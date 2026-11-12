@@ -1,0 +1,7 @@
+Result<int, string> parse() {
+    return 5
+}
+
+void main() {
+    print(parse() ?? 0)
+}

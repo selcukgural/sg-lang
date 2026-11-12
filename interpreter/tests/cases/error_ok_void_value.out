@@ -1,0 +1,5 @@
+error: success carries no value in `Result<void, string>`
+  --> error_ok_void_value.sg:2:12
+ 2 |     return Ok(1)
+   |            ^^^^^
+  hint: `Ok()`

@@ -1,0 +1,8 @@
+Result<int, string> first(int? value) {
+    var v = try value
+    return Ok(v)
+}
+
+void main() {
+    print(first(1) ?? 0)
+}

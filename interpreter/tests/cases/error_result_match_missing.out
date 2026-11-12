@@ -1,0 +1,6 @@
+error: this `match` does not handle `Error`
+  every variant of `Result<int, string>` needs an arm
+  --> error_result_match_missing.sg:6:11
+ 6 |     match parse() {
+   |           ^^^^^^^
+  hint: add an arm for each, or `_ => ...` for everything else

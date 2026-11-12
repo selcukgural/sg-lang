@@ -1,0 +1,5 @@
+error: `try` on `int?` returns `null` to the caller, but `first` returns `Result<int, string>`
+  --> error_try_null_in_result.sg:2:13
+ 2 |     var v = try value
+   |             ^^^^^^^^^
+  hint: say which error a missing value is: `... ?? return Error(...)`

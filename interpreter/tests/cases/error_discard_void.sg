@@ -1,0 +1,3 @@
+void main() {
+    _ = print("x")
+}

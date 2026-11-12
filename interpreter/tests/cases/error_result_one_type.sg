@@ -1,0 +1,6 @@
+Result<int> parse() {
+    return Ok(1)
+}
+
+void main() {
+}

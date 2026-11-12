@@ -1,0 +1,11 @@
+Result<int, string> parse(bool good) {
+    if good {
+        return Ok(1)
+    }
+    return Error("bad")
+}
+
+void main() {
+    print(parse(true) ?? panic("number expected"))
+    print(parse(false) ?? panic("number expected"))
+}

@@ -75,6 +75,8 @@ pub enum Callee {
 pub struct TypeExpr {
     pub mode: Option<Mode>,
     pub name: String,
+    /// The types between `<` and `>`: `Result<int, ParseError>`.
+    pub args: Vec<TypeExpr>,
     pub suffixes: Vec<Suffix>,
     pub span: Span,
 }
@@ -120,6 +122,8 @@ pub enum StmtKind {
     Break,
     Continue,
     Expr(Expr),
+    /// `_ = e`: runs `e` and drops its value on purpose.
+    Discard(Expr),
 }
 
 pub struct Expr {
@@ -152,8 +156,12 @@ pub enum ExprKind {
     Borrow { mutable: bool, expr: Box<Expr> },
     /// `e is null` / `e is not null`
     IsNull { expr: Box<Expr>, negated: bool },
-    /// `a ?? b`
-    Coalesce(Box<Expr>, Box<Expr>),
+    /// `a ?? b`. `on_result`: the left side is a `Result`, not a `T?` (set by the checker).
+    Coalesce { left: Box<Expr>, right: Box<Expr>, on_result: bool },
+    /// `try e`: gives the value, or returns the error (or `null`) to the caller.
+    Try { expr: Box<Expr>, kind: TryKind },
+    /// `return e` on the right side of `??`.
+    Return(Option<Box<Expr>>),
     /// `e is Circle(r)` / `e is not Circle`. `by_ref`: the names are `ref` borrows, otherwise
     /// `read` (set by the checker).
     IsVariant { expr: Box<Expr>, negated: bool, pattern: Pattern, by_ref: bool },
@@ -161,8 +169,8 @@ pub enum ExprKind {
     /// taking what it holds (set by the checker).
     Match { subject: Box<Expr>, arms: Vec<Arm>, borrowed: bool },
 
-    /// Built by the checker from `Shape.Circle(2)` and `Shape.Empty`: the variant's position
-    /// and what it carries.
+    /// Built by the checker from `Shape.Circle(2)`, `Shape.Empty`, `Ok(1)` and `Error(e)`: the
+    /// variant's position and what it carries. `Ok` is 0 and `Error` is 1.
     Variant { index: usize, args: Vec<Expr> },
     /// Inserted by the checker: a borrow of a `T*` used as a borrow of the `T` it owns.
     Unbox(Box<Expr>),
@@ -171,6 +179,16 @@ pub enum ExprKind {
     Widen(IntTy, Box<Expr>),
     /// Inserted by the checker: a borrow of a copyable value used as the value itself.
     Load(Box<Expr>),
+}
+
+/// What `try` does when there is no value. Set by the checker.
+#[derive(Clone, Copy, PartialEq)]
+pub enum TryKind {
+    /// On a `T?`: returns `null`.
+    Null,
+    /// On a `Result`: returns the error. With a position, the error is first wrapped in that
+    /// variant of the caller's error type.
+    Result(Option<usize>),
 }
 
 /// One arm of a `match`: `Circle(r) when r > 0 => body`. The body is a single expression

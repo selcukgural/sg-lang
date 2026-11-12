@@ -8,7 +8,7 @@ use crate::types::IntTy;
 /// Words that are in the design but not in the interpreter yet. They get an explicit
 /// message instead of "unknown name".
 const NOT_YET: &[&str] = &[
-    "interface", "use", "try", "shared", "weak", "checked", "locked", "raw", "unsafe", "lock",
+    "interface", "use", "shared", "weak", "checked", "locked", "raw", "unsafe", "lock",
     "spawn", "share", "using", "readonly",
 ];
 
@@ -100,7 +100,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `[read | ref] Name { * | ? }`
+    /// `[read | ref] Name [<Type, ...>] { * | ? }`
     fn type_expr(&mut self) -> Res<TypeExpr> {
         let start = self.span();
         let mode = match self.peek() {
@@ -112,6 +112,16 @@ impl<'a> Parser<'a> {
             self.bump();
         }
         let (name, _) = self.ident("a type name")?;
+        let mut args = Vec::new();
+        if self.eat(&Tok::Lt) {
+            loop {
+                args.push(self.type_expr()?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(Tok::Gt, "`>`")?;
+        }
         let mut suffixes = Vec::new();
         loop {
             match self.peek() {
@@ -121,7 +131,7 @@ impl<'a> Parser<'a> {
             }
             self.bump();
         }
-        Ok(TypeExpr { mode, name, suffixes, span: Span::new(start.start, self.prev_end()) })
+        Ok(TypeExpr { mode, name, args, suffixes, span: Span::new(start.start, self.prev_end()) })
     }
 
     fn program(&mut self) -> Res<Program> {
@@ -303,26 +313,43 @@ impl<'a> Parser<'a> {
         result
     }
 
-    /// The type comes first: `int x = 1`, `Node*? list = null`. A name, any `*` and `?`,
-    /// then another name is a declaration.
-    fn at_declaration(&self) -> bool {
-        if !matches!(self.peek(), Tok::Ident(_)) {
-            return false;
+    /// How many tokens the type written `n` tokens ahead takes: a name, `<...>`, any `*` and
+    /// `?`. `None` if no type is written there.
+    fn type_len(&self, start: usize) -> Option<usize> {
+        if !matches!(self.peek_at(start), Tok::Ident(_)) {
+            return None;
         }
-        let mut n = 1;
+        let mut n = start + 1;
+        if *self.peek_at(n) == Tok::Lt {
+            loop {
+                n += 1;
+                if matches!(self.peek_at(n), Tok::Read | Tok::Ref) {
+                    n += 1;
+                }
+                n += self.type_len(n)?;
+                match self.peek_at(n) {
+                    Tok::Comma => {}
+                    Tok::Gt => break,
+                    _ => return None,
+                }
+            }
+            n += 1;
+        }
         while matches!(self.peek_at(n), Tok::Star | Tok::Question) {
             n += 1;
         }
-        matches!(self.peek_at(n), Tok::Ident(_))
+        Some(n - start)
+    }
+
+    /// The type comes first: `int x = 1`, `Node*? list = null`, `Result<int, E> r = f()`. A
+    /// type and then a name is a declaration.
+    fn at_declaration(&self) -> bool {
+        self.type_len(0).is_some_and(|n| matches!(self.peek_at(n), Tok::Ident(_)))
     }
 
     /// Whether a declaration starts here and is followed by `=`.
     fn at_initialized_declaration(&self) -> bool {
-        let mut n = 1;
-        while matches!(self.peek_at(n), Tok::Star | Tok::Question) {
-            n += 1;
-        }
-        self.at_declaration() && *self.peek_at(n + 1) == Tok::Assign
+        self.at_declaration() && self.type_len(0).is_some_and(|n| *self.peek_at(n + 1) == Tok::Assign)
     }
 
     /// Whether only line ends stand between here and the `}` that closes the block.
@@ -431,10 +458,16 @@ impl<'a> Parser<'a> {
                     }
                     self.bump();
                     let value = self.expr()?;
-                    StmtKind::Assign { target: expr, op, value, through: false }
+                    match (&expr.kind, op) {
+                        (ExprKind::Var(name), None) if name == "_" => StmtKind::Discard(value),
+                        _ => StmtKind::Assign { target: expr, op, value, through: false },
+                    }
                 } else if tail_ok(self) {
                     return Ok(Err(expr));
-                } else if matches!(expr.kind, ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Match { .. }) {
+                } else if matches!(
+                    expr.kind,
+                    ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Match { .. } | ExprKind::Try { .. }
+                ) {
                     StmtKind::Expr(expr)
                 } else {
                     return Err(Diag::error(expr.span, "the value of this expression is not used")
@@ -599,9 +632,19 @@ impl<'a> Parser<'a> {
         if !self.eat(&Tok::QuestionQuestion) {
             return Ok(left);
         }
-        let right = self.expr()?;
+        // The right side can leave the function: `x ?? return Error(...)`.
+        let right = if *self.peek() == Tok::Return {
+            let start = self.bump().span;
+            let value = match self.peek() {
+                Tok::Newline | Tok::RBrace | Tok::RParen | Tok::Comma | Tok::Eof => None,
+                _ => Some(Box::new(self.expr()?)),
+            };
+            Expr { kind: ExprKind::Return(value), span: Span::new(start.start, self.prev_end()) }
+        } else {
+            self.expr()?
+        };
         let span = left.span.to(right.span);
-        Ok(Expr { kind: ExprKind::Coalesce(Box::new(left), Box::new(right)), span })
+        Ok(Expr { kind: ExprKind::Coalesce { left: Box::new(left), right: Box::new(right), on_result: false }, span })
     }
 
     /// Same precedence as C#: `||`, `&&`, equality, comparison and `is`, additive, multiplicative.
@@ -684,6 +727,12 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let operand = self.unary()?;
                 Ok(wrap(ExprKind::New, operand))
+            }
+            // A prefix, like `await`: `try a().b()` tries the whole chain.
+            Tok::Try => {
+                self.bump();
+                let operand = self.unary()?;
+                Ok(wrap(|e| ExprKind::Try { expr: e, kind: TryKind::Null }, operand))
             }
             Tok::Read => {
                 self.bump();
@@ -809,6 +858,9 @@ impl<'a> Parser<'a> {
                 } else {
                     ExprKind::Var(name)
                 }
+            }
+            Tok::Return => {
+                return Err(self.unexpected("an expression").note("inside an expression `return` is written only on the right side of `??`"))
             }
             _ => return Err(self.unexpected("an expression")),
         };

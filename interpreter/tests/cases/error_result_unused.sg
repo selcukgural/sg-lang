@@ -1,0 +1,7 @@
+Result<void, string> save() {
+    return Ok()
+}
+
+void main() {
+    save()
+}

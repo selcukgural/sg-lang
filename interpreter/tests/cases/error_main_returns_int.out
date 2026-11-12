@@ -1,0 +1,4 @@
+error: `main` is written `void main()` or `Result<void, E> main()`
+  --> error_main_returns_int.sg:1:21
+ 1 | Result<int, string> main() {
+   |                     ^^^^

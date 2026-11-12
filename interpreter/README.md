@@ -13,20 +13,21 @@ cargo test
 | Area | Supported |
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point. `public` is accepted and has no effect yet |
-| Types | `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `read T` and `ref T` in signatures |
+| Types | `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `read T` and `ref T` in signatures |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
 | Methods | Written in the struct body with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`. Called as `stack.push(1)`, also through pointers and borrows. A function without `this` is called on the type: `Stack.create()`. `Stack(args)` is short for `Stack.create(args)` |
 | Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)` |
 | `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a name or `_` for each value, `_`, `var other`; a condition with `when`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
 | `is` | `if s is Circle(r) { ... }`, `while next() is not End { ... }` |
+| Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`. A variable keeps its type |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `break`, `continue`, `return` |
 | Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x` |
-| Text | `"..."` with `\n \t \r \0 \\ \"`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()` |
+| Text | `"..."` with `\n \t \r \0 \\ \"`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()` |
 | Built-ins | `print(x)`, `panic("...")`, `assert(condition)` |
-| Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply` |
+| Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic |
 
 Design rules that are already enforced:
 
@@ -58,6 +59,14 @@ Design rules that are already enforced:
 - `match x` is `var y = x`: an owner is moved in and the names in the arms own what the variant carried;
   `match read x` and `match ref x` borrow, and so does a `match` on something that is already a borrow.
 - A borrow of a `T*` is accepted where a borrow of `T` is expected (`eval(left)` with `left` a `read Expr*`).
+- A `Result` that is not used is an error, as a statement (`save()`) and as a variable that nothing looks at.
+  The hint names `try` and `_ = ...`.
+- `try` needs a function that can pass the error on: one that returns a `Result` (or a `T?` for `try` on a
+  `T?`). With a different error type, `try` wraps the error in the one variant of the caller's error type that
+  carries it; none or more than one is an error.
+- A value where a `Result` is expected is an error whose hint is `Ok(x)` or `Error(x)`; a `Result` where its
+  value is expected is an error whose hint is `try`.
+- A function that returns `Result<void, E>` ends with `return Ok()`.
 
 ## How it is built
 
@@ -66,7 +75,7 @@ Design rules that are already enforced:
 | `src/lexer.rs` | Tokens, the line-end rule, `$"..."` pieces |
 | `src/parser.rs` | Hand-written recursive descent parser |
 | `src/types.rs` | Types as the checker sees them |
-| `src/check.rs` | Static checks: names, types, `null` safety, use after move (per variable and per field), `match` covering every variant, `return` on every path. Writes resolved details (literal types, field indexes, implicit conversions, what each call runs) into the tree |
+| `src/check.rs` | Static checks: names, types, `null` safety, use after move (per variable and per field), `match` covering every variant, `return` on every path, unused `Result`, what `try` may pass on. Writes resolved details (literal types, field indexes, implicit conversions, what each call runs) into the tree |
 | `src/interp.rs` | Runs the checked tree; only data-dependent failures (panics) are left to it |
 | `src/diag.rs` | Error and panic messages |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
@@ -118,9 +127,6 @@ Approved on 12 November 2026.
 5. **A `ref this` method can be called on a value that was just built** (`Stack().push(1)`), as in Rust.
 6. **A `this` method called through a `T*` uses the pointer up.**
 
-The stack example differs from the design text in one line: `pop` tests `if node is null { return null }`
-where the design writes `try this.top.take()`, because `try` is not here yet.
-
 Smaller placeholders: a panic exits with code 1; a variable may shadow one from an outer block but not one in
 the same block.
 
@@ -143,6 +149,33 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
 6. **`match` and `is` look through `T*`**, like field access. `var other` gets the value as it was given
    (the `T*` itself).
 
+## Rules from the fifth slice
+
+Approved on 12 November 2026. Each has a test in `tests/cases/`.
+
+1. **`Ok(...)` and `Error(...)` take their type from where the value goes**, like `null`: a `return`, a
+   declaration with a type, an argument, a field. `var r = Ok(1)` is an error, because nothing says what the
+   error type is. Rust infers it from later lines; here a line is read on its own.
+2. **`Result`, `Ok` and `Error` are taken names**: no type called `Result`, no function called `Ok` or `Error`.
+   A variant of your own enum can still be called `Ok` (`Status.Ok`).
+3. **"A `Result` in a variable that is never unwrapped" is checked as "never looked at".** Any read of the
+   variable counts (`try r`, `r ?? 0`, `match r`, `r is Ok(v)`, passing it on). Exact for the common mistake,
+   and no flow analysis.
+4. **`_ = e` drops any value, not only a `Result`.** `_ = print("x")` is an error: there is nothing to drop.
+5. **`??` on a `Result<void, E>` is an error**: success carries nothing, so there is nothing to fall back to.
+   The hint names `try` and `_ = ...`.
+6. **`tryDivide` gives `null` for division by zero too**, not only for overflow (Rust's `checked_div`).
+7. **`return` inside an expression is written only on the right side of `??`.**
+
+Placeholders: the error `main` ends with is written by its shape (`AppError.Eval(EvalError.Overflow)`), a
+`string` error as its text, until `Formattable` exists. `try` on a borrowed `Result` works only if it can be
+copied. A `Result` cannot carry a borrow (`Result<read string, E>`), since `from` is not here.
+
+The calculator runs from the tokens on (`examples/calculator.sg`): parser, evaluator, error conversion. It
+differs from the design text where the interpreter lacks something: the tokens are built by hand (no `char`,
+no string indexing), `Token` is not `Copyable` so the parser swaps the current token with `replace`, variables
+are a linked list instead of a `HashMap`, and `-x` is `0.trySubtract(x)`.
+
 ## Not here yet
 
 - **Borrow checking.** Moves are checked, borrows are not: nothing stops a `read` borrow from outliving its
@@ -154,11 +187,11 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
   the names of `x is Circle(r)`: they exist when the test is the whole condition of an `if` or `while`.
 - Patterns inside patterns (`Negate(Number(v))`), patterns for numbers and text (`match c { '+' => ... }`),
   methods and interfaces on enums. An enum cannot be copied, compared with `==` or printed yet.
-- `Result` and `try`, generics, interfaces (`Copyable`,
+- Generics other than the built-in `Result<T, E>`, interfaces (`Copyable`,
   `Formattable`: a struct cannot be copied or printed yet), lambdas, collections, modules, `test` blocks, threads,
   `shared` / `weak` / `checked` / `locked`.
 - `byte`, `char`, `double` and the other number types; character literals; indexing and slices.
-- The `try...` methods (`tryAdd`, `tryToInt`). Until then overflow and cast panics print the values but not the
+- `tryToInt` and the other `tryTo...` conversions. Overflow and cast panics print the values but not yet the
   safe alternative.
 - Freeing a long linked list recurses, the open stack-depth question from the design; here it runs on a 1 GB stack.
 
@@ -167,4 +200,5 @@ error.
 
 ## Next
 
-`Result` and `try` (with `??` on a `Result` and `return` on its right side), which reach the calculator. `Result` will be a built-in type; user-written generics are not planned for now.
+`byte`, character literals, string indexing and slices, so the calculator gets its lexer and reads real
+text. After that the interfaces the examples lean on most (`Copyable`, `Formattable`).

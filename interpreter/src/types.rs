@@ -70,6 +70,8 @@ pub enum Ty {
     Ptr(Box<Ty>),
     /// `T?`
     Nullable(Box<Ty>),
+    /// `Result<T, E>`: built in, with the variants `Ok(T value)` and `Error(E cause)`.
+    Result(Box<Ty>, Box<Ty>),
     /// `read T`: read-only borrow.
     Read(Box<Ty>),
     /// `ref T`: writable borrow.
@@ -92,6 +94,7 @@ impl Ty {
         match self {
             Ty::Int(_) | Ty::Bool | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) => true,
             Ty::Nullable(inner) => inner.is_copyable(),
+            Ty::Result(ok, error) => ok.is_copyable() && error.is_copyable(),
             Ty::Str | Ty::Struct(_) | Ty::Enum(_) | Ty::Ptr(_) => false,
         }
     }
@@ -122,6 +125,7 @@ impl fmt::Display for Ty {
             Ty::Struct(name) | Ty::Enum(name) => f.write_str(name),
             Ty::Ptr(inner) => write!(f, "{inner}*"),
             Ty::Nullable(inner) => write!(f, "{inner}?"),
+            Ty::Result(ok, error) => write!(f, "Result<{ok}, {error}>"),
             Ty::Read(inner) => write!(f, "read {inner}"),
             Ty::Ref(inner) => write!(f, "ref {inner}"),
         }

@@ -1,0 +1,5 @@
+error: `try` cannot choose: `Header` and `Body` of `AppError` both carry `ParseError`
+  --> error_try_two_variants.sg:15:15
+ 15 |     return Ok(try parse())
+    |               ^^^^^^^^^^^
+  hint: open the `Result` with `match` and build the one you mean

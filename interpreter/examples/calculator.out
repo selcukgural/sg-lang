@@ -1,0 +1,4 @@
+30
+-1
+that one does not parse
+error: AppError.Eval(EvalError.UnknownName("y"))

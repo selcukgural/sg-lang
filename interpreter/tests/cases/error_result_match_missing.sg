@@ -1,0 +1,9 @@
+Result<int, string> parse() {
+    return Ok(5)
+}
+
+void main() {
+    match parse() {
+        Ok(value) => print(value)
+    }
+}

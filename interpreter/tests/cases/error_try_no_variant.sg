@@ -1,0 +1,19 @@
+enum ParseError {
+    Empty
+}
+
+enum AppError {
+    Other
+}
+
+Result<int, ParseError> parse() {
+    return Error(ParseError.Empty)
+}
+
+Result<int, AppError> run() {
+    return Ok(try parse())
+}
+
+void main() {
+    print(run() ?? 0)
+}

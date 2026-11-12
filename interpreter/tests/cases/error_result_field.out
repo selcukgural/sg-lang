@@ -1,0 +1,5 @@
+error: this is `Result<Point, string>`: either a value or an error; `.x` needs the value
+  --> error_result_field.sg:10:11
+ 10 |     print(load().x)
+    |           ^^^^^^
+  hint: open it first with `try`, `??` or `match`

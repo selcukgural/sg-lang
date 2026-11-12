@@ -1,0 +1,8 @@
+Result<void, string> save() {
+    return Ok()
+}
+
+void main() {
+    var saved = save() ?? 1
+    print(saved)
+}

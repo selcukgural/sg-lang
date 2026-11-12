@@ -1,0 +1,198 @@
+// The calculator from the examples, from the tokens on: the parser and the evaluator
+// pass errors up with `try`, and `main` ends with the error it could not handle.
+// The lexer waits for `char` and string indexing, so the tokens are built by hand.
+enum Token {
+    Number(int value)
+    Name(string text)
+    Plus
+    Minus
+    Star
+    Slash
+    LeftParen
+    RightParen
+    End
+}
+
+struct TokenNode {
+    Token token
+    TokenNode*? next
+}
+
+enum SyntaxError {
+    Unexpected(int position)
+}
+
+enum Operator {
+    Add
+    Subtract
+    Multiply
+    Divide
+}
+
+enum Expr {
+    Number(int value)
+    Variable(string name)
+    Negate(Expr* operand)
+    Binary(Operator op, Expr* left, Expr* right)
+}
+
+struct Parser {
+    TokenNode*? rest
+    Token current
+    int pos
+
+    Parser create(TokenNode*? tokens) {
+        var parser = Parser { rest = tokens, current = Token.End, pos = -1 }
+        parser.advance()
+        return parser
+    }
+
+    // Gives the current token and steps to the next one.
+    Token advance(ref this) {
+        this.pos += 1
+        var node = this.rest.take() ?? return this.current.replace(Token.End)
+        this.rest = node.next
+        return this.current.replace(node.token)
+    }
+
+    Result<Expr*, SyntaxError> expression(ref this) {
+        var left = try this.term()
+        while true {
+            Operator op = match read this.current {
+                Plus => Operator.Add
+                Minus => Operator.Subtract
+                _ => return Ok(left)
+            }
+            this.advance()
+            var right = try this.term()
+            left = new Expr.Binary(op, left, right)
+        }
+    }
+
+    Result<Expr*, SyntaxError> term(ref this) {
+        var left = try this.factor()
+        while true {
+            Operator op = match read this.current {
+                Star => Operator.Multiply
+                Slash => Operator.Divide
+                _ => return Ok(left)
+            }
+            this.advance()
+            var right = try this.factor()
+            left = new Expr.Binary(op, left, right)
+        }
+    }
+
+    Result<Expr*, SyntaxError> factor(ref this) {
+        int position = this.pos
+        return match this.advance() {
+            Number(v) => Ok(new Expr.Number(v))
+            Name(text) => Ok(new Expr.Variable(text))
+            Minus => Ok(new Expr.Negate(try this.factor()))
+            LeftParen => {
+                var inner = try this.expression()
+                if this.current is not RightParen {
+                    return Error(SyntaxError.Unexpected(this.pos))
+                }
+                this.advance()
+                Ok(inner)
+            }
+            _ => Error(SyntaxError.Unexpected(position))
+        }
+    }
+}
+
+Result<Expr*, SyntaxError> parse(TokenNode*? tokens) {
+    var parser = Parser(tokens)
+    var tree = try parser.expression()
+    if parser.current is not End {
+        return Error(SyntaxError.Unexpected(parser.pos))
+    }
+    return Ok(tree)
+}
+
+enum EvalError {
+    UnknownName(string name)             // owned: the error can outlive the tree
+    DivideByZero
+    Overflow
+}
+
+struct Binding {
+    string name
+    int value
+    Binding*? next
+}
+
+int? find(read Binding*? vars, read string name) {
+    var cur = vars
+    while cur is not null {
+        if cur.name == name {
+            return cur.value
+        }
+        cur = read cur.next
+    }
+    return null
+}
+
+Result<int, EvalError> apply(read Operator op, int a, int b) {
+    return match op {
+        Add => Ok(a.tryAdd(b) ?? return Error(EvalError.Overflow))
+        Subtract => Ok(a.trySubtract(b) ?? return Error(EvalError.Overflow))
+        Multiply => Ok(a.tryMultiply(b) ?? return Error(EvalError.Overflow))
+        Divide when b == 0 => Error(EvalError.DivideByZero)
+        Divide => Ok(a.tryDivide(b) ?? return Error(EvalError.Overflow))
+    }
+}
+
+Result<int, EvalError> eval(read Expr e, read Binding*? vars) {
+    return match e {                     // e is read, so the names in the arms are read too
+        Number(v) => Ok(v)
+        Variable(name) => Ok(find(vars, name) ?? return Error(EvalError.UnknownName(name.clone())))
+        Negate(operand) => Ok(0.trySubtract(try eval(operand, vars)) ?? return Error(EvalError.Overflow))
+        Binary(op, left, right) => {
+            var a = try eval(left, vars)
+            var b = try eval(right, vars)
+            apply(op, a, b)
+        }
+    }
+}
+
+enum AppError {
+    Syntax(SyntaxError cause)
+    Eval(EvalError cause)
+}
+
+Result<int, AppError> run(TokenNode*? tokens, read Binding*? vars) {
+    var tree = try parse(tokens)         // SyntaxError becomes AppError.Syntax
+    return Ok(try eval(read tree, vars)) // EvalError becomes AppError.Eval
+}
+
+TokenNode*? then(Token token, TokenNode*? next) {
+    return new TokenNode { token = token, next = next }
+}
+
+// name * (left op right), written from the last token back
+TokenNode*? product(string name, int left, Token op, int right) {
+    var tokens = then(Token.RightParen, null)
+    tokens = then(Token.Number(right), tokens)
+    tokens = then(op, tokens)
+    tokens = then(Token.Number(left), tokens)
+    tokens = then(Token.LeftParen, tokens)
+    tokens = then(Token.Star, tokens)
+    return then(Token.Name(name), tokens)
+}
+
+Result<void, AppError> main() {
+    var vars = new Binding { name = "x", value = 10, next = null }
+
+    print(try run(product("x", 7, Token.Minus, 4), read vars))       // x * (7 - 4)
+    print(run(product("x", 1, Token.Slash, 0), read vars) ?? -1)     // x * (1 / 0)
+
+    match run(product("x", 7, Token.RightParen, 4), read vars) {     // x * (7 ) 4)
+        Ok(value) => print(value)
+        Error(_) => print("that one does not parse")
+    }
+
+    print(try run(product("y", 7, Token.Plus, 4), read vars))        // y * (7 + 4)
+    return Ok()
+}                                        // on an error it is printed, exit code 1

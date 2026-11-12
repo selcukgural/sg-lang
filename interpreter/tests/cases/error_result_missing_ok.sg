@@ -1,0 +1,7 @@
+Result<void, string> save() {
+    print("saved")
+}
+
+void main() {
+    _ = save()
+}

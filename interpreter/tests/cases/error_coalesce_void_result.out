@@ -1,0 +1,5 @@
+error: this is `Result<void, string>`: success carries no value, so `??` has nothing to give
+  --> error_coalesce_void_result.sg:6:17
+ 6 |     var saved = save() ?? 1
+   |                 ^^^^^^
+  hint: pass the error on with `try`, or drop it on purpose with `_ = ...`

@@ -1,0 +1,5 @@
+error: expected `Result<int, string>`, found `int`
+  --> error_result_needs_ok.sg:2:12
+ 2 |     return 5
+   |            ^
+  hint: success is written `Ok(5)`

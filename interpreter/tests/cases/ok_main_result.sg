@@ -1,0 +1,5 @@
+// `main` can return a Result; with `Ok()` the program ends normally.
+Result<void, string> main() {
+    print("done")
+    return Ok()
+}

@@ -1,0 +1,3 @@
+Result<int, string> main() {
+    return Ok(1)
+}

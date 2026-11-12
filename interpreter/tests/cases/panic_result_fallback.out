@@ -1,0 +1,5 @@
+1
+panic: number expected
+  --> panic_result_fallback.sg:10:27
+ 10 |     print(parse(false) ?? panic("number expected"))
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,12 @@
+struct Place {
+    int line
+    string? file
+}
+
+enum LoadError {
+    NotFound(Place where, int? code)
+}
+
+Result<void, LoadError> main() {
+    return Error(LoadError.NotFound(Place { line = 3, file = "a.txt" }, null))
+}

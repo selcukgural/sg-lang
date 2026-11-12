@@ -1,0 +1,8 @@
+Result<int, string> parse() {
+    return Ok(1)
+}
+
+void main() {
+    var result = parse()
+    print("done")
+}

@@ -19,10 +19,7 @@ public struct Stack {
     }
 
     public int? pop(ref this) {
-        var node = this.top.take()
-        if node is null {
-            return null
-        }
+        var node = try this.top.take()      // an empty stack: `try` returns null
         this.top = node.next        // `node` is owned, so its field can move out
         this.count -= 1
         return node.value

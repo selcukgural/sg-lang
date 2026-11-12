@@ -33,6 +33,7 @@ pub enum Tok {
     Struct,
     Enum,
     Match,
+    Try,
 
     LParen,
     RParen,
@@ -154,6 +155,7 @@ impl Tok {
             Tok::Struct => "struct",
             Tok::Enum => "enum",
             Tok::Match => "match",
+            Tok::Try => "try",
             Tok::FatArrow => "=>",
             Tok::LParen => "(",
             Tok::RParen => ")",
@@ -346,6 +348,7 @@ impl<'a> Lexer<'a> {
             "struct" => Tok::Struct,
             "enum" => Tok::Enum,
             "match" => Tok::Match,
+            "try" => Tok::Try,
             name => Tok::Ident(name.to_string()),
         };
         self.push(tok, start);

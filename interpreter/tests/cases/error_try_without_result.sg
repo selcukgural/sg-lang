@@ -1,0 +1,11 @@
+Result<int, string> parse() {
+    return Ok(1)
+}
+
+int twice() {
+    return 2 * try parse()
+}
+
+void main() {
+    print(twice())
+}

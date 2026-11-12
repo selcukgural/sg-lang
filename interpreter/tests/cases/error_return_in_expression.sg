@@ -1,0 +1,7 @@
+int f(int? x) {
+    return 1 + return 2
+}
+
+void main() {
+    print(f(1))
+}

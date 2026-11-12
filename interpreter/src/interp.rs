@@ -95,6 +95,8 @@ pub enum Stop {
     OutputClosed,
     /// Writing to output failed: stop with a message.
     OutputFailed(String),
+    /// `main` returned an error: the text of the error.
+    Failed(String),
 }
 
 impl From<Diag> for Stop {
@@ -184,6 +186,14 @@ pub fn run_program(prog: &Program, src: &str, out: &mut dyn Write) -> Result<(),
     let mut interp = Interp { funcs, methods, src, out, depth: 0 };
     let main = interp.funcs["main"];
     match interp.call(main, None, Vec::new(), main.name_span) {
+        // `Result<void, E> main()` ended with `Error(cause)`.
+        Ok(Value::Enum(1, fields)) => {
+            let cause = fields[0].borrow().clone();
+            Err(Stop::Failed(match &cause {
+                Value::Str(text) => text.to_string(),
+                _ => show(prog, &cause, &main.ret.args[1]),
+            }))
+        }
         Ok(_) => Ok(()),
         Err(Unwind::Stop(stop)) => Err(stop),
         Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop"),
@@ -309,7 +319,7 @@ impl<'a> Interp<'a> {
             }
             StmtKind::Break => return Ok(Flow::Break),
             StmtKind::Continue => return Ok(Flow::Continue),
-            StmtKind::Expr(expr) => {
+            StmtKind::Expr(expr) | StmtKind::Discard(expr) => {
                 self.expr(expr, frame)?;
             }
         }
@@ -413,13 +423,40 @@ impl<'a> Interp<'a> {
                 let is_null = matches!(strip(self.expr(inner, frame)?), Value::Null);
                 Ok(Value::Bool(is_null != *negated))
             }
-            ExprKind::Coalesce(left, right) => {
+            ExprKind::Coalesce { left, right, on_result: false } => {
                 let value = self.expr(left, frame)?;
                 if matches!(strip(value.clone()), Value::Null) {
                     self.expr(right, frame)
                 } else {
                     Ok(value)
                 }
+            }
+            ExprKind::Coalesce { left, right, on_result: true } => match self.expr(left, frame)? {
+                Value::Enum(0, fields) => Ok(fields[0].borrow().clone()),
+                _ => self.expr(right, frame),
+            },
+            ExprKind::Try { expr: inner, kind } => {
+                let value = self.expr(inner, frame)?;
+                match (kind, value) {
+                    (TryKind::Null, Value::Null) => Err(Unwind::Return(Value::Null)),
+                    (TryKind::Null, value) => Ok(value),
+                    (TryKind::Result(_), Value::Enum(0, fields)) => Ok(fields.first().map_or(Value::Void, |field| field.borrow().clone())),
+                    (TryKind::Result(convert), Value::Enum(_, fields)) => {
+                        let mut cause = fields[0].borrow().clone();
+                        if let Some(variant) = convert {
+                            cause = Value::Enum(*variant, Rc::new(vec![cell(cause)]));
+                        }
+                        Err(Unwind::Return(Value::Enum(1, Rc::new(vec![cell(cause)]))))
+                    }
+                    _ => unreachable!("the checker only lets `try` open a `Result` or a `T?`"),
+                }
+            }
+            ExprKind::Return(value) => {
+                let value = match value {
+                    Some(expr) => self.expr(expr, frame)?,
+                    None => Value::Void,
+                };
+                Err(Unwind::Return(value))
             }
             ExprKind::Variant { index, args } => {
                 let cells = self.values(args, frame)?.into_iter().map(cell).collect();
@@ -654,6 +691,23 @@ fn arithmetic(op: BinOp, ty: IntTy, a: i64, b: i64, span: Span) -> Result<Value,
 
 fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
     match (&recv, name, args.as_slice()) {
+        // `null` where the plain operator would panic.
+        (Value::Int(ty, a), "tryAdd" | "trySubtract" | "tryMultiply" | "tryDivide", [Value::Int(_, b)]) => {
+            let (a, b) = (*a as i128, *b as i128);
+            let result = match name {
+                "tryAdd" => a + b,
+                "trySubtract" => a - b,
+                "tryMultiply" => a * b,
+                _ if b == 0 => return Value::Null,
+                _ => a / b,
+            };
+            if ty.fits(result) {
+                Value::Int(*ty, result as i64)
+            } else {
+                Value::Null
+            }
+        }
+        (Value::Str(_), "clone", []) => recv,
         (Value::Int(ty, a), _, [Value::Int(_, b)]) => {
             let (a, b) = (*a as i128, *b as i128);
             let result = match name {
@@ -666,5 +720,45 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
         (_, "toString", []) => Value::Str(recv.format().into()),
         (Value::Str(text), "length", []) => Value::Int(IntTy::Nint, text.len() as i64),
         _ => unreachable!("the checker only lets known methods through"),
+    }
+}
+
+/// Writes a value by its type, for the error `main` ends with. A placeholder until
+/// `Formattable` exists: `AppError.Syntax(SyntaxError.Unexpected(3))`.
+fn show(prog: &Program, value: &Value, ty: &TypeExpr) -> String {
+    show_as(prog, value, ty, ty.suffixes.len())
+}
+
+/// `suffixes`: how many of the `*` and `?` written after the type name still apply.
+fn show_as(prog: &Program, value: &Value, ty: &TypeExpr, suffixes: usize) -> String {
+    let list = |fields: &[Cell], types: &mut dyn Iterator<Item = &TypeExpr>| -> Vec<String> {
+        fields.iter().zip(types).map(|(field, ty)| show(prog, &field.borrow(), ty)).collect()
+    };
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Ptr(inner) | Value::Borrow(inner) => show_as(prog, &inner.borrow(), ty, suffixes.saturating_sub(1)),
+        // A `T?` that holds a value.
+        _ if suffixes > 0 => show_as(prog, value, ty, suffixes - 1),
+        Value::Str(text) => format!("{text:?}"),
+        Value::Enum(index, fields) if ty.name == "Result" => {
+            let word = if *index == 0 { "Ok" } else { "Error" };
+            format!("{word}({})", list(fields, &mut ty.args.iter().skip(*index)).join(", "))
+        }
+        Value::Enum(index, fields) => {
+            let decl = prog.enums.iter().find(|decl| decl.name == ty.name).expect("the checker resolved the type");
+            let variant = &decl.variants[*index];
+            let inside = list(fields, &mut variant.fields.iter().map(|field| &field.ty));
+            match inside.is_empty() {
+                true => format!("{}.{}", decl.name, variant.name),
+                false => format!("{}.{}({})", decl.name, variant.name, inside.join(", ")),
+            }
+        }
+        Value::Struct(fields) => {
+            let decl = prog.structs.iter().find(|decl| decl.name == ty.name).expect("the checker resolved the type");
+            let inside = list(fields, &mut decl.fields.iter().map(|field| &field.ty));
+            let named: Vec<String> = decl.fields.iter().zip(inside).map(|(field, text)| format!("{} = {text}", field.name)).collect();
+            format!("{} {{ {} }}", decl.name, named.join(", "))
+        }
+        other => other.format(),
     }
 }

@@ -1,0 +1,5 @@
+error: expected an expression, found `return`
+  inside an expression `return` is written only on the right side of `??`
+  --> error_return_in_expression.sg:2:16
+ 2 |     return 1 + return 2
+   |                ^^^^^^

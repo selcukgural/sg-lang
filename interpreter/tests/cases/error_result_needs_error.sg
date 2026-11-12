@@ -1,0 +1,7 @@
+Result<int, string> parse(string message) {
+    return message
+}
+
+void main() {
+    print(parse("bad") ?? 0)
+}

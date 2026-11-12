@@ -1,0 +1,5 @@
+error: `try` cannot turn `ParseError` into `AppError`
+  --> error_try_no_variant.sg:14:15
+ 14 |     return Ok(try parse())
+    |               ^^^^^^^^^^^
+  hint: add a variant to `AppError` that carries it: `Name(ParseError cause)`

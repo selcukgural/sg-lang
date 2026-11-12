@@ -105,6 +105,13 @@ smallness: what each language does best is taken in the form that fits us, and i
 | `Result` unwrapping | `x ?? default`, `x ?? panic("message")`. There can be a `return` on the right of `??` | The same operator as for `T?`, like `x ?? throw` in C# |
 | Error conversion | `try` finds by itself the variant of the target error type whose only field is the source type. If there is none or more than one, a compile error | No hand-written `From` as in Rust, and no macro either |
 | Unused `Result` | Compile error, and `_ = f()` to discard on purpose. A `Result` that is assigned to a variable and never unwrapped gives the same error, an exit through `try` is exempt | An error should not be lost silently |
+| Type of `Ok` and `Error` | `Ok(...)` and `Error(...)` take their type from where the value goes, like `null`: a `return`, a declaration with a type, an argument, a field. `var r = Ok(1)` is a compile error, and the hint is to write the type | Nothing in `Ok(1)` says what the error type is. Rust infers it from later lines; here a line is read on its own |
+| Taken names | `Result`, `Ok` and `Error`: no type called `Result`, no function called `Ok` or `Error`. A variant of your own enum can be called `Ok` (`Status.Ok`) | The short names must mean one thing everywhere |
+| `Result` in a variable | "Never unwrapped" is checked as "never looked at": any read of the variable counts (`try r`, `r ?? 0`, `match r`, `r is Ok(v)`, passing it on) | Exact for the common mistake, and needs no flow analysis |
+| `_ = e` | Drops any value on purpose, not only a `Result`. On a call that returns nothing it is a compile error | One way to say "I do not want this"; with `void` there is nothing to drop |
+| `??` on `Result<void, E>` | Compile error; the hint is `try` or `_ = ...` | Success carries nothing, so there is nothing to fall back to |
+| `tryDivide` | Gives `null` for division by zero too, not only for overflow | Rust's `checked_div`. "`null` where the operator would panic" is one rule for the whole `try...` family |
+| `return` in an expression | Written only on the right side of `??` | The one place it reads well; anywhere else it hides an exit in the middle of a line |
 | Integer overflow | Panic in release too. `tryAdd` returns `int?`, `wrappingAdd` wraps on purpose | The first application of the core principle: a silent wrong result cannot be the default. We deliberately differ from Rust, the cost is below, and a hot loop is rescued with `wrappingAdd` |
 | Implicit conversion | `read T` stands in for `T` if `T` is `Copyable`. A `read T*` can be given to a `read T` parameter | Otherwise a dereference would be needed on every line |
 | `new` | Required. It puts the value on the heap and gives a `T*`, it does not mean creating an object. `HashMap<K, V>()` takes no `new`, it is the value itself | A separate heap allocation should stay visible, and `var` should know which type is wanted. An implicit conversion can be added later, but cannot be removed |
@@ -235,14 +242,19 @@ This goal holds only with a back end at the level of LLVM. A tree-walking interp
    Second slice (the same day): structs, `T*` and `new`, `T?` and `null` (`is null`, `??`, flow narrowing), `read`/`ref`,
    static type checking and the check for moved variables; the linked list in the syntax draft runs unchanged.
    Third slice (the same day): methods (`this`, `read this`, `ref this`), calls through the type and `T(args)`,
-   `take`/`replace`, moving a field out of an owned value (tracked per field); the stack example runs (until `try` arrives,
-   with `if node is null { return null }` inside `pop`). The six small choices made in this slice were approved on 12 November 2026 and are in the decisions table:
+   `take`/`replace`, moving a field out of an owned value (tracked per field); the stack example runs. The six small choices made in this slice were approved on 12 November 2026 and are in the decisions table:
    [interpreter/README.md](../interpreter/README.md), "Rules from the third slice".
    Fourth slice (the same day): `enum`, `match` (expression and statement, `when`, `_`, `var other`, the check that every
    variant is handled, `return`/`break`/`continue` from an arm) and `is` with a variant; an expression tree with `Expr*` runs.
    The six small choices made in this slice were approved on 12 November 2026 and are in the decisions table:
    [interpreter/README.md](../interpreter/README.md), "Rules from the fourth slice".
-   The borrow check (`from`, conflicting `ref`) does not exist yet. Next: `Result` and `try`. The current state is in
+   Fifth slice (the same day): the built-in `Result<T, E>`, `Ok`/`Error`, `try` (on a `Result` and on a `T?`, with
+   error conversion), `??` on a `Result`, `?? return`, the unused `Result` error, `_ = f()`, `Result<void, E> main()`,
+   `tryAdd` and its siblings; the calculator runs from the tokens on (`examples/calculator.sg`), and `pop` in the stack
+   example is now written with `try` as in the design. The seven small choices made in this slice were approved on 12 November 2026 and are in the decisions table:
+   [interpreter/README.md](../interpreter/README.md), "Rules from the fifth slice".
+   The borrow check (`from`, conflicting `ref`) does not exist yet. Next: `byte`, character literals, string indexing and
+   slices (the calculator's lexer). The current state is in
    [interpreter/README.md](../interpreter/README.md). The code, comments and error messages are in English. Since 12 November 2026 the design documents are in English too.
 
 ## Dropped decisions

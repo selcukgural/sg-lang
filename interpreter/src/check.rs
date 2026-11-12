@@ -20,7 +20,7 @@ type Res<T> = Result<T, Diag>;
 const TYPES_NOT_YET: &[&str] =
     &["byte", "sbyte", "short", "ushort", "uint", "ulong", "nuint", "float", "double", "char"];
 
-const BUILTINS: &[&str] = &["print", "assert", "panic"];
+const BUILTINS: &[&str] = &["print", "assert", "panic", "Ok", "Error"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -63,6 +63,9 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
         .map(|decl| (&decl.name, decl.name_span, TypeKind::Struct))
         .chain(prog.enums.iter().map(|decl| (&decl.name, decl.name_span, TypeKind::Enum)));
     for (name, span, kind) in declared {
+        if name == "Result" {
+            return Err(Diag::error(span, "`Result` is a built-in type and cannot be redefined"));
+        }
         if Ty::from_name(name).is_some() || names.insert(name.clone(), kind).is_some() {
             return Err(Diag::error(span, format!("type `{name}` is defined twice")));
         }
@@ -163,10 +166,16 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
             return Err(Diag::error(Span::new(src.len(), src.len()), "there is no `main` function")
                 .hint("a program starts at `void main() { ... }`"))
         }
-        Some(main) if sigs["main"].ret != Ty::Void || !main.params.is_empty() => {
-            return Err(Diag::error(main.name_span, "for now `main` can only be written as `void main()`"))
+        Some(main) => {
+            let ret_ok = match &sigs["main"].ret {
+                Ty::Void => true,
+                Ty::Result(ok, _) => **ok == Ty::Void,
+                _ => false,
+            };
+            if !ret_ok || !main.params.is_empty() {
+                return Err(Diag::error(main.name_span, "`main` is written `void main()` or `Result<void, E> main()`"));
+            }
         }
-        Some(_) => {}
     }
 
     let body = |func: &mut Func, sig: &FuncSig, owner: Option<&str>| -> Res<()> {
@@ -196,10 +205,14 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
         }
         checker.block(&mut func.body, None)?;
         if sig.ret != Ty::Void && !leaves(&func.body, false) {
-            return Err(Diag::error(
+            let diag = Diag::error(
                 func.name_span,
                 format!("`{}` does not return a value on every path; it must return `{}`", func.name, sig.ret),
-            ));
+            );
+            return Err(match &sig.ret {
+                Ty::Result(ok, _) if **ok == Ty::Void => diag.hint("success is written too: end with `return Ok()`"),
+                _ => diag,
+            });
         }
         Ok(())
     };
@@ -216,7 +229,28 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
 }
 
 fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
+    if ty.name != "Result" && !ty.args.is_empty() {
+        return Err(Diag::error(ty.span, format!("`{}<...>`: generic types are not in the interpreter yet", ty.name))
+            .note("the only type written with `<` and `>` for now is `Result<T, E>`"));
+    }
     let mut resolved = match Ty::from_name(&ty.name) {
+        _ if ty.name == "Result" => {
+            let [ok, error] = ty.args.as_slice() else {
+                return Err(Diag::error(ty.span, "`Result` is written with two types: `Result<T, E>`")
+                    .note("`T` is what success gives (`void` for nothing), `E` is the error"));
+            };
+            for arg in [ok, error] {
+                if arg.mode.is_some() {
+                    return Err(Diag::error(arg.span, "a `Result` that carries a borrow is not in the interpreter yet")
+                        .note("it needs the function to name the source of the borrow with `from`"));
+                }
+            }
+            if error.name == "void" {
+                return Err(Diag::error(error.span, "the error of a `Result` cannot be `void`")
+                    .hint("a value that may be missing, with nothing to say about why, is a `T?`"));
+            }
+            Ty::Result(Box::new(resolve_type(ok, names, true)?), Box::new(resolve_type(error, names, false)?))
+        }
         Some(Ty::Void) if !allow_void || !ty.suffixes.is_empty() || ty.mode.is_some() => {
             return Err(Diag::error(ty.span, "`void` can only be a return type"));
         }
@@ -291,6 +325,8 @@ fn contains_itself<'d>(
 
 struct Var {
     name: String,
+    /// Set for a local that holds a `Result` until something looks at it: where it is declared.
+    unopened: Option<Span>,
     declared: Ty,
     /// The type right now: `declared`, or narrowed after an `is null` test.
     current: Ty,
@@ -329,6 +365,14 @@ struct Checker<'a> {
     /// The struct whose method is being checked.
     owner: Option<&'a str>,
     src: &'a str,
+}
+
+/// The variants a `match` or `is` chooses between: those of an enum, or `Ok` and `Error`.
+struct Variants {
+    /// The type as it is named in messages.
+    owner: String,
+    /// In declaration order, each with the fields it carries.
+    list: Vec<(String, Vec<(String, Ty)>)>,
 }
 
 /// Names a pattern brings into the block it guards: name, type, where it is written.
@@ -388,7 +432,7 @@ impl<'a> Checker<'a> {
             return Err(Diag::error(span, format!("`{name}` is already declared in this scope")));
         }
         let moved = Moved::default();
-        scope.vars.push(Var { name: name.to_string(), declared: ty.clone(), current: ty, moved, assigned: 0 });
+        scope.vars.push(Var { name: name.to_string(), unopened: None, declared: ty.clone(), current: ty, moved, assigned: 0 });
         Ok(())
     }
 
@@ -435,6 +479,7 @@ impl<'a> Checker<'a> {
         if let Some(moved) = var.moved.whole {
             return Err(Diag::error(span, format!("`{name}` was moved and can no longer be used")).related(moved, "it was moved here"));
         }
+        var.unopened = None;
         Ok(var)
     }
 
@@ -445,12 +490,20 @@ impl<'a> Checker<'a> {
         self.scopes.last_mut().expect("an open scope").narrowed.push(saved);
     }
 
-    fn pop_scope(&mut self) {
+    /// Closes the scope. A `Result` kept in a variable that nothing looked at is an error:
+    /// the failure it may hold would be lost silently.
+    fn pop_scope(&mut self) -> Res<()> {
         let scope = self.scopes.pop().expect("an open scope");
+        if let Some((var, span)) = scope.vars.iter().find_map(|var| var.unopened.map(|span| (var, span))) {
+            let name = &var.name;
+            return Err(Diag::error(span, format!("`{name}` holds a `Result` that is never looked at, so an error would be lost"))
+                .hint(format!("open it with `try {name}`, `{name} ?? ...` or `match {name} {{ ... }}`; to drop it on purpose write `_ = ...`")));
+        }
         for (name, before, assigned) in scope.narrowed.into_iter().rev() {
             let Some(var) = self.find(&name) else { continue };
             var.current = if var.assigned == assigned { before } else { var.declared.clone() };
         }
+        Ok(())
     }
 
     fn moves(&self) -> Moves {
@@ -497,8 +550,7 @@ impl<'a> Checker<'a> {
         for stmt in block.iter_mut() {
             self.stmt(stmt)?;
         }
-        self.pop_scope();
-        Ok(())
+        self.pop_scope()
     }
 
     fn stmt(&mut self, stmt: &mut Stmt) -> Res<()> {
@@ -524,8 +576,20 @@ impl<'a> Checker<'a> {
                         ty => ty,
                     },
                 };
+                let holds_result = matches!(ty, Ty::Result(..));
                 self.declare_local(name, ty, *name_span)?;
+                if holds_result {
+                    self.find(name).expect("just declared").unopened = Some(*name_span);
+                }
             }
+            StmtKind::Discard(value) => match self.expr(value, None)? {
+                Ty::Void => {
+                    return Err(Diag::error(value.span, "this call does not return a value, so there is nothing to discard")
+                        .hint("write the call alone, without `_ =`"));
+                }
+                Ty::Null => return Err(Diag::error(value.span, "there is nothing to discard in `null`")),
+                _ => {}
+            },
             StmtKind::Assign { target, op, value, through } => {
                 let target_ty = match &target.kind {
                     ExprKind::Var(name) => {
@@ -626,21 +690,9 @@ impl<'a> Checker<'a> {
                 self.scopes.push(Scope::default());
                 self.declare_local(var, ty, *var_span)?;
                 self.loop_body(body, None, Vec::new())?;
-                self.pop_scope();
+                self.pop_scope()?;
             }
-            StmtKind::Return(value) => match value {
-                Some(value) if self.ret == Ty::Void => {
-                    return Err(Diag::error(value.span, format!("`{}` is void and cannot return a value", self.func_name)));
-                }
-                Some(value) => {
-                    let ret = self.ret.clone();
-                    self.typed(value, &ret)?;
-                }
-                None if self.ret != Ty::Void => {
-                    return Err(Diag::error(stmt_span, format!("`{}` must return a `{}` value", self.func_name, self.ret)));
-                }
-                None => {}
-            },
+            StmtKind::Return(value) => self.returned(value.as_mut(), stmt_span)?,
             StmtKind::Break | StmtKind::Continue => {
                 if self.loops == 0 {
                     let word = if matches!(stmt.kind, StmtKind::Break) { "break" } else { "continue" };
@@ -654,6 +706,27 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// `return` or `return value`, as a statement or on the right side of `??`.
+    fn returned(&mut self, value: Option<&mut Expr>, span: Span) -> Res<()> {
+        match value {
+            Some(value) if self.ret == Ty::Void => {
+                Err(Diag::error(value.span, format!("`{}` is void and cannot return a value", self.func_name)))
+            }
+            Some(value) => {
+                let ret = self.ret.clone();
+                self.typed(value, &ret)
+            }
+            None if self.ret != Ty::Void => {
+                let diag = Diag::error(span, format!("`{}` must return a `{}` value", self.func_name, self.ret));
+                Err(match &self.ret {
+                    Ty::Result(ok, _) if **ok == Ty::Void => diag.hint("success is written too: `return Ok()`"),
+                    _ => diag,
+                })
+            }
+            None => Ok(()),
+        }
+    }
+
     /// An expression whose value is not used: a statement, or an arm of a `match` statement.
     fn unused(&mut self, expr: &mut Expr) -> Res<()> {
         let span = expr.span;
@@ -661,8 +734,12 @@ impl<'a> Checker<'a> {
             ExprKind::Match { subject, arms, borrowed } => {
                 self.match_expr(subject, arms, borrowed, None, true)?;
             }
-            ExprKind::Call { .. } | ExprKind::Method { .. } => {
-                self.expr(expr, None)?;
+            ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Try { .. } => {
+                if matches!(self.expr(expr, None)?, Ty::Result(..)) {
+                    let text = &self.src[span.start..span.end];
+                    return Err(Diag::error(span, "this `Result` is not used, so an error would be lost silently")
+                        .hint(format!("pass the error on with `try {text}`, or drop it on purpose with `_ = {text}`")));
+                }
             }
             _ => {
                 return Err(Diag::error(span, "the value of this expression is not used")
@@ -781,6 +858,11 @@ impl<'a> Checker<'a> {
             (Ty::Str, Ty::Read(to)) if **to == Ty::Str && matches!(expr.kind, ExprKind::Str(_)) => Ok(()),
             (_, Ty::Read(to)) if found == **to => mismatch(Some(format!("lend it with `read`: `read {text}`"))),
             (_, Ty::Ref(to)) if found == **to => mismatch(Some(format!("lend it with `ref`: `ref {text}`"))),
+            (_, Ty::Result(ok, _)) if found == **ok => mismatch(Some(format!("success is written `Ok({text})`"))),
+            (_, Ty::Result(_, error)) if found == **error => mismatch(Some(format!("an error is written `Error({text})`"))),
+            (Ty::Result(ok, _), _) if **ok == *expected => {
+                mismatch(Some(format!("open the `Result` first: `try {text}`, `{text} ?? ...` or `match`")))
+            }
             _ => mismatch(None),
         }
     }
@@ -838,6 +920,10 @@ impl<'a> Checker<'a> {
                         Ty::Enum(_) => {
                             return Err(Diag::error(*name_span, format!("`{ty}` is an enum; what it carries depends on the variant"))
                                 .hint("reach it with `match`, or test one variant: `if x is Circle(r) { ... }`"));
+                        }
+                        Ty::Result(..) => {
+                            return Err(Diag::error(recv.span, format!("this is `{ty}`: either a value or an error; `.{name}` needs the value"))
+                                .hint("open it first with `try`, `??` or `match`"));
                         }
                         other => {
                             return Err(Diag::error(*name_span, format!("`{other}` has no fields")));
@@ -949,6 +1035,12 @@ impl<'a> Checker<'a> {
                     expr.kind = ExprKind::Variant { index, args };
                     return Ok(ty);
                 }
+            }
+            ExprKind::Call { name, args, .. } if name == "Ok" || name == "Error" => {
+                let (index, ty) = self.result_value(name == "Ok", args, expected, span)?;
+                let args = std::mem::take(args);
+                expr.kind = ExprKind::Variant { index, args };
+                return Ok(ty);
             }
             _ => {}
         }
@@ -1109,14 +1201,33 @@ impl<'a> Checker<'a> {
                 }
                 Ok(Ty::Bool)
             }
-            ExprKind::Coalesce(left, right) => {
+            ExprKind::Coalesce { left, right, on_result } => {
                 let nullable = expected.filter(|ty| !ty.is_borrow()).map(|ty| Ty::Nullable(Box::new(ty.clone())));
                 let found = self.expr(left, nullable.as_ref())?;
+                // On a `Result` the error is dropped and the right side stands in.
+                if let Ty::Result(ok, _) = &found {
+                    if **ok == Ty::Void {
+                        return Err(Diag::error(left.span, format!("this is `{found}`: success carries no value, so `??` has nothing to give"))
+                            .hint("pass the error on with `try`, or drop it on purpose with `_ = ...`"));
+                    }
+                    *on_result = true;
+                    self.typed(right, ok)?;
+                    return Ok((**ok).clone());
+                }
+                if matches!(found.strip_borrow(), Ty::Result(..)) {
+                    return Err(Diag::error(left.span, format!("`??` takes the value out of the `Result`, and this `{found}` is only borrowed"))
+                        .hint("look at it with `match` or `is`"));
+                }
                 let Some(inner) = without_null(&found) else {
                     return Err(Diag::error(left.span, format!("this is `{found}`, which is never `null`, so `??` has nothing to do")));
                 };
                 self.typed(right, &inner)?;
                 Ok(inner)
+            }
+            ExprKind::Try { expr: inner, kind } => self.try_expr(inner, kind, span),
+            ExprKind::Return(value) => {
+                self.returned(value.as_deref_mut(), span)?;
+                Ok(Ty::Never)
             }
             ExprKind::IsVariant { .. } => {
                 self.is_variant(expr, false)?;
@@ -1177,9 +1288,108 @@ impl<'a> Checker<'a> {
         Ok((position, Ty::Enum(owner.to_string())))
     }
 
+    /// `Ok(value)`, `Ok()` or `Error(cause)`. The type comes from where the value goes, as
+    /// for `null`: `Ok(1)` alone does not say what the error type is.
+    fn result_value(&mut self, is_ok: bool, args: &mut [Expr], expected: Option<&Ty>, span: Span) -> Res<(usize, Ty)> {
+        let word = if is_ok { "Ok" } else { "Error" };
+        let target = expected.map(|ty| match ty {
+            Ty::Nullable(inner) => &**inner,
+            other => other,
+        });
+        let (ok, error) = match target {
+            Some(Ty::Result(ok, error)) => ((**ok).clone(), (**error).clone()),
+            Some(other) => {
+                return Err(Diag::error(span, format!("expected `{other}`, found a `Result`"))
+                    .note(format!("`{word}(...)` builds a `Result<T, E>`")));
+            }
+            None => {
+                return Err(Diag::error(span, format!("the type of this `Result` cannot be found from `{word}(...)` alone"))
+                    .hint(format!("write the type where the value goes, for example `Result<int, MyError> x = {word}(...)`")));
+            }
+        };
+        match (is_ok, args) {
+            (true, []) if ok == Ty::Void => {}
+            (true, _) if ok == Ty::Void => {
+                return Err(Diag::error(span, format!("success carries no value in `Result<void, {error}>`")).hint("`Ok()`"));
+            }
+            (true, [value]) => self.typed(value, &ok)?,
+            (false, [cause]) => self.typed(cause, &error)?,
+            (true, args) => {
+                return Err(Diag::error(span, format!("`Ok` carries one value, the `{ok}`; {} given", args.len())));
+            }
+            (false, args) => {
+                return Err(Diag::error(span, format!("`Error` carries one value, the `{error}`; {} given", args.len())));
+            }
+        }
+        Ok((if is_ok { 0 } else { 1 }, Ty::Result(Box::new(ok), Box::new(error))))
+    }
+
+    /// `try e`: on a `Result` gives the value or returns the error to the caller; on a `T?`
+    /// gives the value or returns `null`.
+    fn try_expr(&mut self, inner: &mut Expr, kind: &mut TryKind, span: Span) -> Res<Ty> {
+        let mut found = self.expr(inner, None)?;
+        if let Ty::Read(behind) | Ty::Ref(behind) = &found {
+            if matches!(**behind, Ty::Result(..) | Ty::Nullable(_)) {
+                if !behind.is_copyable() {
+                    return Err(Diag::error(inner.span, format!("`try` takes the value out, and this `{found}` is only borrowed"))
+                        .hint("look at it with `match` or `is`"));
+                }
+                let behind = (**behind).clone();
+                wrap(inner, ExprKind::Load);
+                found = behind;
+            }
+        }
+        let func = self.func_name.clone();
+        match found {
+            Ty::Result(ok, error) => {
+                let Ty::Result(_, target) = &self.ret else {
+                    return Err(Diag::error(span, format!("`try` returns the error to the caller, but `{func}` returns `{}`", self.ret))
+                        .hint(format!("make `{func}` return a `Result<..., {error}>`, or handle the error here with `match` or `??`")));
+                };
+                let convert = if **target == *error { None } else { Some(self.error_variant(&error, target, span)?) };
+                *kind = TryKind::Result(convert);
+                Ok(*ok)
+            }
+            Ty::Nullable(value) => {
+                if !matches!(self.ret, Ty::Nullable(_)) {
+                    let diag = Diag::error(span, format!("`try` on `{value}?` returns `null` to the caller, but `{func}` returns `{}`", self.ret));
+                    return Err(match &self.ret {
+                        Ty::Result(..) => diag.hint("say which error a missing value is: `... ?? return Error(...)`"),
+                        _ => diag.hint("give a fallback with `??`, or test with `is null`"),
+                    });
+                }
+                *kind = TryKind::Null;
+                Ok(*value)
+            }
+            other => Err(Diag::error(inner.span, format!("`try` needs a `Result` or a `T?`, found `{other}`"))
+                .note("there is no error here to pass on")),
+        }
+    }
+
+    /// The variant of the caller's error type that `try` wraps a different error in: the one
+    /// whose only field is that error.
+    fn error_variant(&self, error: &Ty, target: &Ty, span: Span) -> Res<usize> {
+        let mismatch = Diag::error(span, format!("`try` cannot turn `{error}` into `{target}`"));
+        let Ty::Enum(name) = target else {
+            return Err(mismatch.note(format!("this function returns errors of the type `{target}`")));
+        };
+        let variants = &self.enums[name].variants;
+        let fits: Vec<usize> = (0..variants.len()).filter(|i| matches!(variants[*i].1.as_slice(), [(_, ty)] if ty == error)).collect();
+        match fits.as_slice() {
+            [index] => Ok(*index),
+            [] => Err(mismatch.hint(format!("add a variant to `{name}` that carries it: `Name({error} cause)`"))),
+            _ => {
+                let names: Vec<String> = fits.iter().map(|i| format!("`{}`", variants[*i].0)).collect();
+                Err(Diag::error(span, format!("`try` cannot choose: {} of `{name}` both carry `{error}`", names.join(" and ")))
+                    .hint("open the `Result` with `match` and build the one you mean"))
+            }
+        }
+    }
+
     /// The enum a `match` or `is` looks at, behind pointers and borrows, and how the value
-    /// is held: owned (`None`) or through a `read` or `ref` borrow.
-    fn enum_behind(&self, ty: &Ty, span: Span, what: &str) -> Res<(&'a str, Option<Mode>)> {
+    /// is held: owned (`None`) or through a `read` or `ref` borrow. A `Result` counts as an
+    /// enum with the variants `Ok` and `Error`.
+    fn enum_behind(&self, ty: &Ty, span: Span, what: &str) -> Res<(Variants, Option<Mode>)> {
         let mut mode = None;
         let mut inner = ty;
         loop {
@@ -1194,8 +1404,13 @@ impl<'a> Checker<'a> {
                 }
                 Ty::Ptr(behind) => behind,
                 Ty::Enum(name) => {
-                    let (key, _) = self.enums.get_key_value(name.as_str()).expect("the type was resolved");
-                    return Ok((key.as_str(), mode));
+                    let list = self.enums[name].variants.clone();
+                    return Ok((Variants { owner: name.clone(), list }, mode));
+                }
+                Ty::Result(ok, error) => {
+                    let value = if **ok == Ty::Void { Vec::new() } else { vec![("value".to_string(), (**ok).clone())] };
+                    let list = vec![("Ok".to_string(), value), ("Error".to_string(), vec![("cause".to_string(), (**error).clone())])];
+                    return Ok((Variants { owner: inner.to_string(), list }, mode));
                 }
                 Ty::Nullable(_) => {
                     return Err(Diag::error(span, format!("this is `{ty}` and may be `null`; {what} needs a value"))
@@ -1211,15 +1426,14 @@ impl<'a> Checker<'a> {
 
     /// Resolves a pattern against the enum and gives the names it declares. With `mode` the
     /// names borrow from the value; without, they take what the value holds.
-    fn pattern_binds(&mut self, pattern: &mut Pattern, owner: &str, mode: Option<Mode>, subject: &Ty) -> Res<Binds> {
+    fn pattern_binds(&mut self, pattern: &mut Pattern, of: &Variants, mode: Option<Mode>, subject: &Ty) -> Res<Binds> {
         let span = pattern.span;
         let (name, args, index) = match &mut pattern.kind {
             PatternKind::Wildcard => return Ok(Vec::new()),
             PatternKind::Bind(name) => return Ok(vec![(name.clone(), subject.clone(), span)]),
             PatternKind::Variant { name, args, index } => (name, args, index),
         };
-        let enums = self.enums;
-        let variants = &enums[owner].variants;
+        let (owner, variants) = (&of.owner, &of.list);
         let Some(position) = variants.iter().position(|(variant, _)| variant == name) else {
             let diag = Diag::error(span, format!("`{owner}` has no variant `{name}`"));
             return Err(match nearest(name, variants.iter().map(|(variant, _)| variant.as_str())) {
@@ -1266,9 +1480,9 @@ impl<'a> Checker<'a> {
             unreachable!("only called for an `is` test");
         };
         let ty = self.operand(subject, None)?;
-        let (owner, mode) = self.enum_behind(&ty, subject.span, "`is`")?;
+        let (variants, mode) = self.enum_behind(&ty, subject.span, "`is`")?;
         *by_ref = mode == Some(Mode::Ref);
-        let binds = self.pattern_binds(pattern, owner, mode.or(Some(Mode::Read)), &ty)?;
+        let binds = self.pattern_binds(pattern, &variants, mode.or(Some(Mode::Read)), &ty)?;
         if binds.is_empty() {
             return Ok(binds);
         }
@@ -1294,10 +1508,9 @@ impl<'a> Checker<'a> {
     ) -> Res<Ty> {
         // Like `var y = subject`: an owned value is moved in, a borrow stays a borrow.
         let subject_ty = self.expr(subject, None)?;
-        let (owner, mode) = self.enum_behind(&subject_ty, subject.span, "`match`")?;
+        let (of, mode) = self.enum_behind(&subject_ty, subject.span, "`match`")?;
         *borrowed = mode.is_some();
-        let enums = self.enums;
-        let variants = &enums[owner].variants;
+        let (owner, variants) = (&of.owner, &of.list);
 
         let mut handled = vec![false; variants.len()];
         let mut handled_all = false;
@@ -1307,7 +1520,7 @@ impl<'a> Checker<'a> {
         for arm in arms.iter_mut() {
             self.set_moves(&before);
             self.scopes.push(Scope::default());
-            let binds = self.pattern_binds(&mut arm.pattern, owner, mode, &subject_ty)?;
+            let binds = self.pattern_binds(&mut arm.pattern, &of, mode, &subject_ty)?;
             let position = match &arm.pattern.kind {
                 PatternKind::Variant { index, .. } => Some(*index),
                 _ => None,
@@ -1358,7 +1571,7 @@ impl<'a> Checker<'a> {
                         .hint("the last line of the block is the value of the arm"));
                 }
             }
-            self.pop_scope();
+            self.pop_scope()?;
             // An arm that leaves does not reach the code after the `match`.
             if !leaves {
                 if let Some(other) = &after {
@@ -1615,6 +1828,18 @@ impl<'a> Checker<'a> {
                 self.coerce(&mut args[0], Ty::Int(other), &common)?;
                 Ok(common)
             }
+            (Ty::Int(ty), "tryAdd" | "trySubtract" | "tryMultiply" | "tryDivide") => {
+                arity(1)?;
+                let other = self.int_operand(&mut args[0], Some(*ty), "the argument")?;
+                let common = Ty::Int(ty.unify(other));
+                self.coerce(recv, recv_ty.clone(), &common)?;
+                self.coerce(&mut args[0], Ty::Int(other), &common)?;
+                Ok(Ty::Nullable(Box::new(common)))
+            }
+            (Ty::Str, "clone") => {
+                arity(0)?;
+                Ok(Ty::Str)
+            }
             (Ty::Int(_) | Ty::Bool | Ty::Fmt, "toString") => {
                 arity(0)?;
                 Ok(Ty::Str)
@@ -1746,7 +1971,7 @@ fn changed_in<'b>(block: &'b Block, names: &mut Vec<&'b str>) {
                 taken_in(to, names);
                 changed_in(body, names);
             }
-            StmtKind::Return(Some(expr)) | StmtKind::Expr(expr) => taken_in(expr, names),
+            StmtKind::Return(Some(expr)) | StmtKind::Expr(expr) | StmtKind::Discard(expr) => taken_in(expr, names),
             StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
         }
     }
@@ -1771,7 +1996,7 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
                 }
             }
         }
-        ExprKind::Binary(_, left, right) | ExprKind::Coalesce(left, right) => {
+        ExprKind::Binary(_, left, right) | ExprKind::Coalesce { left, right, .. } => {
             taken_in(left, names);
             taken_in(right, names);
         }
@@ -1791,6 +2016,8 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
         ExprKind::Field { recv: inner, .. }
         | ExprKind::IsVariant { expr: inner, .. }
         | ExprKind::Unbox(inner)
+        | ExprKind::Try { expr: inner, .. }
+        | ExprKind::Return(Some(inner))
         | ExprKind::Unary(_, inner)
         | ExprKind::Cast { expr: inner, .. }
         | ExprKind::New(inner)
@@ -1798,7 +2025,7 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
         | ExprKind::IsNull { expr: inner, .. }
         | ExprKind::Widen(_, inner)
         | ExprKind::Load(inner) => taken_in(inner, names),
-        ExprKind::Int(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Null | ExprKind::Var(_) => {}
+        ExprKind::Int(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::Return(None) => {}
     }
 }
 
@@ -1845,7 +2072,7 @@ fn has_break(block: &Block) -> bool {
     block.iter().any(|stmt| match &stmt.kind {
         StmtKind::Break => true,
         StmtKind::If { then, els, .. } => has_break(then) || els.as_ref().is_some_and(has_break),
-        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => breaks_in(expr),
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Discard(expr) => breaks_in(expr),
         StmtKind::Let { init: expr, .. } | StmtKind::Assign { value: expr, .. } => breaks_in(expr),
         _ => false,
     })

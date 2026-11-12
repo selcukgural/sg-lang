@@ -1,0 +1,7 @@
+int? half(int value) {
+    return try value
+}
+
+void main() {
+    print(half(2) ?? 0)
+}

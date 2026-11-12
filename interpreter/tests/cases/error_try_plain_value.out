@@ -1,0 +1,5 @@
+error: `try` needs a `Result` or a `T?`, found `int`
+  there is no error here to pass on
+  --> error_try_plain_value.sg:2:16
+ 2 |     return try value
+   |                ^^^^^

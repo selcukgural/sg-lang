@@ -1,0 +1,5 @@
+error: `try` returns the error to the caller, but `twice` returns `int`
+  --> error_try_without_result.sg:6:16
+ 6 |     return 2 * try parse()
+   |                ^^^^^^^^^^^
+  hint: make `twice` return a `Result<..., string>`, or handle the error here with `match` or `??`

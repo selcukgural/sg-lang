@@ -1,0 +1,5 @@
+error: `result` holds a `Result` that is never looked at, so an error would be lost
+  --> error_result_never_opened.sg:6:9
+ 6 |     var result = parse()
+   |         ^^^^^^
+  hint: open it with `try result`, `result ?? ...` or `match result { ... }`; to drop it on purpose write `_ = ...`

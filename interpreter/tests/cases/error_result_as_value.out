@@ -1,0 +1,5 @@
+error: expected `int`, found `Result<int, string>`
+  --> error_result_as_value.sg:6:17
+ 6 |     int value = parse()
+   |                 ^^^^^^^
+  hint: open the `Result` first: `try parse()`, `parse() ?? ...` or `match`

@@ -1,0 +1,4 @@
+error: `Result` is a built-in type and cannot be redefined
+  --> error_result_redefined.sg:1:6
+ 1 | enum Result {
+   |      ^^^^^^

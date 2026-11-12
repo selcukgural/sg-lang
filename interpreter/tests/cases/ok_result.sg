@@ -1,0 +1,88 @@
+// Result, Ok, Error, try, ?? and match on a Result.
+enum ParseError {
+    Empty
+    TooLong(int length)
+}
+
+enum AppError {
+    Parse(ParseError cause)
+    Missing
+}
+
+Result<int, ParseError> size(read string text) {
+    if text.length() == 0 {
+        return Error(ParseError.Empty)
+    }
+    if text.length() > 5 {
+        return Error(ParseError.TooLong((int)text.length()))
+    }
+    return Ok((int)text.length())
+}
+
+Result<int, ParseError> total(read string a, read string b) {
+    var x = try size(a)                  // an error returns to the caller
+    var y = try size(b)
+    return Ok(x + y)
+}
+
+Result<void, ParseError> check(read string text) {
+    try size(text)                       // the value is not needed, the error is passed on
+    return Ok()
+}
+
+Result<int, AppError> twice(read string text) {
+    var n = try size(text)               // ParseError becomes AppError.Parse
+    return Ok(n * 2)
+}
+
+Result<int, AppError> first(int? value) {
+    var v = value ?? return Error(AppError.Missing)
+    return Ok(v)
+}
+
+int? half(int? value) {
+    var v = try value                    // on a T? `try` returns null
+    return v / 2
+}
+
+void show(Result<int, ParseError> result) {
+    match result {
+        Ok(value) => print(value)
+        Error(cause) => match cause {
+            Empty => print("empty")
+            TooLong(length) => print($"too long: {length}")
+        }
+    }
+}
+
+void main() {
+    show(total("ab", "cde"))
+    show(total("ab", ""))
+    show(total("abcdefg", "x"))
+
+    print(size("abc") ?? 0)              // the error is dropped
+    print(size("") ?? 0)
+
+    Result<int, ParseError> kept = size("abcd")
+    if kept is Ok(value) {
+        print(value)
+    }
+    print(size("") is Error(_))
+
+    match check("") {
+        Ok => print("fine")
+        Error(_) => print("not fine")
+    }
+    _ = check("abc")                     // dropped on purpose
+
+    print(twice("abc") ?? -1)
+    print(twice("") is Error(_))
+    print(first(7) ?? -1)
+    print(first(null) ?? -1)
+    print(half(9) ?? -1)
+    print(half(null) ?? -1)
+
+    print(2000000000.tryAdd(2000000000) is null)
+    print(6.tryMultiply(7) ?? 0)
+    print(1.tryDivide(0) is null)
+}

@@ -1,0 +1,11 @@
+struct Point {
+    int x
+}
+
+Result<Point, string> load() {
+    return Ok(Point { x = 1 })
+}
+
+void main() {
+    print(load().x)
+}

@@ -35,6 +35,10 @@ fn main() -> ExitCode {
             eprint!("{}", diag.render(&src, path));
             ExitCode::FAILURE
         }
+        Err(Stop::Failed(text)) => {
+            eprintln!("error: {text}");
+            ExitCode::FAILURE
+        }
         Err(Stop::OutputClosed) => ExitCode::SUCCESS,
         Err(Stop::OutputFailed(error)) => {
             eprintln!("error: cannot write output: {error}");

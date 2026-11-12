@@ -1,0 +1,5 @@
+error: the type of this `Result` cannot be found from `Ok(...)` alone
+  --> error_ok_without_type.sg:2:18
+ 2 |     var result = Ok(1)
+   |                  ^^^^^
+  hint: write the type where the value goes, for example `Result<int, MyError> x = Ok(...)`

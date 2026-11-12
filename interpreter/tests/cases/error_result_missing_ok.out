@@ -1,0 +1,5 @@
+error: `save` does not return a value on every path; it must return `Result<void, string>`
+  --> error_result_missing_ok.sg:1:22
+ 1 | Result<void, string> save() {
+   |                      ^^^^
+  hint: success is written too: end with `return Ok()`

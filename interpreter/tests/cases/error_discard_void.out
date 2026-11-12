@@ -1,0 +1,5 @@
+error: this call does not return a value, so there is nothing to discard
+  --> error_discard_void.sg:2:9
+ 2 |     _ = print("x")
+   |         ^^^^^^^^^^
+  hint: write the call alone, without `_ =`

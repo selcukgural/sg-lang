@@ -1,0 +1,14 @@
+// An error `main` ends with is printed, and the exit code is 1.
+Result<int, string> load(bool there) {
+    if there {
+        return Ok(1)
+    }
+    return Error("nothing to load")
+}
+
+Result<void, string> main() {
+    print(try load(true))
+    print(try load(false))
+    print("not reached")
+    return Ok()
+}

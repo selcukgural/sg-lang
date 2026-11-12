@@ -13,6 +13,7 @@ fn run_file(path: &Path) -> String {
     match result {
         Ok(()) => {}
         Err(sg::Stop::Diag(diag)) => text.push_str(&diag.render(&src, &name)),
+        Err(sg::Stop::Failed(error)) => text.push_str(&format!("error: {error}\n")),
         Err(other) => text.push_str(&format!("{other:?}\n")),
     }
     text

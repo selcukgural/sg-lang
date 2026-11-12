@@ -1,0 +1,5 @@
+error: expected `Result<int, string>`, found `string`
+  --> error_result_needs_error.sg:2:12
+ 2 |     return message
+   |            ^^^^^^^
+  hint: an error is written `Error(message)`
