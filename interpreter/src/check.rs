@@ -9,7 +9,7 @@
 //!
 //! Not checked yet: borrow lifetimes (`from`), and conflicts between a `ref` and other borrows.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::{nearest, Diag, Span};
@@ -19,6 +19,8 @@ type Res<T> = Result<T, Diag>;
 
 const TYPES_NOT_YET: &[&str] =
     &["sbyte", "short", "ushort", "uint", "ulong", "nuint", "float", "double", "char"];
+
+const INTERFACES_NOT_YET: &[&str] = &["Clonable", "Disposable", "Equatable", "Hashable", "Comparable", "Closable", "Iterator"];
 
 const BUILTINS: &[&str] = &["print", "assert", "panic", "Ok", "Error"];
 
@@ -71,6 +73,37 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
         }
     }
 
+    // What each type says about itself after `:`.
+    let mut copyable: HashSet<String> = HashSet::new();
+    let mut formattable: HashSet<String> = HashSet::new();
+    let said = prog
+        .structs
+        .iter()
+        .map(|decl| (&decl.name, &decl.interfaces))
+        .chain(prog.enums.iter().map(|decl| (&decl.name, &decl.interfaces)));
+    for (name, interfaces) in said {
+        for (position, (interface, span)) in interfaces.iter().enumerate() {
+            if interfaces[..position].iter().any(|(earlier, _)| earlier == interface) {
+                return Err(Diag::error(*span, format!("`{interface}` is written twice")));
+            }
+            match interface.as_str() {
+                "Copyable" => copyable.insert(name.clone()),
+                "Formattable" => formattable.insert(name.clone()),
+                _ if INTERFACES_NOT_YET.contains(&interface.as_str()) => {
+                    return Err(Diag::error(*span, format!("`{interface}` is not in the interpreter yet"))
+                        .note("interfaces for now: `Copyable` and `Formattable`"));
+                }
+                _ => {
+                    let diag = Diag::error(*span, format!("there is no interface named `{interface}`"));
+                    return Err(match nearest(interface, ["Copyable", "Formattable"].into_iter()) {
+                        Some(close) => diag.hint(format!("`{close}`")),
+                        None => diag.note("interfaces for now: `Copyable` and `Formattable`; your own are not in the interpreter yet"),
+                    });
+                }
+            };
+        }
+    }
+
     let mut structs: HashMap<String, StructInfo> = HashMap::new();
     for decl in &prog.structs {
         let mut fields: Vec<(String, Ty)> = Vec::new();
@@ -97,6 +130,15 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
             }
             if methods.insert(method.name.clone(), func_sig(method, &names)?).is_some() {
                 return Err(Diag::error(method.name_span, format!("method `{}` is defined twice", method.name)));
+            }
+            // The body of `Formattable`, when the struct writes its own.
+            if method.name == "format" && formattable.contains(&decl.name) {
+                let sig = &methods["format"];
+                let fits = sig.this == Some(This::Read) && sig.ret == Ty::Void && sig.params == [Ty::Ref(Box::new(Ty::Formatter))];
+                if !fits {
+                    return Err(Diag::error(method.name_span, "this is not the `format` that `Formattable` asks for")
+                        .hint("`void format(read this, ref Formatter f)`"));
+                }
             }
         }
         structs.insert(decl.name.clone(), StructInfo { fields, methods });
@@ -145,6 +187,30 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
         contains_itself("enum", &decl.name, fields.zip(types), &members)?;
     }
 
+    // What a type promises after `:` must hold for everything it carries.
+    for decl in &prog.structs {
+        let info = &structs[&decl.name];
+        let fields = || decl.fields.iter().zip(&info.fields);
+        if copyable.contains(&decl.name) {
+            all_copyable(&decl.name, fields(), &copyable)?;
+        }
+        if formattable.contains(&decl.name) && !info.methods.contains_key("format") {
+            all_formattable(&decl.name, fields(), &formattable)?;
+        }
+    }
+    for decl in &prog.enums {
+        let fields = || {
+            let written = decl.variants.iter().flat_map(|variant| &variant.fields);
+            written.zip(enums[&decl.name].variants.iter().flat_map(|(_, fields)| fields))
+        };
+        if copyable.contains(&decl.name) {
+            all_copyable(&decl.name, fields(), &copyable)?;
+        }
+        if formattable.contains(&decl.name) {
+            all_formattable(&decl.name, fields(), &formattable)?;
+        }
+    }
+
     let mut sigs: HashMap<String, FuncSig> = HashMap::new();
     for func in &prog.funcs {
         if BUILTINS.contains(&func.name.as_str()) {
@@ -175,12 +241,28 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
             if !ret_ok || !main.params.is_empty() {
                 return Err(Diag::error(main.name_span, "`main` is written `void main()` or `Result<void, E> main()`"));
             }
+            // The error `main` ends with is written out.
+            if let Ty::Result(_, error) = &sigs["main"].ret {
+                let written = match &**error {
+                    Ty::Struct(name) | Ty::Enum(name) => formattable.contains(name),
+                    other => can_format(other, &formattable),
+                };
+                if !written {
+                    let diag = Diag::error(main.ret.args[1].span, format!("the error `main` ends with is printed, so `{error}` must be `Formattable`"));
+                    return Err(match &**error {
+                        Ty::Struct(name) | Ty::Enum(name) => diag.hint(format!("add it to the definition: `{name} : Formattable`")),
+                        _ => diag,
+                    });
+                }
+            }
         }
     }
 
     let body = |func: &mut Func, sig: &FuncSig, owner: Option<&str>| -> Res<()> {
         let mut checker = Checker {
             names: &names,
+            copyable: &copyable,
+            formattable: &formattable,
             structs: &structs,
             enums: &enums,
             sigs: &sigs,
@@ -286,6 +368,58 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
     })
 }
 
+/// `: Copyable` holds only if everything the type carries can be copied.
+fn all_copyable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d (String, Ty))>, copyable: &HashSet<String>) -> Res<()> {
+    for (field, (_, ty)) in fields {
+        if ty.is_copyable(copyable) {
+            continue;
+        }
+        let diag = Diag::error(field.ty.span, format!("`{name}` cannot be `Copyable`: `{}` is a `{ty}`, which is not", field.name));
+        return Err(match ty {
+            Ty::Struct(inner) | Ty::Enum(inner) => diag.hint(format!("make `{inner}` `Copyable` too, or take `Copyable` off `{name}`")),
+            Ty::Str | Ty::Ptr(_) => diag.note(format!("a `{ty}` owns memory on the heap; a copy would have to allocate, and that is written `.clone()`")),
+            _ => diag,
+        });
+    }
+    Ok(())
+}
+
+/// Without a `format` of its own, a `Formattable` type is written field by field.
+fn all_formattable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d (String, Ty))>, formattable: &HashSet<String>) -> Res<()> {
+    for (field, (_, ty)) in fields {
+        if can_format(ty, formattable) {
+            continue;
+        }
+        let diag = Diag::error(field.ty.span, format!("`{name}` cannot be written as text field by field: `{}` is a `{ty}`, which is not `Formattable`", field.name));
+        return Err(match unformattable(ty, formattable) {
+            Some(inner) => diag.hint(format!("make `{inner}` `Formattable` too, or write `format` yourself")),
+            None => diag,
+        });
+    }
+    Ok(())
+}
+
+/// Whether a value of this type can be written as text, on its own or inside another value.
+fn can_format(ty: &Ty, formattable: &HashSet<String>) -> bool {
+    match ty {
+        Ty::Int(_) | Ty::Bool | Ty::Str | Ty::Void => true,
+        Ty::Struct(_) | Ty::Enum(_) => unformattable(ty, formattable).is_none(),
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => can_format(inner, formattable),
+        Ty::Result(ok, error) => can_format(ok, formattable) && can_format(error, formattable),
+        _ => false,
+    }
+}
+
+/// The struct or enum inside `ty` that stands in the way of writing it as text.
+fn unformattable<'t>(ty: &'t Ty, formattable: &HashSet<String>) -> Option<&'t str> {
+    match ty {
+        Ty::Struct(name) | Ty::Enum(name) => (!formattable.contains(name)).then_some(name.as_str()),
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => unformattable(inner, formattable),
+        Ty::Result(ok, error) => unformattable(ok, formattable).or_else(|| unformattable(error, formattable)),
+        _ => None,
+    }
+}
+
 /// A type that holds itself by value would have no finite size.
 fn contains_itself<'d>(
     kind: &str,
@@ -355,6 +489,10 @@ type Moves = Vec<Vec<Moved>>;
 
 struct Checker<'a> {
     names: &'a Names,
+    /// Structs and enums written with `: Copyable`.
+    copyable: &'a HashSet<String>,
+    /// Structs and enums written with `: Formattable`.
+    formattable: &'a HashSet<String>,
     structs: &'a HashMap<String, StructInfo>,
     enums: &'a HashMap<String, EnumInfo>,
     sigs: &'a HashMap<String, FuncSig>,
@@ -843,7 +981,7 @@ impl<'a> Checker<'a> {
             // `T` where `T?` is expected.
             (_, Ty::Nullable(inner)) => self.coerce(expr, found.clone(), inner),
             // A borrow of a copyable value stands in for the value.
-            (Ty::Read(inner) | Ty::Ref(inner), _) if !expected.is_borrow() && inner.is_copyable() => {
+            (Ty::Read(inner) | Ty::Ref(inner), _) if !expected.is_borrow() && inner.is_copyable(self.copyable) => {
                 wrap(expr, ExprKind::Load);
                 self.coerce(expr, (**inner).clone(), expected)
             }
@@ -1023,7 +1161,7 @@ impl<'a> Checker<'a> {
     fn expr(&mut self, expr: &mut Expr, expected: Option<&Ty>) -> Res<Ty> {
         let span = expr.span;
         if let Some((ty, _)) = self.place(expr)? {
-            if !ty.is_copyable() {
+            if !ty.is_copyable(self.copyable) {
                 self.move_out(expr, &ty)?;
             }
             return Ok(ty);
@@ -1034,21 +1172,21 @@ impl<'a> Checker<'a> {
             ExprKind::Field { recv, name, name_span, .. } => {
                 let owner = self.enum_named(recv).expect("any other field is a place");
                 let (index, ty) = self.variant(owner, name, *name_span, None, span)?;
-                expr.kind = ExprKind::Variant { index, args: Vec::new() };
+                expr.kind = ExprKind::Variant { owner: owner.to_string(), index, args: Vec::new() };
                 return Ok(ty);
             }
             ExprKind::Method { recv, name, name_span, args, .. } => {
                 if let Some(owner) = self.enum_named(recv) {
                     let (index, ty) = self.variant(owner, name, *name_span, Some(args), span)?;
                     let args = std::mem::take(args);
-                    expr.kind = ExprKind::Variant { index, args };
+                    expr.kind = ExprKind::Variant { owner: owner.to_string(), index, args };
                     return Ok(ty);
                 }
             }
             ExprKind::Call { name, args, .. } if name == "Ok" || name == "Error" => {
                 let (index, ty) = self.result_value(name == "Ok", args, expected, span)?;
                 let args = std::mem::take(args);
-                expr.kind = ExprKind::Variant { index, args };
+                expr.kind = ExprKind::Variant { owner: "Result".to_string(), index, args };
                 return Ok(ty);
             }
             _ => {}
@@ -1402,7 +1540,7 @@ impl<'a> Checker<'a> {
         let mut found = self.expr(inner, None)?;
         if let Ty::Read(behind) | Ty::Ref(behind) = &found {
             if matches!(**behind, Ty::Result(..) | Ty::Nullable(_)) {
-                if !behind.is_copyable() {
+                if !behind.is_copyable(self.copyable) {
                     return Err(Diag::error(inner.span, format!("`try` takes the value out, and this `{found}` is only borrowed"))
                         .hint("look at it with `match` or `is`"));
                 }
@@ -1440,7 +1578,7 @@ impl<'a> Checker<'a> {
 
     /// The variant of the caller's error type that `try` wraps a different error in: the one
     /// whose only field is that error.
-    fn error_variant(&self, error: &Ty, target: &Ty, span: Span) -> Res<usize> {
+    fn error_variant(&self, error: &Ty, target: &Ty, span: Span) -> Res<(String, usize)> {
         let mismatch = Diag::error(span, format!("`try` cannot turn `{error}` into `{target}`"));
         let Ty::Enum(name) = target else {
             return Err(mismatch.note(format!("this function returns errors of the type `{target}`")));
@@ -1448,7 +1586,7 @@ impl<'a> Checker<'a> {
         let variants = &self.enums[name].variants;
         let fits: Vec<usize> = (0..variants.len()).filter(|i| matches!(variants[*i].1.as_slice(), [(_, ty)] if ty == error)).collect();
         match fits.as_slice() {
-            [index] => Ok(*index),
+            [index] => Ok((name.clone(), *index)),
             [] => Err(mismatch.hint(format!("add a variant to `{name}` that carries it: `Name({error} cause)`"))),
             _ => {
                 let names: Vec<String> = fits.iter().map(|i| format!("`{}`", variants[*i].0)).collect();
@@ -1758,12 +1896,24 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// What `print`, `$"..."` and `f.write` accept: numbers, `bool`, text, and a struct or an
+    /// enum that is `Formattable`, also behind a pointer.
     fn printable(&self, ty: &Ty, span: Span) -> Res<()> {
-        match ty.strip_borrow() {
+        let mut inner = ty.strip_borrow();
+        while let Ty::Ptr(behind) = inner {
+            inner = behind.strip_borrow();
+        }
+        match inner {
             Ty::Int(_) | Ty::Bool | Ty::Str | Ty::Fmt => Ok(()),
+            Ty::Struct(name) | Ty::Enum(name) if self.formattable.contains(name) => Ok(()),
+            Ty::Struct(name) | Ty::Enum(name) => Err(Diag::error(span, format!("`{name}` cannot be written as text: it is not `Formattable`"))
+                .hint(format!("add it to the definition: `{name} : Formattable`"))),
             Ty::Void => Err(Diag::error(span, "this call does not return a value, and one is needed here")),
-            other => Err(Diag::error(span, format!("a `{other}` value cannot be written as text yet"))
-                .note("`Formattable` is not in the interpreter yet; for now: integers, `bool`, `string`")),
+            Ty::Nullable(_) => Err(Diag::error(span, format!("this is `{ty}` and may be `null`; there is no text for `null`"))
+                .hint("give a fallback with `??`, or test with `is null`")),
+            Ty::Result(..) => Err(Diag::error(span, format!("this is `{ty}`: either a value or an error"))
+                .hint("open it first with `try`, `??` or `match`")),
+            other => Err(Diag::error(span, format!("a `{other}` value cannot be written as text"))),
         }
     }
 
@@ -1917,6 +2067,8 @@ impl<'a> Checker<'a> {
                             .hint("take the value as `ref` instead of `read`"));
                     }
                     This::Ref => {}
+                    // A `Copyable` receiver is copied in, like an argument.
+                    This::Value if target.is_copyable(self.copyable) => {}
                     This::Value if borrowed => {
                         return Err(Diag::error(recv.span, format!("`{name}` takes `this` by value and uses it up, but this value is only borrowed")));
                     }
@@ -1969,6 +2121,15 @@ impl<'a> Checker<'a> {
             (Ty::Str, "length") => {
                 arity(0)?;
                 Ok(Ty::Int(IntTy::Nint))
+            }
+            (Ty::Formatter, "write") => {
+                arity(1)?;
+                if !writable {
+                    return Err(Diag::error(recv.span, "`write` needs the `Formatter` as `ref`"));
+                }
+                let ty = self.operand(&mut args[0], None)?;
+                self.printable(&ty, args[0].span)?;
+                Ok(Ty::Void)
             }
             (Ty::Nullable(_), _) => {
                 let diag = Diag::error(recv.span, format!("this is `{recv_ty}` and may be `null`; `.{name}()` needs a value"));

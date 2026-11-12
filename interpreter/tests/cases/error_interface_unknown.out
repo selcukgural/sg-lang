@@ -1,0 +1,5 @@
+error: there is no interface named `Copyabel`
+  --> error_interface_unknown.sg:1:16
+ 1 | struct Point : Copyabel {
+   |                ^^^^^^^^
+  hint: `Copyable`

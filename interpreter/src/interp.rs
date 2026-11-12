@@ -31,10 +31,13 @@ pub enum Value {
     Fmt(Rc<str>),
     Void,
     Null,
-    /// Fields in declaration order.
-    Struct(Rc<Vec<Cell>>),
-    /// The variant's position in the enum and what it carries.
-    Enum(usize, Rc<Vec<Cell>>),
+    /// The struct's name and its fields in declaration order.
+    Struct(Rc<str>, Rc<Vec<Cell>>),
+    /// The enum's name (`Result` for the built-in one), the variant's position and what it
+    /// carries.
+    Enum(Rc<str>, usize, Rc<Vec<Cell>>),
+    /// What `format` writes into.
+    Formatter(Rc<RefCell<String>>),
     /// `T*`
     Ptr(Cell),
     /// `read T` / `ref T`
@@ -53,6 +56,18 @@ fn strip(mut value: Value) -> Value {
     value
 }
 
+/// A value read out of a variable or a field gets cells of its own, so that a copy of a
+/// `Copyable` struct can be changed without changing the original. What a `T*` owns stays
+/// where it is: a pointer is only ever moved.
+fn fresh(value: &Value) -> Value {
+    let cells = |fields: &Rc<Vec<Cell>>| Rc::new(fields.iter().map(|field| cell(fresh(&field.borrow()))).collect());
+    match value {
+        Value::Struct(name, fields) => Value::Struct(name.clone(), cells(fields)),
+        Value::Enum(name, index, fields) => Value::Enum(name.clone(), *index, cells(fields)),
+        other => other.clone(),
+    }
+}
+
 /// The cell a `ref` or `read` variable stands for.
 fn behind_borrows(mut target: Cell) -> Cell {
     loop {
@@ -66,7 +81,7 @@ fn behind_borrows(mut target: Cell) -> Cell {
 }
 
 impl Value {
-    /// How the value is written by `print` and inside `$"..."`.
+    /// How a number, a `bool` or text is written. Structs and enums go through `Interp::show`.
     fn format(&self) -> String {
         match self {
             Value::Int(_, value) => value.to_string(),
@@ -150,7 +165,7 @@ fn loop_flow(result: Res<Flow>) -> Res<Flow> {
 fn enum_parts(mut value: Value) -> (usize, Rc<Vec<Cell>>) {
     loop {
         value = match value {
-            Value::Enum(index, fields) => return (index, fields),
+            Value::Enum(_, index, fields) => return (index, fields),
             Value::Ptr(inner) | Value::Borrow(inner) => inner.borrow().clone(),
             _ => unreachable!("the checker only lets enums be matched"),
         };
@@ -183,17 +198,19 @@ pub fn run_program(prog: &Program, src: &str, out: &mut dyn Write) -> Result<(),
     for decl in &prog.structs {
         methods.insert(&decl.name, decl.methods.iter().map(|method| (method.name.as_str(), method)).collect());
     }
-    let mut interp = Interp { funcs, methods, src, out, depth: 0 };
+    let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
+    let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
+    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0 };
     let main = interp.funcs["main"];
-    match interp.call(main, None, Vec::new(), main.name_span) {
-        // `Result<void, E> main()` ended with `Error(cause)`.
-        Ok(Value::Enum(1, fields)) => {
+    let result = match interp.call(main, None, Vec::new(), main.name_span) {
+        // `Result<void, E> main()` ended with `Error(cause)`: the cause is written out.
+        Ok(Value::Enum(_, 1, fields)) => {
             let cause = fields[0].borrow().clone();
-            Err(Stop::Failed(match &cause {
-                Value::Str(text) => text.to_string(),
-                _ => show(prog, &cause, &main.ret.args[1]),
-            }))
+            interp.show(&cause, false, main.name_span).and_then(|text| Err(Unwind::Stop(Stop::Failed(text))))
         }
+        other => other,
+    };
+    match result {
         Ok(_) => Ok(()),
         Err(Unwind::Stop(stop)) => Err(stop),
         Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop"),
@@ -204,6 +221,8 @@ struct Interp<'a> {
     funcs: HashMap<&'a str, &'a Func>,
     /// Functions written in struct bodies: struct name, then function name.
     methods: HashMap<&'a str, HashMap<&'a str, &'a Func>>,
+    structs: HashMap<&'a str, &'a StructDecl>,
+    enums: HashMap<&'a str, &'a EnumDecl>,
     src: &'a str,
     out: &'a mut dyn Write,
     depth: usize,
@@ -344,7 +363,7 @@ impl<'a> Interp<'a> {
                     let value = target.borrow().clone();
                     match value {
                         Value::Ptr(inner) | Value::Borrow(inner) => target = inner,
-                        Value::Struct(fields) => return Ok(fields[*index].clone()),
+                        Value::Struct(_, fields) => return Ok(fields[*index].clone()),
                         _ => unreachable!("the checker rules out field access on `null` and non-structs"),
                     }
                 }
@@ -364,20 +383,23 @@ impl<'a> Interp<'a> {
                 for part in parts {
                     match part {
                         InterpPart::Text(piece) => text.push_str(piece),
-                        InterpPart::Expr(inner) => text.push_str(&strip(self.expr(inner, frame)?).format()),
+                        InterpPart::Expr(inner) => {
+                            let value = self.expr(inner, frame)?;
+                            text.push_str(&self.show(&value, false, inner.span)?);
+                        }
                     }
                 }
                 Ok(Value::Fmt(text.into()))
             }
             ExprKind::Var(_) | ExprKind::Field { .. } => {
-                let value = self.place(expr, frame)?.borrow().clone();
+                let value = fresh(&self.place(expr, frame)?.borrow());
                 Ok(value)
             }
             ExprKind::Widen(ty, inner) => match strip(self.expr(inner, frame)?) {
                 Value::Int(_, value) => Ok(Value::Int(*ty, value)),
                 _ => unreachable!("the checker only widens integers"),
             },
-            ExprKind::Load(inner) => Ok(strip(self.expr(inner, frame)?)),
+            ExprKind::Load(inner) => Ok(fresh(&strip(self.expr(inner, frame)?))),
             ExprKind::Unary(UnOp::Neg, operand) => match strip(self.expr(operand, frame)?) {
                 Value::Int(ty, value) => {
                     let result = -(value as i128);
@@ -446,13 +468,13 @@ impl<'a> Interp<'a> {
                 }
                 _ => unreachable!("the checker only casts integers"),
             },
-            ExprKind::StructLit { fields, .. } => {
+            ExprKind::StructLit { name, fields, .. } => {
                 let mut cells: Vec<Option<Cell>> = vec![None; fields.len()];
                 for init in fields {
                     cells[init.index] = Some(cell(self.expr(&init.value, frame)?));
                 }
                 let cells = cells.into_iter().map(|field| field.expect("the checker requires every field")).collect();
-                Ok(Value::Struct(Rc::new(cells)))
+                Ok(Value::Struct(name.as_str().into(), Rc::new(cells)))
             }
             ExprKind::New(inner) => Ok(Value::Ptr(cell(self.expr(inner, frame)?))),
             ExprKind::Borrow { expr: inner, .. } => Ok(Value::Borrow(self.place(inner, frame)?)),
@@ -469,7 +491,7 @@ impl<'a> Interp<'a> {
                 }
             }
             ExprKind::Coalesce { left, right, on_result: true } => match self.expr(left, frame)? {
-                Value::Enum(0, fields) => Ok(fields[0].borrow().clone()),
+                Value::Enum(_, 0, fields) => Ok(fields[0].borrow().clone()),
                 _ => self.expr(right, frame),
             },
             ExprKind::Try { expr: inner, kind } => {
@@ -477,13 +499,13 @@ impl<'a> Interp<'a> {
                 match (kind, value) {
                     (TryKind::Null, Value::Null) => Err(Unwind::Return(Value::Null)),
                     (TryKind::Null, value) => Ok(value),
-                    (TryKind::Result(_), Value::Enum(0, fields)) => Ok(fields.first().map_or(Value::Void, |field| field.borrow().clone())),
-                    (TryKind::Result(convert), Value::Enum(_, fields)) => {
+                    (TryKind::Result(_), Value::Enum(_, 0, fields)) => Ok(fields.first().map_or(Value::Void, |field| field.borrow().clone())),
+                    (TryKind::Result(convert), Value::Enum(result, _, fields)) => {
                         let mut cause = fields[0].borrow().clone();
-                        if let Some(variant) = convert {
-                            cause = Value::Enum(*variant, Rc::new(vec![cell(cause)]));
+                        if let Some((owner, variant)) = convert {
+                            cause = Value::Enum(owner.as_str().into(), *variant, Rc::new(vec![cell(cause)]));
                         }
-                        Err(Unwind::Return(Value::Enum(1, Rc::new(vec![cell(cause)]))))
+                        Err(Unwind::Return(Value::Enum(result, 1, Rc::new(vec![cell(cause)]))))
                     }
                     _ => unreachable!("the checker only lets `try` open a `Result` or a `T?`"),
                 }
@@ -495,9 +517,9 @@ impl<'a> Interp<'a> {
                 };
                 Err(Unwind::Return(value))
             }
-            ExprKind::Variant { index, args } => {
+            ExprKind::Variant { owner, index, args } => {
                 let cells = self.values(args, frame)?.into_iter().map(cell).collect();
-                Ok(Value::Enum(*index, Rc::new(cells)))
+                Ok(Value::Enum(owner.as_str().into(), *index, Rc::new(cells)))
             }
             ExprKind::Unbox(inner) => match self.expr(inner, frame)? {
                 Value::Borrow(target) => match &*behind_borrows(target).borrow() {
@@ -606,7 +628,7 @@ impl<'a> Interp<'a> {
                         target = inner;
                     }
                     let this = match this {
-                        This::Value => target.borrow().clone(),
+                        This::Value => fresh(&target.borrow()),
                         This::Read | This::Ref => Value::Borrow(target),
                     };
                     let values = self.values(args, frame)?;
@@ -625,6 +647,13 @@ impl<'a> Interp<'a> {
                 }
                 Callee::Plain => {
                     let recv = strip(self.expr(recv, frame)?);
+                    // `f.write(x)` inside a `format` method.
+                    if let Value::Formatter(written) = &recv {
+                        let value = self.expr(&args[0], frame)?;
+                        let text = self.show(&value, false, args[0].span)?;
+                        written.borrow_mut().push_str(&text);
+                        return Ok(Value::Void);
+                    }
                     let mut values = Vec::new();
                     for arg in args {
                         values.push(strip(self.expr(arg, frame)?));
@@ -660,7 +689,8 @@ impl<'a> Interp<'a> {
     fn call_expr(&mut self, expr: &'a Expr, name: &str, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
         match name {
             "print" => {
-                let text = strip(self.expr(&args[0], frame)?).format();
+                let value = self.expr(&args[0], frame)?;
+                let text = self.show(&value, false, args[0].span)?;
                 self.write_line(&text)?;
                 Ok(Value::Void)
             }
@@ -698,6 +728,56 @@ impl<'a> Interp<'a> {
             }
             _ if self.condition(cond, frame)? => Ok(Value::Void),
             _ => Err(failed(None)),
+        }
+    }
+
+    /// How a value is written as text. A struct with a `format` method of its own writes
+    /// itself; any other struct or enum is written field by field. `inside`: the value is
+    /// part of another one, where text is quoted to keep the parts apart.
+    fn show(&mut self, value: &Value, inside: bool, span: Span) -> Res<String> {
+        let list = |interp: &mut Self, fields: &[Cell]| -> Res<Vec<String>> {
+            let mut parts = Vec::new();
+            for field in fields {
+                let value = field.borrow().clone();
+                parts.push(interp.show(&value, true, span)?);
+            }
+            Ok(parts)
+        };
+        match value {
+            Value::Ptr(inner) | Value::Borrow(inner) => {
+                let value = inner.borrow().clone();
+                self.show(&value, inside, span)
+            }
+            Value::Str(text) if inside => Ok(format!("{text:?}")),
+            Value::Null => Ok("null".to_string()),
+            Value::Void => Ok(String::new()),
+            Value::Struct(name, fields) => {
+                if let Some(format) = self.methods.get(&**name).and_then(|methods| methods.get("format")).copied() {
+                    let written = Rc::new(RefCell::new(String::new()));
+                    let this = Value::Borrow(cell(value.clone()));
+                    let formatter = Value::Borrow(cell(Value::Formatter(written.clone())));
+                    self.call(format, Some(this), vec![formatter], span)?;
+                    let text = written.borrow().clone();
+                    return Ok(text);
+                }
+                let decl = self.structs[&**name];
+                let parts = list(self, fields)?;
+                let named: Vec<String> = decl.fields.iter().zip(parts).map(|(field, text)| format!("{} = {text}", field.name)).collect();
+                Ok(format!("{name} {{ {} }}", named.join(", ")))
+            }
+            Value::Enum(name, index, fields) => {
+                let word = match &**name {
+                    "Result" => ["Ok", "Error"][*index],
+                    _ => self.enums[&**name].variants[*index].name.as_str(),
+                };
+                let parts = list(self, fields)?;
+                Ok(match parts.is_empty() {
+                    true => word.to_string(),
+                    false => format!("{word}({})", parts.join(", ")),
+                })
+            }
+            Value::Formatter(_) => unreachable!("the checker does not let a `Formatter` be written"),
+            other => Ok(other.format()),
         }
     }
 
@@ -781,45 +861,5 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
         (_, "toString", []) => Value::Str(recv.format().into()),
         (Value::Str(text), "length", []) => Value::Int(IntTy::Nint, text.len() as i64),
         _ => unreachable!("the checker only lets known methods through"),
-    }
-}
-
-/// Writes a value by its type, for the error `main` ends with. A placeholder until
-/// `Formattable` exists: `AppError.Syntax(SyntaxError.Unexpected(3))`.
-fn show(prog: &Program, value: &Value, ty: &TypeExpr) -> String {
-    show_as(prog, value, ty, ty.suffixes.len())
-}
-
-/// `suffixes`: how many of the `*` and `?` written after the type name still apply.
-fn show_as(prog: &Program, value: &Value, ty: &TypeExpr, suffixes: usize) -> String {
-    let list = |fields: &[Cell], types: &mut dyn Iterator<Item = &TypeExpr>| -> Vec<String> {
-        fields.iter().zip(types).map(|(field, ty)| show(prog, &field.borrow(), ty)).collect()
-    };
-    match value {
-        Value::Null => "null".to_string(),
-        Value::Ptr(inner) | Value::Borrow(inner) => show_as(prog, &inner.borrow(), ty, suffixes.saturating_sub(1)),
-        // A `T?` that holds a value.
-        _ if suffixes > 0 => show_as(prog, value, ty, suffixes - 1),
-        Value::Str(text) => format!("{text:?}"),
-        Value::Enum(index, fields) if ty.name == "Result" => {
-            let word = if *index == 0 { "Ok" } else { "Error" };
-            format!("{word}({})", list(fields, &mut ty.args.iter().skip(*index)).join(", "))
-        }
-        Value::Enum(index, fields) => {
-            let decl = prog.enums.iter().find(|decl| decl.name == ty.name).expect("the checker resolved the type");
-            let variant = &decl.variants[*index];
-            let inside = list(fields, &mut variant.fields.iter().map(|field| &field.ty));
-            match inside.is_empty() {
-                true => format!("{}.{}", decl.name, variant.name),
-                false => format!("{}.{}({})", decl.name, variant.name, inside.join(", ")),
-            }
-        }
-        Value::Struct(fields) => {
-            let decl = prog.structs.iter().find(|decl| decl.name == ty.name).expect("the checker resolved the type");
-            let inside = list(fields, &mut decl.fields.iter().map(|field| &field.ty));
-            let named: Vec<String> = decl.fields.iter().zip(inside).map(|(field, text)| format!("{} = {text}", field.name)).collect();
-            format!("{} {{ {} }}", decl.name, named.join(", "))
-        }
-        other => other.format(),
     }
 }

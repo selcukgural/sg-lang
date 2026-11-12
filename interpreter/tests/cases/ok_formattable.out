@@ -1,0 +1,9 @@
+1.4
+version 1.4!
+Package { name = "core", version = 2.0, needs = null }
+Package { name = "app", version = 1.4, needs = Package { name = "core", version = 2.0, needs = null } }
+Package { name = "app", version = 1.4, needs = Package { name = "core", version = 2.0, needs = null } }
+Ready
+Failed("disk full", 28)
+Waiting(3.0)
+status: Failed("again", 1)

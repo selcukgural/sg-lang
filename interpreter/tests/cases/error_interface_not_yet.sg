@@ -1,0 +1,6 @@
+struct Point : Copyable, Equatable {
+    int x
+}
+
+void main() {
+}

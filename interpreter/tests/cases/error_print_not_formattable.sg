@@ -1,0 +1,8 @@
+struct Point {
+    int x
+}
+
+void main() {
+    var p = Point { x = 1 }
+    print(p)
+}

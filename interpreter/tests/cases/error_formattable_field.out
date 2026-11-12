@@ -1,0 +1,5 @@
+error: `Line` cannot be written as text field by field: `from` is a `Point`, which is not `Formattable`
+  --> error_formattable_field.sg:6:5
+ 6 |     Point from
+   |     ^^^^^
+  hint: make `Point` `Formattable` too, or write `format` yourself

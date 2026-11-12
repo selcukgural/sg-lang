@@ -1,0 +1,62 @@
+struct Point : Copyable {
+    int x
+    int y
+
+    int sum(this) {                      // takes the value: a copy, for a Copyable type
+        this.x += 100
+        return this.x + this.y
+    }
+}
+
+enum Color : Copyable {
+    Red
+    Mix(int red, int blue)
+}
+
+struct Pixel : Copyable {
+    Point at
+    Color color
+}
+
+int width(Point from, Point to) {
+    return to.x - from.x
+}
+
+int red(Color color) {
+    return match color {
+        Red => 255
+        Mix(r, _) => r
+    }
+}
+
+int first(read Pixel pixel) {
+    Point at = pixel.at                  // a copy out of a borrow
+    return at.x
+}
+
+void main() {
+    var a = Point { x = 1, y = 2 }
+    var b = a                            // copied, not moved
+    b.x = 10
+    print(a.x)
+    print(b.x)
+    print(width(a, b))
+    print(a.sum())
+    print(a.x)
+
+    var color = Color.Mix(7, 9)
+    print(red(color))
+    print(red(color))
+
+    var pixel = Pixel { at = a, color = color }
+    var other = pixel
+    other.at.y = 50
+    print(pixel.at.y)
+    print(other.at.y)
+    print(first(read pixel))
+
+    Point? maybe = a
+    var again = maybe
+    print(maybe is not null)
+    print(again is not null)
+}

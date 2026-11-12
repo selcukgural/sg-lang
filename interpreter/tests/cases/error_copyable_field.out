@@ -1,0 +1,5 @@
+error: `User` cannot be `Copyable`: `name` is a `string`, which is not
+  a `string` owns memory on the heap; a copy would have to allocate, and that is written `.clone()`
+  --> error_copyable_field.sg:3:5
+ 3 |     string name
+   |     ^^^^^^

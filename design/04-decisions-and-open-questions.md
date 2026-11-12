@@ -264,7 +264,11 @@ This goal holds only with a back end at the level of LLVM. A tree-walking interp
    Sixth slice (the same day): `byte`, character literals, `text[i]`, `text[a..b]` and a `match` on a number; the
    calculator now runs whole, with its lexer reading real text. The choices made in this slice were approved on 12 November 2026 and are in the decisions table:
    [interpreter/README.md](../interpreter/README.md), "Rules from the sixth slice".
-   The borrow check (`from`, conflicting `ref`) does not exist yet. Next: `Copyable` and `Formattable`. The current state is in
+   Seventh slice (the same day): `: Copyable` and `: Formattable` on structs and enums, as the two built-in interfaces;
+   a `Copyable` value is copied instead of moved, a `Formattable` one is printed (with its own `format` or field by field),
+   and the error of `main` must be `Formattable`. The choices made in this slice were made without a round of approval and are still to be talked over:
+   [interpreter/README.md](../interpreter/README.md), "Choices made in the seventh slice".
+   The borrow check (`from`, conflicting `ref`) does not exist yet. Next: the built-in `List<T>` and `HashMap<K, V>`. The current state is in
    [interpreter/README.md](../interpreter/README.md). The code, comments and error messages are in English. Since 12 November 2026 the design documents are in English too.
 
 ## Dropped decisions

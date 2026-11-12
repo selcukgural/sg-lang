@@ -1,0 +1,4 @@
+error: `Copyable` is written twice
+  --> error_interface_twice.sg:1:24
+ 1 | enum Color : Copyable, Copyable {
+   |                        ^^^^^^^^

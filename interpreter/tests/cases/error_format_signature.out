@@ -1,0 +1,5 @@
+error: this is not the `format` that `Formattable` asks for
+  --> error_format_signature.sg:4:12
+ 4 |     string format(read this) {
+   |            ^^^^^^
+  hint: `void format(read this, ref Formatter f)`

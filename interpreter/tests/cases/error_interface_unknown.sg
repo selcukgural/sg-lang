@@ -1,0 +1,6 @@
+struct Point : Copyabel {
+    int x
+}
+
+void main() {
+}

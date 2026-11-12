@@ -1,0 +1,7 @@
+struct User : Copyable {
+    int id
+    string name
+}
+
+void main() {
+}

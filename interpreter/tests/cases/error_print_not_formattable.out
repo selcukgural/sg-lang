@@ -1,0 +1,5 @@
+error: `Point` cannot be written as text: it is not `Formattable`
+  --> error_print_not_formattable.sg:7:11
+ 7 |     print(p)
+   |           ^
+  hint: add it to the definition: `Point : Formattable`

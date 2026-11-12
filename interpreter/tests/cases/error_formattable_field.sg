@@ -1,0 +1,11 @@
+struct Point {
+    int x
+}
+
+struct Line : Formattable {
+    Point from
+    Point to
+}
+
+void main() {
+}

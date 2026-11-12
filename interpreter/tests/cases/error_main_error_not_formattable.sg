@@ -1,0 +1,7 @@
+enum AppError {
+    Failed
+}
+
+Result<void, AppError> main() {
+    return Error(AppError.Failed)
+}

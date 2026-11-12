@@ -1,0 +1,10 @@
+struct Version : Formattable {
+    int major
+
+    string format(read this) {
+        return this.major.toString()
+    }
+}
+
+void main() {
+}

@@ -1,0 +1,13 @@
+struct ParseError : Formattable {
+    int line
+    string reason
+
+    void format(read this, ref Formatter f) {
+        f.write($"line {this.line}: {this.reason}")
+    }
+}
+
+Result<void, ParseError> main() {
+    print("reading")
+    return Error(ParseError { line = 7, reason = "unexpected `)`" })
+}

@@ -1,0 +1,38 @@
+struct Version : Formattable {
+    int major
+    int minor
+
+    void format(read this, ref Formatter f) {
+        f.write($"{this.major}.{this.minor}")
+    }
+}
+
+struct Package : Formattable {           // no body: written field by field
+    string name
+    Version version
+    Package*? needs
+}
+
+enum Status : Formattable {
+    Ready
+    Failed(string reason, int code)
+    Waiting(Version until)
+}
+
+void main() {
+    var version = Version { major = 1, minor = 4 }
+    print(version)
+    print($"version {version}!")
+
+    var base = new Package { name = "core", version = Version { major = 2, minor = 0 }, needs = null }
+    print(base)
+    var app = Package { name = "app", version = version, needs = base }
+    print(app)
+    print(read app)
+
+    print(Status.Ready)
+    print(Status.Failed("disk full", 28))
+    print(Status.Waiting(Version { major = 3, minor = 0 }))
+    var status = Status.Failed("again", 1)
+    print($"status: {status}")
+}

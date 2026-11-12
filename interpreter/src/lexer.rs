@@ -43,6 +43,7 @@ pub enum Tok {
     LBracket,
     RBracket,
     Comma,
+    Colon,
     Dot,
     DotDot,
 
@@ -166,6 +167,7 @@ impl Tok {
             Tok::LBracket => "[",
             Tok::RBracket => "]",
             Tok::Comma => ",",
+            Tok::Colon => ":",
             Tok::Dot => ".",
             Tok::DotDot => "..",
             Tok::Plus => "+",
@@ -550,6 +552,7 @@ impl<'a> Lexer<'a> {
             (b'%', _) => (Tok::Percent, 1),
             (b'.', _) => (Tok::Dot, 1),
             (b',', _) => (Tok::Comma, 1),
+            (b':', _) => (Tok::Colon, 1),
             (b'(', _) => (Tok::LParen, 1),
             (b')', _) => (Tok::RParen, 1),
             (b'{', _) => (Tok::LBrace, 1),

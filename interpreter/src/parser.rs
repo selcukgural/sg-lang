@@ -162,6 +162,7 @@ impl<'a> Parser<'a> {
     fn struct_decl(&mut self) -> Res<StructDecl> {
         self.bump();
         let (name, name_span) = self.ident("a struct name")?;
+        let interfaces = self.interfaces()?;
         self.open_brace()?;
         let mut fields = Vec::new();
         let mut methods = Vec::new();
@@ -184,13 +185,28 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         }
         self.bump();
-        Ok(StructDecl { name, name_span, fields, methods })
+        Ok(StructDecl { name, name_span, interfaces, fields, methods })
+    }
+
+    /// `: Copyable, Formattable` after the name of a struct or an enum.
+    fn interfaces(&mut self) -> Res<Vec<(String, Span)>> {
+        let mut list = Vec::new();
+        if self.eat(&Tok::Colon) {
+            loop {
+                list.push(self.ident("an interface name")?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        Ok(list)
     }
 
     /// `enum Shape { Circle(int radius)` / `Empty }`: one variant per line.
     fn enum_decl(&mut self) -> Res<EnumDecl> {
         self.bump();
         let (name, name_span) = self.ident("an enum name")?;
+        let interfaces = self.interfaces()?;
         self.open_brace()?;
         let mut variants = Vec::new();
         self.skip_newlines();
@@ -227,7 +243,7 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         }
         self.bump();
-        Ok(EnumDecl { name, name_span, variants })
+        Ok(EnumDecl { name, name_span, interfaces, variants })
     }
 
     /// The rest of a function after its return type and name. In a struct body the first

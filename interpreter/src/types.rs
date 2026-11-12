@@ -1,5 +1,6 @@
 //! Types as the checker sees them.
 
+use std::collections::HashSet;
 use std::fmt;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -91,6 +92,8 @@ pub enum Ty {
     Nullable(Box<Ty>),
     /// `Result<T, E>`: built in, with the variants `Ok(T value)` and `Error(E cause)`.
     Result(Box<Ty>, Box<Ty>),
+    /// What a `format` method writes into: `ref Formatter f`.
+    Formatter,
     /// `read T`: read-only borrow.
     Read(Box<Ty>),
     /// `ref T`: writable borrow.
@@ -103,18 +106,21 @@ impl Ty {
             "bool" => Some(Ty::Bool),
             "string" => Some(Ty::Str),
             "void" => Some(Ty::Void),
+            "Formatter" => Some(Ty::Formatter),
             _ => IntTy::from_name(name).map(Ty::Int),
         }
     }
 
     /// Whether using a value of this type leaves the original usable. Everything else moves.
-    /// `ref` counts as copyable until there is a borrow checker.
-    pub fn is_copyable(&self) -> bool {
+    /// `declared` holds the structs and enums written with `: Copyable`. `ref` counts as
+    /// copyable until there is a borrow checker.
+    pub fn is_copyable(&self, declared: &HashSet<String>) -> bool {
         match self {
             Ty::Int(_) | Ty::Bool | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) => true,
-            Ty::Nullable(inner) => inner.is_copyable(),
-            Ty::Result(ok, error) => ok.is_copyable() && error.is_copyable(),
-            Ty::Str | Ty::Struct(_) | Ty::Enum(_) | Ty::Ptr(_) => false,
+            Ty::Nullable(inner) => inner.is_copyable(declared),
+            Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
+            Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
+            Ty::Str | Ty::Ptr(_) | Ty::Formatter => false,
         }
     }
 
@@ -142,6 +148,7 @@ impl fmt::Display for Ty {
             Ty::Never => f.write_str("never"),
             Ty::Null => f.write_str("null"),
             Ty::Struct(name) | Ty::Enum(name) => f.write_str(name),
+            Ty::Formatter => f.write_str("Formatter"),
             Ty::Ptr(inner) => write!(f, "{inner}*"),
             Ty::Nullable(inner) => write!(f, "{inner}?"),
             Ty::Result(ok, error) => write!(f, "Result<{ok}, {error}>"),

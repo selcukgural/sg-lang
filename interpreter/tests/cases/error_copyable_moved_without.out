@@ -1,0 +1,8 @@
+error: `a` was moved and can no longer be used
+  --> error_copyable_moved_without.sg:8:11
+ 8 |     print(a.x)
+   |           ^
+  it was moved here:
+  --> error_copyable_moved_without.sg:7:13
+ 7 |     var b = a
+   |             ^

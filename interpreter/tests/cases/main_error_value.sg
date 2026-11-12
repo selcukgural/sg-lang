@@ -1,9 +1,9 @@
-struct Place {
+struct Place : Formattable {
     int line
     string? file
 }
 
-enum LoadError {
+enum LoadError : Formattable {
     NotFound(Place where, int? code)
 }
 

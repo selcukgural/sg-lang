@@ -1,0 +1,5 @@
+error: `Shape` cannot be `Copyable`: `at` is a `Point`, which is not
+  --> error_copyable_inner.sg:6:9
+ 6 |     Dot(Point at)
+   |         ^^^^^
+  hint: make `Point` `Copyable` too, or take `Copyable` off `Shape`

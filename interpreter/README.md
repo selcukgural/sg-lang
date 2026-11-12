@@ -18,6 +18,7 @@ cargo test
 | Methods | Written in the struct body with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`. Called as `stack.push(1)`, also through pointers and borrows. A function without `this` is called on the type: `Stack.create()`. `Stack(args)` is short for `Stack.create(args)` |
 | Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)` |
 | `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a name or `_` for each value, `_`, `var other`; a condition with `when`. On an integer the patterns are numbers and characters: `match c { '+' => ... _ => ... }`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
+| Interfaces | Two built-in ones, written after the name: `struct Point : Copyable`, `enum AppError : Formattable`. A `Copyable` value is copied where another would be moved. A `Formattable` value is accepted by `print`, `$"..."` and `f.write`; a struct can write its own `void format(read this, ref Formatter f)`, otherwise the text is made from the fields |
 | `is` | `if s is Circle(r) { ... }`, `while next() is not End { ... }` |
 | Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
@@ -74,6 +75,12 @@ Design rules that are already enforced:
 - A character that takes more than one byte (`'é'`) is an error where a `byte` goes; the hint is `char`.
 - A conversion whose value is known and does not fit is an error, not a panic: `(byte)300`.
 - A `match` on a number needs `_` or `var name` for the values it does not list.
+- `: Copyable` holds only if every field can be copied; the error names the field that cannot (`string`, `T*`,
+  a struct that is not `Copyable`).
+- `: Formattable` without a `format` method needs every field to be `Formattable`; with one, the method must be
+  `void format(read this, ref Formatter f)`.
+- `print(x)` of a struct or an enum that is not `Formattable` is an error whose hint is the two words to add.
+- The error type of `Result<void, E> main()` must be `Formattable` (or a `string`), because it is printed.
 
 ## How it is built
 
@@ -82,7 +89,7 @@ Design rules that are already enforced:
 | `src/lexer.rs` | Tokens, the line-end rule, `$"..."` pieces |
 | `src/parser.rs` | Hand-written recursive descent parser |
 | `src/types.rs` | Types as the checker sees them |
-| `src/check.rs` | Static checks: names, types, `null` safety, use after move (per variable and per field), `match` covering every variant, `return` on every path, unused `Result`, what `try` may pass on. Writes resolved details (literal types, field indexes, implicit conversions, what each call runs) into the tree |
+| `src/check.rs` | Static checks: names, types, `null` safety, use after move (per variable and per field), `match` covering every variant, `return` on every path, unused `Result`, what `try` may pass on, what `Copyable` and `Formattable` promise. Writes resolved details (literal types, field indexes, implicit conversions, what each call runs) into the tree |
 | `src/interp.rs` | Runs the checked tree; only data-dependent failures (panics) are left to it |
 | `src/diag.rs` | Error and panic messages |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
@@ -174,8 +181,7 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
 6. **`tryDivide` gives `null` for division by zero too**, not only for overflow (Rust's `checked_div`).
 7. **`return` inside an expression is written only on the right side of `??`.**
 
-Placeholders: the error `main` ends with is written by its shape (`AppError.Eval(EvalError.Overflow)`), a
-`string` error as its text, until `Formattable` exists. `try` on a borrowed `Result` works only if it can be
+Placeholders: `try` on a borrowed `Result` works only if it can be
 copied. A `Result` cannot carry a borrow (`Result<read string, E>`), since `from` is not here.
 
 ## Rules from the sixth slice
@@ -201,11 +207,34 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
    whose hint is the bare form. One way to write it. `read items[0]` is something else and stays: that lends
    one element.
 
+## Choices made in the seventh slice
+
+Made on 12 November 2026 without a round of approval, at the author's request; to be talked over. Each has a
+test in `tests/cases/`.
+
+1. **Only `Copyable` and `Formattable` exist, as built-in names.** `interface` of your own, `where`, and the
+   other built-in ones (`Clonable`, `Equatable`, `Hashable`, `Disposable`) answer "not in the interpreter yet".
+   These two were enough to bring the calculator and the error of `main` in line with the design.
+2. **The text the compiler makes** (the design says it is generated, not what it looks like): a struct is
+   written the way it is built, `Place { line = 3, file = "a.txt" }`; a variant the way a pattern writes it,
+   without its enum, `NotFound(...)`, `Ready`; text inside another value is in quotes, so the parts can be told
+   apart; a missing value is `null`; a `T*` is written as what it owns.
+3. **`print` of a `T?` or a `Result` is an error**, with the hint `??` or `try`: at the top level a silent
+   `null` in the output is more likely a mistake than a wish. Inside a generated text `null` is written.
+4. **A struct that writes its own `format` may hold fields that are not `Formattable`.** Only the generated
+   body needs them all.
+5. **A method that takes `this` by value copies a `Copyable` receiver**, so the value stays usable, also
+   through a borrow. This is the argument rule applied to the receiver.
+6. **`Formatter` is a taken type name**, and `f.write(x)` takes whatever `print` takes. Write errors that stay
+   in the `Formatter` (the design's reason for it) wait for files.
+7. **The error `main` ends with** is now written by `Formattable`: `error: Syntax(NumberTooLarge(0))` where
+   the placeholder wrote `AppError.Syntax(SyntaxError.NumberTooLarge(0))`. A `string` error is still its text.
+
 The calculator runs whole (`examples/calculator.sg`): lexer, parser, evaluator, error conversion. It differs
 from the design text where the interpreter lacks something: `Lexer` owns a copy of the input and `Token.Name`
-a copy of the name (no borrowed fields without `from`), `Token` is not `Copyable` so `advance` hands over the
-current token with `replace`, variables are a linked list instead of a `HashMap`, `-x` is `0.trySubtract(x)`,
-and the input is a string in the program instead of a file.
+a copy of the name (no borrowed fields without `from`), so `Token` cannot be `Copyable` and `advance` hands
+over the current token with `replace`; variables are a linked list instead of a `HashMap`, `-x` is
+`0.trySubtract(x)`, and the input is a string in the program instead of a file.
 
 ## Not here yet
 
@@ -217,9 +246,10 @@ and the input is a string in the program instead of a file.
 - Narrowing only follows a direct `x is null` / `x is not null` test, not `&&` chains. The same holds for
   the names of `x is Circle(r)`: they exist when the test is the whole condition of an `if` or `while`.
 - Patterns inside patterns (`Negate(Number(v))`), patterns for text (`match word { "if" => ... }`),
-  methods and interfaces on enums. An enum cannot be copied, compared with `==` or printed yet.
-- Generics other than the built-in `Result<T, E>`, interfaces (`Copyable`,
-  `Formattable`: a struct cannot be copied or printed yet), lambdas, collections, modules, `test` blocks, threads,
+  methods on enums. A struct or an enum cannot be compared with `==` yet.
+- Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Equatable`,
+  `Hashable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
+- Generics other than the built-in `Result<T, E>`, lambdas, collections, modules, `test` blocks, threads,
   `shared` / `weak` / `checked` / `locked`.
 - `char` and `text.chars()`, `double` and the other number types.
 - Slices of anything but text (`read byte[]`, `text.asBytes()`, `string.fromUtf8`), `List<T>`, `T[N]`.
@@ -233,5 +263,6 @@ error.
 
 ## Next
 
-The interfaces the examples lean on most: `Copyable` (so `Token` is copied, as the calculator in the design
-does) and `Formattable` (so a struct, an enum and the error `main` ends with are written as text).
+The built-in collections, `List<T>` and `HashMap<K, V>`, written like `Result<T, E>` without general generics:
+most of the design examples need them, and with `HashMap` the calculator loses its hand-made linked list.
+After that the borrow check (`from`, a `ref` that overlaps another borrow), the largest piece still missing.

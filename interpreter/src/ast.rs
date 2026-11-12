@@ -13,6 +13,8 @@ pub struct Program {
 pub struct StructDecl {
     pub name: String,
     pub name_span: Span,
+    /// The names after `:` in `struct Version : Copyable, Formattable`.
+    pub interfaces: Vec<(String, Span)>,
     pub fields: Vec<FieldDecl>,
     /// Functions written in the struct body, with or without `this`.
     pub methods: Vec<Func>,
@@ -21,6 +23,7 @@ pub struct StructDecl {
 pub struct EnumDecl {
     pub name: String,
     pub name_span: Span,
+    pub interfaces: Vec<(String, Span)>,
     pub variants: Vec<VariantDecl>,
 }
 
@@ -176,8 +179,9 @@ pub enum ExprKind {
     Match { subject: Box<Expr>, arms: Vec<Arm>, borrowed: bool },
 
     /// Built by the checker from `Shape.Circle(2)`, `Shape.Empty`, `Ok(1)` and `Error(e)`: the
-    /// variant's position and what it carries. `Ok` is 0 and `Error` is 1.
-    Variant { index: usize, args: Vec<Expr> },
+    /// enum (`Result` for the last two), the variant's position and what it carries. `Ok` is
+    /// 0 and `Error` is 1.
+    Variant { owner: String, index: usize, args: Vec<Expr> },
     /// Inserted by the checker: a borrow of a `T*` used as a borrow of the `T` it owns.
     Unbox(Box<Expr>),
 
@@ -188,13 +192,13 @@ pub enum ExprKind {
 }
 
 /// What `try` does when there is no value. Set by the checker.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum TryKind {
     /// On a `T?`: returns `null`.
     Null,
-    /// On a `Result`: returns the error. With a position, the error is first wrapped in that
-    /// variant of the caller's error type.
-    Result(Option<usize>),
+    /// On a `Result`: returns the error. With an enum and a position, the error is first
+    /// wrapped in that variant of the caller's error type.
+    Result(Option<(String, usize)>),
 }
 
 /// One arm of a `match`: `Circle(r) when r > 0 => body`. The body is a single expression

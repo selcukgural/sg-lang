@@ -12,7 +12,7 @@ enum Token {
     End
 }
 
-enum SyntaxError {
+enum SyntaxError : Formattable {
     BadCharacter(int position)
     NumberTooLarge(int position)
     Unexpected(int position)
@@ -87,7 +87,7 @@ struct Lexer {
     }
 }
 
-enum Operator {
+enum Operator : Copyable {
     Add
     Subtract
     Multiply
@@ -175,7 +175,7 @@ Result<Expr*, SyntaxError> parse(read string input) {
     return Ok(tree)
 }
 
-enum EvalError {
+enum EvalError : Formattable {
     UnknownName(string name)             // owned: the error can outlive the tree
     DivideByZero
     Overflow
@@ -198,7 +198,7 @@ int? find(read Binding*? vars, read string name) {
     return null
 }
 
-Result<int, EvalError> apply(read Operator op, int a, int b) {
+Result<int, EvalError> apply(Operator op, int a, int b) {
     return match op {
         Add => Ok(a.tryAdd(b) ?? return Error(EvalError.Overflow))
         Subtract => Ok(a.trySubtract(b) ?? return Error(EvalError.Overflow))
@@ -221,7 +221,7 @@ Result<int, EvalError> eval(read Expr e, read Binding*? vars) {
     }
 }
 
-enum AppError {
+enum AppError : Formattable {
     Syntax(SyntaxError cause)
     Eval(EvalError cause)
 }

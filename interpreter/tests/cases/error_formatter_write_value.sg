@@ -1,0 +1,14 @@
+struct Point {
+    int x
+}
+
+struct Line : Formattable {
+    Point from
+
+    void format(read this, ref Formatter f) {
+        f.write(this.from)
+    }
+}
+
+void main() {
+}

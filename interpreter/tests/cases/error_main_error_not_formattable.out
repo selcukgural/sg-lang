@@ -1,0 +1,5 @@
+error: the error `main` ends with is printed, so `AppError` must be `Formattable`
+  --> error_main_error_not_formattable.sg:5:14
+ 5 | Result<void, AppError> main() {
+   |              ^^^^^^^^
+  hint: add it to the definition: `AppError : Formattable`

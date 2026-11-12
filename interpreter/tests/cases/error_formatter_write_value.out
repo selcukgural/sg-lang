@@ -1,0 +1,5 @@
+error: `Point` cannot be written as text: it is not `Formattable`
+  --> error_formatter_write_value.sg:9:17
+ 9 |         f.write(this.from)
+   |                 ^^^^^^^^^
+  hint: add it to the definition: `Point : Formattable`

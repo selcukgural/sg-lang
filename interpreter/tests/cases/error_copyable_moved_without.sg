@@ -1,0 +1,10 @@
+struct Point {
+    int x
+}
+
+void main() {
+    var a = Point { x = 1 }
+    var b = a
+    print(a.x)
+    print(b.x)
+}
