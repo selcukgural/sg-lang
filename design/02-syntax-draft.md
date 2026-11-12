@@ -20,8 +20,7 @@
 | `Result<T, E>`, `Err(e)` | `Result<T, E>`, `Error(e)` |
 | `x?` | `try x` |
 | `if let P = x` | `if x is P` |
-| `&dyn Fn(A) -> B`, `&mut dyn FnMut(A) -> B` | `read Func<A, B>` |
-| `Box<dyn Fn(A) -> B>`, `Box<dyn FnMut(A) -> B>` | `Func<A, B>*` |
+| `fn(A) -> B` (a function pointer; closures have no counterpart) | `Func<A, B>` |
 | `&[T]`, `&mut [T]` | `read T[]`, `ref T[]` |
 | `pub` | `public` |
 | `mod stock;` + file | folder, no declaration |
@@ -226,10 +225,16 @@ void main() {
 }
 ```
 
-If a `spawn` argument carries a borrow, an unlocked `checked` or a `Func`, it is a compile error. Because the counter
+If a `spawn` argument carries a borrow or an unlocked `checked`, it is a compile error. Because the counter
 is always atomic, Rust's `Send` and `Sync` distinction comes down to this single rule.
 
 ### Generics and interfaces
+
+> **Deferred on 12 November 2026.** Generics of your own, `where` and your own `interface` are not in the first
+> version; this section is kept as the record of what was designed. What stays: the built-in generic types
+> (`Result<T, E>`, `T?`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`), the built-in interfaces written after `:`
+> (`Copyable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`), methods in the struct body, and the rule that
+> `==` is `equals` and `<` is `compare`. A container of your own is written for the type it holds.
 
 Generic code is compiled separately for each type (monomorphization): as fast as C, at the cost of a larger binary.
 
@@ -642,67 +647,44 @@ The check looks only at local variables. If the value is moved into a struct fie
 tracking it, and closing becomes the responsibility of whoever wrote that struct. In C# the same idea is an analyzer
 warning (CA2000); Rust has no such check.
 
-### Function values and lambdas
+### Function values
 
-A lambda is written as in C#. In the type `Func<int, bool>` the last parameter is the return type. Because `void` is a
-type, there is no separate `Action`: `Func<int, void>`. `return` and `try` exit the lambda, and a block body needs
-`return`.
-
-| Use | Syntax | Heap |
-|---|---|---|
-| For the duration of the call | `read Func<A, B>` | None |
-| Stored or returned | `Func<A, B>*` | With `new` |
-
-Capture is one sentence: without `new` the lambda borrows, with `new` it moves.
+`Func<int, bool>` is the type of a function; the last parameter is the return type, and `Func<int, void>` returns
+nothing. A value of it is the address of a named function and nothing more: it can be copied, it needs no heap, and it
+carries no data. There is no lambda notation and nothing is captured (removed on 12 November 2026: capture brought a
+run-time check and about ten rules).
 
 ```
-public bool any(read this, read Func<read T, bool> test)
-
-long limit = 500
-var large = orders.filter(o => o.amount >= limit)    // limit is borrowed
-orders.forEach(o => { total += o.amount })           // total is a writable borrow
-
-Func<read Order, bool>* minAmount(long limit) {
-    return new o => o.amount >= limit                // limit was copied
+bool isPaid(read Order o) {
+    return o.paid
 }
-```
 
-A bare `Func` cannot be a variable type, its size is unknown. Locally, `var` needs a type, as in C#:
-`var add = (int x) => x + 1`. If there is an expected type, the parameter type is not written.
-
-A lambda can modify what it captures, with nothing extra to write. The compiler behaves as if it had added `checked`
-to a captured variable that is written to, and a panic happens only on a real conflict:
-
-```
-Func<int>* makeCounter() {
+int count(read List<Order> orders, Func<read Order, bool> test) {
     int n = 0
-    return new () => {                               // n was moved into the lambda
-        n += 1
-        return n
+    for o in orders {
+        if test(o) {                             // called like a function
+            n += 1
+        }
     }
+    return n
+}
+
+print(count(read orders, isPaid))                // the name of the function is the value
+Func<read Order, bool> rule = isPaid             // kept in a variable or a field, copied freely
+```
+
+What a function needs comes in as a parameter. A rule that carries data of its own is a variant of an `enum`, and the
+`match` does what the lambda body did:
+
+```
+enum OrderRule {
+    Check(Func<read Order, bool> test)
+    MinAmount(long limit)
 }
 ```
 
-Writing afterwards to a variable copied with `new` is a compile error, since the lambda would keep the old value. If
-the lambda writes, the variable counts as moved even if it is `Copyable`. Capture is per field:
-`this.items.removeAll(x => x > this.limit)` captures only `limit`. A captured owned value cannot be moved out inside
-the lambda. A `new` lambda that captures a borrow needs `from`:
-`Func<read Order, bool>* startsWith(read string text) from text`.
-
-A lambda cannot cross to a thread; thread work starts with `spawn f(args)`.
-
-A function name can be written in place of a lambda. For a method bound to an object, a lambda is written:
-
-```
-bool isPaid(read Order o) { return o.paid }
-
-orders.removeAll(isPaid)                             // same as o => isPaid(o)
-orders.removeAll(Order.isCancelled)                  // method, by type name
-Func<read Order, bool>* test = new isPaid            // new if it will be stored
-orders.removeAll(this.isValid)                       // error. Hint: o => this.isValid(o)
-```
-
-List methods run immediately and return a new list. The full example is in the [example programs](05-examples.md) file.
+A method bound to an object (`validator.accepts`) is not a function value. The full example is "Order rules" in the
+[example programs](05-examples.md).
 
 ### Slices
 

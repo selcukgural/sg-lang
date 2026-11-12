@@ -296,6 +296,10 @@ Result<void, IoError> main() {
 
 ## `List`: `for`, index and `raw`
 
+> **12 November 2026.** Generics of your own are deferred, so `List<T>` is known to the compiler and is not written in
+> the language. The definition below is kept as a sketch of how it could be; the three forms of `for` and `xs[i]`
+> at the end of the section are how the built-in list behaves.
+
 Shows that the standard library can be written in the language itself. `unsafe` stays only on the lines that touch
 memory; the user outside does not see it.
 
@@ -576,23 +580,18 @@ void addFile(read FolderRef root, read string folder, long bytes) {
 }
 ```
 
-The list that keeps the largest ones is generic and works with any type that can be ordered:
+The list that keeps the largest ones (written for `Ranked`: generics of your own are deferred):
 
 ```
-public struct List<T> : Disposable {
-    ...
-    public void sort(ref this) where T : Comparable      // only this method requires Comparable
-}
-
-public struct TopList<T> where T : Comparable {
-    List<T> items
+public struct TopList {
+    List<Ranked> items
     nint limit
 
-    public TopList<T> create(nint limit) {
-        return TopList<T> { items = List<T>(), limit = limit }
+    public TopList create(nint limit) {
+        return TopList { items = List<Ranked>(), limit = limit }
     }
 
-    public void add(ref this, T value) {
+    public void add(ref this, Ranked value) {
         this.items.add(value)
         this.items.sort()
         if this.items.length() > this.limit {
@@ -614,14 +613,14 @@ struct Ranked : Comparable, Formattable {
     }
 }
 
-void collect(read FolderRef folder, ref TopList<Ranked> top) {
+void collect(read FolderRef folder, ref TopList top) {
     top.add(Ranked { bytes = folder.bytes, path = folder.path() })
     for child in read folder.children {  // folder is being read for the whole loop
         collect(child, ref top)          // path walks up but only reads, no conflict
     }
 }
 
-void report<T>(read TopList<T> top) where T : Comparable, Formattable {
+void report(read TopList top) {
     for item in read top.items {
         print($"{item}")
     }
@@ -633,7 +632,7 @@ void main() {
     addFile(read root, "docs/2025", 800)
     addFile(read root, "photos", 5000)
 
-    var top = TopList<Ranked>(3)
+    var top = TopList(3)
     collect(read root, ref top)
     report(read top)
 }                                        // root drops to zero, the tree is freed, weak does not get in the way
@@ -696,50 +695,11 @@ panic: Folder could not be opened for writing, it is being read at line 12
 hint: loop over a copy, for child in folder.children.clone()
 ```
 
-## Order rules: `Func`, lambda
+## Order rules: function values, `enum`
 
-Filters, sums and sorts a list of orders, and checks it with rules added at run time. In C#, the GC keeps whatever a
-lambda captures alive. Here the owner must be clear: without `new` the lambda borrows, with `new` it moves.
-
-The list methods use the lambda for the duration of the call, so they take `read Func` and do not allocate on the heap:
-
-```
-public struct List<T> : Disposable {
-    ...
-    public bool any(read this, read Func<read T, bool> test) {
-        for item in this {
-            if test(item) {
-                return true
-            }
-        }
-        return false
-    }
-
-    public List<read T> filter(read this, read Func<read T, bool> keep) from this {
-        var kept = List<read T>()
-        for item in this {
-            if keep(item) {
-                kept.add(item)
-            }
-        }
-        return kept
-    }
-
-    public List<U> map<U>(read this, read Func<read T, U> convert) {
-        var result = List<U>()
-        for item in this {
-            result.add(convert(item))
-        }
-        return result
-    }
-
-    public void forEach(read this, read Func<read T, void> visit)
-    public void removeAll(ref this, read Func<read T, bool> test)
-    public void sortBy<K>(ref this, read Func<read T, read K> key) where K : Comparable
-}
-```
-
-Because the rules are stored in a list, they outlive the function that creates them, and go to the heap with `new`:
+Filters and sums a list of orders, and checks it with rules added at run time. Until 12 November 2026 this example was
+written with lambdas that captured their data; lambdas were removed, and it is written with what remains: a `for`
+loop, a named function as a value, and an `enum` for a rule that carries data.
 
 ```
 struct Order {
@@ -748,21 +708,23 @@ struct Order {
     bool paid
 }
 
-using OrderRule = Func<read Order, bool>*
-
-OrderRule minAmount(long limit) {
-    return new o => o.amount >= limit        // limit was copied
+// A rule that needs no data of its own is a named function.
+bool isPaid(read Order o) {
+    return o.paid
 }
 
-OrderRule customerIs(string name) {
-    return new o => o.customer == name       // name moved into the lambda, it dies with it
+// A rule that carries data is a variant: the data is in the value, where the owner is clear.
+enum OrderRule {
+    Check(Func<read Order, bool> test)
+    MinAmount(long limit)
+    CustomerIs(string name)
 }
 
-OrderRule firstOnly(int limit) {
-    int seen = 0
-    return new o => {                        // seen lives inside the lambda and persists between calls
-        seen += 1
-        return seen <= limit
+bool passes(read OrderRule rule, read Order order) {
+    return match rule {
+        Check(test) => test(order)                   // a function value is called like a function
+        MinAmount(limit) => order.amount >= limit
+        CustomerIs(name) => order.customer == name
     }
 }
 
@@ -779,7 +741,7 @@ struct Validator {
 
     public bool accepts(read this, read Order order) {
         for rule in read this.rules {
-            if !rule(order) {
+            if !passes(rule, order) {
                 return false
             }
         }
@@ -787,129 +749,43 @@ struct Validator {
     }
 }
 
-List<Order> loadOrders() {
-    return List<Order> {
+void main() {
+    var orders = List<Order> {
         Order { customer = "ada", amount = 1200, paid = true },
         Order { customer = "grace", amount = 300, paid = false },
         Order { customer = "ada", amount = 80, paid = true }
     }
-}
-
-void main() {
-    var orders = loadOrders()
-
-    long limit = 500
-    var large = orders.filter(o => o.amount >= limit)    // limit is borrowed, heap only for the returned list
-    print(large.length())
-
-    long total = 0
-    orders.forEach(o => { total += o.amount })           // total is a writable borrow
-    print(total)
-
-    var names = orders.map(o => o.customer.clone())
-    print(names.length())
 
     var rules = Validator()
-    rules.add(minAmount(100))
-    rules.add(customerIs("ada"))
-    rules.add(firstOnly(10))
-    rules.add(new o => o.paid)
+    rules.add(OrderRule.Check(isPaid))               // the name of the function is the value
+    rules.add(OrderRule.MinAmount(100))
+    rules.add(OrderRule.CustomerIs("ada"))
 
-    var accepted = orders.filter(o => rules.accepts(o))
-    print(accepted.length())
-
-    orders.sortBy(o => read o.customer)      // large and accepted are no longer used, sorting is allowed
-}
-```
-
-Because the `sortBy` key is returned as `read`, a `string` key is not copied. The same code does not compile with Rust's
-`sort_by_key` method.
-
-Capture is per field: `this.minimum` can be read while `this.items` is being changed:
-
-```
-public struct Inbox {
-    List<Order> items
-    long minimum
-
-    public void prune(ref this) {
-        this.items.removeAll(o => o.amount < this.minimum)
-    }
-}
-```
-
-Compile errors of this example:
-
-```
-OrderRule tooShort(long limit) {
-    return o => o.amount >= limit        // error: the lambda borrows limit, limit dies here
-}
-
-Func<read Order, bool> rule = o => o.paid    // error: the size of Func is not known
-
-long limit = 500
-OrderRule rule = new o => o.amount >= limit
-limit = 200                              // error: the lambda holds 500, in C# it would see the new value
-
-string name = loadName()
-OrderRule rule = new o => o.customer == name
-print(name)                              // error: name moved into the lambda
-
-int seen = 0
-OrderRule rule = new o => {
-    seen += 1
-    return true
-}
-print(seen)                              // error: the lambda writes to seen, seen moved into it
-
-long total = 0
-var add = (read Order o) => { total += o.amount }
-print(total)                             // error: add is still in use, total is borrowed by it
-orders.forEach(read add)
-
-orders.forEach(o => { try writer.writeLine(o.customer) })
-                                         // error: try exits the lambda, the lambda returns void
-
-orders.removeAll(o => orders.length() > 2)
-                                         // error: the lambda reads orders while it is being changed
-
-OrderRule startsWith(read string text) {
-    return new o => o.customer.startsWith(text)   // error: the lambda carries a borrow of text, from is not written
-}
-
-spawn check(rule)                        // error: Func cannot cross to a thread
-
-var seen = new shared checked List<int>()
-spawn collect(share seen)                // error: checked cannot cross to a thread
-```
-
-| Error | Hint |
-|---|---|
-| A capturing lambda leaves the function | `new o => ...` |
-| Bare `Func` type | `var` or `Func<...>*` |
-| A variable moved into the lambda | `var copy = name.clone()` before the lambda |
-| A variable copied by `new` was written to | None: the intent is not known |
-| `try` exits the lambda | `for o in read orders { ... }` |
-| A `new` lambda carries a borrow, the source is not written | Add `from text` at the end |
-| `Func` passed to a thread | None: a lambda cannot cross to a thread, work starts with `spawn f(args)` |
-| `checked` passed to a thread | `new shared locked List<int>()` |
-
-A conflict the compiler cannot see panics at run time:
-
-```
-Func<int, void>* tracker(Func<int, void>* notify) {
-    List<int> seen = List<int>()
-    return new x => {
-        for item in read seen {
-            notify(item)                 // panic if notify calls the same lambda and writes to seen
+    long total = 0
+    var accepted = List<read Order>()                // borrows the orders, copies nothing
+    for o in read orders {
+        if rules.accepts(o) {
+            accepted.add(o)
+            total += o.amount
         }
-        seen.add(x)
     }
+    print($"{accepted.length()} orders, {total} in total")
 }
 ```
 
-In C# the same situation gives the `Collection was modified` error. A plain counter does not have this problem: the
-check is per access.
+| With a lambda, before | Now | What it costs |
+|---|---|---|
+| `orders.filter(o => o.amount >= limit)` | A `for` with an `if` | Three lines for one; the machine code is the same |
+| `orders.forEach(o => { total += o.amount })` | `for o in read orders { total += o.amount }` | Nothing; the run-time check on `total` is gone |
+| `new o => o.amount >= limit` kept in a list | `OrderRule.MinAmount(limit)` | A variant and an arm; no heap, and the owner of `limit` is the value |
+| `new o => { seen += 1 ... }`, a rule with a state of its own | The state is a field of the struct that owns the rules | The state is visible where it lives |
+| `orders.sortBy(o => read o.customer)` | `: Comparable` on the type and `orders.sort()` | One order per type; another order needs a wrapper type |
+
+### Decisions this example led to
+
+On 12 November 2026: the function value as the address of a named function, and the removal of lambda notation,
+capture and the list methods that took a lambda. The reasons are in the decisions table ("Function value") and under
+"Dropped decisions".
 
 ## Cities and roads: graph, cycle, `weak` edge
 
@@ -1759,10 +1635,15 @@ integer overflow, implicit conversions, character and slice notation, `new`, con
 field order, types that carry a borrow, `Copyable` and enum, `take`, `for` and ownership, string literal, `for` pattern,
 index, `length`, `raw T` operations, number types, text formatting, the `string` guarantee, file API, the duration and
 conflict of a `checked` borrow, `this` with a type, type alias, the form of `where`, equality, `weak T?`, copying
-`shared T`, function value, capture, lambda body, `char`, panic and buffer, named function, narrowing conversion, `print`
+`shared T`, function value, `char`, panic and buffer, narrowing conversion, `print`
 error, `NaN`, identity and equality, `shared` cycle, collection names, module, visibility, `use`, slice type, fixed-size
 array, test, `assert`.
 
 On 11 November the language was made smaller: automatic `Ok`, the heavy version of `Closable` (only the check that looks
 at local variables remained), `ThreadFunc`, a block that produces a value on its own, and the flow check for moving a
 field through `ref` were removed. The examples were updated accordingly: success is written with `return Ok(value)`.
+
+On 12 November it was made smaller again: lambdas and capture were removed (a function value is the address of a
+named function; "Order rules" was rewritten with a `for` loop and an `enum`), and generics of your own, `where` and
+your own `interface` were deferred (`TopList` in "Folder tree" is written for one type, and the definition of `List`
+is kept as a sketch).

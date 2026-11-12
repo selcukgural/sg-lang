@@ -274,8 +274,8 @@ instead of a file. Since the eighth slice the variables are a `HashMap<string, i
 Approved on 12 November 2026. Each has a test in `tests/cases/`.
 
 1. **`List<T>` and `HashMap<K, V>` are built in, like `Result<T, E>`.** There are still no generics of your own.
-   The methods are the ones the design examples call (the tables above); `filter`, `map`, `reserve` and `clone`
-   wait for lambdas and `Clonable`.
+   The methods are the ones the design examples call (the tables above); `reserve` and `clone` wait for `Clonable`.
+   (`filter` and `map` left the design with lambdas on 12 November 2026.)
    2. **`xs[i]` lends what cannot be copied.** The design says reading `xs[i]` is `xs.at(i)`, which returns
    `read T`: so `names[0]` is a `read string`, and an `int` item is simply the number. To take an item out there
    is `removeLast()`, `xs[i].replace(value)`, or `.clone()` for a copy.
@@ -349,10 +349,10 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
    field by field. A collection is not `Hashable` (it is not a key) and not `Comparable` (`xs < ys` is an
    error): an order is written, not made up.
 
-## Choices made in the eleventh slice
+## Rules from the eleventh slice
 
-`test` blocks, as decided in the design ("Test" and "`assert`" rows). What the design left open, chosen on
-12 November 2026 and still to be talked over; each has a test in `tests/cases/` or `examples/`.
+`test` blocks, as decided in the design ("Test" and "`assert`" rows). What the design left open was chosen and
+approved on 12 November 2026; each has a test in `tests/cases/` or `examples/`.
 
 1. **The command is `sg test file.sg`**, and the report is one line per test: `ok    name` or `FAIL  name`
    followed by the panic or `error: ...`, then `4 test(s) passed` or `1 of 4 test(s) failed`.
@@ -382,11 +382,12 @@ golden test runs every file whose name starts with `tests_` through the test com
 - Patterns inside patterns (`Negate(Number(v))`), patterns for text (`match word { "if" => ... }`),
   methods on enums.
 - Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
-- Generics other than the built-in `Result<T, E>`, `List<T>` and `HashMap<K, V>`; lambdas, modules, threads, `shared` / `weak` / `checked` / `locked`.
+- Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
+  in the design); function values (`Func<A, B>`), modules, threads, `shared` / `weak` / `checked` / `locked`.
 - A collection changed inside its own `for` through another `ref` to it is not caught (it is part of the
   borrow check); the direct forms are. Here a list is gone over by position and a map or a set as it was when
   the loop started.
-- Lists of borrows (`List<read T>`); `filter` and `map` (lambdas); `reserve`, `clone`; a `Hashable`
+- Lists of borrows (`List<read T>`); `reserve`, `clone`; a `Hashable`
   type with its own `equals` or `hash`.
 - `char` and `text.chars()`, `double` and the other number types.
 - Slices of anything but text (`read byte[]`, `xs[a..b]`, `text.asBytes()`, `string.fromUtf8`), `T[N]`.
