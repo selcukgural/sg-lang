@@ -51,8 +51,9 @@ and what was removed is in the [dropped decisions](#dropped-decisions) section.
 *Restated on 12 November 2026, in the author's words.* The promise of the language is software that is safe and runs
 fast: memory safe like Rust, as fast as C. It is not a promise of fast development. The language may be tiny, like C: C
 lacks many features and everything is still written in it, operating systems included. Having the features Rust has is
-not a goal. So a feature that only saves typing does not earn its place, and a feature that costs at run time needs a
-reason that is about safety.
+not a goal. The two things that are not given up are performance and simplicity: a feature that costs nothing at run
+time and does not complicate the language can stay (the collection methods, the text of a collection); a feature that
+costs at run time needs a reason that is about safety, and one that adds concepts and rules needs to be worth them.
 
 *Added on 12 November 2026.* We are not tied to a single language. Rust's guarantees, C#'s notation, Go's simplicity, Zig's
 smallness: what each language does best is taken in the form that fits us, and is not taken if it does not fit. A proposal is accepted not because
