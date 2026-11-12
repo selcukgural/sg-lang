@@ -107,6 +107,10 @@ Design rules that are already enforced:
   whose hint is `ref`.
 - A collection passed where a borrow is expected needs `read` or `ref` written: `count(xs)` is an error whose
   hint is `count(read xs)`.
+- While a variable holds a borrow and is still used later, what it borrowed from cannot be changed, moved or
+  lent as `ref`; with a `ref` borrow it cannot be touched at all. The error shows where the borrow was taken.
+  After the last use of the variable the place is free again. The same place cannot be lent twice in one call
+  when one of the two is `ref`.
 - A collection that a `for` goes over by borrowing it cannot be changed inside the loop: `xs.add(v)`,
   `xs[i] = v`, `xs = ...`, `ref xs`, moving `xs`, and a `ref this` method on what holds it are errors that show
   the loop. The hint is to go over the positions, or to keep the changes until the loop ends. Looking at it and
@@ -386,10 +390,36 @@ made here were approved the same day; each has a test in `tests/cases/`.
 
 `examples/order_rules.sg` is the order rules of the design.
 
+## Rules from the thirteenth slice
+
+The first part of the borrow check: borrows that do not go together. The rule itself is the design's (one
+`ref`, or any number of `read`), and a borrow lasts until its last use (decided on 12 November 2026). How it
+is found was chosen here and approved the same day. Each has a test in `tests/cases/`.
+
+1. **What holds a borrow is a variable.** A variable gets one from `read x` / `ref x`, a range of text, an
+   item that is lent (`names[0]`), the names of a `match` or `is` pattern, a copy of another borrow, and the
+   result of a call that returns a borrow.
+2. **A call that returns a borrow is taken to borrow from its receiver and from every borrow it was given**,
+   until `from` can say which one. This can only reject too much, never too little.
+3. **Fields are told apart**: `ref p.x` and `read p.y` go together; `ref p` and `read p.x` do not. Items of a
+   collection are not told apart: a borrow of `xs[0]` is a borrow of `xs`.
+4. **"Used again later" follows the shape of the code**: a use in the other branch of an `if` or a `match`
+   does not count; inside a loop a use anywhere in the loop counts (it comes round again), unless the variable
+   is declared inside the loop and so is new in every round.
+5. **In one call the same place is not lent twice when one of the two is `ref`**: `swap(ref x, ref x)`,
+   `copyInto(ref xs, read xs)`, `bag.merge(read bag)`. A value read for an argument is not a borrow:
+   `xs.add(xs.length())` is fine.
+6. **Pointing a `read` variable at something else frees what it held** (`cur = read cur.next`).
+7. Known gaps, all on the side of accepting too much: a `match` used as a value that gives a borrow is not
+   followed, and a variable re-pointed inside a loop keeps counting as used.
+
+The check found nothing to reject in the 252 programs that existed before it.
+
 ## Not here yet
 
-- **Borrow checking.** Moves are checked, borrows are not: nothing stops a `read` borrow from outliving its
-  owner or a `ref` from overlapping another borrow, and `from` is not parsed. `ref` values can be copied freely.
+- **The rest of the borrow check.** Borrows that do not go together are caught (the thirteenth slice);
+  nothing yet stops a borrow from outliving its owner (a `read` of a local returned or kept past its block),
+  and `from` is not parsed. Fields cannot hold borrows.
 - `swap(ref a, ref b)`, and `this` with a type (`read FolderRef this`).
 - A string literal has the type `string` here; in the design it is `read string` that becomes `string` without
   allocating.
@@ -417,5 +447,6 @@ error.
 
 ## Next
 
-The borrow check (`from`, a `ref` that overlaps another borrow), the largest piece still missing. After it the question is the
+The second part of the borrow check: a borrow that outlives its owner, and `from` on a function that
+returns one. Then the third: types that carry a borrow (`struct Token<from source>`). After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

@@ -1,0 +1,6 @@
+void main() {
+    var names = List<string> { "ada", "grace" }
+    var first = read names[0]
+    names.add("edsger")
+    print(first)
+}

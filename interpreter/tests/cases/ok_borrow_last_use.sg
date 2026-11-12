@@ -1,0 +1,76 @@
+struct Point {
+    int x
+    int y
+}
+
+struct Node {
+    int value
+    Node*? next
+}
+
+void bump(ref int n) {
+    n += 1
+}
+
+int sum(read Node*? list) {
+    var total = 0
+    var cur = list
+    while cur is not null {
+        total += cur.value
+        cur = read cur.next              // pointed at the next node: what it held before is free
+    }
+    return total
+}
+
+void main() {
+    // A borrow ends at its last use, not at the end of the block.
+    var names = List<string> { "ada", "grace" }
+    var first = read names[0]
+    print(first)
+    names.add("edsger")                  // `first` is not used again: the list is free
+    print(names.length())
+
+    // Two borrows of different fields go together.
+    var p = Point { x = 1, y = 2 }
+    var px = ref p.x
+    var py = read p.y
+    px += py
+    print(p.x)
+
+    // A `ref` borrow that is finished, then another one.
+    var count = 0
+    var a = ref count
+    a += 1
+    var b = ref count
+    b += 10
+    print(count)
+    bump(ref count)
+    print(count)
+
+    // Used in one branch, changed in the other.
+    var limit = read names[1]
+    if names.length() > 5 {
+        names.clear()
+    } else {
+        print(limit)
+    }
+
+    // New in every round: the borrow of one round does not reach the next.
+    var totals = HashMap<string, int>()
+    for name in read names {
+        var slot = totals.getOrAdd(name, 0)
+        slot += (int)name.length()
+    }
+    print(totals)
+
+    var list = new Node { value = 1, next = new Node { value = 2, next = null } }
+    print(sum(read list))
+
+    // A match that borrows, and a change after the names are done.
+    var maybe = names.get(0)
+    if maybe is not null {
+        print(maybe)
+    }
+    names.clear()
+    print(names.length())
+}

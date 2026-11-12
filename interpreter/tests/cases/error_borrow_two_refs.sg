@@ -1,0 +1,8 @@
+void main() {
+    var count = 0
+    var a = ref count
+    var b = ref count
+    a += 1
+    b += 1
+    print(count)
+}

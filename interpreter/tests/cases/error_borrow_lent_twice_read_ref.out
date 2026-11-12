@@ -1,0 +1,9 @@
+error: `xs` is lent twice in one call, and a `ref` borrow must be the only one
+  --> error_borrow_lent_twice_read_ref.sg:9:27
+ 9 |     copyInto(ref xs, read xs)
+   |                           ^^
+  the other borrow is here:
+  --> error_borrow_lent_twice_read_ref.sg:9:18
+ 9 |     copyInto(ref xs, read xs)
+   |                  ^^
+  hint: copy what is needed into a variable before the call

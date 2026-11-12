@@ -1,0 +1,9 @@
+error: `names` cannot be changed here: `first` borrows from it and is used again later
+  --> error_borrow_next_round.sg:6:9
+ 6 |         names.add("more")
+   |         ^^^^^
+  `first` borrowed it here:
+  --> error_borrow_next_round.sg:3:17
+ 3 |     var first = read names[0]
+   |                 ^^^^^^^^^^^^^
+  hint: finish with `first` before this line: a borrow ends at its last use

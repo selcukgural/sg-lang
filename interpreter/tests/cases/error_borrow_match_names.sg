@@ -1,0 +1,15 @@
+enum Shape {
+    Circle(string label)
+    Empty
+}
+
+void main() {
+    var shape = Shape.Circle("round")
+    match read shape {
+        Circle(label) => {
+            shape = Shape.Empty
+            print(label)
+        }
+        Empty => print("empty")
+    }
+}

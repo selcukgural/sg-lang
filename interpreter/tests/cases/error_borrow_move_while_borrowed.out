@@ -1,0 +1,9 @@
+error: `xs` cannot be moved here: `first` borrows from it and is used again later
+  --> error_borrow_move_while_borrowed.sg:8:13
+ 8 |     consume(xs)
+   |             ^^
+  `first` borrowed it here:
+  --> error_borrow_move_while_borrowed.sg:7:17
+ 7 |     var first = read xs
+   |                 ^^^^^^^
+  hint: finish with `first` before this line: a borrow ends at its last use

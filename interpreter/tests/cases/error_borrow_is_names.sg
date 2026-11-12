@@ -1,0 +1,12 @@
+enum Shape {
+    Circle(string label)
+    Empty
+}
+
+void main() {
+    var shape = Shape.Circle("round")
+    if shape is Circle(label) {
+        shape = Shape.Empty
+        print(label)
+    }
+}

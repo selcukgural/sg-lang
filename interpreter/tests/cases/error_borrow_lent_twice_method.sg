@@ -1,0 +1,14 @@
+struct Bag {
+    List<int> items
+
+    void merge(ref this, read Bag other) {
+        for x in read other.items {
+            this.items.add(x)
+        }
+    }
+}
+
+void main() {
+    var bag = Bag { items = List<int> { 1 } }
+    bag.merge(read bag)
+}

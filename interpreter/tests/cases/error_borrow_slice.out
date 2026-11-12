@@ -1,0 +1,9 @@
+error: `text` cannot be changed here: `word` borrows from it and is used again later
+  --> error_borrow_slice.sg:4:5
+ 4 |     text = "bye"
+   |     ^^^^
+  `word` borrowed it here:
+  --> error_borrow_slice.sg:3:16
+ 3 |     var word = text[0..5]
+   |                ^^^^^^^^^^
+  hint: finish with `word` before this line: a borrow ends at its last use

@@ -1,0 +1,9 @@
+error: `bag` is lent twice in one call, and a `ref` borrow must be the only one
+  --> error_borrow_lent_twice_method.sg:13:20
+ 13 |     bag.merge(read bag)
+    |                    ^^^
+  the other borrow is here:
+  --> error_borrow_lent_twice_method.sg:13:5
+ 13 |     bag.merge(read bag)
+    |     ^^^
+  hint: copy what is needed into a variable before the call

@@ -1,0 +1,9 @@
+error: `p` cannot be changed here: `px` borrows from it and is used again later
+  --> error_borrow_assign_while_borrowed.sg:9:5
+ 9 |     p = Point { x = 5, y = 6 }
+   |     ^
+  `px` borrowed it here:
+  --> error_borrow_assign_while_borrowed.sg:8:14
+ 8 |     var px = read p.x
+   |              ^^^^^^^^
+  hint: finish with `px` before this line: a borrow ends at its last use

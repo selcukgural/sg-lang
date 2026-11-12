@@ -1,0 +1,7 @@
+void main() {
+    var names = List<string> { "ada" }
+    var first = read names[0]
+    var again = first
+    names.clear()
+    print(again)
+}

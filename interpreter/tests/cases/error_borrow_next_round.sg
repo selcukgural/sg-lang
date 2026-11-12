@@ -1,0 +1,8 @@
+void main() {
+    var names = List<string> { "ada" }
+    var first = read names[0]
+    for i in 0..3 {
+        print(first)
+        names.add("more")
+    }
+}

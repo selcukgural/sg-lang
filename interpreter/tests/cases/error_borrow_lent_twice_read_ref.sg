@@ -1,0 +1,10 @@
+void copyInto(ref List<int> to, read List<int> source) {
+    for x in source {
+        to.add(x)
+    }
+}
+
+void main() {
+    var xs = List<int> { 1 }
+    copyInto(ref xs, read xs)
+}

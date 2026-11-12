@@ -1,0 +1,6 @@
+void main() {
+    var xs = List<int> { 1, 2 }
+    var first = xs.get(0)
+    xs.clear()
+    print(first ?? 0)
+}

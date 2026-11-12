@@ -1,0 +1,6 @@
+void main() {
+    var totals = HashMap<string, int>()
+    var slot = totals.getOrAdd("a", 0)
+    print(totals.length())
+    slot += 1
+}

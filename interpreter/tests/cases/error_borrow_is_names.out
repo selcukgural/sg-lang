@@ -1,0 +1,9 @@
+error: `shape` cannot be changed here: `label` borrows from it and is used again later
+  --> error_borrow_is_names.sg:9:9
+ 9 |         shape = Shape.Empty
+   |         ^^^^^
+  `label` borrowed it here:
+  --> error_borrow_is_names.sg:8:8
+ 8 |     if shape is Circle(label) {
+   |        ^^^^^
+  hint: finish with `label` before this line: a borrow ends at its last use

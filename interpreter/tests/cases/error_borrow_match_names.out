@@ -1,0 +1,9 @@
+error: `shape` cannot be changed here: `label` borrows from it and is used again later
+  --> error_borrow_match_names.sg:10:13
+ 10 |             shape = Shape.Empty
+    |             ^^^^^
+  `label` borrowed it here:
+  --> error_borrow_match_names.sg:8:11
+ 8 |     match read shape {
+   |           ^^^^^^^^^^
+  hint: finish with `label` before this line: a borrow ends at its last use

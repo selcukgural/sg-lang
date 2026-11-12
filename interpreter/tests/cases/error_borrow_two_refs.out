@@ -1,0 +1,9 @@
+error: `count` cannot be used here: `a` holds a `ref` borrow of it and is used again later
+  --> error_borrow_two_refs.sg:4:17
+ 4 |     var b = ref count
+   |                 ^^^^^
+  `a` borrowed it here:
+  --> error_borrow_two_refs.sg:3:13
+ 3 |     var a = ref count
+   |             ^^^^^^^^^
+  hint: finish with `a` before this line: a borrow ends at its last use

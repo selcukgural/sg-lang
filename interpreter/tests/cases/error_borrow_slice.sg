@@ -1,0 +1,6 @@
+void main() {
+    var text = "hello world"
+    var word = text[0..5]
+    text = "bye"
+    print(word)
+}

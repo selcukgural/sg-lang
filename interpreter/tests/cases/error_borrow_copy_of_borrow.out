@@ -1,0 +1,9 @@
+error: `names` cannot be changed here: `again` borrows from it and is used again later
+  --> error_borrow_copy_of_borrow.sg:5:5
+ 5 |     names.clear()
+   |     ^^^^^
+  `again` borrowed it here:
+  --> error_borrow_copy_of_borrow.sg:3:17
+ 3 |     var first = read names[0]
+   |                 ^^^^^^^^^^^^^
+  hint: finish with `again` before this line: a borrow ends at its last use

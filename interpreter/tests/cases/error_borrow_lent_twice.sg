@@ -1,0 +1,10 @@
+void swapInts(ref int a, ref int b) {
+    var kept = a
+    a = b
+    b = kept
+}
+
+void main() {
+    var x = 1
+    swapInts(ref x, ref x)
+}
