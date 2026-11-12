@@ -1,0 +1,4 @@
+error: `from` says where a returned borrow comes from, and `length` returns `int`
+  --> error_from_without_borrow.sg:1:32
+ 1 | int length(read string a) from a {
+   |                                ^

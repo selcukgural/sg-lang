@@ -1,0 +1,9 @@
+error: `second` cannot be changed here: `winner` borrows from it and is used again later
+  --> error_borrow_from_call_result.sg:12:5
+ 12 |     second = "fig".clone()
+    |     ^^^^^^
+  `winner` borrowed it here:
+  --> error_borrow_from_call_result.sg:11:38
+ 11 |     var winner = longest(read first, read second)
+    |                                      ^^^^^^^^^^^
+  hint: finish with `winner` before this line: a borrow ends at its last use

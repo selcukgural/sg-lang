@@ -55,6 +55,8 @@ pub struct Func {
     /// How a method takes its receiver. `None` for a function without `this`.
     pub this: Option<This>,
     pub params: Vec<Param>,
+    /// The names after `from`: the parameters a returned borrow comes from.
+    pub from: Vec<(String, Span)>,
     pub body: Block,
 }
 

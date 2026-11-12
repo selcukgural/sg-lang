@@ -1,0 +1,5 @@
+error: `chosen` borrows from `local` here, but `local` is gone at the end of its block and `chosen` is used after that
+  --> error_borrow_outlives_block.sg:6:18
+ 6 |         chosen = read local
+   |                  ^^^^^^^^^^
+  hint: declare `local` where `chosen` is declared, so that it lives as long

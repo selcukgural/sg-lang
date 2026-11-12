@@ -1,0 +1,33 @@
+// `var kept = a` copies the number: a borrowed variable used as a value is the value behind it.
+void swapInts(ref int a, ref int b) {
+    var kept = a
+    a = b
+    b = kept
+}
+
+int twice(read int n) {
+    var copy = n
+    copy += n
+    return copy
+}
+
+void main() {
+    var x = 1
+    var y = 2
+    swapInts(ref x, ref y)
+    print($"{x} {y}")
+    print(twice(read x))
+
+    // A second borrow is written out.
+    var count = 10
+    var a = ref count
+    var b = ref a
+    b += 1
+    print(count)
+
+    // A call that returns a `ref` keeps it.
+    var totals = HashMap<string, int>()
+    var slot = totals.getOrAdd("a", 0)
+    slot += 5
+    print(totals)
+}

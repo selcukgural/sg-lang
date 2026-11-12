@@ -1,0 +1,5 @@
+error: this returns a borrow of `names`, and `names` is gone when the function returns
+  --> error_return_borrow_of_value_param.sg:2:12
+ 2 |     return names[0]
+   |            ^^^^^^^^
+  hint: take `names` as `read`, so that the caller keeps it

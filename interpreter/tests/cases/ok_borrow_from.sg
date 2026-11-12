@@ -1,0 +1,87 @@
+struct Node {
+    int value
+    Node*? next
+}
+
+struct Team {
+    string name
+    List<string> members
+
+    // One borrowed parameter (`this`): the result comes from it, nothing is written.
+    read string first(read this) {
+        return this.members[0]
+    }
+
+    // Two borrowed parameters: `from` says which the result can come from.
+    read string memberOr(read this, nint at, read string fallback) from this, fallback {
+        var found = this.members.get(at)
+        if found is null {
+            return fallback
+        }
+        return found
+    }
+
+    // Only `this`: the other borrow is looked at and not returned.
+    read string find(read this, read string wanted) from this {
+        for member in read this.members {
+            if member == wanted {
+                return member
+            }
+        }
+        return read this.name
+    }
+}
+
+read string longest(read string a, read string b) from a, b {
+    if a.length() >= b.length() {
+        return a
+    }
+    return b
+}
+
+// No borrowed parameter: only a constant can be returned.
+read string greeting(bool formal) {
+    if formal {
+        return "good morning"
+    }
+    return "hi"
+}
+
+read int last(read Node* list) {
+    var cur = list
+    while cur.next is not null {
+        var next = read cur.next
+        if next is not null {
+            cur = next
+        }
+    }
+    return read cur.value
+}
+
+ref int slot(ref List<int> xs, nint at) {
+    return ref xs[at]
+}
+
+void main() {
+    var team = Team { name = "core", members = List<string> { "ada", "grace" } }
+    print(team.first())
+    print(team.memberOr(1, "nobody"))
+    print(team.memberOr(7, "nobody"))
+    print(team.find("grace"))
+    print(longest("pear", "banana"))
+    print(greeting(true))
+
+    var list = new Node { value = 1, next = new Node { value = 2, next = null } }
+    print(last(read list))
+
+    var xs = List<int> { 1, 2, 3 }
+    var second = slot(ref xs, 1)
+    second += 40
+    print(xs)
+
+    // `find` borrows from the team only, so the text that was looked for is free at once.
+    var wanted = "ada".clone()
+    var found = team.find(read wanted)
+    wanted = "changed".clone()
+    print(found)
+}

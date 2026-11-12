@@ -1,0 +1,5 @@
+error: `count` is not a borrowed parameter of `pick`
+  `count` is taken by value and is gone when the function returns, so nothing can be borrowed from it
+  --> error_from_not_borrowed.sg:1:49
+ 1 | read string pick(read string a, int count) from count {
+   |                                                 ^^^^^

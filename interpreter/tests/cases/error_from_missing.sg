@@ -1,0 +1,10 @@
+read string longest(read string a, read string b) {
+    if a.length() >= b.length() {
+        return a
+    }
+    return b
+}
+
+void main() {
+    print(longest("a", "bb"))
+}

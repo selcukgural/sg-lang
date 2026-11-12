@@ -1,0 +1,9 @@
+void main() {
+    var fallback = "none".clone()
+    var chosen = read fallback
+    if fallback.length() > 2 {
+        var local = "inside".clone()
+        chosen = read local
+    }
+    print(chosen)
+}

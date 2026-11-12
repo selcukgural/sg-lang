@@ -1,0 +1,14 @@
+read string longest(read string a, read string b) from a, b {
+    if a.length() >= b.length() {
+        return a
+    }
+    return b
+}
+
+void main() {
+    var first = "pear".clone()
+    var second = "banana".clone()
+    var winner = longest(read first, read second)
+    second = "fig".clone()
+    print(winner)
+}

@@ -1,0 +1,8 @@
+read string name() {
+    var text = "ada".clone()
+    return read text
+}
+
+void main() {
+    print(name())
+}

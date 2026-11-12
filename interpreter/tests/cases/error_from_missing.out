@@ -1,0 +1,5 @@
+error: `longest` returns a borrow and borrows 2 parameters, so it says which of them the result comes from
+  --> error_from_missing.sg:1:13
+ 1 | read string longest(read string a, read string b) {
+   |             ^^^^^^^
+  hint: after the parameters: `from a, b`, or only the ones it can come from

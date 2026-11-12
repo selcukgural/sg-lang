@@ -1,0 +1,5 @@
+error: this returns a borrow that comes from `b`, and `from` names only `a`
+  --> error_from_not_named.sg:5:12
+ 5 |     return b
+   |            ^
+  hint: `from a, b`

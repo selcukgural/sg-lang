@@ -296,8 +296,24 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(Tok::RParen, "`)`")?;
+        // `from a, b`: where a returned borrow comes from.
+        let mut from = Vec::new();
+        if matches!(self.peek(), Tok::Ident(word) if word == "from") {
+            self.bump();
+            loop {
+                let source = self.ident("the name of a parameter")?;
+                if *self.peek() == Tok::Dot {
+                    return Err(Diag::error(self.span(), "`from` with a path is not in the interpreter yet")
+                        .note("it names the source of a type that carries a borrow, and those are not here yet"));
+                }
+                from.push(source);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+        }
         let body = self.block()?;
-        Ok(Func { ret, name, name_span, this, params, body })
+        Ok(Func { ret, name, name_span, this, params, from, body })
     }
 
     fn open_brace(&mut self) -> Res<()> {

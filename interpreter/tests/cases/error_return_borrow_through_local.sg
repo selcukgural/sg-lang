@@ -1,0 +1,9 @@
+read int pick(read List<int> xs) {
+    var copy = List<int> { 1, 2 }
+    var first = read copy[0]
+    return first
+}
+
+void main() {
+    print(pick(read List<int>()))
+}

@@ -1,5 +1,5 @@
 void swapInts(ref int a, ref int b) {
-    var kept = a
+    int kept = a
     a = b
     b = kept
 }

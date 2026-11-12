@@ -1,0 +1,7 @@
+read string first(List<string> names) {
+    return names[0]
+}
+
+void main() {
+    print(first(List<string> { "ada" }))
+}

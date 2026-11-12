@@ -1,0 +1,5 @@
+error: this returns a borrow of `text`, and `text` is gone when the function returns
+  --> error_return_borrow_of_local.sg:3:12
+ 3 |     return read text
+   |            ^^^^^^^^^
+  hint: return the value itself instead of a borrow of it

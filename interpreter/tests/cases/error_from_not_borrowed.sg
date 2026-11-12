@@ -1,0 +1,7 @@
+read string pick(read string a, int count) from count {
+    return a
+}
+
+void main() {
+    print(pick("a", 1))
+}

@@ -1,0 +1,9 @@
+error: this returns a borrow of `copy`, and `copy` is gone when the function returns
+  --> error_return_borrow_through_local.sg:4:12
+ 4 |     return first
+   |            ^^^^^
+  it is borrowed here:
+  --> error_return_borrow_through_local.sg:3:17
+ 3 |     var first = read copy[0]
+   |                 ^^^^^^^^^^^^
+  hint: return the value itself instead of a borrow of it

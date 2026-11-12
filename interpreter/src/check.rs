@@ -57,7 +57,11 @@ struct Names {
 struct FuncSig {
     this: Option<This>,
     params: Vec<Ty>,
+    param_names: Vec<String>,
     ret: Ty,
+    /// For a function that returns a borrow: the parameters it may come from (`this` for the
+    /// receiver). Empty when it can only be a constant.
+    sources: Vec<String>,
 }
 
 fn func_sig(func: &Func, names: &Names) -> Res<FuncSig> {
@@ -65,7 +69,42 @@ fn func_sig(func: &Func, names: &Names) -> Res<FuncSig> {
     for param in &func.params {
         params.push(resolve_type(&param.ty, names, false)?);
     }
-    Ok(FuncSig { this: func.this, params, ret: resolve_type(&func.ret, names, true)? })
+    let ret = resolve_type(&func.ret, names, true)?;
+    let param_names: Vec<String> = func.params.iter().map(|param| param.name.clone()).collect();
+
+    // Where a returned borrow comes from: the one borrowed parameter, or what `from` names.
+    let receiver = matches!(func.this, Some(This::Read | This::Ref)).then(|| "this".to_string());
+    let borrowed: Vec<String> = receiver
+        .into_iter()
+        .chain(param_names.iter().zip(&params).filter(|(_, ty)| ty.is_borrow()).map(|(name, _)| name.clone()))
+        .collect();
+    let mut sources = Vec::new();
+    for (name, span) in &func.from {
+        if !ret.is_borrow() {
+            return Err(Diag::error(*span, format!("`from` says where a returned borrow comes from, and `{}` returns `{ret}`", func.name)));
+        }
+        if !borrowed.contains(name) {
+            let diag = Diag::error(*span, format!("`{name}` is not a borrowed parameter of `{}`", func.name));
+            let by_value = param_names.contains(name) || (name == "this" && func.this == Some(This::Value));
+            return Err(match by_value {
+                true => diag.note(format!("`{name}` is taken by value and is gone when the function returns, so nothing can be borrowed from it")),
+                false => diag,
+            });
+        }
+        if sources.contains(name) {
+            return Err(Diag::error(*span, format!("`{name}` is written twice")));
+        }
+        sources.push(name.clone());
+    }
+    if ret.is_borrow() && func.from.is_empty() {
+        if borrowed.len() > 1 {
+            let list = borrowed.join(", ");
+            return Err(Diag::error(func.name_span, format!("`{}` returns a borrow and borrows {} parameters, so it says which of them the result comes from", func.name, borrowed.len()))
+                .hint(format!("after the parameters: `from {list}`, or only the ones it can come from")));
+        }
+        sources = borrowed;
+    }
+    Ok(FuncSig { this: func.this, params, param_names, ret, sources })
 }
 
 /// With `tests` the `test` blocks are checked too and `main` may be missing: that is what the
@@ -354,6 +393,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             borrows: Borrows::default(),
             loops: 0,
             ret: sig.ret.clone(),
+            sources: sig.sources.clone(),
             func_name: func.name.clone(),
             in_test: false,
             owner,
@@ -367,9 +407,11 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 This::Ref => Ty::Ref(Box::new(ty)),
             };
             checker.declare("this", ty, func.name_span)?;
+            checker.find("this").expect("just declared").param = true;
         }
         for (param, ty) in func.params.iter().zip(&sig.params) {
             checker.declare(&param.name, ty.clone(), param.span)?;
+            checker.find(&param.name).expect("just declared").param = true;
         }
         checker.block(&mut func.body, None)?;
         checker.borrow_conflicts()?;
@@ -417,6 +459,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             borrows: Borrows::default(),
             loops: 0,
             ret: Ty::Void,
+            sources: Vec::new(),
             func_name: "test".to_string(),
             in_test: true,
             owner: None,
@@ -715,6 +758,8 @@ enum Access {
     Read,
     Write,
     Move,
+    /// The owner reached the end of its block.
+    Gone,
 }
 
 /// A place touched while a variable held a borrow of it. It is an error only if that variable
@@ -722,6 +767,11 @@ enum Access {
 struct Clash {
     holder: usize,
     holder_name: String,
+    /// For an owner that reached the end of its block: its name.
+    owner_name: String,
+    /// The place is itself a borrow of a value that can be copied: the type to write to
+    /// get a copy of the value instead of a second borrow.
+    copy_as: Option<String>,
     /// The loops that were open where the holder was declared.
     holder_loops: Vec<usize>,
     loan: Loan,
@@ -742,6 +792,8 @@ struct Borrows {
     clashes: Vec<Clash>,
     /// What the names of the pattern being declared borrow from.
     binds: Vec<Loan>,
+    /// How far the function has been read.
+    pos: usize,
 }
 
 struct Var {
@@ -751,6 +803,8 @@ struct Var {
     decl_loops: Vec<usize>,
     /// What it has borrowed, if it holds a borrow.
     loans: Vec<Loan>,
+    /// A parameter of the function (or `this`).
+    param: bool,
     name: String,
     /// Set for a local that holds a `Result` until something looks at it: where it is declared.
     unopened: Option<Span>,
@@ -799,6 +853,8 @@ struct Checker<'a> {
     borrows: Borrows,
     loops: usize,
     ret: Ty,
+    /// The parameters a returned borrow may come from.
+    sources: Vec<String>,
     func_name: String,
     /// A `test` block is being checked: `try` passes any error on, and the test fails with it.
     in_test: bool,
@@ -899,7 +955,7 @@ impl<'a> Checker<'a> {
         let id = self.borrows.next_id;
         self.borrows.next_id += 1;
         let decl_loops = self.borrows.loops.clone();
-        scope.vars.push(Var { id, decl_loops, loans: Vec::new(), name: name.to_string(), unopened: None, declared: ty.clone(), current: ty, moved, assigned: 0 });
+        scope.vars.push(Var { id, decl_loops, loans: Vec::new(), param: false, name: name.to_string(), unopened: None, declared: ty.clone(), current: ty, moved, assigned: 0 });
         Ok(())
     }
 
@@ -950,6 +1006,7 @@ impl<'a> Checker<'a> {
         let id = var.id;
         let at = Point { pos: span.start, branches: self.borrows.branches.clone(), loops: self.borrows.loops.clone() };
         self.borrows.uses.push((id, at));
+        self.borrows.pos = self.borrows.pos.max(span.start);
         Ok(self.find(name).expect("just found"))
     }
 
@@ -977,32 +1034,64 @@ impl<'a> Checker<'a> {
             ExprKind::Borrow { mutable, expr: inner } => self.place_loans(inner, *mutable, expr.span),
             ExprKind::Slice { recv, .. } => self.place_loans(recv, false, expr.span),
             // A copy of a borrow has borrowed what the original has.
-            ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => match store_path(expr).and_then(|(name, _)| self.find(name)) {
-                Some(var) => var.loans.clone(),
-                None => Vec::new(),
-            },
+            // It also borrows through the variable it is copied from: a `ref` copied out of
+            // `a` keeps `a` from being used, and a parameter is where the borrow comes from.
+            ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
+                let Some((name, path)) = store_path(expr) else { return Vec::new() };
+                let Some(var) = self.find(name) else { return Vec::new() };
+                let mut loans = var.loans.clone();
+                if var.declared.is_borrow() {
+                    loans.push(Loan { root: var.id, path, mutable, span: expr.span });
+                }
+                loans
+            }
             ExprKind::Load(inner) | ExprKind::Unbox(inner) | ExprKind::Widen(_, inner) | ExprKind::Try { expr: inner, .. } => self.loans_of(inner, mutable),
             ExprKind::Coalesce { left, right, .. } => {
                 let mut loans = self.loans_of(left, mutable);
                 loans.extend(self.loans_of(right, mutable));
                 loans
             }
-            // Until `from` says more: what a call returns may borrow from the receiver and
-            // from every borrow it was given.
-            ExprKind::Method { recv, args, .. } => {
-                let mut loans = match recv.is_place() {
-                    true => self.place_loans(recv, mutable, expr.span),
-                    false => self.loans_of(recv, mutable),
+            // What a call returns borrows from what its signature names: the one borrowed
+            // parameter, or those after `from`. A built-in method lends from its receiver.
+            ExprKind::Method { recv, name, args, callee, .. } => {
+                let sig = match callee {
+                    Callee::Method { owner, .. } | Callee::Static { owner, .. } => self.structs[owner.as_str()].methods.get(name.as_str()),
+                    _ => None,
                 };
-                for arg in args {
-                    loans.extend(self.loans_of(arg, mutable));
+                let from_recv = match (sig, callee) {
+                    (Some(sig), _) => sig.sources.iter().any(|source| source == "this"),
+                    (None, Callee::Plain) => true,
+                    (None, _) => false,
+                };
+                let mut loans = match (from_recv, recv.is_place()) {
+                    (false, _) => Vec::new(),
+                    (true, true) => self.place_loans(recv, mutable, expr.span),
+                    (true, false) => self.loans_of(recv, mutable),
+                };
+                for (position, arg) in args.iter().enumerate() {
+                    let lends = match (sig, callee) {
+                        (Some(sig), _) => sig.sources.contains(&sig.param_names[position]),
+                        (None, Callee::Plain) => false,
+                        (None, _) => true,
+                    };
+                    if lends {
+                        loans.extend(self.loans_of(arg, mutable));
+                    }
                 }
                 loans
             }
-            ExprKind::Call { args, .. } => {
+            ExprKind::Call { name, args, callee, .. } => {
+                let sigs = self.sigs;
+                let sig = match callee {
+                    Callee::Static { owner, name } => self.structs[owner.as_str()].methods.get(name.as_str()),
+                    Callee::Plain => sigs.get(name.as_str()),
+                    _ => None,
+                };
                 let mut loans = Vec::new();
-                for arg in args {
-                    loans.extend(self.loans_of(arg, mutable));
+                for (position, arg) in args.iter().enumerate() {
+                    if sig.is_none_or(|sig| sig.param_names.get(position).is_some_and(|param| sig.sources.contains(param))) {
+                        loans.extend(self.loans_of(arg, mutable));
+                    }
                 }
                 loans
             }
@@ -1015,7 +1104,10 @@ impl<'a> Checker<'a> {
     /// as a possible error until it is known whether that variable is used again.
     fn touch(&mut self, expr: &Expr, access: Access) {
         let Some((name, path)) = store_path(expr) else { return };
-        let Some(root) = self.find(name).map(|var| var.id) else { return };
+        let Some(var) = self.find(name) else { return };
+        let root = var.id;
+        let behind = var.declared.strip_borrow().clone();
+        let copy_as = (var.declared.is_borrow() && behind.is_copyable(self.copyable)).then(|| behind.to_string());
         let at = Point { pos: expr.span.start, branches: self.borrows.branches.clone(), loops: self.borrows.loops.clone() };
         let mut found = Vec::new();
         for var in self.scopes.iter().flat_map(|scope| &scope.vars) {
@@ -1028,6 +1120,8 @@ impl<'a> Checker<'a> {
                     found.push(Clash {
                         holder: var.id,
                         holder_name: var.name.clone(),
+                        owner_name: String::new(),
+                        copy_as: copy_as.clone().filter(|_| loan.path.is_empty()),
                         holder_loops: var.decl_loops.clone(),
                         loan: loan.clone(),
                         access,
@@ -1060,14 +1154,51 @@ impl<'a> Checker<'a> {
             }
             let text = &self.src[clash.span.start..clash.span.end];
             let holder = &clash.holder_name;
+            if clash.access == Access::Gone {
+                let owner = &clash.owner_name;
+                return Err(Diag::error(clash.span, format!("`{holder}` borrows from `{owner}` here, but `{owner}` is gone at the end of its block and `{holder}` is used after that"))
+                    .hint(format!("declare `{owner}` where `{holder}` is declared, so that it lives as long")));
+            }
             let diag = match (clash.access, clash.loan.mutable) {
                 (Access::Read, _) => Diag::error(clash.span, format!("`{text}` cannot be used here: `{holder}` holds a `ref` borrow of it and is used again later")),
                 (Access::Write, _) => Diag::error(clash.span, format!("`{text}` cannot be changed here: `{holder}` borrows from it and is used again later")),
-                (Access::Move, _) => Diag::error(clash.span, format!("`{text}` cannot be moved here: `{holder}` borrows from it and is used again later")),
+                (Access::Move | Access::Gone, _) => Diag::error(clash.span, format!("`{text}` cannot be moved here: `{holder}` borrows from it and is used again later")),
             };
-            return Err(diag
-                .related(clash.loan.span, format!("`{holder}` borrowed it here"))
-                .hint(format!("finish with `{holder}` before this line: a borrow ends at its last use")));
+            let diag = diag.related(clash.loan.span, format!("`{holder}` borrowed it here"));
+            return Err(match &clash.copy_as {
+                Some(ty) => diag.hint(format!("`{holder}` is a second borrow of the same place; to copy the value instead, write its type: `{ty} {holder} = ...`")),
+                None => diag.hint(format!("finish with `{holder}` before this line: a borrow ends at its last use")),
+            });
+        }
+        Ok(())
+    }
+
+    /// The value a function returns as a borrow must come from where the signature says: a
+    /// borrowed parameter. A borrow of something that lives only in the function would dangle.
+    fn returned_borrow(&mut self, value: &Expr) -> Res<()> {
+        let loans = self.loans_of(value, matches!(self.ret, Ty::Ref(_)));
+        for loan in loans {
+            let Some(var) = self.scopes.iter().flat_map(|scope| &scope.vars).find(|var| var.id == loan.root) else { continue };
+            let name = &var.name;
+            if var.declared.is_borrow() {
+                // A local that holds a borrow: what it borrowed is in the list too.
+                if var.param && !self.sources.contains(name) {
+                    let said: Vec<String> = self.sources.iter().map(|source| format!("`{source}`")).collect();
+                    let all: Vec<&str> = self.sources.iter().map(String::as_str).chain([name.as_str()]).collect();
+                    return Err(Diag::error(value.span, format!("this returns a borrow that comes from `{name}`, and `from` names only {}", said.join(", ")))
+                        .hint(format!("`from {}`", all.join(", "))));
+                }
+                continue;
+            }
+            let diag = Diag::error(value.span, format!("this returns a borrow of `{name}`, and `{name}` is gone when the function returns"));
+            let diag = match loan.span == value.span {
+                true => diag,
+                false => diag.related(loan.span, "it is borrowed here"),
+            };
+            return Err(match var.param {
+                true => diag.hint(format!("take `{name}` as `read`, so that the caller keeps it")),
+                false => diag.hint("return the value itself instead of a borrow of it"),
+            });
         }
         Ok(())
     }
@@ -1137,6 +1268,25 @@ impl<'a> Checker<'a> {
     /// the failure it may hold would be lost silently.
     fn pop_scope(&mut self) -> Res<()> {
         let scope = self.scopes.pop().expect("an open scope");
+        // A variable outside that still holds a borrow of an owner that ends here.
+        let at = Point { pos: self.borrows.pos, branches: self.borrows.branches.clone(), loops: self.borrows.loops.clone() };
+        for owner in scope.vars.iter().filter(|var| !var.declared.is_borrow()) {
+            for holder in self.scopes.iter().flat_map(|outer| &outer.vars) {
+                for loan in holder.loans.iter().filter(|loan| loan.root == owner.id) {
+                    self.borrows.clashes.push(Clash {
+                        holder: holder.id,
+                        holder_name: holder.name.clone(),
+                        owner_name: owner.name.clone(),
+                        copy_as: None,
+                        holder_loops: holder.decl_loops.clone(),
+                        loan: loan.clone(),
+                        access: Access::Gone,
+                        span: loan.span,
+                        at: at.clone(),
+                    });
+                }
+            }
+        }
         if let Some((var, span)) = scope.vars.iter().find_map(|var| var.unopened.map(|span| (var, span))) {
             let name = &var.name;
             return Err(Diag::error(span, format!("`{name}` holds a `Result` that is never looked at, so an error would be lost"))
@@ -1223,6 +1373,11 @@ impl<'a> Checker<'a> {
                         ty
                     }
                     None => match self.expr(init, None)? {
+                        // A borrowed variable used as a value is the value behind it.
+                        Ty::Read(inner) | Ty::Ref(inner) if matches!(init.kind, ExprKind::Var(_)) && inner.is_copyable(self.copyable) => {
+                            wrap(init, ExprKind::Load);
+                            *inner
+                        }
                         Ty::Void => return Err(Diag::error(init.span, "this call does not return a value")),
                         Ty::Null => {
                             return Err(Diag::error(init.span, "`var` cannot find a type from `null` alone")
@@ -1489,7 +1644,11 @@ impl<'a> Checker<'a> {
             }
             Some(value) => {
                 let ret = self.ret.clone();
-                self.typed(value, &ret)
+                self.typed(value, &ret)?;
+                match ret.is_borrow() {
+                    true => self.returned_borrow(value),
+                    false => Ok(()),
+                }
             }
             None if self.ret != Ty::Void => {
                 let diag = Diag::error(span, format!("`{}` must return a `{}` value", self.func_name, self.ret));

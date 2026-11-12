@@ -111,6 +111,11 @@ Design rules that are already enforced:
   lent as `ref`; with a `ref` borrow it cannot be touched at all. The error shows where the borrow was taken.
   After the last use of the variable the place is free again. The same place cannot be lent twice in one call
   when one of the two is `ref`.
+- A function that returns a borrow returns one that comes from a borrowed parameter. With one borrowed
+  parameter nothing is written; with more, `from a, b` after the parameters says which, and leaving it out is
+  an error that shows what to write. Returning a borrow of a local, of a parameter taken by value, or from a
+  parameter `from` does not name is an error. With no borrowed parameter only a constant can be returned.
+- A borrow kept in a variable cannot outlive the block of what it borrowed from.
 - A collection that a `for` goes over by borrowing it cannot be changed inside the loop: `xs.add(v)`,
   `xs[i] = v`, `xs = ...`, `ref xs`, moving `xs`, and a `ref this` method on what holds it are errors that show
   the loop. The hint is to go over the positions, or to keep the changes until the loop ends. Looking at it and
@@ -415,11 +420,35 @@ is found was chosen here and approved the same day. Each has a test in `tests/ca
 
 The check found nothing to reject in the 252 programs that existed before it.
 
+## Rules from the fourteenth slice
+
+The second part of the borrow check: a borrow does not outlive its owner. `from` is the design's notation
+("Source notation"); what was chosen here was approved on 12 November 2026. Each has a test in
+`tests/cases/`.
+
+1. **`from` is checked in both directions.** Inside the function every returned borrow must come from a
+   parameter that is named; at the call the result borrows only from the arguments that are named. So with
+   `read string find(read this, read string wanted) from this` the text that was looked for is free as soon
+   as the call returns. This replaces the stopgap of the thirteenth slice (a result borrowed from everything).
+2. **`from` may be written with a single borrowed parameter too**, where it is not needed. It may name fewer
+   parameters than are borrowed, never one that is not borrowed.
+3. **A built-in method that returns a borrow lends from its receiver**: `xs.get(i)`, `map.getOrAdd(k, v)`,
+   `text[a..b]`.
+4. **A call through a function value that returns a borrow** is taken to borrow from every borrow it was
+   given: a `Func` type has no place for `from`.
+5. **`var kept = a`, with `a` a `ref int` or a `read int`, copies the number.** A borrowed variable used as a
+   value is the value behind it, as it is in `a + 1` and `print(a)`. It used to make a second borrow, and the
+   borrow check found the mistake that invites (a swap written with it). A second borrow is written
+   `ref a` / `read a`. What cannot be copied (`read string`) is still a copy of the borrow, and a call that
+   returns a `ref` keeps it: `var slot = map.getOrAdd(key, 0)`.
+6. **"Gone at the end of its block" is found when the block ends**: a variable declared outside that still
+   holds a borrow of something declared inside, and is used afterwards.
+
 ## Not here yet
 
-- **The rest of the borrow check.** Borrows that do not go together are caught (the thirteenth slice);
-  nothing yet stops a borrow from outliving its owner (a `read` of a local returned or kept past its block),
-  and `from` is not parsed. Fields cannot hold borrows.
+- **The last part of the borrow check: types that carry a borrow.** A field cannot be a `read` or a `ref`
+  (`struct Token<from source>`), a `Result` or a list cannot hold one, and `from` takes only names of
+  parameters, not paths (`from lx.source`).
 - `swap(ref a, ref b)`, and `this` with a type (`read FolderRef this`).
 - A string literal has the type `string` here; in the design it is `read string` that becomes `string` without
   allocating.
@@ -447,6 +476,6 @@ error.
 
 ## Next
 
-The second part of the borrow check: a borrow that outlives its owner, and `from` on a function that
-returns one. Then the third: types that carry a borrow (`struct Token<from source>`). After it the question is the
+The third part of the borrow check: types that carry a borrow (`struct Token<from source>`), with which the
+calculator stops copying its input. After it the question is the back end. After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.
