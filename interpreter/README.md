@@ -137,7 +137,7 @@ Design rules that are already enforced:
 Since the sixteenth slice (12 November 2026) a program can be compiled: `sg build file.sg` writes it as C and
 hands that to the C compiler. The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, and then runs the
-same C once more under the address and undefined-behaviour sanitizers (38 of 297 programs for now).
+same C once more under the address and undefined-behaviour sanitizers (45 of 302 programs for now).
 
 What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -146,11 +146,15 @@ recursion; `if`, `while`, `for i in a..b`, `break`, `continue`; structs, by valu
 `panic`. Since the eighteenth slice also the heap and missing values: `T*` and `new`, `T?` with `null`,
 `is null` / `is not null` and what the checker learns from them, `??`, `?? return`, `?? panic(...)`, `try` on a
 `T?`, `take()` and `replace()`, a `read T*` used as a `read T`, and methods and fields reached through a
-pointer. Anything else (enums, collections, `Result`, types that carry a borrow, function values) is an error
-that names what is missing: nothing is compiled wrongly in silence.
+pointer. Since the nineteenth slice enums: variants with and without values, `match` on an enum (owned,
+borrowed with `read` or `ref`, behind a `T*`) and on an integer, `when`, `var other`, `is` / `is not` with
+names in `if` and `while`, enums inside structs, `T?` and `T*`, and enums that own text, structs and pointers.
+Anything else (collections, `Result`, types that carry a borrow, function values, writing an enum or a
+struct with `print`, `==` on them) is an error that names what is missing: nothing is compiled wrongly in
+silence.
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
-value (a `string`, a `T*`, a struct or a `T?` that holds one) is freed where its variable ends, on every way
+value (a `string`, a `T*`, a struct, an enum or a `T?` that holds one) is freed where its variable ends, on every way
 out of the block (`return`, `break`, `continue`, and the `return` inside `try` and `?? return`). A use that moves the value empties the place it came from, so the later free
 finds nothing to do; a text constant has no capacity and is never allocated or freed. There is no garbage
 collector and no reference count.
@@ -170,6 +174,7 @@ hand with no checks):
 | `collatz`: longest chain below three million | 0.359 s | 0.570 s | 0.359 s | 1.00 |
 | `words`: bytes read, words compared, each word copied to the heap and freed | 0.874 s | 0.888 s | 0.854 s | 1.02 |
 | `list`: a linked list of a million nodes built with `new`, walked and freed, twenty times | 0.238 s | 0.243 s | 0.236 s | 1.01 |
+| `expr`: a tree of enum values built, evaluated twenty times with `match`, rewritten and freed | 0.309 s | 0.302 s | 0.303 s | 1.02 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -179,8 +184,11 @@ looked 20% faster: the C compiler had removed its `malloc` and `free` because th
 program now compares the copies. `list` follows pointers: a `Node*?` is one pointer, `is not null` is one
 comparison, and there is nothing else to pay for. Its first version took 1.10 times the time of C, because
 freeing a node called a function for its (already empty) `next`; the loop that frees a chain now drops the
-other fields itself. The numbers move by a few percent from run to run, and five small programs are not a
-benchmark suite.
+other fields itself. `expr` is the first program with an enum: a `match` is a test on one byte, and the C it
+is compared with is a tagged union and a `switch`. The part that builds, rewrites and frees the tree first took
+1.13 times the time of C: after a value was moved, the drop of the (empty) variable was still written, and the
+C compiler did not remove it. Those drops are no longer written (choice 24) and that part takes 1.03 times.
+The numbers move by a few percent from run to run, and six small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
 
@@ -246,6 +254,52 @@ Two things in the checker were found while writing these tests and are fixed sin
   of a struct already were: `name.length()` with `string* name`, `count.wrappingAdd(1)` with `int* count`.
   The value is read where it is; nothing is copied or moved. On a pointer that has no name
   (`makeName().length()`) the compiled code frees it after the statement.
+
+Choices made in the nineteenth slice (enums and `match`), approved on 12 November 2026:
+
+18. **An enum is a tag of one byte and, beside it, room for the largest variant** (a C union). An enum whose
+    variants carry nothing is the tag alone. This is what a C programmer writes by hand, and what Rust does
+    without its further packing (Rust hides the tag in unused bit patterns where it can; that is not done
+    here). No cost at run time beyond the tag.
+19. **`match` is a chain of tests on the tag, not a C `switch`.** Inside a `switch` a `break` would leave the
+    `switch`, and in SG `break` and `continue` in an arm mean the loop around the `match`. The C compiler
+    turns the chain into the same jumps. An arm with `when` that does not hold goes on to the arms below.
+20. **A `match` on an owned value takes it apart.** The names of the arm own what the variant carried, what
+    the pattern skips (`_`) is freed as the arm starts, and a `T*` subject gives its block back. A `match` on
+    a borrow only looks: the names are pointers into the value. Nothing is copied in either case.
+21. **An enum that was moved out of its place gets a tag that is no variant**, so the later drop does
+    nothing (one store, like the capacity of a moved `string`). The tag 255 is kept for that, which leaves
+    254 variants.
+22. **`match` is compiled as a statement or as the whole right side** (`var x = match ...`, `x = match ...`,
+    `x += match ...`, `return match ...`, and as the last line of an arm). Inside a larger expression
+    (`f(match ...)`) the back end stops with the hint "give the value a name first". The same limit as 14, and
+    for the same reason; the interpreter runs both forms.
+23. **A `when` condition only looks; it cannot move a value** (decided on 12 November 2026, a rule of the
+    checker). If the condition moved a value and then did not hold, the arms below would run without it:
+    `Say(text) when isLong(text)` with `bool isLong(string text)` is an error that says so and points at
+    `read`. Rust has the same rule. With it a `when` is compiled on every arm, also one that takes an owned
+    value out of an owned subject: the names are filled in for the condition and are the arm's only once it
+    holds (`tests/cases/error_when_moves.sg`).
+24. **The drop of a variable that was certainly moved is not written.** The checker marks every use that
+    moves; where such a use is on a line that always runs, the back end leaves the drop out. Where it is not
+    certain (moved in one branch, inside a loop, on the right of `??`, `&&` or `||`) the drop is written and
+    finds the place empty, as before. Measured on the expression tree: building, rewriting and freeing it
+    went from 1.13 to 1.03 times the time of C; the C compiler did not remove those empty drops by itself. `tests/cases/ok_moved_drops.sg` goes through the
+    doubtful cases.
+25. **The names of `is` and of a borrowing `match` need a value that stays**: on a value that has no name and
+    owns something (`if make() is Say(text)`) the back end stops and asks for a name. A limit for now.
+
+26. **The parts of an expression are computed from left to right in compiled code too** (asked for on 12
+    November 2026). C leaves open in which order it computes the arguments of a call, the two sides of an
+    operator and the values of an initialiser, and until now the generated C wrote them as one C expression.
+    Where the order can be seen, the earlier parts are now kept in variables first. It can be seen when two
+    parts can each stop the program or call a function (`f(next(), next())`, `a / b + c / d`), or when one
+    part lends with `ref` what another reads (`f(n, bump(ref n))`). Everything else is written as before, so
+    plain arithmetic and calls with plain arguments produce the same C: the measurements did not move. The
+    values of a formatted text (`$"{a()} {b()}"`) follow the same rule. One case is refused instead: a text
+    written before a value that lends with `ref` in the same `$"..."`, since the text is only looked at and
+    could be gone by the time it is written. `tests/cases/ok_evaluation_order.sg` goes through the cases; all
+    compiled test programs give the same output when built with gcc 16 instead of clang.
 
 ## How it is built
 
@@ -626,5 +680,6 @@ error.
 ## Next
 
 The back end, one piece of the language at a time, each compared with the interpreter, run under the
-sanitizers and measured against C: next enums and `match`, then `Result` and the collections. After it the question is the
+sanitizers and measured against C: next `Result` and `try` on it (an enum the language brings with it), then the collections, types that carry a
+borrow and function values. After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

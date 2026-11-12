@@ -1,0 +1,64 @@
+// An expression tree: an enum whose variants hold their parts on the heap. Three times, a tree
+// 25 levels deep is built, evaluated twenty times with `match`, rewritten once and freed.
+// What is measured is the tag test, following pointers, `new` and the drop of a tree.
+enum Expr {
+    Number(long value)
+    Negate(Expr* operand)
+    Add(Expr* left, Expr* right)
+    Multiply(Expr* left, Expr* right)
+}
+
+Expr* build(int depth, long seed) {
+    if depth == 0 {
+        return new Expr.Number(seed % 7)
+    }
+    var kind = seed % 3
+    if kind == 0 {
+        return new Expr.Negate(build(depth - 1, (seed * 31 + 1) % 1000003))
+    }
+    var left = build(depth - 1, (seed * 17 + 3) % 1000003)
+    var right = build(depth - 1, (seed * 13 + 5) % 1000003)
+    if kind == 1 {
+        return new Expr.Add(left, right)
+    }
+    return new Expr.Multiply(left, right)
+}
+
+// `bias` is added to every number, so each evaluation is a different computation.
+long eval(read Expr e, long bias) {
+    return match e {
+        Number(value) => value + bias
+        Negate(operand) => -eval(operand, bias)
+        Add(left, right) => (eval(left, bias) + eval(right, bias)) % 1000003
+        Multiply(left, right) => (eval(left, bias) * eval(right, bias)) % 1000003
+    }
+}
+
+// Takes the tree apart and builds it again without double negation.
+Expr* simplify(Expr* e) {
+    return match e {
+        Negate(operand) => {
+            var inner = simplify(operand)
+            match inner {
+                Negate(twice) => twice
+                var other => new Expr.Negate(other)
+            }
+        }
+        Add(left, right) => new Expr.Add(simplify(left), simplify(right))
+        Multiply(left, right) => new Expr.Multiply(simplify(left), simplify(right))
+        var other => other
+    }
+}
+
+void main() {
+    long total = 0
+    for round in 0..3 {
+        var tree = build(25, round + 1)
+        for i in 0..20 {
+            total += eval(read tree, i)
+        }
+        var simple = simplify(tree)
+        total += eval(read simple, 0)
+    }
+    print(total)
+}

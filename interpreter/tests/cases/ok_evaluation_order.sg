@@ -1,0 +1,91 @@
+// The parts of an expression are computed from left to right: the arguments of a call, the
+// two sides of an operator, the fields of a literal, the values of a formatted text.
+struct Pair {
+    int first
+    int second
+}
+
+enum Shape {
+    Rect(int width, int height)
+    Named(string name, int size)
+}
+
+struct Counter {
+    int value
+
+    int next(ref this) {
+        this.value += 1
+        return this.value
+    }
+
+    int plus(read this, int a, int b) {
+        return this.value + a + b
+    }
+}
+
+int say(read string what, int value) {
+    print($"{what} {value}")
+    return value
+}
+
+string word(read string what) {
+    print($"word {what}")
+    return what.clone()
+}
+
+int bump(ref int n) {
+    n += 10
+    return n
+}
+
+int sub(int a, int b) {
+    return a - b
+}
+
+int three(int a, int b, int c) {
+    return a * 100 + b * 10 + c
+}
+
+void main() {
+    // Two calls as arguments.
+    print(sub(say("left", 5), say("right", 3)))
+    print(three(say("a", 1), say("b", 2), say("c", 3)))
+
+    // The two sides of an operator.
+    print(say("minus left", 9) - say("minus right", 4))
+    print(say("less left", 1) < say("less right", 2))
+    print(word("x") == word("y"))
+
+    // A value read before a later argument changes it.
+    var n = 1
+    print(sub(n, bump(ref n)))
+    print(n + bump(ref n))
+    print(three(n, bump(ref n), n))
+
+    // Fields of a struct and values of a variant.
+    var pair = Pair { first = say("first", 1), second = say("second", 2) }
+    print(pair.first - pair.second)
+    var rect = Shape.Rect(say("width", 3), say("height", 4))
+    var named = Shape.Named(word("name"), say("size", 7))
+    if rect is Rect(w, h) {
+        print(w * 10 + h)
+    }
+    if named is Named(name, size) {
+        print($"{name} {size}")
+    }
+
+    // The receiver of a method and its arguments.
+    var counter = Counter { value = 0 }
+    print(counter.plus(counter.next(), counter.next()))
+    print(sub(counter.next(), counter.next()))
+
+    // A formatted text.
+    print($"{say("one", 1)} {say("two", 2)}")
+    print($"{n} {bump(ref n)} {n}")
+    print($"{word("p")} {say("q", 5)} {word("r")}")
+
+    // A value that is kept before the statement (the text) and one that is not.
+    print(sub(say("before", 8), (int)word("four").length()))
+    var text = "abcdef".clone()
+    print(text[say("from", 1)..say("to", 3)])
+}

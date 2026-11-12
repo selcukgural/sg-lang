@@ -1,0 +1,22 @@
+// A `when` condition only looks at values. If it could move one and then not hold, the arms
+// below would run without it.
+enum Message {
+    Say(string text)
+    Quit
+}
+
+bool isLong(string text) {
+    return text.length() > 5
+}
+
+string textOf(Message m) {
+    return match m {
+        Say(text) when isLong(text) => "long".clone()
+        Say(text) => text
+        Quit => "quit".clone()
+    }
+}
+
+void main() {
+    print(textOf(Message.Say("hello".clone())))
+}

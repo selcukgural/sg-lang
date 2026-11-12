@@ -1579,6 +1579,22 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A `when` condition only looks: if it moved a value and then did not hold, the arms
+    /// below would run without it. `before`: what was moved when the condition started.
+    fn only_looked(&self, before: &Moves) -> Res<()> {
+        for (scope, before) in self.scopes.iter().zip(before) {
+            for (var, before) in scope.vars.iter().zip(before) {
+                let whole = var.moved.whole.filter(|_| before.whole.is_none()).map(|at| (var.name.clone(), at));
+                let part = var.moved.parts.iter().find(|(path, _)| !before.parts.iter().any(|(old, _)| old == path));
+                let Some((what, at)) = whole.or(part.map(|(path, at)| (format!("{}.{path}", var.name), *at))) else { continue };
+                return Err(Diag::error(at, format!("`{what}` cannot be moved in a `when` condition"))
+                    .note("if the condition does not hold, the arms below still need the value")
+                    .hint("a condition only looks: lend the value with `read`, or test it inside the arm"));
+            }
+        }
+        Ok(())
+    }
+
     // ---- statements ----
 
     fn block(&mut self, block: &mut Block, narrow: Option<&str>) -> Res<()> {
@@ -3064,7 +3080,11 @@ impl<'a> Checker<'a> {
             self.borrows.binds = subject_loans.clone();
             self.declare_binds(binds)?;
             match &mut arm.guard {
-                Some(guard) => self.typed(guard, &Ty::Bool)?,
+                Some(guard) => {
+                    let unmoved = self.moves();
+                    self.typed(guard, &Ty::Bool)?;
+                    self.only_looked(&unmoved)?;
+                }
                 // Only an arm without a condition settles its variant.
                 None => match position {
                     Some(position) => handled.push(position),

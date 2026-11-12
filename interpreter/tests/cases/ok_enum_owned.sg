@@ -1,0 +1,175 @@
+// Enums that own what they carry: text, a `T*`, a struct. Whoever takes the value apart owns
+// the parts; what a pattern skips is freed; an enum that is moved away is freed once.
+struct Point {
+    int x
+    int y
+}
+
+struct Label {
+    string text
+    Point at
+}
+
+enum Message {
+    Quit
+    Say(string text)
+    Move(Point to)
+    Tagged(Label label, int priority)
+    Both(string first, string second)
+    Chain(Message* next, string note)
+}
+
+struct Envelope {
+    Message body
+    int id
+}
+
+// The value is only looked at: the names are borrows.
+string describe(read Message m) {
+    return match m {
+        Quit => "quit".clone()
+        Say(text) when text.length() > 5 => $"long: {text}".toString()
+        Say(text) => text.clone()
+        Move(to) => $"to {to.x},{to.y}".toString()
+        Tagged(label, priority) => $"{label.text} at {label.at.x} ({priority})".toString()
+        Both(first, _) => first.clone()
+        Chain(next, note) => {
+            var inner = describe(next)
+            $"{note} > {inner}".toString()
+        }
+    }
+}
+
+// The value is taken apart: `first` is owned by the arm, `second` is freed where it is skipped.
+string firstOf(Message m) {
+    return match m {
+        Both(first, _) => first
+        Say(text) when text.length() > 20 => "a long text".clone()   // only looks; the next arm takes it
+        Say(text) => text
+        Chain(_, note) => note
+        _ => "none".clone()
+    }
+}
+
+// A `Message*` taken apart: the parts leave the heap and the box is freed.
+int depth(Message* m) {
+    var total = 0
+    match m {
+        Chain(next, _) => total = 1 + depth(next)
+        var other => {
+            if other is Say(text) {
+                total = (int)text.length()
+            }
+        }
+    }
+    return total
+}
+
+// `ref`: the names lend for writing.
+void shout(ref Message m) {
+    match m {
+        Say(text) => text = $"{text}!".toString()
+        Tagged(label, priority) => {
+            label.at.x += 1
+            priority += 10
+        }
+        _ => {}
+    }
+}
+
+int code(int n) {
+    var label = "n".clone()
+    int result = match n {
+        0 => 100
+        1 => {
+            if label.length() == 1 {
+                return -1               // `label` is freed on the way out
+            }
+            101
+        }
+        var other when other < 0 => -other
+        var other => other * 2
+    }
+    return result
+}
+
+Message? pick(int n) {
+    if n == 0 {
+        return null
+    }
+    return Message.Say("picked".clone())
+}
+
+void main() {
+    var say = Message.Say("hello world".clone())
+    var short = Message.Say("hi".clone())
+    var tagged = Message.Tagged(Label { text = "home".clone(), at = Point { x = 1, y = 2 } }, 3)
+    var chain = Message.Chain(new Message.Chain(new Message.Move(Point { x = 7, y = 8 }), "inner".clone()), "outer".clone())
+    print(describe(read say))
+    print(describe(read short))
+    print(describe(read Message.Quit))
+    print(describe(read tagged))
+    print(describe(read chain))
+
+    shout(ref short)
+    shout(ref tagged)
+    print(describe(read short))
+    print(describe(read tagged))
+
+    // Moved into the function; the variables are empty afterwards and nothing is freed twice.
+    print(firstOf(Message.Both("one".clone(), "two".clone())))
+    print(firstOf(say))
+    print(firstOf(chain))
+    print(firstOf(tagged))
+
+    print(depth(new Message.Chain(new Message.Chain(new Message.Say("abc".clone()), "b".clone()), "a".clone())))
+
+    // An enum inside a struct, and a new value in the place of the old one.
+    var envelope = Envelope { body = Message.Say("first".clone()), id = 1 }
+    envelope.body = Message.Both("second".clone(), "third".clone())
+    if envelope.body is Both(_, second) {
+        print(second)
+    }
+    var taken = envelope.body               // the field is moved out; the rest of the struct stays
+    print(describe(read taken))
+    print(envelope.id)
+
+    // `is` with a name, in a loop.
+    var current = Message.Say("x".clone())
+    var rounds = 0
+    while current is Say(text) {
+        if text.length() >= 3 {
+            current = Message.Quit
+        } else {
+            var longer = $"{text}x".toString()
+            current = Message.Say(longer)
+        }
+        rounds += 1
+    }
+    print(rounds)
+    print(current is Quit)
+
+    // An enum that may be missing.
+    var picked = pick(1)
+    if picked is not null {
+        print(describe(read picked))
+    }
+    print(pick(0) is null)
+
+    print(code(0))
+    print(code(1))
+    print(code(-5))
+    print(code(21))
+
+    // A value that is matched and never named: the arm that skips it frees it.
+    match Message.Both("left".clone(), "right".clone()) {
+        Say(_) => print("say")
+        _ => print("something else")
+    }
+    var number = 0
+    number += match short {
+        Say(text) => (int)text.length()
+        _ => 0
+    }
+    print(number)
+}

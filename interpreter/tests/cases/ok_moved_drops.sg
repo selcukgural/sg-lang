@@ -1,0 +1,83 @@
+// A value is freed once, whichever way the program goes: moved on one path and not on
+// another, moved and given a new value, moved before a loop and filled again inside it.
+struct Box {
+    string label
+}
+
+int consume(Box* b) {
+    return (int)b.label.length()
+}
+
+Box* make(read string label) {
+    return new Box { label = label.clone() }
+}
+
+// Moved in one branch only: the other branch still owns it at the end.
+int oneBranch(bool take) {
+    var b = make("branch")
+    var total = 0
+    if take {
+        total = consume(b)
+    }
+    return total
+}
+
+// Moved, then filled again in a loop that may leave early.
+int refill(int rounds, int stopAt) {
+    var b = make("first")
+    var total = consume(b)
+    for i in 0..rounds {
+        if i == stopAt {
+            return total                // on the second round and later `b` holds a value
+        }
+        b = make("again")
+        total += 1
+    }
+    return total
+}
+
+// Moved on the right of `??` and of `&&`: only sometimes.
+int sometimes(int? known, bool first) {
+    var b = make("maybe")
+    var size = known ?? consume(b)
+    var c = make("and")
+    if first && consume(c) > 0 {
+        size += 1
+    }
+    return size
+}
+
+// The value goes back as it came when the `return` runs, and is used after it otherwise.
+Box*? keepOrPass(Box* b, int? limit) {
+    var most = limit ?? return b
+    if consume(b) > most {
+        return null
+    }
+    return make("short")
+}
+
+// Moved, given a new value, moved again.
+int twice() {
+    var b = make("one")
+    var total = consume(b)
+    b = make("three")
+    total += consume(b)
+    b = make("fifth")
+    return total
+}
+
+void main() {
+    print(oneBranch(true))
+    print(oneBranch(false))
+    print(refill(3, 5))
+    print(refill(3, 1))
+    print(refill(3, 0))
+    print(sometimes(null, true))
+    print(sometimes(4, true))
+    print(sometimes(4, false))
+    var kept = keepOrPass(make("kept"), null)
+    print(kept is not null)
+    print(keepOrPass(make("longer"), 3) is null)
+    print(keepOrPass(make("ab"), 3) is not null)
+    print(twice())
+}

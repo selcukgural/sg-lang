@@ -1,0 +1,6 @@
+error: `text` cannot be moved in a `when` condition
+  if the condition does not hold, the arms below still need the value
+  --> error_when_moves.sg:14:31
+ 14 |         Say(text) when isLong(text) => "long".clone()
+    |                               ^^^^
+  hint: a condition only looks: lend the value with `read`, or test it inside the arm

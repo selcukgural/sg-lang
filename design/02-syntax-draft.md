@@ -412,7 +412,8 @@ if s is Circle(r) {
 ```
 
 A missing variant is a compile error. `_` catches everything, `var other` also takes the value, and an unknown bare
-name is an error. A condition is written with `when`: `Circle(r) when r > 100 => ...`. An arm body is an expression or
+name is an error. A condition is written with `when`: `Circle(r) when r > 100 => ...`. The condition only looks at values: it cannot
+move one, because the arms below still need it if the condition does not hold. An arm body is an expression or
 a block; in a block the last line is the value, and `return` exits the function.
 
 `match x` behaves like `var y = x`:
