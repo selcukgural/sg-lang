@@ -1,0 +1,12 @@
+enum Shape {
+    Circle(int radius)
+    Rect(int width, int height)
+    Empty
+}
+
+void main() {
+    var s = Shape.Rect(3, 4)
+    if s is Rect(w) {
+        print(w)
+    }
+}

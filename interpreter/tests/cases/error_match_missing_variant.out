@@ -1,0 +1,6 @@
+error: this `match` does not handle `Empty`
+  every variant of `Shape` needs an arm
+  --> error_match_missing_variant.sg:8:18
+ 8 |     return match s {
+   |                  ^
+  hint: add an arm for each, or `_ => ...` for everything else

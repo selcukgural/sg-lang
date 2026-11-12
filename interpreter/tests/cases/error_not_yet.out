@@ -1,6 +1,6 @@
-error: expected a type name, found `enum`
-  `enum` is not in the interpreter yet
+error: expected a type name, found `interface`
+  `interface` is not in the interpreter yet
   --> error_not_yet.sg:1:1
- 1 | enum Shape {
-   | ^^^^
-  hint: only structs and functions are written at the top level: `void main() { ... }`
+ 1 | interface Shape {
+   | ^^^^^^^^^
+  hint: only structs, enums and functions are written at the top level: `void main() { ... }`

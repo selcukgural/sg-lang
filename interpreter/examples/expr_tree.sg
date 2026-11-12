@@ -1,0 +1,77 @@
+// An enum that contains itself holds the inner values behind `T*`.
+
+enum Operator {
+    Add
+    Subtract
+    Multiply
+}
+
+enum Expr {
+    Number(int value)
+    Negate(Expr* operand)
+    Binary(Operator op, Expr* left, Expr* right)
+}
+
+int apply(read Operator op, int a, int b) {
+    return match op {
+        Add => a + b
+        Subtract => a - b
+        Multiply => a * b
+    }
+}
+
+int eval(read Expr e) {
+    return match e {                     // e is read, so the names in the arms are read too
+        Number(v) => v
+        Negate(operand) => -eval(operand)
+        Binary(op, left, right) => {
+            var a = eval(left)
+            var b = eval(right)
+            apply(op, a, b)
+        }
+    }
+}
+
+int depth(read Expr e) {
+    match e {
+        Number(_) => return 1
+        Negate(operand) => return 1 + depth(operand)
+        Binary(_, left, right) => {
+            var a = depth(left)
+            var b = depth(right)
+            if a > b {
+                return 1 + a
+            }
+            return 1 + b
+        }
+    }
+}
+
+// Takes the tree apart: the owner is moved into the `match`, the arms own the parts.
+Expr* simplify(Expr* e) {
+    return match e {
+        Negate(operand) => {
+            var inner = simplify(operand)
+            if inner is Number(v) {
+                return new Expr.Number(-v)
+            }
+            new Expr.Negate(inner)
+        }
+        Binary(op, left, right) => new Expr.Binary(op, simplify(left), simplify(right))
+        var other => other
+    }
+}
+
+void main() {
+    // (1 + 2) * -(4 - 10)
+    var sum = new Expr.Binary(Operator.Add, new Expr.Number(1), new Expr.Number(2))
+    var difference = new Expr.Binary(Operator.Subtract, new Expr.Number(4), new Expr.Number(10))
+    var tree = new Expr.Binary(Operator.Multiply, sum, new Expr.Negate(difference))
+
+    print(eval(read tree))
+    print(depth(read tree))
+
+    var simple = simplify(new Expr.Negate(new Expr.Number(7)))
+    print(eval(read simple))
+    print(depth(read simple))
+}

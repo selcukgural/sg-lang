@@ -28,13 +28,26 @@ struct StructInfo {
     methods: HashMap<String, FuncSig>,
 }
 
+struct EnumInfo {
+    /// Variants in declaration order, each with the fields it carries.
+    variants: Vec<(String, Vec<(String, Ty)>)>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum TypeKind {
+    Struct,
+    Enum,
+}
+
+type Names = HashMap<String, TypeKind>;
+
 struct FuncSig {
     this: Option<This>,
     params: Vec<Ty>,
     ret: Ty,
 }
 
-fn func_sig(func: &Func, names: &HashMap<String, Span>) -> Res<FuncSig> {
+fn func_sig(func: &Func, names: &Names) -> Res<FuncSig> {
     let mut params = Vec::new();
     for param in &func.params {
         params.push(resolve_type(&param.ty, names, false)?);
@@ -43,10 +56,15 @@ fn func_sig(func: &Func, names: &HashMap<String, Span>) -> Res<FuncSig> {
 }
 
 pub fn check(prog: &mut Program, src: &str) -> Res<()> {
-    let mut names: HashMap<String, Span> = HashMap::new();
-    for decl in &prog.structs {
-        if Ty::from_name(&decl.name).is_some() || names.insert(decl.name.clone(), decl.name_span).is_some() {
-            return Err(Diag::error(decl.name_span, format!("type `{}` is defined twice", decl.name)));
+    let mut names: Names = HashMap::new();
+    let declared = prog
+        .structs
+        .iter()
+        .map(|decl| (&decl.name, decl.name_span, TypeKind::Struct))
+        .chain(prog.enums.iter().map(|decl| (&decl.name, decl.name_span, TypeKind::Enum)));
+    for (name, span, kind) in declared {
+        if Ty::from_name(name).is_some() || names.insert(name.clone(), kind).is_some() {
+            return Err(Diag::error(span, format!("type `{name}` is defined twice")));
         }
     }
 
@@ -80,8 +98,48 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
         }
         structs.insert(decl.name.clone(), StructInfo { fields, methods });
     }
+
+    let mut enums: HashMap<String, EnumInfo> = HashMap::new();
+    for decl in &prog.enums {
+        let mut variants: Vec<(String, Vec<(String, Ty)>)> = Vec::new();
+        for variant in &decl.variants {
+            if variants.iter().any(|(name, _)| *name == variant.name) {
+                return Err(Diag::error(variant.span, format!("variant `{}` is declared twice", variant.name)));
+            }
+            let mut fields: Vec<(String, Ty)> = Vec::new();
+            for field in &variant.fields {
+                if fields.iter().any(|(name, _)| *name == field.name) {
+                    return Err(Diag::error(field.span, format!("field `{}` is declared twice", field.name)));
+                }
+                if field.ty.mode.is_some() {
+                    return Err(Diag::error(field.ty.span, "borrowed fields are not in the interpreter yet")
+                        .note("they need the enum to name its source: `enum Token<from source>`"));
+                }
+                fields.push((field.name.clone(), resolve_type(&field.ty, &names, false)?));
+            }
+            variants.push((variant.name.clone(), fields));
+        }
+        if variants.is_empty() {
+            return Err(Diag::error(decl.name_span, format!("enum `{}` has no variants, so it can never have a value", decl.name)));
+        }
+        enums.insert(decl.name.clone(), EnumInfo { variants });
+    }
+
+    // What each type holds by value, to find a type that would have to contain itself.
+    let mut members: HashMap<&str, Vec<&Ty>> = HashMap::new();
+    for (name, info) in &structs {
+        members.insert(name, info.fields.iter().map(|(_, ty)| ty).collect());
+    }
+    for (name, info) in &enums {
+        members.insert(name, info.variants.iter().flat_map(|(_, fields)| fields.iter().map(|(_, ty)| ty)).collect());
+    }
     for decl in &prog.structs {
-        contains_itself(decl, &structs)?;
+        contains_itself("struct", &decl.name, decl.fields.iter().zip(&structs[&decl.name].fields), &members)?;
+    }
+    for decl in &prog.enums {
+        let fields = decl.variants.iter().flat_map(|variant| &variant.fields);
+        let types = enums[&decl.name].variants.iter().flat_map(|(_, fields)| fields);
+        contains_itself("enum", &decl.name, fields.zip(types), &members)?;
     }
 
     let mut sigs: HashMap<String, FuncSig> = HashMap::new();
@@ -115,6 +173,7 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
         let mut checker = Checker {
             names: &names,
             structs: &structs,
+            enums: &enums,
             sigs: &sigs,
             scopes: vec![Scope::default()],
             loops: 0,
@@ -156,20 +215,21 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
     Ok(())
 }
 
-fn resolve_type(ty: &TypeExpr, structs: &HashMap<String, Span>, allow_void: bool) -> Res<Ty> {
+fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
     let mut resolved = match Ty::from_name(&ty.name) {
         Some(Ty::Void) if !allow_void || !ty.suffixes.is_empty() || ty.mode.is_some() => {
             return Err(Diag::error(ty.span, "`void` can only be a return type"));
         }
         Some(base) => base,
-        None if structs.contains_key(ty.name.as_str()) => Ty::Struct(ty.name.clone()),
+        None if names.get(ty.name.as_str()) == Some(&TypeKind::Struct) => Ty::Struct(ty.name.clone()),
+        None if names.contains_key(ty.name.as_str()) => Ty::Enum(ty.name.clone()),
         None => {
             let diag = if TYPES_NOT_YET.contains(&ty.name.as_str()) {
                 Diag::error(ty.span, format!("type `{}` is not in the interpreter yet", ty.name))
             } else {
                 Diag::error(ty.span, format!("there is no type named `{}`", ty.name))
             };
-            let known = structs.keys().map(String::as_str).chain(["int", "long", "nint", "bool", "string"]);
+            let known = names.keys().map(String::as_str).chain(["int", "long", "nint", "bool", "string"]);
             return Err(match nearest(&ty.name, known) {
                 Some(close) => diag.hint(format!("`{close}`")),
                 None => diag.note("built-in types for now: int, long, nint, bool, string"),
@@ -192,32 +252,37 @@ fn resolve_type(ty: &TypeExpr, structs: &HashMap<String, Span>, allow_void: bool
     })
 }
 
-/// A struct that holds itself by value would have no finite size.
-fn contains_itself(decl: &StructDecl, structs: &HashMap<String, StructInfo>) -> Res<()> {
-    fn reaches(from: &str, target: &str, structs: &HashMap<String, StructInfo>, seen: &mut Vec<String>) -> bool {
+/// A type that holds itself by value would have no finite size.
+fn contains_itself<'d>(
+    kind: &str,
+    name: &str,
+    fields: impl Iterator<Item = (&'d FieldDecl, &'d (String, Ty))>,
+    members: &HashMap<&str, Vec<&Ty>>,
+) -> Res<()> {
+    fn reaches(from: &str, target: &str, members: &HashMap<&str, Vec<&Ty>>, seen: &mut Vec<String>) -> bool {
         if seen.iter().any(|name| name == from) {
             return false;
         }
         seen.push(from.to_string());
-        structs[from].fields.iter().any(|(_, ty)| match by_value(ty) {
-            Some(inner) => inner == target || reaches(inner, target, structs, seen),
+        members[from].iter().any(|ty| match by_value(ty) {
+            Some(inner) => inner == target || reaches(inner, target, members, seen),
             None => false,
         })
     }
     fn by_value(ty: &Ty) -> Option<&str> {
         match ty {
-            Ty::Struct(name) => Some(name),
+            Ty::Struct(name) | Ty::Enum(name) => Some(name),
             Ty::Nullable(inner) => by_value(inner),
             _ => None,
         }
     }
 
-    for (field, (_, ty)) in decl.fields.iter().zip(&structs[&decl.name].fields) {
+    for (field, (_, ty)) in fields {
         let Some(inner) = by_value(ty) else { continue };
-        if inner == decl.name || reaches(inner, &decl.name, structs, &mut Vec::new()) {
+        if inner == name || reaches(inner, name, members, &mut Vec::new()) {
             let written = ty.to_string();
             let pointer = written.replacen(inner, &format!("{inner}*"), 1);
-            return Err(Diag::error(field.ty.span, format!("struct `{}` contains itself, so it has no finite size", decl.name))
+            return Err(Diag::error(field.ty.span, format!("{kind} `{name}` contains itself, so it has no finite size"))
                 .hint(format!("put it behind a pointer: `{pointer} {}`", field.name)));
         }
     }
@@ -253,8 +318,9 @@ struct Scope {
 type Moves = Vec<Vec<Moved>>;
 
 struct Checker<'a> {
-    names: &'a HashMap<String, Span>,
+    names: &'a Names,
     structs: &'a HashMap<String, StructInfo>,
+    enums: &'a HashMap<String, EnumInfo>,
     sigs: &'a HashMap<String, FuncSig>,
     scopes: Vec<Scope>,
     loops: usize,
@@ -264,6 +330,9 @@ struct Checker<'a> {
     owner: Option<&'a str>,
     src: &'a str,
 }
+
+/// Names a pattern brings into the block it guards: name, type, where it is written.
+type Binds = Vec<(String, Ty, Span)>;
 
 /// `x is null` or `x is not null` on a plain variable: (name, is the test "not null").
 type Narrowing = (String, bool);
@@ -413,9 +482,17 @@ impl<'a> Checker<'a> {
     // ---- statements ----
 
     fn block(&mut self, block: &mut Block, narrow: Option<&str>) -> Res<()> {
+        self.block_with(block, narrow, Vec::new())
+    }
+
+    /// A block that starts with the names of an `is` pattern in scope.
+    fn block_with(&mut self, block: &mut Block, narrow: Option<&str>, binds: Binds) -> Res<()> {
         self.scopes.push(Scope::default());
         if let Some(name) = narrow {
             self.narrow(name);
+        }
+        for (name, ty, span) in binds {
+            self.declare_local(&name, ty, span)?;
         }
         for stmt in block.iter_mut() {
             self.stmt(stmt)?;
@@ -466,7 +543,9 @@ impl<'a> Checker<'a> {
                         }
                     }
                     _ => {
-                        let (ty, writable) = self.place_unchecked(target)?.expect("the parser only accepts places");
+                        let Some((ty, writable)) = self.place_unchecked(target)? else {
+                            return Err(Diag::error(target.span, "a variant of an enum is a value, not a place to write to"));
+                        };
                         self.check_parts(target, true)?;
                         if !writable {
                             return Err(Diag::error(target.span, "this field is reached through a `read` borrow and cannot be written")
@@ -498,12 +577,12 @@ impl<'a> Checker<'a> {
                 }
             }
             StmtKind::If { cond, then, els } => {
-                self.typed(cond, &Ty::Bool)?;
+                let binds = self.condition(cond)?;
                 let test = narrowing(cond);
                 let not_null = |wanted: bool| test.as_ref().filter(|(_, negated)| *negated == wanted).map(|(name, _)| name.as_str());
 
                 let before = self.moves();
-                self.block(then, not_null(true))?;
+                self.block_with(then, not_null(true), binds)?;
                 let then_leaves = leaves(then, true);
                 let after_then = self.moves();
                 self.set_moves(&before);
@@ -532,10 +611,10 @@ impl<'a> Checker<'a> {
             }
             StmtKind::While { cond, body } => {
                 self.forget_narrowing_of_assigned(body, Some(cond));
-                self.typed(cond, &Ty::Bool)?;
+                let binds = self.condition(cond)?;
                 let test = narrowing(cond);
                 let narrow = test.as_ref().filter(|(_, negated)| *negated).map(|(name, _)| name.as_str());
-                self.loop_body(body, narrow)?;
+                self.loop_body(body, narrow, binds)?;
             }
             StmtKind::For { var, var_span, from, to, body } => {
                 self.forget_narrowing_of_assigned(body, None);
@@ -546,7 +625,7 @@ impl<'a> Checker<'a> {
                 self.coerce(to, Ty::Int(to_ty), &ty)?;
                 self.scopes.push(Scope::default());
                 self.declare_local(var, ty, *var_span)?;
-                self.loop_body(body, None)?;
+                self.loop_body(body, None, Vec::new())?;
                 self.pop_scope();
             }
             StmtKind::Return(value) => match value {
@@ -569,17 +648,45 @@ impl<'a> Checker<'a> {
                 }
             }
             StmtKind::Expr(expr) => {
-                self.expr(expr, None)?;
+                self.unused(expr)?;
             }
         }
         Ok(())
     }
 
+    /// An expression whose value is not used: a statement, or an arm of a `match` statement.
+    fn unused(&mut self, expr: &mut Expr) -> Res<()> {
+        let span = expr.span;
+        match &mut expr.kind {
+            ExprKind::Match { subject, arms, borrowed } => {
+                self.match_expr(subject, arms, borrowed, None, true)?;
+            }
+            ExprKind::Call { .. } | ExprKind::Method { .. } => {
+                self.expr(expr, None)?;
+            }
+            _ => {
+                return Err(Diag::error(span, "the value of this expression is not used")
+                    .hint("only a call, an assignment or a declaration can be a statement"));
+            }
+        }
+        Ok(())
+    }
+
+    /// The condition of an `if` or `while`. `x is Circle(r)` as the whole condition brings
+    /// its names into the block.
+    fn condition(&mut self, cond: &mut Expr) -> Res<Binds> {
+        if matches!(cond.kind, ExprKind::IsVariant { .. }) {
+            return self.is_variant(cond, true);
+        }
+        self.typed(cond, &Ty::Bool)?;
+        Ok(Vec::new())
+    }
+
     /// A value moved inside a loop is gone when the next iteration starts.
-    fn loop_body(&mut self, body: &mut Block, narrow: Option<&str>) -> Res<()> {
+    fn loop_body(&mut self, body: &mut Block, narrow: Option<&str>, binds: Binds) -> Res<()> {
         let before = self.moves();
         self.loops += 1;
-        self.block(body, narrow)?;
+        self.block_with(body, narrow, binds)?;
         self.loops -= 1;
         if leaves(body, true) {
             return Ok(());
@@ -660,6 +767,15 @@ impl<'a> Checker<'a> {
             (Ty::Read(_) | Ty::Ref(_), _) if !expected.is_borrow() => {
                 mismatch(Some(format!("`{found}` only borrows the value; `{expected}` needs to own it")))
             }
+            // A borrow of a `T*` stands in for a borrow of the `T` it owns.
+            (Ty::Read(from), Ty::Read(to)) | (Ty::Ref(from), Ty::Read(to) | Ty::Ref(to))
+                if matches!(&**from, Ty::Ptr(inner) if inner == to) =>
+            {
+                wrap(expr, ExprKind::Unbox);
+                Ok(())
+            }
+            (Ty::Ptr(inner), Ty::Read(to)) if inner == to => mismatch(Some(format!("lend it with `read`: `read {text}`"))),
+            (Ty::Ptr(inner), Ty::Ref(to)) if inner == to => mismatch(Some(format!("lend it with `ref`: `ref {text}`"))),
             (Ty::Ref(from), Ty::Read(to)) if from == to => Ok(()),
             (Ty::Read(from) | Ty::Ref(from), Ty::Read(to)) if **to == Ty::Nullable(from.clone()) => Ok(()),
             (Ty::Str, Ty::Read(to)) if **to == Ty::Str && matches!(expr.kind, ExprKind::Str(_)) => Ok(()),
@@ -682,6 +798,12 @@ impl<'a> Checker<'a> {
     /// `place` without the check for fields that were moved out.
     fn place_unchecked(&mut self, expr: &mut Expr) -> Res<Option<(Ty, bool)>> {
         let span = expr.span;
+        // `Shape.Empty` is a value, not a field.
+        if let ExprKind::Field { recv, .. } = &expr.kind {
+            if self.enum_named(recv).is_some() {
+                return Ok(None);
+            }
+        }
         match &mut expr.kind {
             ExprKind::Var(name) => {
                 let ty = self.live_var(name, span)?.current.clone();
@@ -712,6 +834,10 @@ impl<'a> Checker<'a> {
                                 ExprKind::Var(var) => diag.hint(format!("test it first: `if {var} is not null {{ ... }}`")),
                                 _ => diag.hint("copy it to a variable and test that with `is not null`; fields are not narrowed"),
                             });
+                        }
+                        Ty::Enum(_) => {
+                            return Err(Diag::error(*name_span, format!("`{ty}` is an enum; what it carries depends on the variant"))
+                                .hint("reach it with `match`, or test one variant: `if x is Circle(r) { ... }`"));
                         }
                         other => {
                             return Err(Diag::error(*name_span, format!("`{other}` has no fields")));
@@ -806,6 +932,25 @@ impl<'a> Checker<'a> {
                 self.move_out(expr, &ty)?;
             }
             return Ok(ty);
+        }
+
+        // `Shape.Empty` and `Shape.Circle(2)` build a value of the enum.
+        match &mut expr.kind {
+            ExprKind::Field { recv, name, name_span, .. } => {
+                let owner = self.enum_named(recv).expect("any other field is a place");
+                let (index, ty) = self.variant(owner, name, *name_span, None, span)?;
+                expr.kind = ExprKind::Variant { index, args: Vec::new() };
+                return Ok(ty);
+            }
+            ExprKind::Method { recv, name, name_span, args, .. } => {
+                if let Some(owner) = self.enum_named(recv) {
+                    let (index, ty) = self.variant(owner, name, *name_span, Some(args), span)?;
+                    let args = std::mem::take(args);
+                    expr.kind = ExprKind::Variant { index, args };
+                    return Ok(ty);
+                }
+            }
+            _ => {}
         }
 
         match &mut expr.kind {
@@ -973,9 +1118,279 @@ impl<'a> Checker<'a> {
                 self.typed(right, &inner)?;
                 Ok(inner)
             }
+            ExprKind::IsVariant { .. } => {
+                self.is_variant(expr, false)?;
+                Ok(Ty::Bool)
+            }
+            ExprKind::Match { subject, arms, borrowed } => self.match_expr(subject, arms, borrowed, expected, false),
             ExprKind::Var(_) | ExprKind::Field { .. } => unreachable!("places are handled above"),
-            ExprKind::Widen(..) | ExprKind::Load(_) => unreachable!("inserted only after checking"),
+            ExprKind::Widen(..) | ExprKind::Load(_) | ExprKind::Unbox(_) | ExprKind::Variant { .. } => {
+                unreachable!("inserted only after checking")
+            }
         }
+    }
+
+    // ---- enums ----
+
+    /// The enum an expression names when it is written in front of a dot: `Shape` in
+    /// `Shape.Circle(2)`. A variable of that name wins.
+    fn enum_named(&mut self, expr: &Expr) -> Option<&'a str> {
+        let ExprKind::Var(name) = &expr.kind else { return None };
+        if name == "this" || self.find(name).is_some() {
+            return None;
+        }
+        self.enums.get_key_value(name.as_str()).map(|(key, _)| key.as_str())
+    }
+
+    /// `Shape.Circle(2)` or `Shape.Empty`. `args` is `None` when no parentheses were written.
+    fn variant(&mut self, owner: &str, name: &str, name_span: Span, args: Option<&mut Vec<Expr>>, span: Span) -> Res<(usize, Ty)> {
+        let enums = self.enums;
+        let variants = &enums[owner].variants;
+        let Some(position) = variants.iter().position(|(variant, _)| variant == name) else {
+            let diag = Diag::error(name_span, format!("`{owner}` has no variant `{name}`"));
+            return Err(match nearest(name, variants.iter().map(|(variant, _)| variant.as_str())) {
+                Some(close) => diag.hint(format!("`{close}`")),
+                None => diag,
+            });
+        };
+        let fields = &variants[position].1;
+        let names = fields.iter().map(|(field, _)| field.as_str()).collect::<Vec<_>>().join(", ");
+        match args {
+            None if !fields.is_empty() => {
+                return Err(Diag::error(span, format!("`{name}` carries {} value(s) and cannot be built without them", fields.len()))
+                    .hint(format!("`{owner}.{name}({names})`")));
+            }
+            None => {}
+            Some(_) if fields.is_empty() => {
+                return Err(Diag::error(span, format!("`{name}` carries nothing, so it is written without parentheses"))
+                    .hint(format!("`{owner}.{name}`")));
+            }
+            Some(args) if args.len() != fields.len() => {
+                return Err(Diag::error(span, format!("`{owner}.{name}` takes {} value(s) ({names}), {} given", fields.len(), args.len())));
+            }
+            Some(args) => {
+                for (arg, (_, ty)) in args.iter_mut().zip(fields) {
+                    self.typed(arg, ty)?;
+                }
+            }
+        }
+        Ok((position, Ty::Enum(owner.to_string())))
+    }
+
+    /// The enum a `match` or `is` looks at, behind pointers and borrows, and how the value
+    /// is held: owned (`None`) or through a `read` or `ref` borrow.
+    fn enum_behind(&self, ty: &Ty, span: Span, what: &str) -> Res<(&'a str, Option<Mode>)> {
+        let mut mode = None;
+        let mut inner = ty;
+        loop {
+            inner = match inner {
+                Ty::Read(behind) => {
+                    mode = Some(Mode::Read);
+                    behind
+                }
+                Ty::Ref(behind) => {
+                    mode = mode.or(Some(Mode::Ref));
+                    behind
+                }
+                Ty::Ptr(behind) => behind,
+                Ty::Enum(name) => {
+                    let (key, _) = self.enums.get_key_value(name.as_str()).expect("the type was resolved");
+                    return Ok((key.as_str(), mode));
+                }
+                Ty::Nullable(_) => {
+                    return Err(Diag::error(span, format!("this is `{ty}` and may be `null`; {what} needs a value"))
+                        .hint("test it first with `is not null`, or give a fallback with `??`"));
+                }
+                _ => {
+                    return Err(Diag::error(span, format!("{what} needs a value of an enum, found `{ty}`"))
+                        .note("patterns for numbers and text are not in the interpreter yet"));
+                }
+            };
+        }
+    }
+
+    /// Resolves a pattern against the enum and gives the names it declares. With `mode` the
+    /// names borrow from the value; without, they take what the value holds.
+    fn pattern_binds(&mut self, pattern: &mut Pattern, owner: &str, mode: Option<Mode>, subject: &Ty) -> Res<Binds> {
+        let span = pattern.span;
+        let (name, args, index) = match &mut pattern.kind {
+            PatternKind::Wildcard => return Ok(Vec::new()),
+            PatternKind::Bind(name) => return Ok(vec![(name.clone(), subject.clone(), span)]),
+            PatternKind::Variant { name, args, index } => (name, args, index),
+        };
+        let enums = self.enums;
+        let variants = &enums[owner].variants;
+        let Some(position) = variants.iter().position(|(variant, _)| variant == name) else {
+            let diag = Diag::error(span, format!("`{owner}` has no variant `{name}`"));
+            return Err(match nearest(name, variants.iter().map(|(variant, _)| variant.as_str())) {
+                Some(close) => diag.hint(format!("`{close}`")),
+                None => diag.hint(format!("to take any value under this name, write `var {name}`")),
+            });
+        };
+        *index = position;
+        let fields = &variants[position].1;
+        let names = fields.iter().map(|(field, _)| field.as_str()).collect::<Vec<_>>().join(", ");
+        let Some(args) = args else {
+            if fields.is_empty() {
+                return Ok(Vec::new());
+            }
+            let blanks = vec!["_"; fields.len()].join(", ");
+            return Err(Diag::error(span, format!("`{name}` carries {} value(s); the pattern must name or skip each", fields.len()))
+                .hint(format!("`{name}({names})`, or `{name}({blanks})` to skip them")));
+        };
+        if fields.is_empty() {
+            return Err(Diag::error(span, format!("`{name}` carries nothing, so it is written without parentheses"))
+                .hint(format!("`{name}`")));
+        }
+        if args.len() != fields.len() {
+            return Err(Diag::error(span, format!("`{name}` carries {} value(s), the pattern has {}", fields.len(), args.len()))
+                .hint(format!("`{name}({names})`; write `_` for a value that is not needed")));
+        }
+        let mut binds = Vec::new();
+        for ((arg, arg_span), (_, ty)) in args.iter().zip(fields) {
+            let Some(arg) = arg else { continue };
+            let ty = match mode {
+                None => ty.clone(),
+                Some(Mode::Read) => Ty::Read(Box::new(ty.clone())),
+                Some(Mode::Ref) => Ty::Ref(Box::new(ty.clone())),
+            };
+            binds.push((arg.clone(), ty, *arg_span));
+        }
+        Ok(binds)
+    }
+
+    /// `x is Circle(r)`: looks at the value without taking it, so the names are borrows.
+    /// They are in scope only when the test is the whole condition of an `if` or `while`.
+    fn is_variant(&mut self, expr: &mut Expr, names_ok: bool) -> Res<Binds> {
+        let ExprKind::IsVariant { expr: subject, negated, pattern, by_ref } = &mut expr.kind else {
+            unreachable!("only called for an `is` test");
+        };
+        let ty = self.operand(subject, None)?;
+        let (owner, mode) = self.enum_behind(&ty, subject.span, "`is`")?;
+        *by_ref = mode == Some(Mode::Ref);
+        let binds = self.pattern_binds(pattern, owner, mode.or(Some(Mode::Read)), &ty)?;
+        if binds.is_empty() {
+            return Ok(binds);
+        }
+        if *negated {
+            return Err(Diag::error(pattern.span, "`is not` holds when the value is another variant, so there is nothing to name")
+                .hint("write `_` for each value"));
+        }
+        if !names_ok {
+            return Err(Diag::error(pattern.span, "the names in this pattern exist only when `is` is the whole condition of an `if` or `while`")
+                .hint("write `_` for each value, or use `match`"));
+        }
+        Ok(binds)
+    }
+
+    /// `match subject { ... }`. As a statement (`unused`) the arms give no value.
+    fn match_expr(
+        &mut self,
+        subject: &mut Expr,
+        arms: &mut [Arm],
+        borrowed: &mut bool,
+        expected: Option<&Ty>,
+        unused: bool,
+    ) -> Res<Ty> {
+        // Like `var y = subject`: an owned value is moved in, a borrow stays a borrow.
+        let subject_ty = self.expr(subject, None)?;
+        let (owner, mode) = self.enum_behind(&subject_ty, subject.span, "`match`")?;
+        *borrowed = mode.is_some();
+        let enums = self.enums;
+        let variants = &enums[owner].variants;
+
+        let mut handled = vec![false; variants.len()];
+        let mut handled_all = false;
+        let mut result: Option<Ty> = expected.cloned();
+        let before = self.moves();
+        let mut after: Option<Moves> = None;
+        for arm in arms.iter_mut() {
+            self.set_moves(&before);
+            self.scopes.push(Scope::default());
+            let binds = self.pattern_binds(&mut arm.pattern, owner, mode, &subject_ty)?;
+            let position = match &arm.pattern.kind {
+                PatternKind::Variant { index, .. } => Some(*index),
+                _ => None,
+            };
+            if handled_all {
+                return Err(Diag::error(arm.pattern.span, "this arm can never run: an arm above takes every value"));
+            }
+            if let Some(position) = position.filter(|position| handled[*position]) {
+                return Err(Diag::error(
+                    arm.pattern.span,
+                    format!("this arm can never run: `{}` is already handled above", variants[position].0),
+                ));
+            }
+            for (name, ty, span) in binds {
+                self.declare_local(&name, ty, span)?;
+            }
+            match &mut arm.guard {
+                Some(guard) => self.typed(guard, &Ty::Bool)?,
+                // Only an arm without a condition settles its variant.
+                None => match position {
+                    Some(position) => handled[position] = true,
+                    None => handled_all = true,
+                },
+            }
+            for stmt in arm.body.iter_mut() {
+                self.stmt(stmt)?;
+            }
+            let leaves = arm_leaves(arm, self.loops > 0);
+            match &mut arm.value {
+                Some(value) if unused => self.unused(value)?,
+                Some(value) => match &result {
+                    Some(ty) => {
+                        let ty = ty.clone();
+                        self.typed(value, &ty)?;
+                    }
+                    None => match self.expr(value, None)? {
+                        Ty::Never => {}
+                        Ty::Null => {
+                            return Err(Diag::error(value.span, "the type of this `match` cannot be found from `null` alone")
+                                .hint("write the type where the result goes, for example `int? x = match ...`"));
+                        }
+                        ty => result = Some(ty),
+                    },
+                },
+                None if unused || leaves => {}
+                None => {
+                    return Err(Diag::error(arm.span, "this arm gives no value, and the `match` is used as one")
+                        .hint("the last line of the block is the value of the arm"));
+                }
+            }
+            self.pop_scope();
+            // An arm that leaves does not reach the code after the `match`.
+            if !leaves {
+                if let Some(other) = &after {
+                    self.merge_moves(other);
+                }
+                after = Some(self.moves());
+            }
+        }
+
+        if !handled_all {
+            let missing: Vec<String> =
+                variants.iter().zip(&handled).filter(|(_, done)| !**done).map(|((name, _), _)| format!("`{name}`")).collect();
+            if !missing.is_empty() {
+                let diag = Diag::error(subject.span, format!("this `match` does not handle {}", missing.join(", ")))
+                    .hint("add an arm for each, or `_ => ...` for everything else");
+                let guarded = arms.iter().any(|arm| {
+                    arm.guard.is_some() && matches!(&arm.pattern.kind, PatternKind::Variant { index, .. } if !handled[*index])
+                });
+                return Err(match guarded {
+                    true => diag.note("an arm with `when` does not settle its variant: the condition may be false"),
+                    false => diag.note(format!("every variant of `{owner}` needs an arm")),
+                });
+            }
+        }
+        if let Some(after) = &after {
+            self.set_moves(after);
+        }
+        Ok(match (unused, after) {
+            (_, None) => Ty::Never,
+            (true, _) => Ty::Void,
+            (false, _) => result.unwrap_or(Ty::Never),
+        })
     }
 
     fn binary(&mut self, op: BinOp, left: &mut Expr, right: &mut Expr, expected: Option<&Ty>, span: Span) -> Res<Ty> {
@@ -1360,7 +1775,22 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
             taken_in(left, names);
             taken_in(right, names);
         }
+        ExprKind::Variant { args, .. } => args.iter().for_each(|arg| taken_in(arg, names)),
+        ExprKind::Match { subject, arms, .. } => {
+            taken_in(subject, names);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    taken_in(guard, names);
+                }
+                changed_in(&arm.body, names);
+                if let Some(value) = &arm.value {
+                    taken_in(value, names);
+                }
+            }
+        }
         ExprKind::Field { recv: inner, .. }
+        | ExprKind::IsVariant { expr: inner, .. }
+        | ExprKind::Unbox(inner)
         | ExprKind::Unary(_, inner)
         | ExprKind::Cast { expr: inner, .. }
         | ExprKind::New(inner)
@@ -1388,8 +1818,25 @@ fn leaves(block: &Block, in_loop: bool) -> bool {
         StmtKind::Break | StmtKind::Continue => in_loop,
         StmtKind::If { then, els: Some(els), .. } => leaves(then, in_loop) && leaves(els, in_loop),
         StmtKind::While { cond, body } => matches!(cond.kind, ExprKind::Bool(true)) && !has_break(body),
-        StmtKind::Expr(expr) => matches!(&expr.kind, ExprKind::Call { name, .. } if name == "panic"),
+        StmtKind::Expr(expr) => never_returns(expr, in_loop),
         _ => false,
+    }
+}
+
+/// Whether evaluating the expression always leaves: `panic(...)`, or a `match` whose arms
+/// all leave.
+fn never_returns(expr: &Expr, in_loop: bool) -> bool {
+    match &expr.kind {
+        ExprKind::Call { name, .. } => name == "panic",
+        ExprKind::Match { arms, .. } => arms.iter().all(|arm| arm_leaves(arm, in_loop)),
+        _ => false,
+    }
+}
+
+fn arm_leaves(arm: &Arm, in_loop: bool) -> bool {
+    match &arm.value {
+        Some(value) => never_returns(value, in_loop),
+        None => leaves(&arm.body, in_loop),
     }
 }
 
@@ -1398,6 +1845,18 @@ fn has_break(block: &Block) -> bool {
     block.iter().any(|stmt| match &stmt.kind {
         StmtKind::Break => true,
         StmtKind::If { then, els, .. } => has_break(then) || els.as_ref().is_some_and(has_break),
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => breaks_in(expr),
+        StmtKind::Let { init: expr, .. } | StmtKind::Assign { value: expr, .. } => breaks_in(expr),
         _ => false,
     })
+}
+
+/// Whether a `match` here has an arm with a `break`.
+fn breaks_in(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Match { arms, .. } => {
+            arms.iter().any(|arm| has_break(&arm.body) || arm.value.as_ref().is_some_and(breaks_in))
+        }
+        _ => false,
+    }
 }

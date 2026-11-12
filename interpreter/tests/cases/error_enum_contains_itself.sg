@@ -1,0 +1,7 @@
+enum Expr {
+    Number(int value)
+    Negate(Expr operand)
+}
+
+void main() {
+}

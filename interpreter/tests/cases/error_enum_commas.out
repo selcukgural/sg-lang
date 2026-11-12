@@ -1,0 +1,5 @@
+error: variants are separated by line ends, not commas
+  --> error_enum_commas.sg:7:17
+ 7 | enum Color { Red, Green }
+   |                 ^
+  hint: write each variant on its own line

@@ -1,0 +1,4 @@
+error: expected `int`, found `string`
+  --> error_match_arm_type.sg:11:23
+ 11 |         Rect(_, _) => "four"
+    |                       ^^^^^^

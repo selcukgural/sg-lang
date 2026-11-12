@@ -65,6 +65,7 @@ pub enum Ty {
     /// Type of the `null` literal before it meets a `T?`.
     Null,
     Struct(String),
+    Enum(String),
     /// `T*`: owning pointer.
     Ptr(Box<Ty>),
     /// `T?`
@@ -91,7 +92,7 @@ impl Ty {
         match self {
             Ty::Int(_) | Ty::Bool | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) => true,
             Ty::Nullable(inner) => inner.is_copyable(),
-            Ty::Str | Ty::Struct(_) | Ty::Ptr(_) => false,
+            Ty::Str | Ty::Struct(_) | Ty::Enum(_) | Ty::Ptr(_) => false,
         }
     }
 
@@ -118,7 +119,7 @@ impl fmt::Display for Ty {
             Ty::Void => f.write_str("void"),
             Ty::Never => f.write_str("never"),
             Ty::Null => f.write_str("null"),
-            Ty::Struct(name) => f.write_str(name),
+            Ty::Struct(name) | Ty::Enum(name) => f.write_str(name),
             Ty::Ptr(inner) => write!(f, "{inner}*"),
             Ty::Nullable(inner) => write!(f, "{inner}?"),
             Ty::Read(inner) => write!(f, "read {inner}"),

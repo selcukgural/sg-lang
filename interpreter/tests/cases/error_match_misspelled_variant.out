@@ -1,0 +1,5 @@
+error: `Shape` has no variant `Circel`
+  --> error_match_misspelled_variant.sg:10:9
+ 10 |         Circel(_) => print("circle")
+    |         ^^^^^^^^^
+  hint: `Circle`

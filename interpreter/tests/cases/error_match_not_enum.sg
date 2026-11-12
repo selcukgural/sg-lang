@@ -1,0 +1,12 @@
+enum Shape {
+    Circle(int radius)
+    Rect(int width, int height)
+    Empty
+}
+
+void main() {
+    var n = 3
+    match n {
+        _ => print("any")
+    }
+}

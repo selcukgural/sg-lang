@@ -13,9 +13,12 @@ cargo test
 | Area | Supported |
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point. `public` is accepted and has no effect yet |
-| Types | `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, `T*`, `T?`, `read T` and `ref T` in signatures |
+| Types | `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `read T` and `ref T` in signatures |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
 | Methods | Written in the struct body with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`. Called as `stack.push(1)`, also through pointers and borrows. A function without `this` is called on the type: `Stack.create()`. `Stack(args)` is short for `Stack.create(args)` |
+| Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)` |
+| `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a name or `_` for each value, `_`, `var other`; a condition with `when`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
+| `is` | `if s is Circle(r) { ... }`, `while next() is not End { ... }` |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`. A variable keeps its type |
@@ -48,7 +51,13 @@ Design rules that are already enforced:
 - A method that takes `this` by value uses the receiver up, like passing it to a function.
 - The receiver is never written with `read` or `ref` at the call; the method's first parameter decides.
 - Inside a method a bare field name is an error whose hint is `this.name`.
-- Every field of a struct literal gets a value. A struct cannot contain itself by value; the hint is `T*`.
+- Every field of a struct literal gets a value. A struct or an enum cannot contain itself by value; the hint
+  is `T*`.
+- A `match` handles every variant, or the error names the missing ones. An arm with `when` does not settle its
+  variant. A bare name that is not a variant is an error whose hint is `var name`.
+- `match x` is `var y = x`: an owner is moved in and the names in the arms own what the variant carried;
+  `match read x` and `match ref x` borrow, and so does a `match` on something that is already a borrow.
+- A borrow of a `T*` is accepted where a borrow of `T` is expected (`eval(left)` with `left` a `read Expr*`).
 
 ## How it is built
 
@@ -57,7 +66,7 @@ Design rules that are already enforced:
 | `src/lexer.rs` | Tokens, the line-end rule, `$"..."` pieces |
 | `src/parser.rs` | Hand-written recursive descent parser |
 | `src/types.rs` | Types as the checker sees them |
-| `src/check.rs` | Static checks: names, types, `null` safety, use after move (per variable and per field), `return` on every path. Writes resolved details (literal types, field indexes, implicit conversions, what each call runs) into the tree |
+| `src/check.rs` | Static checks: names, types, `null` safety, use after move (per variable and per field), `match` covering every variant, `return` on every path. Writes resolved details (literal types, field indexes, implicit conversions, what each call runs) into the tree |
 | `src/interp.rs` | Runs the checked tree; only data-dependent failures (panics) are left to it |
 | `src/diag.rs` | Error and panic messages |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
@@ -115,6 +124,25 @@ where the design writes `try this.top.take()`, because `try` is not here yet.
 Smaller placeholders: a panic exits with code 1; a variable may shadow one from an outer block but not one in
 the same block.
 
+## Rules from the fourth slice
+
+Approved on 12 November 2026. Each has a test in `tests/cases/`.
+
+1. **`x is Circle(r)` only looks.** It never moves `x`; the names are `read` borrows, or `ref` borrows when
+   `x` is a `ref` borrow or the test is written `ref x is Circle(r)`. To take the values out, use `match`. The
+   design only said that `is` is the counterpart of Rust's `if let`, which moves; here `is null` already only
+   looks, and a test that uses its subject up would surprise.
+2. **A pattern names or skips every value**: `Rect(w, _)`, never a bare `Rect` for a variant that carries
+   data. One way to write it, and adding a field to a variant shows every pattern that needs a look.
+3. **An arm that can never run is an error** (the variant is handled above, or an arm above takes every
+   value). Rust warns; there are no warnings here.
+4. **In a `match` used as a statement an arm follows the statement rule**: a call, an assignment, `return` /
+   `break` / `continue`, or a block. `Circle(r) => r * 2` is "the value is not used". `Empty => {}` does
+   nothing.
+5. **Variants and arms are separated by line ends, never commas**, as the design examples write them.
+6. **`match` and `is` look through `T*`**, like field access. `var other` gets the value as it was given
+   (the `T*` itself).
+
 ## Not here yet
 
 - **Borrow checking.** Moves are checked, borrows are not: nothing stops a `read` borrow from outliving its
@@ -122,9 +150,11 @@ the same block.
 - `swap(ref a, ref b)`, and `this` with a type (`read FolderRef this`).
 - A string literal has the type `string` here; in the design it is `read string` that becomes `string` without
   allocating.
-- `read T*` is not accepted where `read T` is expected.
-- Narrowing only follows a direct `x is null` / `x is not null` test, not `&&` chains.
-- `enum`, `match`, `Result` and `try`, generics, interfaces (`Copyable`,
+- Narrowing only follows a direct `x is null` / `x is not null` test, not `&&` chains. The same holds for
+  the names of `x is Circle(r)`: they exist when the test is the whole condition of an `if` or `while`.
+- Patterns inside patterns (`Negate(Number(v))`), patterns for numbers and text (`match c { '+' => ... }`),
+  methods and interfaces on enums. An enum cannot be copied, compared with `==` or printed yet.
+- `Result` and `try`, generics, interfaces (`Copyable`,
   `Formattable`: a struct cannot be copied or printed yet), lambdas, collections, modules, `test` blocks, threads,
   `shared` / `weak` / `checked` / `locked`.
 - `byte`, `char`, `double` and the other number types; character literals; indexing and slices.
@@ -137,4 +167,4 @@ error.
 
 ## Next
 
-Enums with `match`, then `Result` and `try`, which together reach the calculator.
+`Result` and `try` (with `??` on a `Result` and `return` on its right side), which reach the calculator. `Result` will be a built-in type; user-written generics are not planned for now.

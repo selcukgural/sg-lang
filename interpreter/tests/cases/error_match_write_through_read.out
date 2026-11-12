@@ -1,0 +1,4 @@
+error: `r` is a `read` borrow and cannot be written through
+  --> error_match_write_through_read.sg:10:22
+ 10 |         Circle(r) => r += 1
+    |                      ^

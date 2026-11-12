@@ -1,0 +1,5 @@
+error: `Rect` carries 2 value(s); the pattern must name or skip each
+  --> error_pattern_without_values.sg:9:13
+ 9 |     if s is Rect {
+   |             ^^^^
+  hint: `Rect(width, height)`, or `Rect(_, _)` to skip them

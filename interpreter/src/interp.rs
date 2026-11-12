@@ -33,6 +33,8 @@ pub enum Value {
     Null,
     /// Fields in declaration order.
     Struct(Rc<Vec<Cell>>),
+    /// The variant's position in the enum and what it carries.
+    Enum(usize, Rc<Vec<Cell>>),
     /// `T*`
     Ptr(Cell),
     /// `read T` / `ref T`
@@ -101,13 +103,56 @@ impl From<Diag> for Stop {
     }
 }
 
-type Res<T> = Result<T, Stop>;
+/// Why evaluation is being abandoned. Besides a stop of the whole program, an arm of a
+/// `match` can leave from inside an expression with `return`, `break` or `continue`; these
+/// travel up to the call or the loop they belong to.
+enum Unwind {
+    Stop(Stop),
+    Return(Value),
+    Break,
+    Continue,
+}
+
+impl From<Diag> for Unwind {
+    fn from(diag: Diag) -> Unwind {
+        Unwind::Stop(Stop::Diag(diag))
+    }
+}
+
+impl From<Stop> for Unwind {
+    fn from(stop: Stop) -> Unwind {
+        Unwind::Stop(stop)
+    }
+}
+
+type Res<T> = Result<T, Unwind>;
 
 enum Flow {
     Next,
     Break,
     Continue,
     Return(Value),
+}
+
+/// What a loop body did, when it left from inside an expression: a `break` or `continue`
+/// in a `match` arm ends here.
+fn loop_flow(result: Res<Flow>) -> Res<Flow> {
+    match result {
+        Err(Unwind::Break) => Ok(Flow::Break),
+        Err(Unwind::Continue) => Ok(Flow::Continue),
+        other => other,
+    }
+}
+
+/// The variant and the cells of an enum value, behind pointers and borrows.
+fn enum_parts(mut value: Value) -> (usize, Rc<Vec<Cell>>) {
+    loop {
+        value = match value {
+            Value::Enum(index, fields) => return (index, fields),
+            Value::Ptr(inner) | Value::Borrow(inner) => inner.borrow().clone(),
+            _ => unreachable!("the checker only lets enums be matched"),
+        };
+    }
 }
 
 /// Variables of one function call.
@@ -130,7 +175,7 @@ impl Frame {
     }
 }
 
-pub fn run_program(prog: &Program, src: &str, out: &mut dyn Write) -> Res<()> {
+pub fn run_program(prog: &Program, src: &str, out: &mut dyn Write) -> Result<(), Stop> {
     let funcs = prog.funcs.iter().map(|func| (func.name.as_str(), func)).collect();
     let mut methods: HashMap<&str, HashMap<&str, &Func>> = HashMap::new();
     for decl in &prog.structs {
@@ -138,8 +183,11 @@ pub fn run_program(prog: &Program, src: &str, out: &mut dyn Write) -> Res<()> {
     }
     let mut interp = Interp { funcs, methods, src, out, depth: 0 };
     let main = interp.funcs["main"];
-    interp.call(main, None, Vec::new(), main.name_span)?;
-    Ok(())
+    match interp.call(main, None, Vec::new(), main.name_span) {
+        Ok(_) => Ok(()),
+        Err(Unwind::Stop(stop)) => Err(stop),
+        Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop"),
+    }
 }
 
 struct Interp<'a> {
@@ -166,11 +214,12 @@ impl<'a> Interp<'a> {
             frame.declare(&param.name, value);
         }
         self.depth += 1;
-        let flow = self.block(&func.body, &mut frame)?;
+        let result = self.block(&func.body, &mut frame);
         self.depth -= 1;
-        match flow {
-            Flow::Return(value) => Ok(value),
-            _ => Ok(Value::Void),
+        match result {
+            Ok(Flow::Return(value)) | Err(Unwind::Return(value)) => Ok(value),
+            Ok(_) => Ok(Value::Void),
+            Err(other) => Err(other),
         }
     }
 
@@ -206,15 +255,28 @@ impl<'a> Interp<'a> {
                 *target.borrow_mut() = new;
             }
             StmtKind::If { cond, then, els } => {
-                if self.condition(cond, frame)? {
-                    return self.block(then, frame);
+                // The scope holds the names of an `is` pattern in the condition.
+                frame.scopes.push(HashMap::new());
+                let flow = if self.condition(cond, frame)? {
+                    self.block(then, frame)?
                 } else if let Some(els) = els {
-                    return self.block(els, frame);
-                }
+                    self.block(els, frame)?
+                } else {
+                    Flow::Next
+                };
+                frame.scopes.pop();
+                return Ok(flow);
             }
             StmtKind::While { cond, body } => {
-                while self.condition(cond, frame)? {
-                    match self.block(body, frame)? {
+                let depth = frame.scopes.len();
+                loop {
+                    frame.scopes.push(HashMap::new());
+                    let flow = match self.condition(cond, frame)? {
+                        true => loop_flow(self.block(body, frame))?,
+                        false => Flow::Break,
+                    };
+                    frame.scopes.truncate(depth);
+                    match flow {
                         Flow::Break => break,
                         Flow::Return(value) => return Ok(Flow::Return(value)),
                         Flow::Next | Flow::Continue => {}
@@ -225,11 +287,12 @@ impl<'a> Interp<'a> {
                 let (Value::Int(ty, start), Value::Int(_, end)) = (self.expr(from, frame)?, self.expr(to, frame)?) else {
                     unreachable!("the checker makes range bounds integers")
                 };
+                let depth = frame.scopes.len();
                 for i in start..end {
                     frame.scopes.push(HashMap::new());
                     frame.declare(var, Value::Int(ty, i));
-                    let flow = self.block(body, frame)?;
-                    frame.scopes.pop();
+                    let flow = loop_flow(self.block(body, frame))?;
+                    frame.scopes.truncate(depth);
                     match flow {
                         Flow::Break => break,
                         Flow::Return(value) => return Ok(Flow::Return(value)),
@@ -358,6 +421,81 @@ impl<'a> Interp<'a> {
                     Ok(value)
                 }
             }
+            ExprKind::Variant { index, args } => {
+                let cells = self.values(args, frame)?.into_iter().map(cell).collect();
+                Ok(Value::Enum(*index, Rc::new(cells)))
+            }
+            ExprKind::Unbox(inner) => match self.expr(inner, frame)? {
+                Value::Borrow(target) => match &*behind_borrows(target).borrow() {
+                    Value::Ptr(owned) => Ok(Value::Borrow(owned.clone())),
+                    _ => unreachable!("the checker only unboxes a borrow of a pointer"),
+                },
+                _ => unreachable!("the checker only unboxes a borrow"),
+            },
+            ExprKind::IsVariant { expr: inner, negated, pattern, .. } => {
+                let (index, fields) = enum_parts(self.expr(inner, frame)?);
+                let PatternKind::Variant { index: wanted, args, .. } = &pattern.kind else {
+                    unreachable!("`is` only tests for a variant")
+                };
+                let found = index == *wanted;
+                if found {
+                    // `is` only looks, so the names borrow.
+                    for ((name, _), field) in args.iter().flatten().zip(fields.iter()) {
+                        if let Some(name) = name {
+                            frame.scopes.last_mut().expect("an open scope").insert(name.clone(), cell(Value::Borrow(field.clone())));
+                        }
+                    }
+                }
+                Ok(Value::Bool(found != *negated))
+            }
+            ExprKind::Match { subject, arms, borrowed } => {
+                let value = self.expr(subject, frame)?;
+                let (index, fields) = enum_parts(value.clone());
+                let depth = frame.scopes.len();
+                for arm in arms {
+                    frame.scopes.push(HashMap::new());
+                    let fits = match &arm.pattern.kind {
+                        PatternKind::Wildcard => true,
+                        PatternKind::Bind(name) => {
+                            frame.declare(name, value.clone());
+                            true
+                        }
+                        PatternKind::Variant { index: wanted, args, .. } => {
+                            if index == *wanted {
+                                for ((name, _), field) in args.iter().flatten().zip(fields.iter()) {
+                                    let Some(name) = name else { continue };
+                                    let bound = if *borrowed { Value::Borrow(field.clone()) } else { field.borrow().clone() };
+                                    frame.declare(name, bound);
+                                }
+                            }
+                            index == *wanted
+                        }
+                    };
+                    let chosen = fits
+                        && match &arm.guard {
+                            Some(guard) => self.condition(guard, frame)?,
+                            None => true,
+                        };
+                    if chosen {
+                        for stmt in &arm.body {
+                            match self.stmt(stmt, frame)? {
+                                Flow::Next => {}
+                                Flow::Break => return Err(Unwind::Break),
+                                Flow::Continue => return Err(Unwind::Continue),
+                                Flow::Return(value) => return Err(Unwind::Return(value)),
+                            }
+                        }
+                        let result = match &arm.value {
+                            Some(value) => self.expr(value, frame)?,
+                            None => Value::Void,
+                        };
+                        frame.scopes.truncate(depth);
+                        return Ok(result);
+                    }
+                    frame.scopes.truncate(depth);
+                }
+                unreachable!("the checker requires an arm for every variant")
+            }
             ExprKind::Call { name, args, callee, .. } => match callee {
                 Callee::Static { owner, name } => {
                     let func = self.methods[owner.as_str()][name.as_str()];
@@ -449,7 +587,7 @@ impl<'a> Interp<'a> {
             if let Some((left, right)) = sides {
                 diag = diag.note(format!("left: {}", left.debug())).note(format!("right: {}", right.debug()));
             }
-            Stop::Diag(diag)
+            Unwind::from(diag)
         };
         match &cond.kind {
             ExprKind::Binary(op, left, right) if op.is_comparison() => {
@@ -467,8 +605,8 @@ impl<'a> Interp<'a> {
 
     fn write_line(&mut self, text: &str) -> Res<()> {
         writeln!(self.out, "{text}").map_err(|error| match error.kind() {
-            std::io::ErrorKind::BrokenPipe => Stop::OutputClosed,
-            _ => Stop::OutputFailed(error.to_string()),
+            std::io::ErrorKind::BrokenPipe => Unwind::Stop(Stop::OutputClosed),
+            _ => Unwind::Stop(Stop::OutputFailed(error.to_string())),
         })
     }
 }

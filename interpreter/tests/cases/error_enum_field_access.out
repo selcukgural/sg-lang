@@ -1,0 +1,5 @@
+error: `Shape` is an enum; what it carries depends on the variant
+  --> error_enum_field_access.sg:9:13
+ 9 |     print(s.radius)
+   |             ^^^^^^
+  hint: reach it with `match`, or test one variant: `if x is Circle(r) { ... }`

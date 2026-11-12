@@ -1,0 +1,5 @@
+error: `Rect` carries 2 value(s), the pattern has 1
+  --> error_pattern_wrong_count.sg:9:13
+ 9 |     if s is Rect(w) {
+   |             ^^^^^^^
+  hint: `Rect(width, height)`; write `_` for a value that is not needed

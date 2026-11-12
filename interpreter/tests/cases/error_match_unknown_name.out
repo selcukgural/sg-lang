@@ -1,0 +1,5 @@
+error: `Shape` has no variant `other`
+  --> error_match_unknown_name.sg:11:9
+ 11 |         other => print("other")
+    |         ^^^^^
+  hint: to take any value under this name, write `var other`

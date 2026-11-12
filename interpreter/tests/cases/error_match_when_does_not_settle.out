@@ -1,0 +1,6 @@
+error: this `match` does not handle `Circle`
+  an arm with `when` does not settle its variant: the condition may be false
+  --> error_match_when_does_not_settle.sg:9:11
+ 9 |     match read s {
+   |           ^^^^^^
+  hint: add an arm for each, or `_ => ...` for everything else

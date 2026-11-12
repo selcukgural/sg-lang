@@ -1,0 +1,5 @@
+error: expected `read Expr`, found `Expr*`
+  --> error_pointer_needs_read.sg:15:16
+ 15 |     print(eval(tree))
+    |                ^^^^
+  hint: lend it with `read`: `read tree`

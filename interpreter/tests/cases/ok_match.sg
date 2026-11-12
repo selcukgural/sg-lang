@@ -1,0 +1,111 @@
+enum Token {
+    Number(int value)
+    Plus
+    Minus
+    End
+}
+
+Token at(int i) {
+    if i == 0 {
+        return Token.Number(5)
+    }
+    if i == 1 {
+        return Token.Plus
+    }
+    if i == 2 {
+        return Token.Number(7)
+    }
+    if i == 3 {
+        return Token.Minus
+    }
+    if i == 4 {
+        return Token.Number(2)
+    }
+    return Token.End
+}
+
+// `return`, `break` and `continue` in an arm leave from inside the expression.
+int sum() {
+    var total = 0
+    var sign = 1
+    var i = 0
+    while true {
+        var token = at(i)
+        i += 1
+        int value = match token {
+            Number(v) => v
+            Plus => {
+                sign = 1
+                continue
+            }
+            Minus => {
+                sign = -1
+                continue
+            }
+            End => break
+        }
+        total += sign * value
+    }
+    return total
+}
+
+int firstNumber() {
+    for i in 0..10 {
+        match at(i) {
+            Number(v) => return v
+            _ => {}
+        }
+    }
+    return -1
+}
+
+string describe(read Token t) {
+    // A `match` on the last line of an arm's block is the value of the block.
+    return match t {
+        Number(v) => {
+            var r = v % 2
+            match Token.Number(r) {
+                Number(odd) when odd == 1 => "odd"
+                _ => "even"
+            }
+        }
+        var other => {
+            if other is Plus {
+                return "plus"
+            }
+            "something else"
+        }
+    }
+}
+
+void main() {
+    print(sum())
+    print(firstNumber())
+    print(describe(read Token.Number(3)))
+    print(describe(read Token.Number(4)))
+    print(describe(read Token.Plus))
+    print(describe(read Token.End))
+
+    // The names of a pattern do not leak, and an outer name comes back after the block.
+    var v = 100
+    var token = Token.Number(1)
+    if token is Number(v) {
+        print(v)
+    }
+    print(v)
+
+    var i = 0
+    while at(i) is not End {
+        i += 1
+    }
+    print(i)
+
+    // `ref` in front lends for writing.
+    if ref token is Number(n) {
+        n = 42
+    }
+    match token {
+        Number(n) => print(n)
+        _ => print("no number")
+    }
+}

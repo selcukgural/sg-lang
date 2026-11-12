@@ -1,0 +1,14 @@
+enum Shape {
+    Circle(int radius)
+    Rect(int width, int height)
+    Empty
+}
+
+void main() {
+    var s = Shape.Circle(2)
+    match read s {
+        Circle(r) when r > 100 => print("big")
+        Rect(_, _) => print("rect")
+        Empty => print("empty")
+    }
+}

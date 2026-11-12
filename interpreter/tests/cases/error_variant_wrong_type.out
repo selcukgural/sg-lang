@@ -1,0 +1,4 @@
+error: expected `int`, found `string`
+  --> error_variant_wrong_type.sg:8:27
+ 8 |     var s = Shape.Rect(3, "four")
+   |                           ^^^^^^

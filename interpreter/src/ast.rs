@@ -6,6 +6,7 @@ use crate::types::IntTy;
 
 pub struct Program {
     pub structs: Vec<StructDecl>,
+    pub enums: Vec<EnumDecl>,
     pub funcs: Vec<Func>,
 }
 
@@ -15,6 +16,19 @@ pub struct StructDecl {
     pub fields: Vec<FieldDecl>,
     /// Functions written in the struct body, with or without `this`.
     pub methods: Vec<Func>,
+}
+
+pub struct EnumDecl {
+    pub name: String,
+    pub name_span: Span,
+    pub variants: Vec<VariantDecl>,
+}
+
+/// `Circle(int radius)` or `Empty`
+pub struct VariantDecl {
+    pub name: String,
+    pub span: Span,
+    pub fields: Vec<FieldDecl>,
 }
 
 pub struct FieldDecl {
@@ -140,11 +154,48 @@ pub enum ExprKind {
     IsNull { expr: Box<Expr>, negated: bool },
     /// `a ?? b`
     Coalesce(Box<Expr>, Box<Expr>),
+    /// `e is Circle(r)` / `e is not Circle`. `by_ref`: the names are `ref` borrows, otherwise
+    /// `read` (set by the checker).
+    IsVariant { expr: Box<Expr>, negated: bool, pattern: Pattern, by_ref: bool },
+    /// `match e { ... }`. `borrowed`: the names in the arms borrow from the value instead of
+    /// taking what it holds (set by the checker).
+    Match { subject: Box<Expr>, arms: Vec<Arm>, borrowed: bool },
+
+    /// Built by the checker from `Shape.Circle(2)` and `Shape.Empty`: the variant's position
+    /// and what it carries.
+    Variant { index: usize, args: Vec<Expr> },
+    /// Inserted by the checker: a borrow of a `T*` used as a borrow of the `T` it owns.
+    Unbox(Box<Expr>),
 
     /// Inserted by the checker: `int` value used where a wider integer is expected.
     Widen(IntTy, Box<Expr>),
     /// Inserted by the checker: a borrow of a copyable value used as the value itself.
     Load(Box<Expr>),
+}
+
+/// One arm of a `match`: `Circle(r) when r > 0 => body`. The body is a single expression
+/// (`value` alone), a statement such as `return`, or a block whose last line may be the value.
+pub struct Arm {
+    pub pattern: Pattern,
+    pub guard: Option<Expr>,
+    pub body: Block,
+    pub value: Option<Expr>,
+    pub span: Span,
+}
+
+pub struct Pattern {
+    pub kind: PatternKind,
+    pub span: Span,
+}
+
+pub enum PatternKind {
+    /// `_`
+    Wildcard,
+    /// `var other`: matches everything and takes the value.
+    Bind(String),
+    /// `Circle(r)`, `Rect(w, _)`, `Empty`. A name is `None` for `_`. `args` is `None` when
+    /// no parentheses were written. `index` is the variant's position, set by the checker.
+    Variant { name: String, args: Option<Vec<(Option<String>, Span)>>, index: usize },
 }
 
 pub struct FieldInit {

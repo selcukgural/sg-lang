@@ -1,0 +1,4 @@
+error: this arm can never run: an arm above takes every value
+  --> error_match_unreachable_arm.sg:12:9
+ 12 |         Empty => print("empty")
+    |         ^^^^^

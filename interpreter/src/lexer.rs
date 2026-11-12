@@ -31,6 +31,8 @@ pub enum Tok {
     Ref,
     Public,
     Struct,
+    Enum,
+    Match,
 
     LParen,
     RParen,
@@ -48,6 +50,7 @@ pub enum Tok {
     Slash,
     Percent,
     Assign,
+    FatArrow,
     PlusEq,
     MinusEq,
     StarEq,
@@ -96,6 +99,7 @@ impl Tok {
                 | Tok::Slash
                 | Tok::Percent
                 | Tok::Assign
+                | Tok::FatArrow
                 | Tok::PlusEq
                 | Tok::MinusEq
                 | Tok::StarEq
@@ -148,6 +152,9 @@ impl Tok {
             Tok::Ref => "ref",
             Tok::Public => "public",
             Tok::Struct => "struct",
+            Tok::Enum => "enum",
+            Tok::Match => "match",
+            Tok::FatArrow => "=>",
             Tok::LParen => "(",
             Tok::RParen => ")",
             Tok::LBrace => "{",
@@ -337,6 +344,8 @@ impl<'a> Lexer<'a> {
             "ref" => Tok::Ref,
             "public" => Tok::Public,
             "struct" => Tok::Struct,
+            "enum" => Tok::Enum,
+            "match" => Tok::Match,
             name => Tok::Ident(name.to_string()),
         };
         self.push(tok, start);
@@ -470,6 +479,7 @@ impl<'a> Lexer<'a> {
         let next = self.at(1);
         let (tok, len) = match (self.bytes[start], next) {
             (b'=', Some(b'=')) => (Tok::Eq, 2),
+            (b'=', Some(b'>')) => (Tok::FatArrow, 2),
             (b'!', Some(b'=')) => (Tok::Ne, 2),
             (b'<', Some(b'=')) => (Tok::Le, 2),
             (b'>', Some(b'=')) => (Tok::Ge, 2),

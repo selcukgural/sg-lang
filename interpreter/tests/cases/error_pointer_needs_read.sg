@@ -1,0 +1,16 @@
+enum Expr {
+    Number(int value)
+    Negate(Expr* operand)
+}
+
+int eval(read Expr e) {
+    return match e {
+        Number(v) => v
+        Negate(operand) => -eval(operand)
+    }
+}
+
+void main() {
+    var tree = new Expr.Negate(new Expr.Number(1))
+    print(eval(tree))
+}

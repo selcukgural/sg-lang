@@ -1,0 +1,5 @@
+error: enum `Expr` contains itself, so it has no finite size
+  --> error_enum_contains_itself.sg:3:12
+ 3 |     Negate(Expr operand)
+   |            ^^^^
+  hint: put it behind a pointer: `Expr* operand`

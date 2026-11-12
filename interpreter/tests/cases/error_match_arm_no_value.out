@@ -1,0 +1,5 @@
+error: this arm gives no value, and the `match` is used as one
+  --> error_match_arm_no_value.sg:11:9
+ 11 |         Rect(_, _) => {
+    |         ^^^^^^^^^^^^^^^
+  hint: the last line of the block is the value of the arm

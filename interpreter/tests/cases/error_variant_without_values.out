@@ -1,0 +1,5 @@
+error: `Circle` carries 1 value(s) and cannot be built without them
+  --> error_variant_without_values.sg:8:13
+ 8 |     var s = Shape.Circle
+   |             ^^^^^^^^^^^^
+  hint: `Shape.Circle(radius)`

@@ -94,6 +94,12 @@ smallness: what each language does best is taken in the form that fits us, and i
 | Patterns | `_` catches everything, `var other` also takes the value, an unknown bare name is an error. The condition is `when` | A mistyped name should not silently become "catch everything" |
 | `match` and ownership | `match x` behaves like `var y = x`: it moves if `x` is an owner, `match read x` and `match ref x` borrow, and if `x` is already a borrow it gives the same kind of borrow | No new rule |
 | Testing a single variant | `if s is Circle(r) { }`, the same word as `is null` | The counterpart of Rust's `if let` |
+| `is` and ownership | `x is Circle(r)` only looks: it never moves `x`. The names are `read` borrows, or `ref` borrows when `x` is a `ref` borrow or the test is written `ref x is Circle(r)`. To take the values out, `match` | `is null` already only looks, and a test that uses its subject up would surprise. Rust's `if let` moves; we differ on purpose |
+| Pattern shape | A pattern names or skips every value: `Rect(w, _)`. A bare `Rect` for a variant that carries data is a compile error | One way to write it; adding a field to a variant shows every pattern that needs a look |
+| Unreachable arm | An arm that can never run (its variant is handled above, or an arm above takes every value) is a compile error | Rust warns; there are no warnings here |
+| Arm of a statement `match` | Follows the statement rule: a call, an assignment (`Circle(r) => r += 1`), `return`/`break`/`continue`, or a block. `Circle(r) => r * 2` is "the value is not used". `Empty => {}` does nothing | No new rule |
+| Separators in `enum` and `match` | Variants and arms are separated by line ends, never commas | The line-end rule; one way to write it |
+| `match`, `is` and `T*` | Both look through `T*`, like field access. `var other` gets the value as it was given (the `T*` itself) | No new rule |
 | Recoverable errors | `Result<T, E>` is an ordinary enum: `Ok(T value)`, `Error(E cause)`. Success is `return Ok(value)`, and for an operation that returns no value `Result<void, E>` and `return Ok()`. `main` can return it too, the error is printed and the exit code is 1 | No new type feature is needed, and because it is a value it can be stored and passed to generic code. The `int f() fails E` notation was ruled out for this reason |
 | Error propagation | `try x`, a prefix like `await`. On an error it returns to the caller, on a `T?` it returns `null`. Parentheses in a chain: `(try a()).b()` | `?` is used as a type suffix. Returning through `try` is a normal exit, `dispose` runs |
 | `Result` unwrapping | `x ?? default`, `x ?? panic("message")`. There can be a `return` on the right of `??` | The same operator as for `T?`, like `x ?? throw` in C# |
@@ -187,6 +193,10 @@ smallness: what each language does best is taken in the form that fits us, and i
 
 ## Open questions
 
+- Generics. The author's view (12 November 2026): the language can do without user-written generics for a while, perhaps
+  for good, as Go did for years. Not decided yet. The interpreter knows `Result` as a built-in type for now; what this
+  means for `List<T>`, `HashMap<K, V>` and the generic examples is still to be talked through.
+
 - Notation. The [C# variant](02-syntax-draft.md) is the current draft, and it will be stressed with example programs.
 - Library boundary: in a library with more than one folder there is no level for "my own folders can see it, the user cannot"
   (`internal` in C#, `pub(crate)` in Rust). To be handled together with the package system.
@@ -228,7 +238,11 @@ This goal holds only with a back end at the level of LLVM. A tree-walking interp
    `take`/`replace`, moving a field out of an owned value (tracked per field); the stack example runs (until `try` arrives,
    with `if node is null { return null }` inside `pop`). The six small choices made in this slice were approved on 12 November 2026 and are in the decisions table:
    [interpreter/README.md](../interpreter/README.md), "Rules from the third slice".
-   The borrow check (`from`, conflicting `ref`) does not exist yet. Next: `enum` and `match`, then `Result` and `try`. The current state is in
+   Fourth slice (the same day): `enum`, `match` (expression and statement, `when`, `_`, `var other`, the check that every
+   variant is handled, `return`/`break`/`continue` from an arm) and `is` with a variant; an expression tree with `Expr*` runs.
+   The six small choices made in this slice were approved on 12 November 2026 and are in the decisions table:
+   [interpreter/README.md](../interpreter/README.md), "Rules from the fourth slice".
+   The borrow check (`from`, conflicting `ref`) does not exist yet. Next: `Result` and `try`. The current state is in
    [interpreter/README.md](../interpreter/README.md). The code, comments and error messages are in English. Since 12 November 2026 the design documents are in English too.
 
 ## Dropped decisions

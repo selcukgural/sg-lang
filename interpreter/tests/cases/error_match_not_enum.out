@@ -1,0 +1,5 @@
+error: `match` needs a value of an enum, found `int`
+  patterns for numbers and text are not in the interpreter yet
+  --> error_match_not_enum.sg:9:11
+ 9 |     match n {
+   |           ^

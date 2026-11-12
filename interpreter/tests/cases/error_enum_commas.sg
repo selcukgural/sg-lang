@@ -1,0 +1,10 @@
+enum Shape {
+    Circle(int radius)
+    Rect(int width, int height)
+    Empty
+}
+
+enum Color { Red, Green }
+
+void main() {
+}

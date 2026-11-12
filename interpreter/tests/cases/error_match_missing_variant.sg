@@ -1,0 +1,16 @@
+enum Shape {
+    Circle(int radius)
+    Rect(int width, int height)
+    Empty
+}
+
+int sides(read Shape s) {
+    return match s {
+        Circle(r) => 0
+        Rect(w, h) => 4
+    }
+}
+
+void main() {
+    print(sides(read Shape.Empty))
+}

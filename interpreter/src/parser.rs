@@ -8,7 +8,7 @@ use crate::types::IntTy;
 /// Words that are in the design but not in the interpreter yet. They get an explicit
 /// message instead of "unknown name".
 const NOT_YET: &[&str] = &[
-    "enum", "interface", "match", "use", "try", "shared", "weak", "checked", "locked", "raw", "unsafe", "lock",
+    "interface", "use", "try", "shared", "weak", "checked", "locked", "raw", "unsafe", "lock",
     "spawn", "share", "using", "readonly",
 ];
 
@@ -125,16 +125,18 @@ impl<'a> Parser<'a> {
     }
 
     fn program(&mut self) -> Res<Program> {
-        let mut program = Program { structs: Vec::new(), funcs: Vec::new() };
+        let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new() };
         self.skip_newlines();
         while *self.peek() != Tok::Eof {
             // One module for now, so `public` changes nothing yet.
             self.eat(&Tok::Public);
             if *self.peek() == Tok::Struct {
                 program.structs.push(self.struct_decl()?);
+            } else if *self.peek() == Tok::Enum {
+                program.enums.push(self.enum_decl()?);
             } else {
                 let ret = self.type_expr().map_err(|d| {
-                    d.hint("only structs and functions are written at the top level: `void main() { ... }`")
+                    d.hint("only structs, enums and functions are written at the top level: `void main() { ... }`")
                 })?;
                 let (name, name_span) = self.ident("a function name")?;
                 program.funcs.push(self.func(ret, name, name_span, false)?);
@@ -173,6 +175,49 @@ impl<'a> Parser<'a> {
         }
         self.bump();
         Ok(StructDecl { name, name_span, fields, methods })
+    }
+
+    /// `enum Shape { Circle(int radius)` / `Empty }`: one variant per line.
+    fn enum_decl(&mut self) -> Res<EnumDecl> {
+        self.bump();
+        let (name, name_span) = self.ident("an enum name")?;
+        self.open_brace()?;
+        let mut variants = Vec::new();
+        self.skip_newlines();
+        while *self.peek() != Tok::RBrace {
+            if *self.peek() == Tok::Eof {
+                return Err(self.unexpected("`}`"));
+            }
+            let (variant, span) = self.ident("a variant name")?;
+            let mut fields = Vec::new();
+            if *self.peek() == Tok::LParen {
+                let open = self.bump().span;
+                while *self.peek() != Tok::RParen {
+                    let ty = self.type_expr()?;
+                    let (field, span) = self.ident("a field name")?;
+                    fields.push(FieldDecl { ty, name: field, span });
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                let close = self.expect(Tok::RParen, "`)`")?;
+                if fields.is_empty() {
+                    return Err(Diag::error(open.to(close), "a variant that carries nothing is written without parentheses")
+                        .hint(format!("`{variant}`")));
+                }
+            }
+            variants.push(VariantDecl { name: variant, span, fields });
+            if *self.peek() == Tok::Comma {
+                return Err(Diag::error(self.span(), "variants are separated by line ends, not commas")
+                    .hint("write each variant on its own line"));
+            }
+            if *self.peek() != Tok::RBrace {
+                self.expect(Tok::Newline, "end of line")?;
+            }
+            self.skip_newlines();
+        }
+        self.bump();
+        Ok(EnumDecl { name, name_span, variants })
     }
 
     /// The rest of a function after its return type and name. In a struct body the first
@@ -271,7 +316,38 @@ impl<'a> Parser<'a> {
         matches!(self.peek_at(n), Tok::Ident(_))
     }
 
+    /// Whether a declaration starts here and is followed by `=`.
+    fn at_initialized_declaration(&self) -> bool {
+        let mut n = 1;
+        while matches!(self.peek_at(n), Tok::Star | Tok::Question) {
+            n += 1;
+        }
+        self.at_declaration() && *self.peek_at(n + 1) == Tok::Assign
+    }
+
+    /// Whether only line ends stand between here and the `}` that closes the block.
+    fn at_block_end(&self) -> bool {
+        let mut n = 0;
+        while *self.peek_at(n) == Tok::Newline {
+            n += 1;
+        }
+        *self.peek_at(n) == Tok::RBrace
+    }
+
     fn stmt(&mut self) -> Res<Stmt> {
+        match self.stmt_or_tail(Tail::Never)? {
+            Ok(stmt) => Ok(stmt),
+            Err(_) => unreachable!("a tail expression is only read when asked for"),
+        }
+    }
+
+    /// A statement, or an expression that is the value of a `match` arm (see `Tail`).
+    fn stmt_or_tail(&mut self, tail: Tail) -> Res<Result<Stmt, Expr>> {
+        let tail_ok = |parser: &Self| match tail {
+            Tail::Never => false,
+            Tail::LastLine => parser.at_block_end(),
+            Tail::Always => true,
+        };
         let start = self.span();
         let kind = match self.peek().clone() {
             Tok::Var => {
@@ -317,6 +393,13 @@ impl<'a> Parser<'a> {
                 self.bump();
                 StmtKind::Continue
             }
+            Tok::Match => {
+                let expr = self.match_expr()?;
+                if tail_ok(self) {
+                    return Ok(Err(expr));
+                }
+                StmtKind::Expr(expr)
+            }
             Tok::Else => {
                 return Err(Diag::error(start, "`else` cannot start a new line")
                     .hint("put `else` on the same line as `}`: `} else {`"));
@@ -327,7 +410,7 @@ impl<'a> Parser<'a> {
                 return Err(Diag::error(start, format!("a line cannot start with {text}"))
                     .hint(format!("the statement ended on the previous line; to continue it, put {text} at the end of that line")));
             }
-            _ if self.at_declaration() => {
+            _ if self.at_declaration() && (tail == Tail::Never || self.at_initialized_declaration()) => {
                 let ty = self.type_expr()?;
                 let (name, name_span) = self.ident("a variable name")?;
                 if *self.peek() != Tok::Assign {
@@ -349,7 +432,9 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let value = self.expr()?;
                     StmtKind::Assign { target: expr, op, value, through: false }
-                } else if matches!(expr.kind, ExprKind::Call { .. } | ExprKind::Method { .. }) {
+                } else if tail_ok(self) {
+                    return Ok(Err(expr));
+                } else if matches!(expr.kind, ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Match { .. }) {
                     StmtKind::Expr(expr)
                 } else {
                     return Err(Diag::error(expr.span, "the value of this expression is not used")
@@ -357,7 +442,134 @@ impl<'a> Parser<'a> {
                 }
             }
         };
-        Ok(Stmt { kind, span: Span::new(start.start, self.prev_end()) })
+        Ok(Ok(Stmt { kind, span: Span::new(start.start, self.prev_end()) }))
+    }
+
+    /// `match subject { pattern [when condition] => body ... }`: one arm per line.
+    fn match_expr(&mut self) -> Res<Expr> {
+        let start = self.bump().span;
+        let subject = self.head_expr(false)?;
+        self.open_brace()?;
+        let outer = std::mem::replace(&mut self.struct_literals, true);
+        let mut arms = Vec::new();
+        self.skip_newlines();
+        while *self.peek() != Tok::RBrace {
+            if *self.peek() == Tok::Eof {
+                return Err(self.unexpected("`}`"));
+            }
+            let arm_start = self.span();
+            let pattern = self.pattern()?;
+            let guard = if matches!(self.peek(), Tok::Ident(word) if word == "when") {
+                self.bump();
+                Some(self.expr()?)
+            } else {
+                None
+            };
+            self.expect(Tok::FatArrow, "`=>`")?;
+            let (body, value) = match self.peek() {
+                Tok::LBrace => self.arm_block()?,
+                _ => match self.stmt_or_tail(Tail::Always)? {
+                    Ok(stmt) => (vec![stmt], None),
+                    Err(value) => (Vec::new(), Some(value)),
+                },
+            };
+            arms.push(Arm { pattern, guard, body, value, span: Span::new(arm_start.start, self.prev_end()) });
+            if *self.peek() == Tok::Comma {
+                return Err(Diag::error(self.span(), "arms are separated by line ends, not commas")
+                    .hint("write each arm on its own line"));
+            }
+            if *self.peek() != Tok::RBrace {
+                self.expect(Tok::Newline, "end of line")?;
+            }
+            self.skip_newlines();
+        }
+        self.bump();
+        self.struct_literals = outer;
+        let span = Span::new(start.start, self.prev_end());
+        Ok(Expr { kind: ExprKind::Match { subject: Box::new(subject), arms, borrowed: false }, span })
+    }
+
+    /// The block of a `match` arm: statements, and the last line may be the value.
+    fn arm_block(&mut self) -> Res<(Block, Option<Expr>)> {
+        self.open_brace()?;
+        let outer = std::mem::replace(&mut self.struct_literals, true);
+        let mut stmts = Vec::new();
+        let mut value = None;
+        self.skip_newlines();
+        while *self.peek() != Tok::RBrace {
+            if *self.peek() == Tok::Eof {
+                return Err(self.unexpected("`}`"));
+            }
+            match self.stmt_or_tail(Tail::LastLine)? {
+                Ok(stmt) => stmts.push(stmt),
+                Err(expr) => value = Some(expr),
+            }
+            if *self.peek() != Tok::RBrace {
+                self.expect(Tok::Newline, "end of line")?;
+            }
+            self.skip_newlines();
+        }
+        self.bump();
+        self.struct_literals = outer;
+        Ok((stmts, value))
+    }
+
+    /// `Circle(r)`, `Rect(w, _)`, `Empty`, `_`, `var other`
+    fn pattern(&mut self) -> Res<Pattern> {
+        let start = self.span();
+        let kind = match self.peek().clone() {
+            Tok::Var => {
+                self.bump();
+                PatternKind::Bind(self.ident("a variable name")?.0)
+            }
+            Tok::Ident(word) if word == "_" => {
+                self.bump();
+                PatternKind::Wildcard
+            }
+            Tok::Ident(_) => {
+                let (name, _) = self.ident("a variant name")?;
+                if *self.peek() == Tok::Dot {
+                    let diag = Diag::error(start.to(self.span()), "a pattern names the variant alone, without its enum");
+                    return Err(match self.peek_at(1) {
+                        Tok::Ident(variant) => diag.hint(format!("`{variant}`")),
+                        _ => diag,
+                    });
+                }
+                let mut args = None;
+                if self.eat(&Tok::LParen) {
+                    let mut names = Vec::new();
+                    while *self.peek() != Tok::RParen {
+                        match self.peek().clone() {
+                            Tok::Ident(_) if !matches!(self.peek_at(1), Tok::Comma | Tok::RParen) => {
+                                self.bump();
+                                return Err(self
+                                    .unexpected("`,` or `)`")
+                                    .note("a pattern inside a pattern is not in the interpreter yet; name the value and test it in the arm"));
+                            }
+                            Tok::Ident(word) => {
+                                let span = self.bump().span;
+                                names.push(((word != "_").then_some(word), span));
+                            }
+                            _ => {
+                                return Err(self.unexpected("a name or `_`").note(
+                                    "a pattern inside a pattern is not in the interpreter yet; name the value and test it in the arm",
+                                ))
+                            }
+                        }
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(Tok::RParen, "`)`")?;
+                    args = Some(names);
+                }
+                PatternKind::Variant { name, args, index: 0 }
+            }
+            _ => {
+                return Err(self.unexpected("a pattern").note("patterns for now: a variant such as `Circle(r)`, `_`, or `var name`"))
+            }
+        };
+        Ok(Pattern { kind, span: Span::new(start.start, self.prev_end()) })
     }
 
     fn if_stmt(&mut self) -> Res<StmtKind> {
@@ -408,7 +620,7 @@ impl<'a> Parser<'a> {
         let mut left = self.binary(level + 1)?;
         loop {
             if level == COMPARISON && *self.peek() == Tok::Is {
-                left = self.is_null(left)?;
+                left = self.is_test(left)?;
                 continue;
             }
             let Some(&(_, op)) = LEVELS[level].iter().find(|(tok, _)| tok == self.peek()) else {
@@ -421,19 +633,27 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `x is null`, `x is not null`
-    fn is_null(&mut self, operand: Expr) -> Res<Expr> {
+    /// `x is null`, `x is not null`, `x is Circle(r)`, `x is not Circle`
+    fn is_test(&mut self, operand: Expr) -> Res<Expr> {
         self.bump();
         let negated = matches!(self.peek(), Tok::Ident(word) if word == "not");
         if negated {
             self.bump();
         }
-        if *self.peek() != Tok::Null {
-            return Err(self.unexpected("`null`").note("for now `is` only tests for `null`"));
-        }
-        self.bump();
-        let span = Span::new(operand.span.start, self.prev_end());
-        Ok(Expr { kind: ExprKind::IsNull { expr: Box::new(operand), negated }, span })
+        let start = operand.span.start;
+        let expr = Box::new(operand);
+        let kind = match self.peek() {
+            Tok::Null => {
+                self.bump();
+                ExprKind::IsNull { expr, negated }
+            }
+            Tok::Ident(word) if word != "_" => {
+                let pattern = self.pattern()?;
+                ExprKind::IsVariant { expr, negated, pattern, by_ref: false }
+            }
+            _ => return Err(self.unexpected("`null` or a variant name").note("`is` tests for `null` or for one variant of an enum")),
+        };
+        Ok(Expr { kind, span: Span::new(start, self.prev_end()) })
     }
 
     fn unary(&mut self) -> Res<Expr> {
@@ -571,6 +791,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 ExprKind::Interp(self.interp_parts(parts)?)
             }
+            Tok::Match => return self.match_expr(),
             Tok::LParen => {
                 self.bump();
                 let inner = self.bracketed(|p| p.expr())?;
@@ -635,6 +856,16 @@ impl<'a> Parser<'a> {
         }
         Ok(result)
     }
+}
+
+/// Where an expression may stand as the value of a `match` arm instead of a statement.
+#[derive(Clone, Copy, PartialEq)]
+enum Tail {
+    Never,
+    /// On the last line of an arm's block.
+    LastLine,
+    /// In an arm written without a block: `Circle(r) => 3 * r * r`.
+    Always,
 }
 
 const COMPARISON: usize = 3;
