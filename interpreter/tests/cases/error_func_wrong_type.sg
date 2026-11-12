@@ -1,0 +1,11 @@
+int double(int x) {
+    return x * 2
+}
+
+int apply(Func<string, int> f) {
+    return f("a")
+}
+
+void main() {
+    print(apply(double))
+}

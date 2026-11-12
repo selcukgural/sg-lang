@@ -27,7 +27,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "assert", "panic", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -425,9 +425,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
 }
 
 fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
-    if !matches!(ty.name.as_str(), "Result" | "List" | "HashMap" | "HashSet") && !ty.args.is_empty() {
+    if !matches!(ty.name.as_str(), "Result" | "List" | "HashMap" | "HashSet" | "Func") && !ty.args.is_empty() {
         return Err(Diag::error(ty.span, format!("`{}<...>`: generic types are not in the interpreter yet", ty.name))
-            .note("the types written with `<` and `>` for now are `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>`"));
+            .note("the types written with `<` and `>` for now are `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>` and `Func<A, R>`"));
     }
     let no_borrow = |arg: &TypeExpr, of: &str| match arg.mode {
         Some(_) => Err(Diag::error(arg.span, format!("a `{of}` that holds borrows is not in the interpreter yet"))
@@ -441,6 +441,22 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             };
             no_borrow(item, "List")?;
             Ty::List(Box::new(resolve_type(item, names, false)?))
+        }
+        // The type of a function: what it takes, then what it returns.
+        _ if ty.name == "Func" => {
+            let Some((ret, params)) = ty.args.split_last() else {
+                return Err(Diag::error(ty.span, "`Func` is written with the types of the parameters and then the return type: `Func<int, bool>`")
+                    .note("a function that takes nothing and returns nothing is a `Func<void>`"));
+            };
+            if ret.mode.is_some() {
+                return Err(Diag::error(ret.span, "a function value that returns a borrow is not in the interpreter yet")
+                    .note("it needs the borrow check, which is not here yet"));
+            }
+            let mut resolved = Vec::new();
+            for param in params {
+                resolved.push(resolve_type(param, names, false)?);
+            }
+            Ty::Func(resolved, Box::new(resolve_type(ret, names, true)?))
         }
         _ if ty.name == "HashSet" => {
             let [item] = ty.args.as_slice() else {
@@ -1388,6 +1404,8 @@ impl<'a> Checker<'a> {
             }
         }
         match &mut expr.kind {
+            // Not a variable, but the name of a function: a value, not a place.
+            ExprKind::Var(name) if self.find(name).is_none() && self.sigs.contains_key(name.as_str()) && name != "main" => Ok(None),
             ExprKind::Var(name) => {
                 let ty = self.live_var(name, span)?.current.clone();
                 let writable = !matches!(ty, Ty::Read(_));
@@ -1608,6 +1626,14 @@ impl<'a> Checker<'a> {
                 }
                 self.move_out(expr, &ty)?;
             }
+            return Ok(ty);
+        }
+
+        // The name of a function is a value: its address.
+        if let ExprKind::Var(name) = &expr.kind {
+            let sig = &self.sigs[name.as_str()];
+            let ty = Ty::Func(sig.params.clone(), Box::new(sig.ret.clone()));
+            expr.kind = ExprKind::FuncRef(name.clone());
             return Ok(ty);
         }
 
@@ -1917,7 +1943,7 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Match { subject, arms, borrowed } => self.match_expr(subject, arms, borrowed, expected, false),
             ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => unreachable!("places are handled above"),
-            ExprKind::Widen(..) | ExprKind::Load(_) | ExprKind::Unbox(_) | ExprKind::Variant { .. } => {
+            ExprKind::Widen(..) | ExprKind::Load(_) | ExprKind::Unbox(_) | ExprKind::Variant { .. } | ExprKind::FuncRef(_) => {
                 unreachable!("inserted only after checking")
             }
         }
@@ -2486,6 +2512,18 @@ impl<'a> Checker<'a> {
                 Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len())))
             }
         };
+        // A variable that holds a function value is called like a function; it wins over a
+        // function of the same name.
+        if let Some(var) = self.find(name) {
+            let held = var.current.strip_borrow().clone();
+            let Ty::Func(params, ret) = held else {
+                return Err(Diag::error(name_span, format!("`{name}` is a `{held}`, not a function, and cannot be called")));
+            };
+            self.live_var(name, name_span)?;
+            self.args(name, args, &params, span)?;
+            *callee = Callee::Value;
+            return Ok(*ret);
+        }
         match name {
             "print" => {
                 arity(1)?;
@@ -2639,6 +2677,17 @@ impl<'a> Checker<'a> {
                 self.args(name, args, &sig.params, span)?;
                 *callee = Callee::Method { owner: owner.clone(), this };
                 return Ok(sig.ret.clone());
+            }
+        }
+        // A function value kept in a field: `this.test(order)`.
+        if let Ty::Struct(owner) = target {
+            let fields = &structs[owner].fields;
+            if let Some(position) = fields.iter().position(|(field, _)| field == name) {
+                if let Ty::Func(params, ret) = &fields[position].1 {
+                    self.args(name, args, params, span)?;
+                    *callee = Callee::FieldValue(position);
+                    return Ok((**ret).clone());
+                }
             }
         }
         match name {
@@ -3098,6 +3147,7 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
         | ExprKind::Char(_)
         | ExprKind::Null
         | ExprKind::Var(_)
+        | ExprKind::FuncRef(_)
         | ExprKind::Return(None) => {}
     }
 }

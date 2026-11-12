@@ -78,6 +78,10 @@ pub enum Callee {
     Method { owner: String, this: This },
     /// `string.join(separator, read names)`
     Join,
+    /// A call through a function value kept in a variable: `test(order)`.
+    Value,
+    /// A call through a function value kept in a field: `this.test(order)`; the field's position.
+    FieldValue(usize),
     /// `slot.take()`: gives the value and leaves `null`.
     Take,
     /// `slot.replace(value)`: gives the old value and leaves the new one.
@@ -200,6 +204,9 @@ pub enum ExprKind {
     Variant { owner: String, index: usize, args: Vec<Expr> },
     /// Inserted by the checker: a borrow of a `T*` used as a borrow of the `T` it owns.
     Unbox(Box<Expr>),
+
+    /// Built by the checker from the name of a function used as a value: `isPaid`.
+    FuncRef(String),
 
     /// Inserted by the checker: `int` value used where a wider integer is expected.
     Widen(IntTy, Box<Expr>),

@@ -1,0 +1,4 @@
+error: `count` is a `int`, not a function, and cannot be called
+  --> error_call_not_function.sg:3:11
+ 3 |     print(count(1))
+   |           ^^^^^

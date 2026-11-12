@@ -1,0 +1,5 @@
+error: `Func` is written with the types of the parameters and then the return type: `Func<int, bool>`
+  a function that takes nothing and returns nothing is a `Func<void>`
+  --> error_func_no_types.sg:2:5
+ 2 |     Func f = main
+   |     ^^^^

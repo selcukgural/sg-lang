@@ -34,6 +34,7 @@ cargo test
 | Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x` |
 | Text | `"..."` with `\n \t \r \0 \\ \" \'`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()`, `text.indexOf(':')`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string` |
 | Characters | `'+'`, `'\n'`: a `byte` |
+| Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
 | Built-ins | `print(x)`, `panic("...")`, `assert(condition)` |
 | Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A normal run leaves the tests out |
 | Comparing by name | `a.compare(b)` on integers and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
@@ -370,6 +371,21 @@ approved on 12 November 2026; each has a test in `tests/cases/` or `examples/`.
 `examples/tests_stock.sg` is the stock tests of the design in one file (no modules yet), and it passes. The
 golden test runs every file whose name starts with `tests_` through the test command.
 
+## Rules from the twelfth slice
+
+Function values, as decided on 12 November 2026 ("Function value" in the decisions table). The small choices
+made here were approved the same day; each has a test in `tests/cases/`.
+
+1. **A variable that holds a function value wins over a function of the same name** when it is called, like
+   the rule for `Name.f()`. Calling a variable that is not a function says what it is.
+2. **A method and a function without `this` in a struct are not values** (`Stack.create` cannot be passed);
+   only top-level functions are. `main` and the built-in functions (`print`) are not values either.
+3. **The result of a call is not called directly**: `pick(true)(2)` is written with a variable in between.
+4. **`x => ...` in an argument is an error that says there are no lambdas**, with the hint to pass a name.
+5. A function value is not written as text and not compared with `==`.
+
+`examples/order_rules.sg` is the order rules of the design.
+
 ## Not here yet
 
 - **Borrow checking.** Moves are checked, borrows are not: nothing stops a `read` borrow from outliving its
@@ -383,7 +399,7 @@ golden test runs every file whose name starts with `tests_` through the test com
   methods on enums.
 - Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
-  in the design); function values (`Func<A, B>`), modules, threads, `shared` / `weak` / `checked` / `locked`.
+  in the design); modules, threads, `shared` / `weak` / `checked` / `locked`.
 - A collection changed inside its own `for` through another `ref` to it is not caught (it is part of the
   borrow check); the direct forms are. Here a list is gone over by position and a map or a set as it was when
   the loop started.

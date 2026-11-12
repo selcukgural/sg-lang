@@ -1,0 +1,68 @@
+int double(int x) {
+    return x * 2
+}
+
+int square(int x) {
+    return x * x
+}
+
+void shout(read string text) {
+    print($"{text}!")
+}
+
+int apply(Func<int, int> f, int x) {
+    return f(x)
+}
+
+int twice(Func<int, int> f, int x) {
+    return f(f(x))
+}
+
+Func<int, int> pick(bool wide) {
+    if wide {
+        return square
+    }
+    return double
+}
+
+// A function value in a field is called through the field.
+struct Button {
+    string label
+    Func<read string, void> onClick
+
+    void click(read this) {
+        this.onClick(read this.label)
+    }
+}
+
+int answer() {
+    return 42
+}
+
+void main() {
+    print(apply(double, 5))
+    print(twice(square, 3))
+
+    Func<int, int> f = double
+    var g = f                            // a function value is copied
+    f = square
+    print(f(4))
+    print(g(4))
+    var wide = pick(true)
+    var narrow = pick(false)
+    print(wide(1 + 1) + narrow(10))
+
+    var steps = List<Func<int, int>> { double, square, double }
+    var value = 3
+    for step in read steps {
+        value = step(value)
+    }
+    print(value)
+
+    var button = Button { label = "save", onClick = shout }
+    button.click()
+    button.onClick("direct")
+
+    Func<int> source = answer
+    print(source())
+}

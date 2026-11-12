@@ -1,0 +1,7 @@
+int apply(Func<int, int> f, int x) {
+    return f(x)
+}
+
+void main() {
+    print(apply(x => x * 2, 5))
+}

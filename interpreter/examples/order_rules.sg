@@ -1,0 +1,72 @@
+// The order rules from the design: a named function as a value, an enum for a rule that
+// carries data, and a `for` loop where other languages reach for a lambda.
+
+struct Order {
+    string customer
+    long amount
+    bool paid
+}
+
+// A rule that needs no data of its own is a named function.
+bool isPaid(read Order o) {
+    return o.paid
+}
+
+// A rule that carries data is a variant: the data is in the value, where the owner is clear.
+enum OrderRule {
+    Check(Func<read Order, bool> test)
+    MinAmount(long limit)
+    CustomerIs(string name)
+}
+
+bool passes(read OrderRule rule, read Order order) {
+    return match rule {
+        Check(test) => test(order)                   // a function value is called like a function
+        MinAmount(limit) => order.amount >= limit
+        CustomerIs(name) => order.customer == name
+    }
+}
+
+struct Validator {
+    List<OrderRule> rules
+
+    Validator create() {
+        return Validator { rules = List<OrderRule>() }
+    }
+
+    void add(ref this, OrderRule rule) {
+        this.rules.add(rule)
+    }
+
+    bool accepts(read this, read Order order) {
+        for rule in read this.rules {
+            if !passes(rule, order) {
+                return false
+            }
+        }
+        return true
+    }
+}
+
+void main() {
+    var orders = List<Order> {
+        Order { customer = "ada", amount = 1200, paid = true },
+        Order { customer = "grace", amount = 300, paid = false },
+        Order { customer = "ada", amount = 80, paid = true }
+    }
+
+    var rules = Validator()
+    rules.add(OrderRule.Check(isPaid))               // the name of the function is the value
+    rules.add(OrderRule.MinAmount(100))
+    rules.add(OrderRule.CustomerIs("ada"))
+
+    long total = 0
+    var accepted = 0
+    for o in read orders {
+        if rules.accepts(o) {
+            accepted += 1
+            total += o.amount
+        }
+    }
+    print($"{accepted} orders, {total} in total")
+}

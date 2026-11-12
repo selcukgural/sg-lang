@@ -42,6 +42,8 @@ pub enum Value {
     /// Kept in the order of the keys so that a run always prints the same; the design
     /// promises no order.
     Map(Rc<RefCell<Entries>>),
+    /// The address of a named function: its name.
+    Func(Rc<str>),
     /// `HashSet<T>`: the items, each under itself as the key.
     Set(Rc<RefCell<BTreeMap<Key, Value>>>),
     /// What `format` writes into.
@@ -583,6 +585,7 @@ impl<'a> Interp<'a> {
                 let value = fresh(&self.place(expr, frame)?.borrow());
                 Ok(value)
             }
+            ExprKind::FuncRef(name) => Ok(Value::Func(name.as_str().into())),
             ExprKind::Collection { ty, items, .. } => {
                 let given = items.iter().flatten();
                 if ty.name == "List" {
@@ -814,6 +817,14 @@ impl<'a> Interp<'a> {
                     let values = self.values(args, frame)?;
                     self.call(func, None, values, expr.span)
                 }
+                Callee::Value => {
+                    let Value::Func(target) = strip(frame.slot(name).borrow().clone()) else {
+                        unreachable!("the checker only lets a function value be called")
+                    };
+                    let func = self.funcs[&*target];
+                    let values = self.values(args, frame)?;
+                    self.call(func, None, values, expr.span)
+                }
                 _ => self.call_expr(expr, name, args, frame),
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
@@ -840,6 +851,18 @@ impl<'a> Interp<'a> {
                     let values = self.values(args, frame)?;
                     self.call(func, Some(this), values, expr.span)
                 }
+                Callee::FieldValue(index) => {
+                    let Value::Struct(_, fields) = owned(self.place(recv, frame)?.borrow().clone()) else {
+                        unreachable!("the checker only lets a field of a struct be called")
+                    };
+                    let Value::Func(target) = strip(fields[*index].borrow().clone()) else {
+                        unreachable!("the checker only lets a function value be called")
+                    };
+                    let func = self.funcs[&*target];
+                    let values = self.values(args, frame)?;
+                    self.call(func, None, values, expr.span)
+                }
+                Callee::Value => unreachable!("a variable is called without a receiver"),
                 Callee::Join => {
                     let Value::Str(separator) = strip(self.expr(&args[0], frame)?) else {
                         unreachable!("the checker makes the separator text")

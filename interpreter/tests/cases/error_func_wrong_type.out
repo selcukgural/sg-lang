@@ -1,0 +1,4 @@
+error: expected `Func<string, int>`, found `Func<int, int>`
+  --> error_func_wrong_type.sg:10:17
+ 10 |     print(apply(double))
+    |                 ^^^^^^

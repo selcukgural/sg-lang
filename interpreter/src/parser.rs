@@ -879,6 +879,10 @@ impl<'a> Parser<'a> {
         let args = self.bracketed(|p| {
             let mut args = Vec::new();
             while *p.peek() != Tok::RParen {
+                if matches!(p.peek(), Tok::Ident(_)) && *p.peek_at(1) == Tok::FatArrow {
+                    return Err(Diag::error(p.span().to(p.toks[p.i + 1].span), "there are no lambdas in the language")
+                        .hint("write a function and pass its name: `apply(double, 5)`"));
+                }
                 args.push(p.expr()?);
                 if !p.eat(&Tok::Comma) {
                     break;

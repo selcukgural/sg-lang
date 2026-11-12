@@ -1,0 +1,7 @@
+int double(int x) {
+    return x * 2
+}
+
+void main() {
+    print(double)
+}

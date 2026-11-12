@@ -1,0 +1,4 @@
+error: `f` takes 1 argument(s), 2 given
+  --> error_func_call_args.sg:7:11
+ 7 |     print(f(1, 2))
+   |           ^^^^^^^

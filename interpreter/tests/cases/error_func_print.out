@@ -1,0 +1,4 @@
+error: a `Func<int, int>` value cannot be written as text
+  --> error_func_print.sg:6:11
+ 6 |     print(double)
+   |           ^^^^^^

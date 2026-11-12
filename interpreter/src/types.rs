@@ -96,6 +96,8 @@ pub enum Ty {
     List(Box<Ty>),
     /// `HashMap<K, V>`: built in.
     Map(Box<Ty>, Box<Ty>),
+    /// `Func<A, B, R>`: the address of a named function that takes `A` and `B` and returns `R`.
+    Func(Vec<Ty>, Box<Ty>),
     /// `HashSet<T>`: built in.
     Set(Box<Ty>),
     /// What a `for` over a `HashMap<K, V>` gives: a `key` and a `value`.
@@ -124,7 +126,7 @@ impl Ty {
     /// copyable until there is a borrow checker.
     pub fn is_copyable(&self, declared: &HashSet<String>) -> bool {
         match self {
-            Ty::Int(_) | Ty::Bool | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) => true,
+            Ty::Int(_) | Ty::Bool | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) | Ty::Func(..) => true,
             Ty::Nullable(inner) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
@@ -163,6 +165,13 @@ impl fmt::Display for Ty {
             Ty::List(item) => write!(f, "List<{item}>"),
             Ty::Map(key, value) => write!(f, "HashMap<{key}, {value}>"),
             Ty::Set(item) => write!(f, "HashSet<{item}>"),
+            Ty::Func(params, ret) => {
+                f.write_str("Func<")?;
+                for param in params {
+                    write!(f, "{param}, ")?;
+                }
+                write!(f, "{ret}>")
+            }
             Ty::Entry(key, value) => write!(f, "entry of HashMap<{key}, {value}>"),
             Ty::Read(inner) => write!(f, "read {inner}"),
             Ty::Ref(inner) => write!(f, "ref {inner}"),

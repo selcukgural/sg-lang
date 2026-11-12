@@ -1,0 +1,5 @@
+error: there are no lambdas in the language
+  --> error_lambda.sg:6:17
+ 6 |     print(apply(x => x * 2, 5))
+   |                 ^^^^
+  hint: write a function and pass its name: `apply(double, 5)`

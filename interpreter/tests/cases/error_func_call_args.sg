@@ -1,0 +1,8 @@
+int double(int x) {
+    return x * 2
+}
+
+void main() {
+    Func<int, int> f = double
+    print(f(1, 2))
+}

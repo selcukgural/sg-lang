@@ -1,5 +1,5 @@
 error: `Stack<...>`: generic types are not in the interpreter yet
-  the types written with `<` and `>` for now are `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>`
+  the types written with `<` and `>` for now are `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>` and `Func<A, R>`
   --> error_generic_type.sg:2:5
  2 |     Stack<int> xs = null
    |     ^^^^^^^^^^
