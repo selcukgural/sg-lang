@@ -83,6 +83,9 @@ fn compiled() {
     }
     files.sort();
 
+    // `SG_NO_SANITIZERS=1` skips the second, slower build of every program.
+    let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
+    let mut sanitized = 0;
     let mut compiled = 0;
     let mut failures = Vec::new();
     for path in &files {
@@ -115,8 +118,28 @@ fn compiled() {
             failures.push(format!("--- {name}\nexpected:\n{expected}\nactual:\n{actual}"));
         }
         compiled += 1;
+
+        // The same C again under the address and undefined-behaviour sanitizers: a use after
+        // free, a double free or a read outside a buffer would stop the program here.
+        if sanitizers {
+            let checked_binary = work.join(format!("{stem}-san"));
+            let cc = std::process::Command::new("cc")
+                .args(["-std=c11", "-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-o"])
+                .arg(&checked_binary)
+                .arg(&c_file)
+                .output()
+                .unwrap();
+            if cc.status.success() {
+                let run = std::process::Command::new(&checked_binary).output().unwrap();
+                let actual = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+                if actual != expected {
+                    failures.push(format!("--- {name}, under the sanitizers\nexpected:\n{expected}\nactual:\n{actual}"));
+                }
+                sanitized += 1;
+            }
+        }
     }
     assert!(failures.is_empty(), "{} compiled program(s) differ:\n{}", failures.len(), failures.join("\n"));
     assert!(compiled >= 10, "only {compiled} programs were compiled: the back end skips too much");
-    eprintln!("{compiled} of {} programs compiled through C and gave the same output", files.len());
+    eprintln!("{compiled} of {} programs compiled through C and gave the same output; {sanitized} also ran clean under the sanitizers", files.len());
 }

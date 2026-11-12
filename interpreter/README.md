@@ -135,35 +135,44 @@ Design rules that are already enforced:
 ## The C back end
 
 Since the sixteenth slice (12 November 2026) a program can be compiled: `sg build file.sg` writes it as C and
-hands that to the C compiler (`cc -O2`). The interpreter stays as the reference: `cargo test` compiles every
-program the back end accepts and requires the same output as the interpreter, panic messages included (15 of
-288 programs for now).
+hands that to the C compiler. The interpreter stays as the reference: `cargo test` compiles every program the
+back end accepts and requires the same output as the interpreter, panic messages included, and then runs the
+same C once more under the address and undefined-behaviour sanitizers (27 of 292 programs for now).
 
-What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; functions and recursion; `if`, `while`,
-`for i in a..b`, `break`, `continue`; structs of those types, by value, with methods; `read` and `ref`
-(pointers); the checked operators, casts and the wrapping methods; `print` of numbers, `bool`, text constants
-and `$"..."` made of them; `assert` and `panic` with a constant text. Anything else (text as a value, `T?`,
-`T*`, enums, collections, `Result`) is an error that names what is missing: nothing is compiled wrongly in
-silence.
+What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
+constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
+recursion; `if`, `while`, `for i in a..b`, `break`, `continue`; structs of those types, by value, with methods;
+`read` and `ref`; the checked operators, casts and the wrapping methods; `print`, `assert` and `panic`. Anything
+else (`T?`, `T*`, enums, collections, `Result`) is an error that names what is missing: nothing is compiled
+wrongly in silence.
+
+Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
+value (a `string`, a struct that holds one) is freed where its variable ends, on every way out of the block
+(`return`, `break`, `continue`). A use that moves the value empties the place it came from, so the later free
+finds nothing to do; a text constant has no capacity and is never allocated or freed. There is no garbage
+collector and no reference count.
 
 A debug build (`sg build file.sg`) checks integer overflow and is not optimised; a release build
 (`sg build file.sg --release`) wraps on overflow and is optimised. The interpreter and `sg test` behave like a
-debug build; a cast that does not fit follows the same rule. Division by zero, `assert` and `panic` stop the
-program in every build.
+debug build; a cast that does not fit follows the same rule. An index or a range outside a text, division by
+zero, `assert` and `panic` stop the program in every build.
 
 Measured (`sh bench/run.sh`, Apple clang 21 on arm64, best of five, `-O2` for all three; the C is written by
 hand with no checks):
 
 | Program | SG, release | SG, overflow checked | C | release / C |
 |---|---|---|---|---|
-| `fib`: recursive `fib(40)` | 0.258 s | 0.372 s | 0.269 s | 0.96 |
-| `primes`: trial division below five million | 0.460 s | 0.449 s | 0.470 s | 0.98 |
-| `collatz`: longest chain below three million | 0.335 s | 0.532 s | 0.335 s | 1.00 |
+| `fib`: recursive `fib(40)` | 0.282 s | 0.390 s | 0.284 s | 0.99 |
+| `primes`: trial division below five million | 0.500 s | 0.482 s | 0.508 s | 0.98 |
+| `collatz`: longest chain below three million | 0.364 s | 0.579 s | 0.364 s | 1.00 |
+| `words`: bytes read, words compared, each word copied to the heap and freed | 0.891 s | 0.888 s | 0.849 s | 1.05 |
 
-A release build runs these in the time of C. The middle column is what the overflow check alone costs: nothing
-where arithmetic is rare, 40 to 60% in a loop that is nothing but arithmetic. That measurement is why the rule
-became Rust's (checked in debug, wrapping in release) on 12 November 2026. Three small programs are not a
-benchmark suite, and nothing here uses memory yet.
+A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
+check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
+memory: the 5% is what the checks that stay cost (every index and every range is checked, and a range may not
+cut a character in half), against C that checks nothing. The first version of that C program looked 20%
+faster: the C compiler had removed its `malloc` and `free` because the copies were never read; the program now
+compares the copies. Four small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
 
@@ -181,6 +190,21 @@ Choices made here, approved on 12 November 2026:
    `cc`, with `-O0` for a debug build and `-O2` for a release build.
 6. **A cast that does not fit (`(int)big`) follows the overflow rule**: it panics in a debug build and is
    cut to size in a release build (decided on 12 November 2026).
+
+Choices made in the seventeenth slice (text and owned values), approved on 12 November 2026:
+
+7. **A `read string` is a pointer and a length** passed by value; a `string` is a pointer, a length and a
+   capacity. Every other `read T` / `ref T` is a plain pointer.
+8. **A move empties the place it leaves** (the capacity is set to 0), and every owned variable is dropped
+   where it ends. This is the simplest correct form: a variable moved in only one branch needs no extra
+   bookkeeping. The C compiler removes most of these tests; where it cannot, a move costs one store and a
+   drop one comparison.
+9. **An owned value that has no name** (`greeting("ada", 1).length()`) is kept in a temporary for the
+   statement and dropped after it.
+10. **Allocation failure stops the program** (`abort`); there is no notation for handling it.
+11. **The character-boundary check of a range stays in release builds.** By the criterion of 12 November it
+    is a correctness check, not a memory-safety one, but it is not measurable here (0.690 s with it, 0.707 s
+    without), so there is nothing to gain.
 
 ## How it is built
 
@@ -560,7 +584,7 @@ error.
 
 ## Next
 
-The back end, one piece of the language at a time, each compared with the interpreter and measured against
-C: text (`string`, `read string`) and the heap (`T*`, `new`, freeing at the end of the owner) first, since
-that is where memory safety and speed meet; then `T?`, enums and `match`, and the collections. After it the question is the
+The back end, one piece of the language at a time, each compared with the interpreter, run under the
+sanitizers and measured against C: next `T?` and the heap (`T*`, `new`), with which the linked list and the
+stack compile; then enums and `match`, `Result`, and the collections. After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

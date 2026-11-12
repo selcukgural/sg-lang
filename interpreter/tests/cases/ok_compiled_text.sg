@@ -1,0 +1,104 @@
+// Text in the back end: constants, borrows, ranges, copies, and who frees what.
+struct User {
+    string name
+    int age
+}
+
+struct Team {
+    string title
+    User lead
+}
+
+int countSpaces(read string text) {
+    var count = 0
+    for i in 0..text.length() {
+        if text[i] == ' ' {
+            count += 1
+        }
+    }
+    return count
+}
+
+// A range of the text it was given: a window, not a copy.
+read string firstWord(read string text) {
+    for i in 0..text.length() {
+        if text[i] == ' ' {
+            return text[..i]
+        }
+    }
+    return text
+}
+
+string greeting(read string name, int times) {
+    return $"hello {name}, {times} times".toString()
+}
+
+// Takes the user and gives back only the name: the rest ends here.
+string nameOf(User user) {
+    return user.name
+}
+
+void rename(ref User user, string name) {
+    user.name = name                     // the old name is freed here
+}
+
+void shout(ref string text) {
+    text = $"{text}!".toString()
+}
+
+bool isAdult(read User user) {
+    return user.age >= 18
+}
+
+void main() {
+    var line = "the quick brown fox"
+    print(line)
+    print(line.length())
+    print(countSpaces(read line))
+    print(firstWord(read line))
+    print(line[4..9])
+    print(line[10..])
+    print(line[4])
+
+    var owned = line[4..9].clone()
+    print($"{owned} has {owned.length()} bytes")
+    print(owned == "quick")
+    print(owned != "slow")
+    print(owned < "zebra" && "apple" < owned)
+
+    var hello = greeting(read owned, 3)
+    print(hello)
+    print(greeting("grace", 1).length())
+
+    var ada = User { name = "ada".clone(), age = 36 }
+    print($"{ada.name} is {ada.age}: {isAdult(read ada)}")
+    rename(ref ada, "ada lovelace".clone())
+    print(ada.name)
+    shout(ref ada.name)
+    print(ada.name)
+
+    var team = Team { title = "core".clone(), lead = ada }
+    print($"{team.title}: {team.lead.name}")
+    var taken = team.lead.name           // moved out of the field
+    team.lead.name = "nobody".clone()
+    print(taken)
+    print(nameOf(team.lead))
+
+    var count = 0
+    while count < 3 {
+        var word = $"word {count}".toString()
+        if count == 1 {
+            count += 1
+            continue                     // `word` is freed on the way out
+        }
+        print(word)
+        count += 1
+    }
+
+    var empty = ""
+    print(empty.length())
+    print(empty.clone() == "")
+    print((42).toString())
+    print(true.toString().length())
+    assert(firstWord("one two") == "one")
+}

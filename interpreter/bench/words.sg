@@ -1,0 +1,42 @@
+// Text: bytes are read one by one and words are compared, once as windows of the text and
+// once as copies on the heap that are freed again.
+int matches(read string text, read string wanted) {
+    var count = 0
+    nint start = 0
+    for i in 0..text.length() {
+        if text[i] == ' ' {
+            if text[start..i] == wanted {
+                count += 1
+            }
+            start = i + 1
+        }
+    }
+    return count
+}
+
+// The same search on a copy of each word: one allocation and one free per word.
+int matchesCopied(read string text, read string wanted) {
+    var count = 0
+    nint start = 0
+    for i in 0..text.length() {
+        if text[i] == ' ' {
+            var word = text[start..i].clone()
+            if word == wanted {
+                count += 1
+            }
+            start = i + 1
+        }
+    }
+    return count
+}
+
+void main() {
+    var text = "the quick brown fox jumps over the lazy dog and then the cat sleeps "
+    var found = 0
+    var foundInCopies = 0
+    for round in 0..4000000 {
+        found += matches(read text, "the")
+        foundInCopies += matchesCopied(read text, "the")
+    }
+    print($"{found} matches, {foundInCopies} in copies")
+}

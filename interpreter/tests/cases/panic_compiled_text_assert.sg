@@ -1,0 +1,8 @@
+string label(int n) {
+    return $"item {n}".toString()
+}
+
+void main() {
+    assert(label(1) == "item 1")
+    assert(label(2) == "item \"two\"")
+}

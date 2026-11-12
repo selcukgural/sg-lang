@@ -164,6 +164,9 @@ pub struct Expr {
     pub span: Span,
     /// The type of the value, written by the checker; `void` until then. The back end reads it.
     pub ty: Ty,
+    /// Written by the checker: this use moves the value out of its place. The back end
+    /// empties the place, so that what is dropped later is dropped once.
+    pub moved: bool,
 }
 
 pub enum ExprKind {

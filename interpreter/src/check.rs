@@ -2057,9 +2057,20 @@ impl<'a> Checker<'a> {
             }
             (Ty::Ptr(inner), Ty::Read(to)) if inner == to => mismatch(Some(format!("lend it with `read`: `read {text}`"))),
             (Ty::Ptr(inner), Ty::Ref(to)) if inner == to => mismatch(Some(format!("lend it with `ref`: `ref {text}`"))),
+            // A `ref string` where a `read string` goes: a look at the same text.
+            (Ty::Ref(from), Ty::Read(to)) if from == to && **from == Ty::Str => {
+                wrap(expr, |inner| ExprKind::Borrow { mutable: false, expr: inner });
+                expr.ty = expected.clone();
+                Ok(())
+            }
             (Ty::Ref(from), Ty::Read(to)) if from == to => Ok(()),
             (Ty::Read(from) | Ty::Ref(from), Ty::Read(to)) if **to == Ty::Nullable(from.clone()) => Ok(()),
-            (Ty::Str, Ty::Read(to)) if **to == Ty::Str && matches!(expr.kind, ExprKind::Str(_)) => Ok(()),
+            // A text constant where a `read string` goes: lent as it is.
+            (Ty::Str, Ty::Read(to)) if **to == Ty::Str && matches!(expr.kind, ExprKind::Str(_)) => {
+                wrap(expr, |inner| ExprKind::Borrow { mutable: false, expr: inner });
+                expr.ty = expected.clone();
+                Ok(())
+            }
             (_, Ty::Read(to)) if found == **to => mismatch(Some(format!("lend it with `read`: `read {text}`"))),
             (_, Ty::Ref(to)) if found == **to => mismatch(Some(format!("lend it with `ref`: `ref {text}`"))),
             (Ty::Nullable(inner), _) if **inner == *expected => {
@@ -2330,6 +2341,7 @@ impl<'a> Checker<'a> {
                     return Ok(Ty::Read(Box::new(ty)));
                 }
                 self.move_out(expr, &ty)?;
+                expr.moved = true;
             }
             return Ok(ty);
         }
@@ -3385,7 +3397,10 @@ impl<'a> Checker<'a> {
                     This::Value if borrowed => {
                         return Err(Diag::error(recv.span, format!("`{name}` takes `this` by value and uses it up, but this value is only borrowed")));
                     }
-                    This::Value if is_place => self.move_out(recv, &recv_ty)?,
+                    This::Value if is_place => {
+                        self.move_out(recv, &recv_ty)?;
+                        recv.moved = true;
+                    }
                     This::Value => {}
                 }
                 self.args(name, args, &sig.params, span)?;
@@ -3891,7 +3906,7 @@ fn byte_of(value: char, span: Span) -> Res<i64> {
 /// Replaces `expr` with a node built around it.
 fn wrap(expr: &mut Expr, build: impl FnOnce(Box<Expr>) -> ExprKind) {
     let span = expr.span;
-    let inner = std::mem::replace(expr, Expr { kind: ExprKind::Null, span, ty: Ty::Void });
+    let inner = std::mem::replace(expr, Expr { kind: ExprKind::Null, span, ty: Ty::Void, moved: false });
     expr.kind = build(Box::new(inner));
 }
 
