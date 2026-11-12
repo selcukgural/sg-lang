@@ -1,0 +1,5 @@
+error: there is no `this` here
+  `this` exists in a method that takes it as its first parameter: `this`, `read this` or `ref this`
+  --> error_this_outside_method.sg:5:30
+ 5 |         return Counter { n = this.n }
+   |                              ^^^^

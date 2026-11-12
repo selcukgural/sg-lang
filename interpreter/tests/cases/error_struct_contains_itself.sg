@@ -1,0 +1,7 @@
+struct Node {
+    int value
+    Node? next
+}
+
+void main() {
+}

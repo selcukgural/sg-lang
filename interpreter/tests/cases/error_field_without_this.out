@@ -1,0 +1,5 @@
+error: there is no variable named `n`
+  --> error_field_without_this.sg:5:9
+ 5 |         n += 1
+   |         ^
+  hint: a field is reached through `this`: `this.n`

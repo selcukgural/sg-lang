@@ -1,0 +1,5 @@
+panic: stack overflow: more than 5000 nested calls
+  last called: `down`
+  --> panic_stack_overflow.sg:2:12
+ 2 |     return down(n + 1)
+   |            ^^^^^^^^^^^

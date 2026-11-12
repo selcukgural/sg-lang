@@ -1,0 +1,4 @@
+error: `sign` does not return a value on every path; it must return `int`
+  --> error_missing_return.sg:1:5
+ 1 | int sign(int n) {
+   |     ^^^^

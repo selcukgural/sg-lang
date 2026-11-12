@@ -1,0 +1,5 @@
+error: struct `Node` contains itself, so it has no finite size
+  --> error_struct_contains_itself.sg:3:5
+ 3 |     Node? next
+   |     ^^^^^
+  hint: put it behind a pointer: `Node*? next`

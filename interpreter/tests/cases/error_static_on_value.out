@@ -1,0 +1,5 @@
+error: `create` does not take `this`, so it is called on the type
+  --> error_static_on_value.sg:11:15
+ 11 |     var d = c.create()
+    |               ^^^^^^
+  hint: `Counter.create(...)`

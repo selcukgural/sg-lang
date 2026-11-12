@@ -1,0 +1,11 @@
+int pick(int n) {
+    if n > 0 {
+        return n
+    }
+    panic($"n must be positive, got {n}")
+}
+
+void main() {
+    print(pick(3))
+    print(pick(-1))
+}

@@ -1,0 +1,11 @@
+struct Node {
+    int value
+    Node*? next
+}
+
+void main() {
+    var a = Node { value = 1, next = null }
+    for i in 0..2 {
+        var rest = a.next
+    }
+}

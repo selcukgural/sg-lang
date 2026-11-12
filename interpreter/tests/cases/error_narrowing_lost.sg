@@ -1,0 +1,14 @@
+struct Node {
+    int value
+    Node*? next
+}
+
+void main() {
+    Node*? list = new Node { value = 1, next = null }
+    if list is null {
+        return
+    }
+    print(list.value)
+    list = null
+    print(list.value)
+}

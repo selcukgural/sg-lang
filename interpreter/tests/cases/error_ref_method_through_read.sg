@@ -1,0 +1,14 @@
+struct Counter {
+    int n
+
+    void bump(ref this) {
+        this.n += 1
+    }
+}
+
+void show(read Counter c) {
+    c.bump()
+}
+
+void main() {
+}

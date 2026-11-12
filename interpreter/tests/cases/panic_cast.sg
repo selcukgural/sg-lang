@@ -1,0 +1,4 @@
+void main() {
+    long big = 5000000000
+    print((int)big)
+}

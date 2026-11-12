@@ -1,0 +1,5 @@
+error: an assignment cannot be a condition
+  --> error_assign_in_condition.sg:3:10
+ 3 |     if a = 2 {
+   |          ^
+  hint: comparison is written `==`

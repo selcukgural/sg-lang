@@ -1,0 +1,4 @@
+error: `a` is already declared in this scope
+  --> error_redeclare.sg:3:9
+ 3 |     var a = 2
+   |         ^

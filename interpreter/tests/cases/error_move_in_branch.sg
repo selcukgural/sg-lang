@@ -1,0 +1,11 @@
+void consume(string text) {
+    print(text)
+}
+
+void main() {
+    var name = "ada"
+    if name.length() > 2 {
+        consume(name)
+    }
+    print(name)
+}

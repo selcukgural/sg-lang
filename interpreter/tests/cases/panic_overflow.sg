@@ -1,0 +1,5 @@
+void main() {
+    int max = 2147483647
+    print("before")
+    print(max + 1)
+}

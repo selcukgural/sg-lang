@@ -1,0 +1,12 @@
+struct Counter {
+    int n
+
+    int value(read this) {
+        return this.n
+    }
+}
+
+void main() {
+    Counter? c = null
+    print(c.value())
+}

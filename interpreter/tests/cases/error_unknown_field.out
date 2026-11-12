@@ -1,0 +1,5 @@
+error: `Point` has no field `z`
+  --> error_unknown_field.sg:8:13
+ 8 |     print(p.z)
+   |             ^
+  hint: `x`

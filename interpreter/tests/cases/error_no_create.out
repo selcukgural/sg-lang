@@ -1,0 +1,5 @@
+error: `Point` has no `create` function, so `Point(...)` cannot build it
+  --> error_no_create.sg:7:13
+ 7 |     var p = Point(1, 2)
+   |             ^^^^^
+  hint: write the fields: `Point { ... }`, or add a `create` function to the struct

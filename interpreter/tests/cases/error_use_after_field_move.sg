@@ -1,0 +1,15 @@
+struct Node {
+    int value
+    Node*? next
+}
+
+int length(read Node node) {
+    return 1
+}
+
+void main() {
+    var a = Node { value = 1, next = null }
+    var rest = a.next
+    print(a.value)
+    print(length(read a))
+}

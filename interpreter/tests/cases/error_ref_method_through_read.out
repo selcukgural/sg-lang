@@ -1,0 +1,5 @@
+error: `bump` takes `ref this`, but this value is reached through a `read` borrow
+  --> error_ref_method_through_read.sg:10:5
+ 10 |     c.bump()
+    |     ^
+  hint: take the value as `ref` instead of `read`

@@ -1,0 +1,13 @@
+struct Counter {
+    int n
+
+    int finish(this) {
+        return this.n
+    }
+}
+
+void main() {
+    var c = Counter { n = 1 }
+    print(c.finish())
+    print(c.n)
+}

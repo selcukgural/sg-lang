@@ -1,0 +1,12 @@
+struct Point {
+    int x
+}
+
+int getX(read Point p) {
+    return p.x
+}
+
+void main() {
+    var p = Point { x = 1 }
+    print(getX(p))
+}

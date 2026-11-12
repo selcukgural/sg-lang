@@ -1,0 +1,4 @@
+error: `break` can only be written inside a loop
+  --> error_break_outside_loop.sg:2:5
+ 2 |     break
+   |     ^^^^^

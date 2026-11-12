@@ -1,0 +1,12 @@
+struct Point {
+    int x
+}
+
+void reset(read Point p) {
+    p.x = 0
+}
+
+void main() {
+    var p = Point { x = 1 }
+    reset(read p)
+}

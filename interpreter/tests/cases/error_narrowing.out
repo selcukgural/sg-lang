@@ -1,0 +1,5 @@
+error: expected `int`, found `long`
+  --> error_narrowing.sg:3:17
+ 3 |     int small = big
+   |                 ^^^
+  hint: convert with `(int)`; it panics if the value does not fit

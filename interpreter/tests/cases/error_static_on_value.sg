@@ -1,0 +1,12 @@
+struct Counter {
+    int n
+
+    Counter create() {
+        return Counter { n = 0 }
+    }
+}
+
+void main() {
+    var c = Counter()
+    var d = c.create()
+}

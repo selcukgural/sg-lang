@@ -1,0 +1,11 @@
+struct Node {
+    int value
+    Node* next
+}
+
+void cut(ref Node node) {
+    var rest = node.next.take()
+}
+
+void main() {
+}

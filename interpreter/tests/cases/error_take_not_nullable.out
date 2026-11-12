@@ -1,0 +1,5 @@
+error: `take` leaves `null` behind, so it needs a `T?`; this is `Node*`
+  --> error_take_not_nullable.sg:7:16
+ 7 |     var rest = node.next.take()
+   |                ^^^^^^^^^
+  hint: to put another value in its place: `node.next.replace(value)`

@@ -1,0 +1,27 @@
+int add3(int a, int b, int c) {
+    return a + b + c
+}
+
+void main() {
+    // Inside parentheses a line end means nothing.
+    var x = add3(
+        1,
+        2,
+        3
+    )
+    // A line ending with an operator continues.
+    var y = x +
+        10
+    print(y)
+    print($"{{braces}} and {add3(1, 2, 3) * 2}")
+    if y == 16 { print("one line") }
+    var i = 0
+    while true {
+        i += 1
+        if i == 3 { break }
+    }
+    print(i)
+    print(!(1 > 2) || false)
+    print(7 / 2)
+    print(-7 % 3)
+}

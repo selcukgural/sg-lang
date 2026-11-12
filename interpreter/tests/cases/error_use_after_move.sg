@@ -1,0 +1,18 @@
+struct Node {
+    int value
+    Node*? next
+}
+
+Node* push(Node*? list, int v) {
+    return new Node { value = v, next = list }
+}
+
+int first(read Node* list) {
+    return list.value
+}
+
+void main() {
+    Node* a = push(null, 1)
+    Node* b = push(a, 2)
+    print(first(read a))
+}

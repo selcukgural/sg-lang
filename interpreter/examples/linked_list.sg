@@ -1,0 +1,35 @@
+// The linked list from the syntax draft: struct, T*, T?, new, read, null narrowing.
+public struct Node {
+    int value
+    Node*? next                 // Node* owns the next node
+}
+
+public Node* push(Node*? list, int v) {
+    return new Node { value = v, next = list }   // list moves in here
+}
+
+public int sum(read Node*? list) {
+    var total = 0
+    var cur = list              // cur borrows the list
+    while cur is not null {
+        total += cur.value
+        cur = read cur.next     // ownership does not change
+    }
+    return total
+}
+
+int length(read Node*? list) {
+    if list is null {
+        return 0
+    }
+    return 1 + length(read list.next)
+}
+
+void main() {
+    Node*? list = null
+    list = push(list, 1)
+    list = push(list, 2)
+    list = push(list, 3)
+    print(sum(read list))
+    print(length(read list))
+}

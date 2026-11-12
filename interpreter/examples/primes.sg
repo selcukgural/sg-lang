@@ -1,0 +1,29 @@
+// Counts primes below a limit: while, &&, !, continue, compound assignment.
+bool isPrime(int n) {
+    if n < 2 {
+        return false
+    }
+    var d = 2
+    while d * d <= n {
+        if n % d == 0 {
+            return false
+        }
+        d += 1
+    }
+    return true
+}
+
+void main() {
+    var count = 0
+    var largest = 0
+    for n in 0..100 {
+        if !isPrime(n) { continue }
+        count += 1
+        largest = n
+    }
+    print($"{count} primes below 100, largest {largest}")
+
+    var isSmall = count < 50 &&
+        largest < 100
+    print(isSmall)
+}

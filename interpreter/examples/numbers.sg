@@ -1,0 +1,24 @@
+// Integer rules: widening is implicit, narrowing is written, wrapping is chosen on purpose.
+long square(long x) {
+    return x * x
+}
+
+void main() {
+    int small = 46341
+    print(square(small))                 // int widens to long: no overflow
+
+    long big = 5000000000
+    var half = (int)(big / 4)            // fits, so the cast succeeds
+    print(half)
+
+    int max = 2147483647
+    print(max.wrappingAdd(1))            // wraps on purpose
+    print(-2147483648)
+
+    var name = "language"
+    nint size = name.length()
+    string text = $"{name} has {size} bytes".toString()
+    print(text)
+    print(text.length() == 20)
+    print("a" < "b")
+}

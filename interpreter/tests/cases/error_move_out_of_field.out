@@ -1,0 +1,5 @@
+error: a `Node*?` field cannot be moved out through a borrow
+  --> error_move_out_of_field.sg:7:16
+ 7 |     var rest = node.next
+   |                ^^^^^^^^^
+  hint: take it with `node.next.take()`, which leaves `null` there

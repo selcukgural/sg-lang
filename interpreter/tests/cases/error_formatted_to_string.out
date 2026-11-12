@@ -1,0 +1,5 @@
+error: expected `string`; `$"..."` does not become a `string` on its own
+  --> error_formatted_to_string.sg:3:19
+ 3 |     string text = $"n = {n}"
+   |                   ^^^^^^^^^^
+  hint: add `.toString()` at the end; that is where the allocation shows

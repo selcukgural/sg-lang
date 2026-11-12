@@ -1,0 +1,8 @@
+error: `c` was moved and can no longer be used
+  --> error_use_after_consuming_method.sg:12:11
+ 12 |     print(c.n)
+    |           ^
+  it was moved here:
+  --> error_use_after_consuming_method.sg:11:11
+ 11 |     print(c.finish())
+    |           ^

@@ -1,0 +1,5 @@
+error: `Node*` cannot be `null`
+  --> error_null_to_pointer.sg:6:15
+ 6 |     Node* a = null
+   |               ^^^^
+  hint: a value that may be missing has the type `Node*?`

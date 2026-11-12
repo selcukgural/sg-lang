@@ -1,0 +1,5 @@
+error: there is no variable named `totl`
+  --> error_unknown_variable.sg:3:11
+ 3 |     print(totl)
+   |           ^^^^
+  hint: `total`

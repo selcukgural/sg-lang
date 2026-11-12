@@ -1,0 +1,4 @@
+error: expected `bool`, found `Flag`
+  --> error_struct_literal_in_condition.sg:14:8
+ 14 |     if flag {
+    |        ^^^^

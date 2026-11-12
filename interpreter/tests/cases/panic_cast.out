@@ -1,0 +1,4 @@
+panic: value 5000000000 does not fit in int
+  --> panic_cast.sg:3:11
+ 3 |     print((int)big)
+   |           ^^^^^^^^

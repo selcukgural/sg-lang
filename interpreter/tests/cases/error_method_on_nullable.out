@@ -1,0 +1,5 @@
+error: this is `Counter?` and may be `null`; `.value()` needs a value
+  --> error_method_on_nullable.sg:11:11
+ 11 |     print(c.value())
+    |           ^
+  hint: test it first: `if c is not null { ... }`

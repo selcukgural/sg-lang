@@ -1,0 +1,5 @@
+error: there is no function named `prnt`
+  --> error_unknown_function.sg:2:5
+ 2 |     prnt(1)
+   |     ^^^^
+  hint: `print`

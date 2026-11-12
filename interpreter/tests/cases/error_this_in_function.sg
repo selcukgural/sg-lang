@@ -1,0 +1,10 @@
+struct Counter {
+    int n
+}
+
+void bump(ref this) {
+    this.n += 1
+}
+
+void main() {
+}

@@ -1,0 +1,39 @@
+// Three intentions, three signatures: look (read), change (ref), take (by value).
+struct Account {
+    string owner
+    long balance
+    int? limit                  // null: no limit
+}
+
+bool canWithdraw(read Account account, long amount) {
+    var limit = account.limit ?? 1000
+    return amount <= limit && amount <= account.balance
+}
+
+void deposit(ref Account account, long amount) {
+    account.balance += amount
+}
+
+void addInterest(ref long balance, int percent) {
+    balance = balance + balance * percent / 100
+}
+
+long close(Account account) {
+    return account.balance      // the account ends here
+}
+
+void main() {
+    var account = Account { owner = "ada", balance = 100, limit = null }
+    deposit(ref account, 400)
+    print($"{account.owner}: {account.balance}")
+
+    print(canWithdraw(read account, 500))
+    account.limit = 200
+    print(canWithdraw(read account, 500))
+
+    addInterest(ref account.balance, 10)
+    print(account.balance)
+
+    var paid = close(account)
+    print(paid)
+}

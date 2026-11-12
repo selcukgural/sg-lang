@@ -1,0 +1,4 @@
+panic: assert failed: ready
+  --> panic_assert_plain.sg:3:5
+ 3 |     assert(ready)
+   |     ^^^^^^^^^^^^^

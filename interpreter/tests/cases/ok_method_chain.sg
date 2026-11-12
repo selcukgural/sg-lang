@@ -1,0 +1,9 @@
+void main() {
+    var n = 2147483647
+    // A line starting with a dot continues the previous one.
+    var text = n
+        .wrappingAdd(1)
+        .toString()
+    print(text)
+    print(text.length())
+}

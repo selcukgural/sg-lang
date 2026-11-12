@@ -1,0 +1,5 @@
+error: the value of this expression is not used
+  --> error_unused_value.sg:3:5
+ 3 |     a + 2
+   |     ^^^^^
+  hint: only a call, an assignment or a declaration can be a statement

@@ -1,0 +1,4 @@
+error: 3000000000 does not fit in int
+  --> error_literal_too_big.sg:2:13
+ 2 |     int x = 3000000000
+   |             ^^^^^^^^^^

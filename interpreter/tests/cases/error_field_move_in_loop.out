@@ -1,0 +1,4 @@
+error: `a.next` is moved inside a loop, so the next iteration cannot use it
+  --> error_field_move_in_loop.sg:9:20
+ 9 |         var rest = a.next
+   |                    ^^^^^^

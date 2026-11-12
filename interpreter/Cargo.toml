@@ -1,0 +1,12 @@
+[package]
+name = "sg"
+version = "0.1.0"
+edition = "2021"
+description = "Tree-walking interpreter for the language. The crate name and the .lang extension are placeholders until the language is named."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "sg"
+path = "src/main.rs"

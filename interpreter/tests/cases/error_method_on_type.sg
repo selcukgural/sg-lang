@@ -1,0 +1,11 @@
+struct Counter {
+    int n
+
+    int total(read this) {
+        return this.n
+    }
+}
+
+void main() {
+    print(Counter.total())
+}

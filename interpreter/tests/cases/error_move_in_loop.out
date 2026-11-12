@@ -1,0 +1,4 @@
+error: `name` is moved inside a loop, so the next iteration cannot use it
+  --> error_move_in_loop.sg:8:17
+ 8 |         consume(name)
+   |                 ^^^^

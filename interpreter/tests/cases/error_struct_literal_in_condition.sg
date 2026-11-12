@@ -1,0 +1,17 @@
+struct Flag {
+    bool on
+}
+
+bool isOn(Flag flag) {
+    return flag.on
+}
+
+void main() {
+    if isOn(Flag { on = true }) {
+        print("in parentheses a struct literal is fine")
+    }
+    var flag = Flag { on = true }
+    if flag {
+        print("unreachable")
+    }
+}

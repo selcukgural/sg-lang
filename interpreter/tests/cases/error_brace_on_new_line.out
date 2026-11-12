@@ -1,0 +1,5 @@
+error: `{` cannot start a new line
+  --> error_brace_on_new_line.sg:2:1
+ 2 | {
+   | ^
+  hint: put `{` at the end of the previous line

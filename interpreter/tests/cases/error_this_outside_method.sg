@@ -1,0 +1,10 @@
+struct Counter {
+    int n
+
+    Counter create() {
+        return Counter { n = this.n }
+    }
+}
+
+void main() {
+}

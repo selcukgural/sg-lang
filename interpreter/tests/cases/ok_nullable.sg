@@ -1,0 +1,39 @@
+struct Box {
+    int? value
+}
+
+int? half(int n) {
+    if n % 2 != 0 {
+        return null
+    }
+    return n / 2
+}
+
+void clear(ref int? slot) {
+    slot = null
+}
+
+void main() {
+    print(half(10) ?? -1)
+    print(half(7) ?? -1)
+
+    int? h = half(8)
+    if h is not null {
+        print(h + 1)
+    }
+    if h is null {
+        print("unreachable")
+    } else {
+        long wide = h
+        print(wide * 1000000000)
+    }
+
+    clear(ref h)
+    print(h is null)
+
+    var box = Box { value = 5 }
+    var copy = box.value            // fields are not narrowed: copy first
+    if copy is null { return }
+    print(copy * 2)
+    print(half(4) ?? panic("four is even"))
+}

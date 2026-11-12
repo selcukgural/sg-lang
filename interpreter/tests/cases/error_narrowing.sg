@@ -1,0 +1,5 @@
+void main() {
+    long big = 10
+    int small = big
+    print(small)
+}

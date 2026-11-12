@@ -1,0 +1,5 @@
+error: this is `Node*?` and may be `null`; `.value` needs a value
+  --> error_take_ends_narrowing.sg:9:15
+ 9 |         print(node.value)
+   |               ^^^^
+  hint: test it first: `if node is not null { ... }`

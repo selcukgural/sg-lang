@@ -1,0 +1,9 @@
+error: `a` cannot be used as a whole: `a.next` was moved out of it
+  --> error_use_after_field_move.sg:14:23
+ 14 |     print(length(read a))
+    |                       ^
+  it was moved here:
+  --> error_use_after_field_move.sg:12:16
+ 12 |     var rest = a.next
+    |                ^^^^^^
+  hint: give `a.next` a value again, or use the other fields one by one

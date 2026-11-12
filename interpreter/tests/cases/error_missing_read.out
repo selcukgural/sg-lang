@@ -1,0 +1,5 @@
+error: expected `read Point`, found `Point`
+  --> error_missing_read.sg:11:16
+ 11 |     print(getX(p))
+    |                ^
+  hint: lend it with `read`: `read p`

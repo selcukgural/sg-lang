@@ -1,0 +1,5 @@
+error: `total` works on a value, not on the type `Counter`
+  --> error_method_on_type.sg:10:19
+ 10 |     print(Counter.total())
+    |                   ^^^^^
+  hint: call it on a `Counter` value: `value.total(...)`

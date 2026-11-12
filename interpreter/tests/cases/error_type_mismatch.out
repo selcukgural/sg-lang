@@ -1,0 +1,4 @@
+error: expected `int`, found `string`
+  --> error_type_mismatch.sg:3:13
+ 3 |     count = "one"
+   |             ^^^^^

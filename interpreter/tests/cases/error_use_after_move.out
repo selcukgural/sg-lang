@@ -1,0 +1,8 @@
+error: `a` was moved and can no longer be used
+  --> error_use_after_move.sg:17:22
+ 17 |     print(first(read a))
+    |                      ^
+  it was moved here:
+  --> error_use_after_move.sg:16:20
+ 16 |     Node* b = push(a, 2)
+    |                    ^

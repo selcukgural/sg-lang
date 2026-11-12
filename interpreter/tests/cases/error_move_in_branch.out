@@ -1,0 +1,8 @@
+error: `name` was moved and can no longer be used
+  --> error_move_in_branch.sg:10:11
+ 10 |     print(name)
+    |           ^^^^
+  it was moved here:
+  --> error_move_in_branch.sg:8:17
+ 8 |         consume(name)
+   |                 ^^^^

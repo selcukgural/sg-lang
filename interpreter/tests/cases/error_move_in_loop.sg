@@ -1,0 +1,10 @@
+void consume(string text) {
+    print(text)
+}
+
+void main() {
+    var name = "ada"
+    for i in 0..2 {
+        consume(name)
+    }
+}

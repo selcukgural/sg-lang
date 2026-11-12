@@ -1,0 +1,5 @@
+error: `var` cannot find a type from `null` alone
+  --> error_var_null.sg:2:13
+ 2 |     var x = null
+   |             ^^^^
+  hint: write the type, for example `int? x = null`

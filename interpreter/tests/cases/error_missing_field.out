@@ -1,0 +1,5 @@
+error: `Point` is missing `y`
+  every field gets a value; there is no uninitialized memory
+  --> error_missing_field.sg:7:13
+ 7 |     var p = Point { x = 1 }
+   |             ^^^^^^^^^^^^^^^

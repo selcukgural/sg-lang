@@ -1,0 +1,5 @@
+error: this is `Node*?` and may be `null`; `.value` needs a value
+  --> error_narrowing_lost.sg:13:11
+ 13 |     print(list.value)
+    |           ^^^^
+  hint: test it first: `if list is not null { ... }`

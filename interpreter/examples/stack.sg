@@ -1,0 +1,79 @@
+// The stack from the examples: methods, `this`, `T(args)`, `take`.
+public struct Node {
+    int value
+    Node*? next
+}
+
+public struct Stack {
+    Node*? top
+    int count
+
+    public Stack create() {
+        return Stack { top = null, count = 0 }
+    }
+
+    public void push(ref this, int v) {
+        // Through `ref` a field is moved out only with `take`, which leaves `null` there.
+        this.top = new Node { value = v, next = this.top.take() }
+        this.count += 1
+    }
+
+    public int? pop(ref this) {
+        var node = this.top.take()
+        if node is null {
+            return null
+        }
+        this.top = node.next        // `node` is owned, so its field can move out
+        this.count -= 1
+        return node.value
+    }                               // the node is freed here
+
+    public int? peek(read this) {
+        var top = read this.top
+        if top is null {
+            return null
+        }
+        return top.value
+    }
+
+    public bool isEmpty(read this) {
+        return this.count == 0
+    }
+
+    // Takes `this` by value: the stack is used up and cannot be touched afterwards.
+    public int drain(this) {
+        var total = 0
+        var cur = this.top
+        while cur is not null {
+            total += cur.value
+            cur = cur.next
+        }
+        return total
+    }
+}
+
+void fill(ref Stack stack, int n) {
+    for i in 0..n {
+        stack.push(i * i)
+    }
+}
+
+void main() {
+    var stack = Stack()             // short for Stack.create()
+    print(stack.isEmpty())
+    stack.push(1)
+    stack.push(2)
+    stack.push(3)
+    print(stack.peek() ?? -1)
+    print(stack.pop() ?? -1)
+    print(stack.pop() ?? -1)
+    print(stack.count)
+
+    fill(ref stack, 4)
+    print(stack.count)
+    print(stack.drain())
+
+    var empty = Stack.create()
+    print(empty.pop() ?? -1)
+    print(empty.peek() is null)
+}

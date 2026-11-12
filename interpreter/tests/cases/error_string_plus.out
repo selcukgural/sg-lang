@@ -1,0 +1,5 @@
+error: operator `+` is not defined for `string` and `string`
+  --> error_string_plus.sg:2:11
+ 2 |     print("a" + "b")
+   |           ^^^^^^^^^
+  hint: strings are joined with `$"{a}{b}"`

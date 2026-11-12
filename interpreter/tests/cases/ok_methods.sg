@@ -1,0 +1,83 @@
+struct Name {
+    string text
+}
+
+struct Pair {
+    Name first
+    Name second
+
+    Pair create(string a, string b) {
+        return Pair { first = Name { text = a }, second = Name { text = b } }
+    }
+
+    read string left(read this) {
+        return read this.first.text
+    }
+
+    void setLeft(ref this, string value) {
+        this.first.text = value
+    }
+
+    // A method calls another one through `this`.
+    void rename(ref this, string value) {
+        this.setLeft(value)
+    }
+
+    // `this` by value: the pair ends here and gives away one of its fields.
+    Name intoRight(this) {
+        return this.second
+    }
+}
+
+struct Counter {
+    int n
+
+    void bump(ref this) {
+        this.n += 1
+    }
+
+    int value(read this) {
+        return this.n
+    }
+}
+
+void bumpTwice(ref Counter c) {
+    c.bump()
+    c.bump()
+}
+
+int? takeSlot(ref int? slot) {
+    return slot.take()
+}
+
+void main() {
+    var pair = Pair("left", "right")
+    print(pair.left())
+    pair.rename("west")
+    print(pair.left())
+    var right = pair.intoRight()
+    print(right.text)
+
+    // Through a pointer, a `ref` parameter and on a value that was just built.
+    var boxed = new Counter { n = 10 }
+    boxed.bump()
+    print(boxed.value())
+    var counter = Counter { n = 0 }
+    bumpTwice(ref counter)
+    print(counter.value())
+    print(Pair.create("a", "b").left())
+
+    // `take` leaves null, `replace` leaves the new value.
+    int? slot = 5
+    print(takeSlot(ref slot) ?? -1)
+    print(slot is null)
+    var name = Name { text = "old" }
+    var old = name.text.replace("new")
+    print($"{old} -> {name.text}")
+
+    // A field moved out of an owned value can be given a value again.
+    var other = Pair("x", "y")
+    var first = other.first
+    other.first = Name { text = "z" }
+    print($"{first.text} {other.left()}")
+}

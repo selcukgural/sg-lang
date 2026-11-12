@@ -1,0 +1,11 @@
+struct Node {
+    int value
+}
+
+void main() {
+    Node*? node = new Node { value = 1 }
+    if node is not null {
+        var taken = node.take()
+        print(node.value)
+    }
+}

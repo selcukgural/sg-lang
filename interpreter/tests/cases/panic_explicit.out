@@ -1,0 +1,5 @@
+3
+panic: n must be positive, got -1
+  --> panic_explicit.sg:5:5
+ 5 |     panic($"n must be positive, got {n}")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
