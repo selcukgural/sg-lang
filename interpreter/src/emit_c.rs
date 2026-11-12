@@ -23,6 +23,9 @@
 //! helper is made that writes it into a text (`sg_show_...`) and one that tells whether two
 //! are equal (`sg_same_...`). They call the `format`, `equals` and `compare` a struct wrote.
 //!
+//! Borrows inside values: a field that borrows is the same pointer a borrowed variable is,
+//! and a function value is the address of the function.
+//!
 //! Who frees: the checker has decided who owns each value, so the back end only follows it.
 //! An owned value is dropped where its variable ends. A use that moves the value (marked by
 //! the checker) empties the place it came from, so the later drop finds nothing to free.
@@ -449,7 +452,7 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
 
 fn not_yet(span: Span, what: &str) -> Diag {
     Diag::error(span, format!("{what} is not in the C back end yet"))
-        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, `List`, `T*`, `T?`, `read` and `ref`, and `print`")
+        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, `List`, function values, `T*`, `T?`, `read` and `ref`, and `print`")
 }
 
 /// A C string literal for any text.
@@ -486,9 +489,21 @@ fn int_ctype(ty: IntTy) -> &'static str {
     }
 }
 
+/// A borrow of a borrow is the inner borrow: looking at a field that itself borrows gives
+/// the pointer the field holds.
+fn flat(mut ty: &Ty) -> &Ty {
+    while let Ty::Read(inner) | Ty::Ref(inner) = ty {
+        if !inner.is_borrow() {
+            break;
+        }
+        ty = inner;
+    }
+    ty
+}
+
 /// `read string`: the one borrow that is not a plain pointer.
 fn is_text_view(ty: &Ty) -> bool {
-    matches!(ty, Ty::Read(inner) if **inner == Ty::Str)
+    matches!(flat(ty), Ty::Read(inner) if **inner == Ty::Str)
 }
 
 fn is_text(ty: &Ty) -> bool {
@@ -522,6 +537,20 @@ fn mangle(ty: &Ty) -> Option<String> {
             _ => format!("O_{}", mangle(inner)?),
         },
         Ty::List(item) => format!("L_{}", mangle(item)?),
+        // A function type is named after the way it is written, letter by letter.
+        Ty::Func(..) => {
+            let mut name = String::from("F_");
+            for letter in ty.to_string().chars() {
+                match letter {
+                    'a'..='z' | 'A'..='Z' | '0'..='9' => name.push(letter),
+                    '_' => name.push_str("__"),
+                    other => {
+                        let _ = write!(name, "_{:02x}", other as u32);
+                    }
+                }
+            }
+            name
+        }
         // The length of the first name keeps two different pairs from sharing a name.
         Ty::Result(ok, error) => {
             let ok = if **ok == Ty::Void { "void".to_string() } else { mangle(ok)? };
@@ -691,6 +720,7 @@ impl<'a> Emitter<'a> {
 
     /// The C type of a value.
     fn ctype(&mut self, ty: &Ty, span: Span) -> Res<String> {
+        let ty = flat(ty);
         Ok(match ty {
             Ty::Int(ty) => int_ctype(*ty).to_string(),
             Ty::Bool => "bool".to_string(),
@@ -699,7 +729,7 @@ impl<'a> Emitter<'a> {
             Ty::Str | Ty::Formatter => "sg_string".to_string(),
             Ty::Struct(name) => format!("S_{name}"),
             Ty::Enum(name) => format!("E_{name}"),
-            Ty::Result(..) | Ty::List(_) => {
+            Ty::Result(..) | Ty::List(_) | Ty::Func(..) => {
                 let Some(name) = mangle(ty) else { return Err(not_yet(span, &format!("the type `{ty}`"))) };
                 self.need(ty, span)?;
                 format!("sg_{name}")
@@ -784,6 +814,19 @@ impl<'a> Emitter<'a> {
                 }
             }
             Ty::Nullable(inner) => self.need(inner, span)?,
+            // A function value is the address of a function: one pointer.
+            Ty::Func(params, ret) => {
+                if !self.made.insert(name.clone()) {
+                    return Ok(());
+                }
+                let mut takes = Vec::new();
+                for param in params {
+                    takes.push(self.ctype(param, span)?);
+                }
+                let takes = if takes.is_empty() { "void".to_string() } else { takes.join(", ") };
+                let gives = self.ctype(ret, span)?;
+                let _ = writeln!(self.types, "typedef {gives} (*sg_{name})({takes});");
+            }
             // A list: where its items are, how many there are and how many there is room for.
             // An empty list has no block. Only a pointer to the items is kept, so a struct
             // can hold a list of its own kind.
@@ -857,6 +900,10 @@ impl<'a> Emitter<'a> {
         let mut found = match (Ty::from_name(&ty.name), ty.args.as_slice()) {
             (None, [ok, error]) if ty.name == "Result" => Ty::Result(Box::new(self.written(ok)?), Box::new(self.written(error)?)),
             (None, [item]) if ty.name == "List" => Ty::List(Box::new(self.written(item)?)),
+            (None, [params @ .., ret]) if ty.name == "Func" => {
+                let params = params.iter().map(|param| self.written(param)).collect::<Res<Vec<Ty>>>()?;
+                Ty::Func(params, Box::new(self.written(ret)?))
+            }
             (Some(base @ (Ty::Int(_) | Ty::Bool | Ty::Void | Ty::Str | Ty::Formatter)), []) => base,
             (None, []) if self.structs.contains_key(ty.name.as_str()) => Ty::Struct(ty.name.clone()),
             (None, []) if self.enums.contains_key(ty.name.as_str()) => Ty::Enum(ty.name.clone()),
@@ -964,7 +1011,7 @@ impl<'a> Emitter<'a> {
                 for (position, field) in decl.fields.iter().enumerate() {
                     let field_ty = self.written(&field.ty)?;
                     let text = format!("{}{} = ", if position == 0 { "" } else { ", " }, field.name);
-                    let _ = write!(body, " sg_puts(out, {}); {}(out, &v->m_{});", c_string(&text), self.shower(&field_ty, span)?, field.name);
+                    let _ = write!(body, " sg_puts(out, {}); {}", c_string(&text), self.show_at(&field_ty, &format!("v->m_{}", field.name), span)?);
                 }
                 body.push_str(" sg_puts(out, \" }\");");
             }
@@ -981,7 +1028,7 @@ impl<'a> Emitter<'a> {
                         if position > 0 {
                             body.push_str(" sg_puts(out, \", \");");
                         }
-                        let _ = write!(body, " {}(out, &v->u.v{index}.m_{field});", self.shower(field_ty, span)?);
+                        let _ = write!(body, " {}", self.show_at(field_ty, &format!("v->u.v{index}.m_{field}"), span)?);
                     }
                     body.push_str(if fields.is_empty() { " break;" } else { " sg_puts(out, \")\"); break;" });
                 }
@@ -998,6 +1045,25 @@ impl<'a> Emitter<'a> {
         }
         let _ = writeln!(self.glue, "static void {helper}(sg_string* out, {ctype} const* v) {{ {body} }}");
         Ok(helper)
+    }
+
+    /// The C statement that writes what is at `place`: a field of a struct or of a variant.
+    /// A field that borrows is written like the value it points at.
+    fn show_at(&mut self, ty: &Ty, place: &str, span: Span) -> Res<String> {
+        match ty {
+            _ if is_text_view(ty) => Ok(format!("sg_put_quoted(out, {place});")),
+            Ty::Read(inner) | Ty::Ref(inner) => Ok(format!("{}(out, {place});", self.shower(inner, span)?)),
+            _ => Ok(format!("{}(out, &{place});", self.shower(ty, span)?)),
+        }
+    }
+
+    /// The C test that what is at `a` and at `b` is equal; see `show_at`.
+    fn same_at(&mut self, ty: &Ty, a: &str, b: &str, span: Span) -> Res<String> {
+        match ty {
+            _ if is_text_view(ty) => Ok(format!("sg_eq({a}, {b})")),
+            Ty::Read(inner) | Ty::Ref(inner) => Ok(format!("{}({a}, {b})", self.equaler(inner, span)?)),
+            _ => Ok(format!("{}(&{a}, &{b})", self.equaler(ty, span)?)),
+        }
     }
 
     /// The helper that tells whether two values of this type are equal, written once: a
@@ -1034,7 +1100,7 @@ impl<'a> Emitter<'a> {
                 let decl: &'a StructDecl = self.structs[owner.as_str()];
                 for field in &decl.fields {
                     let field_ty = self.written(&field.ty)?;
-                    let _ = write!(body, "if (!{}(&a->m_{1}, &b->m_{1})) return false; ", self.equaler(&field_ty, span)?, field.name);
+                    let _ = write!(body, "if (!{}) return false; ", self.same_at(&field_ty, &format!("a->m_{}", field.name), &format!("b->m_{}", field.name), span)?);
                 }
                 body.push_str("return true;");
             }
@@ -1047,7 +1113,7 @@ impl<'a> Emitter<'a> {
                     }
                     let _ = write!(body, " case {index}:");
                     for (field, field_ty, _) in fields {
-                        let _ = write!(body, " if (!{}(&a->u.v{index}.m_{field}, &b->u.v{index}.m_{field})) return false;", self.equaler(field_ty, span)?);
+                        let _ = write!(body, " if (!{}) return false;", self.same_at(field_ty, &format!("a->u.v{index}.m_{field}"), &format!("b->u.v{index}.m_{field}"), span)?);
                     }
                     body.push_str(" break;");
                 }
@@ -1177,16 +1243,13 @@ impl<'a> Emitter<'a> {
             return Ok(());
         }
         done.push(&decl.name);
-        if let Some((_, span)) = decl.sources.first() {
-            return Err(not_yet(*span, "a type that carries a borrow"));
-        }
         let name = &decl.name;
         let (mut fields, mut drops, mut forgets) = (String::new(), String::new(), String::new());
+        // A field that borrows is a pointer (or, for text, a pointer and a length) to what
+        // someone else owns: it is never freed here. The checker has seen that it does not
+        // outlive its owner.
         for field in &decl.fields {
             let ty = self.written(&field.ty)?;
-            if ty.is_borrow() {
-                return Err(not_yet(field.ty.span, "a field that borrows"));
-            }
             let mut held = Vec::new();
             held_types(&ty, &mut held);
             for inner in held {
@@ -1225,9 +1288,6 @@ impl<'a> Emitter<'a> {
             return Ok(());
         }
         done.push(&decl.name);
-        if let Some((_, span)) = decl.sources.first() {
-            return Err(not_yet(*span, "a type that carries a borrow"));
-        }
         if decl.variants.len() >= MOVED_TAG {
             return Err(not_yet(decl.name_span, "an enum with this many variants"));
         }
@@ -1237,9 +1297,6 @@ impl<'a> Emitter<'a> {
             let (mut fields, mut drops) = (String::new(), String::new());
             for field in &variant.fields {
                 let ty = self.written(&field.ty)?;
-                if ty.is_borrow() {
-                    return Err(not_yet(field.ty.span, "a field that borrows"));
-                }
                 let mut held = Vec::new();
                 held_types(&ty, &mut held);
                 for inner in held {
@@ -1677,10 +1734,16 @@ impl<'a> Emitter<'a> {
     /// A name that borrows what is at `at`, and the C line that declares it. The name is not
     /// in scope yet.
     fn borrowed_name(&mut self, name: &str, ty: Ty, at: &str, span: Span) -> Res<(Local, String)> {
+        // What is there may be a borrow itself (a field `read string text`): the name is a
+        // copy of it, not a borrow of a borrow.
+        let (ty, init) = match &ty {
+            Ty::Read(held) | Ty::Ref(held) if held.is_borrow() => ((**held).clone(), at.to_string()),
+            _ if is_text_view(&ty) => (ty, format!("sg_view(&{at})")),
+            _ => (ty, format!("(&{at})")),
+        };
         let ctype = self.ctype(&ty, span)?;
         self.temps += 1;
         let cname = format!("v_{name}_{}", self.temps);
-        let init = if is_text_view(&ty) { format!("sg_view(&{at})") } else { format!("(&{at})") };
         let line = format!("{ctype} {cname} = {init};");
         Ok((Local { name: name.to_string(), cname, ty, gone: false, drop: None }, line))
     }
@@ -2335,13 +2398,17 @@ impl<'a> Emitter<'a> {
             }
             // A field is reached through any number of `T*` on its own.
             ExprKind::Field { recv, name, .. } => {
-                let mut place = self.lvalue(recv)?;
+                // A field of a value that has no name (`longer(a, b).text`): the value is kept
+                // for the statement.
+                let mut place = self.look(recv)?;
                 let mut ty = recv.ty.strip_borrow();
                 while let Ty::Ptr(inner) = ty {
                     place = format!("(*{place})");
                     ty = inner;
                 }
-                Ok(format!("{place}.m_{name}"))
+                // A field that borrows stands for what it points at, as a borrowed variable does.
+                let field = format!("{place}.m_{name}");
+                Ok(if expr.ty.is_borrow() && !is_text_view(&expr.ty) { format!("(*{field})") } else { field })
             }
             // An item of a list: the index is checked, and the item is used where it is.
             ExprKind::Index { recv, index, kind: IndexKind::List } => {
@@ -2504,7 +2571,11 @@ impl<'a> Emitter<'a> {
                 })
             }
             ExprKind::Var(name) => Ok(self.local(name).cname.clone()),
+            // The value of a field that borrows is the pointer it holds.
+            ExprKind::Field { .. } if expr.ty.is_borrow() && !is_text_view(&expr.ty) => Ok(format!("(&{})", self.lvalue(expr)?)),
             ExprKind::Field { .. } => self.lvalue(expr),
+            // The name of a function, as a value: its address.
+            ExprKind::FuncRef(name) => Ok(format!("f_{name}")),
             // A number read out of a pointer that has no name: the pointer is freed after the statement.
             ExprKind::Load(inner) if matches!(inner.ty, Ty::Ptr(_)) => Ok(format!("(*{})", self.look(inner)?)),
             ExprKind::Load(inner) => Ok(format!("(*{})", self.first(inner, head)?)),
@@ -2787,7 +2858,15 @@ impl<'a> Emitter<'a> {
                 Callee::Plain if matches!(name.as_str(), "print" | "assert") => Err(not_yet(expr.span, &format!("`{name}` used as a value"))),
                 Callee::Plain => self.call(format!("f_{name}"), None, args, head),
                 Callee::Static { owner, name } => self.call(format!("f_{owner}_{name}"), None, args, head),
-                _ => Err(not_yet(expr.span, "a call through a function value")),
+                // A call through a function value kept in a variable.
+                Callee::Value => {
+                    let local = self.local(name);
+                    let (callee, ty) = (if local.ty.is_borrow() { format!("(*{})", local.cname) } else { local.cname.clone() }, local.ty.strip_borrow().clone());
+                    let Ty::Func(params, _) = ty else { return Err(not_yet(expr.span, "this call")) };
+                    self.sigs.insert(callee.clone(), params);
+                    self.call(callee, None, args, false)
+                }
+                _ => Err(not_yet(expr.span, "this call")),
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
                 Callee::Static { owner, name } => self.call(format!("f_{owner}_{name}"), None, args, head),
@@ -2831,6 +2910,22 @@ impl<'a> Emitter<'a> {
                     };
                     let receiver = self.part(recv, &this_ty, receiver, before);
                     self.call(format!("f_{owner}_{name}"), Some(receiver), args, false)
+                }
+                // A call through a function value kept in a field.
+                Callee::FieldValue(_) => {
+                    let mut place = self.look(recv)?;
+                    let mut ty = recv.ty.strip_borrow();
+                    while let Ty::Ptr(inner) = ty {
+                        place = format!("(*{place})");
+                        ty = inner;
+                    }
+                    let Ty::Struct(owner) = ty else { return Err(not_yet(expr.span, "this call")) };
+                    let decl: &'a StructDecl = self.structs[owner.as_str()];
+                    let field = decl.fields.iter().find(|field| field.name == *name).expect("the checker found the field");
+                    let Ty::Func(params, _) = self.written(&field.ty)? else { return Err(not_yet(expr.span, "this call")) };
+                    let callee = format!("{place}.m_{name}");
+                    self.sigs.insert(callee.clone(), params);
+                    self.call(callee, None, args, false)
                 }
                 // `slot.take()` leaves `null`; `slot.replace(v)` leaves `v`. Both give what was there.
                 Callee::Take => {

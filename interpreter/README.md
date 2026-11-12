@@ -137,7 +137,7 @@ Design rules that are already enforced:
 Since the sixteenth slice (12 November 2026) a program can be compiled: `sg build file.sg` writes it as C and
 hands that to the C compiler. The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, and then runs the
-same C once more under the address and undefined-behaviour sanitizers (65 of 305 programs for now).
+same C once more under the address and undefined-behaviour sanitizers (69 of 306 programs for now).
 
 What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -162,8 +162,12 @@ an enum or a list as the interpreter does (also behind a `T*`, with `T?` fields 
 `format` and `f.write`); `==` and `!=` on structs, enums and lists (the struct's own `equals` where it
 wrote one), `<` and the others through `compare`; `indexOf`, `contains` and `sort` on lists of such
 items; `equals` and `compare` on numbers and text; and a `Formattable` error that `main` ends with.
-Anything else (`HashMap`, `HashSet`, types that carry a borrow, function values) is an error that names
-what is missing: nothing is compiled wrongly in silence.
+Since the twenty-third slice types that carry a borrow (`struct Word<from source>` with a `read string`
+field, an enum whose variants borrow, a `read Config` field) and function values (`Func<A, R>` in a
+variable, a parameter, a field, a variant or a list, and calls through them); the order rules example is
+compiled.
+Anything else (`HashMap`, `HashSet`) is an error that names what is missing: nothing is compiled wrongly
+in silence. The calculator waits for `HashMap` alone.
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
 value (a `string`, a `T*`, a struct, an enum or a `T?` that holds one) is freed where its variable ends, on every way
@@ -751,6 +755,20 @@ interpreter itself when a `T?` field held a value on one side and `null` on the 
 one that can be a key (a struct with a list in it). It gives `false` now
 (`tests/cases/ok_equal_values.sg`).
 
+Choices made in the twenty-third slice (types that carry a borrow, function values), approved on 12 November 2026:
+
+44. **A field that borrows is a pointer** to what someone else owns (for text: a pointer and a length). It
+    is never freed with the value that holds it, and `<from source>` leaves no trace in the compiled
+    program: the checker has already seen that the borrow does not outlive its owner. This is what a C
+    programmer writes, without the guarantee. Rust's lifetimes cost the same: nothing.
+45. **A function value is the address of the function**, one pointer, and a call through it is an indirect
+    call. Rust's `fn` pointer and C's function pointer are the same.
+46. **Looking at a field that itself borrows gives the pointer the field holds**, not a pointer to the
+    field: in `match token { Name(text) => ... }` on a `read Token`, `text` is the `read string` of the
+    variant.
+47. **A field of a value that has no name can be read** (`longer(a, b).text`): the value is kept for the
+    statement and freed after it.
+
 ## Not here yet
 
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
@@ -785,6 +803,7 @@ error.
 ## Next
 
 The back end, one piece of the language at a time, each compared with the interpreter, run under the
-sanitizers and measured against C: next `HashMap` and `HashSet`, then types that carry a
-borrow (the calculator) and function values. After it the question is the
+sanitizers and measured against C: next `HashMap` and `HashSet` (as hash tables, with no promised
+order; the interpreter changes to that too), which lets the calculator be compiled. Then printing a struct
+without an allocation, and modules (`use`). After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

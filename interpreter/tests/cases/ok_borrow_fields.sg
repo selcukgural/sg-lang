@@ -1,0 +1,68 @@
+// Types that carry a borrow, as compiled code sees them: a field that borrows is a pointer
+// into what someone else owns, and is never freed with the value that holds it.
+struct Config : Formattable, Equatable {
+    string name
+    int size
+}
+
+struct View<from source> : Formattable {
+    read Config config
+    int extra
+
+    int total(read this) {
+        return this.config.size + this.extra
+    }
+}
+
+enum Token<from source> : Formattable, Equatable {
+    Name(read string text)
+    Number(int value)
+    End
+}
+
+Token next(read string input, nint at) from input {
+    if at >= input.length() {
+        return Token.End
+    }
+    if input[at] >= '0' && input[at] <= '9' {
+        return Token.Number(input[at] - '0')
+    }
+    return Token.Name(input[at..at + 1])
+}
+
+int width(read Token token) {
+    match token {
+        Name(text) => return (int)text.length()
+        Number(value) => return value
+        End => return 0
+    }
+}
+
+void main() {
+    var config = Config { name = "main".clone(), size = 40 }
+    var view = View { config = read config, extra = 2 }
+    print(view.total())
+    print(view.config.name)
+    print(view.config.size + 1)
+    print(view)
+
+    var input = "a7".clone()
+    var first = next(read input, 0)
+    var second = next(read input, 1)
+    print(first)
+    print(second)
+    print(next(read input, 2))
+    print(width(read first) + width(read second))
+    print(first == next(read input, 0))
+    print(first == second)
+    if first is Name(text) {
+        print(text)
+    }
+    match second {
+        Number(value) => print(value)
+        Name(text) => print(text)
+        End => print("end")
+    }
+    var tokens = List<Token> { first, next(read input, 1), Token.End }
+    print(tokens)
+}
