@@ -1,0 +1,48 @@
+struct Point : Copyable, Equatable, Hashable {
+    int x
+    int y
+}
+
+// A struct that holds a list is compared field by field like any other.
+struct Team : Equatable {
+    string name
+    List<string> members
+}
+
+List<int> sorted(List<int> xs) {
+    xs.sort()
+    return xs
+}
+
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    print(xs == List<int> { 1, 2, 3 })
+    print(xs == List<int> { 3, 2, 1 })       // the order counts in a list
+    print(xs == List<int> { 1, 2 })
+    print(xs != List<int>())
+    assert(sorted(List<int> { 3, 1, 2 }) == xs)
+
+    var a = HashSet<int> { 1, 2, 3 }
+    var b = HashSet<int> { 3, 2, 1 }
+    print(a == b)                            // not in a set
+    print(a.add(4))
+    print(a == b)
+
+    var first = HashMap<string, Point> { {"a", Point { x = 1, y = 2 }} }
+    var second = HashMap<string, Point>()
+    print(first == second)
+    second.add("a", Point { x = 1, y = 2 })
+    print(first == second)
+    second["a"].y = 9
+    print(first == second)
+
+    var core = Team { name = "core", members = List<string> { "ada", "grace" } }
+    var same = Team { name = "core", members = List<string> { "ada", "grace" } }
+    print(core == same)
+    same.members.add("edsger")
+    print(core == same)
+
+    var rows = List<List<int>> { List<int> { 1 }, List<int> { 2, 3 } }
+    print(rows.contains(read List<int> { 2, 3 }))
+    print(rows.indexOf(read xs) is null)
+}

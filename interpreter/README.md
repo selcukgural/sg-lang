@@ -18,11 +18,11 @@ cargo test
 | Methods | Written in the struct body with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`. Called as `stack.push(1)`, also through pointers and borrows. A function without `this` is called on the type: `Stack.create()`. `Stack(args)` is short for `Stack.create(args)` |
 | Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)` |
 | `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a name or `_` for each value, `_`, `var other`; a condition with `when`. On an integer the patterns are numbers and characters: `match c { '+' => ... _ => ... }`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
-| Interfaces | Two built-in ones, written after the name: `struct Point : Copyable`, `enum AppError : Formattable`. A `Copyable` value is copied where another would be moved. A `Formattable` value is accepted by `print`, `$"..."` and `f.write`; a struct can write its own `void format(read this, ref Formatter f)`, otherwise the text is made from the fields |
-| `List<T>` | Built in. `List<int>()`, `List<int> { 1, 2 }`; `xs.add(v)`, `xs.length()`, `xs[i]` to read and to write (`xs[i] = v`, `xs[i] += 1`, `xs[i].name = ...`, `ref xs[i]`), `xs.get(i)` gives `null` where `xs[i]` would panic, `xs.removeLast()`, `xs.reverse()`, `xs.clear()`. On a list of integers or text: `xs.indexOf(v)`, `xs.contains(v)`, `xs.sort()` (`bool` too, except for `sort`). `string.join(", ", read names)` |
-| `HashMap<K, V>` | Built in; a key is an integer, a `bool` or a `string`. `HashMap<string, int>()`, `HashMap<string, int> { {"x", 10} }`; `map.add(key, value)`, `map[key]` to read and to write what is under a key that is there, `map.get(key)` gives `null` for a missing key, `map.getOrAdd(key, initial)` gives a `ref V`, `map.contains(key)`, `map.remove(key)`, `map.length()`, `map.clear()` |
+| Interfaces | Five built-in ones, written after the name: `struct Point : Copyable`, `enum AppError : Formattable`. A `Copyable` value is copied where another would be moved. A `Formattable` value is accepted by `print`, `$"..."` and `f.write`; a struct can write its own `void format(read this, ref Formatter f)`, otherwise the text is made from the fields. `Equatable` gives `==` and `!=` (field by field, or the struct's own `bool equals(read this, read T other)`), `Hashable` lets the type be a key of a `HashMap` or an item of a `HashSet`, `Comparable` gives `<` `<=` `>` `>=` and `sort` through the struct's `int compare(read this, read T other)` |
+| `List<T>` | Built in. `List<int>()`, `List<int> { 1, 2 }`; `xs.add(v)`, `xs.length()`, `xs[i]` to read and to write (`xs[i] = v`, `xs[i] += 1`, `xs[i].name = ...`, `ref xs[i]`), `xs.get(i)` gives `null` where `xs[i]` would panic, `xs.removeLast()`, `xs.reverse()`, `xs.clear()`. `xs.indexOf(v)` and `xs.contains(v)` on `Equatable` items, `xs.sort()` on `Comparable` ones (numbers and text are both). `string.join(", ", read names)` |
+| `HashMap<K, V>` | Built in; a key is an integer, a `bool`, a `string` or a type written `: Equatable, Hashable`. `HashMap<string, int>()`, `HashMap<string, int> { {"x", 10} }`; `map.add(key, value)`, `map[key]` to read and to write what is under a key that is there, `map.get(key)` gives `null` for a missing key, `map.getOrAdd(key, initial)` gives a `ref V`, `map.contains(key)`, `map.remove(key)`, `map.length()`, `map.clear()` |
 | Text of a collection | `print(xs)`, `$"{xs}"`: `[1, 2, 3]`, `{"ada": 36}`, `{1, 2, 3}`, when the items can be written as text |
-| `HashSet<T>` | Built in; an item is an integer, a `bool` or a `string`. `HashSet<int>()`, `HashSet<int> { 1, 2 }`; `set.add(v)` gives `true` if the item was not there, `set.contains(v)`, `set.remove(v)` gives `true` if it was there, `set.length()`, `set.clear()` |
+| `HashSet<T>` | Built in; an item is what a key of a `HashMap` can be. `HashSet<int>()`, `HashSet<int> { 1, 2 }`; `set.add(v)` gives `true` if the item was not there, `set.contains(v)`, `set.remove(v)` gives `true` if it was there, `set.length()`, `set.clear()` |
 | `for` over a collection | `for x in xs` hands the collection over and `x` owns each item; `for x in read xs` and `for x in ref xs` lend, and so does a collection that is already borrowed. Over a `HashMap` the variable has a `key` and a `value`; a `HashSet` is gone over by hand-over or `read` |
 | `is` | `if s is Circle(r) { ... }`, `while next() is not End { ... }` |
 | Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
@@ -34,6 +34,7 @@ cargo test
 | Text | `"..."` with `\n \t \r \0 \\ \" \'`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()`, `text.indexOf(':')`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string` |
 | Characters | `'+'`, `'\n'`: a `byte` |
 | Built-ins | `print(x)`, `panic("...")`, `assert(condition)` |
+| Comparing by name | `a.compare(b)` on integers and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
 | Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic |
 
 Design rules that are already enforced:
@@ -86,6 +87,13 @@ Design rules that are already enforced:
   `void format(read this, ref Formatter f)`.
 - `print(x)` of a struct or an enum that is not `Formattable` is an error whose hint is the two words to add.
 - The error type of `Result<void, E> main()` must be `Formattable` (or a `string`), because it is printed.
+- `==` on a struct or an enum that is not `Equatable` is an error whose hint is the word to add; so are `<` on
+  one that is not `Comparable`, `sort` and `indexOf` on such items, and a key that is not `Hashable`.
+- `: Equatable` without an `equals` needs every field to be `Equatable`; `: Hashable` needs `Equatable` and
+  every field `Hashable`; `: Comparable` needs a `compare` method. A method with the wrong signature is an
+  error that shows the right one.
+- A failed `assert(a == b)` writes both sides, also when they are structs, enums or collections.
+- `xs < ys` on two collections is an error, and so is a collection as a key.
 - An index outside a `List` panics with the index and the length; a key that is not in a `HashMap` panics with
   the key. The message names `get`, which gives `null` instead.
 - An item is never moved out of a collection through an index: `consume(names[0])` is an error whose hint is
@@ -230,9 +238,9 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
 
 Approved on 12 November 2026. Each has a test in `tests/cases/`.
 
-1. **Only `Copyable` and `Formattable` exist, as built-in names.** `interface` of your own, `where`, and the
-   other built-in ones (`Clonable`, `Equatable`, `Hashable`, `Disposable`) answer "not in the interpreter yet".
-   These two were enough to bring the calculator and the error of `main` in line with the design.
+1. **`Copyable` and `Formattable` exist as built-in names.** `interface` of your own, `where`, `Clonable` and
+   `Disposable` answer "not in the interpreter yet". (`Equatable`, `Hashable` and `Comparable` came the same
+   way in the tenth slice.)
 2. **The text the compiler makes** (the design says it is generated, not what it looks like): a struct is
    written the way it is built, `Place { line = 3, file = "a.txt" }`; a variant the way a pattern writes it,
    without its enum, `NotFound(...)`, `Ready`; text inside another value is in quotes, so the parts can be told
@@ -280,7 +288,8 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
 7. **`for item in map` gives an entry with `key` and `value`.** The value can be written through `ref`
    (`item.value += 1`), the key never. The entry has no type name that can be written yet. Here the entries come
    in the order of their keys so that a run always prints the same; the design promises no order.
-8. **A key is an integer, a `bool` or a `string`**, until `Equatable` and `Hashable` exist.
+8. **A key is an integer, a `bool` or a `string`**; since the tenth slice also a type written
+   `: Equatable, Hashable`.
 9. **A collection is written as text if its items are**: `print(xs)` writes `[1, 2, 3]`, a map
    `{"ada": 36, "grace": 45}`, a set `{1, 2, 3}`; text inside is in quotes, as inside a struct. A struct that
    holds a list can be `Formattable` without a `format` of its own. (The first choice here was an error; it was
@@ -305,10 +314,36 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
 4. Writing an item (`xs[0] = v`) inside `for x in read xs` counts as changing `xs`. Pointing a `read` variable
    at something else does not.
 5. `xs.indexOf(v)` gives a `nint?` (`null` if there is none), as `text.indexOf(byte)` does in the design.
-6. `indexOf`, `contains` and `sort` work on integers and text (`bool` for the first two) until `Equatable` and
-   `Comparable` exist; on another item type the error says so.
+6. `indexOf`, `contains` and `sort` work on integers and text (`bool` for the first two); since the tenth
+   slice also on items written `: Equatable` and `: Comparable`. On another item type the error says so.
 7. `string.join(separator, read names)` is the design's notation; it takes a `read List<string>` here, where
    the design means a slice.
+
+## Rules from the tenth slice
+
+Approved on 12 November 2026. Each has a test in `tests/cases/`.
+
+1. **`Equatable`, `Hashable` and `Comparable` are built-in names, like `Copyable`.** `interface` of your own is
+   still not here. The design has all three with these signatures.
+2. **`Equatable` without an `equals` compares field by field**, as the design says. A `T?` field is equal when
+   both are `null` or both hold equal values; a `T*` field is compared by what it owns.
+3. **`==` wants the same type on both sides** and looks through `read` and `T*`. `a != b` is `!a.equals(b)`.
+4. **`Hashable` needs `Equatable`**, and the hash is made from the fields. Here a `Hashable` type cannot write
+   its own `equals` or `hash` yet: the interpreter keeps its maps in order of the fields and never calls `hash`.
+5. **`Comparable` needs a `compare` that is written**; it is not made from the fields (the design generates
+   only `equals` and `hash`). An enum cannot be `Comparable` until enums have methods.
+6. **`a.compare(b)` and `a.equals(b)` exist on integers and text** (`equals` on `bool` too), as the design's
+   `this.major.compare(other.major)` needs.
+7. **An argument that is only looked at is lent when it cannot be copied**: `old.compare(read next)`,
+   `tags.contains(read tag)`, `board.get(read key)`; a `Copyable` one is passed as it is. The operators need
+   no `read` (`old < next`): looking is not taking.
+8. **A failed `assert` writes a struct or an enum field by field**, whether it is `Formattable` or not.
+
+9. **A collection is `Equatable` if what it holds is.** A list is equal to another with the same items in the
+   same order; a set with the same items and a map with the same keys and equal values, whatever the order.
+   So `assert(xs == List<int> { 1, 2, 3 })` can be written, and a struct that holds a list is `Equatable`
+   field by field. A collection is not `Hashable` (it is not a key) and not `Comparable` (`xs < ys` is an
+   error): an order is written, not made up.
 
 ## Not here yet
 
@@ -320,16 +355,15 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
 - Narrowing only follows a direct `x is null` / `x is not null` test, not `&&` chains. The same holds for
   the names of `x is Circle(r)`: they exist when the test is the whole condition of an `if` or `while`.
 - Patterns inside patterns (`Negate(Number(v))`), patterns for text (`match word { "if" => ... }`),
-  methods on enums. A struct or an enum cannot be compared with `==` yet.
-- Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Equatable`,
-  `Hashable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
+  methods on enums.
+- Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>` and `HashMap<K, V>`; lambdas, modules, `test`
   blocks, threads, `shared` / `weak` / `checked` / `locked`.
 - A collection changed inside its own `for` through another `ref` to it is not caught (it is part of the
   borrow check); the direct forms are. Here a list is gone over by position and a map or a set as it was when
   the loop started.
-- Lists of borrows (`List<read T>`); `indexOf`, `contains`, `sort` and keys for your own types (`Equatable`,
-  `Hashable`, `Comparable`); `filter` and `map` (lambdas); `reserve`, `clone`.
+- Lists of borrows (`List<read T>`); `filter` and `map` (lambdas); `reserve`, `clone`; a `Hashable`
+  type with its own `equals` or `hash`.
 - `char` and `text.chars()`, `double` and the other number types.
 - Slices of anything but text (`read byte[]`, `xs[a..b]`, `text.asBytes()`, `string.fromUtf8`), `T[N]`.
   A slice of a `string` is a copy here, not a window; without a borrow check the difference cannot be seen.
@@ -342,6 +376,6 @@ error.
 
 ## Next
 
-`Equatable`, `Hashable` and `Comparable` as built-in names like `Copyable` (which bring `==`, `indexOf`,
-`sort` and keys for your own types). After that the borrow check (`from`, a `ref` that overlaps another
-borrow), the largest piece still missing; `test` blocks are a smaller step that could come before it.
+The borrow check (`from`, a `ref` that overlaps another borrow), the largest piece still missing. Smaller
+steps that could come before it: `test` blocks (the stock tests of the design now have everything else they
+need), methods on enums, `char`.

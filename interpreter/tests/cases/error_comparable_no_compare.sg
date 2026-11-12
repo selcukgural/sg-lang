@@ -1,0 +1,6 @@
+struct Version : Comparable {
+    int major
+}
+
+void main() {
+}

@@ -1,5 +1,5 @@
-error: `Equatable` is not in the interpreter yet
-  interfaces for now: `Copyable` and `Formattable`
+error: `Clonable` is not in the interpreter yet
+  interfaces for now: `Copyable`, `Formattable`, `Equatable`, `Hashable` and `Comparable`
   --> error_interface_not_yet.sg:1:26
- 1 | struct Point : Copyable, Equatable {
-   |                          ^^^^^^^^^
+ 1 | struct Point : Copyable, Clonable {
+   |                          ^^^^^^^^

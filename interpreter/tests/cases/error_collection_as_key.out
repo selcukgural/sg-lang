@@ -1,0 +1,5 @@
+error: `List<int>` cannot be the key of a `HashMap`: it is not `Equatable` and `Hashable`
+  a collection can be compared with `==`, but it is not `Hashable`
+  --> error_collection_as_key.sg:2:26
+ 2 |     var groups = HashMap<List<int>, string>()
+   |                          ^^^^^^^^^

@@ -54,12 +54,15 @@ pub enum Value {
 
 type Entries = BTreeMap<Key, (Value, Cell)>;
 
-/// A key of a `HashMap`: an integer, a `bool` or text.
+/// A key of a `HashMap` or an item of a `HashSet`: an integer, a `bool`, text, or a struct
+/// or an enum made of such parts (an enum starts with the position of its variant).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Key {
+    Null,
     Bool(bool),
     Int(i64),
     Str(Rc<str>),
+    Parts(Vec<Key>),
 }
 
 fn key_of(value: &Value) -> Key {
@@ -67,15 +70,22 @@ fn key_of(value: &Value) -> Key {
         Value::Bool(value) => Key::Bool(*value),
         Value::Int(_, value) => Key::Int(*value),
         Value::Str(text) => Key::Str(text.clone()),
-        _ => unreachable!("the checker only lets integers, `bool` and text be keys"),
+        Value::Null => Key::Null,
+        Value::Struct(_, fields) => Key::Parts(fields.iter().map(|field| key_of(&field.borrow())).collect()),
+        Value::Enum(_, index, fields) => {
+            let parts = fields.iter().map(|field| key_of(&field.borrow()));
+            Key::Parts(std::iter::once(Key::Int(*index as i64)).chain(parts).collect())
+        }
+        Value::Ptr(inner) | Value::Borrow(inner) => key_of(&inner.borrow()),
+        _ => unreachable!("the checker only lets `Hashable` values be keys"),
     }
 }
 
 /// `map.add(key, value)`: a key that is already there is a mistake, not a silent overwrite.
-fn map_add(entries: &mut Entries, key: Value, value: Value, span: Span) -> Result<(), Diag> {
+fn map_add(entries: &mut Entries, key: Value, value: Value, shown: String, span: Span) -> Result<(), Diag> {
     match entries.entry(key_of(&key)) {
         std::collections::btree_map::Entry::Occupied(_) => {
-            Err(Diag::panic(span, format!("key {} is already in the map", key.debug()))
+            Err(Diag::panic(span, format!("key {shown} is already in the map"))
                 .note("to change what is kept under a key, write `map[key] = value`"))
         }
         std::collections::btree_map::Entry::Vacant(slot) => {
@@ -471,9 +481,12 @@ impl<'a> Interp<'a> {
                     }
                     (Value::Map(entries), key) => match entries.borrow().get(&key_of(key)) {
                         Some((_, value)) => Ok(value.clone()),
-                        None => Err(Diag::panic(expr.span, format!("key {} is not in the map", key.debug()))
-                            .note("`map.get(key)` gives `null` for a missing key; `map.add(key, value)` puts one in")
-                            .into()),
+                        None => {
+                            let shown = self.show(key, true, expr.span)?;
+                            Err(Diag::panic(expr.span, format!("key {shown} is not in the map"))
+                                .note("`map.get(key)` gives `null` for a missing key; `map.add(key, value)` puts one in")
+                                .into())
+                        }
                     },
                     _ => unreachable!("the checker only lets text, lists and maps be indexed"),
                 }
@@ -526,7 +539,8 @@ impl<'a> Interp<'a> {
                 for item in given {
                     let key = strip(self.expr(&item.values[0], frame)?);
                     let value = self.expr(&item.values[1], frame)?;
-                    map_add(&mut entries, key, value, item.span)?;
+                    let shown = self.show(&key, true, item.span)?;
+                    map_add(&mut entries, key, value, shown, item.span)?;
                 }
                 Ok(Value::Map(Rc::new(RefCell::new(entries))))
             }
@@ -557,7 +571,7 @@ impl<'a> Interp<'a> {
             ExprKind::Binary(op, left, right) => {
                 let left = strip(self.expr(left, frame)?);
                 let right = strip(self.expr(right, frame)?);
-                Ok(binary(*op, left, right, expr.span)?)
+                self.binary(*op, left, right, expr.span)
             }
             ExprKind::Char(_) => unreachable!("the checker turns a character into a `byte`"),
             ExprKind::Slice { recv, from, to } => {
@@ -796,7 +810,7 @@ impl<'a> Interp<'a> {
                         values.push(strip(self.expr(arg, frame)?));
                     }
                     if matches!(recv, Value::List(_) | Value::Map(_) | Value::Set(_)) {
-                        return Ok(collection_method(recv, name, values, expr.span)?);
+                        return self.collection_method(recv, name, values, expr.span);
                     }
                     Ok(method(recv, name, values))
                 }
@@ -850,10 +864,10 @@ impl<'a> Interp<'a> {
     /// On failure writes the expression text and, for a comparison, the value of both sides.
     fn assert(&mut self, call: &'a Expr, cond: &'a Expr, frame: &mut Frame) -> Res<Value> {
         let text = &self.src[cond.span.start..cond.span.end];
-        let failed = |sides: Option<(Value, Value)>| {
+        let failed = |sides: Option<(String, String)>| {
             let mut diag = Diag::panic(call.span, format!("assert failed: {text}"));
             if let Some((left, right)) = sides {
-                diag = diag.note(format!("left: {}", left.debug())).note(format!("right: {}", right.debug()));
+                diag = diag.note(format!("left: {left}")).note(format!("right: {right}"));
             }
             Unwind::from(diag)
         };
@@ -861,9 +875,20 @@ impl<'a> Interp<'a> {
             ExprKind::Binary(op, left, right) if op.is_comparison() => {
                 let left = strip(self.expr(left, frame)?);
                 let right = strip(self.expr(right, frame)?);
-                match binary(*op, left.clone(), right.clone(), cond.span)? {
+                match self.binary(*op, left.clone(), right.clone(), cond.span)? {
                     Value::Bool(true) => Ok(Value::Void),
-                    _ => Err(failed(Some((left, right)))),
+                    _ => {
+                        // A struct or an enum is written the way `print` would write it.
+                        let mut shown = Vec::new();
+                        for side in [&left, &right] {
+                            shown.push(match owned(side.clone()) {
+                                Value::Struct(..) | Value::Enum(..) | Value::List(_) | Value::Set(_) | Value::Map(_) => self.show(side, true, cond.span)?,
+                                _ => side.debug(),
+                            });
+                        }
+                        let right = shown.pop().expect("two sides");
+                        Err(failed(Some((shown.pop().expect("two sides"), right))))
+                    }
                 }
             }
             _ if self.condition(cond, frame)? => Ok(Value::Void),
@@ -939,6 +964,150 @@ impl<'a> Interp<'a> {
         }
     }
 
+    /// An operator on two values. On a struct or an enum `==` is `equals` and `<` is `compare`.
+    fn binary(&mut self, op: BinOp, left: Value, right: Value, span: Span) -> Res<Value> {
+        use std::cmp::Ordering;
+        let (left, right) = (owned(left), owned(right));
+        let by_method = |value: &Value| matches!(value, Value::Struct(..) | Value::Enum(..) | Value::List(_) | Value::Set(_) | Value::Map(_));
+        if !by_method(&left) {
+            return Ok(binary(op, left, right, span)?);
+        }
+        Ok(Value::Bool(match op {
+            BinOp::Eq => self.equal(&left, &right, span)?,
+            BinOp::Ne => !self.equal(&left, &right, span)?,
+            _ => {
+                let ordering = self.compare(&left, &right, span)?;
+                match op {
+                    BinOp::Lt => ordering == Ordering::Less,
+                    BinOp::Le => ordering != Ordering::Greater,
+                    BinOp::Gt => ordering == Ordering::Greater,
+                    _ => ordering != Ordering::Less,
+                }
+            }
+        }))
+    }
+
+    /// The method of a struct that `==`, `<`, `indexOf` or `sort` runs, if the struct wrote
+    /// its own: called with both values lent.
+    fn compared(&mut self, method: &str, left: &Value, right: &Value, span: Span) -> Res<Option<Value>> {
+        let Value::Struct(name, _) = left else { return Ok(None) };
+        let Some(func) = self.methods.get(&**name).and_then(|methods| methods.get(method)).copied() else { return Ok(None) };
+        let this = Value::Borrow(cell(left.clone()));
+        let other = Value::Borrow(cell(right.clone()));
+        self.call(func, Some(this), vec![other], span).map(Some)
+    }
+
+    /// `a.equals(b)`: the struct's own `equals`, or field by field.
+    fn equal(&mut self, left: &Value, right: &Value, span: Span) -> Res<bool> {
+        let (left, right) = (owned(left.clone()), owned(right.clone()));
+        if let Some(result) = self.compared("equals", &left, &right, span)? {
+            return Ok(matches!(result, Value::Bool(true)));
+        }
+        // Collections: a list item by item in order; a set and a map by what they hold,
+        // whatever the order.
+        let pairs: Vec<(Cell, Cell)> = match (&left, &right) {
+            (Value::List(a), Value::List(b)) => {
+                let (a, b) = (a.borrow(), b.borrow());
+                if a.len() != b.len() {
+                    return Ok(false);
+                }
+                a.iter().cloned().zip(b.iter().cloned()).collect()
+            }
+            (Value::Set(a), Value::Set(b)) => return Ok(a.borrow().keys().eq(b.borrow().keys())),
+            (Value::Map(a), Value::Map(b)) => {
+                let (a, b) = (a.borrow(), b.borrow());
+                if !a.keys().eq(b.keys()) {
+                    return Ok(false);
+                }
+                a.values().zip(b.values()).map(|((_, a), (_, b))| (a.clone(), b.clone())).collect()
+            }
+            _ => Vec::new(),
+        };
+        if matches!(left, Value::List(_) | Value::Map(_)) {
+            for (a, b) in pairs {
+                let (a, b) = (a.borrow().clone(), b.borrow().clone());
+                if !self.equal(&a, &b, span)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        let (left_fields, right_fields) = match (&left, &right) {
+            (Value::Struct(_, a), Value::Struct(_, b)) => (a, b),
+            (Value::Enum(_, a_index, a), Value::Enum(_, b_index, b)) if a_index == b_index => (a, b),
+            (Value::Enum(..), Value::Enum(..)) => return Ok(false),
+            _ => return Ok(key_of(&left) == key_of(&right)),
+        };
+        for (a, b) in left_fields.iter().zip(right_fields.iter()) {
+            let (a, b) = (a.borrow().clone(), b.borrow().clone());
+            if !self.equal(&a, &b, span)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// `a.compare(b)`: the struct's own `compare`; numbers and text have their order.
+    fn compare(&mut self, left: &Value, right: &Value, span: Span) -> Res<std::cmp::Ordering> {
+        let (left, right) = (owned(left.clone()), owned(right.clone()));
+        match self.compared("compare", &left, &right, span)? {
+            Some(Value::Int(_, result)) => Ok(result.cmp(&0)),
+            _ => Ok(key_of(&left).cmp(&key_of(&right))),
+        }
+    }
+
+    /// The methods of `List<T>`, `HashMap<K, V>` and `HashSet<T>`.
+    fn collection_method(&mut self, recv: Value, name: &str, mut args: Vec<Value>, span: Span) -> Res<Value> {
+        match (&recv, name) {
+            (Value::List(items), "indexOf" | "contains") => {
+                let items: Vec<Cell> = items.borrow().clone();
+                let mut found = None;
+                for (at, item) in items.iter().enumerate() {
+                    let item = item.borrow().clone();
+                    if self.equal(&item, &args[0], span)? {
+                        found = Some(at);
+                        break;
+                    }
+                }
+                Ok(match (name, found) {
+                    ("contains", _) => Value::Bool(found.is_some()),
+                    (_, Some(at)) => Value::Int(IntTy::Nint, at as i64),
+                    (_, None) => Value::Null,
+                })
+            }
+            (Value::List(items), "sort") => {
+                // The list is taken out while its items are compared, so that a `compare`
+                // that fails leaves through here.
+                let mut sorted: Vec<Cell> = items.borrow().clone();
+                let mut failed = None;
+                sorted.sort_by(|a, b| {
+                    let (a, b) = (a.borrow().clone(), b.borrow().clone());
+                    match self.compare(&a, &b, span) {
+                        Ok(ordering) if failed.is_none() => ordering,
+                        Ok(_) => std::cmp::Ordering::Equal,
+                        Err(stop) => {
+                            failed.get_or_insert(stop);
+                            std::cmp::Ordering::Equal
+                        }
+                    }
+                });
+                if let Some(stop) = failed {
+                    return Err(stop);
+                }
+                *items.borrow_mut() = sorted;
+                Ok(Value::Void)
+            }
+            (Value::Map(entries), "add") => {
+                let value = args.remove(1);
+                let key = args.remove(0);
+                let shown = self.show(&key, true, span)?;
+                map_add(&mut entries.borrow_mut(), key, value, shown, span)?;
+                Ok(Value::Void)
+            }
+            _ => Ok(collection_method(recv, name, args)),
+        }
+    }
+
     fn write_line(&mut self, text: &str) -> Res<()> {
         writeln!(self.out, "{text}").map_err(|error| match error.kind() {
             std::io::ErrorKind::BrokenPipe => Unwind::Stop(Stop::OutputClosed),
@@ -988,10 +1157,10 @@ fn arithmetic(op: BinOp, ty: IntTy, a: i64, b: i64, span: Span) -> Result<Value,
     Ok(Value::Int(ty, result as i64))
 }
 
-/// The methods of `List<T>` and `HashMap<K, V>`.
-fn collection_method(recv: Value, name: &str, mut args: Vec<Value>, span: Span) -> Result<Value, Diag> {
+/// The methods of the collections that neither compare items nor can fail.
+fn collection_method(recv: Value, name: &str, mut args: Vec<Value>) -> Value {
     let lent = |found: Option<Cell>| found.map_or(Value::Null, Value::Borrow);
-    Ok(match (&recv, name) {
+    match (&recv, name) {
         (Value::List(items), "length") => Value::Int(IntTy::Nint, items.borrow().len() as i64),
         (Value::List(items), "clear") => {
             items.borrow_mut().clear();
@@ -1013,19 +1182,6 @@ fn collection_method(recv: Value, name: &str, mut args: Vec<Value>, span: Span) 
             items.borrow_mut().reverse();
             Value::Void
         }
-        (Value::List(items), "indexOf" | "contains") => {
-            let wanted = key_of(&args[0]);
-            let found = items.borrow().iter().position(|item| key_of(&item.borrow()) == wanted);
-            match (name, found) {
-                ("contains", _) => Value::Bool(found.is_some()),
-                (_, Some(at)) => Value::Int(IntTy::Nint, at as i64),
-                (_, None) => Value::Null,
-            }
-        }
-        (Value::List(items), "sort") => {
-            items.borrow_mut().sort_by_cached_key(|item| key_of(&item.borrow()));
-            Value::Void
-        }
         (Value::Set(items), "length") => Value::Int(IntTy::Nint, items.borrow().len() as i64),
         (Value::Set(items), "clear") => {
             items.borrow_mut().clear();
@@ -1042,11 +1198,6 @@ fn collection_method(recv: Value, name: &str, mut args: Vec<Value>, span: Span) 
             entries.borrow_mut().clear();
             Value::Void
         }
-        (Value::Map(entries), "add") => {
-            let value = args.remove(1);
-            map_add(&mut entries.borrow_mut(), args.remove(0), value, span)?;
-            Value::Void
-        }
         (Value::Map(entries), "get") => lent(entries.borrow().get(&key_of(&args[0])).map(|(_, value)| value.clone())),
         (Value::Map(entries), "contains") => Value::Bool(entries.borrow().contains_key(&key_of(&args[0]))),
         (Value::Map(entries), "remove") => {
@@ -1061,7 +1212,7 @@ fn collection_method(recv: Value, name: &str, mut args: Vec<Value>, span: Span) 
             Value::Borrow(value.clone())
         }
         _ => unreachable!("the checker only lets known methods through"),
-    })
+    }
 }
 
 fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
@@ -1083,6 +1234,8 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
             }
         }
         (Value::Str(_), "clone", []) => recv,
+        (_, "equals", [other]) => Value::Bool(key_of(&recv) == key_of(other)),
+        (_, "compare", [other]) => Value::Int(IntTy::Int, key_of(&recv).cmp(&key_of(other)) as i64),
         (Value::Int(ty, a), _, [Value::Int(_, b)]) => {
             let (a, b) = (*a as i128, *b as i128);
             let result = match name {

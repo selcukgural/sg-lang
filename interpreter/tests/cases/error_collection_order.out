@@ -1,0 +1,5 @@
+error: `<` puts the values in order, and a `List<int>` has no order of its own
+  a collection is compared with `==` and `!=` only
+  --> error_collection_order.sg:4:11
+ 4 |     print(a < b)
+   |           ^^^^^

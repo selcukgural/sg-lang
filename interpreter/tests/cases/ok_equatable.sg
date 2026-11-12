@@ -1,0 +1,98 @@
+struct Point : Copyable, Equatable, Hashable, Formattable {
+    int x
+    int y
+}
+
+struct User : Equatable {
+    string name
+    Point? home
+}
+
+enum StockError : Equatable, Formattable {
+    NotFound(string code)
+    Insufficient(int available)
+    Closed
+}
+
+// Its own `equals`: the case of the letters does not count.
+struct Tag : Equatable {
+    string text
+
+    bool equals(read this, read Tag other) {
+        if this.text.length() != other.text.length() {
+            return false
+        }
+        for i in 0..this.text.length() {
+            if lower(this.text[i]) != lower(other.text[i]) {
+                return false
+            }
+        }
+        return true
+    }
+}
+
+byte lower(byte c) {
+    if c >= 'A' && c <= 'Z' {
+        return c + 32
+    }
+    return c
+}
+
+Result<int, StockError> take(int wanted) {
+    if wanted > 5 {
+        return Error(StockError.Insufficient(5))
+    }
+    return Ok(wanted)
+}
+
+void main() {
+    var a = Point { x = 1, y = 2 }
+    var b = Point { x = 1, y = 2 }
+    print(a == b)
+    b.y = 3
+    print(a == b)
+    print(a != b)
+
+    var ada = User { name = "ada", home = a }
+    var twin = User { name = "ada", home = Point { x = 1, y = 2 } }
+    var nomad = User { name = "ada", home = null }
+    print(ada == twin)
+    print(ada == nomad)
+    print(read ada == read twin)
+
+    var error = StockError.NotFound("K-1")
+    print(error == StockError.NotFound("K-1"))
+    print(error == StockError.NotFound("K-2"))
+    print(error == StockError.Closed)
+    match take(9) {
+        Ok(_) => print("taken")
+        Error(e) => assert(e == StockError.Insufficient(5))
+    }
+
+    print(Tag { text = "Rust" } == Tag { text = "RUST" })
+    print(Tag { text = "Rust" } == Tag { text = "Go" })
+
+    // In a list, `indexOf` and `contains` use the same `equals`.
+    var points = List<Point> { Point { x = 0, y = 0 }, a, b }
+    print(points.indexOf(b) ?? -1)
+    print(points.contains(Point { x = 9, y = 9 }))
+    var tags = List<Tag>()
+    tags.add(Tag { text = "sg" })
+    print(tags.contains(read Tag { text = "SG" }))
+
+    // A key of your own: a point on a board.
+    var board = HashMap<Point, string>()
+    board.add(Point { x = 2, y = 1 }, "knight")
+    board.add(a, "rook")
+    print(board[Point { x = 1, y = 2 }])
+    print(board.get(Point { x = 5, y = 5 }) ?? "empty")
+    print(board.contains(a))
+    print(board)
+    var seen = HashSet<Point>()
+    print(seen.add(a))
+    print(seen.add(Point { x = 1, y = 2 }))
+    print(seen.length())
+
+    print(3.equals(3))
+    print("a".equals("b"))
+}

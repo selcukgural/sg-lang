@@ -1,0 +1,5 @@
+error: a `Hashable` type with its own `equals` or `hash` is not in the interpreter yet
+  leave both out: they are made from the fields
+  --> error_hashable_own_equals.sg:4:10
+ 4 |     bool equals(read this, read Tag other) {
+   |          ^^^^^^

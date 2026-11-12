@@ -1,0 +1,11 @@
+struct A : Equatable {
+    int x
+}
+
+struct B : Equatable {
+    int x
+}
+
+void main() {
+    print(A { x = 1 } == B { x = 1 })
+}

@@ -1,0 +1,5 @@
+panic: key Point { x = 1, y = 2 } is not in the map
+  `map.get(key)` gives `null` for a missing key; `map.add(key, value)` puts one in
+  --> panic_map_missing_struct_key.sg:8:11
+ 8 |     print(board[Point { x = 1, y = 2 }])
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

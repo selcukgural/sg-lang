@@ -1,0 +1,10 @@
+struct Inner {
+    int x
+}
+
+struct Outer : Equatable {
+    Inner inner
+}
+
+void main() {
+}

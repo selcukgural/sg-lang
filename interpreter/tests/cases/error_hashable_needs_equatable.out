@@ -1,0 +1,5 @@
+error: `Point` is `Hashable`, so it must be `Equatable` too: a key is found by its hash and then compared
+  --> error_hashable_needs_equatable.sg:1:8
+ 1 | struct Point : Hashable {
+   |        ^^^^^
+  hint: `Point : Equatable, Hashable`

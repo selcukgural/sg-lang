@@ -1,0 +1,23 @@
+true
+false
+true
+true
+false
+true
+true
+false
+false
+true
+false
+2
+false
+true
+rook
+empty
+true
+{Point { x = 1, y = 2 }: "rook", Point { x = 2, y = 1 }: "knight"}
+true
+false
+1
+true
+false

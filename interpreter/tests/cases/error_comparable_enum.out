@@ -1,0 +1,4 @@
+error: `Level` is `Comparable`, so it needs a `compare` method, and methods on enums are not in the interpreter yet
+  --> error_comparable_enum.sg:1:6
+ 1 | enum Level : Comparable {
+   |      ^^^^^

@@ -1,0 +1,9 @@
+struct Point : Copyable, Equatable, Hashable {
+    int x
+    int y
+}
+
+void main() {
+    var board = HashMap<Point, int>()
+    print(board[Point { x = 1, y = 2 }])
+}

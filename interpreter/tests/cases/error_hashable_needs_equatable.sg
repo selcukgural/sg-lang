@@ -1,0 +1,6 @@
+struct Point : Hashable {
+    int x
+}
+
+void main() {
+}

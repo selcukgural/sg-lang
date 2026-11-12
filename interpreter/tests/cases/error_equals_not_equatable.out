@@ -1,0 +1,5 @@
+error: `==` compares the values, and `Point` is not `Equatable`
+  --> error_equals_not_equatable.sg:8:11
+ 8 |     print(a == b)
+   |           ^^^^^^
+  hint: add it to the definition: `Point : Equatable`

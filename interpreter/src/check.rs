@@ -20,7 +20,9 @@ type Res<T> = Result<T, Diag>;
 const TYPES_NOT_YET: &[&str] =
     &["sbyte", "short", "ushort", "uint", "ulong", "nuint", "float", "double", "char"];
 
-const INTERFACES_NOT_YET: &[&str] = &["Clonable", "Disposable", "Equatable", "Hashable", "Comparable", "Closable", "Iterator"];
+const INTERFACES_NOT_YET: &[&str] = &["Clonable", "Disposable", "Closable", "Iterator"];
+
+const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable", "Comparable"];
 
 const BUILTINS: &[&str] = &["print", "assert", "panic", "Ok", "Error"];
 
@@ -44,7 +46,13 @@ enum TypeKind {
     Enum,
 }
 
-type Names = HashMap<String, TypeKind>;
+/// The types of the program, known before anything else is resolved.
+#[derive(Default)]
+struct Names {
+    kinds: HashMap<String, TypeKind>,
+    /// Types written with `: Hashable`: they can be the key of a `HashMap`.
+    keys: HashSet<String>,
+}
 
 struct FuncSig {
     this: Option<This>,
@@ -61,7 +69,7 @@ fn func_sig(func: &Func, names: &Names) -> Res<FuncSig> {
 }
 
 pub fn check(prog: &mut Program, src: &str) -> Res<()> {
-    let mut names: Names = HashMap::new();
+    let mut names = Names::default();
     let declared = prog
         .structs
         .iter()
@@ -71,7 +79,7 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
         if BUILTIN_TYPES.contains(&name.as_str()) {
             return Err(Diag::error(span, format!("`{name}` is a built-in type and cannot be redefined")));
         }
-        if Ty::from_name(name).is_some() || names.insert(name.clone(), kind).is_some() {
+        if Ty::from_name(name).is_some() || names.kinds.insert(name.clone(), kind).is_some() {
             return Err(Diag::error(span, format!("type `{name}` is defined twice")));
         }
     }
@@ -79,6 +87,8 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
     // What each type says about itself after `:`.
     let mut copyable: HashSet<String> = HashSet::new();
     let mut formattable: HashSet<String> = HashSet::new();
+    let mut equatable: HashSet<String> = HashSet::new();
+    let mut comparable: HashSet<String> = HashSet::new();
     let said = prog
         .structs
         .iter()
@@ -92,15 +102,18 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
             match interface.as_str() {
                 "Copyable" => copyable.insert(name.clone()),
                 "Formattable" => formattable.insert(name.clone()),
+                "Equatable" => equatable.insert(name.clone()),
+                "Hashable" => names.keys.insert(name.clone()),
+                "Comparable" => comparable.insert(name.clone()),
                 _ if INTERFACES_NOT_YET.contains(&interface.as_str()) => {
                     return Err(Diag::error(*span, format!("`{interface}` is not in the interpreter yet"))
-                        .note("interfaces for now: `Copyable` and `Formattable`"));
+                        .note("interfaces for now: `Copyable`, `Formattable`, `Equatable`, `Hashable` and `Comparable`"));
                 }
                 _ => {
                     let diag = Diag::error(*span, format!("there is no interface named `{interface}`"));
-                    return Err(match nearest(interface, ["Copyable", "Formattable"].into_iter()) {
+                    return Err(match nearest(interface, INTERFACES.iter().copied()) {
                         Some(close) => diag.hint(format!("`{close}`")),
-                        None => diag.note("interfaces for now: `Copyable` and `Formattable`; your own are not in the interpreter yet"),
+                        None => diag.note("interfaces for now: `Copyable`, `Formattable`, `Equatable`, `Hashable` and `Comparable`; your own are not in the interpreter yet"),
                     });
                 }
             };
@@ -200,6 +213,47 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
         if formattable.contains(&decl.name) && !info.methods.contains_key("format") {
             all_formattable(&decl.name, fields(), &formattable)?;
         }
+        let name = &decl.name;
+        let own = |method: &str| decl.methods.iter().find(|func| func.name == method);
+        // `equals` and `compare` look at this value and another one of the same type.
+        let takes_other = |method: &str| {
+            let sig = &info.methods[method];
+            sig.this == Some(This::Read) && sig.params == [Ty::Read(Box::new(Ty::Struct(name.clone())))]
+        };
+        if equatable.contains(name) {
+            match own("equals") {
+                Some(func) if !takes_other("equals") || info.methods["equals"].ret != Ty::Bool => {
+                    return Err(Diag::error(func.name_span, "this is not the `equals` that `Equatable` asks for")
+                        .hint(format!("`bool equals(read this, read {name} other)`")));
+                }
+                Some(_) => {}
+                None => all_have(name, fields(), "Equatable", &equatable)?,
+            }
+        }
+        if names.keys.contains(name) {
+            if !equatable.contains(name) {
+                return Err(Diag::error(decl.name_span, format!("`{name}` is `Hashable`, so it must be `Equatable` too: a key is found by its hash and then compared"))
+                    .hint(format!("`{name} : Equatable, Hashable`")));
+            }
+            if let Some(func) = own("hash").or_else(|| own("equals")) {
+                return Err(Diag::error(func.name_span, "a `Hashable` type with its own `equals` or `hash` is not in the interpreter yet")
+                    .note("leave both out: they are made from the fields"));
+            }
+            all_have(name, fields(), "Hashable", &names.keys)?;
+        }
+        if comparable.contains(name) {
+            match own("compare") {
+                None => {
+                    return Err(Diag::error(decl.name_span, format!("`{name}` is `Comparable`, so it needs a `compare` method"))
+                        .hint(format!("`int compare(read this, read {name} other)`: negative if this one comes first, 0 if they are equal")));
+                }
+                Some(func) if !takes_other("compare") || info.methods["compare"].ret != Ty::Int(IntTy::Int) => {
+                    return Err(Diag::error(func.name_span, "this is not the `compare` that `Comparable` asks for")
+                        .hint(format!("`int compare(read this, read {name} other)`")));
+                }
+                Some(_) => {}
+            }
+        }
     }
     for decl in &prog.enums {
         let fields = || {
@@ -211,6 +265,20 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
         }
         if formattable.contains(&decl.name) {
             all_formattable(&decl.name, fields(), &formattable)?;
+        }
+        let name = &decl.name;
+        if equatable.contains(name) {
+            all_have(name, fields(), "Equatable", &equatable)?;
+        }
+        if names.keys.contains(name) {
+            if !equatable.contains(name) {
+                return Err(Diag::error(decl.name_span, format!("`{name}` is `Hashable`, so it must be `Equatable` too: a key is found by its hash and then compared"))
+                    .hint(format!("`{name} : Equatable, Hashable`")));
+            }
+            all_have(name, fields(), "Hashable", &names.keys)?;
+        }
+        if comparable.contains(name) {
+            return Err(Diag::error(decl.name_span, format!("`{name}` is `Comparable`, so it needs a `compare` method, and methods on enums are not in the interpreter yet")));
         }
     }
 
@@ -225,7 +293,7 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
         if BUILTIN_TYPES.contains(&func.name.as_str()) {
             return Err(Diag::error(func.name_span, format!("`{}` is a built-in type, so a function cannot have its name", func.name)));
         }
-        if names.contains_key(func.name.as_str()) {
+        if names.kinds.contains_key(func.name.as_str()) {
             return Err(Diag::error(func.name_span, format!("`{}` is already the name of a type", func.name)));
         }
         if sigs.insert(func.name.clone(), func_sig(func, &names)?).is_some() {
@@ -269,6 +337,8 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
             names: &names,
             copyable: &copyable,
             formattable: &formattable,
+            equatable: &equatable,
+            comparable: &comparable,
             structs: &structs,
             enums: &enums,
             sigs: &sigs,
@@ -341,9 +411,8 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             };
             no_borrow(item, "HashSet")?;
             let item_ty = resolve_type(item, names, false)?;
-            if !matches!(item_ty, Ty::Int(_) | Ty::Bool | Ty::Str) {
-                return Err(Diag::error(item.span, format!("`{item_ty}` cannot be an item of a `HashSet`"))
-                    .note("an item must be `Equatable` and `Hashable`; for now that is an integer, a `bool` or a `string`"));
+            if !has(&item_ty, &names.keys, false) || matches!(item_ty, Ty::Ptr(_) | Ty::Nullable(_)) {
+                return Err(not_a_key(item.span, &item_ty, "an item of a `HashSet`"));
             }
             Ty::Set(Box::new(item_ty))
         }
@@ -355,9 +424,8 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             no_borrow(key, "HashMap")?;
             no_borrow(value, "HashMap")?;
             let key_ty = resolve_type(key, names, false)?;
-            if !matches!(key_ty, Ty::Int(_) | Ty::Bool | Ty::Str) {
-                return Err(Diag::error(key.span, format!("`{key_ty}` cannot be the key of a `HashMap`"))
-                    .note("a key must be `Equatable` and `Hashable`; for now that is an integer, a `bool` or a `string`"));
+            if !has(&key_ty, &names.keys, false) || matches!(key_ty, Ty::Ptr(_) | Ty::Nullable(_)) {
+                return Err(not_a_key(key.span, &key_ty, "the key of a `HashMap`"));
             }
             Ty::Map(Box::new(key_ty), Box::new(resolve_type(value, names, false)?))
         }
@@ -382,15 +450,15 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             return Err(Diag::error(ty.span, "`void` can only be a return type"));
         }
         Some(base) => base,
-        None if names.get(ty.name.as_str()) == Some(&TypeKind::Struct) => Ty::Struct(ty.name.clone()),
-        None if names.contains_key(ty.name.as_str()) => Ty::Enum(ty.name.clone()),
+        None if names.kinds.get(ty.name.as_str()) == Some(&TypeKind::Struct) => Ty::Struct(ty.name.clone()),
+        None if names.kinds.contains_key(ty.name.as_str()) => Ty::Enum(ty.name.clone()),
         None => {
             let diag = if TYPES_NOT_YET.contains(&ty.name.as_str()) {
                 Diag::error(ty.span, format!("type `{}` is not in the interpreter yet", ty.name))
             } else {
                 Diag::error(ty.span, format!("there is no type named `{}`", ty.name))
             };
-            let known = names.keys().map(String::as_str).chain(["byte", "int", "long", "nint", "bool", "string"]);
+            let known = names.kinds.keys().map(String::as_str).chain(["byte", "int", "long", "nint", "bool", "string"]);
             return Err(match nearest(&ty.name, known) {
                 Some(close) => diag.hint(format!("`{close}`")),
                 None => diag.note("built-in types for now: byte, int, long, nint, bool, string"),
@@ -413,6 +481,15 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
     })
 }
 
+fn not_a_key(span: Span, ty: &Ty, what: &str) -> Diag {
+    let diag = Diag::error(span, format!("`{ty}` cannot be {what}: it is not `Equatable` and `Hashable`"));
+    match ty {
+        Ty::Struct(name) | Ty::Enum(name) => diag.hint(format!("add them to the definition: `{name} : Equatable, Hashable`")),
+        Ty::List(_) | Ty::Set(_) | Ty::Map(..) => diag.note("a collection can be compared with `==`, but it is not `Hashable`"),
+        _ => diag.note("integers, `bool`, `string` and the types written with `: Equatable, Hashable` are"),
+    }
+}
+
 /// `: Copyable` holds only if everything the type carries can be copied.
 fn all_copyable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d (String, Ty))>, copyable: &HashSet<String>) -> Res<()> {
     for (field, (_, ty)) in fields {
@@ -427,6 +504,55 @@ fn all_copyable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d
         });
     }
     Ok(())
+}
+
+/// Whether a value of this type is `Equatable` (or `Hashable`): numbers, `bool`, text, the
+/// types in `declared`, and a `T*` or `T?` of those. With `collections`, a collection counts
+/// if what it holds does: that is so for `Equatable`, not for `Hashable`.
+fn has(ty: &Ty, declared: &HashSet<String>, collections: bool) -> bool {
+    match ty {
+        Ty::Int(_) | Ty::Bool | Ty::Str => true,
+        Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
+        Ty::Ptr(inner) | Ty::Nullable(inner) => has(inner, declared, collections),
+        Ty::List(item) | Ty::Set(item) => collections && has(item, declared, collections),
+        Ty::Map(key, value) => collections && has(key, declared, collections) && has(value, declared, collections),
+        _ => false,
+    }
+}
+
+/// The struct or enum inside `ty` that is not in `declared`.
+fn lacking<'t>(ty: &'t Ty, declared: &HashSet<String>) -> Option<&'t str> {
+    match ty {
+        Ty::Struct(name) | Ty::Enum(name) => (!declared.contains(name)).then_some(name.as_str()),
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) => lacking(inner, declared),
+        Ty::Map(key, value) => lacking(key, declared).or_else(|| lacking(value, declared)),
+        _ => None,
+    }
+}
+
+/// `: Equatable` and `: Hashable` without a body are made field by field, so every field
+/// must have them.
+fn all_have<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d (String, Ty))>, word: &str, declared: &HashSet<String>) -> Res<()> {
+    for (field, (_, ty)) in fields {
+        if has(ty, declared, word == "Equatable") {
+            continue;
+        }
+        let diag = Diag::error(field.ty.span, format!("`{name}` cannot be `{word}` field by field: `{}` is a `{ty}`, which is not `{word}`", field.name));
+        return Err(match (ty, lacking(ty, declared)) {
+            (Ty::List(_) | Ty::Set(_) | Ty::Map(..), _) if word == "Hashable" => diag.note("a collection can be compared with `==`, but it is not a key"),
+            (_, Some(inner)) => diag.hint(format!("make `{inner}` `{word}` too")),
+            _ => diag,
+        });
+    }
+    Ok(())
+}
+
+/// The type behind borrows and pointers.
+fn peel(mut ty: &Ty) -> &Ty {
+    while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Ptr(inner) = ty {
+        ty = inner;
+    }
+    ty
 }
 
 /// Without a `format` of its own, a `Formattable` type is written field by field.
@@ -540,6 +666,10 @@ struct Checker<'a> {
     copyable: &'a HashSet<String>,
     /// Structs and enums written with `: Formattable`.
     formattable: &'a HashSet<String>,
+    /// Structs and enums written with `: Equatable`.
+    equatable: &'a HashSet<String>,
+    /// Structs written with `: Comparable`.
+    comparable: &'a HashSet<String>,
     structs: &'a HashMap<String, StructInfo>,
     enums: &'a HashMap<String, EnumInfo>,
     sigs: &'a HashMap<String, FuncSig>,
@@ -1323,7 +1453,7 @@ impl<'a> Checker<'a> {
                         Ok(Some(((**item).clone(), writable)))
                     }
                     Ty::Map(key, value) => {
-                        self.typed(index, &key_param(key))?;
+                        self.typed(index, &self.key_param(key))?;
                         *kind = IndexKind::Map;
                         Ok(Some(((**value).clone(), writable)))
                     }
@@ -1342,6 +1472,15 @@ impl<'a> Checker<'a> {
         let ExprKind::Field { recv, name, .. } = &expr.kind else { return false };
         let ExprKind::Var(var) = &recv.kind else { return false };
         name == "key" && self.find(var).is_some_and(|var| matches!(var.current.strip_borrow(), Ty::Entry(..)))
+    }
+
+    /// How a method takes a key or an item it only looks at: what can be copied is copied,
+    /// the rest (text, a struct that owns something) is lent.
+    fn key_param(&self, key: &Ty) -> Ty {
+        match key.is_copyable(self.copyable) {
+            true => key.clone(),
+            false => Ty::Read(Box::new(key.clone())),
+        }
     }
 
     /// Rejects the use of a place that overlaps a field that was moved out. When `assigning`,
@@ -2188,6 +2327,38 @@ impl<'a> Checker<'a> {
         let right_ty = self.operand(right, like.as_ref().or(wanted))?;
 
         let undefined = || Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()));
+        // `a == b` is `a.equals(b)` and `a < b` is `a.compare(b) < 0`, for the types that have them.
+        if let (Ty::Struct(name) | Ty::Enum(name), true, true) = (peel(&left_ty), peel(&left_ty) == peel(&right_ty), op.is_comparison()) {
+            let symbol = op.symbol();
+            if matches!(op, BinOp::Eq | BinOp::Ne) {
+                if self.equatable.contains(name) {
+                    return Ok(Ty::Bool);
+                }
+                return Err(Diag::error(span, format!("`{symbol}` compares the values, and `{name}` is not `Equatable`"))
+                    .hint(format!("add it to the definition: `{name} : Equatable`")));
+            }
+            if self.comparable.contains(name) {
+                return Ok(Ty::Bool);
+            }
+            return Err(Diag::error(span, format!("`{symbol}` puts the values in order, and `{name}` is not `Comparable`"))
+                .hint(format!("add `: Comparable` to the definition and write `int compare(read this, read {name} other)`")));
+        }
+        // A collection is `Equatable` if what it holds is; it has no order of its own.
+        if let (collection @ (Ty::List(_) | Ty::Set(_) | Ty::Map(..)), true, true) = (peel(&left_ty), peel(&left_ty) == peel(&right_ty), op.is_comparison()) {
+            let symbol = op.symbol();
+            if !matches!(op, BinOp::Eq | BinOp::Ne) {
+                return Err(Diag::error(span, format!("`{symbol}` puts the values in order, and a `{collection}` has no order of its own"))
+                    .note("a collection is compared with `==` and `!=` only"));
+            }
+            if has(collection, self.equatable, true) {
+                return Ok(Ty::Bool);
+            }
+            let diag = Diag::error(span, format!("`{symbol}` compares what the collections hold, and a `{collection}` is not `Equatable`"));
+            return Err(match lacking(collection, self.equatable) {
+                Some(inner) => diag.hint(format!("add it to the definition: `{inner} : Equatable`")),
+                None => diag,
+            });
+        }
         match (left_ty.strip_borrow(), right_ty.strip_borrow()) {
             (Ty::Int(a), Ty::Int(b)) => {
                 let common = Ty::Int(a.unify(*b));
@@ -2456,6 +2627,23 @@ impl<'a> Checker<'a> {
                 arity(0)?;
                 Ok(Ty::Int(IntTy::Nint))
             }
+            // What `==` and `<` are short for, on the built-in types too.
+            (Ty::Int(ty), "compare" | "equals") => {
+                arity(1)?;
+                let other = self.int_operand(&mut args[0], Some(*ty), "the argument")?;
+                let common = Ty::Int(ty.unify(other));
+                self.coerce(recv, recv_ty.clone(), &common)?;
+                self.coerce(&mut args[0], Ty::Int(other), &common)?;
+                Ok(if name == "compare" { Ty::Int(IntTy::Int) } else { Ty::Bool })
+            }
+            (Ty::Str | Ty::Bool, "compare" | "equals") if name == "equals" || *recv_ty.strip_borrow() == Ty::Str => {
+                arity(1)?;
+                let other = self.operand(&mut args[0], None)?;
+                if other.strip_borrow() != recv_ty.strip_borrow() {
+                    return Err(Diag::error(args[0].span, format!("expected `{}`, found `{other}`", recv_ty.strip_borrow())));
+                }
+                Ok(if name == "compare" { Ty::Int(IntTy::Int) } else { Ty::Bool })
+            }
             // The position of the first such byte, `null` if there is none.
             (Ty::Str, "indexOf") => {
                 arity(1)?;
@@ -2524,11 +2712,24 @@ impl<'a> Checker<'a> {
             self.not_locked(recv)?;
         }
         // What `indexOf`, `contains` and `sort` can compare until `Equatable` and `Comparable` exist.
+        let item = match target {
+            Ty::List(item) | Ty::Set(item) => Some(&**item),
+            _ => None,
+        };
+        let can_equal = item.is_some_and(|item| has(item, self.equatable, true));
+        let can_order = item.is_some_and(|item| match item {
+            Ty::Int(_) | Ty::Str => true,
+            Ty::Struct(name) => self.comparable.contains(name),
+            _ => false,
+        });
         let compares = |item: &Ty, needs: &str| match item {
-            Ty::Int(_) | Ty::Str => Ok(()),
-            Ty::Bool if needs == "Equatable" => Ok(()),
+            _ if needs == "Equatable" && can_equal => Ok(()),
+            _ if needs == "Comparable" && can_order => Ok(()),
+            Ty::Struct(inner) | Ty::Enum(inner) => Err(Diag::error(name_span, format!("`{name}` compares the items, and `{inner}` is not `{needs}`"))
+                .hint(format!("add it to the definition: `{inner} : {needs}`"))),
+            Ty::List(_) | Ty::Set(_) | Ty::Map(..) if needs == "Comparable" => Err(Diag::error(name_span, format!("`{name}` puts the items in order, and a collection has no order of its own"))),
             other => Err(Diag::error(name_span, format!("`{name}` compares the items, and `{other}` is not `{needs}`"))
-                .note(format!("`{needs}` for your own types is not in the interpreter yet; for now: integers{} and `string`", if needs == "Equatable" { ", `bool`" } else { "" }))),
+                .note(format!("`{needs}`: integers{}, `string` and the types written with `: {needs}`", if needs == "Equatable" { ", `bool`" } else { "" }))),
         };
         let changes = || {
             if writable {
@@ -2574,13 +2775,13 @@ impl<'a> Checker<'a> {
             (Ty::List(item), "indexOf") => {
                 arity(1)?;
                 compares(item, "Equatable")?;
-                self.typed(&mut args[0], &key_param(item))?;
+                self.typed(&mut args[0], &self.key_param(item))?;
                 Ok(nullable(&Ty::Int(IntTy::Nint)))
             }
             (Ty::List(item), "contains") => {
                 arity(1)?;
                 compares(item, "Equatable")?;
-                self.typed(&mut args[0], &key_param(item))?;
+                self.typed(&mut args[0], &self.key_param(item))?;
                 Ok(Ty::Bool)
             }
             (Ty::List(item), "sort") => {
@@ -2598,14 +2799,14 @@ impl<'a> Checker<'a> {
             }
             (Ty::Set(item), "contains") => {
                 arity(1)?;
-                self.typed(&mut args[0], &key_param(item))?;
+                self.typed(&mut args[0], &self.key_param(item))?;
                 Ok(Ty::Bool)
             }
             // `true` if the item was there.
             (Ty::Set(item), "remove") => {
                 arity(1)?;
                 changes()?;
-                self.typed(&mut args[0], &key_param(item))?;
+                self.typed(&mut args[0], &self.key_param(item))?;
                 Ok(Ty::Bool)
             }
             (Ty::Map(key, value), "add") => {
@@ -2617,24 +2818,24 @@ impl<'a> Checker<'a> {
             }
             (Ty::Map(key, value), "get") => {
                 arity(1)?;
-                self.typed(&mut args[0], &key_param(key))?;
+                self.typed(&mut args[0], &self.key_param(key))?;
                 Ok(Ty::Read(Box::new(nullable(value))))
             }
             (Ty::Map(key, _), "contains") => {
                 arity(1)?;
-                self.typed(&mut args[0], &key_param(key))?;
+                self.typed(&mut args[0], &self.key_param(key))?;
                 Ok(Ty::Bool)
             }
             (Ty::Map(key, value), "remove") => {
                 arity(1)?;
                 changes()?;
-                self.typed(&mut args[0], &key_param(key))?;
+                self.typed(&mut args[0], &self.key_param(key))?;
                 Ok(nullable(value))
             }
             (Ty::Map(key, value), "getOrAdd") => {
                 arity(2)?;
                 changes()?;
-                self.typed(&mut args[0], &key_param(key))?;
+                self.typed(&mut args[0], &self.key_param(key))?;
                 self.typed(&mut args[1], value)?;
                 Ok(Ty::Ref(value.clone()))
             }
@@ -2839,14 +3040,6 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
         | ExprKind::Null
         | ExprKind::Var(_)
         | ExprKind::Return(None) => {}
-    }
-}
-
-/// How a method of a `HashMap` takes a key it only looks at: text is lent, the rest is copied.
-fn key_param(key: &Ty) -> Ty {
-    match key {
-        Ty::Str => Ty::Read(Box::new(Ty::Str)),
-        other => other.clone(),
     }
 }
 

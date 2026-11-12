@@ -1,0 +1,5 @@
+error: this is not the `equals` that `Equatable` asks for
+  --> error_equals_signature.sg:4:10
+ 4 |     bool equals(read this, read string other) {
+   |          ^^^^^^
+  hint: `bool equals(read this, read Tag other)`

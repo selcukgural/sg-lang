@@ -1,0 +1,7 @@
+enum Level : Comparable {
+    Low
+    High
+}
+
+void main() {
+}

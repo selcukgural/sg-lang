@@ -1,0 +1,51 @@
+struct Version : Comparable, Equatable, Formattable {
+    int major
+    int minor
+
+    int compare(read this, read Version other) {
+        if this.major != other.major {
+            return this.major.compare(other.major)   // subtraction would overflow at the extremes
+        }
+        return this.minor.compare(other.minor)
+    }
+
+    void format(read this, ref Formatter f) {
+        f.write($"{this.major}.{this.minor}")
+    }
+}
+
+// Larger first.
+struct Ranked : Comparable {
+    string name
+    long bytes
+
+    int compare(read this, read Ranked other) {
+        return other.bytes.compare(this.bytes)
+    }
+}
+
+void main() {
+    var old = Version { major = 1, minor = 9 }
+    var next = Version { major = 2, minor = 0 }
+    print(old < next)
+    print(old >= next)
+    print(old <= Version { major = 1, minor = 9 })
+    print(old.compare(read next))
+
+    var versions = List<Version> { next, Version { major = 1, minor = 2 }, old }
+    versions.sort()
+    print(versions)
+
+    var files = List<Ranked>()
+    files.add(Ranked { name = "small", bytes = 10 })
+    files.add(Ranked { name = "large", bytes = 9000 })
+    files.add(Ranked { name = "medium", bytes = 500 })
+    files.sort()
+    for file in read files {
+        print($"{file.name}: {file.bytes}")
+    }
+
+    print(1.compare(2))
+    print("b".compare("a"))
+    print("a".compare("a"))
+}

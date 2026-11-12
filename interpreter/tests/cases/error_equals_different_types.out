@@ -1,0 +1,4 @@
+error: operator `==` is not defined for `A` and `B`
+  --> error_equals_different_types.sg:10:11
+ 10 |     print(A { x = 1 } == B { x = 1 })
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^

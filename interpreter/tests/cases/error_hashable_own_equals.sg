@@ -1,0 +1,10 @@
+struct Tag : Equatable, Hashable {
+    string text
+
+    bool equals(read this, read Tag other) {
+        return this.text == other.text
+    }
+}
+
+void main() {
+}

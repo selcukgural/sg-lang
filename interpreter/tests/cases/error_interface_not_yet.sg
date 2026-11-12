@@ -1,4 +1,4 @@
-struct Point : Copyable, Equatable {
+struct Point : Copyable, Clonable {
     int x
 }
 

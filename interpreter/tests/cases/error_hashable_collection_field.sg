@@ -1,0 +1,6 @@
+struct Path : Equatable, Hashable {
+    List<int> steps
+}
+
+void main() {
+}

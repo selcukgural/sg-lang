@@ -1,0 +1,10 @@
+struct Tag : Equatable {
+    string text
+
+    bool equals(read this, read string other) {
+        return this.text == other
+    }
+}
+
+void main() {
+}

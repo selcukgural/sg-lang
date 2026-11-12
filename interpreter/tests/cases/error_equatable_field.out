@@ -1,0 +1,5 @@
+error: `Outer` cannot be `Equatable` field by field: `inner` is a `Inner`, which is not `Equatable`
+  --> error_equatable_field.sg:6:5
+ 6 |     Inner inner
+   |     ^^^^^
+  hint: make `Inner` `Equatable` too

@@ -1,0 +1,5 @@
+error: `<` puts the values in order, and `Point` is not `Comparable`
+  --> error_less_not_comparable.sg:8:11
+ 8 |     print(a < b)
+   |           ^^^^^
+  hint: add `: Comparable` to the definition and write `int compare(read this, read Point other)`

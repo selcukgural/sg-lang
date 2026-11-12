@@ -1,5 +1,5 @@
-error: `Point` cannot be an item of a `HashSet`
-  an item must be `Equatable` and `Hashable`; for now that is an integer, a `bool` or a `string`
+error: `Point` cannot be an item of a `HashSet`: it is not `Equatable` and `Hashable`
   --> error_set_item_type.sg:6:24
  6 |     var seen = HashSet<Point>()
    |                        ^^^^^
+  hint: add them to the definition: `Point : Equatable, Hashable`

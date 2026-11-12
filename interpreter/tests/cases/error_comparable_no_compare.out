@@ -1,0 +1,5 @@
+error: `Version` is `Comparable`, so it needs a `compare` method
+  --> error_comparable_no_compare.sg:1:8
+ 1 | struct Version : Comparable {
+   |        ^^^^^^^
+  hint: `int compare(read this, read Version other)`: negative if this one comes first, 0 if they are equal

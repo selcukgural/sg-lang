@@ -1,0 +1,5 @@
+error: `==` compares what the collections hold, and a `List<Point>` is not `Equatable`
+  --> error_collection_equal_items.sg:8:11
+ 8 |     print(a == b)
+   |           ^^^^^^
+  hint: add it to the definition: `Point : Equatable`
