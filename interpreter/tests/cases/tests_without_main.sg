@@ -1,0 +1,7 @@
+int double(int x) {
+    return x * 2
+}
+
+test "double" {
+    assert(double(4) == 8)
+}

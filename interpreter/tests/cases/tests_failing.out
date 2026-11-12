@@ -1,0 +1,17 @@
+ok    passes
+FAIL  a false assert fails the test
+panic: assert failed: xs.length() == 3
+  left: 2
+  right: 3
+  --> tests_failing.sg:18:5
+ 18 |     assert(xs.length() == 3)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+FAIL  an error passed on by try fails the test
+error: Missing("secrets")
+FAIL  a panic fails the test, and the next one still runs
+panic: index 0 is out of range: the length is 0
+  --> tests_failing.sg:29:11
+ 29 |     print(xs[0])
+    |           ^^^^^
+ok    each test starts fresh
+3 of 5 test(s) failed

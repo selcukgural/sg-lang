@@ -1,0 +1,5 @@
+error: an error that fails a test is printed, so `LoadError` must be `Formattable`
+  --> tests_error_try_not_formattable.sg:10:17
+ 10 |     var value = try load()
+    |                 ^^^^^^^^^^
+  hint: add it to the definition: `LoadError : Formattable`

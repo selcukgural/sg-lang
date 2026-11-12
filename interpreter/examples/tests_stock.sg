@@ -1,0 +1,88 @@
+// The stock tests from the design, in one file: the warehouse and its tests.
+// Run with `sg test examples/tests_stock.sg`.
+
+struct Product {
+    string code
+    string name
+    int quantity
+}
+
+enum StockError : Formattable, Equatable {
+    NotFound(string code)
+    Insufficient(string code, int available)
+}
+
+nint? indexOf(read List<Product> products, read string code) {
+    for i in 0..products.length() {
+        if products[i].code == code {
+            return i
+        }
+    }
+    return null
+}
+
+struct Warehouse {
+    List<Product> products
+
+    Warehouse create() {
+        return Warehouse { products = List<Product>() }
+    }
+
+    void add(ref this, Product product) {
+        this.products.add(product)
+    }
+
+    Result<void, StockError> receive(ref this, read string code, int count) {
+        var at = indexOf(read this.products, code) ?? return Error(StockError.NotFound(code.clone()))
+        this.products[at].quantity += count
+        return Ok()
+    }
+
+    Result<void, StockError> ship(ref this, read string code, int count) {
+        var at = indexOf(read this.products, code) ?? return Error(StockError.NotFound(code.clone()))
+        var available = this.products[at].quantity
+        if available < count {
+            return Error(StockError.Insufficient(code.clone(), available))
+        }
+        this.products[at].quantity -= count
+        return Ok()
+    }
+}
+
+// An ordinary function: there is no separate feature for shared setup.
+Result<Warehouse, StockError> penStock(int count) {
+    var warehouse = Warehouse()
+    warehouse.add(Product { code = "K-1", name = "pen", quantity = 0 })
+    try warehouse.receive("K-1", count)
+    return Ok(warehouse)
+}
+
+test "indexOf returns null for an unknown code" {
+    var products = List<Product>()
+    products.add(Product { code = "K-1", name = "pen", quantity = 1 })
+    assert(indexOf(read products, "K-1") is not null)
+    assert(indexOf(read products, "X-9") is null)
+}
+
+test "received goods are added to stock" {
+    var warehouse = try penStock(100)                // an error here fails the test and is printed
+    try warehouse.receive("K-1", 20)
+    assert(warehouse.products[0].quantity == 120)
+}
+
+test "nothing ships when stock is short" {
+    var warehouse = try penStock(3)
+    match warehouse.ship("K-1", 5) {
+        Ok => assert(false)
+        Error(e) => assert(e == StockError.Insufficient("K-1", 3))
+    }
+    assert(warehouse.products[0].quantity == 3)
+}
+
+test "an unknown code is reported" {
+    var warehouse = try penStock(1)
+    match warehouse.ship("X-9", 1) {
+        Ok => assert(false)
+        Error(e) => assert(e == StockError.NotFound("X-9"))
+    }
+}

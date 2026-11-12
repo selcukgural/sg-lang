@@ -1,0 +1,8 @@
+int? find() {
+    return null
+}
+
+test "find" {
+    var value = try find()
+    assert(value == 1)
+}

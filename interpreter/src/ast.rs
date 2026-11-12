@@ -8,6 +8,14 @@ pub struct Program {
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,
     pub funcs: Vec<Func>,
+    pub tests: Vec<TestDecl>,
+}
+
+/// `test "name" { ... }`: compiled and run only by the test command.
+pub struct TestDecl {
+    pub name: String,
+    pub name_span: Span,
+    pub body: Block,
 }
 
 pub struct StructDecl {

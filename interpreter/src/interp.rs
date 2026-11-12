@@ -171,6 +171,8 @@ pub enum Stop {
     OutputFailed(String),
     /// `main` returned an error: the text of the error.
     Failed(String),
+    /// The test command ran and at least one test failed; the report is already written.
+    TestsFailed,
 }
 
 impl From<Diag> for Stop {
@@ -273,6 +275,69 @@ pub fn run_program(prog: &Program, src: &str, out: &mut dyn Write) -> Result<(),
         Ok(_) => Ok(()),
         Err(Unwind::Stop(stop)) => Err(stop),
         Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop"),
+    }
+}
+
+/// Runs every `test` block and writes one line for each: `ok` or `FAIL` with the reason.
+/// Gives how many passed and how many failed. A test that fails does not stop the others.
+pub fn run_tests(prog: &Program, src: &str, path: &str, out: &mut dyn Write) -> Result<(usize, usize), Stop> {
+    let funcs = prog.funcs.iter().map(|func| (func.name.as_str(), func)).collect();
+    let mut methods: HashMap<&str, HashMap<&str, &Func>> = HashMap::new();
+    for decl in &prog.structs {
+        methods.insert(&decl.name, decl.methods.iter().map(|method| (method.name.as_str(), method)).collect());
+    }
+    let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
+    let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
+    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0 };
+    let (mut passed, mut failed) = (0, 0);
+    for test in &prog.tests {
+        // Nothing is shared between tests: each starts with variables of its own.
+        interp.depth = 0;
+        let mut frame = Frame { scopes: vec![HashMap::new()] };
+        let ended = match interp.block(&test.body, &mut frame) {
+            Ok(Flow::Return(value)) | Err(Unwind::Return(value)) => Ok(value),
+            Ok(_) => Ok(Value::Void),
+            Err(other) => Err(other),
+        };
+        let reason = match ended {
+            // `try` met an error: the test fails with it.
+            Ok(Value::Enum(_, 1, fields)) => {
+                let cause = fields[0].borrow().clone();
+                match interp.show(&cause, false, test.name_span) {
+                    Ok(text) => Some(format!("error: {text}\n")),
+                    Err(Unwind::Stop(stop)) => return Err(stop),
+                    Err(_) => unreachable!("writing a value does not leave a loop or a function"),
+                }
+            }
+            Ok(_) => None,
+            Err(Unwind::Stop(Stop::Diag(diag))) => Some(diag.render(src, path)),
+            Err(Unwind::Stop(stop)) => return Err(stop),
+            Err(_) => unreachable!("`break` and `continue` end at their loop"),
+        };
+        let line = match &reason {
+            None => {
+                passed += 1;
+                format!("ok    {}", test.name)
+            }
+            Some(reason) => {
+                failed += 1;
+                format!("FAIL  {}\n{}", test.name, reason.trim_end())
+            }
+        };
+        match interp.write_line(&line) {
+            Ok(()) => {}
+            Err(Unwind::Stop(stop)) => return Err(stop),
+            Err(_) => unreachable!("writing a line does not leave a loop or a function"),
+        }
+    }
+    let summary = match failed {
+        0 => format!("{passed} test(s) passed"),
+        _ => format!("{failed} of {} test(s) failed", passed + failed),
+    };
+    match interp.write_line(&summary) {
+        Ok(()) => Ok((passed, failed)),
+        Err(Unwind::Stop(stop)) => Err(stop),
+        Err(_) => unreachable!("writing a line does not leave a loop or a function"),
     }
 }
 

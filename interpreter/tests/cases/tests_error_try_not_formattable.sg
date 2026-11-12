@@ -1,0 +1,12 @@
+enum LoadError {
+    Missing
+}
+
+Result<int, LoadError> load() {
+    return Error(LoadError.Missing)
+}
+
+test "load" {
+    var value = try load()
+    assert(value == 1)
+}

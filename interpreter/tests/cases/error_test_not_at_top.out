@@ -1,0 +1,4 @@
+error: a test is written at the top level of the file, not inside a function
+  --> error_test_not_at_top.sg:2:5
+ 2 |     test "inside" {
+   |     ^^^^

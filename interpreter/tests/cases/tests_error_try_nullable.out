@@ -1,0 +1,5 @@
+error: `try` on `int?` returns `null` to the caller, and a test has no caller
+  --> tests_error_try_nullable.sg:6:17
+ 6 |     var value = try find()
+   |                 ^^^^^^^^^^
+  hint: say what is expected: `assert(x is not null)`, or give a fallback with `??`

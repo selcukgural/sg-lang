@@ -1,0 +1,9 @@
+// A normal run does not compile the tests: this one would not pass the checker.
+test "broken" {
+    assert(missing(1) == 2)
+}
+
+void main() {
+    var test = 5                         // `test` is an ordinary name everywhere else
+    print(test)
+}

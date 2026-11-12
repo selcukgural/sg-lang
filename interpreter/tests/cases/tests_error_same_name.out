@@ -1,0 +1,8 @@
+error: there are two tests named "one"
+  --> tests_error_same_name.sg:5:6
+ 5 | test "one" {
+   |      ^^^^^
+  the other one is here:
+  --> tests_error_same_name.sg:1:6
+ 1 | test "one" {
+   |      ^^^^^

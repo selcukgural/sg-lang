@@ -135,18 +135,26 @@ impl<'a> Parser<'a> {
     }
 
     fn program(&mut self) -> Res<Program> {
-        let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new() };
+        let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new() };
         self.skip_newlines();
         while *self.peek() != Tok::Eof {
             // One module for now, so `public` changes nothing yet.
             self.eat(&Tok::Public);
-            if *self.peek() == Tok::Struct {
+            // `test` is a word only here, in front of the name of a test.
+            let at_test = matches!(self.peek(), Tok::Ident(word) if word == "test") && matches!(self.peek_at(1), Tok::Str(_));
+            if at_test {
+                self.bump();
+                let Tok::Str(name) = self.peek().clone() else { unreachable!("checked above") };
+                let name_span = self.bump().span;
+                let body = self.block()?;
+                program.tests.push(TestDecl { name, name_span, body });
+            } else if *self.peek() == Tok::Struct {
                 program.structs.push(self.struct_decl()?);
             } else if *self.peek() == Tok::Enum {
                 program.enums.push(self.enum_decl()?);
             } else {
                 let ret = self.type_expr().map_err(|d| {
-                    d.hint("only structs, enums and functions are written at the top level: `void main() { ... }`")
+                    d.hint("only structs, enums, functions and tests are written at the top level: `void main() { ... }`")
                 })?;
                 let (name, name_span) = self.ident("a function name")?;
                 program.funcs.push(self.func(ret, name, name_span, false)?);
@@ -453,6 +461,9 @@ impl<'a> Parser<'a> {
                 let text = self.peek().describe();
                 return Err(Diag::error(start, format!("a line cannot start with {text}"))
                     .hint(format!("the statement ended on the previous line; to continue it, put {text} at the end of that line")));
+            }
+            Tok::Ident(word) if word == "test" && matches!(self.peek_at(1), Tok::Str(_)) => {
+                return Err(Diag::error(start, "a test is written at the top level of the file, not inside a function"));
             }
             _ if self.at_declaration() && (tail == Tail::Never || self.at_initialized_declaration()) => {
                 let ty = self.type_expr()?;

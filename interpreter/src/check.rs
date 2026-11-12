@@ -68,7 +68,9 @@ fn func_sig(func: &Func, names: &Names) -> Res<FuncSig> {
     Ok(FuncSig { this: func.this, params, ret: resolve_type(&func.ret, names, true)? })
 }
 
-pub fn check(prog: &mut Program, src: &str) -> Res<()> {
+/// With `tests` the `test` blocks are checked too and `main` may be missing: that is what the
+/// test command compiles. A normal run leaves the tests out.
+pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     let mut names = Names::default();
     let declared = prog
         .structs
@@ -302,6 +304,11 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
     }
 
     match prog.funcs.iter().find(|func| func.name == "main") {
+        None if tests => {}
+        None if !prog.tests.is_empty() => {
+            return Err(Diag::error(Span::new(src.len(), src.len()), "there is no `main` function")
+                .hint("this file holds tests; they are run by the test command: `sg test <file>`"))
+        }
         None => {
             return Err(Diag::error(Span::new(src.len(), src.len()), "there is no `main` function")
                 .hint("a program starts at `void main() { ... }`"))
@@ -347,6 +354,7 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
             loops: 0,
             ret: sig.ret.clone(),
             func_name: func.name.clone(),
+            in_test: false,
             owner,
             src,
         };
@@ -383,6 +391,35 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
         for method in &mut decl.methods {
             body(method, &structs[owner].methods[&method.name], Some(owner))?;
         }
+    }
+    if !tests {
+        return Ok(());
+    }
+    for position in 0..prog.tests.len() {
+        let test = &prog.tests[position];
+        if let Some(first) = prog.tests[..position].iter().find(|other| other.name == test.name) {
+            return Err(Diag::error(test.name_span, format!("there are two tests named \"{}\"", test.name))
+                .related(first.name_span, "the other one is here"));
+        }
+        let mut checker = Checker {
+            names: &names,
+            copyable: &copyable,
+            formattable: &formattable,
+            equatable: &equatable,
+            comparable: &comparable,
+            structs: &structs,
+            enums: &enums,
+            sigs: &sigs,
+            scopes: vec![Scope::default()],
+            locks: Vec::new(),
+            loops: 0,
+            ret: Ty::Void,
+            func_name: "test".to_string(),
+            in_test: true,
+            owner: None,
+            src,
+        };
+        checker.block(&mut prog.tests[position].body, None)?;
     }
     Ok(())
 }
@@ -679,6 +716,8 @@ struct Checker<'a> {
     loops: usize,
     ret: Ty,
     func_name: String,
+    /// A `test` block is being checked: `try` passes any error on, and the test fails with it.
+    in_test: bool,
     /// The struct whose method is being checked.
     owner: Option<&'a str>,
     src: &'a str,
@@ -2002,6 +2041,22 @@ impl<'a> Checker<'a> {
         }
         let func = self.func_name.clone();
         match found {
+            // In a test an error of any type ends the test and is printed.
+            Ty::Result(ok, error) if self.in_test => {
+                let written = match &*error {
+                    Ty::Struct(name) | Ty::Enum(name) => self.formattable.contains(name),
+                    other => can_format(other, self.formattable),
+                };
+                if !written {
+                    let diag = Diag::error(span, format!("an error that fails a test is printed, so `{error}` must be `Formattable`"));
+                    return Err(match &*error {
+                        Ty::Struct(name) | Ty::Enum(name) => diag.hint(format!("add it to the definition: `{name} : Formattable`")),
+                        _ => diag,
+                    });
+                }
+                *kind = TryKind::Result(None);
+                Ok(*ok)
+            }
             Ty::Result(ok, error) => {
                 let Ty::Result(_, target) = &self.ret else {
                     return Err(Diag::error(span, format!("`try` returns the error to the caller, but `{func}` returns `{}`", self.ret))
@@ -2010,6 +2065,10 @@ impl<'a> Checker<'a> {
                 let convert = if **target == *error { None } else { Some(self.error_variant(&error, target, span)?) };
                 *kind = TryKind::Result(convert);
                 Ok(*ok)
+            }
+            Ty::Nullable(value) if self.in_test => {
+                Err(Diag::error(span, format!("`try` on `{value}?` returns `null` to the caller, and a test has no caller"))
+                    .hint("say what is expected: `assert(x is not null)`, or give a fallback with `??`"))
             }
             Ty::Nullable(value) => {
                 if !matches!(self.ret, Ty::Nullable(_)) {

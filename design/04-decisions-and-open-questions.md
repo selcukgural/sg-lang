@@ -48,6 +48,12 @@ A rule that does not satisfy all of them can still be added, but its cost is the
 is added, the question is "can this be written without it", and there are never two ways to do the same thing. On the same day the table was reviewed with this in mind,
 and what was removed is in the [dropped decisions](#dropped-decisions) section.
 
+*Restated on 12 November 2026, in the author's words.* The promise of the language is software that is safe and runs
+fast: memory safe like Rust, as fast as C. It is not a promise of fast development. The language may be tiny, like C: C
+lacks many features and everything is still written in it, operating systems included. Having the features Rust has is
+not a goal. So a feature that only saves typing does not earn its place, and a feature that costs at run time needs a
+reason that is about safety.
+
 *Added on 12 November 2026.* We are not tied to a single language. Rust's guarantees, C#'s notation, Go's simplicity, Zig's
 smallness: what each language does best is taken in the form that fits us, and is not taken if it does not fit. A proposal is accepted not because
 "Rust does it this way" but because it fits the goals of this language.
@@ -296,6 +302,8 @@ This goal holds only with a back end at the level of LLVM. A tree-walking interp
    Tenth slice (the same day): `: Equatable`, `: Hashable` and `: Comparable` as built-in names; `==` and `<` on your own types,
    `indexOf` and `sort` on lists of them, and keys of your own in a `HashMap`. A collection is `Equatable` if what it holds is. Its choices were approved on 12 November 2026 and are in the decisions table:
    [interpreter/README.md](../interpreter/README.md), "Rules from the tenth slice".
+   Eleventh slice (the same day): `test "name" { }` blocks and the test command (`sg test file.sg`); the stock tests of the design run in one file.
+   The few things the design left open are in "Choices made in the eleventh slice", still to be talked over.
    The borrow check (`from`, conflicting `ref`) does not exist yet, and it is the next large piece. The current state is in
    [interpreter/README.md](../interpreter/README.md). The code, comments and error messages are in English. Since 12 November 2026 the design documents are in English too.
 

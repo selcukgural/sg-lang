@@ -5,6 +5,7 @@ running real programs, not to be fast. Source files end in `.sg`; the crate and 
 
 ```
 cargo run -- examples/stack.sg
+cargo run -- test examples/tests_stock.sg
 cargo test
 ```
 
@@ -34,6 +35,7 @@ cargo test
 | Text | `"..."` with `\n \t \r \0 \\ \" \'`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()`, `text.indexOf(':')`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string` |
 | Characters | `'+'`, `'\n'`: a `byte` |
 | Built-ins | `print(x)`, `panic("...")`, `assert(condition)` |
+| Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A normal run leaves the tests out |
 | Comparing by name | `a.compare(b)` on integers and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
 | Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic |
 
@@ -94,6 +96,8 @@ Design rules that are already enforced:
   error that shows the right one.
 - A failed `assert(a == b)` writes both sides, also when they are structs, enums or collections.
 - `xs < ys` on two collections is an error, and so is a collection as a key.
+- A test that fails (a false `assert`, a panic, an error passed on by `try`) does not stop the others. Two
+  tests with the same name are an error; so is an error type passed on by `try` that is not `Formattable`.
 - An index outside a `List` panics with the index and the length; a key that is not in a `HashMap` panics with
   the key. The message names `get`, which gives `null` instead.
 - An item is never moved out of a collection through an index: `consume(names[0])` is an error whose hint is
@@ -345,6 +349,27 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
    field by field. A collection is not `Hashable` (it is not a key) and not `Comparable` (`xs < ys` is an
    error): an order is written, not made up.
 
+## Choices made in the eleventh slice
+
+`test` blocks, as decided in the design ("Test" and "`assert`" rows). What the design left open, chosen on
+12 November 2026 and still to be talked over; each has a test in `tests/cases/` or `examples/`.
+
+1. **The command is `sg test file.sg`**, and the report is one line per test: `ok    name` or `FAIL  name`
+   followed by the panic or `error: ...`, then `4 test(s) passed` or `1 of 4 test(s) failed`.
+2. **A test file needs no `main`** under the test command; `sg file.sg` on a file that has only tests says so
+   in the hint.
+3. **Two tests with the same name are an error.**
+4. **`try` on a `T?` in a test is an error** (there is no caller to give `null` to); the hint is
+   `assert(x is not null)`.
+5. **`test "..."` inside a function is an error** that says where a test goes; `test` stays an ordinary name
+   everywhere else (`var test = 5`).
+6. **Here the tests run one after the other in the same process**, each with variables of its own; the design
+   runs each in a separate process. With no global state and a panic that is caught, the difference cannot be
+   seen yet.
+
+`examples/tests_stock.sg` is the stock tests of the design in one file (no modules yet), and it passes. The
+golden test runs every file whose name starts with `tests_` through the test command.
+
 ## Not here yet
 
 - **Borrow checking.** Moves are checked, borrows are not: nothing stops a `read` borrow from outliving its
@@ -357,8 +382,7 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
 - Patterns inside patterns (`Negate(Number(v))`), patterns for text (`match word { "if" => ... }`),
   methods on enums.
 - Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
-- Generics other than the built-in `Result<T, E>`, `List<T>` and `HashMap<K, V>`; lambdas, modules, `test`
-  blocks, threads, `shared` / `weak` / `checked` / `locked`.
+- Generics other than the built-in `Result<T, E>`, `List<T>` and `HashMap<K, V>`; lambdas, modules, threads, `shared` / `weak` / `checked` / `locked`.
 - A collection changed inside its own `for` through another `ref` to it is not caught (it is part of the
   borrow check); the direct forms are. Here a list is gone over by position and a map or a set as it was when
   the loop started.
@@ -376,6 +400,5 @@ error.
 
 ## Next
 
-The borrow check (`from`, a `ref` that overlaps another borrow), the largest piece still missing. Smaller
-steps that could come before it: `test` blocks (the stock tests of the design now have everything else they
-need), methods on enums, `char`.
+The borrow check (`from`, a `ref` that overlaps another borrow), the largest piece still missing. After it the question is the
+back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

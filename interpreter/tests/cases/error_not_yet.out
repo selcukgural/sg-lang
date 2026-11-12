@@ -3,4 +3,4 @@ error: expected a type name, found `interface`
   --> error_not_yet.sg:1:1
  1 | interface Shape {
    | ^^^^^^^^^
-  hint: only structs, enums and functions are written at the top level: `void main() { ... }`
+  hint: only structs, enums, functions and tests are written at the top level: `void main() { ... }`

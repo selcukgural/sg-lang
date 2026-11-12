@@ -1,0 +1,39 @@
+enum LoadError : Formattable {
+    Missing(string name)
+}
+
+Result<int, LoadError> load(read string name) {
+    if name == "config" {
+        return Ok(42)
+    }
+    return Error(LoadError.Missing(name.clone()))
+}
+
+test "passes" {
+    assert(try load("config") == 42)
+}
+
+test "a false assert fails the test" {
+    var xs = List<int> { 1, 2 }
+    assert(xs.length() == 3)
+    print("not reached")
+}
+
+test "an error passed on by try fails the test" {
+    var value = try load("secrets")
+    print(value)
+}
+
+test "a panic fails the test, and the next one still runs" {
+    var xs = List<int>()
+    print(xs[0])
+}
+
+test "each test starts fresh" {
+    var total = 0
+    for i in 0..4 {
+        total += i
+    }
+    assert(total == 6)
+    return
+}

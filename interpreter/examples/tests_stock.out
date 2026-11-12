@@ -1,0 +1,5 @@
+ok    indexOf returns null for an unknown code
+ok    received goods are added to stock
+ok    nothing ships when stock is short
+ok    an unknown code is reported
+4 test(s) passed

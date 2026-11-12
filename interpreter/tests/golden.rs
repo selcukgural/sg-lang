@@ -8,7 +8,11 @@ fn run_file(path: &Path) -> String {
     let src = std::fs::read_to_string(path).unwrap();
     let name = path.file_name().unwrap().to_string_lossy();
     let mut out = Vec::new();
-    let result = sg::run(&src, &mut out);
+    // A file named `tests_...` is run by the test command.
+    let result = match name.starts_with("tests_") {
+        true => sg::run_tests(&src, &name, &mut out).map(|_| ()),
+        false => sg::run(&src, &mut out),
+    };
     let mut text = String::from_utf8(out).unwrap();
     match result {
         Ok(()) => {}
