@@ -137,7 +137,7 @@ Design rules that are already enforced:
 Since the sixteenth slice (12 November 2026) a program can be compiled: `sg build file.sg` writes it as C and
 hands that to the C compiler. The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, and then runs the
-same C once more under the address and undefined-behaviour sanitizers (45 of 302 programs for now).
+same C once more under the address and undefined-behaviour sanitizers (50 of 303 programs for now).
 
 What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -149,7 +149,10 @@ recursion; `if`, `while`, `for i in a..b`, `break`, `continue`; structs, by valu
 pointer. Since the nineteenth slice enums: variants with and without values, `match` on an enum (owned,
 borrowed with `read` or `ref`, behind a `T*`) and on an integer, `when`, `var other`, `is` / `is not` with
 names in `if` and `while`, enums inside structs, `T?` and `T*`, and enums that own text, structs and pointers.
-Anything else (collections, `Result`, types that carry a borrow, function values, writing an enum or a
+Since the twentieth slice `Result<T, E>`: `Ok(...)`, `Ok()` and `Error(...)`, `try` (the error goes to the
+caller as it is, or inside the variant of the caller's error type that carries it), `??` and `?? return` on a
+`Result`, `match` and `is` on one, `_ = f()`, and `Result<void, E> main()` whose error is text or a number.
+Anything else (collections, types that carry a borrow, function values, writing an enum or a
 struct with `print`, `==` on them) is an error that names what is missing: nothing is compiled wrongly in
 silence.
 
@@ -175,6 +178,7 @@ hand with no checks):
 | `words`: bytes read, words compared, each word copied to the heap and freed | 0.874 s | 0.888 s | 0.854 s | 1.02 |
 | `list`: a linked list of a million nodes built with `new`, walked and freed, twenty times | 0.238 s | 0.243 s | 0.236 s | 1.01 |
 | `expr`: a tree of enum values built, evaluated twenty times with `match`, rewritten and freed | 0.309 s | 0.302 s | 0.303 s | 1.02 |
+| `parse`: numbers read out of text, an error found three calls deep and passed up with `try` | 0.290 s | 0.320 s | 0.293 s | 0.99 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -188,7 +192,12 @@ other fields itself. `expr` is the first program with an enum: a `match` is a te
 is compared with is a tagged union and a `switch`. The part that builds, rewrites and frees the tree first took
 1.13 times the time of C: after a value was moved, the drop of the (empty) variable was still written, and the
 C compiler did not remove it. Those drops are no longer written (choice 24) and that part takes 1.03 times.
-The numbers move by a few percent from run to run, and six small programs are not a benchmark suite.
+`parse` is the first program with errors as values: eighteen million lines are read, a third of them end in
+an error that is found three calls deep, handed up with `try` and looked at with `match` or dropped with
+`??`. The C it is compared with returns an error code and gives the value through a pointer. The two take the
+same time (0.99 to 1.02 over several runs): a `Result` is a tag and a value, `try` is one test, and nothing
+is allocated.
+The numbers move by a few percent from run to run, and seven small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
 
@@ -231,11 +240,12 @@ Choices made in the eighteenth slice (the heap and missing values), approved on 
     Freeing a list of a million nodes does not go a million calls deep; in Rust the same list overflows the
     stack unless `Drop` is written by hand. Other shapes (a tree with two children) are freed by recursion,
     as deep as the tree is. The open "stack depth" question stays open for those.
-14. **`try` and `?? return` are compiled only where they are the whole right side of a statement**
-    (`var x = try f()`, `x = f() ?? return y`, `return try f()`). Inside a larger expression
-    (`g(a(), try b())`) the back end stops with an error and the hint "give the value a name first". The
-    reason: what `a()` returned would have to be freed on the way out, and that bookkeeping is not written
-    yet. A limit of the back end for now, not a rule of the language; the interpreter runs both forms.
+14. **`try` and `?? return` are compiled only where nothing is left behind** (widened in the twentieth
+    slice, see 29; until then only as the whole right side of a statement). Where a value that owns
+    something was computed before them in the same statement (`g(a(), try b())` with `a()` a `string`) the
+    back end stops with an error and the hint "give the value a name first". The reason: what `a()`
+    returned would have to be freed on the way out, and that bookkeeping is not written yet. A limit of
+    the back end for now, not a rule of the language; the interpreter runs both forms.
 15. **`??`, `try` and `replace` are written as GNU statement expressions**, so they run where they stand and
     the right side of `??` runs only when it is needed. clang and gcc both have them; a C compiler without
     them (MSVC) cannot build the output for now.
@@ -646,6 +656,32 @@ test in `tests/cases/`.
 7. **A function that returns such a type with no borrowed parameter writes no `from`**: it can only return
    constants.
 
+Choices made in the twentieth slice (`Result` and `try`), not talked over yet:
+
+27. **A `Result<T, E>` has the shape of an enum**: a tag of one byte and, beside it, room for the larger of
+    the value and the error. A `Result<void, E>` is the tag and the error. It is returned by value like any
+    struct: a small one in registers, a larger one written into room the caller made. Rust does the same and
+    packs the tag further where it can; that is not done here. C written by hand returns an error code
+    and gives the value through a pointer: the same work.
+28. **`try` is one test of the tag and, on an error, a `return`.** The error is moved into what is returned,
+    not copied, and when the caller's error type wraps it (`ParseError` into `AppError.Parse`) that is one
+    more tag written. On the way out the function frees what it owns, as on any `return`. There is no
+    unwinding and there are no tables: an error costs what a returned value costs. Rust's `?` is the same.
+29. **Where `try` and `?? return` can stand** (replaces the limit of 14): anywhere in a statement, as long
+    as no value that owns something was computed before them in that statement and is still without a
+    name. So `Ok(try f())`, `print(try f())`, `new try f()`, `add(10, try f())`, `value * 10 + try digit(c)`,
+    `if try ready()`, `while try more()` and `match try next() { ... }` are compiled. Still refused, with the
+    hint to give the value a name first: after an argument that owns something (`f(name.clone(), try g())`),
+    as an argument of a method call, inside `$"..."`, on the right side of `&&`, `||` and `??`, and inside
+    `assert`. A limit of the back end, not a rule of the language.
+30. **`??` on a `Result` frees the error, then computes the right side**; with `?? return` the error is
+    freed on the way out.
+31. **An error that `main` ends with is written by the code the program starts with**: output written so
+    far goes out first, then `error: ...` on the error output, and the exit code is 1, as in the interpreter.
+    For now the error is text, a number or a `bool`: writing a `Formattable` struct or enum is not in the
+    back end yet (it comes with `print` of those).
+32. **A `Result` that was moved out of its place gets the tag 255**, like an enum (choice 21).
+
 ## Not here yet
 
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
@@ -680,6 +716,6 @@ error.
 ## Next
 
 The back end, one piece of the language at a time, each compared with the interpreter, run under the
-sanitizers and measured against C: next `Result` and `try` on it (an enum the language brings with it), then the collections, types that carry a
-borrow and function values. After it the question is the
+sanitizers and measured against C: next the collections (`List`, `HashMap`, `HashSet`), then types that carry a
+borrow (the calculator), function values, and `print` and `==` on structs and enums. After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

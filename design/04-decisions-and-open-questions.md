@@ -296,7 +296,9 @@ time of C: that is the cost of the checks that stay, on every index and every ra
 pointers (a linked list of a million nodes built with `new`, walked and freed) runs in 1.01 times the time of C: a
 `Node*?` is one pointer and `is not null` one comparison. The first program with an enum (an expression tree
 built, evaluated with `match`, rewritten and freed) runs in 1.02 times the time of C written as a tagged union and a
-`switch`.
+`switch`. The first program with errors as values (numbers read out of text, an error found three calls deep and
+passed up with `try`) runs in the time of C that returns error codes (0.99 to 1.02): a `Result` is a tag and a value,
+and `try` is one test.
 
 ## Next steps
 
@@ -347,7 +349,8 @@ built, evaluated with `match`, rewritten and freed) runs in 1.02 times the time 
    Sixteenth slice: the first piece of a back end. `sg build` writes the program as C (integers, `bool`, functions, structs, `read`/`ref`, `print`, the same panics) and the C compiler makes the program; every program it accepts is compared with the interpreter. The first measurements are in the performance note. Its choices were approved the same day ("Back end"), and the overflow rule became Rust's on the first measurement ("Integer overflow", "Narrowing conversion").
    Seventeenth slice: text in the back end (`string`, `read string`, ranges, comparison, `$"..."`), and the first owned values: a value is freed where its variable ends, a move empties the place it leaves. Every compiled program is also run under the address and undefined-behaviour sanitizers. Its choices were approved the same day ("Owned values in compiled code").
    Eighteenth slice: the heap and missing values in the back end (`T*`, `new`, `T?`, `null`, `??`, `try` on a `T?`, `take`, `replace`); the linked list, the stack and the account examples are compiled. Its choices were approved the same day ("Heap and missing values in compiled code"). 
-   Nineteenth slice: enums in the back end (a tag and a union), `match` on an enum and on an integer, `when`, `var other`, `is` with names; the shapes and the expression-tree examples are compiled. A `when` condition may no longer move a value, and compiled code computes the parts of an expression from left to right. Its choices were approved the same day ("Enums in compiled code", "`when` only looks", "Order of evaluation"). The current state is in
+   Nineteenth slice: enums in the back end (a tag and a union), `match` on an enum and on an integer, `when`, `var other`, `is` with names; the shapes and the expression-tree examples are compiled. A `when` condition may no longer move a value, and compiled code computes the parts of an expression from left to right. Its choices were approved the same day ("Enums in compiled code", "`when` only looks", "Order of evaluation").
+   Twentieth slice: `Result<T, E>` in the back end (`Ok`, `Error`, `try` with the error wrapped for the caller, `??`, `match`, `is`, `Result<void, E> main()`); `try` and `?? return` are compiled wherever nothing that owns memory was computed before them in the statement. Its choices are in the interpreter README ("Choices made in the twentieth slice") and are not talked over yet, so they are not in the table above. The current state is in
    [interpreter/README.md](../interpreter/README.md). The code, comments and error messages are in English. Since 12 November 2026 the design documents are in English too.
 
 ## Dropped decisions

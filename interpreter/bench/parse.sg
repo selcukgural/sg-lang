@@ -1,0 +1,67 @@
+// Errors as values: numbers are read out of a line of text. An error is found three calls
+// deep and travels back up with `try`; the caller looks at it with `match` or drops it with `??`.
+enum ParseError {
+    Empty
+    BadDigit(byte found)
+    TooLarge
+}
+
+Result<int, ParseError> digit(byte c) {
+    if c < '0' || c > '9' {
+        return Error(ParseError.BadDigit(c))
+    }
+    return Ok(c - '0')
+}
+
+Result<int, ParseError> number(read string text) {
+    if text.length() == 0 {
+        return Error(ParseError.Empty)
+    }
+    var value = 0
+    for i in 0..text.length() {
+        if value > 99999999 {
+            return Error(ParseError.TooLarge)
+        }
+        value = value * 10 + try digit(text[i])
+    }
+    return Ok(value)
+}
+
+// The sum of the numbers of a line; each number ends with a space.
+Result<int, ParseError> sum(read string line) {
+    var total = 0
+    nint start = 0
+    for i in 0..line.length() {
+        if line[i] == ' ' {
+            total += try number(line[start..i])
+            start = i + 1
+        }
+    }
+    return Ok(total)
+}
+
+void main() {
+    var good = "12 345 6789 0 42 100000 7 99 "
+    var bad = "12 345 67x9 0 42 "
+    var large = "12 1234567890123 "
+    long total = 0
+    var empty = 0
+    var badDigits = 0
+    for round in 0..6000000 {
+        // A different start in each round: the third one leaves an empty number in front.
+        var skip = round % 3
+        match sum(good[skip..]) {
+            Ok(value) => total += value
+            Error(_) => empty += 1
+        }
+        match sum(bad[skip..]) {
+            Ok(value) => total += value
+            Error(cause) => match cause {
+                BadDigit(found) => badDigits += found - 'a'
+                _ => empty += 1
+            }
+        }
+        total += sum(large[skip..]) ?? -1
+    }
+    print($"{total} {empty} {badDigits}")
+}

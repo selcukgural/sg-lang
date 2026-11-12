@@ -1,0 +1,174 @@
+// A `Result` whose value or error owns memory: every way through frees it once.
+// (The compiled program runs under the sanitizers in the tests.)
+struct Config {
+    string name
+    int size
+}
+
+enum LoadError {
+    Missing(string name)
+    TooLarge(int size)
+}
+
+enum AppError {
+    Load(LoadError cause)
+    Other
+}
+
+Result<string, string> word(int n) {
+    if n < 0 {
+        return Error($"negative: {n}".toString())
+    }
+    var text = "word".clone()
+    if n == 0 {
+        return Error("zero".clone())         // `text` is freed on this way out
+    }
+    return Ok(text)
+}
+
+Result<Config, LoadError> load(read string name, int size) {
+    if size > 100 {
+        return Error(LoadError.TooLarge(size))
+    }
+    if name.length() == 0 {
+        return Error(LoadError.Missing("<empty>".clone()))
+    }
+    return Ok(Config { name = name.clone(), size = size })
+}
+
+// The error goes on as it is; what this function owns is freed first.
+Result<int, LoadError> total(read string a, read string b) {
+    var first = try load(a, 1)
+    var second = try load(b, 2)              // on an error `first` is freed
+    return Ok(first.size + second.size + (int)first.name.length())
+}
+
+// The error is wrapped in the caller's error type.
+Result<int, AppError> wrapped(read string name) {
+    var label = "label".clone()
+    var config = try load(name, 3)
+    return Ok(config.size + (int)label.length())
+}
+
+// `try` inside what is returned, inside a call and inside `new`.
+Result<int, LoadError> nested(read string name) {
+    return Ok(try total(name, name))
+}
+
+int add(int a, int b) {
+    return a + b
+}
+
+Result<int, LoadError> second(read string name) {
+    var sum = add(10, try total(name, "x"))
+    return Ok(sum * 2)
+}
+
+Result<Config*, LoadError> boxed(read string name) {
+    return Ok(new try load(name, 7))
+}
+
+Result<void, LoadError> check(read string name) {
+    try load(name, 5)                        // the value is freed, an error goes on
+    return Ok()
+}
+
+enum Size {
+    Small
+    Large
+}
+
+Result<Size, LoadError> sizeOf(read string name) {
+    var config = try load(name, 8)
+    if config.name.length() > 3 {
+        return Ok(Size.Large)
+    }
+    return Ok(Size.Small)
+}
+
+// `try` as what a `match` looks at; on an error `prefix` is freed.
+Result<string, LoadError> label(read string name) {
+    var prefix = "size: ".clone()
+    return match try sizeOf(name) {
+        Small => Ok($"{prefix}small".toString())
+        Large => Ok($"{prefix}large".toString())
+    }
+}
+
+// The error is dropped and the function gives its own answer.
+int sizeOr(read string name, int otherwise) {
+    var config = load(name, 9) ?? return otherwise
+    return config.size
+}
+
+string describe(LoadError error) {
+    match error {
+        Missing(name) => return name
+        TooLarge(size) => return $"too large: {size}".toString()
+    }
+}
+
+void show(Result<int, LoadError> result) {
+    match result {
+        Ok(value) => print(value)
+        Error(cause) => print(describe(cause))
+    }
+}
+
+Result<void, string> main() {
+    print(try word(1))
+    print(word(0) ?? "fallback".clone())     // the error is freed
+    print(word(-5) ?? "fallback".clone())
+    match word(-2) {
+        Ok(text) => print(text)
+        Error(cause) => print(cause)
+    }
+
+    show(total("ab", "cd"))
+    show(total("ab", ""))
+    show(total("", "cd"))
+    show(nested("abc"))
+    show(nested(""))
+    show(second("abc"))
+    show(second(""))
+
+    match wrapped("") {
+        Ok(value) => print(value)
+        Error(error) => match error {
+            Load(cause) => print(describe(cause))
+            Other => print("other")
+        }
+    }
+    print(wrapped("name") ?? -1)
+
+    print(label("ab") ?? "no label".clone())
+    print(label("abcdef") ?? "no label".clone())
+    print(label("") ?? "no label".clone())
+
+    var kept = load("kept", 4)
+    if kept is Ok(config) {
+        print(config.name)
+    }
+    if read kept is Error(_) {
+        print("not reached")
+    }
+    Result<Config, LoadError> large = load("x", 500)
+    if large is Error(cause) {
+        print(cause is TooLarge(_))
+    }
+
+    match boxed("heap") {
+        Ok(config) => print(config.size)
+        Error(_) => print("no box")
+    }
+    _ = boxed("dropped")                     // the box and its text are freed
+    _ = boxed("")
+    _ = check("fine")
+    print(check("") is Error(_))
+    print(sizeOr("abc", -1))
+    print(sizeOr("", -1))
+
+    var last = try word(0)                   // `main` ends with this error
+    print(last)
+    return Ok()
+}

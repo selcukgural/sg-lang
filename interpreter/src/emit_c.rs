@@ -5,8 +5,9 @@
 //! overflow, division by zero, a cast that does not fit, `assert` and `panic`.
 //!
 //! Only a part of the language is compiled so far: integers, `bool`, text, functions, structs,
-//! enums with `match` and `is`, `T*` and `new`, `T?`, `read` and `ref`, and `print`. Anything
-//! else is an error that names what is missing, so nothing is compiled wrongly in silence.
+//! enums with `match` and `is`, `Result` and `try`, `T*` and `new`, `T?`, `read` and `ref`, and
+//! `print`. Anything else is an error that names what is missing, so nothing is compiled
+//! wrongly in silence.
 //!
 //! How values are represented: `byte`, `int`, `long` and `nint` are fixed-size C integers; a
 //! struct is a C struct passed by value; `read T` / `ref T` are pointers; a `string` is its
@@ -14,6 +15,8 @@
 //! pointer to one `malloc`ed `T`. A `T*?` is the same pointer, where `NULL` is `null`: it
 //! costs nothing. Any other `T?` is the value and a flag beside it. An enum is a tag and,
 //! beside it, room for the largest variant (a C union); a `match` is a chain of tests on the tag.
+//! A `Result<T, E>` is such an enum with the variants `Ok(T value)` and `Error(E cause)`; `try`
+//! is one test on the tag and, on an error, a `return`.
 //!
 //! Who frees: the checker has decided who owns each value, so the back end only follows it.
 //! An owned value is dropped where its variable ends. A use that moves the value (marked by
@@ -21,6 +24,11 @@
 //!
 //! Order: `try`, `??` and `replace` are written as GNU statement expressions (clang and gcc
 //! both have them), so they run where they stand, between what is written before and after.
+//!
+//! Leaving from inside an expression: `try` and `?? return` can leave the function in the
+//! middle of a statement. They are compiled where nothing that would have to be freed has been
+//! computed before them in that statement (see `Emitter::head`); elsewhere they are an error
+//! that asks for a name.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -246,6 +254,8 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
         sigs: HashMap::new(),
         ret: Ty::Void,
         maybe: 0,
+        head: false,
+        exits: 0,
     };
     // Every struct and enum is named first, so that a type can point at itself or at a later
     // one. Then the types themselves, each after the types it holds by value.
@@ -286,6 +296,29 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
         }
     }
 
+    // Where the program starts. An error that `main` ends with is written out, and the
+    // program ends with the exit code 1.
+    let main = prog.funcs.iter().find(|func| func.name == "main").expect("the checker asks for `main`");
+    let start = match emitter.written(&main.ret)? {
+        ret @ Ty::Result(..) => {
+            let Ty::Result(_, error) = &ret else { unreachable!("matched above") };
+            let cause = "result.u.v1.m_cause";
+            let (format, values) = match &**error {
+                Ty::Str => ("%.*s", format!("(int){cause}.len, (const char*){cause}.ptr")),
+                Ty::Int(_) => ("%lld", format!("(long long){cause}")),
+                Ty::Bool => ("%s", format!("{cause} ? \"true\" : \"false\"")),
+                other => return Err(not_yet(main.ret.span, &format!("writing the `{other}` that `main` ends with"))),
+            };
+            let ctype = emitter.ctype(&ret, main.ret.span)?;
+            let drop = if emitter.droppable(error) { emitter.drop_of(error, cause) } else { String::new() };
+            format!(
+                "int main(void) {{\n    {ctype} result = f_main();\n    if (result.tag != 0) {{\n        fflush(stdout);\n        \
+                 fprintf(stderr, \"error: {format}\\n\", {values});\n        {drop}\n        return 1;\n    }}\n    return 0;\n}}\n"
+            )
+        }
+        _ => "int main(void) {\n    f_main();\n    return 0;\n}\n".to_string(),
+    };
+
     let mut out = String::from(RUNTIME);
     out.push('\n');
     out.push_str(&emitter.types);
@@ -300,13 +333,13 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
     out.push_str(&protos);
     out.push('\n');
     out.push_str(&bodies);
-    out.push_str("int main(void) {\n    f_main();\n    return 0;\n}\n");
+    out.push_str(&start);
     Ok(out)
 }
 
 fn not_yet(span: Span, what: &str) -> Diag {
     Diag::error(span, format!("{what} is not in the C back end yet"))
-        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `T*`, `T?`, `read` and `ref`, and `print`")
+        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, `T*`, `T?`, `read` and `ref`, and `print`")
 }
 
 /// A C string literal for any text.
@@ -378,6 +411,11 @@ fn mangle(ty: &Ty) -> Option<String> {
             Ty::Nullable(_) => return None,
             _ => format!("O_{}", mangle(inner)?),
         },
+        // The length of the first name keeps two different pairs from sharing a name.
+        Ty::Result(ok, error) => {
+            let ok = if **ok == Ty::Void { "void".to_string() } else { mangle(ok)? };
+            format!("R{}_{ok}_{}", ok.len(), mangle(error)?)
+        }
         _ => return None,
     })
 }
@@ -387,14 +425,26 @@ fn is_option(ty: &Ty) -> bool {
     matches!(ty, Ty::Nullable(inner) if !matches!(**inner, Ty::Ptr(_)))
 }
 
-/// The struct or enum a field of this type needs to be defined first, if any.
-fn held_type(ty: &Ty) -> Option<&str> {
+/// The structs and enums a field of this type needs to be defined first.
+fn held_types<'t>(ty: &'t Ty, found: &mut Vec<&'t str>) {
     match ty {
-        Ty::Struct(name) | Ty::Enum(name) => Some(name),
-        Ty::Nullable(inner) | Ty::Ptr(inner) => held_type(inner),
-        _ => None,
+        Ty::Struct(name) | Ty::Enum(name) => found.push(name),
+        Ty::Nullable(inner) | Ty::Ptr(inner) => held_types(inner, found),
+        Ty::Result(ok, error) => {
+            held_types(ok, found);
+            held_types(error, found);
+        }
+        _ => {}
     }
 }
+
+/// A value that is written out in full where it is used: when it is computed cannot matter.
+fn is_constant(expr: &Expr) -> bool {
+    matches!(expr.kind, ExprKind::Int(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Null)
+}
+
+/// What one variant of an enum carries: the name, the type and the place in the source of each value.
+type Carried = Vec<(String, Ty, Span)>;
 
 /// The tag an enum has after its value was moved out: no variant, so nothing is dropped.
 const MOVED_TAG: usize = 255;
@@ -424,6 +474,9 @@ struct Part {
     settled: bool,
     /// The lines `pre` had before and after the value was written.
     pre: (usize, usize),
+    /// Computing it can leave the function: it holds a `try` or a `?? return`.
+    leaves: bool,
+    span: Span,
 }
 
 /// Where the value of a `match` goes.
@@ -483,6 +536,15 @@ struct Emitter<'a> {
     /// How many expressions that run only sometimes are being written (the right side of
     /// `??`, `&&` and `||`): a move in there is not certain.
     maybe: usize,
+    /// The expression about to be written is computed while nothing that would have to be
+    /// freed is waiting in its statement: no value that owns something has been computed
+    /// before it and is still unnamed. Only there can `try` and `?? return` leave the function,
+    /// because what they free on the way out is exactly what has a name: the variables, and
+    /// the temporaries made so far. `value` reads it and clears it; an expression hands it on
+    /// to the part of itself that is computed first.
+    head: bool,
+    /// How many ways out of the function were written inside expressions.
+    exits: usize,
 }
 
 impl<'a> Emitter<'a> {
@@ -512,6 +574,11 @@ impl<'a> Emitter<'a> {
             Ty::Str => "sg_string".to_string(),
             Ty::Struct(name) => format!("S_{name}"),
             Ty::Enum(name) => format!("E_{name}"),
+            Ty::Result(..) => {
+                let Some(name) = mangle(ty) else { return Err(not_yet(span, &format!("the type `{ty}`"))) };
+                self.need(ty, span)?;
+                format!("sg_{name}")
+            }
             _ if is_text_view(ty) => "sg_str".to_string(),
             Ty::Read(inner) | Ty::Ref(inner) => format!("{}*", self.ctype(inner, span)?),
             Ty::Ptr(inner) | Ty::Nullable(inner) => {
@@ -592,6 +659,29 @@ impl<'a> Emitter<'a> {
                 }
             }
             Ty::Nullable(inner) => self.need(inner, span)?,
+            // The same shape as an enum with the variants `Ok(T value)` and `Error(E cause)`,
+            // so `match` and `is` read both in one way.
+            Ty::Result(ok, error) => {
+                if !self.made.insert(name.clone()) {
+                    return Ok(());
+                }
+                let (mut members, mut drops) = (String::new(), Vec::new());
+                for (index, (field, held)) in [("value", ok), ("cause", error)].into_iter().enumerate() {
+                    if **held == Ty::Void {
+                        continue;
+                    }
+                    let _ = write!(members, "struct {{ {} m_{field}; }} v{index}; ", self.ctype(held, span)?);
+                    if self.droppable(held) {
+                        drops.push(format!("if (v->tag == {index}) {{ {} }}", self.drop_of(held, &format!("v->u.v{index}.m_{field}"))));
+                    }
+                }
+                let _ = writeln!(self.types, "typedef struct {{ uint8_t tag; union {{ {members}}} u; }} sg_{name};");
+                if !drops.is_empty() {
+                    let _ = writeln!(self.glue_protos, "static inline void sg_drop_{name}(sg_{name}* v);\nstatic inline sg_{name} sg_move_{name}(sg_{name}* v);");
+                    let _ = writeln!(self.glue, "static inline void sg_drop_{name}(sg_{name}* v) {{ {} }}", drops.join(" else "));
+                    let _ = writeln!(self.glue, "static inline sg_{name} sg_move_{name}(sg_{name}* v) {{ sg_{name} out = *v; v->tag = {MOVED_TAG}; return out; }}");
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -600,13 +690,11 @@ impl<'a> Emitter<'a> {
     /// A type as it is written in a signature or a field.
     fn written(&self, ty: &TypeExpr) -> Res<Ty> {
         let unknown = || not_yet(ty.span, &format!("the type `{}`", self.text(ty.span)));
-        if !ty.args.is_empty() {
-            return Err(unknown());
-        }
-        let mut found = match Ty::from_name(&ty.name) {
-            Some(base @ (Ty::Int(_) | Ty::Bool | Ty::Void | Ty::Str)) => base,
-            None if self.structs.contains_key(ty.name.as_str()) => Ty::Struct(ty.name.clone()),
-            None if self.enums.contains_key(ty.name.as_str()) => Ty::Enum(ty.name.clone()),
+        let mut found = match (Ty::from_name(&ty.name), ty.args.as_slice()) {
+            (None, [ok, error]) if ty.name == "Result" => Ty::Result(Box::new(self.written(ok)?), Box::new(self.written(error)?)),
+            (Some(base @ (Ty::Int(_) | Ty::Bool | Ty::Void | Ty::Str)), []) => base,
+            (None, []) if self.structs.contains_key(ty.name.as_str()) => Ty::Struct(ty.name.clone()),
+            (None, []) if self.enums.contains_key(ty.name.as_str()) => Ty::Enum(ty.name.clone()),
             _ => return Err(unknown()),
         };
         for suffix in &ty.suffixes {
@@ -630,6 +718,7 @@ impl<'a> Emitter<'a> {
         match ty {
             Ty::Str | Ty::Ptr(_) => true,
             Ty::Nullable(inner) => self.droppable(inner),
+            Ty::Result(ok, error) => self.droppable(ok) || self.droppable(error),
             Ty::Struct(name) => self.structs[name.as_str()].fields.iter().any(|field| self.written(&field.ty).is_ok_and(|ty| self.droppable(&ty))),
             Ty::Enum(name) => {
                 let mut fields = self.enums[name.as_str()].variants.iter().flat_map(|variant| &variant.fields);
@@ -649,6 +738,24 @@ impl<'a> Emitter<'a> {
         format!("sg_move_{}(&{place})", mangle(ty).expect("what is moved has a C type"))
     }
 
+    /// What `match` and `is` see of an enum or a `Result`: for each variant, the name and the
+    /// type of every value it carries. `None` for any other type. `span`: where to point for
+    /// a `Result`, whose variants are written nowhere.
+    fn variants(&self, ty: &Ty, span: Span) -> Res<Option<Vec<Carried>>> {
+        match ty {
+            Ty::Enum(name) => {
+                let decl = self.enums[name.as_str()];
+                let fields = |variant: &VariantDecl| variant.fields.iter().map(|field| Ok((field.name.clone(), self.written(&field.ty)?, field.ty.span))).collect();
+                Ok(Some(decl.variants.iter().map(fields).collect::<Res<_>>()?))
+            }
+            Ty::Result(ok, error) => {
+                let value = if **ok == Ty::Void { Vec::new() } else { vec![("value".to_string(), (**ok).clone(), span)] };
+                Ok(Some(vec![value, vec![("cause".to_string(), (**error).clone(), span)]]))
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn struct_decl(&mut self, decl: &'a StructDecl, done: &mut Vec<&'a str>) -> Res<()> {
         if done.contains(&decl.name.as_str()) {
             return Ok(());
@@ -664,7 +771,9 @@ impl<'a> Emitter<'a> {
             if ty.is_borrow() {
                 return Err(not_yet(field.ty.span, "a field that borrows"));
             }
-            if let Some(inner) = held_type(&ty) {
+            let mut held = Vec::new();
+            held_types(&ty, &mut held);
+            for inner in held {
                 self.type_decl(inner, done)?;
             }
             let _ = writeln!(fields, "    {} m_{};", self.ctype(&ty, field.ty.span)?, field.name);
@@ -715,7 +824,9 @@ impl<'a> Emitter<'a> {
                 if ty.is_borrow() {
                     return Err(not_yet(field.ty.span, "a field that borrows"));
                 }
-                if let Some(inner) = held_type(&ty) {
+                let mut held = Vec::new();
+                held_types(&ty, &mut held);
+                for inner in held {
                     self.type_decl(inner, done)?;
                 }
                 let _ = write!(fields, "{} m_{}; ", self.ctype(&ty, field.ty.span)?, field.name);
@@ -1054,7 +1165,7 @@ impl<'a> Emitter<'a> {
     /// `x is Circle(r)`.
     fn condition(&mut self, cond: &'a Expr) -> Res<(String, Vec<(Local, String)>)> {
         if !matches!(cond.kind, ExprKind::IsVariant { .. }) {
-            return Ok((self.value(cond)?, Vec::new()));
+            return Ok((self.first(cond, true)?, Vec::new()));
         }
         let (test, names) = self.variant_test(cond)?;
         // The names point into the value: it has to be there for as long as the block runs.
@@ -1078,16 +1189,15 @@ impl<'a> Emitter<'a> {
             place = format!("(*{place})");
             ty = inner;
         }
-        let Ty::Enum(owner) = ty else { return Err(not_yet(expr.span, &format!("`is` on `{ty}`"))) };
-        let decl: &'a EnumDecl = self.enums[owner.as_str()];
+        let Some(variants) = self.variants(ty, subject.span)? else { return Err(not_yet(expr.span, &format!("`is` on `{ty}`"))) };
         let mut names = Vec::new();
         for (position, (name, _)) in args.iter().flatten().enumerate() {
             let Some(name) = name else { continue };
-            let field = &decl.variants[*index].fields[position];
-            let held = Box::new(self.written(&field.ty)?);
+            let (field, held, span) = variants[*index][position].clone();
+            let held = Box::new(held);
             let ty = if *by_ref { Ty::Ref(held) } else { Ty::Read(held) };
-            let at = format!("{place}.u.v{index}.m_{}", field.name);
-            names.push(self.borrowed_name(name, ty, &at, field.ty.span)?);
+            let at = format!("{place}.u.v{index}.m_{field}");
+            names.push(self.borrowed_name(name, ty, &at, span)?);
         }
         let op = if *negated { "!=" } else { "==" };
         Ok((format!("({place}.tag {op} {index})"), names))
@@ -1115,7 +1225,7 @@ impl<'a> Emitter<'a> {
             unreachable!("only called for a `match`");
         };
         let (pad, inner) = ("    ".repeat(depth), "    ".repeat(depth + 1));
-        let value = self.value(subject)?;
+        let value = self.first(subject, true)?;
         let ctype = self.ctype(&subject.ty, subject.span)?;
         let held = self.temp();
         self.flush_pre(&pad, out);
@@ -1136,11 +1246,8 @@ impl<'a> Emitter<'a> {
             Ty::Int(ty) => Some((if subject.ty.is_borrow() { format!("(*{held})") } else { held.clone() }, *ty)),
             _ => None,
         };
-        let decl: Option<&'a EnumDecl> = match core {
-            Ty::Enum(owner) => Some(self.enums[owner.as_str()]),
-            _ => None,
-        };
-        if (number.is_none() && decl.is_none()) || (number.is_some() && boxes > 0) {
+        let variants = self.variants(core, subject.span)?;
+        if (number.is_none() && variants.is_none()) || (number.is_some() && boxes > 0) {
             return Err(not_yet(subject.span, &format!("a `match` on `{}`", subject.ty)));
         }
         // The enum as C reaches it: through a pointer in every case.
@@ -1192,20 +1299,19 @@ impl<'a> Emitter<'a> {
                 }
                 PatternKind::Wildcard if !*borrowed && self.droppable(&subject.ty) => chosen.push(self.drop_of(&subject.ty, &held)),
                 PatternKind::Variant { index, args, .. } => {
-                    let decl = decl.expect("the checker allows a variant only for an enum");
-                    for (place, field) in decl.variants[*index].fields.iter().enumerate() {
-                        let ty = self.written(&field.ty)?;
-                        let value = format!("{at}->u.v{index}.m_{}", field.name);
+                    let fields = &variants.as_ref().expect("the checker allows a variant only for an enum")[*index];
+                    for (place, (field, ty, span)) in fields.iter().cloned().enumerate() {
+                        let value = format!("{at}->u.v{index}.m_{field}");
                         let name = args.as_ref().and_then(|args| args[place].0.as_ref());
                         match (name, mode) {
                             (Some(name), None) => {
-                                let ctype = self.ctype(&ty, field.ty.span)?;
+                                let ctype = self.ctype(&ty, span)?;
                                 let cname = self.declare(name, ty);
                                 let _ = writeln!(out, "{body_pad}{ctype} {cname} = {value};");
                             }
                             (Some(name), Some(mode)) => {
                                 let ty = if mode == Mode::Ref { Ty::Ref(Box::new(ty)) } else { Ty::Read(Box::new(ty)) };
-                                let (local, line) = self.borrowed_name(name, ty, &value, field.ty.span)?;
+                                let (local, line) = self.borrowed_name(name, ty, &value, span)?;
                                 let _ = writeln!(out, "{body_pad}{line}");
                                 self.scopes.last_mut().expect("an open scope").push(local);
                             }
@@ -1328,47 +1434,42 @@ impl<'a> Emitter<'a> {
     }
 
     /// The value of an expression that is the whole right side of a statement, shaped for where
-    /// it goes. Only here can `try` and `?? return` leave the function: nothing else of the
-    /// statement has been computed yet, so nothing is left behind.
+    /// it goes. Nothing else of the statement has been computed yet, so a `try` or a
+    /// `?? return` in it can leave the function and leave nothing behind.
     fn head_value(&mut self, expr: &'a Expr, want: &Ty) -> Res<String> {
-        let opened = match &expr.kind {
-            ExprKind::Try { expr: inner, kind: TryKind::Null } => {
-                let value = self.value(inner)?;
-                let ret = self.ret.clone();
-                let null = self.lift(String::new(), &Ty::Null, &ret, expr.span)?;
-                let mut exit = self.post.clone();
-                exit.extend(self.drops(0));
-                exit.push(format!("return {null};"));
-                self.open(&inner.ty, value, exit, inner.span)?
-            }
-            ExprKind::Coalesce { left, right, on_result: false } if matches!(right.kind, ExprKind::Return(_)) => {
-                let ExprKind::Return(returned) = &right.kind else { unreachable!("matched above") };
-                let value = self.value(left)?;
-                // The `return` has its own temporaries; the ones made so far are dropped on its way out.
-                let (pre, post) = (std::mem::take(&mut self.pre), std::mem::take(&mut self.post));
-                // What the `return` moves is moved only on that way out.
-                let before = self.gone();
-                let exit = self.return_lines(returned.as_deref(), &post, right.span);
-                self.set_gone(&before);
-                (self.pre, self.post) = (pre, post);
-                self.open(&left.ty, value, exit?, left.span)?
-            }
-            _ => return self.value_as(expr, want),
-        };
-        self.lift(opened, &expr.ty, want, expr.span)
+        self.first_as(expr, want, true)
     }
 
-    /// Opens a `T?`: gives what it holds, or runs `exit` (which leaves the function) on `null`.
-    fn open(&mut self, ty: &Ty, value: String, exit: Vec<String>, span: Span) -> Res<String> {
-        if !matches!(ty, Ty::Nullable(_)) {
-            return Err(not_yet(span, &format!("opening a `{ty}`")));
-        }
-        let (ctype, temp) = (self.ctype(ty, span)?, self.temp());
-        let (test, held) = match is_option(ty) {
-            true => (format!("{temp}.has"), format!("{temp}.value")),
-            false => (temp.clone(), temp.clone()),
+    /// The value of the part of an expression that is computed first. `head`: whether the
+    /// expression itself stood where leaving the function is possible (see `Emitter::head`).
+    fn first(&mut self, expr: &'a Expr, head: bool) -> Res<String> {
+        self.head = head;
+        let value = self.value(expr);
+        self.head = false;
+        value
+    }
+
+    fn first_as(&mut self, expr: &'a Expr, want: &Ty, head: bool) -> Res<String> {
+        self.head = head;
+        let value = self.value_as(expr, want);
+        self.head = false;
+        value
+    }
+
+    /// Opens a `T?` or a `Result` kept in `temp`: gives what it holds, or runs `exit` (which
+    /// leaves the function) when there is no value.
+    fn open(&mut self, ty: &Ty, temp: &str, value: String, exit: Vec<String>, span: Span) -> Res<String> {
+        let ctype = self.ctype(ty, span)?;
+        let (test, held) = match ty {
+            // Success that carries nothing gives nothing: the expression is a `void` one.
+            Ty::Result(ok, _) if **ok == Ty::Void => (format!("{temp}.tag == 0"), String::new()),
+            Ty::Result(..) => (format!("{temp}.tag == 0"), format!("{temp}.u.v0.m_value")),
+            Ty::Nullable(_) if is_option(ty) => (format!("{temp}.has"), format!("{temp}.value")),
+            Ty::Nullable(_) => (temp.to_string(), temp.to_string()),
+            _ => return Err(not_yet(span, &format!("opening a `{ty}`"))),
         };
-        Ok(format!("({{ {ctype} {temp} = {value}; if (!{test}) {{ {} }} {held}; }})", exit.join(" ")))
+        self.exits += 1;
+        Ok(format!("({{ {ctype} {temp} = {value}; if (!({test})) {{ {} }} {held}; }})", exit.join(" ")))
     }
 
     /// The value of an expression, shaped for where it goes: a `T` that goes where a `T?` is
@@ -1406,18 +1507,21 @@ impl<'a> Emitter<'a> {
     }
 
     /// A function called with its arguments, each shaped for its parameter.
-    fn call(&mut self, name: String, receiver: Option<Part>, args: &'a [Expr]) -> Res<String> {
+    fn call(&mut self, name: String, receiver: Option<Part>, args: &'a [Expr], head: bool) -> Res<String> {
         let params = self.sigs.get(&name).cloned().unwrap_or_default();
+        // An argument can leave the function for as long as no argument before it owns anything.
+        let mut head = head && receiver.is_none();
         let mut parts: Vec<Part> = receiver.into_iter().collect();
         for (position, arg) in args.iter().enumerate() {
-            let before = self.pre.len();
+            let before = self.mark();
             let (value, ty) = match params.get(position) {
-                Some(want) => (self.value_as(arg, want)?, want.clone()),
-                None => (self.value(arg)?, arg.ty.clone()),
+                Some(want) => (self.first_as(arg, want, head)?, want.clone()),
+                None => (self.first(arg, head)?, arg.ty.clone()),
             };
+            head = head && !self.droppable(&ty);
             parts.push(self.part(arg, &ty, value, before));
         }
-        let (values, names) = self.in_order(parts);
+        let (values, names) = self.in_order(parts)?;
         Ok(sequence(&names, format!("{name}({})", values.join(", "))))
     }
 
@@ -1472,15 +1576,20 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// One of the values of a call, an operator or a literal. `before`: how many lines `pre`
-    /// had when the value started to be written.
-    fn part(&mut self, expr: &'a Expr, ty: &Ty, value: String, before: usize) -> Part {
+    /// Where the writing of a part starts: how many lines `pre` has, and how many ways out
+    /// of the function were written.
+    fn mark(&self) -> (usize, usize) {
+        (self.pre.len(), self.exits)
+    }
+
+    /// One of the values of a call, an operator or a literal. `before`: the `mark` taken
+    /// when the value started to be written.
+    fn part(&mut self, expr: &'a Expr, ty: &Ty, value: String, before: (usize, usize)) -> Part {
         let ctype = match (&expr.ty, ty) {
             (Ty::Never | Ty::Void, _) | (_, Ty::Never | Ty::Void | Ty::Null) => String::new(),
             _ => self.ctype(ty, expr.span).unwrap_or_default(),
         };
-        let settled = matches!(expr.kind, ExprKind::Int(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Null);
-        Part { ctype, value, effect: self.effect(expr), settled, pre: (before, self.pre.len()) }
+        Part { ctype, value, effect: self.effect(expr), settled: is_constant(expr), pre: (before.0, self.pre.len()), leaves: self.exits > before.1, span: expr.span }
     }
 
     /// Makes sure the parts are computed from left to right where the order can be seen: C
@@ -1492,10 +1601,20 @@ impl<'a> Emitter<'a> {
     /// when one part can change what another reads. A part that put lines before the statement
     /// (a value kept in a temporary) is already computed there, so the parts before it go
     /// there too.
-    fn in_order(&mut self, mut parts: Vec<Part>) -> (Vec<String>, String) {
+    ///
+    /// A part that can leave the function frees the temporaries made before it on its way
+    /// out, so it has to run before the lines of the parts after it; moving it there is the
+    /// same step.
+    fn in_order(&mut self, mut parts: Vec<Part>) -> Res<(Vec<String>, String)> {
         let values = |parts: &[Part]| parts.iter().map(|part| part.value.clone()).collect::<Vec<_>>();
         if parts.iter().any(|part| part.ctype.is_empty()) {
-            return (values(&parts), String::new());
+            // Nothing can be moved here; then nothing may need to be.
+            if let Some(leaving) = parts.iter().position(|part| part.leaves) {
+                if parts[leaving + 1..].iter().any(|part| part.pre.1 > part.pre.0) {
+                    return Err(not_yet(parts[leaving].span, "leaving the function from here").hint("give the value a name first: `var x = try ...`"));
+                }
+            }
+            return Ok((values(&parts), String::new()));
         }
         if let Some(last) = parts.iter().rposition(|part| part.pre.1 > part.pre.0) {
             for (added, part) in parts[..last].iter_mut().filter(|part| !part.settled).enumerate() {
@@ -1518,7 +1637,7 @@ impl<'a> Emitter<'a> {
                 parts[*index].value = temp;
             }
         }
-        (values(&parts), names)
+        Ok((values(&parts), names))
     }
 
     /// An expression whose value is not kept: it is computed, and dropped if it owns something.
@@ -1642,7 +1761,11 @@ impl<'a> Emitter<'a> {
     }
 
     fn print(&mut self, arg: &'a Expr, pad: &str, out: &mut String) -> Res<()> {
-        let (mut format, values) = self.format(arg)?;
+        // One value is the whole line: it can be `try ...`.
+        self.head = !matches!(arg.kind, ExprKind::Interp(_));
+        let formatted = self.format(arg);
+        self.head = false;
+        let (mut format, values) = formatted?;
         format.push('\n');
         self.flush_pre(pad, out);
         let _ = writeln!(out, "{pad}printf({}{values});", c_string(&format));
@@ -1816,19 +1939,21 @@ impl<'a> Emitter<'a> {
     }
 
     /// Two values that are computed one after the other, the left one first.
-    fn two(&mut self, left: &'a Expr, right: &'a Expr) -> Res<(Vec<String>, String)> {
+    fn two(&mut self, left: &'a Expr, right: &'a Expr, mut head: bool) -> Res<(Vec<String>, String)> {
         let mut parts = Vec::new();
         for side in [left, right] {
-            let before = self.pre.len();
-            let value = self.value(side)?;
+            let before = self.mark();
+            let value = self.first(side, head)?;
+            head = head && !self.droppable(&side.ty);
             parts.push(self.part(side, &side.ty, value, before));
         }
-        Ok(self.in_order(parts))
+        self.in_order(parts)
     }
 
     /// The value of an expression as C writes it. A use that the checker marked as a move
     /// takes the value out of its place and leaves the place empty.
     fn value(&mut self, expr: &'a Expr) -> Res<String> {
+        let head = std::mem::replace(&mut self.head, false);
         match &expr.kind {
             ExprKind::Int(value, ty) => Ok(match *value {
                 i64::MIN => format!("(({})(-9223372036854775807LL - 1))", int_ctype(*ty)),
@@ -1859,13 +1984,13 @@ impl<'a> Emitter<'a> {
             ExprKind::Field { .. } => self.lvalue(expr),
             // A number read out of a pointer that has no name: the pointer is freed after the statement.
             ExprKind::Load(inner) if matches!(inner.ty, Ty::Ptr(_)) => Ok(format!("(*{})", self.look(inner)?)),
-            ExprKind::Load(inner) => Ok(format!("(*{})", self.value(inner)?)),
+            ExprKind::Load(inner) => Ok(format!("(*{})", self.first(inner, head)?)),
             // A borrow of a `T*` used as a borrow of the `T`: one step along the pointer.
             ExprKind::Unbox(inner) => Ok(format!("(*{})", self.value(inner)?)),
             ExprKind::New(inner) => {
                 let Ty::Ptr(target) = &expr.ty else { return Err(not_yet(expr.span, "this `new`")) };
                 self.ctype(&expr.ty, expr.span)?;
-                let value = self.value_as(inner, target)?;
+                let value = self.first_as(inner, target, head)?;
                 Ok(format!("sg_new_{}({value})", mangle(&expr.ty).expect("it has a C type")))
             }
             ExprKind::IsNull { expr: inner, negated } => {
@@ -1877,14 +2002,40 @@ impl<'a> Emitter<'a> {
                 let holds = if is_option(ty) { format!("{subject}.has") } else { format!("({subject} != NULL)") };
                 Ok(if *negated { holds } else { format!("(!{holds})") })
             }
-            ExprKind::Coalesce { right, .. } if matches!(right.kind, ExprKind::Return(_)) => Err(not_yet(expr.span, "`?? return` inside a larger expression")
-                .hint("give the value a name first: `var x = ... ?? return ...`")),
-            // The right side runs only when there is no value.
-            ExprKind::Coalesce { left, right, on_result: false } => {
-                if !matches!(left.ty, Ty::Nullable(_)) {
-                    return Err(not_yet(left.span, &format!("`??` on `{}`", left.ty)));
+            // `x ?? return y`: with no value the function ends here.
+            ExprKind::Coalesce { left, right, on_result } if matches!(right.kind, ExprKind::Return(_)) => {
+                let ExprKind::Return(returned) = &right.kind else { unreachable!("matched above") };
+                if !head {
+                    return Err(not_yet(expr.span, "`?? return` in this part of a statement")
+                        .hint("give the value a name first: `var x = ... ?? return ...`"));
                 }
-                let value = self.value(left)?;
+                let value = self.first(left, true)?;
+                let temp = self.temp();
+                // The `return` has its own temporaries; the ones made so far are dropped on its way out.
+                let (pre, post) = (std::mem::take(&mut self.pre), std::mem::take(&mut self.post));
+                // The error of a `Result` is dropped: the `return` gives one of its own.
+                let mut pending = Vec::new();
+                if let (true, Ty::Result(_, error)) = (*on_result, &left.ty) {
+                    if self.droppable(error) {
+                        pending.push(self.drop_of(error, &format!("{temp}.u.v1.m_cause")));
+                    }
+                }
+                pending.extend(post.iter().cloned());
+                // What the `return` moves is moved only on that way out.
+                let before = self.gone();
+                let exit = self.return_lines(returned.as_deref(), &pending, right.span);
+                self.set_gone(&before);
+                (self.pre, self.post) = (pre, post);
+                self.open(&left.ty, &temp, value, exit?, left.span)
+            }
+            // The right side runs only when there is no value. On a `Result` the error is dropped first.
+            ExprKind::Coalesce { left, right, on_result } => {
+                let error = match (&left.ty, on_result) {
+                    (Ty::Result(_, error), true) => Some(&**error),
+                    (Ty::Nullable(_), false) => None,
+                    _ => return Err(not_yet(left.span, &format!("`??` on `{}`", left.ty))),
+                };
+                let value = self.first(left, head)?;
                 let before = (self.pre.len(), self.post.len());
                 self.maybe += 1;
                 let fallback = self.value(right);
@@ -1894,42 +2045,80 @@ impl<'a> Emitter<'a> {
                     return Err(not_yet(right.span, "a value that needs a temporary on the right of `??`"));
                 }
                 let (ctype, temp) = (self.ctype(&left.ty, left.span)?, self.temp());
-                let held = if is_option(&left.ty) { format!("{temp}.value") } else { temp.clone() };
+                let (holds, held) = match &left.ty {
+                    Ty::Result(..) => (format!("{temp}.tag == 0"), format!("{temp}.u.v0.m_value")),
+                    ty if is_option(ty) => (format!("{temp}.has"), format!("{temp}.value")),
+                    _ => (temp.clone(), temp.clone()),
+                };
                 // A right side that never gives a value (`panic`) still has to have the type in C.
                 let fallback = if right.ty == Ty::Never { format!("({fallback}, {held})") } else { fallback };
-                let holds = if is_option(&left.ty) { format!("{temp}.has") } else { temp.clone() };
+                let fallback = match error.filter(|error| self.droppable(error)) {
+                    Some(error) => format!("({{ {} {fallback}; }})", self.drop_of(error, &format!("{temp}.u.v1.m_cause"))),
+                    None => fallback,
+                };
                 Ok(format!("({{ {ctype} {temp} = {value}; {holds} ? {held} : {fallback}; }})"))
             }
-            ExprKind::Try { kind: TryKind::Null, .. } => Err(not_yet(expr.span, "`try` inside a larger expression")
-                .hint("give the value a name first: `var x = try ...`")),
-            ExprKind::Widen(ty, inner) => Ok(format!("(({}){})", int_ctype(*ty), self.value(inner)?)),
+            // `try e`: with no value the function ends here, and gives its caller `null` or the error.
+            ExprKind::Try { expr: inner, kind } => {
+                if !head {
+                    return Err(not_yet(expr.span, "`try` in this part of a statement")
+                        .hint("give the value a name first: `var x = try ...`"));
+                }
+                let value = self.first(inner, true)?;
+                let temp = self.temp();
+                let ret = self.ret.clone();
+                let returned = match kind {
+                    TryKind::Null => self.lift(String::new(), &Ty::Null, &ret, expr.span)?,
+                    TryKind::Result(convert) => {
+                        if !matches!(ret, Ty::Result(..)) {
+                            return Err(not_yet(expr.span, "`try` on a `Result` here"));
+                        }
+                        // The error goes to the caller as it is, or inside the variant of
+                        // the caller's error type that carries it.
+                        let cause = format!("{temp}.u.v1.m_cause");
+                        let cause = match convert {
+                            Some((owner, index)) => format!("((E_{owner}){{ .tag = {index}, .u.v{index} = {{ {cause} }} }})"),
+                            None => cause,
+                        };
+                        format!("(({}){{ .tag = 1, .u.v1 = {{ {cause} }} }})", self.ctype(&ret, expr.span)?)
+                    }
+                };
+                // What is returned is made of the opened value alone, so it can be written last.
+                let mut exit = self.post.clone();
+                exit.extend(self.drops(0));
+                exit.push(format!("return {returned};"));
+                self.open(&inner.ty, &temp, value, exit, inner.span)
+            }
+            ExprKind::Widen(ty, inner) => Ok(format!("(({}){})", int_ctype(*ty), self.first(inner, head)?)),
             ExprKind::Borrow { expr: inner, .. } if is_text_view(&expr.ty) => self.view(inner),
             ExprKind::Borrow { expr: inner, .. } if inner.is_place() => self.address(inner),
             // A value that has no name, lent: it is kept until the statement ends.
             ExprKind::Borrow { expr: inner, .. } if !inner.ty.is_borrow() => Ok(format!("(&{})", self.look(inner)?)),
-            ExprKind::Variant { owner, index, args } => {
-                let Ty::Enum(_) = &expr.ty else { return Err(not_yet(expr.span, &format!("a value of `{}`", expr.ty))) };
-                let decl: &'a EnumDecl = self.enums[owner.as_str()];
+            // A value of an enum, and `Ok(...)` and `Error(...)` of a `Result`.
+            ExprKind::Variant { index, args, .. } => {
+                let Some(variants) = self.variants(&expr.ty, expr.span)? else { return Err(not_yet(expr.span, &format!("a value of `{}`", expr.ty))) };
+                let ctype = self.ctype(&expr.ty, expr.span)?;
                 let mut parts = Vec::new();
-                for (arg, field) in args.iter().zip(&decl.variants[*index].fields) {
-                    let want = self.written(&field.ty)?;
-                    let before = self.pre.len();
-                    let value = self.value_as(arg, &want)?;
-                    parts.push(self.part(arg, &want, value, before));
+                let mut head = head;
+                for (arg, (_, want, _)) in args.iter().zip(&variants[*index]) {
+                    let before = self.mark();
+                    let value = self.first_as(arg, want, head)?;
+                    head = head && !self.droppable(want);
+                    parts.push(self.part(arg, want, value, before));
                 }
-                let (values, names) = self.in_order(parts);
+                let (values, names) = self.in_order(parts)?;
                 Ok(sequence(&names, match values.is_empty() {
-                    true => format!("((E_{owner}){{ .tag = {index} }})"),
-                    false => format!("((E_{owner}){{ .tag = {index}, .u.v{index} = {{ {} }} }})", values.join(", ")),
+                    true => format!("(({ctype}){{ .tag = {index} }})"),
+                    false => format!("(({ctype}){{ .tag = {index}, .u.v{index} = {{ {} }} }})", values.join(", ")),
                 }))
             }
             ExprKind::IsVariant { .. } => Ok(self.variant_test(expr)?.0),
             ExprKind::Match { .. } => Err(not_yet(expr.span, "a `match` inside a larger expression")
                 .hint("give the value a name first: `var x = match ...`")),
-            ExprKind::Unary(UnOp::Not, operand) => Ok(format!("(!{})", self.value(operand)?)),
+            ExprKind::Unary(UnOp::Not, operand) => Ok(format!("(!{})", self.first(operand, head)?)),
             ExprKind::Unary(UnOp::Neg, operand) => {
                 let Ty::Int(ty) = &expr.ty else { return Err(not_yet(expr.span, "this operator")) };
-                let operand = self.value(operand)?;
+                let operand = self.first(operand, head)?;
                 if !self.checked {
                     return Ok(format!("sg_wsub_{0}(({1})0, {operand})", int_name(*ty), int_ctype(*ty)));
                 }
@@ -1937,7 +2126,7 @@ impl<'a> Emitter<'a> {
                 Ok(format!("sg_neg_{}({operand}, {loc})", int_name(*ty)))
             }
             ExprKind::Binary(op @ (BinOp::And | BinOp::Or), left, right) => {
-                let left = self.value(left)?;
+                let left = self.first(left, head)?;
                 // The right side runs only sometimes, so it cannot need a line before the statement.
                 let before = (self.pre.len(), self.post.len());
                 self.maybe += 1;
@@ -1953,11 +2142,11 @@ impl<'a> Emitter<'a> {
                 let view = Ty::Read(Box::new(Ty::Str));
                 let mut parts = Vec::new();
                 for side in [left, right] {
-                    let before = self.pre.len();
+                    let before = self.mark();
                     let value = self.view(side)?;
                     parts.push(self.part(side, &view, value, before));
                 }
-                let (values, names) = self.in_order(parts);
+                let (values, names) = self.in_order(parts)?;
                 let (left, right) = (&values[0], &values[1]);
                 Ok(sequence(&names, match op {
                     BinOp::Eq => format!("sg_eq({left}, {right})"),
@@ -1967,7 +2156,7 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Binary(op, left, right) => {
                 let operands = left.ty.strip_borrow().clone();
-                let (values, names) = self.two(left, right)?;
+                let (values, names) = self.two(left, right, head)?;
                 let (left, right) = (&values[0], &values[1]);
                 match (&operands, op.is_comparison()) {
                     (Ty::Int(_) | Ty::Bool, true) => Ok(sequence(&names, format!("({left} {} {right})", op.symbol()))),
@@ -1978,7 +2167,7 @@ impl<'a> Emitter<'a> {
             // A narrowing conversion follows the overflow rule: checked in a debug build, cut
             // to size in a release build.
             ExprKind::Cast { ty, expr: inner } => {
-                let inner = self.value(inner)?;
+                let inner = self.first(inner, head)?;
                 if !self.checked {
                     return Ok(format!("(({})({inner}))", int_ctype(*ty)));
                 }
@@ -1987,13 +2176,13 @@ impl<'a> Emitter<'a> {
             }
             // A byte of text and a range of it: checked in every build.
             ExprKind::Index { recv, index, kind: IndexKind::Text } => {
-                let before = self.pre.len();
+                let before = self.mark();
                 let text = self.view(recv)?;
                 let mut parts = vec![self.part(recv, &Ty::Read(Box::new(Ty::Str)), text, before)];
-                let before = self.pre.len();
+                let before = self.mark();
                 let at = self.value(index)?;
                 parts.push(self.part(index, &index.ty, at, before));
-                let (values, names) = self.in_order(parts);
+                let (values, names) = self.in_order(parts)?;
                 let loc = self.loc(expr.span);
                 Ok(sequence(&names, format!("sg_at({}, {}, {loc})", values[0], values[1])))
             }
@@ -2007,7 +2196,7 @@ impl<'a> Emitter<'a> {
                 self.pre.push(format!("sg_str {temp} = {text};"));
                 let (from, to, names) = match (from, to) {
                     (Some(from), Some(to)) => {
-                        let (values, names) = self.two(from, to)?;
+                        let (values, names) = self.two(from, to, false)?;
                         (values[0].clone(), values[1].clone(), names)
                     }
                     (Some(from), None) => (self.value(from)?, format!("{temp}.len"), String::new()),
@@ -2020,13 +2209,15 @@ impl<'a> Emitter<'a> {
             ExprKind::StructLit { name, fields, .. } => {
                 let mut parts = Vec::new();
                 let decl: &'a StructDecl = self.structs[name.as_str()];
+                let mut head = head;
                 for field in fields {
                     let want = self.written(&decl.fields[field.index].ty)?;
-                    let before = self.pre.len();
-                    let value = self.value_as(&field.value, &want)?;
+                    let before = self.mark();
+                    let value = self.first_as(&field.value, &want, head)?;
+                    head = head && !self.droppable(&want);
                     parts.push(self.part(&field.value, &want, value, before));
                 }
-                let (values, names) = self.in_order(parts);
+                let (values, names) = self.in_order(parts)?;
                 let inits: Vec<String> = fields.iter().zip(values).map(|(field, value)| format!(".m_{} = {value}", field.name)).collect();
                 Ok(sequence(&names, format!("((S_{name}){{ {} }})", inits.join(", "))))
             }
@@ -2042,15 +2233,15 @@ impl<'a> Emitter<'a> {
                     Ok(format!("sg_panicf({loc}, {}{values})", c_string(&format)))
                 }
                 Callee::Plain if matches!(name.as_str(), "print" | "assert") => Err(not_yet(expr.span, &format!("`{name}` used as a value"))),
-                Callee::Plain => self.call(format!("f_{name}"), None, args),
-                Callee::Static { owner, name } => self.call(format!("f_{owner}_{name}"), None, args),
+                Callee::Plain => self.call(format!("f_{name}"), None, args, head),
+                Callee::Static { owner, name } => self.call(format!("f_{owner}_{name}"), None, args, head),
                 _ => Err(not_yet(expr.span, "a call through a function value")),
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
-                Callee::Static { owner, name } => self.call(format!("f_{owner}_{name}"), None, args),
+                Callee::Static { owner, name } => self.call(format!("f_{owner}_{name}"), None, args, head),
                 Callee::Method { owner, this } => {
                     let held = recv.ty.strip_borrow().clone();
-                    let before = self.pre.len();
+                    let before = self.mark();
                     let receiver = match (this, &held) {
                         // A value that has no name: it is used up, or kept until the statement ends.
                         _ if !recv.is_place() => match (this, &held) {
@@ -2087,7 +2278,7 @@ impl<'a> Emitter<'a> {
                         This::Ref => Ty::Ref(Box::new(Ty::Struct(owner.clone()))),
                     };
                     let receiver = self.part(recv, &this_ty, receiver, before);
-                    self.call(format!("f_{owner}_{name}"), Some(receiver), args)
+                    self.call(format!("f_{owner}_{name}"), Some(receiver), args, false)
                 }
                 // `slot.take()` leaves `null`; `slot.replace(v)` leaves `v`. Both give what was there.
                 Callee::Take => {
@@ -2116,20 +2307,21 @@ impl<'a> Emitter<'a> {
                     let Ty::Nullable(inner) = &expr.ty else { return Err(not_yet(expr.span, &format!("the method `{name}`"))) };
                     let Ty::Int(ty) = &**inner else { return Err(not_yet(expr.span, &format!("the method `{name}`"))) };
                     let (option, int, temp) = (self.ctype(&expr.ty, expr.span)?, int_ctype(*ty), self.temp());
-                    let (left, right) = (self.value(recv)?, self.value(&args[0])?);
+                    let (values, names) = self.two(recv, &args[0], head)?;
+                    let (left, right) = (&values[0], &values[1]);
                     let builtin = match name.as_str() {
                         "tryAdd" => "add",
                         "trySubtract" => "sub",
                         "tryMultiply" => "mul",
                         _ => {
-                            return Ok(format!(
+                            return Ok(sequence(&names, format!(
                                 "({{ {int} {temp}a = {left}, {temp}b = {right}; {option} {temp} = {{ false, 0 }}; \
                                  if ({temp}b != 0 && !(({int})-1 < 0 && {temp}b == ({int})-1 && __builtin_sub_overflow(({int})0, {temp}a, &{temp}.value))) \
                                  {{ {temp}.has = true; {temp}.value = {temp}a / {temp}b; }} {temp}; }})"
-                            ));
+                            )));
                         }
                     };
-                    Ok(format!("({{ {option} {temp}; {temp}.has = !__builtin_{builtin}_overflow({left}, {right}, &{temp}.value); {temp}; }})"))
+                    Ok(sequence(&names, format!("({{ {option} {temp}; {temp}.has = !__builtin_{builtin}_overflow({left}, {right}, &{temp}.value); {temp}; }})")))
                 }
                 Callee::Plain => {
                     let wrapping = match name.as_str() {
@@ -2139,7 +2331,7 @@ impl<'a> Emitter<'a> {
                         _ => return Err(not_yet(expr.span, &format!("the method `{name}`"))),
                     };
                     let Ty::Int(ty) = &expr.ty else { return Err(not_yet(expr.span, &format!("the method `{name}`"))) };
-                    let (values, names) = self.two(recv, &args[0])?;
+                    let (values, names) = self.two(recv, &args[0], head)?;
                     Ok(sequence(&names, format!("sg_{wrapping}_{}({}, {})", int_name(*ty), values[0], values[1])))
                 }
                 _ => Err(not_yet(expr.span, &format!("`{name}`"))),
