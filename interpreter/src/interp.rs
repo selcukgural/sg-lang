@@ -616,7 +616,7 @@ impl<'a> Interp<'a> {
                 Value::Int(_, value) => Ok(Value::Int(*ty, value)),
                 _ => unreachable!("the checker only widens integers"),
             },
-            ExprKind::Load(inner) => Ok(fresh(&strip(self.expr(inner, frame)?))),
+            ExprKind::Load(inner) => Ok(fresh(&owned(self.expr(inner, frame)?))),
             ExprKind::Unary(UnOp::Neg, operand) => match strip(self.expr(operand, frame)?) {
                 Value::Int(ty, value) => {
                     let result = -(value as i128);

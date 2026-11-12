@@ -1,0 +1,78 @@
+// Leaving a function early with `try` and `?? return`: what the function owns at that point
+// is freed on the way out, and only that.
+struct Entry {
+    string key
+    Entry*? next
+}
+
+Entry*? find(read Entry*? list, read string key) {
+    return null
+}
+
+string? firstWord(read string line) {
+    for i in 0..line.length() {
+        if line[i] == ' ' {
+            return line[..i].clone()
+        }
+    }
+    return null
+}
+
+// `label` is owned when `try` leaves; so is `word` when the second one does.
+int? wordLength(read string line) {
+    var label = $"line: {line}".toString()
+    var word = try firstWord(line)
+    var second = try firstWord(line[word.length() + 1..])
+    print(label)
+    return (int)(word.length() + second.length())
+}
+
+string lengthOrText(read string line) {
+    var prefix = "none of ".clone()
+    var word = firstWord(line) ?? return $"{prefix}{line}".toString()
+    return word
+}
+
+int count(read string line) {
+    var total = 0
+    var rest = line
+    while true {
+        var word = firstWord(rest) ?? return total
+        total += 1
+        rest = rest[word.length() + 1..]
+    }
+    return total
+}
+
+// `list` is moved only if the `return` runs; the line after it still owns the list.
+Entry*? prepend(Entry*? list, string? key) {
+    var text = key ?? return list       // the list goes back as it came
+    return new Entry { key = text, next = list }
+}
+
+void clear(ref Entry*? list, ref int? count) {
+    var old = list.take()
+    count = null
+}
+
+void main() {
+    print(wordLength("one two three") ?? -1)
+    print(wordLength("one two") ?? -1)
+    print(wordLength("one") ?? -1)
+    print(lengthOrText("alpha beta"))
+    print(lengthOrText("alpha"))
+    print(count("a b c d "))
+
+    Entry*? list = null
+    list = prepend(list, "x".clone())
+    list = prepend(list, null)
+    list = prepend(list, "y".clone())
+    if list is not null {
+        print(list.key)
+    }
+    int? size = 2
+    clear(ref list, ref size)
+    print(list is null)
+    print(size is null)
+    print(find(read list, "x") is null)
+}

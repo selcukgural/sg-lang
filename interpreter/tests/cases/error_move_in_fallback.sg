@@ -1,0 +1,19 @@
+// The right side of `??` moves `list` and then goes on: after the line the list may be gone.
+// (With `?? return list` it is not: the code after it runs only if the `return` did not.)
+struct Entry {
+    string key
+}
+
+int consume(Entry* entry) {
+    return 1
+}
+
+Entry* keep(Entry* list, int? size) {
+    var known = size ?? consume(list)
+    return list
+}
+
+void main() {
+    var kept = keep(new Entry { key = "a".clone() }, null)
+    print(kept.key)
+}

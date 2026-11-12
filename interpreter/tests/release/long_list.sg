@@ -1,0 +1,26 @@
+// A list of a million nodes is freed link by link, in a loop: the drop does not go one call
+// deeper for every node. (Compiled only: the interpreter is not asked to hold a list this long.)
+struct Node {
+    long value
+    Node*? next
+}
+
+long sum(read Node*? list) {
+    long total = 0
+    var cur = list
+    while cur is not null {
+        total += cur.value
+        cur = read cur.next
+    }
+    return total
+}
+
+void main() {
+    Node*? list = null
+    for i in 0..1000000 {
+        list = new Node { value = i, next = list }
+    }
+    print(sum(read list))
+    list = null                         // freed here
+    print(sum(read list))
+}

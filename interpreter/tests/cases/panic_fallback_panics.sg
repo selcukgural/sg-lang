@@ -1,0 +1,15 @@
+// `?? panic(...)`: no value, so the program stops with the message.
+struct Node {
+    int value
+    Node*? next
+}
+
+Node*? find(read Node*? list, int value) {
+    return null
+}
+
+void main() {
+    Node*? list = new Node { value = 1, next = null }
+    var missing = find(read list, 2) ?? panic($"no node holds {2}")
+    print(missing.value)
+}

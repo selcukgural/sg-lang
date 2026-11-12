@@ -1,0 +1,28 @@
+// A linked list on the heap: build it node by node, walk it, free it. Twenty rounds of a
+// million nodes: what is measured is `new`, following pointers and the drop at the end.
+struct Node {
+    long value
+    Node*? next
+}
+
+long round(int count) {
+    Node*? list = null
+    for i in 0..count {
+        list = new Node { value = i, next = list }
+    }
+    long total = 0
+    var cur = read list
+    while cur is not null {
+        total += cur.value
+        cur = read cur.next
+    }
+    return total
+}                                       // the list is freed here, link by link
+
+void main() {
+    long sum = 0
+    for i in 0..20 {
+        sum += round(1000000)
+    }
+    print(sum)
+}

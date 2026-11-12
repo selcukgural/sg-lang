@@ -1,0 +1,8 @@
+error: `list` was moved and can no longer be used
+  --> error_move_in_fallback.sg:13:12
+ 13 |     return list
+    |            ^^^^
+  it was moved here:
+  --> error_move_in_fallback.sg:12:33
+ 12 |     var known = size ?? consume(list)
+    |                                 ^^^^

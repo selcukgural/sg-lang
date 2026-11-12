@@ -137,18 +137,21 @@ Design rules that are already enforced:
 Since the sixteenth slice (12 November 2026) a program can be compiled: `sg build file.sg` writes it as C and
 hands that to the C compiler. The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, and then runs the
-same C once more under the address and undefined-behaviour sanitizers (27 of 292 programs for now).
+same C once more under the address and undefined-behaviour sanitizers (38 of 297 programs for now).
 
 What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
-recursion; `if`, `while`, `for i in a..b`, `break`, `continue`; structs of those types, by value, with methods;
-`read` and `ref`; the checked operators, casts and the wrapping methods; `print`, `assert` and `panic`. Anything
-else (`T?`, `T*`, enums, collections, `Result`) is an error that names what is missing: nothing is compiled
-wrongly in silence.
+recursion; `if`, `while`, `for i in a..b`, `break`, `continue`; structs, by value, with methods; `read` and
+`ref`; the checked operators, casts, the wrapping methods and the `try...` methods; `print`, `assert` and
+`panic`. Since the eighteenth slice also the heap and missing values: `T*` and `new`, `T?` with `null`,
+`is null` / `is not null` and what the checker learns from them, `??`, `?? return`, `?? panic(...)`, `try` on a
+`T?`, `take()` and `replace()`, a `read T*` used as a `read T`, and methods and fields reached through a
+pointer. Anything else (enums, collections, `Result`, types that carry a borrow, function values) is an error
+that names what is missing: nothing is compiled wrongly in silence.
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
-value (a `string`, a struct that holds one) is freed where its variable ends, on every way out of the block
-(`return`, `break`, `continue`). A use that moves the value empties the place it came from, so the later free
+value (a `string`, a `T*`, a struct or a `T?` that holds one) is freed where its variable ends, on every way
+out of the block (`return`, `break`, `continue`, and the `return` inside `try` and `?? return`). A use that moves the value empties the place it came from, so the later free
 finds nothing to do; a text constant has no capacity and is never allocated or freed. There is no garbage
 collector and no reference count.
 
@@ -162,17 +165,22 @@ hand with no checks):
 
 | Program | SG, release | SG, overflow checked | C | release / C |
 |---|---|---|---|---|
-| `fib`: recursive `fib(40)` | 0.282 s | 0.390 s | 0.284 s | 0.99 |
-| `primes`: trial division below five million | 0.500 s | 0.482 s | 0.508 s | 0.98 |
-| `collatz`: longest chain below three million | 0.364 s | 0.579 s | 0.364 s | 1.00 |
-| `words`: bytes read, words compared, each word copied to the heap and freed | 0.891 s | 0.888 s | 0.849 s | 1.05 |
+| `fib`: recursive `fib(40)` | 0.277 s | 0.383 s | 0.282 s | 0.98 |
+| `primes`: trial division below five million | 0.493 s | 0.476 s | 0.499 s | 0.99 |
+| `collatz`: longest chain below three million | 0.359 s | 0.570 s | 0.359 s | 1.00 |
+| `words`: bytes read, words compared, each word copied to the heap and freed | 0.874 s | 0.888 s | 0.854 s | 1.02 |
+| `list`: a linked list of a million nodes built with `new`, walked and freed, twenty times | 0.238 s | 0.243 s | 0.236 s | 1.01 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
-memory: the 5% is what the checks that stay cost (every index and every range is checked, and a range may not
-cut a character in half), against C that checks nothing. The first version of that C program looked 20%
-faster: the C compiler had removed its `malloc` and `free` because the copies were never read; the program now
-compares the copies. Four small programs are not a benchmark suite.
+memory: the few percent are what the checks that stay cost (every index and every range is checked, and a
+range may not cut a character in half), against C that checks nothing. The first version of that C program
+looked 20% faster: the C compiler had removed its `malloc` and `free` because the copies were never read; the
+program now compares the copies. `list` follows pointers: a `Node*?` is one pointer, `is not null` is one
+comparison, and there is nothing else to pay for. Its first version took 1.10 times the time of C, because
+freeing a node called a function for its (already empty) `next`; the loop that frees a chain now drops the
+other fields itself. The numbers move by a few percent from run to run, and five small programs are not a
+benchmark suite.
 
 Choices made here, approved on 12 November 2026:
 
@@ -205,6 +213,39 @@ Choices made in the seventeenth slice (text and owned values), approved on 12 No
 11. **The character-boundary check of a range stays in release builds.** By the criterion of 12 November it
     is a correctness check, not a memory-safety one, but it is not measurable here (0.690 s with it, 0.707 s
     without), so there is nothing to gain.
+
+Choices made in the eighteenth slice (the heap and missing values), approved on 12 November 2026:
+
+12. **A `T*?` is the pointer itself, and `null` is the null pointer**: no flag, no extra word (Rust does the
+    same for `Option<Box<T>>`). Any other `T?` (`int?`, `string?`, a struct) is the value and a `bool` beside
+    it. Costs nothing at run time and adds no rule to the language.
+13. **A struct with exactly one pointer to its own kind (`Node*? next`) is freed in a loop**, link by link.
+    Freeing a list of a million nodes does not go a million calls deep; in Rust the same list overflows the
+    stack unless `Drop` is written by hand. Other shapes (a tree with two children) are freed by recursion,
+    as deep as the tree is. The open "stack depth" question stays open for those.
+14. **`try` and `?? return` are compiled only where they are the whole right side of a statement**
+    (`var x = try f()`, `x = f() ?? return y`, `return try f()`). Inside a larger expression
+    (`g(a(), try b())`) the back end stops with an error and the hint "give the value a name first". The
+    reason: what `a()` returned would have to be freed on the way out, and that bookkeeping is not written
+    yet. A limit of the back end for now, not a rule of the language; the interpreter runs both forms.
+15. **`??`, `try` and `replace` are written as GNU statement expressions**, so they run where they stand and
+    the right side of `??` runs only when it is needed. clang and gcc both have them; a C compiler without
+    them (MSVC) cannot build the output for now.
+16. **A `read int` lent where a `read int?` is expected is not compiled yet** (a pointer to a number is not a
+    pointer to a number and a flag; it needs a temporary). The same with a `T*?` works, since both are one
+    pointer.
+17. **`print(p)` with `int* p` writes the number**, as the interpreter does.
+
+Two things in the checker were found while writing these tests and are fixed since:
+
+- **A move on a right side of `??` that always leaves does not count afterwards.** After
+  `var text = key ?? return list` the list is still owned: the next line runs only when the `return` did
+  not. The same holds for `?? panic(...)`. A right side that goes on (`size ?? consume(list)`) still moves,
+  since the checker cannot tell whether it ran (`tests/cases/error_move_in_fallback.sg`).
+- **The built-in methods of numbers, `bool` and text are found through a `T*`**, as fields and the methods
+  of a struct already were: `name.length()` with `string* name`, `count.wrappingAdd(1)` with `int* count`.
+  The value is read where it is; nothing is copied or moved. On a pointer that has no name
+  (`makeName().length()`) the compiled code frees it after the statement.
 
 ## How it is built
 
@@ -585,6 +626,5 @@ error.
 ## Next
 
 The back end, one piece of the language at a time, each compared with the interpreter, run under the
-sanitizers and measured against C: next `T?` and the heap (`T*`, `new`), with which the linked list and the
-stack compile; then enums and `match`, `Result`, and the collections. After it the question is the
+sanitizers and measured against C: next enums and `match`, then `Result` and the collections. After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

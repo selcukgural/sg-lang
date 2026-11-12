@@ -1,0 +1,128 @@
+// Values on the heap: `new`, `T*`, who frees them, and what reaches through a pointer.
+struct Point {
+    int x
+    int y
+
+    int sum(read this) {
+        return this.x + this.y
+    }
+
+    void shift(ref this, int by) {
+        this.x += by
+        this.y += by
+    }
+
+    int area(this) {
+        return this.x * this.y
+    }
+}
+
+struct Label {
+    string text
+    Point* at
+
+    string* intoText(this) {
+        return new this.text            // the point is freed here, the text lives on
+    }
+}
+
+// Two pointers to its own kind: freed by walking down both sides.
+struct Tree {
+    int value
+    Tree*? left
+    Tree*? right
+}
+
+Tree* leaf(int value) {
+    return new Tree { value = value, left = null, right = null }
+}
+
+int total(read Tree*? tree) {
+    if tree is null {
+        return 0
+    }
+    return tree.value + total(read tree.left) + total(read tree.right)
+}
+
+int depth(read Tree tree) {
+    var left = read tree.left
+    var right = read tree.right
+    var deepest = 0
+    if left is not null {
+        deepest = depth(read left)      // a borrow of a `Tree*` stands in for a borrow of the `Tree`
+    }
+    if right is not null {
+        var other = depth(read right)
+        if other > deepest {
+            deepest = other
+        }
+    }
+    return deepest + 1
+}
+
+void bump(ref int n) {
+    n += 1
+}
+
+int twice(read Point p) {
+    return p.sum() * 2
+}
+
+string* makeName() {
+    return new "grace".clone()
+}
+
+int* makeCount() {
+    return new 7
+}
+
+void main() {
+    // A number and a text on the heap.
+    int* count = new 41
+    bump(ref count)
+    print(count)
+    string* name = new "ada".clone()
+    print(name)
+
+    // The methods of a number and of a text are reached through the pointer too.
+    print(name.length())
+    print(name.indexOf('d') ?? -1)
+    print(count.wrappingAdd(1))
+    print(makeName().length())
+    print(makeCount().tryAdd(1) ?? -1)
+
+    // A struct: fields and methods are reached through the pointer.
+    var p = new Point { x = 1, y = 2 }
+    p.shift(10)
+    p.x += 1
+    print(p.sum())
+    print(twice(read p))
+    print(p.area())                     // `this` by value: the pointer is used up
+
+    // A new value in the place of the old one: the old one is freed.
+    var q = new Point { x = 3, y = 4 }
+    q = new Point { x = 5, y = 6 }
+    var old = q.replace(new Point { x = 7, y = 8 })
+    print(old.x)
+    print(q.x)
+
+    // A heap value that owns another one.
+    var label = new Label { text = "origin".clone(), at = new Point { x = 0, y = 0 } }
+    label.at.x = 9
+    print($"{label.text} {label.at.x}")
+    var text = label.intoText()
+    print(text)
+
+    // A field moved out of a heap value; the rest of it is freed with the pointer.
+    var other = new Label { text = "far".clone(), at = new Point { x = 100, y = 200 } }
+    var at = other.at
+    print(at.y)
+
+    var tree = new Tree { value = 1, left = leaf(2), right = new Tree { value = 3, left = leaf(4), right = null } }
+    print(total(read tree.left))
+    print(depth(read tree))
+    Tree*? whole = tree
+    print(total(read whole))
+    whole = null                        // the whole tree is freed here
+    print(total(read whole))
+}

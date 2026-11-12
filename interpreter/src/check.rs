@@ -2007,6 +2007,17 @@ impl<'a> Checker<'a> {
         self.coerce(expr, found, expected)
     }
 
+    /// The right side of `??`. When it always leaves (`?? return list`, `?? panic(...)`), the
+    /// code after it runs only if the right side did not, so what it moved is still there.
+    fn fallback(&mut self, right: &mut Expr, expected: &Ty) -> Res<()> {
+        let before = self.moves();
+        self.typed(right, expected)?;
+        if right.ty == Ty::Never {
+            self.set_moves(&before);
+        }
+        Ok(())
+    }
+
     fn coerce(&mut self, expr: &mut Expr, found: Ty, expected: &Ty) -> Res<()> {
         if found == *expected || found == Ty::Never {
             return Ok(());
@@ -2636,7 +2647,7 @@ impl<'a> Checker<'a> {
                             .hint("pass the error on with `try`, or drop it on purpose with `_ = ...`"));
                     }
                     *on_result = true;
-                    self.typed(right, ok)?;
+                    self.fallback(right, ok)?;
                     return Ok((**ok).clone());
                 }
                 if matches!(found.strip_borrow(), Ty::Result(..)) {
@@ -2646,7 +2657,7 @@ impl<'a> Checker<'a> {
                 let Some(inner) = without_null(&found) else {
                     return Err(Diag::error(left.span, format!("this is `{found}`, which is never `null`, so `??` has nothing to do")));
                 };
-                self.typed(right, &inner)?;
+                self.fallback(right, &inner)?;
                 Ok(inner)
             }
             ExprKind::Try { expr: inner, kind } => self.try_expr(inner, kind, span),
@@ -3438,7 +3449,18 @@ impl<'a> Checker<'a> {
                 Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len())))
             }
         };
-        match (recv_ty.strip_borrow(), name) {
+        // A number behind a pointer is read out first: `count.wrappingAdd(1)` with `int* count`.
+        let target = target.clone();
+        let mut recv_ty = recv_ty;
+        if matches!(target, Ty::Int(_)) {
+            while let Ty::Ptr(inner) | Ty::Read(inner) | Ty::Ref(inner) = recv_ty {
+                wrap(recv, ExprKind::Load);
+                recv.ty = (*inner).clone();
+                recv_ty = *inner;
+            }
+        }
+        let target = &target;
+        match (target, name) {
             (Ty::Int(ty), "wrappingAdd" | "wrappingSubtract" | "wrappingMultiply") => {
                 arity(1)?;
                 let other = self.int_operand(&mut args[0], Some(*ty), "the argument")?;
@@ -3476,11 +3498,11 @@ impl<'a> Checker<'a> {
                 self.coerce(&mut args[0], Ty::Int(other), &common)?;
                 Ok(if name == "compare" { Ty::Int(IntTy::Int) } else { Ty::Bool })
             }
-            (Ty::Str | Ty::Bool, "compare" | "equals") if name == "equals" || *recv_ty.strip_borrow() == Ty::Str => {
+            (Ty::Str | Ty::Bool, "compare" | "equals") if name == "equals" || *target == Ty::Str => {
                 arity(1)?;
                 let other = self.operand(&mut args[0], None)?;
-                if other.strip_borrow() != recv_ty.strip_borrow() {
-                    return Err(Diag::error(args[0].span, format!("expected `{}`, found `{other}`", recv_ty.strip_borrow())));
+                if other.strip_borrow() != target {
+                    return Err(Diag::error(args[0].span, format!("expected `{target}`, found `{other}`")));
                 }
                 Ok(if name == "compare" { Ty::Int(IntTy::Int) } else { Ty::Bool })
             }

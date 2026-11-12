@@ -1,0 +1,114 @@
+// `T?` for values that are not pointers: a number, a text, a struct.
+struct Reading {
+    string sensor
+    int? value
+    string? note
+}
+
+struct Range : Copyable {
+    int low
+    int high
+}
+
+int? half(int n) {
+    if n % 2 != 0 {
+        return null
+    }
+    return n / 2
+}
+
+int? quarter(int n) {
+    var h = try half(n)                 // `null` goes back to the caller
+    return try half(h)
+}
+
+int orMinusOne(read int? n) {
+    if n is null {
+        return -1
+    }
+    return n
+}
+
+int noteLength(read string? note) {
+    if note is not null {
+        return (int)note.length()
+    }
+    return 0
+}
+
+string? pick(bool yes) {
+    if yes {
+        return "picked".clone()
+    }
+    return null
+}
+
+Range? around(int? middle) {
+    var m = middle ?? return null
+    return Range { low = m - 1, high = m + 1 }
+}
+
+string describe(read Reading r) {
+    var value = r.value ?? 0
+    return $"{r.sensor}: {value}".toString()
+}
+
+void main() {
+    print(half(10) ?? -1)
+    print(half(7) ?? -1)
+    print(quarter(20) ?? -1)
+    print(quarter(10) ?? -1)
+
+    int? n = 5
+    print(orMinusOne(read n))
+    if n is not null {
+        print(n + 1)
+    }
+    var taken = n.take()                // leaves `null` behind
+    print(taken ?? 0)
+    print(n is null)
+    print(orMinusOne(read n))
+    n = 8
+    print(n.replace(null) ?? 0)
+    print(n is null)
+
+    // A text that may be missing owns its bytes like any other text.
+    var word = pick(true)
+    print(noteLength(read word))
+    if word is not null {
+        print(word)
+        var mine = word                 // moved out; nothing is left to free
+        print(mine.length())
+    }
+    print(pick(false) is null)
+    print(pick(true) ?? "nothing".clone())
+    print(pick(false) ?? "nothing".clone())
+
+    var r = Reading { sensor = "t1".clone(), value = null, note = null }
+    print(describe(read r))
+    r.value = 21
+    r.note = "checked".clone()
+    r.note = "checked twice".clone()    // the old note is freed
+    print(describe(read r))
+    print(noteLength(read r.note))
+    var note = r.note.take()
+    print(note ?? "none".clone())
+    print(r.note is null)
+
+    var range = around(5)
+    if range is not null {
+        print(range.high - range.low)
+        range.low = 0
+        print(range.low)
+    }
+    print(around(null) is null)
+
+    // `null` where the plain operator would panic.
+    var big = 2000000000
+    print(big.tryAdd(big) ?? -1)
+    print(big.trySubtract(1) ?? -1)
+    print(big.tryMultiply(2) is null)
+    print(big.tryDivide(0) ?? -1)
+    print(big.tryDivide(4) ?? -1)
+    print(half(4) ?? panic("four is even"))
+}

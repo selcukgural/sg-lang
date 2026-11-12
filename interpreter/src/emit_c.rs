@@ -4,19 +4,24 @@
 //! are the same data-dependent failures the interpreter reports, with the same messages:
 //! overflow, division by zero, a cast that does not fit, `assert` and `panic`.
 //!
-//! Only a part of the language is compiled so far: integers, `bool`, text, functions, structs
-//! of those, `read` and `ref`, and `print`. Anything else is an error that names what is
-//! missing, so nothing is compiled wrongly in silence.
+//! Only a part of the language is compiled so far: integers, `bool`, text, functions, structs,
+//! `T*` and `new`, `T?`, `read` and `ref`, and `print`. Anything else is an error that names
+//! what is missing, so nothing is compiled wrongly in silence.
 //!
 //! How values are represented: `byte`, `int`, `long` and `nint` are fixed-size C integers; a
 //! struct is a C struct passed by value; `read T` / `ref T` are pointers; a `string` is its
-//! bytes, a length and a capacity, and a `read string` is a pointer and a length.
+//! bytes, a length and a capacity, and a `read string` is a pointer and a length. A `T*` is a
+//! pointer to one `malloc`ed `T`. A `T*?` is the same pointer, where `NULL` is `null`: it
+//! costs nothing. Any other `T?` is the value and a flag beside it.
 //!
 //! Who frees: the checker has decided who owns each value, so the back end only follows it.
 //! An owned value is dropped where its variable ends. A use that moves the value (marked by
 //! the checker) empties the place it came from, so the later drop finds nothing to free.
+//!
+//! Order: `try`, `??` and `replace` are written as GNU statement expressions (clang and gcc
+//! both have them), so they run where they stand, between what is written before and after.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use crate::ast::*;
@@ -36,6 +41,7 @@ const RUNTIME: &str = r#"#include <stdarg.h>
 /* The generated code puts every operation in parentheses. */
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wparentheses-equality"
+#pragma clang diagnostic ignored "-Wgnu-statement-expression"
 #endif
 
 /* A panic is never the usual path: its code is kept out of the way of the code that runs. */
@@ -230,16 +236,37 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
         loops: Vec::new(),
         pre: Vec::new(),
         post: Vec::new(),
+        types: String::new(),
+        glue_protos: String::new(),
+        glue: String::new(),
+        made: HashSet::new(),
+        sigs: HashMap::new(),
+        ret: Ty::Void,
     };
     if let Some(decl) = prog.enums.first() {
         return Err(not_yet(decl.name_span, "an enum"));
     }
 
-    // Structs, each after the structs it holds by value.
-    let mut types = String::new();
+    // Every struct is named first, so that a struct can point at itself or at a later one.
+    // Then the structs themselves, each after the structs it holds by value.
+    for decl in &prog.structs {
+        let _ = writeln!(emitter.types, "typedef struct S_{0} S_{0};", decl.name);
+    }
     let mut done: Vec<&str> = Vec::new();
     for decl in &prog.structs {
-        emitter.struct_decl(decl, &mut done, &mut types)?;
+        emitter.struct_decl(decl, &mut done)?;
+    }
+
+    // What each function takes: an argument is shaped for the parameter it goes to.
+    for func in &prog.funcs {
+        let params = func.params.iter().map(|param| emitter.written(&param.ty)).collect::<Res<Vec<Ty>>>()?;
+        emitter.sigs.insert(format!("f_{}", func.name), params);
+    }
+    for decl in &prog.structs {
+        for method in &decl.methods {
+            let params = method.params.iter().map(|param| emitter.written(&param.ty)).collect::<Res<Vec<Ty>>>()?;
+            emitter.sigs.insert(format!("f_{}_{}", decl.name, method.name), params);
+        }
     }
 
     let mut protos = String::new();
@@ -255,7 +282,11 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
 
     let mut out = String::from(RUNTIME);
     out.push('\n');
-    out.push_str(&types);
+    out.push_str(&emitter.types);
+    out.push('\n');
+    out.push_str(&emitter.glue_protos);
+    out.push('\n');
+    out.push_str(&emitter.glue);
     for (number, text) in emitter.locs.iter().enumerate() {
         let _ = writeln!(out, "static const char sg_loc_{number}[] = {};", c_string(text));
     }
@@ -269,7 +300,7 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
 
 fn not_yet(span: Span, what: &str) -> Diag {
     Diag::error(span, format!("{what} is not in the C back end yet"))
-        .note("the back end compiles integers, `bool`, text, functions, structs of those, `read` and `ref`, and `print`")
+        .note("the back end compiles integers, `bool`, text, functions, structs, `T*`, `T?`, `read` and `ref`, and `print`")
 }
 
 /// A C string literal for any text.
@@ -315,6 +346,49 @@ fn is_text(ty: &Ty) -> bool {
     *ty.strip_borrow() == Ty::Str
 }
 
+/// Whether this is text on the heap: `string*`, or a borrow of one.
+fn is_text_behind_pointer(ty: &Ty) -> bool {
+    let mut ty = ty.strip_borrow();
+    let mut behind = false;
+    while let Ty::Ptr(inner) = ty {
+        (ty, behind) = (inner, true);
+    }
+    behind && *ty == Ty::Str
+}
+
+/// The name a type has inside the names of its helpers: `sg_drop_P_S_Node`. `None` for a type
+/// the back end does not hold in a `T*` or a `T?` yet.
+fn mangle(ty: &Ty) -> Option<String> {
+    Some(match ty {
+        Ty::Int(ty) => ty.name().to_string(),
+        Ty::Bool => "bool".to_string(),
+        Ty::Str => "string".to_string(),
+        Ty::Struct(name) => format!("S_{name}"),
+        Ty::Ptr(inner) => format!("P_{}", mangle(inner)?),
+        Ty::Nullable(inner) => match &**inner {
+            // A pointer that may be `null` is the same pointer.
+            Ty::Ptr(_) => mangle(inner)?,
+            Ty::Nullable(_) => return None,
+            _ => format!("O_{}", mangle(inner)?),
+        },
+        _ => return None,
+    })
+}
+
+/// A `T?` that is kept as a value and a flag: every `T?` but a pointer.
+fn is_option(ty: &Ty) -> bool {
+    matches!(ty, Ty::Nullable(inner) if !matches!(**inner, Ty::Ptr(_)))
+}
+
+/// The struct a field of this type needs to be defined first, if any.
+fn held_struct(ty: &Ty) -> Option<&str> {
+    match ty {
+        Ty::Struct(name) => Some(name),
+        Ty::Nullable(inner) | Ty::Ptr(inner) => held_struct(inner),
+        _ => None,
+    }
+}
+
 /// A variable of the function being written.
 struct Local {
     name: String,
@@ -341,6 +415,18 @@ struct Emitter<'a> {
     pre: Vec<String>,
     /// Lines that go after it: those temporaries are dropped.
     post: Vec<String>,
+    /// The C types: the structs, and a value-and-flag struct for each `T?` that is used.
+    types: String,
+    /// The helpers that drop, move and allocate each type that is used: first all their
+    /// declarations, then their bodies, so that they can call each other.
+    glue_protos: String,
+    glue: String,
+    /// The `T*` and `T?` types whose helpers are written.
+    made: HashSet<String>,
+    /// The parameter types of each function, by its C name.
+    sigs: HashMap<String, Vec<Ty>>,
+    /// What the function being written returns.
+    ret: Ty,
 }
 
 impl<'a> Emitter<'a> {
@@ -362,7 +448,7 @@ impl<'a> Emitter<'a> {
     // ---- types ----
 
     /// The C type of a value.
-    fn ctype(&self, ty: &Ty, span: Span) -> Res<String> {
+    fn ctype(&mut self, ty: &Ty, span: Span) -> Res<String> {
         Ok(match ty {
             Ty::Int(ty) => int_ctype(*ty).to_string(),
             Ty::Bool => "bool".to_string(),
@@ -371,31 +457,121 @@ impl<'a> Emitter<'a> {
             Ty::Struct(name) => format!("S_{name}"),
             _ if is_text_view(ty) => "sg_str".to_string(),
             Ty::Read(inner) | Ty::Ref(inner) => format!("{}*", self.ctype(inner, span)?),
+            Ty::Ptr(inner) | Ty::Nullable(inner) => {
+                let Some(name) = mangle(ty) else { return Err(not_yet(span, &format!("the type `{ty}`"))) };
+                self.need(ty, span)?;
+                match ty {
+                    Ty::Ptr(_) => format!("{}*", self.ctype(inner, span)?),
+                    _ if is_option(ty) => format!("sg_{name}"),
+                    _ => self.ctype(inner, span)?,
+                }
+            }
             other => return Err(not_yet(span, &format!("the type `{other}`"))),
         })
     }
 
+    /// Writes, once, what a `T*` or a `T?` needs: its C type and the helpers that drop it,
+    /// move it and, for a `T*`, allocate it.
+    fn need(&mut self, ty: &Ty, span: Span) -> Res<()> {
+        let Some(name) = mangle(ty) else { return Ok(()) };
+        match ty {
+            Ty::Ptr(inner) => {
+                if !self.made.insert(name.clone()) {
+                    return Ok(());
+                }
+                let target = self.ctype(inner, span)?;
+                let drop_inner = match self.droppable(inner) {
+                    true => format!("sg_drop_{}(p); ", mangle(inner).expect("it has a C type")),
+                    false => String::new(),
+                };
+                let _ = writeln!(self.glue_protos, "static inline {target}* sg_new_{name}({target} value);");
+                let _ = writeln!(self.glue_protos, "static inline {target}* sg_move_{name}({target}** v);");
+                let _ = writeln!(self.glue_protos, "static inline void sg_drop_{name}({target}** v);");
+                let _ = writeln!(
+                    self.glue,
+                    "static inline {target}* sg_new_{name}({target} value) {{\n    {target}* p = malloc(sizeof({target}));\n    if (!p) abort();\n    *p = value;\n    return p;\n}}"
+                );
+                let _ = writeln!(self.glue, "static inline {target}* sg_move_{name}({target}** v) {{ {target}* out = *v; *v = NULL; return out; }}");
+                // A struct with one pointer to its own kind is a chain: it is freed in a loop,
+                // link by link, so a long list does not need a deep stack. The loop drops the
+                // other fields of each link itself.
+                let mut chain = None;
+                if let Ty::Struct(of) = &**inner {
+                    let decl: &'a StructDecl = self.structs[of.as_str()];
+                    let is_link = |field: &FieldDecl| self.written(&field.ty).is_ok_and(|field| field == *ty || field == Ty::Nullable(Box::new(ty.clone())));
+                    let mut links = decl.fields.iter().filter(|field| is_link(field));
+                    if let (Some(link), None) = (links.next(), links.next()) {
+                        let mut rest = String::new();
+                        for field in decl.fields.iter().filter(|field| field.name != link.name) {
+                            let field_ty = self.written(&field.ty)?;
+                            if self.droppable(&field_ty) {
+                                let _ = write!(rest, "{} ", self.drop_of(&field_ty, &format!("p->m_{}", field.name)));
+                            }
+                        }
+                        chain = Some((link.name.clone(), rest));
+                    }
+                }
+                let _ = match chain {
+                    Some((link, rest)) => writeln!(
+                        self.glue,
+                        "static inline void sg_drop_{name}({target}** v) {{\n    {target}* p = *v;\n    while (p) {{ {target}* next = p->m_{link}; {rest}free(p); p = next; }}\n}}"
+                    ),
+                    None => writeln!(self.glue, "static inline void sg_drop_{name}({target}** v) {{ {target}* p = *v; if (p) {{ {drop_inner}free(p); }} }}"),
+                };
+            }
+            Ty::Nullable(inner) if is_option(ty) => {
+                if !self.made.insert(name.clone()) {
+                    return Ok(());
+                }
+                let value = self.ctype(inner, span)?;
+                let _ = writeln!(self.types, "typedef struct {{ bool has; {value} value; }} sg_{name};");
+                // Taking the value out leaves `null`.
+                let _ = writeln!(self.glue_protos, "static inline sg_{name} sg_move_{name}(sg_{name}* v);");
+                let _ = writeln!(self.glue, "static inline sg_{name} sg_move_{name}(sg_{name}* v) {{ sg_{name} out = *v; v->has = false; return out; }}");
+                if self.droppable(inner) {
+                    let inner = mangle(inner).expect("it has a C type");
+                    let _ = writeln!(self.glue_protos, "static inline void sg_drop_{name}(sg_{name}* v);");
+                    let _ = writeln!(self.glue, "static inline void sg_drop_{name}(sg_{name}* v) {{ if (v->has) sg_drop_{inner}(&v->value); }}");
+                }
+            }
+            Ty::Nullable(inner) => self.need(inner, span)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// A type as it is written in a signature or a field.
     fn written(&self, ty: &TypeExpr) -> Res<Ty> {
-        if !ty.args.is_empty() || !ty.suffixes.is_empty() {
-            return Err(not_yet(ty.span, &format!("the type `{}`", self.text(ty.span))));
+        let unknown = || not_yet(ty.span, &format!("the type `{}`", self.text(ty.span)));
+        if !ty.args.is_empty() {
+            return Err(unknown());
         }
-        let base = match Ty::from_name(&ty.name) {
+        let mut found = match Ty::from_name(&ty.name) {
             Some(base @ (Ty::Int(_) | Ty::Bool | Ty::Void | Ty::Str)) => base,
             None if self.structs.contains_key(ty.name.as_str()) => Ty::Struct(ty.name.clone()),
-            _ => return Err(not_yet(ty.span, &format!("the type `{}`", self.text(ty.span)))),
+            _ => return Err(unknown()),
         };
+        for suffix in &ty.suffixes {
+            found = match suffix {
+                Suffix::Pointer => Ty::Ptr(Box::new(found)),
+                Suffix::Nullable => Ty::Nullable(Box::new(found)),
+            };
+            if mangle(&found).is_none() {
+                return Err(unknown());
+            }
+        }
         Ok(match ty.mode {
-            Some(Mode::Read) => Ty::Read(Box::new(base)),
-            Some(Mode::Ref) => Ty::Ref(Box::new(base)),
-            None => base,
+            Some(Mode::Read) => Ty::Read(Box::new(found)),
+            Some(Mode::Ref) => Ty::Ref(Box::new(found)),
+            None => found,
         })
     }
 
     /// Whether a value of this type owns something that is freed when it ends.
     fn droppable(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Str => true,
+            Ty::Str | Ty::Ptr(_) => true,
+            Ty::Nullable(inner) => self.droppable(inner),
             Ty::Struct(name) => self.structs[name.as_str()].fields.iter().any(|field| self.written(&field.ty).is_ok_and(|ty| self.droppable(&ty))),
             _ => false,
         }
@@ -403,21 +579,15 @@ impl<'a> Emitter<'a> {
 
     /// The C statement that drops what is at `place`.
     fn drop_of(&self, ty: &Ty, place: &str) -> String {
-        match ty {
-            Ty::Struct(name) => format!("sg_drop_S_{name}(&{place});"),
-            _ => format!("sg_drop_string(&{place});"),
-        }
+        format!("sg_drop_{}(&{place});", mangle(ty).expect("what is dropped has a C type"))
     }
 
     /// The C expression that takes the value out of `place` and leaves it empty.
     fn move_of(&self, ty: &Ty, place: &str) -> String {
-        match ty {
-            Ty::Struct(name) => format!("sg_move_S_{name}(&{place})"),
-            _ => format!("sg_move_string(&{place})"),
-        }
+        format!("sg_move_{}(&{place})", mangle(ty).expect("what is moved has a C type"))
     }
 
-    fn struct_decl(&mut self, decl: &'a StructDecl, done: &mut Vec<&'a str>, out: &mut String) -> Res<()> {
+    fn struct_decl(&mut self, decl: &'a StructDecl, done: &mut Vec<&'a str>) -> Res<()> {
         if done.contains(&decl.name.as_str()) {
             return Ok(());
         }
@@ -432,9 +602,9 @@ impl<'a> Emitter<'a> {
             if ty.is_borrow() {
                 return Err(not_yet(field.ty.span, "a field that borrows"));
             }
-            if let Ty::Struct(inner) = &ty {
-                let inner = self.structs[inner.as_str()];
-                self.struct_decl(inner, done, out)?;
+            if let Some(inner) = held_struct(&ty) {
+                let inner: &'a StructDecl = self.structs[inner];
+                self.struct_decl(inner, done)?;
             }
             let _ = writeln!(fields, "    {} m_{};", self.ctype(&ty, field.ty.span)?, field.name);
             if self.droppable(&ty) {
@@ -443,13 +613,13 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(forgets, "    (void){};", self.move_of(&ty, &place));
             }
         }
-        let _ = writeln!(out, "typedef struct S_{name} {{\n{fields}}} S_{name};");
+        let _ = writeln!(self.types, "struct S_{name} {{\n{fields}}};");
         // What frees the struct, and what takes it out of a place and leaves that place empty.
         if !drops.is_empty() {
-            let _ = writeln!(out, "static inline void sg_drop_S_{name}(S_{name}* v) {{\n{drops}}}");
-            let _ = writeln!(out, "static inline S_{name} sg_move_S_{name}(S_{name}* v) {{\n    S_{name} out = *v;\n{forgets}    return out;\n}}");
+            let _ = writeln!(self.glue_protos, "static inline void sg_drop_S_{name}(S_{name}* v);\nstatic inline S_{name} sg_move_S_{name}(S_{name}* v);");
+            let _ = writeln!(self.glue, "static inline void sg_drop_S_{name}(S_{name}* v) {{\n{drops}}}");
+            let _ = writeln!(self.glue, "static inline S_{name} sg_move_S_{name}(S_{name}* v) {{\n    S_{name} out = *v;\n{forgets}    return out;\n}}");
         }
-        out.push('\n');
         Ok(())
     }
 
@@ -457,9 +627,6 @@ impl<'a> Emitter<'a> {
 
     fn func(&mut self, func: &'a Func, owner: Option<&str>, protos: &mut String, bodies: &mut String) -> Res<()> {
         let ret = self.written(&func.ret)?;
-        if ret.is_borrow() && !is_text_view(&ret) {
-            return Err(not_yet(func.ret.span, "a function that returns this borrow"));
-        }
         let name = match owner {
             Some(owner) => format!("f_{owner}_{}", func.name),
             None => format!("f_{}", func.name),
@@ -485,6 +652,7 @@ impl<'a> Emitter<'a> {
         let head = format!("static {} {name}({params})", self.ctype(&ret, func.ret.span)?);
         let _ = writeln!(protos, "{head};");
         let _ = writeln!(bodies, "{head} {{");
+        self.ret = ret;
         self.temps = 0;
         self.scopes = vec![scope];
         self.stmts(&func.body, 1, bodies)?;
@@ -565,7 +733,7 @@ impl<'a> Emitter<'a> {
                     Some(written) => self.written(written)?,
                     None => init.ty.clone(),
                 };
-                let value = self.value(init)?;
+                let value = self.head_value(init, &ty)?;
                 let ctype = self.ctype(&ty, init.span)?;
                 self.flush_pre(&pad, out);
                 let cname = self.declare(name, ty);
@@ -574,16 +742,20 @@ impl<'a> Emitter<'a> {
             }
             StmtKind::Assign { target, op, value, through } => {
                 // A `read` variable pointed at something else: the variable itself is assigned.
-                let place = match (&target.kind, target.ty.is_borrow(), through) {
-                    (ExprKind::Var(name), true, false) => self.local(name).cname.clone(),
-                    _ => self.lvalue(target)?,
+                let rebound = match &target.kind {
+                    ExprKind::Var(name) if !through => Some(self.local(name)).filter(|local| local.ty.is_borrow()).map(|local| (local.cname.clone(), local.ty.clone())),
+                    _ => None,
                 };
-                let new = self.value(value)?;
-                let held = target.ty.strip_borrow().clone();
+                let rebinds = rebound.is_some();
+                let (place, held) = match rebound {
+                    Some(variable) => variable,
+                    None => self.slot(target)?,
+                };
+                let new = self.head_value(value, &held)?;
                 self.flush_pre(&pad, out);
                 match op {
                     // The new value is ready before the old one is dropped: it may be made from it.
-                    None if self.droppable(&held) && !(target.ty.is_borrow() && !through) => {
+                    None if self.droppable(&held) && !rebinds => {
                         let (ctype, temp) = (self.ctype(&held, target.span)?, self.temp());
                         let _ = writeln!(out, "{pad}{{ {ctype} {temp} = {new}; {} {place} = {temp}; }}", self.drop_of(&held, &place));
                     }
@@ -653,32 +825,8 @@ impl<'a> Emitter<'a> {
             }
             StmtKind::ForEach { iter, .. } => return Err(not_yet(iter.span, "a `for` over a collection")),
             StmtKind::Return(value) => {
-                let value = match value {
-                    Some(value) => Some((self.value(value)?, self.ctype(&value.ty, value.span)?)),
-                    None => None,
-                };
-                self.flush_pre(&pad, out);
-                let drops = self.drops(0);
-                match value {
-                    // The value is ready before anything it may be made from is dropped.
-                    Some((value, ctype)) if !drops.is_empty() || !self.post.is_empty() => {
-                        let temp = self.temp();
-                        let _ = writeln!(out, "{pad}{ctype} {temp} = {value};");
-                        self.flush_post(&pad, out);
-                        for line in drops {
-                            let _ = writeln!(out, "{pad}{line}");
-                        }
-                        let _ = writeln!(out, "{pad}return {temp};");
-                    }
-                    Some((value, _)) => {
-                        let _ = writeln!(out, "{pad}return {value};");
-                    }
-                    None => {
-                        for line in drops {
-                            let _ = writeln!(out, "{pad}{line}");
-                        }
-                        let _ = writeln!(out, "{pad}return;");
-                    }
+                for line in self.return_lines(value.as_ref(), &[], stmt.span)? {
+                    let _ = writeln!(out, "{pad}{line}");
                 }
             }
             StmtKind::Break | StmtKind::Continue => {
@@ -707,9 +855,129 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
+    /// The lines of a `return`: the value is ready before anything it may be made from is
+    /// dropped. `pending`: what the statement around it still has to drop, when the `return`
+    /// stands inside an expression (`x ?? return y`). Uses up the lines waiting in `pre` and `post`.
+    fn return_lines(&mut self, value: Option<&'a Expr>, pending: &[String], span: Span) -> Res<Vec<String>> {
+        let ret = self.ret.clone();
+        let value = match value {
+            Some(value) => Some(self.head_value(value, &ret)?),
+            None => None,
+        };
+        let mut lines = std::mem::take(&mut self.pre);
+        let post = std::mem::take(&mut self.post);
+        let drops = self.drops(0);
+        match value {
+            Some(value) if !drops.is_empty() || !post.is_empty() || !pending.is_empty() => {
+                let (ctype, temp) = (self.ctype(&ret, span)?, self.temp());
+                lines.push(format!("{ctype} {temp} = {value};"));
+                lines.extend(post);
+                lines.extend(pending.iter().cloned());
+                lines.extend(drops);
+                lines.push(format!("return {temp};"));
+            }
+            Some(value) => lines.push(format!("return {value};")),
+            None => {
+                lines.extend(post);
+                lines.extend(pending.iter().cloned());
+                lines.extend(drops);
+                lines.push("return;".to_string());
+            }
+        }
+        Ok(lines)
+    }
+
+    /// The value of an expression that is the whole right side of a statement, shaped for where
+    /// it goes. Only here can `try` and `?? return` leave the function: nothing else of the
+    /// statement has been computed yet, so nothing is left behind.
+    fn head_value(&mut self, expr: &'a Expr, want: &Ty) -> Res<String> {
+        let opened = match &expr.kind {
+            ExprKind::Try { expr: inner, kind: TryKind::Null } => {
+                let value = self.value(inner)?;
+                let ret = self.ret.clone();
+                let null = self.lift(String::new(), &Ty::Null, &ret, expr.span)?;
+                let mut exit = self.post.clone();
+                exit.extend(self.drops(0));
+                exit.push(format!("return {null};"));
+                self.open(&inner.ty, value, exit, inner.span)?
+            }
+            ExprKind::Coalesce { left, right, on_result: false } if matches!(right.kind, ExprKind::Return(_)) => {
+                let ExprKind::Return(returned) = &right.kind else { unreachable!("matched above") };
+                let value = self.value(left)?;
+                // The `return` has its own temporaries; the ones made so far are dropped on its way out.
+                let (pre, post) = (std::mem::take(&mut self.pre), std::mem::take(&mut self.post));
+                let exit = self.return_lines(returned.as_deref(), &post, right.span);
+                (self.pre, self.post) = (pre, post);
+                self.open(&left.ty, value, exit?, left.span)?
+            }
+            _ => return self.value_as(expr, want),
+        };
+        self.lift(opened, &expr.ty, want, expr.span)
+    }
+
+    /// Opens a `T?`: gives what it holds, or runs `exit` (which leaves the function) on `null`.
+    fn open(&mut self, ty: &Ty, value: String, exit: Vec<String>, span: Span) -> Res<String> {
+        if !matches!(ty, Ty::Nullable(_)) {
+            return Err(not_yet(span, &format!("opening a `{ty}`")));
+        }
+        let (ctype, temp) = (self.ctype(ty, span)?, self.temp());
+        let (test, held) = match is_option(ty) {
+            true => (format!("{temp}.has"), format!("{temp}.value")),
+            false => (temp.clone(), temp.clone()),
+        };
+        Ok(format!("({{ {ctype} {temp} = {value}; if (!{test}) {{ {} }} {held}; }})", exit.join(" ")))
+    }
+
+    /// The value of an expression, shaped for where it goes: a `T` that goes where a `T?` is
+    /// expected gets its flag, and `null` is written for the type it stands for.
+    fn value_as(&mut self, expr: &'a Expr, want: &Ty) -> Res<String> {
+        let value = match expr.kind {
+            ExprKind::Null => String::new(),
+            _ => self.value(expr)?,
+        };
+        self.lift(value, &expr.ty, want, expr.span)
+    }
+
+    fn lift(&mut self, value: String, found: &Ty, want: &Ty, span: Span) -> Res<String> {
+        match want {
+            Ty::Nullable(inner) if is_option(want) => {
+                let ctype = self.ctype(want, span)?;
+                match found {
+                    Ty::Nullable(_) | Ty::Never => Ok(value),
+                    Ty::Null => Ok(format!("(({ctype}){{ false }})")),
+                    _ => Ok(format!("(({ctype}){{ true, {} }})", self.lift(value, found, inner, span)?)),
+                }
+            }
+            Ty::Nullable(inner) => match found {
+                Ty::Null => Ok("NULL".to_string()),
+                Ty::Nullable(_) | Ty::Never => Ok(value),
+                _ => self.lift(value, found, inner, span),
+            },
+            _ if *found == Ty::Null => Err(not_yet(span, "`null` here")),
+            // A pointer to a value is not a pointer to a value and a flag.
+            Ty::Read(to) | Ty::Ref(to) if is_option(to) && found.is_borrow() && !matches!(found.strip_borrow(), Ty::Nullable(_)) => {
+                Err(not_yet(span, &format!("a `{found}` lent as `{want}`")))
+            }
+            _ => Ok(value),
+        }
+    }
+
+    /// A function called with its arguments, each shaped for its parameter.
+    fn call(&mut self, name: String, receiver: Option<String>, args: &'a [Expr]) -> Res<String> {
+        let params = self.sigs.get(&name).cloned().unwrap_or_default();
+        let mut all: Vec<String> = receiver.into_iter().collect();
+        for (position, arg) in args.iter().enumerate() {
+            all.push(match params.get(position) {
+                Some(want) => self.value_as(arg, want)?,
+                None => self.value(arg)?,
+            });
+        }
+        Ok(format!("{name}({})", all.join(", ")))
+    }
+
     /// An expression whose value is not kept: it is computed, and dropped if it owns something.
     fn unused(&mut self, expr: &'a Expr, pad: &str, out: &mut String) -> Res<()> {
-        let value = self.value(expr)?;
+        let value = self.head_value(expr, &expr.ty)?;
         self.flush_pre(pad, out);
         if self.droppable(&expr.ty) {
             let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
@@ -747,6 +1015,31 @@ impl<'a> Emitter<'a> {
     fn formatted(&mut self, expr: &'a Expr, format: &mut String, values: &mut Vec<String>) -> Res<()> {
         if let ExprKind::Str(text) = &expr.kind {
             format.push_str(&text.replace('%', "%%"));
+            return Ok(());
+        }
+        // A value on the heap is written like the value: `print(count)` with `int* count`.
+        if let Ty::Ptr(_) = expr.ty.strip_borrow() {
+            let mut place = self.look(expr)?;
+            let mut ty = expr.ty.strip_borrow();
+            while let Ty::Ptr(inner) = ty {
+                place = format!("(*{place})");
+                ty = inner;
+            }
+            match ty {
+                Ty::Int(_) => {
+                    format.push_str("%lld");
+                    values.push(format!("(long long)({place})"));
+                }
+                Ty::Bool => {
+                    format.push_str("%s");
+                    values.push(format!("({place}) ? \"true\" : \"false\""));
+                }
+                Ty::Str => {
+                    format.push_str("%.*s");
+                    values.push(format!("(int){place}.len, (const char*){place}.ptr"));
+                }
+                other => return Err(not_yet(expr.span, &format!("writing a `{other}*` as text"))),
+            }
             return Ok(());
         }
         if is_text(&expr.ty) {
@@ -824,23 +1117,72 @@ impl<'a> Emitter<'a> {
 
     // ---- expressions ----
 
+    /// Whether a variable declared as a value and a flag is used here as the value alone: after
+    /// `if x is not null` the checker gives `x` the type without the `?`.
+    fn narrowed(&self, name: &str, used_as: &Ty) -> bool {
+        is_option(self.local(name).ty.strip_borrow()) && !matches!(used_as.strip_borrow(), Ty::Nullable(_))
+    }
+
     /// A place as C writes it: something that can be assigned to and whose address can be taken.
     /// A variable that is a pointer stands for what it points at.
     fn lvalue(&mut self, expr: &'a Expr) -> Res<String> {
         match &expr.kind {
             ExprKind::Var(name) => {
                 let cname = self.local(name).cname.clone();
-                Ok(if expr.ty.is_borrow() && !is_text_view(&expr.ty) { format!("(*{cname})") } else { cname })
+                let place = if expr.ty.is_borrow() && !is_text_view(&self.local(name).ty) { format!("(*{cname})") } else { cname };
+                Ok(if self.narrowed(name, &expr.ty) { format!("{place}.value") } else { place })
             }
-            ExprKind::Field { recv, name, .. } => Ok(format!("{}.m_{name}", self.lvalue(recv)?)),
+            // A field is reached through any number of `T*` on its own.
+            ExprKind::Field { recv, name, .. } => {
+                let mut place = self.lvalue(recv)?;
+                let mut ty = recv.ty.strip_borrow();
+                while let Ty::Ptr(inner) = ty {
+                    place = format!("(*{place})");
+                    ty = inner;
+                }
+                Ok(format!("{place}.m_{name}"))
+            }
             _ => Err(not_yet(expr.span, "this place")),
         }
     }
 
+    /// A place that is written to as a whole (`x = v`, `x.take()`, `x.replace(v)`) and the type
+    /// it was declared with: a variable known to hold a value is still a `T?` slot.
+    fn slot(&mut self, expr: &'a Expr) -> Res<(String, Ty)> {
+        match &expr.kind {
+            ExprKind::Var(name) => {
+                let local = self.local(name);
+                Ok(match local.ty.is_borrow() {
+                    true => (format!("(*{})", local.cname), local.ty.strip_borrow().clone()),
+                    false => (local.cname.clone(), local.ty.clone()),
+                })
+            }
+            _ => Ok((self.lvalue(expr)?, expr.ty.strip_borrow().clone())),
+        }
+    }
+
+    /// A value that is only looked at, as something C can name more than once. A value that
+    /// has no name and owns something is kept in a temporary and dropped after the statement.
+    fn look(&mut self, expr: &'a Expr) -> Res<String> {
+        if matches!(expr.kind, ExprKind::Var(_) | ExprKind::Field { .. }) {
+            return self.lvalue(expr);
+        }
+        let value = self.value(expr)?;
+        if expr.ty.is_borrow() {
+            return Ok(format!("(*{value})"));
+        }
+        let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+        self.pre.push(format!("{ctype} {temp} = {value};"));
+        if self.droppable(&expr.ty) {
+            self.post.push(self.drop_of(&expr.ty, &temp));
+        }
+        Ok(temp)
+    }
+
     /// The address of a place, for `read x`, `ref x` and the receiver of a method.
     fn address(&mut self, place: &'a Expr) -> Res<String> {
-        match (&place.kind, place.ty.is_borrow() && !is_text_view(&place.ty)) {
-            (ExprKind::Var(name), true) => Ok(self.local(name).cname.clone()),
+        match &place.kind {
+            ExprKind::Var(name) if place.ty.is_borrow() && !is_text_view(&place.ty) && !self.narrowed(name, &place.ty) => Ok(self.local(name).cname.clone()),
             _ => Ok(format!("(&{})", self.lvalue(place)?)),
         }
     }
@@ -859,6 +1201,16 @@ impl<'a> Emitter<'a> {
                 self.pre.push(format!("sg_string {temp} = {value};"));
                 self.post.push(format!("sg_drop_string(&{temp});"));
                 Ok(format!("sg_view(&{temp})"))
+            }
+            // Text on the heap is looked at where it is: `name.length()` with `string* name`.
+            (_, ty) if is_text_behind_pointer(ty) => {
+                let mut place = self.look(expr)?;
+                let mut ty = ty.strip_borrow();
+                while let Ty::Ptr(inner) = ty {
+                    place = format!("(*{place})");
+                    ty = inner;
+                }
+                Ok(format!("sg_view(&{place})"))
             }
             (_, other) => Err(not_yet(expr.span, &format!("a `{other}` used as text"))),
         }
@@ -884,10 +1236,6 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn args(&mut self, args: &'a [Expr]) -> Res<Vec<String>> {
-        args.iter().map(|arg| self.value(arg)).collect()
-    }
-
     /// The value of an expression as C writes it. A use that the checker marked as a move
     /// takes the value out of its place and leaves the place empty.
     fn value(&mut self, expr: &'a Expr) -> Res<String> {
@@ -903,9 +1251,59 @@ impl<'a> Emitter<'a> {
                 let place = self.lvalue(expr)?;
                 Ok(self.move_of(&expr.ty, &place))
             }
+            // A variable that holds a value and a flag, used as the value alone.
+            ExprKind::Var(name) if self.narrowed(name, &expr.ty) => {
+                let place = self.lvalue(expr)?;
+                Ok(match &expr.ty {
+                    ty if is_text_view(ty) => format!("sg_view(&{place})"),
+                    ty if ty.is_borrow() => format!("(&{place})"),
+                    _ => place,
+                })
+            }
             ExprKind::Var(name) => Ok(self.local(name).cname.clone()),
             ExprKind::Field { .. } => self.lvalue(expr),
+            // A number read out of a pointer that has no name: the pointer is freed after the statement.
+            ExprKind::Load(inner) if matches!(inner.ty, Ty::Ptr(_)) => Ok(format!("(*{})", self.look(inner)?)),
             ExprKind::Load(inner) => Ok(format!("(*{})", self.value(inner)?)),
+            // A borrow of a `T*` used as a borrow of the `T`: one step along the pointer.
+            ExprKind::Unbox(inner) => Ok(format!("(*{})", self.value(inner)?)),
+            ExprKind::New(inner) => {
+                let Ty::Ptr(target) = &expr.ty else { return Err(not_yet(expr.span, "this `new`")) };
+                self.ctype(&expr.ty, expr.span)?;
+                let value = self.value_as(inner, target)?;
+                Ok(format!("sg_new_{}({value})", mangle(&expr.ty).expect("it has a C type")))
+            }
+            ExprKind::IsNull { expr: inner, negated } => {
+                let ty = inner.ty.strip_borrow();
+                if !matches!(ty, Ty::Nullable(_)) {
+                    return Err(not_yet(expr.span, &format!("`is null` on `{ty}`")));
+                }
+                let subject = self.look(inner)?;
+                let holds = if is_option(ty) { format!("{subject}.has") } else { format!("({subject} != NULL)") };
+                Ok(if *negated { holds } else { format!("(!{holds})") })
+            }
+            ExprKind::Coalesce { right, .. } if matches!(right.kind, ExprKind::Return(_)) => Err(not_yet(expr.span, "`?? return` inside a larger expression")
+                .hint("give the value a name first: `var x = ... ?? return ...`")),
+            // The right side runs only when there is no value.
+            ExprKind::Coalesce { left, right, on_result: false } => {
+                if !matches!(left.ty, Ty::Nullable(_)) {
+                    return Err(not_yet(left.span, &format!("`??` on `{}`", left.ty)));
+                }
+                let value = self.value(left)?;
+                let before = (self.pre.len(), self.post.len());
+                let fallback = self.value(right)?;
+                if before != (self.pre.len(), self.post.len()) {
+                    return Err(not_yet(right.span, "a value that needs a temporary on the right of `??`"));
+                }
+                let (ctype, temp) = (self.ctype(&left.ty, left.span)?, self.temp());
+                let held = if is_option(&left.ty) { format!("{temp}.value") } else { temp.clone() };
+                // A right side that never gives a value (`panic`) still has to have the type in C.
+                let fallback = if right.ty == Ty::Never { format!("({fallback}, {held})") } else { fallback };
+                let holds = if is_option(&left.ty) { format!("{temp}.has") } else { temp.clone() };
+                Ok(format!("({{ {ctype} {temp} = {value}; {holds} ? {held} : {fallback}; }})"))
+            }
+            ExprKind::Try { kind: TryKind::Null, .. } => Err(not_yet(expr.span, "`try` inside a larger expression")
+                .hint("give the value a name first: `var x = try ...`")),
             ExprKind::Widen(ty, inner) => Ok(format!("(({}){})", int_ctype(*ty), self.value(inner)?)),
             ExprKind::Borrow { expr: inner, .. } if is_text_view(&expr.ty) => self.view(inner),
             ExprKind::Borrow { expr: inner, .. } if inner.is_place() => self.address(inner),
@@ -981,36 +1379,78 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::StructLit { name, fields, .. } => {
                 let mut inits = Vec::new();
+                let decl: &'a StructDecl = self.structs[name.as_str()];
                 for field in fields {
-                    inits.push(format!(".m_{} = {}", field.name, self.value(&field.value)?));
+                    let want = self.written(&decl.fields[field.index].ty)?;
+                    inits.push(format!(".m_{} = {}", field.name, self.value_as(&field.value, &want)?));
                 }
                 Ok(format!("((S_{name}){{ {} }})", inits.join(", ")))
             }
             ExprKind::Call { name, args, callee, .. } => match callee {
-                Callee::Plain if matches!(name.as_str(), "print" | "assert" | "panic") => Err(not_yet(expr.span, &format!("`{name}` used as a value"))),
-                Callee::Plain => Ok(format!("f_{name}({})", self.args(args)?.join(", "))),
-                Callee::Static { owner, name } => Ok(format!("f_{owner}_{name}({})", self.args(args)?.join(", "))),
+                // `x ?? panic("...")`: the program stops, so there is no value to shape.
+                Callee::Plain if name == "panic" => {
+                    let before = (self.pre.len(), self.post.len());
+                    let (format, values) = self.format(&args[0])?;
+                    if before != (self.pre.len(), self.post.len()) {
+                        return Err(not_yet(expr.span, "a `panic` inside an expression whose message needs a temporary"));
+                    }
+                    let loc = self.loc(expr.span);
+                    Ok(format!("sg_panicf({loc}, {}{values})", c_string(&format)))
+                }
+                Callee::Plain if matches!(name.as_str(), "print" | "assert") => Err(not_yet(expr.span, &format!("`{name}` used as a value"))),
+                Callee::Plain => self.call(format!("f_{name}"), None, args),
+                Callee::Static { owner, name } => self.call(format!("f_{owner}_{name}"), None, args),
                 _ => Err(not_yet(expr.span, "a call through a function value")),
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
-                Callee::Static { owner, name } => Ok(format!("f_{owner}_{name}({})", self.args(args)?.join(", "))),
+                Callee::Static { owner, name } => self.call(format!("f_{owner}_{name}"), None, args),
                 Callee::Method { owner, this } => {
-                    if !recv.is_place() {
-                        return Err(not_yet(recv.span, "a method called on a value that has no name"));
-                    }
-                    let receiver = match this {
-                        This::Value if recv.moved && self.droppable(recv.ty.strip_borrow()) => {
-                            let place = self.lvalue(recv)?;
-                            self.move_of(recv.ty.strip_borrow(), &place)
+                    let held = recv.ty.strip_borrow().clone();
+                    let receiver = match (this, &held) {
+                        // A value that has no name: it is used up, or kept until the statement ends.
+                        _ if !recv.is_place() => match (this, &held) {
+                            (_, Ty::Ptr(_)) => return Err(not_yet(recv.span, "a method called on a `T*` that has no name")),
+                            (This::Value, _) => self.value(recv)?,
+                            _ if recv.ty.is_borrow() => self.value(recv)?,
+                            _ => format!("(&{})", self.look(recv)?),
+                        },
+                        // `this` by value on a `T*`: the value leaves the heap and the box is freed.
+                        (This::Value, Ty::Ptr(inner)) if recv.moved => {
+                            let (place, ctype, temp) = (self.lvalue(recv)?, self.ctype(inner, recv.span)?, self.temp());
+                            format!("({{ {ctype}* {temp} = {}; {ctype} {temp}v = *{temp}; free({temp}); {temp}v; }})", self.move_of(&held, &place))
                         }
-                        This::Value => self.lvalue(recv)?,
-                        This::Read | This::Ref => self.address(recv)?,
+                        (This::Value, Ty::Ptr(_)) => format!("(*{})", self.lvalue(recv)?),
+                        (This::Value, _) if recv.moved && self.droppable(&held) => {
+                            let place = self.lvalue(recv)?;
+                            self.move_of(&held, &place)
+                        }
+                        (This::Value, _) => self.lvalue(recv)?,
+                        // A method of `T` called on a `T*`: along the pointer.
+                        (This::Read | This::Ref, _) => {
+                            let mut address = self.address(recv)?;
+                            let mut ty = &held;
+                            while let Ty::Ptr(inner) = ty {
+                                address = format!("(*{address})");
+                                ty = inner;
+                            }
+                            address
+                        }
                     };
-                    let mut all = vec![receiver];
-                    all.extend(self.args(args)?);
-                    Ok(format!("f_{owner}_{name}({})", all.join(", ")))
+                    self.call(format!("f_{owner}_{name}"), Some(receiver), args)
                 }
-                Callee::Plain if is_text(&recv.ty) => match name.as_str() {
+                // `slot.take()` leaves `null`; `slot.replace(v)` leaves `v`. Both give what was there.
+                Callee::Take => {
+                    let (place, ty) = self.slot(recv)?;
+                    self.ctype(&ty, recv.span)?;
+                    Ok(self.move_of(&ty, &place))
+                }
+                Callee::Replace => {
+                    let (place, ty) = self.slot(recv)?;
+                    let new = self.value_as(&args[0], &ty)?;
+                    let (ctype, temp) = (self.ctype(&ty, recv.span)?, self.temp());
+                    Ok(format!("({{ {ctype} {temp}n = {new}; {ctype} {temp} = {place}; {place} = {temp}n; {temp}; }})"))
+                }
+                Callee::Plain if is_text(&recv.ty) || is_text_behind_pointer(&recv.ty) => match name.as_str() {
                     "length" => Ok(format!("{}.len", self.view(recv)?)),
                     // A copy is the one place where text is allocated.
                     "clone" => Ok(format!("sg_clone({})", self.view(recv)?)),
@@ -1019,6 +1459,26 @@ impl<'a> Emitter<'a> {
                 Callee::Plain if name == "toString" => {
                     let (format, values) = self.format(recv)?;
                     Ok(format!("sg_format({}{values})", c_string(&format)))
+                }
+                // `null` where the plain operator would panic: overflow, and division by zero.
+                Callee::Plain if matches!(name.as_str(), "tryAdd" | "trySubtract" | "tryMultiply" | "tryDivide") => {
+                    let Ty::Nullable(inner) = &expr.ty else { return Err(not_yet(expr.span, &format!("the method `{name}`"))) };
+                    let Ty::Int(ty) = &**inner else { return Err(not_yet(expr.span, &format!("the method `{name}`"))) };
+                    let (option, int, temp) = (self.ctype(&expr.ty, expr.span)?, int_ctype(*ty), self.temp());
+                    let (left, right) = (self.value(recv)?, self.value(&args[0])?);
+                    let builtin = match name.as_str() {
+                        "tryAdd" => "add",
+                        "trySubtract" => "sub",
+                        "tryMultiply" => "mul",
+                        _ => {
+                            return Ok(format!(
+                                "({{ {int} {temp}a = {left}, {temp}b = {right}; {option} {temp} = {{ false, 0 }}; \
+                                 if ({temp}b != 0 && !(({int})-1 < 0 && {temp}b == ({int})-1 && __builtin_sub_overflow(({int})0, {temp}a, &{temp}.value))) \
+                                 {{ {temp}.has = true; {temp}.value = {temp}a / {temp}b; }} {temp}; }})"
+                            ));
+                        }
+                    };
+                    Ok(format!("({{ {option} {temp}; {temp}.has = !__builtin_{builtin}_overflow({left}, {right}, &{temp}.value); {temp}; }})"))
                 }
                 Callee::Plain => {
                     let wrapping = match name.as_str() {

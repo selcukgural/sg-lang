@@ -1,0 +1,4 @@
+panic: no node holds 2
+  --> panic_fallback_panics.sg:13:41
+ 13 |     var missing = find(read list, 2) ?? panic($"no node holds {2}")
+    |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
