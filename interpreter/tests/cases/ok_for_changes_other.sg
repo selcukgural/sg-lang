@@ -1,0 +1,39 @@
+struct Folder {
+    string name
+    List<string> files
+    int visits
+
+    void touch(ref this) {
+        this.visits += 1
+    }
+
+    int count(read this) {
+        return (int)this.files.length()
+    }
+
+    // Changing another field while the files are gone over is fine.
+    void scan(ref this) {
+        for file in read this.files {
+            this.visits += 1
+            print($"{this.name}/{file}")
+        }
+    }
+}
+
+void main() {
+    var folder = Folder { name = "src", files = List<string> { "a.sg", "b.sg" }, visits = 0 }
+    folder.scan()
+    var copies = List<string>()
+    for file in read folder.files {
+        copies.add(file.clone())         // another list
+        print(folder.count())            // looking is fine
+    }
+    for file in ref folder.files {
+        file = "renamed"                 // the item itself, through the loop
+    }
+    for file in copies {
+        folder.files.add(file)           // `copies` was handed over, `folder.files` is free
+    }
+    print(folder.files.length())
+    print(folder.visits)
+}

@@ -273,6 +273,7 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
             enums: &enums,
             sigs: &sigs,
             scopes: vec![Scope::default()],
+            locks: Vec::new(),
             loops: 0,
             ret: sig.ret.clone(),
             func_name: func.name.clone(),
@@ -317,13 +318,9 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
 }
 
 fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
-    if ty.name == "HashSet" {
-        return Err(Diag::error(ty.span, "`HashSet` is not in the interpreter yet")
-            .hint("until then: a `HashMap<T, bool>`, asked with `contains`"));
-    }
-    if !matches!(ty.name.as_str(), "Result" | "List" | "HashMap") && !ty.args.is_empty() {
+    if !matches!(ty.name.as_str(), "Result" | "List" | "HashMap" | "HashSet") && !ty.args.is_empty() {
         return Err(Diag::error(ty.span, format!("`{}<...>`: generic types are not in the interpreter yet", ty.name))
-            .note("the types written with `<` and `>` for now are `Result<T, E>`, `List<T>` and `HashMap<K, V>`"));
+            .note("the types written with `<` and `>` for now are `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>`"));
     }
     let no_borrow = |arg: &TypeExpr, of: &str| match arg.mode {
         Some(_) => Err(Diag::error(arg.span, format!("a `{of}` that holds borrows is not in the interpreter yet"))
@@ -337,6 +334,18 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             };
             no_borrow(item, "List")?;
             Ty::List(Box::new(resolve_type(item, names, false)?))
+        }
+        _ if ty.name == "HashSet" => {
+            let [item] = ty.args.as_slice() else {
+                return Err(Diag::error(ty.span, "`HashSet` is written with the type of its items: `HashSet<T>`"));
+            };
+            no_borrow(item, "HashSet")?;
+            let item_ty = resolve_type(item, names, false)?;
+            if !matches!(item_ty, Ty::Int(_) | Ty::Bool | Ty::Str) {
+                return Err(Diag::error(item.span, format!("`{item_ty}` cannot be an item of a `HashSet`"))
+                    .note("an item must be `Equatable` and `Hashable`; for now that is an integer, a `bool` or a `string`"));
+            }
+            Ty::Set(Box::new(item_ty))
         }
         _ if ty.name == "HashMap" => {
             let [key, value] = ty.args.as_slice() else {
@@ -413,7 +422,7 @@ fn all_copyable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d
         let diag = Diag::error(field.ty.span, format!("`{name}` cannot be `Copyable`: `{}` is a `{ty}`, which is not", field.name));
         return Err(match ty {
             Ty::Struct(inner) | Ty::Enum(inner) => diag.hint(format!("make `{inner}` `Copyable` too, or take `Copyable` off `{name}`")),
-            Ty::Str | Ty::Ptr(_) | Ty::List(_) | Ty::Map(..) => diag.note(format!("a `{ty}` owns memory on the heap; a copy would have to allocate, and that is written `.clone()`")),
+            Ty::Str | Ty::Ptr(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) => diag.note(format!("a `{ty}` owns memory on the heap; a copy would have to allocate, and that is written `.clone()`")),
             _ => diag,
         });
     }
@@ -441,7 +450,8 @@ fn can_format(ty: &Ty, formattable: &HashSet<String>) -> bool {
         Ty::Int(_) | Ty::Bool | Ty::Str | Ty::Void => true,
         Ty::Struct(_) | Ty::Enum(_) => unformattable(ty, formattable).is_none(),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => can_format(inner, formattable),
-        Ty::Result(ok, error) => can_format(ok, formattable) && can_format(error, formattable),
+        Ty::Result(ok, error) | Ty::Map(ok, error) => can_format(ok, formattable) && can_format(error, formattable),
+        Ty::List(item) | Ty::Set(item) => can_format(item, formattable),
         _ => false,
     }
 }
@@ -451,7 +461,8 @@ fn unformattable<'t>(ty: &'t Ty, formattable: &HashSet<String>) -> Option<&'t st
     match ty {
         Ty::Struct(name) | Ty::Enum(name) => (!formattable.contains(name)).then_some(name.as_str()),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => unformattable(inner, formattable),
-        Ty::Result(ok, error) => unformattable(ok, formattable).or_else(|| unformattable(error, formattable)),
+        Ty::Result(ok, error) | Ty::Map(ok, error) => unformattable(ok, formattable).or_else(|| unformattable(error, formattable)),
+        Ty::List(item) | Ty::Set(item) => unformattable(item, formattable),
         _ => None,
     }
 }
@@ -533,12 +544,38 @@ struct Checker<'a> {
     enums: &'a HashMap<String, EnumInfo>,
     sigs: &'a HashMap<String, FuncSig>,
     scopes: Vec<Scope>,
+    /// The collections the enclosing `for` loops are going over.
+    locks: Vec<Lock>,
     loops: usize,
     ret: Ty,
     func_name: String,
     /// The struct whose method is being checked.
     owner: Option<&'a str>,
     src: &'a str,
+}
+
+/// A collection that a `for` is going over by borrowing it: nothing may change it until the
+/// loop ends.
+struct Lock {
+    /// The variable it is reached from: scope and position in the scope.
+    var: (usize, usize),
+    /// The fields that lead from the variable to the collection.
+    path: String,
+    /// The collection as it is written at the loop.
+    text: String,
+    /// It is a `List`, so its positions can be gone over instead.
+    positions: bool,
+    span: Span,
+}
+
+/// The variable and fields a write to this place lands in: writing an item of `a.b` changes
+/// `a.b`.
+fn store_path(expr: &Expr) -> Option<(&str, String)> {
+    match &expr.kind {
+        ExprKind::Index { recv, .. } => store_path(recv),
+        ExprKind::Field { recv, .. } if recv.in_item() => store_path(recv),
+        _ => path_of(expr),
+    }
 }
 
 /// The variants a `match` or `is` chooses between: those of an enum, or `Ok` and `Error`.
@@ -655,6 +692,32 @@ impl<'a> Checker<'a> {
         }
         var.unopened = None;
         Ok(var)
+    }
+
+    /// Which variable a name means right now: scope and position in the scope.
+    fn var_id(&self, name: &str) -> Option<(usize, usize)> {
+        self.scopes.iter().enumerate().rev().find_map(|(depth, scope)| {
+            scope.vars.iter().rposition(|var| var.name == name).map(|position| (depth, position))
+        })
+    }
+
+    /// Rejects a change to a collection, or to what holds it, while a `for` goes over it.
+    fn not_locked(&self, expr: &Expr) -> Res<()> {
+        if self.locks.is_empty() {
+            return Ok(());
+        }
+        let Some((name, path)) = store_path(expr) else { return Ok(()) };
+        let Some(id) = self.var_id(name) else { return Ok(()) };
+        let overlaps = |lock: &Lock| path.is_empty() || lock.path.is_empty() || within(&path, &lock.path) || within(&lock.path, &path);
+        let Some(lock) = self.locks.iter().find(|lock| lock.var == id && overlaps(lock)) else { return Ok(()) };
+        let text = &self.src[expr.span.start..expr.span.end];
+        let over = &lock.text;
+        let diag = Diag::error(expr.span, format!("`{text}` cannot be changed or moved while a `for` goes over `{over}`"))
+            .related(lock.span, "the loop is here");
+        Err(match lock.positions {
+            true => diag.hint(format!("go over the positions instead (`for i in 0..{over}.length()`), or keep the changes in another list until the loop ends")),
+            false => diag.hint("keep the changes in a list until the loop ends, and apply them after it"),
+        })
     }
 
     fn narrow(&mut self, name: &str) {
@@ -804,6 +867,14 @@ impl<'a> Checker<'a> {
                         ty
                     }
                 };
+                // Pointing a `read` variable at something else changes nothing it looked at.
+                let rebinds = match &target.kind {
+                    ExprKind::Var(name) => self.find(name).is_some_and(|var| matches!(var.declared, Ty::Read(_))),
+                    _ => false,
+                };
+                if !rebinds {
+                    self.not_locked(target)?;
+                }
                 if op.is_some() && !matches!(target_ty, Ty::Int(_)) {
                     return Err(Diag::error(
                         stmt_span,
@@ -882,6 +953,14 @@ impl<'a> Checker<'a> {
                 self.forget_narrowing_of_assigned(body, None);
                 // Like `match`: an owned collection is handed over to the loop, a borrowed one
                 // lends its items.
+                let source = match &iter.kind {
+                    ExprKind::Borrow { expr, .. } => expr,
+                    _ => &*iter,
+                };
+                let lock = store_path(source).and_then(|(name, path)| {
+                    let text = self.src[source.span.start..source.span.end].to_string();
+                    Some(Lock { var: self.var_id(name)?, path, text, positions: false, span: iter.span })
+                });
                 let found = self.expr(iter, None)?;
                 let mut mode = None;
                 let mut inner = &found;
@@ -902,6 +981,11 @@ impl<'a> Checker<'a> {
                 let item = match inner {
                     Ty::List(item) => (**item).clone(),
                     Ty::Map(key, value) => Ty::Entry(key.clone(), value.clone()),
+                    Ty::Set(_) if mode == Some(Mode::Ref) => {
+                        return Err(Diag::error(iter.span, "the items of a `HashSet` cannot be changed in place: the set finds them by their value")
+                            .hint("go over it with `read`, and use `remove` and `add` after the loop"));
+                    }
+                    Ty::Set(item) => (**item).clone(),
                     Ty::Str => {
                         return Err(Diag::error(iter.span, "`for` does not go over a `string`")
                             .hint("the bytes: `for i in 0..text.length()` and `text[i]`")
@@ -912,7 +996,7 @@ impl<'a> Checker<'a> {
                             .hint("test it first with `is not null`, or give a fallback with `??`"));
                     }
                     _ => {
-                        return Err(Diag::error(iter.span, format!("`for` goes over a range `a..b`, a `List` or a `HashMap`, found `{found}`")));
+                        return Err(Diag::error(iter.span, format!("`for` goes over a range `a..b`, a `List`, a `HashMap` or a `HashSet`, found `{found}`")));
                     }
                 };
                 let item = match mode {
@@ -922,7 +1006,17 @@ impl<'a> Checker<'a> {
                 };
                 *by = mode;
                 // The variable is new in every round, so an owned item can be used up.
-                self.loop_body(body, None, vec![(var.clone(), item, *var_span)])?;
+                // A borrowed collection stays as it is until the loop ends.
+                let locked = mode.is_some() && lock.is_some();
+                if locked {
+                    let positions = matches!(found.strip_borrow(), Ty::List(_) | Ty::Ptr(_));
+                    self.locks.extend(lock.map(|lock| Lock { positions, ..lock }));
+                }
+                let result = self.loop_body(body, None, vec![(var.clone(), item, *var_span)]);
+                if locked {
+                    self.locks.pop();
+                }
+                result?;
             }
             StmtKind::Return(value) => self.returned(value.as_mut(), stmt_span)?,
             StmtKind::Break | StmtKind::Continue => {
@@ -1161,7 +1255,7 @@ impl<'a> Checker<'a> {
                             *index = position;
                             return Ok(Some((field, writable)));
                         }
-                        Ty::List(_) | Ty::Map(..) if matches!(name.as_str(), "length" | "count" | "Count" | "size") => {
+                        Ty::List(_) | Ty::Map(..) | Ty::Set(_) if matches!(name.as_str(), "length" | "count" | "Count" | "size") => {
                             return Err(Diag::error(*name_span, format!("`{ty}` has no fields"))
                                 .hint("the number of items is a method: `.length()`"));
                         }
@@ -1283,6 +1377,7 @@ impl<'a> Checker<'a> {
             };
             return Err(Diag::error(span, format!("a `{ty}` cannot be moved out of an item of a collection")).hint(hint));
         }
+        self.not_locked(expr)?;
         let Some((name, path)) = path_of(expr) else { return Ok(()) };
         let Some(var) = self.find(name) else { return Ok(()) };
         if path.is_empty() {
@@ -1403,6 +1498,15 @@ impl<'a> Checker<'a> {
                             if given.braced {
                                 return Err(Diag::error(given.span, "an item of a `List` is one value, written without braces")
                                     .hint("`List<int> { 1, 2 }`"));
+                            }
+                            self.typed(&mut given.values[0], item)?;
+                        }
+                    }
+                    Ty::Set(item) => {
+                        for given in items.iter_mut().flatten() {
+                            if given.braced {
+                                return Err(Diag::error(given.span, "an item of a `HashSet` is one value, written without braces")
+                                    .hint("`HashSet<int> { 1, 2 }`"));
                             }
                             self.typed(&mut given.values[0], item)?;
                         }
@@ -1583,6 +1687,7 @@ impl<'a> Checker<'a> {
                 if !writable {
                     return Err(Diag::error(inner.span, "this is reached through a `read` borrow and cannot be lent as `ref`"));
                 }
+                self.not_locked(inner)?;
                 Ok(Ty::Ref(base))
             }
             ExprKind::IsNull { expr: inner, .. } => {
@@ -2103,8 +2208,8 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// What `print`, `$"..."` and `f.write` accept: numbers, `bool`, text, and a struct or an
-    /// enum that is `Formattable`, also behind a pointer.
+    /// What `print`, `$"..."` and `f.write` accept: numbers, `bool`, text, a struct or an enum
+    /// that is `Formattable`, and a collection of such values; also behind a pointer.
     fn printable(&self, ty: &Ty, span: Span) -> Res<()> {
         let mut inner = ty.strip_borrow();
         while let Ty::Ptr(behind) = inner {
@@ -2120,8 +2225,15 @@ impl<'a> Checker<'a> {
                 .hint("give a fallback with `??`, or test with `is null`")),
             Ty::Result(..) => Err(Diag::error(span, format!("this is `{ty}`: either a value or an error"))
                 .hint("open it first with `try`, `??` or `match`")),
-            Ty::List(_) | Ty::Map(..) => Err(Diag::error(span, format!("a `{inner}` cannot be written as text"))
-                .hint("write the items one by one: `for item in read ... { print(item) }`")),
+            // A collection is written item by item, so the items must have a text.
+            Ty::List(_) | Ty::Map(..) | Ty::Set(_) if can_format(inner, self.formattable) => Ok(()),
+            Ty::List(_) | Ty::Map(..) | Ty::Set(_) => {
+                let diag = Diag::error(span, format!("a `{inner}` cannot be written as text"));
+                Err(match unformattable(inner, self.formattable) {
+                    Some(item) => diag.hint(format!("its items are written one by one, so add `Formattable` to the definition: `{item} : Formattable`")),
+                    None => diag,
+                })
+            }
             other => Err(Diag::error(span, format!("a `{other}` value cannot be written as text"))),
         }
     }
@@ -2231,6 +2343,16 @@ impl<'a> Checker<'a> {
                 if self.structs.contains_key(owner.as_str()) {
                     return self.static_call(owner, name, name_span, args, callee, span);
                 }
+                // `string.join(", ", read names)`
+                if owner == "string" {
+                    if name != "join" {
+                        return Err(Diag::error(name_span, format!("`string` has no function `{name}`")).note("functions for now: join"));
+                    }
+                    let text = Ty::Read(Box::new(Ty::Str));
+                    self.args(name, args, &[text, Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))))], span)?;
+                    *callee = Callee::Join;
+                    return Ok(Ty::Str);
+                }
                 let diag = Diag::error(recv.span, format!("there is no variable or type named `{owner}`"));
                 let vars = self.scopes.iter().flat_map(|scope| scope.vars.iter().map(|var| var.name.as_str()));
                 return Err(match nearest(owner, vars.chain(self.structs.keys().map(String::as_str))) {
@@ -2275,7 +2397,7 @@ impl<'a> Checker<'a> {
                         return Err(Diag::error(recv.span, format!("`{name}` takes `ref this`, but this value is reached through a `read` borrow"))
                             .hint("take the value as `ref` instead of `read`"));
                     }
-                    This::Ref => {}
+                    This::Ref => self.not_locked(recv)?,
                     // A `Copyable` receiver is copied in, like an argument.
                     This::Value if target.is_copyable(self.copyable) => {}
                     This::Value if borrowed => {
@@ -2294,7 +2416,7 @@ impl<'a> Checker<'a> {
             "replace" => return self.replace(recv, &recv_ty, writable, is_place, args, callee, span),
             _ => {}
         }
-        if matches!(target, Ty::List(_) | Ty::Map(..)) {
+        if matches!(target, Ty::List(_) | Ty::Map(..) | Ty::Set(_)) {
             return self.collection_method(recv, target, writable, name, name_span, args, span);
         }
 
@@ -2333,6 +2455,12 @@ impl<'a> Checker<'a> {
             (Ty::Str, "length") => {
                 arity(0)?;
                 Ok(Ty::Int(IntTy::Nint))
+            }
+            // The position of the first such byte, `null` if there is none.
+            (Ty::Str, "indexOf") => {
+                arity(1)?;
+                self.typed(&mut args[0], &Ty::Int(IntTy::Byte))?;
+                Ok(Ty::Nullable(Box::new(Ty::Int(IntTy::Nint))))
             }
             (Ty::Formatter, "write") => {
                 arity(1)?;
@@ -2386,7 +2514,22 @@ impl<'a> Checker<'a> {
                 Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len())))
             }
         };
-        let what = if matches!(target, Ty::List(_)) { "list" } else { "map" };
+        let what = match target {
+            Ty::List(_) => "list",
+            Ty::Map(..) => "map",
+            _ => "set",
+        };
+        let changing = matches!(name, "add" | "clear" | "removeLast" | "reverse" | "remove" | "getOrAdd" | "sort");
+        if changing && writable {
+            self.not_locked(recv)?;
+        }
+        // What `indexOf`, `contains` and `sort` can compare until `Equatable` and `Comparable` exist.
+        let compares = |item: &Ty, needs: &str| match item {
+            Ty::Int(_) | Ty::Str => Ok(()),
+            Ty::Bool if needs == "Equatable" => Ok(()),
+            other => Err(Diag::error(name_span, format!("`{name}` compares the items, and `{other}` is not `{needs}`"))
+                .note(format!("`{needs}` for your own types is not in the interpreter yet; for now: integers{} and `string`", if needs == "Equatable" { ", `bool`" } else { "" }))),
+        };
         let changes = || {
             if writable {
                 Ok(())
@@ -2428,6 +2571,43 @@ impl<'a> Checker<'a> {
                 changes()?;
                 Ok(Ty::Void)
             }
+            (Ty::List(item), "indexOf") => {
+                arity(1)?;
+                compares(item, "Equatable")?;
+                self.typed(&mut args[0], &key_param(item))?;
+                Ok(nullable(&Ty::Int(IntTy::Nint)))
+            }
+            (Ty::List(item), "contains") => {
+                arity(1)?;
+                compares(item, "Equatable")?;
+                self.typed(&mut args[0], &key_param(item))?;
+                Ok(Ty::Bool)
+            }
+            (Ty::List(item), "sort") => {
+                arity(0)?;
+                changes()?;
+                compares(item, "Comparable")?;
+                Ok(Ty::Void)
+            }
+            // `true` if the item was not there before.
+            (Ty::Set(item), "add") => {
+                arity(1)?;
+                changes()?;
+                self.typed(&mut args[0], item)?;
+                Ok(Ty::Bool)
+            }
+            (Ty::Set(item), "contains") => {
+                arity(1)?;
+                self.typed(&mut args[0], &key_param(item))?;
+                Ok(Ty::Bool)
+            }
+            // `true` if the item was there.
+            (Ty::Set(item), "remove") => {
+                arity(1)?;
+                changes()?;
+                self.typed(&mut args[0], &key_param(item))?;
+                Ok(Ty::Bool)
+            }
             (Ty::Map(key, value), "add") => {
                 arity(2)?;
                 changes()?;
@@ -2460,15 +2640,17 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let known: &[&str] = match target {
-                    Ty::List(_) => &["add", "get", "length", "removeLast", "reverse", "clear"],
-                    _ => &["add", "get", "getOrAdd", "contains", "remove", "length", "clear"],
+                    Ty::List(_) => &["add", "get", "length", "indexOf", "contains", "sort", "removeLast", "reverse", "clear"],
+                    Ty::Map(..) => &["add", "get", "getOrAdd", "contains", "remove", "length", "clear"],
+                    _ => &["add", "contains", "remove", "length", "clear"],
                 };
                 // Names the same thing has in other languages.
                 let other_name = match (target, name) {
                     (_, "push" | "append" | "insert" | "put" | "set") => Some("add"),
                     (_, "count" | "size" | "len" | "Count") => Some("length"),
                     (Ty::List(_), "pop") => Some("removeLast"),
-                    (Ty::Map(..), "containsKey" | "has") => Some("contains"),
+                    (_, "containsKey" | "has" | "includes") => Some("contains"),
+                    (Ty::List(_), "find") => Some("indexOf"),
                     (Ty::List(_), "at") => Some("get"),
                     _ => None,
                 };
@@ -2514,6 +2696,7 @@ impl<'a> Checker<'a> {
             return Err(Diag::error(recv.span, "this is reached through a `read` borrow, so nothing can be taken out of it")
                 .hint("take the value as `ref` instead of `read`"));
         }
+        self.not_locked(recv)?;
         if let ExprKind::Var(name) = &recv.kind {
             let var = self.var(name, recv.span)?;
             var.current = var.declared.clone();
@@ -2545,6 +2728,7 @@ impl<'a> Checker<'a> {
             return Err(Diag::error(recv.span, "this is reached through a `read` borrow and cannot be replaced")
                 .hint("take the value as `ref` instead of `read`"));
         }
+        self.not_locked(recv)?;
         let slot = recv_ty.strip_borrow().clone();
         self.typed(&mut args[0], &slot)?;
         *callee = Callee::Replace;

@@ -1,0 +1,6 @@
+void main() {
+    var seen = HashSet<int> { 1 }
+    for id in ref seen {
+        id += 1
+    }
+}

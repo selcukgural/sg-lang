@@ -1,0 +1,7 @@
+struct Point {
+    int x
+}
+
+void main() {
+    var seen = HashSet<Point>()
+}

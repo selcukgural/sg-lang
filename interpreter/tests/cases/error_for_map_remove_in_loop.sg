@@ -1,0 +1,8 @@
+void main() {
+    var ages = HashMap<string, int> { {"ada", 36} }
+    for item in read ages {
+        if item.value > 30 {
+            _ = ages.remove(item.key)
+        }
+    }
+}

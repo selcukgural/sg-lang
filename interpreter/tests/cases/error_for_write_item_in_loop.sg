@@ -1,0 +1,6 @@
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    for x in read xs {
+        xs[0] = x
+    }
+}

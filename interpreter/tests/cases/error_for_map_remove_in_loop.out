@@ -1,0 +1,9 @@
+error: `ages` cannot be changed or moved while a `for` goes over `ages`
+  --> error_for_map_remove_in_loop.sg:5:17
+ 5 |             _ = ages.remove(item.key)
+   |                 ^^^^
+  the loop is here:
+  --> error_for_map_remove_in_loop.sg:3:17
+ 3 |     for item in read ages {
+   |                 ^^^^^^^^^
+  hint: keep the changes in a list until the loop ends, and apply them after it

@@ -1,0 +1,10 @@
+void consume(List<int> xs) {
+    print(xs.length())
+}
+
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    for x in read xs {
+        consume(xs)
+    }
+}

@@ -1,0 +1,18 @@
+struct Folder {
+    List<string> files
+
+    void add(ref this, string file) {
+        this.files.add(file)
+    }
+
+    void duplicate(ref this) {
+        for file in read this.files {
+            this.add(file.clone())
+        }
+    }
+}
+
+void main() {
+    var folder = Folder { files = List<string>() }
+    folder.duplicate()
+}

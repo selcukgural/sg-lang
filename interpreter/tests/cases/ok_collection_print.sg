@@ -1,0 +1,29 @@
+struct Point : Copyable, Formattable {
+    int x
+    int y
+}
+
+// A struct that holds a list is written field by field like any other.
+struct Team : Formattable {
+    string name
+    List<string> members
+}
+
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    print(xs)
+    print(List<int>())
+    print(List<string> { "ada", "grace" })
+    print(List<Point> { Point { x = 1, y = 2 } })
+    print(List<List<int>> { List<int> { 1 }, List<int>() })
+    print($"{xs.length()} items: {xs}")
+
+    var ages = HashMap<string, int> { {"grace", 45}, {"ada", 36} }
+    print(ages)
+    print(HashMap<int, bool>())
+    print(HashSet<int> { 3, 1, 2 })
+
+    var team = Team { name = "core", members = List<string> { "ada" } }
+    print(team)
+    print(read xs)
+}

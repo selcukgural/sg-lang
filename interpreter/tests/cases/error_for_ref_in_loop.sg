@@ -1,0 +1,14 @@
+void grow(ref List<int> xs) {
+    xs.add(0)
+}
+
+void fill(ref List<int> xs) {
+    for x in xs {
+        grow(ref xs)
+    }
+}
+
+void main() {
+    var xs = List<int> { 1 }
+    fill(ref xs)
+}

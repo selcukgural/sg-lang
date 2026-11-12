@@ -1,0 +1,33 @@
+void main() {
+    var seen = HashSet<int> { 3, 1 }
+    print(seen.add(2))
+    print(seen.add(3))                   // already there: false, and nothing changes
+    print(seen.length())
+    print(seen.contains(1))
+    print(seen.contains(7))
+    print(seen.remove(1))
+    print(seen.remove(1))
+    for id in read seen {
+        print(id)
+    }
+
+    var words = HashSet<string>()
+    var text = List<string> { "to", "be", "or", "not", "to", "be" }
+    var repeated = 0
+    for word in read text {
+        if !words.add(word.clone()) {
+            repeated += 1
+        }
+    }
+    print(repeated)
+    string key = "or"
+    print(words.contains(read key))
+    print(words.contains("and"))
+    for word in words {                  // handed over: each word is owned
+        string owned = word
+        print(owned)
+    }
+
+    seen.clear()
+    print(seen.length())
+}

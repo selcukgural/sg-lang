@@ -1,0 +1,35 @@
+void main() {
+    var xs = List<int> { 30, 10, 20, 10 }
+    print(xs.indexOf(10) ?? -1)
+    print(xs.indexOf(99) ?? -1)
+    print(xs.contains(20))
+    print(xs.contains(21))
+    xs.sort()
+    for x in read xs {
+        print(x)
+    }
+
+    var names = List<string> { "grace", "ada", "edsger" }
+    string wanted = "ada"
+    print(names.indexOf(read wanted) ?? -1)
+    print(names.contains("alan"))
+    names.sort()
+    print(string.join(", ", read names))
+    names.reverse()
+    print(string.join(" > ", read names))
+    print(string.join("", read List<string>()))
+
+    var line = "Host: example.org"
+    var colon = line.indexOf(':') ?? -1
+    print(colon)
+    print(line[..colon])
+    print(line.indexOf('#') is null)
+
+    // Going over the positions, the list can grow inside the loop.
+    for i in 0..xs.length() {
+        if xs[i] > 10 {
+            xs.add(xs[i] * 2)
+        }
+    }
+    print(xs.length())
+}

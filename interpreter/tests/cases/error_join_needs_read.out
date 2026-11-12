@@ -1,0 +1,5 @@
+error: expected `read List<string>`, found `List<string>`
+  --> error_join_needs_read.sg:3:29
+ 3 |     print(string.join(", ", names))
+   |                             ^^^^^
+  hint: lend it with `read`: `read names`

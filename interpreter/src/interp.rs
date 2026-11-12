@@ -42,6 +42,8 @@ pub enum Value {
     /// Kept in the order of the keys so that a run always prints the same; the design
     /// promises no order.
     Map(Rc<RefCell<Entries>>),
+    /// `HashSet<T>`: the items, each under itself as the key.
+    Set(Rc<RefCell<BTreeMap<Key, Value>>>),
     /// What `format` writes into.
     Formatter(Rc<RefCell<String>>),
     /// `T*`
@@ -378,20 +380,22 @@ impl<'a> Interp<'a> {
             }
             StmtKind::ForEach { var, iter, body, by, .. } => {
                 let collection = owned(self.expr(iter, frame)?);
-                // A map is gone over as it was when the loop started.
-                let entries: Option<Vec<(Value, Cell)>> = match &collection {
-                    Value::Map(entries) => Some(entries.borrow().values().cloned().collect()),
+                // A map or a set is gone over as it was when the loop started.
+                let entry = |(key, value): &(Value, Cell)| {
+                    cell(Value::Struct("entry".into(), Rc::new(vec![cell(key.clone()), value.clone()])))
+                };
+                let snapshot: Option<Vec<Cell>> = match &collection {
+                    Value::Map(entries) => Some(entries.borrow().values().map(entry).collect()),
+                    Value::Set(items) => Some(items.borrow().values().cloned().map(cell).collect()),
                     _ => None,
                 };
                 let depth = frame.scopes.len();
                 let mut next = 0;
                 loop {
-                    let item = match (&collection, &entries) {
-                        (_, Some(entries)) => entries.get(next).map(|(key, value)| {
-                            cell(Value::Struct("entry".into(), Rc::new(vec![cell(key.clone()), value.clone()])))
-                        }),
+                    let item = match (&collection, &snapshot) {
+                        (_, Some(items)) => items.get(next).cloned(),
                         (Value::List(items), _) => items.borrow().get(next).cloned(),
-                        _ => unreachable!("the checker only lets `for` go over a list or a map"),
+                        _ => unreachable!("the checker only lets `for` go over a collection"),
                     };
                     let Some(item) = item else { break };
                     next += 1;
@@ -509,6 +513,14 @@ impl<'a> Interp<'a> {
                         cells.push(cell(self.expr(&item.values[0], frame)?));
                     }
                     return Ok(Value::List(Rc::new(RefCell::new(cells))));
+                }
+                if ty.name == "HashSet" {
+                    let mut set = BTreeMap::new();
+                    for item in given {
+                        let value = strip(self.expr(&item.values[0], frame)?);
+                        set.insert(key_of(&value), value);
+                    }
+                    return Ok(Value::Set(Rc::new(RefCell::new(set))));
                 }
                 let mut entries = Entries::new();
                 for item in given {
@@ -749,6 +761,16 @@ impl<'a> Interp<'a> {
                     let values = self.values(args, frame)?;
                     self.call(func, Some(this), values, expr.span)
                 }
+                Callee::Join => {
+                    let Value::Str(separator) = strip(self.expr(&args[0], frame)?) else {
+                        unreachable!("the checker makes the separator text")
+                    };
+                    let Value::List(items) = owned(self.expr(&args[1], frame)?) else {
+                        unreachable!("the checker makes the second argument a list")
+                    };
+                    let parts: Vec<String> = items.borrow().iter().map(|item| item.borrow().format()).collect();
+                    Ok(Value::Str(parts.join(&separator).into()))
+                }
                 Callee::Take => {
                     let slot = behind_borrows(self.place(recv, frame)?);
                     let old = slot.replace(Value::Null);
@@ -773,7 +795,7 @@ impl<'a> Interp<'a> {
                     for arg in args {
                         values.push(strip(self.expr(arg, frame)?));
                     }
-                    if matches!(recv, Value::List(_) | Value::Map(_)) {
+                    if matches!(recv, Value::List(_) | Value::Map(_) | Value::Set(_)) {
                         return Ok(collection_method(recv, name, values, expr.span)?);
                     }
                     Ok(method(recv, name, values))
@@ -894,6 +916,24 @@ impl<'a> Interp<'a> {
                     false => format!("{word}({})", parts.join(", ")),
                 })
             }
+            // `[1, 2]`, `{"x": 10}`, `{1, 2}`
+            Value::List(items) => {
+                let items: Vec<Cell> = items.borrow().clone();
+                Ok(format!("[{}]", list(self, &items)?.join(", ")))
+            }
+            Value::Set(items) => {
+                let items: Vec<Cell> = items.borrow().values().cloned().map(cell).collect();
+                Ok(format!("{{{}}}", list(self, &items)?.join(", ")))
+            }
+            Value::Map(entries) => {
+                let entries: Vec<(Value, Cell)> = entries.borrow().values().cloned().collect();
+                let mut parts = Vec::new();
+                for (key, value) in entries {
+                    let value = value.borrow().clone();
+                    parts.push(format!("{}: {}", self.show(&key, true, span)?, self.show(&value, true, span)?));
+                }
+                Ok(format!("{{{}}}", parts.join(", ")))
+            }
             Value::Formatter(_) => unreachable!("the checker does not let a `Formatter` be written"),
             other => Ok(other.format()),
         }
@@ -973,6 +1013,30 @@ fn collection_method(recv: Value, name: &str, mut args: Vec<Value>, span: Span) 
             items.borrow_mut().reverse();
             Value::Void
         }
+        (Value::List(items), "indexOf" | "contains") => {
+            let wanted = key_of(&args[0]);
+            let found = items.borrow().iter().position(|item| key_of(&item.borrow()) == wanted);
+            match (name, found) {
+                ("contains", _) => Value::Bool(found.is_some()),
+                (_, Some(at)) => Value::Int(IntTy::Nint, at as i64),
+                (_, None) => Value::Null,
+            }
+        }
+        (Value::List(items), "sort") => {
+            items.borrow_mut().sort_by_cached_key(|item| key_of(&item.borrow()));
+            Value::Void
+        }
+        (Value::Set(items), "length") => Value::Int(IntTy::Nint, items.borrow().len() as i64),
+        (Value::Set(items), "clear") => {
+            items.borrow_mut().clear();
+            Value::Void
+        }
+        (Value::Set(items), "add") => {
+            let value = args.remove(0);
+            Value::Bool(items.borrow_mut().insert(key_of(&value), value).is_none())
+        }
+        (Value::Set(items), "contains") => Value::Bool(items.borrow().contains_key(&key_of(&args[0]))),
+        (Value::Set(items), "remove") => Value::Bool(items.borrow_mut().remove(&key_of(&args[0])).is_some()),
         (Value::Map(entries), "length") => Value::Int(IntTy::Nint, entries.borrow().len() as i64),
         (Value::Map(entries), "clear") => {
             entries.borrow_mut().clear();
@@ -1030,6 +1094,10 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
         }
         (_, "toString", []) => Value::Str(recv.format().into()),
         (Value::Str(text), "length", []) => Value::Int(IntTy::Nint, text.len() as i64),
+        (Value::Str(text), "indexOf", [Value::Int(_, byte)]) => match text.bytes().position(|found| found as i64 == *byte) {
+            Some(at) => Value::Int(IntTy::Nint, at as i64),
+            None => Value::Null,
+        },
         _ => unreachable!("the checker only lets known methods through"),
     }
 }

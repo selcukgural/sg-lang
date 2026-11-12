@@ -1,0 +1,11 @@
+[1, 2, 3]
+[]
+["ada", "grace"]
+[Point { x = 1, y = 2 }]
+[[1], []]
+3 items: [1, 2, 3]
+{"ada": 36, "grace": 45}
+{}
+{1, 2, 3}
+Team { name = "core", members = ["ada"] }
+[1, 2, 3]

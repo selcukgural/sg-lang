@@ -1,0 +1,5 @@
+error: `HashSet<int>` cannot be indexed
+  an index is written on a `string` (one byte), a `List` and a `HashMap`
+  --> error_set_index.sg:3:11
+ 3 |     print(seen[0])
+   |           ^^^^

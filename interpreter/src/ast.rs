@@ -68,6 +68,8 @@ pub enum Callee {
     Static { owner: String, name: String },
     /// A method of a struct, called on a value.
     Method { owner: String, this: This },
+    /// `string.join(separator, read names)`
+    Join,
     /// `slot.take()`: gives the value and leaves `null`.
     Take,
     /// `slot.replace(value)`: gives the old value and leaves the new one.

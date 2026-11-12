@@ -1,0 +1,8 @@
+struct Point {
+    int x
+}
+
+void main() {
+    var points = List<Point>()
+    print(points.indexOf(Point { x = 1 }) ?? -1)
+}

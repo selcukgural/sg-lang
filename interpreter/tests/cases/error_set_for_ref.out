@@ -1,0 +1,5 @@
+error: the items of a `HashSet` cannot be changed in place: the set finds them by their value
+  --> error_set_for_ref.sg:3:15
+ 3 |     for id in ref seen {
+   |               ^^^^^^^^
+  hint: go over it with `read`, and use `remove` and `add` after the loop

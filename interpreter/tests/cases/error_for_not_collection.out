@@ -1,4 +1,4 @@
-error: `for` goes over a range `a..b`, a `List` or a `HashMap`, found `int`
+error: `for` goes over a range `a..b`, a `List`, a `HashMap` or a `HashSet`, found `int`
   --> error_for_not_collection.sg:3:14
  3 |     for x in n {
    |              ^

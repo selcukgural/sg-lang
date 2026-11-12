@@ -1,5 +1,5 @@
-error: a `List<int>` cannot be written as text
-  --> error_list_print.sg:3:11
- 3 |     print(xs)
-   |           ^^
-  hint: write the items one by one: `for item in read ... { print(item) }`
+error: a `List<Point>` cannot be written as text
+  --> error_list_print.sg:7:11
+ 7 |     print(points)
+   |           ^^^^^^
+  hint: its items are written one by one, so add `Formattable` to the definition: `Point : Formattable`

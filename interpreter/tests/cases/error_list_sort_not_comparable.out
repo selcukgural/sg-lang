@@ -1,0 +1,5 @@
+error: `sort` compares the items, and `Point` is not `Comparable`
+  `Comparable` for your own types is not in the interpreter yet; for now: integers and `string`
+  --> error_list_sort_not_comparable.sg:7:12
+ 7 |     points.sort()
+   |            ^^^^

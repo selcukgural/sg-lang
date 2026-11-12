@@ -1,0 +1,9 @@
+error: `xs[0]` cannot be changed or moved while a `for` goes over `xs`
+  --> error_for_write_item_in_loop.sg:4:9
+ 4 |         xs[0] = x
+   |         ^^^^^
+  the loop is here:
+  --> error_for_write_item_in_loop.sg:3:14
+ 3 |     for x in read xs {
+   |              ^^^^^^^
+  hint: go over the positions instead (`for i in 0..xs.length()`), or keep the changes in another list until the loop ends

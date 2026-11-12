@@ -96,6 +96,8 @@ pub enum Ty {
     List(Box<Ty>),
     /// `HashMap<K, V>`: built in.
     Map(Box<Ty>, Box<Ty>),
+    /// `HashSet<T>`: built in.
+    Set(Box<Ty>),
     /// What a `for` over a `HashMap<K, V>` gives: a `key` and a `value`.
     Entry(Box<Ty>, Box<Ty>),
     /// What a `format` method writes into: `ref Formatter f`.
@@ -126,7 +128,7 @@ impl Ty {
             Ty::Nullable(inner) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-            Ty::Str | Ty::Ptr(_) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Entry(..) => false,
+            Ty::Str | Ty::Ptr(_) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) => false,
         }
     }
 
@@ -160,6 +162,7 @@ impl fmt::Display for Ty {
             Ty::Result(ok, error) => write!(f, "Result<{ok}, {error}>"),
             Ty::List(item) => write!(f, "List<{item}>"),
             Ty::Map(key, value) => write!(f, "HashMap<{key}, {value}>"),
+            Ty::Set(item) => write!(f, "HashSet<{item}>"),
             Ty::Entry(key, value) => write!(f, "entry of HashMap<{key}, {value}>"),
             Ty::Read(inner) => write!(f, "read {inner}"),
             Ty::Ref(inner) => write!(f, "ref {inner}"),
