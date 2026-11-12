@@ -5,8 +5,8 @@
 //! overflow, division by zero, a cast that does not fit, `assert` and `panic`.
 //!
 //! Only a part of the language is compiled so far: integers, `bool`, text, functions, structs,
-//! enums with `match` and `is`, `Result` and `try`, `T*` and `new`, `T?`, `read` and `ref`, and
-//! `print`. Anything else is an error that names what is missing, so nothing is compiled
+//! enums with `match` and `is`, `Result` and `try`, `List`, `T*` and `new`, `T?`, `read` and
+//! `ref`, and `print`. Anything else is an error that names what is missing, so nothing is compiled
 //! wrongly in silence.
 //!
 //! How values are represented: `byte`, `int`, `long` and `nint` are fixed-size C integers; a
@@ -16,7 +16,8 @@
 //! costs nothing. Any other `T?` is the value and a flag beside it. An enum is a tag and,
 //! beside it, room for the largest variant (a C union); a `match` is a chain of tests on the tag.
 //! A `Result<T, E>` is such an enum with the variants `Ok(T value)` and `Error(E cause)`; `try`
-//! is one test on the tag and, on an error, a `return`.
+//! is one test on the tag and, on an error, a `return`. A `List<T>` is a pointer to its items,
+//! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index.
 //!
 //! Who frees: the checker has decided who owns each value, so the back end only follows it.
 //! An owned value is dropped where its variable ends. A use that moves the value (marked by
@@ -206,6 +207,27 @@ SG_COLD static _Noreturn void sg_panicf(const char* loc, const char* format, ...
     fputc('\n', stderr);
     sg_die(loc);
 }
+/* A list that is full gets room for twice as many items. */
+static void* sg_grow(void* items, int64_t* cap, size_t size) {
+    int64_t room = *cap ? *cap * 2 : 4;
+    void* grown = realloc(items, (size_t)room * size);
+    if (!grown) abort();
+    *cap = room;
+    return grown;
+}
+static sg_string sg_join(sg_str separator, const sg_string* items, int64_t count) {
+    int64_t len = 0;
+    for (int64_t i = 0; i < count; i++) len += items[i].len + (i ? separator.len : 0);
+    if (len == 0) return SG_LIT("", 0);
+    uint8_t* bytes = malloc((size_t)len);
+    if (!bytes) abort();
+    uint8_t* at = bytes;
+    for (int64_t i = 0; i < count; i++) {
+        if (i && separator.len) { memcpy(at, separator.ptr, (size_t)separator.len); at += separator.len; }
+        if (items[i].len) { memcpy(at, items[i].ptr, (size_t)items[i].len); at += items[i].len; }
+    }
+    return (sg_string){ bytes, len, len };
+}
 static void sg_quoted(sg_str s) {
     fputc('"', stderr);
     for (int64_t i = 0; i < s.len; i++) {
@@ -339,7 +361,7 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
 
 fn not_yet(span: Span, what: &str) -> Diag {
     Diag::error(span, format!("{what} is not in the C back end yet"))
-        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, `T*`, `T?`, `read` and `ref`, and `print`")
+        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, `List`, `T*`, `T?`, `read` and `ref`, and `print`")
 }
 
 /// A C string literal for any text.
@@ -411,6 +433,7 @@ fn mangle(ty: &Ty) -> Option<String> {
             Ty::Nullable(_) => return None,
             _ => format!("O_{}", mangle(inner)?),
         },
+        Ty::List(item) => format!("L_{}", mangle(item)?),
         // The length of the first name keeps two different pairs from sharing a name.
         Ty::Result(ok, error) => {
             let ok = if **ok == Ty::Void { "void".to_string() } else { mangle(ok)? };
@@ -436,6 +459,16 @@ fn held_types<'t>(ty: &'t Ty, found: &mut Vec<&'t str>) {
         }
         _ => {}
     }
+}
+
+/// The list a value is or leads to, behind borrows and pointers, and how many pointers.
+fn list_behind(ty: &Ty) -> Option<(&Ty, usize)> {
+    let mut ty = ty.strip_borrow();
+    let mut boxes = 0;
+    while let Ty::Ptr(inner) = ty {
+        (ty, boxes) = (inner, boxes + 1);
+    }
+    matches!(ty, Ty::List(_)).then_some((ty, boxes))
 }
 
 /// A value that is written out in full where it is used: when it is computed cannot matter.
@@ -501,6 +534,9 @@ struct Local {
     /// Only ever set when that is certain; when in doubt the drop is written and finds the
     /// place empty.
     gone: bool,
+    /// The line that frees it, when that is not the drop of its type: the list a `for` is
+    /// going over has given away the items up to the one of this round.
+    drop: Option<String>,
 }
 
 struct Emitter<'a> {
@@ -574,7 +610,7 @@ impl<'a> Emitter<'a> {
             Ty::Str => "sg_string".to_string(),
             Ty::Struct(name) => format!("S_{name}"),
             Ty::Enum(name) => format!("E_{name}"),
-            Ty::Result(..) => {
+            Ty::Result(..) | Ty::List(_) => {
                 let Some(name) = mangle(ty) else { return Err(not_yet(span, &format!("the type `{ty}`"))) };
                 self.need(ty, span)?;
                 format!("sg_{name}")
@@ -659,6 +695,45 @@ impl<'a> Emitter<'a> {
                 }
             }
             Ty::Nullable(inner) => self.need(inner, span)?,
+            // A list: where its items are, how many there are and how many there is room for.
+            // An empty list has no block. Only a pointer to the items is kept, so a struct
+            // can hold a list of its own kind.
+            Ty::List(item) => {
+                if !self.made.insert(name.clone()) {
+                    return Ok(());
+                }
+                let held = self.ctype(item, span)?;
+                let list = format!("sg_{name}");
+                let _ = writeln!(self.types, "typedef struct {{ {held}* ptr; int64_t len; int64_t cap; }} {list};");
+                let drop_item = if self.droppable(item) { self.drop_of(item, "v->ptr[i]") } else { String::new() };
+                let drop_items = |from: &str| match drop_item.is_empty() {
+                    false => format!("for (int64_t i = {from}; i < v->len; i++) {drop_item} "),
+                    true => String::new(),
+                };
+                let _ = writeln!(
+                    self.glue_protos,
+                    "static void sg_drop_from_{name}({list}* v, int64_t from);\nstatic inline void sg_drop_{name}({list}* v);\nstatic inline {list} sg_move_{name}({list}* v);"
+                );
+                // What a `for` that was handed the list leaves behind: the items from `from` on.
+                let _ = writeln!(self.glue, "static void sg_drop_from_{name}({list}* v, int64_t from) {{ {}free(v->ptr); }}", drop_items("from"));
+                let _ = writeln!(self.glue, "static inline void sg_drop_{name}({list}* v) {{ sg_drop_from_{name}(v, 0); }}");
+                let _ = writeln!(self.glue, "static inline {list} sg_move_{name}({list}* v) {{ {list} out = *v; *v = ({list}){{ 0 }}; return out; }}");
+                let _ = writeln!(
+                    self.glue,
+                    "static inline void sg_add_{name}({list}* v, {held} item) {{ if (__builtin_expect(v->len == v->cap, 0)) v->ptr = sg_grow(v->ptr, &v->cap, sizeof({held})); v->ptr[v->len++] = item; }}"
+                );
+                // An item, as the place it is in. The index is checked in every build.
+                let _ = writeln!(
+                    self.glue,
+                    "static inline {held}* sg_at_{name}(const {list}* v, int64_t at, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t)v->len, 0)) sg_index_fail(at, v->len, loc); return &v->ptr[at]; }}"
+                );
+                let _ = writeln!(
+                    self.glue,
+                    "static inline void sg_reverse_{name}({list}* v) {{ for (int64_t i = 0, j = v->len - 1; i < j; i++, j--) {{ {held} item = v->ptr[i]; v->ptr[i] = v->ptr[j]; v->ptr[j] = item; }} }}"
+                );
+                let _ = writeln!(self.glue, "static inline void sg_clear_{name}({list}* v) {{ {}v->len = 0; }}", drop_items("0"));
+                self.sigs.insert(format!("sg_add_{name}"), vec![(**item).clone()]);
+            }
             // The same shape as an enum with the variants `Ok(T value)` and `Error(E cause)`,
             // so `match` and `is` read both in one way.
             Ty::Result(ok, error) => {
@@ -692,6 +767,7 @@ impl<'a> Emitter<'a> {
         let unknown = || not_yet(ty.span, &format!("the type `{}`", self.text(ty.span)));
         let mut found = match (Ty::from_name(&ty.name), ty.args.as_slice()) {
             (None, [ok, error]) if ty.name == "Result" => Ty::Result(Box::new(self.written(ok)?), Box::new(self.written(error)?)),
+            (None, [item]) if ty.name == "List" => Ty::List(Box::new(self.written(item)?)),
             (Some(base @ (Ty::Int(_) | Ty::Bool | Ty::Void | Ty::Str)), []) => base,
             (None, []) if self.structs.contains_key(ty.name.as_str()) => Ty::Struct(ty.name.clone()),
             (None, []) if self.enums.contains_key(ty.name.as_str()) => Ty::Enum(ty.name.clone()),
@@ -716,7 +792,7 @@ impl<'a> Emitter<'a> {
     /// Whether a value of this type owns something that is freed when it ends.
     fn droppable(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Str | Ty::Ptr(_) => true,
+            Ty::Str | Ty::Ptr(_) | Ty::List(_) => true,
             Ty::Nullable(inner) => self.droppable(inner),
             Ty::Result(ok, error) => self.droppable(ok) || self.droppable(error),
             Ty::Struct(name) => self.structs[name.as_str()].fields.iter().any(|field| self.written(&field.ty).is_ok_and(|ty| self.droppable(&ty))),
@@ -754,6 +830,91 @@ impl<'a> Emitter<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    /// Writes, once, the helpers of a list that are needed only where they are used: `get`
+    /// and `removeLast` (they give a `T?`), and searching and sorting for the items that can
+    /// be compared here (integers, `bool` and text). `what`: the helper asked for.
+    fn list_helper(&mut self, list: &Ty, what: &str, span: Span) -> Res<String> {
+        let Ty::List(item) = list else { unreachable!("only called for a list") };
+        let missing = || not_yet(span, &format!("`{what}` on a `{list}`"));
+        let name = mangle(list).ok_or_else(missing)?;
+        let helper = format!("sg_{what}_{name}");
+        let (list_c, held) = (self.ctype(list, span)?, self.ctype(item, span)?);
+        if !self.made.insert(helper.clone()) {
+            return Ok(helper);
+        }
+        let nint = Ty::Int(IntTy::Nint);
+        match what {
+            "get" | "pop" => {
+                let option = Ty::Nullable(item.clone());
+                if mangle(&option).is_none() {
+                    return Err(missing());
+                }
+                let option_c = self.ctype(&option, span)?;
+                let (some, none) = match is_option(&option) {
+                    true => (format!("({option_c}){{ true, {{}} }}"), format!("({option_c}){{ false }}")),
+                    false => ("{}".to_string(), "NULL".to_string()),
+                };
+                let _ = match what {
+                    // What is given is a look at the item: the list still owns it.
+                    "get" => writeln!(
+                        self.glue,
+                        "static inline {option_c} {helper}(const {list_c}* v, int64_t at) {{ if ((uint64_t)at >= (uint64_t)v->len) return {none}; return {}; }}",
+                        some.replace("{}", "v->ptr[at]")
+                    ),
+                    _ => writeln!(
+                        self.glue,
+                        "static inline {option_c} {helper}({list_c}* v) {{ if (v->len == 0) return {none}; v->len--; return {}; }}",
+                        some.replace("{}", "v->ptr[v->len]")
+                    ),
+                };
+                self.sigs.insert(helper.clone(), if what == "get" { vec![nint] } else { Vec::new() });
+            }
+            // The position of the first item that is equal, or -1.
+            "index" => {
+                let (given, equal) = match &**item {
+                    Ty::Int(_) | Ty::Bool => (held.clone(), "v->ptr[i] == item".to_string()),
+                    Ty::Str => ("sg_str".to_string(), "sg_eq(sg_view(&v->ptr[i]), item)".to_string()),
+                    _ => return Err(not_yet(span, &format!("comparing the items of a `{list}`"))),
+                };
+                let _ = writeln!(
+                    self.glue,
+                    "static inline int64_t {helper}(const {list_c}* v, {given} item) {{ for (int64_t i = 0; i < v->len; i++) if ({equal}) return i; return -1; }}"
+                );
+                let key = if **item == Ty::Str { Ty::Read(item.clone()) } else { (**item).clone() };
+                self.sigs.insert(helper.clone(), vec![key]);
+            }
+            "sort" => {
+                let compare = match &**item {
+                    Ty::Int(_) => format!("{held} x = *(const {held}*)a, y = *(const {held}*)b; return (x > y) - (x < y);"),
+                    Ty::Str => "return sg_cmp(sg_view((const sg_string*)a), sg_view((const sg_string*)b));".to_string(),
+                    _ => return Err(not_yet(span, &format!("putting the items of a `{list}` in order"))),
+                };
+                let _ = writeln!(self.glue, "static int {helper}_compare(const void* a, const void* b) {{ {compare} }}");
+                let _ = writeln!(
+                    self.glue,
+                    "static void {helper}({list_c}* v) {{ if (v->len > 1) qsort(v->ptr, (size_t)v->len, sizeof({held}), {helper}_compare); }}"
+                );
+                self.sigs.insert(helper.clone(), Vec::new());
+            }
+            _ => unreachable!("the helpers are named here"),
+        }
+        Ok(helper)
+    }
+
+    /// A pointer to the list that `recv` is, borrows or points at.
+    fn list_address(&mut self, recv: &'a Expr) -> Res<String> {
+        let boxes = list_behind(&recv.ty).map_or(0, |(_, boxes)| boxes);
+        let mut address = match recv.is_place() {
+            true => self.address(recv)?,
+            false if recv.ty.is_borrow() => self.value(recv)?,
+            false => format!("(&{})", self.look(recv)?),
+        };
+        for _ in 0..boxes {
+            address = format!("(*{address})");
+        }
+        Ok(address)
     }
 
     fn struct_decl(&mut self, decl: &'a StructDecl, done: &mut Vec<&'a str>) -> Res<()> {
@@ -871,12 +1032,12 @@ impl<'a> Emitter<'a> {
                 This::Ref => Ty::Ref(Box::new(owner_ty)),
             };
             params.push(format!("{} v_this", self.ctype(&ty, func.name_span)?));
-            scope.push(Local { name: "this".to_string(), cname: "v_this".to_string(), ty, gone: false });
+            scope.push(Local { name: "this".to_string(), cname: "v_this".to_string(), ty, gone: false, drop: None });
         }
         for param in &func.params {
             let ty = self.written(&param.ty)?;
             params.push(format!("{} v_{}", self.ctype(&ty, param.ty.span)?, param.name));
-            scope.push(Local { name: param.name.clone(), cname: format!("v_{}", param.name), ty, gone: false });
+            scope.push(Local { name: param.name.clone(), cname: format!("v_{}", param.name), ty, gone: false, drop: None });
         }
         let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
         let head = format!("static {} {name}({params})", self.ctype(&ret, func.ret.span)?);
@@ -902,8 +1063,10 @@ impl<'a> Emitter<'a> {
         let mut lines = Vec::new();
         for scope in self.scopes[from..].iter().rev() {
             for local in scope.iter().rev() {
-                if !local.gone && self.droppable(&local.ty) {
-                    lines.push(self.drop_of(&local.ty, &local.cname));
+                match &local.drop {
+                    Some(line) => lines.push(line.clone()),
+                    None if !local.gone && self.droppable(&local.ty) => lines.push(self.drop_of(&local.ty, &local.cname)),
+                    None => {}
                 }
             }
         }
@@ -953,7 +1116,7 @@ impl<'a> Emitter<'a> {
     fn declare(&mut self, name: &str, ty: Ty) -> String {
         self.temps += 1;
         let cname = format!("v_{name}_{}", self.temps);
-        self.scopes.last_mut().expect("an open scope").push(Local { name: name.to_string(), cname: cname.clone(), ty, gone: false });
+        self.scopes.last_mut().expect("an open scope").push(Local { name: name.to_string(), cname: cname.clone(), ty, gone: false, drop: None });
         cname
     }
 
@@ -1019,7 +1182,7 @@ impl<'a> Emitter<'a> {
                     let cname = format!("v_{name}_{}", self.temps);
                     let _ = writeln!(out, "{pad}{ctype} {cname};");
                     self.match_stmt(init, &Dest::Place(cname.clone(), ty.clone()), depth, out)?;
-                    self.scopes.last_mut().expect("an open scope").push(Local { name: name.clone(), cname, ty, gone: false });
+                    self.scopes.last_mut().expect("an open scope").push(Local { name: name.clone(), cname, ty, gone: false, drop: None });
                     return Ok(());
                 }
                 let value = self.head_value(init, &ty)?;
@@ -1120,7 +1283,60 @@ impl<'a> Emitter<'a> {
                 self.scopes.pop();
                 let _ = writeln!(out, "{pad}}}\n{pad}}}");
             }
-            StmtKind::ForEach { iter, .. } => return Err(not_yet(iter.span, "a `for` over a collection")),
+            StmtKind::ForEach { var, iter, body, by, .. } => {
+                let list = match (by, list_behind(&iter.ty)) {
+                    (Some(_), Some((list, _))) => list.clone(),
+                    (None, Some((list, 0))) => list.clone(),
+                    _ => return Err(not_yet(iter.span, &format!("a `for` over a `{}`", iter.ty))),
+                };
+                let Ty::List(item) = &list else { unreachable!("it is a list") };
+                let (list_c, held, name) = (self.ctype(&list, iter.span)?, self.ctype(item, iter.span)?, mangle(&list).expect("it has a C type"));
+                let (it, at) = (self.temp(), self.temp());
+                let inner = format!("{pad}    ");
+                self.nothing_gone();
+                match by {
+                    // A borrowed list lends its items, one position after the other. The
+                    // checker keeps the list from changing while the loop runs.
+                    Some(mode) => {
+                        let address = self.list_address(iter)?;
+                        self.flush_pre(&pad, out);
+                        if !self.post.is_empty() {
+                            return Err(not_yet(iter.span, "a `for` over a borrowed list that has no name").hint("give the list a name first"));
+                        }
+                        let _ = writeln!(out, "{pad}{{");
+                        let _ = writeln!(out, "{inner}const {list_c}* {it} = {address};");
+                        let _ = writeln!(out, "{inner}for (int64_t {at} = 0; {at} < {it}->len; {at}++) {{");
+                        let ty = if *mode == Mode::Ref { Ty::Ref(item.clone()) } else { Ty::Read(item.clone()) };
+                        let lent = self.borrowed_name(var, ty, &format!("{it}->ptr[{at}]"), iter.span)?;
+                        self.loops.push(self.scopes.len());
+                        self.block_with(body, depth + 2, out, vec![lent])?;
+                        self.loops.pop();
+                        let _ = writeln!(out, "{inner}}}\n{pad}}}");
+                    }
+                    // A list that is handed over gives each item to the round it is for. What
+                    // is left of it when the loop ends, or is left early, is freed: the items
+                    // after the one of this round, and the block.
+                    None => {
+                        let value = self.value(iter)?;
+                        self.flush_pre(&pad, out);
+                        let _ = writeln!(out, "{pad}{{");
+                        let _ = writeln!(out, "{inner}{list_c} {it} = {value}; int64_t {at} = 0;");
+                        self.flush_post(&inner, out);
+                        let rest = format!("sg_drop_from_{name}(&{it}, {at} + 1);");
+                        self.scopes.push(vec![Local { name: String::new(), cname: it.clone(), ty: list.clone(), gone: false, drop: Some(rest.clone()) }]);
+                        let _ = writeln!(out, "{inner}for (; {at} < {it}.len; {at}++) {{");
+                        self.temps += 1;
+                        let cname = format!("v_{var}_{}", self.temps);
+                        let line = format!("{held} {cname} = {it}.ptr[{at}];");
+                        let owned = Local { name: var.clone(), cname, ty: (**item).clone(), gone: false, drop: None };
+                        self.loops.push(self.scopes.len());
+                        self.block_with(body, depth + 2, out, vec![(owned, line)])?;
+                        self.loops.pop();
+                        self.scopes.pop();
+                        let _ = writeln!(out, "{inner}}}\n{inner}{rest}\n{pad}}}");
+                    }
+                }
+            }
             StmtKind::Return(Some(value)) if matches!(value.kind, ExprKind::Match { .. }) => self.match_stmt(value, &Dest::Return, depth, out)?,
             StmtKind::Return(value) => {
                 for line in self.return_lines(value.as_ref(), &[], stmt.span)? {
@@ -1211,7 +1427,7 @@ impl<'a> Emitter<'a> {
         let cname = format!("v_{name}_{}", self.temps);
         let init = if is_text_view(&ty) { format!("sg_view(&{at})") } else { format!("(&{at})") };
         let line = format!("{ctype} {cname} = {init};");
-        Ok((Local { name: name.to_string(), cname, ty, gone: false }, line))
+        Ok((Local { name: name.to_string(), cname, ty, gone: false, drop: None }, line))
     }
 
     /// `match`, written as statements: a chain of tests on the tag (or on the number), each
@@ -1564,7 +1780,10 @@ impl<'a> Emitter<'a> {
                 let own = match callee {
                     Callee::Method { this: This::Ref, .. } | Callee::Take | Callee::Replace => Effect::Changes,
                     // The built-in methods of numbers and text compute a value and nothing else.
-                    Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Formatter) => Effect::Changes,
+                    // A list is only read by these.
+                    Callee::Plain if list_behind(&recv.ty).is_some() && matches!(name.as_str(), "length" | "get" | "indexOf" | "contains") => Effect::Reads,
+                    Callee::Plain if list_behind(&recv.ty).is_some() => Effect::Changes,
+                    Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::Map(..) | Ty::Set(_) | Ty::Formatter) => Effect::Changes,
                     Callee::Plain if name == "clone" || name == "toString" => Effect::Acts,
                     Callee::Plain => Effect::Reads,
                     _ => Effect::Acts,
@@ -1839,6 +2058,25 @@ impl<'a> Emitter<'a> {
                 }
                 Ok(format!("{place}.m_{name}"))
             }
+            // An item of a list: the index is checked, and the item is used where it is.
+            ExprKind::Index { recv, index, kind: IndexKind::List } => {
+                let Some((list, _)) = list_behind(&recv.ty) else { return Err(not_yet(expr.span, "this place")) };
+                let Ty::List(item) = list else { unreachable!("it is a list") };
+                let (name, held) = (mangle(list).ok_or_else(|| not_yet(expr.span, &format!("the type `{list}`")))?, self.ctype(item, expr.span)?);
+                self.ctype(list, expr.span)?;
+                // A place may be written more than once in a statement (`xs[i] += 1`): what
+                // finds it is computed once if computing it does more than read.
+                let once = self.effect(index).max(self.effect(recv)) >= Effect::Acts;
+                let (address, at) = (self.list_address(recv)?, self.value(index)?);
+                let loc = self.loc(expr.span);
+                let found = format!("sg_at_{name}({address}, {at}, {loc})");
+                if !once {
+                    return Ok(format!("(*{found})"));
+                }
+                let temp = self.temp();
+                self.pre.push(format!("{held}* {temp} = {found};"));
+                Ok(format!("(*{temp})"))
+            }
             _ => Err(not_yet(expr.span, "this place")),
         }
     }
@@ -1863,7 +2101,7 @@ impl<'a> Emitter<'a> {
     /// A value that is only looked at, as something C can name more than once. A value that
     /// has no name and owns something is kept in a temporary and dropped after the statement.
     fn look(&mut self, expr: &'a Expr) -> Res<String> {
-        if matches!(expr.kind, ExprKind::Var(_) | ExprKind::Field { .. }) {
+        if matches!(expr.kind, ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List, .. }) {
             return self.lvalue(expr);
         }
         let value = self.value(expr)?;
@@ -1897,7 +2135,7 @@ impl<'a> Emitter<'a> {
             (ExprKind::Borrow { expr: inner, .. }, _) if is_text(&inner.ty) => self.view(inner),
             (_, ty) if is_text_view(ty) => self.value(expr),
             (_, Ty::Ref(_)) => Ok(format!("sg_view({})", self.value(expr)?)),
-            (ExprKind::Var(_) | ExprKind::Field { .. }, Ty::Str) => Ok(format!("sg_view(&{})", self.lvalue(expr)?)),
+            (ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List, .. }, Ty::Str) => Ok(format!("sg_view(&{})", self.lvalue(expr)?)),
             (_, Ty::Str) => {
                 let (value, temp) = (self.value(expr)?, self.temp());
                 self.pre.push(format!("sg_string {temp} = {value};"));
@@ -2174,6 +2412,22 @@ impl<'a> Emitter<'a> {
                 let loc = self.loc(expr.span);
                 Ok(format!("sg_cast_{}((int64_t)({inner}), {loc})", int_name(*ty)))
             }
+            ExprKind::Index { kind: IndexKind::List, .. } => self.lvalue(expr),
+            // A new list: the items are added one after the other.
+            ExprKind::Collection { items, .. } => {
+                let Ty::List(item) = &expr.ty else { return Err(not_yet(expr.span, &format!("a `{}`", expr.ty))) };
+                let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+                let name = mangle(&expr.ty).expect("it has a C type");
+                let mut parts = Vec::new();
+                for given in items.iter().flatten() {
+                    let before = self.mark();
+                    let value = self.value_as(&given.values[0], item)?;
+                    parts.push(self.part(&given.values[0], item, value, before));
+                }
+                let (values, names) = self.in_order(parts)?;
+                let adds: String = values.iter().map(|value| format!("sg_add_{name}(&{temp}, {value}); ")).collect();
+                Ok(format!("({{ {names}{ctype} {temp} = {{ 0 }}; {adds}{temp}; }})"))
+            }
             // A byte of text and a range of it: checked in every build.
             ExprKind::Index { recv, index, kind: IndexKind::Text } => {
                 let before = self.mark();
@@ -2292,7 +2546,61 @@ impl<'a> Emitter<'a> {
                     let (ctype, temp) = (self.ctype(&ty, recv.span)?, self.temp());
                     Ok(format!("({{ {ctype} {temp}n = {new}; {ctype} {temp} = {place}; {place} = {temp}n; {temp}; }})"))
                 }
+                Callee::Join => {
+                    if self.made.insert("sg_join_list".to_string()) {
+                        let list = self.ctype(&Ty::List(Box::new(Ty::Str)), expr.span)?;
+                        let _ = writeln!(self.glue, "static sg_string sg_join_list(sg_str separator, const {list}* v) {{ return sg_join(separator, v->ptr, v->len); }}");
+                        let text = Ty::Read(Box::new(Ty::Str));
+                        self.sigs.insert("sg_join_list".to_string(), vec![text, Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))))]);
+                    }
+                    self.call("sg_join_list".to_string(), None, args, false)
+                }
+                Callee::Plain if list_behind(&recv.ty).is_some() => {
+                    let (list, _) = list_behind(&recv.ty).expect("just tested");
+                    let list = list.clone();
+                    let base = mangle(&list).ok_or_else(|| not_yet(expr.span, &format!("the type `{list}`")))?;
+                    self.ctype(&list, expr.span)?;
+                    let helper = match name.as_str() {
+                        "length" => return Ok(format!("{}->len", self.list_address(recv)?)),
+                        "add" | "reverse" | "clear" => format!("sg_{name}_{base}"),
+                        "get" => self.list_helper(&list, "get", expr.span)?,
+                        "removeLast" => self.list_helper(&list, "pop", expr.span)?,
+                        "indexOf" | "contains" => self.list_helper(&list, "index", expr.span)?,
+                        "sort" => self.list_helper(&list, "sort", expr.span)?,
+                        _ => return Err(not_yet(expr.span, &format!("the method `{name}`"))),
+                    };
+                    let before = self.mark();
+                    let address = self.list_address(recv)?;
+                    let receiver = self.part(recv, &Ty::Read(Box::new(list.clone())), address, before);
+                    let called = self.call(helper, Some(receiver), args, false)?;
+                    match name.as_str() {
+                        // A look at an item that may not be there: it is kept beside the
+                        // statement, and what is given is a pointer to it. The list still
+                        // owns the item, so this copy of it is never dropped.
+                        "get" => {
+                            let Ty::List(item) = &list else { unreachable!("it is a list") };
+                            let (ctype, temp) = (self.ctype(&Ty::Nullable(item.clone()), expr.span)?, self.temp());
+                            self.pre.push(format!("{ctype} {temp} = {called};"));
+                            Ok(format!("(&{temp})"))
+                        }
+                        "indexOf" => {
+                            let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+                            Ok(format!("({{ int64_t {temp} = {called}; (({ctype}){{ {temp} >= 0, {temp} }}); }})"))
+                        }
+                        "contains" => Ok(format!("({called} >= 0)")),
+                        _ => Ok(called),
+                    }
+                }
                 Callee::Plain if is_text(&recv.ty) || is_text_behind_pointer(&recv.ty) => match name.as_str() {
+                    // The position of the first such byte, or `null`.
+                    "indexOf" => {
+                        let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+                        let (text, byte) = (self.view(recv)?, self.value(&args[0])?);
+                        Ok(format!(
+                            "({{ sg_str {temp} = {text}; const uint8_t* {temp}p = {temp}.len ? memchr({temp}.ptr, {byte}, (size_t){temp}.len) : NULL; \
+                             (({ctype}){{ {temp}p != NULL, {temp}p ? {temp}p - {temp}.ptr : 0 }}); }})"
+                        ))
+                    }
                     "length" => Ok(format!("{}.len", self.view(recv)?)),
                     // A copy is the one place where text is allocated.
                     "clone" => Ok(format!("sg_clone({})", self.view(recv)?)),

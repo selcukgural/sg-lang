@@ -2653,6 +2653,8 @@ impl<'a> Checker<'a> {
                     if matches!(**behind, Ty::Nullable(_)) && behind.is_copyable(self.copyable) {
                         let behind = (**behind).clone();
                         wrap(left, ExprKind::Load);
+                        // The back end reads the type of what it opens.
+                        left.ty = behind.clone();
                         found = behind;
                     }
                 }
@@ -2806,6 +2808,7 @@ impl<'a> Checker<'a> {
                 }
                 let behind = (**behind).clone();
                 wrap(inner, ExprKind::Load);
+                inner.ty = behind.clone();
                 found = behind;
             }
         }

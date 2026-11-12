@@ -1,0 +1,174 @@
+// Lists as compiled code sees them: items that are numbers, text, structs and lists, and
+// every way a list and its items are freed. (The compiled program runs under the sanitizers.)
+struct Team {
+    string name
+    List<string> members
+}
+
+struct Node {
+    int value
+    List<Node> children
+}
+
+int sum(read List<int> xs) {
+    int total = 0
+    for x in xs {
+        total += x
+    }
+    return total
+}
+
+void doubleAll(ref List<int> xs) {
+    for x in xs {
+        x *= 2
+    }
+}
+
+void consume(string name) {
+    print($"consumed {name}")
+}
+
+List<string> words(int count) {
+    var made = List<string>()
+    for i in 0..count {
+        made.add($"word {i}".toString())
+    }
+    return made
+}
+
+// The loop is left early: the items that were not reached are freed with the list.
+int firstLong(List<string> names, int limit) {
+    var position = 0
+    for name in names {
+        if name.length() > 6 {
+            return position
+        }
+        if position == limit {
+            break
+        }
+        position += 1
+    }
+    return -1
+}
+
+int count(read Node node) {
+    var total = 1
+    for child in read node.children {
+        total += count(child)
+    }
+    return total
+}
+
+Result<int, string> itemAt(read List<int> xs, nint at) {
+    var found = xs.get(at) ?? return Error($"nothing at {at}".toString())
+    return Ok(found)
+}
+
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    xs.add(4)
+    print(xs.length())
+    print(xs[0] + xs[3])
+    xs[1] = 20
+    xs[2] += 5
+    print(sum(read xs))
+    doubleAll(ref xs)
+    print(sum(read xs))
+    print(xs.get(1) ?? -1)
+    print(xs.get(10) ?? -1)
+    var missing = xs.get(-1)
+    print(missing is null)
+    for i in 0..xs.length() {
+        print($"{i}: {xs[i]}")
+    }
+    print(xs.removeLast() ?? 0)
+    xs.reverse()
+    for x in read xs {
+        print(x)
+    }
+    print(itemAt(read xs, 0) ?? -1)
+    print(itemAt(read xs, 9) is Error(_))
+    xs.clear()
+    print(xs.length())
+    print(xs.removeLast() is null)
+
+    var names = List<string> { "ada", "grace" }
+    names.add("edsger".clone())
+    print(names[0])
+    var first = names[0]
+    print(first.length())
+    string copy = names[1].clone()
+    print(copy)
+    names[1] = "barbara".clone()
+    var old = names[2].replace("tony".clone())
+    print(old)
+    var last = names.removeLast() ?? "nobody".clone()
+    print(last)
+    for name in read names {
+        print(name)
+    }
+    for name in ref names {
+        name = $"{name}!".toString()
+    }
+    for name in names {
+        consume(name)
+    }
+
+    var made = words(40)                    // grows several times
+    print(made.length())
+    print(made[39])
+    print(firstLong(made, 12))
+    print(firstLong(words(3), 12))
+    print(firstLong(words(20), 5))
+    _ = words(5)
+
+    var team = Team { name = "core", members = List<string>() }
+    team.members.add("ada".clone())
+    team.members.add("grace".clone())
+    print($"{team.name}: {team.members.length()}")
+    for member in read team.members {
+        print(member)
+    }
+
+    var rows = List<List<int>> {
+        List<int> { 1, 2 },
+        List<int> { 3 }
+    }
+    rows[1].add(4)
+    for row in read rows {
+        print(sum(row))
+    }
+    print(rows[0][1])
+
+    var boxes = List<int*>()
+    boxes.add(new 7)
+    boxes.add(new 8)
+    for box in read boxes {
+        print(box)
+    }
+    var taken = boxes.removeLast()
+    print(taken is not null)
+
+    var tree = Node { value = 1, children = List<Node>() }
+    tree.children.add(Node { value = 2, children = List<Node>() })
+    tree.children.add(Node { value = 3, children = List<Node>() })
+    tree.children[0].children.add(Node { value = 4, children = List<Node>() })
+    print(count(read tree))
+
+    var numbers = List<int> { 30, 10, 20, 10 }
+    print(numbers.indexOf(10) ?? -1)
+    print(numbers.indexOf(99) ?? -1)
+    print(numbers.contains(20))
+    numbers.sort()
+    for n in read numbers {
+        print(n)
+    }
+    var sorted = List<string> { "grace", "ada", "edsger" }
+    print(sorted.contains("alan"))
+    print(sorted.indexOf("ada") ?? -1)
+    sorted.sort()
+    print(string.join(", ", read sorted))
+    print("a:b".indexOf(':') ?? -1)
+
+    print(numbers[4])
+}

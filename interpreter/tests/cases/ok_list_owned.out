@@ -1,0 +1,58 @@
+4
+5
+33
+66
+40
+-1
+true
+0: 2
+1: 40
+2: 16
+3: 8
+8
+16
+40
+2
+16
+true
+0
+true
+ada
+3
+grace
+edsger
+tony
+ada
+barbara
+consumed ada!
+consumed barbara!
+40
+word 39
+10
+-1
+-1
+core: 2
+ada
+grace
+3
+7
+2
+7
+8
+true
+4
+1
+-1
+true
+10
+10
+20
+30
+false
+1
+ada, edsger, grace
+1
+panic: index 4 is out of range: the length is 4
+  --> ok_list_owned.sg:173:11
+ 173 |     print(numbers[4])
+     |           ^^^^^^^^^^

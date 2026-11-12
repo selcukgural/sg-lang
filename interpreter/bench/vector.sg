@@ -1,0 +1,26 @@
+// A list that grows: a million numbers are added one by one, changed in place through
+// their index, added up with `for`, turned around, and freed. Six hundred times.
+long total(read List<int> xs) {
+    long sum = 0
+    for x in xs {
+        sum += x
+    }
+    return sum
+}
+
+void main() {
+    long sum = 0
+    for round in 0..600 {
+        var xs = List<int>()
+        for i in 0..1000000 {
+            xs.add(i % 1000)
+        }
+        for i in 0..xs.length() {
+            xs[i] = xs[i] * 3 + 1
+        }
+        sum += total(read xs)
+        xs.reverse()
+        sum += xs[round]
+    }
+    print(sum)
+}
