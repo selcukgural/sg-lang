@@ -1124,6 +1124,9 @@ impl<'a> Interp<'a> {
             (Value::Struct(_, a), Value::Struct(_, b)) => (a, b),
             (Value::Enum(_, a_index, a), Value::Enum(_, b_index, b)) if a_index == b_index => (a, b),
             (Value::Enum(..), Value::Enum(..)) => return Ok(false),
+            // A `T?` that holds a value on one side only: the value may be one that is no key.
+            (Value::Null, Value::Null) => return Ok(true),
+            (Value::Null, _) | (_, Value::Null) => return Ok(false),
             _ => return Ok(key_of(&left) == key_of(&right)),
         };
         for (a, b) in left_fields.iter().zip(right_fields.iter()) {

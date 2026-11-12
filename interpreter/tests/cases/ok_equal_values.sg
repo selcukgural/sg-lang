@@ -1,0 +1,105 @@
+// `==` on structs, enums and lists, and how they are written: the same in the interpreter
+// and in compiled code.
+struct Point : Copyable, Equatable, Formattable {
+    int x
+    int y
+}
+
+struct User : Equatable, Formattable {
+    string name
+    Point? home
+    List<string> tags
+    User*? manager
+}
+
+enum StockError : Equatable, Formattable {
+    NotFound(string code)
+    Insufficient(int available, Point where)
+    Closed
+}
+
+// Its own `equals`: the case of the letters does not count.
+struct Tag : Equatable, Formattable {
+    string text
+
+    bool equals(read this, read Tag other) {
+        if this.text.length() != other.text.length() {
+            return false
+        }
+        for i in 0..this.text.length() {
+            if lower(this.text[i]) != lower(other.text[i]) {
+                return false
+            }
+        }
+        return true
+    }
+
+    void format(read this, ref Formatter f) {
+        f.write($"#{this.text}")
+    }
+}
+
+byte lower(byte c) {
+    if c >= 'A' && c <= 'Z' {
+        return c + 32
+    }
+    return c
+}
+
+User user(read string name, Point? home) {
+    return User { name = name.clone(), home = home, tags = List<string> { "new".clone() }, manager = null }
+}
+
+void main() {
+    var a = Point { x = 1, y = 2 }
+    var b = Point { x = 1, y = 2 }
+    print(a == b)
+    b.y = 3
+    print(a == b)
+    print(a != b)
+    print(a)
+    print($"{a} and {b}")
+
+    var ada = user("ada", a)
+    var twin = user("ada", Point { x = 1, y = 2 })
+    var nomad = user("ada", null)
+    print(ada == twin)
+    print(ada == nomad)
+    print(read ada == read twin)
+    twin.tags.add("tab\t\"quoted\"".clone())
+    print(ada == twin)
+    print(twin)
+    nomad.manager = new user("grace", null)
+    print(nomad)
+    print(nomad == user("ada", null))
+
+    var error = StockError.NotFound("K-1")
+    print(error == StockError.NotFound("K-1"))
+    print(error == StockError.NotFound("K-2"))
+    print(error == StockError.Closed)
+    print(error)
+    print(StockError.Insufficient(5, a))
+    print(StockError.Closed)
+
+    print(Tag { text = "Rust" } == Tag { text = "RUST" })
+    print(Tag { text = "Rust" } == Tag { text = "Go" })
+    var tags = List<Tag> { Tag { text = "c" }, Tag { text = "Rust" } }
+    print(tags.indexOf(read Tag { text = "RUST" }) ?? -1)
+    print(tags.contains(read Tag { text = "go" }))
+    print(tags)
+
+    var points = List<Point> { a, b }
+    print(points.indexOf(b) ?? -1)
+    print(points.contains(Point { x = 9, y = 9 }))
+    print(points == List<Point> { a, b })
+    print(points == List<Point> { a })
+    print(points)
+    print(List<int>())
+    var words = List<string> { "one", "two" }
+    print(words)
+    print($"words: {words}")
+
+    assert(a == Point { x = 1, y = 2 })
+    assert(error == StockError.NotFound("K-1"))
+    assert(points == List<Point> { a, b })
+}

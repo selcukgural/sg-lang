@@ -19,6 +19,10 @@
 //! is one test on the tag and, on an error, a `return`. A `List<T>` is a pointer to its items,
 //! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index.
 //!
+//! Writing and comparing: for each struct, enum and list that is written or compared, one
+//! helper is made that writes it into a text (`sg_show_...`) and one that tells whether two
+//! are equal (`sg_same_...`). They call the `format`, `equals` and `compare` a struct wrote.
+//!
 //! Who frees: the checker has decided who owns each value, so the back end only follows it.
 //! An owned value is dropped where its variable ends. A use that moves the value (marked by
 //! the checker) empties the place it came from, so the later drop finds nothing to free.
@@ -228,6 +232,83 @@ static sg_string sg_join(sg_str separator, const sg_string* items, int64_t count
     }
     return (sg_string){ bytes, len, len };
 }
+/* Text that is put together piece by piece: what a `Formatter` writes into. */
+static void sg_put(sg_string* out, const void* bytes, int64_t count) {
+    if (count <= 0) return;
+    if (out->len + count > out->cap) {
+        int64_t room = out->cap ? out->cap * 2 : 32;
+        while (room < out->len + count) room *= 2;
+        uint8_t* grown = out->cap ? realloc(out->ptr, (size_t)room) : malloc((size_t)room);
+        if (!grown) abort();
+        out->ptr = grown;
+        out->cap = room;
+    }
+    memcpy(out->ptr + out->len, bytes, (size_t)count);
+    out->len += count;
+}
+static void sg_puts(sg_string* out, const char* text) { sg_put(out, text, (int64_t)strlen(text)); }
+static void sg_putf(sg_string* out, const char* format, ...) {
+    char small[128];
+    va_list count, write;
+    va_start(count, format);
+    va_copy(write, count);
+    int n = vsnprintf(small, sizeof small, format, count);
+    va_end(count);
+    if (n < (int)sizeof small) {
+        sg_put(out, small, n);
+    } else {
+        char* large = malloc((size_t)n + 1);
+        if (!large) abort();
+        vsnprintf(large, (size_t)n + 1, format, write);
+        sg_put(out, large, n);
+        free(large);
+    }
+    va_end(write);
+}
+/* Text inside another value is written in quotes, so that the parts can be told apart. */
+static void sg_put_quoted(sg_string* out, sg_str s) {
+    sg_put(out, "\"", 1);
+    for (int64_t i = 0; i < s.len; i++) {
+        uint8_t c = s.ptr[i];
+        if (c == '"' || c == '\\') { sg_put(out, "\\", 1); sg_put(out, &c, 1); }
+        else if (c == '\n') sg_puts(out, "\\n");
+        else if (c == '\t') sg_puts(out, "\\t");
+        else if (c == '\r') sg_puts(out, "\\r");
+        else if (c == 0) sg_puts(out, "\\0");
+        else if (c < 32 || c == 127) sg_putf(out, "\\u{%x}", (unsigned)c);
+        else sg_put(out, &c, 1);
+    }
+    sg_put(out, "\"", 1);
+}
+SG_COLD static _Noreturn void sg_assert_fail_t(const char* text, sg_str l, sg_str r, const char* loc) {
+    fflush(stdout);
+    fprintf(stderr, "panic: assert failed: %s\n  left: %.*s\n  right: %.*s\n", text, (int)l.len, (const char*)l.ptr, (int)r.len, (const char*)r.ptr);
+    sg_die(loc);
+}
+/* Puts the items in order and keeps equal items in the order they had (a merge sort). */
+static void sg_sort(void* items, int64_t count, size_t size, int (*compare)(const void*, const void*)) {
+    if (count < 2) return;
+    uint8_t* from = items;
+    uint8_t* to = malloc((size_t)count * size);
+    if (!to) abort();
+    for (int64_t width = 1; width < count; width *= 2) {
+        for (int64_t low = 0; low < count; low += 2 * width) {
+            int64_t middle = low + width < count ? low + width : count;
+            int64_t high = low + 2 * width < count ? low + 2 * width : count;
+            int64_t i = low, j = middle, k = low;
+            while (i < middle && j < high) {
+                if (compare(from + j * size, from + i * size) < 0) { memcpy(to + k * size, from + j * size, size); j++; }
+                else { memcpy(to + k * size, from + i * size, size); i++; }
+                k++;
+            }
+            if (i < middle) memcpy(to + k * size, from + i * size, (size_t)(middle - i) * size);
+            if (j < high) memcpy(to + k * size, from + j * size, (size_t)(high - j) * size);
+        }
+        uint8_t* swap = from; from = to; to = swap;
+    }
+    if (from != (uint8_t*)items) { memcpy(items, from, (size_t)count * size); to = from; }
+    free(to);
+}
 static void sg_quoted(sg_str s) {
     fputc('"', stderr);
     for (int64_t i = 0; i < s.len; i++) {
@@ -325,16 +406,22 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
         ret @ Ty::Result(..) => {
             let Ty::Result(_, error) = &ret else { unreachable!("matched above") };
             let cause = "result.u.v1.m_cause";
+            let ctype = emitter.ctype(&ret, main.ret.span)?;
+            let mut drop = if emitter.droppable(error) { emitter.drop_of(error, cause) } else { String::new() };
+            let mut shown = String::new();
             let (format, values) = match &**error {
                 Ty::Str => ("%.*s", format!("(int){cause}.len, (const char*){cause}.ptr")),
                 Ty::Int(_) => ("%lld", format!("(long long){cause}")),
                 Ty::Bool => ("%s", format!("{cause} ? \"true\" : \"false\"")),
-                other => return Err(not_yet(main.ret.span, &format!("writing the `{other}` that `main` ends with"))),
+                // A struct or an enum is written by the helper of its type.
+                other => {
+                    shown = format!("sg_string text = SG_LIT(\"\", 0); {}(&text, &{cause});\n        ", emitter.shower(other, main.ret.span)?);
+                    drop = format!("sg_drop_string(&text); {drop}");
+                    ("%.*s", "(int)text.len, (const char*)text.ptr".to_string())
+                }
             };
-            let ctype = emitter.ctype(&ret, main.ret.span)?;
-            let drop = if emitter.droppable(error) { emitter.drop_of(error, cause) } else { String::new() };
             format!(
-                "int main(void) {{\n    {ctype} result = f_main();\n    if (result.tag != 0) {{\n        fflush(stdout);\n        \
+                "int main(void) {{\n    {ctype} result = f_main();\n    if (result.tag != 0) {{\n        fflush(stdout);\n        {shown}\
                  fprintf(stderr, \"error: {format}\\n\", {values});\n        {drop}\n        return 1;\n    }}\n    return 0;\n}}\n"
             )
         }
@@ -347,12 +434,13 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
     out.push('\n');
     out.push_str(&emitter.glue_protos);
     out.push('\n');
+    // The helpers call the methods a type wrote itself (`format`, `equals`, `compare`).
+    out.push_str(&protos);
+    out.push('\n');
     out.push_str(&emitter.glue);
     for (number, text) in emitter.locs.iter().enumerate() {
         let _ = writeln!(out, "static const char sg_loc_{number}[] = {};", c_string(text));
     }
-    out.push('\n');
-    out.push_str(&protos);
     out.push('\n');
     out.push_str(&bodies);
     out.push_str(&start);
@@ -607,7 +695,8 @@ impl<'a> Emitter<'a> {
             Ty::Int(ty) => int_ctype(*ty).to_string(),
             Ty::Bool => "bool".to_string(),
             Ty::Void => "void".to_string(),
-            Ty::Str => "sg_string".to_string(),
+            // A `Formatter` is the text being written.
+            Ty::Str | Ty::Formatter => "sg_string".to_string(),
             Ty::Struct(name) => format!("S_{name}"),
             Ty::Enum(name) => format!("E_{name}"),
             Ty::Result(..) | Ty::List(_) => {
@@ -768,7 +857,7 @@ impl<'a> Emitter<'a> {
         let mut found = match (Ty::from_name(&ty.name), ty.args.as_slice()) {
             (None, [ok, error]) if ty.name == "Result" => Ty::Result(Box::new(self.written(ok)?), Box::new(self.written(error)?)),
             (None, [item]) if ty.name == "List" => Ty::List(Box::new(self.written(item)?)),
-            (Some(base @ (Ty::Int(_) | Ty::Bool | Ty::Void | Ty::Str)), []) => base,
+            (Some(base @ (Ty::Int(_) | Ty::Bool | Ty::Void | Ty::Str | Ty::Formatter)), []) => base,
             (None, []) if self.structs.contains_key(ty.name.as_str()) => Ty::Struct(ty.name.clone()),
             (None, []) if self.enums.contains_key(ty.name.as_str()) => Ty::Enum(ty.name.clone()),
             _ => return Err(unknown()),
@@ -832,6 +921,170 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Whether a struct wrote this method itself.
+    fn own_method(&self, owner: &str, method: &str) -> bool {
+        self.structs[owner].methods.iter().any(|func| func.name == method)
+    }
+
+    /// The helper that writes a value of this type as text into a `Formatter`, written once:
+    /// a struct field by field (or by its own `format`), an enum as its variant, a list
+    /// between brackets. Text inside is quoted.
+    fn shower(&mut self, ty: &Ty, span: Span) -> Res<String> {
+        if let Ty::Nullable(inner) = ty {
+            if matches!(**inner, Ty::Ptr(_)) {
+                return self.shower(inner, span);
+            }
+        }
+        let name = mangle(ty).ok_or_else(|| not_yet(span, &format!("writing a `{ty}` as text")))?;
+        let helper = format!("sg_show_{name}");
+        let ctype = self.ctype(ty, span)?;
+        if !self.made.insert(helper.clone()) {
+            return Ok(helper);
+        }
+        let _ = writeln!(self.glue_protos, "static void {helper}(sg_string* out, {ctype} const* v);");
+        let mut body = String::new();
+        match ty {
+            Ty::Int(_) => body.push_str("sg_putf(out, \"%lld\", (long long)*v);"),
+            Ty::Bool => body.push_str("sg_puts(out, *v ? \"true\" : \"false\");"),
+            Ty::Str => body.push_str("sg_put_quoted(out, sg_view(v));"),
+            // A `T*` and a `T*?` are one C type and share this helper, so it knows `null`.
+            Ty::Ptr(inner) => {
+                let _ = write!(body, "if (*v) {}(out, *v); else sg_puts(out, \"null\");", self.shower(inner, span)?);
+            }
+            Ty::Nullable(inner) if is_option(ty) => {
+                let _ = write!(body, "if (v->has) {}(out, &v->value); else sg_puts(out, \"null\");", self.shower(inner, span)?);
+            }
+            Ty::Nullable(_) => unreachable!("a `T*?` has the name of the `T*`"),
+            Ty::Struct(owner) if self.own_method(owner, "format") => {
+                let _ = write!(body, "f_{owner}_format(({ctype}*)v, out);");
+            }
+            Ty::Struct(owner) => {
+                let decl: &'a StructDecl = self.structs[owner.as_str()];
+                let _ = write!(body, "sg_puts(out, {});", c_string(&format!("{owner} {{ ")));
+                for (position, field) in decl.fields.iter().enumerate() {
+                    let field_ty = self.written(&field.ty)?;
+                    let text = format!("{}{} = ", if position == 0 { "" } else { ", " }, field.name);
+                    let _ = write!(body, " sg_puts(out, {}); {}(out, &v->m_{});", c_string(&text), self.shower(&field_ty, span)?, field.name);
+                }
+                body.push_str(" sg_puts(out, \" }\");");
+            }
+            Ty::Enum(_) | Ty::Result(..) => {
+                let variants = self.variants(ty, span)?.expect("an enum or a `Result`");
+                let words: Vec<String> = match ty {
+                    Ty::Enum(owner) => self.enums[owner.as_str()].variants.iter().map(|variant| variant.name.clone()).collect(),
+                    _ => vec!["Ok".to_string(), "Error".to_string()],
+                };
+                body.push_str("switch (v->tag) {");
+                for (index, (word, fields)) in words.iter().zip(&variants).enumerate() {
+                    let _ = write!(body, " case {index}: sg_puts(out, {});", c_string(&format!("{word}{}", if fields.is_empty() { "" } else { "(" })));
+                    for (position, (field, field_ty, _)) in fields.iter().enumerate() {
+                        if position > 0 {
+                            body.push_str(" sg_puts(out, \", \");");
+                        }
+                        let _ = write!(body, " {}(out, &v->u.v{index}.m_{field});", self.shower(field_ty, span)?);
+                    }
+                    body.push_str(if fields.is_empty() { " break;" } else { " sg_puts(out, \")\"); break;" });
+                }
+                body.push_str(" default: break; }");
+            }
+            Ty::List(item) => {
+                let _ = write!(
+                    body,
+                    "sg_puts(out, \"[\"); for (int64_t i = 0; i < v->len; i++) {{ if (i) sg_puts(out, \", \"); {}(out, &v->ptr[i]); }} sg_puts(out, \"]\");",
+                    self.shower(item, span)?
+                );
+            }
+            other => return Err(not_yet(span, &format!("writing a `{other}` as text"))),
+        }
+        let _ = writeln!(self.glue, "static void {helper}(sg_string* out, {ctype} const* v) {{ {body} }}");
+        Ok(helper)
+    }
+
+    /// The helper that tells whether two values of this type are equal, written once: a
+    /// struct by its own `equals` or field by field, an enum by its variant and what it
+    /// carries, a list item by item.
+    fn equaler(&mut self, ty: &Ty, span: Span) -> Res<String> {
+        if let Ty::Nullable(inner) = ty {
+            if matches!(**inner, Ty::Ptr(_)) {
+                return self.equaler(inner, span);
+            }
+        }
+        let name = mangle(ty).ok_or_else(|| not_yet(span, &format!("`==` on `{ty}`")))?;
+        let helper = format!("sg_same_{name}");
+        let ctype = self.ctype(ty, span)?;
+        if !self.made.insert(helper.clone()) {
+            return Ok(helper);
+        }
+        let _ = writeln!(self.glue_protos, "static bool {helper}({ctype} const* a, {ctype} const* b);");
+        let mut body = String::new();
+        match ty {
+            Ty::Int(_) | Ty::Bool => body.push_str("return *a == *b;"),
+            Ty::Str => body.push_str("return sg_eq(sg_view(a), sg_view(b));"),
+            Ty::Ptr(inner) => {
+                let _ = write!(body, "return (*a == NULL) == (*b == NULL) && (*a == NULL || {}(*a, *b));", self.equaler(inner, span)?);
+            }
+            Ty::Nullable(inner) if is_option(ty) => {
+                let _ = write!(body, "return a->has == b->has && (!a->has || {}(&a->value, &b->value));", self.equaler(inner, span)?);
+            }
+            Ty::Nullable(_) => unreachable!("a `T*?` has the name of the `T*`"),
+            Ty::Struct(owner) if self.own_method(owner, "equals") => {
+                let _ = write!(body, "return f_{owner}_equals(({ctype}*)a, ({ctype}*)b);");
+            }
+            Ty::Struct(owner) => {
+                let decl: &'a StructDecl = self.structs[owner.as_str()];
+                for field in &decl.fields {
+                    let field_ty = self.written(&field.ty)?;
+                    let _ = write!(body, "if (!{}(&a->m_{1}, &b->m_{1})) return false; ", self.equaler(&field_ty, span)?, field.name);
+                }
+                body.push_str("return true;");
+            }
+            Ty::Enum(_) | Ty::Result(..) => {
+                let variants = self.variants(ty, span)?.expect("an enum or a `Result`");
+                body.push_str("if (a->tag != b->tag) return false; switch (a->tag) {");
+                for (index, fields) in variants.iter().enumerate() {
+                    if fields.is_empty() {
+                        continue;
+                    }
+                    let _ = write!(body, " case {index}:");
+                    for (field, field_ty, _) in fields {
+                        let _ = write!(body, " if (!{}(&a->u.v{index}.m_{field}, &b->u.v{index}.m_{field})) return false;", self.equaler(field_ty, span)?);
+                    }
+                    body.push_str(" break;");
+                }
+                body.push_str(" default: break; } return true;");
+            }
+            Ty::List(item) => {
+                let _ = write!(
+                    body,
+                    "if (a->len != b->len) return false; for (int64_t i = 0; i < a->len; i++) if (!{}(&a->ptr[i], &b->ptr[i])) return false; return true;",
+                    self.equaler(item, span)?
+                );
+            }
+            other => return Err(not_yet(span, &format!("`==` on `{other}`"))),
+        }
+        let _ = writeln!(self.glue, "static bool {helper}({ctype} const* a, {ctype} const* b) {{ {body} }}");
+        Ok(helper)
+    }
+
+    /// A pointer to a value that is only looked at: `read x`, or a value kept for the statement.
+    fn pointer(&mut self, expr: &'a Expr) -> Res<String> {
+        if expr.ty.is_borrow() && !expr.is_place() {
+            return self.value(expr);
+        }
+        Ok(format!("(&{})", self.look(expr)?))
+    }
+
+    /// The test `l op r` on two pointers to values of a struct, an enum, a `Result` or a list:
+    /// `==` and `!=` by the helper of the type, the others by the `compare` the struct wrote.
+    fn compared(&mut self, op: BinOp, ty: &Ty, l: &str, r: &str, span: Span) -> Res<String> {
+        match (op, ty) {
+            (BinOp::Eq, _) => Ok(format!("{}({l}, {r})", self.equaler(ty, span)?)),
+            (BinOp::Ne, _) => Ok(format!("(!{}({l}, {r}))", self.equaler(ty, span)?)),
+            (_, Ty::Struct(owner)) if self.own_method(owner, "compare") => Ok(format!("(f_{owner}_compare({l}, {r}) {} 0)", op.symbol())),
+            _ => Err(not_yet(span, &format!("`{}` on `{ty}`", op.symbol()))),
+        }
+    }
+
     /// Writes, once, the helpers of a list that are needed only where they are used: `get`
     /// and `removeLast` (they give a `T?`), and searching and sorting for the items that can
     /// be compared here (integers, `bool` and text). `what`: the helper asked for.
@@ -876,7 +1129,8 @@ impl<'a> Emitter<'a> {
                 let (given, equal) = match &**item {
                     Ty::Int(_) | Ty::Bool => (held.clone(), "v->ptr[i] == item".to_string()),
                     Ty::Str => ("sg_str".to_string(), "sg_eq(sg_view(&v->ptr[i]), item)".to_string()),
-                    _ => return Err(not_yet(span, &format!("comparing the items of a `{list}`"))),
+                    // Any other item is compared through a pointer, by the helper of its type.
+                    _ => (format!("{held} const*"), format!("{}(&v->ptr[i], item)", self.equaler(item, span)?)),
                 };
                 let _ = writeln!(
                     self.glue,
@@ -889,12 +1143,13 @@ impl<'a> Emitter<'a> {
                 let compare = match &**item {
                     Ty::Int(_) => format!("{held} x = *(const {held}*)a, y = *(const {held}*)b; return (x > y) - (x < y);"),
                     Ty::Str => "return sg_cmp(sg_view((const sg_string*)a), sg_view((const sg_string*)b));".to_string(),
+                    Ty::Struct(owner) if self.own_method(owner, "compare") => format!("return f_{owner}_compare(({held}*)a, ({held}*)b);"),
                     _ => return Err(not_yet(span, &format!("putting the items of a `{list}` in order"))),
                 };
                 let _ = writeln!(self.glue, "static int {helper}_compare(const void* a, const void* b) {{ {compare} }}");
                 let _ = writeln!(
                     self.glue,
-                    "static void {helper}({list_c}* v) {{ if (v->len > 1) qsort(v->ptr, (size_t)v->len, sizeof({held}), {helper}_compare); }}"
+                    "static void {helper}({list_c}* v) {{ sg_sort(v->ptr, v->len, sizeof({held}), {helper}_compare); }}"
                 );
                 self.sigs.insert(helper.clone(), Vec::new());
             }
@@ -1929,6 +2184,21 @@ impl<'a> Emitter<'a> {
             format.push_str(&text.replace('%', "%%"));
             return Ok(());
         }
+        // A struct, an enum or a list (also behind a pointer) is written into a text of its
+        // own first, by the helper of its type.
+        let mut core = expr.ty.strip_borrow();
+        while let Ty::Ptr(inner) = core {
+            core = inner;
+        }
+        if matches!(core, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_)) {
+            let shower = self.shower(expr.ty.strip_borrow(), expr.span)?;
+            let (at, temp) = (self.pointer(expr)?, self.temp());
+            self.pre.push(format!("sg_string {temp} = SG_LIT(\"\", 0); {shower}(&{temp}, {at});"));
+            self.post.push(format!("sg_drop_string(&{temp});"));
+            format.push_str("%.*s");
+            values.push(format!("(int){temp}.len, (const char*){temp}.ptr"));
+            return Ok(());
+        }
         // A value on the heap is written like the value: `print(count)` with `int* count`.
         if let Ty::Ptr(_) = expr.ty.strip_borrow() {
             let mut place = self.look(expr)?;
@@ -1997,6 +2267,21 @@ impl<'a> Emitter<'a> {
         let text = c_string(self.text(cond.span));
         let loc = self.loc(call.span);
         if let ExprKind::Binary(op, left, right) = &cond.kind {
+            // Two structs, enums or lists: on failure each is written as `print` would write it.
+            let ty = left.ty.strip_borrow().clone();
+            if op.is_comparison() && matches!(ty, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Result(..)) {
+                let (l, r, ctype) = (self.temp(), self.temp(), self.ctype(&ty, left.span)?);
+                let (left, right) = (self.pointer(left)?, self.pointer(right)?);
+                let (test, shower) = (self.compared(*op, &ty, &l, &r, cond.span)?, self.shower(&ty, cond.span)?);
+                self.flush_pre(pad, out);
+                let _ = writeln!(
+                    out,
+                    "{pad}{{ {ctype} const* {l} = {left}; {ctype} const* {r} = {right}; if (!({test})) {{ sg_string {l}s = SG_LIT(\"\", 0), {r}s = SG_LIT(\"\", 0); \
+                     {shower}(&{l}s, {l}); {shower}(&{r}s, {r}); sg_assert_fail_t({text}, sg_view(&{l}s), sg_view(&{r}s), {loc}); }} }}"
+                );
+                self.flush_post(pad, out);
+                return Ok(());
+            }
             let sides = match left.ty.strip_borrow() {
                 Ty::Int(_) => Some(("sg_assert_fail_i", "long long")),
                 Ty::Bool => Some(("sg_assert_fail_b", "bool")),
@@ -2392,6 +2677,19 @@ impl<'a> Emitter<'a> {
                     _ => format!("(sg_cmp({left}, {right}) {} 0)", op.symbol()),
                 }))
             }
+            // Structs, enums and lists are compared where they are, through pointers.
+            ExprKind::Binary(op, left, right) if matches!(left.ty.strip_borrow(), Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Result(..)) => {
+                let ty = left.ty.strip_borrow().clone();
+                let lent = Ty::Read(Box::new(ty.clone()));
+                let mut parts = Vec::new();
+                for side in [left, right] {
+                    let before = self.mark();
+                    let value = self.pointer(side)?;
+                    parts.push(self.part(side, &lent, value, before));
+                }
+                let (values, names) = self.in_order(parts)?;
+                Ok(sequence(&names, self.compared(*op, &ty, &values[0], &values[1], expr.span)?))
+            }
             ExprKind::Binary(op, left, right) => {
                 let operands = left.ty.strip_borrow().clone();
                 let (values, names) = self.two(left, right, head)?;
@@ -2571,8 +2869,14 @@ impl<'a> Emitter<'a> {
                     };
                     let before = self.mark();
                     let address = self.list_address(recv)?;
-                    let receiver = self.part(recv, &Ty::Read(Box::new(list.clone())), address, before);
-                    let called = self.call(helper, Some(receiver), args, false)?;
+                    let Ty::List(item) = &list else { unreachable!("it is a list") };
+                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Bool | Ty::Str);
+                    let called = if by_pointer {
+                        format!("{helper}({address}, {})", self.pointer(&args[0])?)
+                    } else {
+                        let receiver = self.part(recv, &Ty::Read(Box::new(list.clone())), address, before);
+                        self.call(helper, Some(receiver), args, false)?
+                    };
                     match name.as_str() {
                         // A look at an item that may not be there: it is kept beside the
                         // statement, and what is given is a pointer to it. The list still
@@ -2602,10 +2906,30 @@ impl<'a> Emitter<'a> {
                         ))
                     }
                     "length" => Ok(format!("{}.len", self.view(recv)?)),
+                    "equals" => Ok(format!("sg_eq({}, {})", self.view(recv)?, self.view(&args[0])?)),
+                    // Less than zero, zero or more than zero, as -1, 0 and 1.
+                    "compare" => {
+                        let temp = self.temp();
+                        Ok(format!("({{ int {temp} = sg_cmp({}, {}); (int32_t)(({temp} > 0) - ({temp} < 0)); }})", self.view(recv)?, self.view(&args[0])?))
+                    }
                     // A copy is the one place where text is allocated.
                     "clone" => Ok(format!("sg_clone({})", self.view(recv)?)),
                     _ => Err(not_yet(expr.span, &format!("the method `{name}`"))),
                 },
+                // `f.write(...)` adds to the text a `format` method is writing.
+                Callee::Plain if *recv.ty.strip_borrow() == Ty::Formatter => {
+                    let out = self.value(recv)?;
+                    let (format, values) = self.format(&args[0])?;
+                    Ok(format!("sg_putf({out}, {}{values})", c_string(&format)))
+                }
+                Callee::Plain if matches!(name.as_str(), "equals" | "compare") && matches!(recv.ty.strip_borrow(), Ty::Int(_) | Ty::Bool) => {
+                    let (values, names) = self.two(recv, &args[0], head)?;
+                    let (ctype, temp) = (self.ctype(recv.ty.strip_borrow(), recv.span)?, self.temp());
+                    Ok(sequence(&names, match name.as_str() {
+                        "equals" => format!("({} == {})", values[0], values[1]),
+                        _ => format!("({{ {ctype} {temp}a = {}, {temp}b = {}; (int32_t)(({temp}a > {temp}b) - ({temp}a < {temp}b)); }})", values[0], values[1]),
+                    }))
+                }
                 Callee::Plain if name == "toString" => {
                     let (format, values) = self.format(recv)?;
                     Ok(format!("sg_format({}{values})", c_string(&format)))

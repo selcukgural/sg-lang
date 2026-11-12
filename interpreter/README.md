@@ -137,7 +137,7 @@ Design rules that are already enforced:
 Since the sixteenth slice (12 November 2026) a program can be compiled: `sg build file.sg` writes it as C and
 hands that to the C compiler. The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, and then runs the
-same C once more under the address and undefined-behaviour sanitizers (56 of 304 programs for now).
+same C once more under the address and undefined-behaviour sanitizers (65 of 305 programs for now).
 
 What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -157,9 +157,13 @@ value and as a place (`xs[i] = v`, `xs[i] += 1`, `xs[i].name`, `rows[1].add(4)`)
 `reverse`, `clear`, `for` over a list that is handed over, read or changed, lists in fields, lists of text,
 structs, pointers and lists; `indexOf`, `contains` and `sort` on lists of integers, `bool` and text,
 `string.join` and `text.indexOf`.
-Anything else (`HashMap`, `HashSet`, types that carry a borrow, function values, writing an enum, a
-struct or a list with `print`, `==` on them) is an error that names what is missing: nothing is compiled
-wrongly in silence.
+Since the twenty-second slice writing and comparing: `print`, `$"..."`, `panic` and `assert` write a struct,
+an enum or a list as the interpreter does (also behind a `T*`, with `T?` fields and the struct's own
+`format` and `f.write`); `==` and `!=` on structs, enums and lists (the struct's own `equals` where it
+wrote one), `<` and the others through `compare`; `indexOf`, `contains` and `sort` on lists of such
+items; `equals` and `compare` on numbers and text; and a `Formattable` error that `main` ends with.
+Anything else (`HashMap`, `HashSet`, types that carry a borrow, function values) is an error that names
+what is missing: nothing is compiled wrongly in silence.
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
 value (a `string`, a `T*`, a struct, an enum or a `T?` that holds one) is freed where its variable ends, on every way
@@ -714,12 +718,38 @@ Choices made in the twenty-first slice (`List<T>`), approved on 12 November 2026
     the item's bytes kept beside the statement; it owns nothing and is never freed. For that reason `get`
     cannot stand on the right side of `&&`, `||` and `??` yet (the back end asks for a name).
 37. **`indexOf`, `contains` and `sort` are compiled for integers, `bool` and text.** For structs and enums
-    they wait for `==` and `compare` in the back end. `sort` is the C library's `qsort`; it does not keep
-    equal items in their order, which cannot be seen for these types.
-38. **`print(xs)` and `xs == ys` are not compiled yet**; they come with `print` and `==` on structs.
+    they waited for `==` and `compare` in the back end (there since the twenty-second slice, see 41). `sort`
+    was the C library's `qsort` here; it is a stable sort since 42.
+38. **`print(xs)` and `xs == ys` were not compiled yet**; they are since the twenty-second slice.
 
 One thing in the checker was found on the way: the node it inserts when a borrowed `T?` is opened with
 `??` or `try` (`xs.get(1) ?? -1`) did not carry its type, which only the back end reads. It does now.
+
+Choices made in the twenty-second slice (writing and comparing), approved on 12 November 2026 (writing a struct
+without an allocation was asked for, for later):
+
+39. **A struct, an enum or a list is written by a helper of its type**, made once for each type that is
+    written: a struct field by field (`Point { x = 1, y = 2 }`) or by its own `format`, an enum as its
+    variant, a list between brackets, text inside in quotes; the same text as the interpreter's. The helper
+    writes into a text that grows, and that text is then printed: one allocation for a value that is
+    written. Numbers and text are printed directly, as before, with none. Rust's `Display` writes straight
+    into the output and allocates nothing; that would need a `Formatter` that can be a file, which is not
+    done here.
+40. **A `Formatter` is the text being written**, and `f.write(...)` adds to it.
+41. **`==` is a helper of the type too**: the two values are compared where they are, through pointers,
+    field by field, by variant, or item by item; a struct that wrote `equals` is compared by it. `<`, `<=`,
+    `>` and `>=` call the struct's `compare`. Nothing is copied or allocated. `indexOf` and `contains` use
+    the same helper and `sort` the same `compare`, so lists of your own types are searched and sorted.
+42. **`sort` is a merge sort that keeps equal items in the order they had**, as the interpreter's does
+    (with your own `compare` the difference can be seen: two files of the same size). It uses one block as
+    large as the list while it runs. Rust's `sort` is the same kind; C's `qsort` promises no order.
+43. **A `T*` and a `T*?` are written and compared by one helper**, since they are one C type; it knows
+    `null`.
+
+One thing in the interpreter was found on the way and is fixed: comparing two structs with `==` stopped the
+interpreter itself when a `T?` field held a value on one side and `null` on the other and the value was not
+one that can be a key (a struct with a list in it). It gives `false` now
+(`tests/cases/ok_equal_values.sg`).
 
 ## Not here yet
 
@@ -756,5 +786,5 @@ error.
 
 The back end, one piece of the language at a time, each compared with the interpreter, run under the
 sanitizers and measured against C: next `HashMap` and `HashSet`, then types that carry a
-borrow (the calculator), function values, and `print` and `==` on structs, enums and collections. After it the question is the
+borrow (the calculator) and function values. After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

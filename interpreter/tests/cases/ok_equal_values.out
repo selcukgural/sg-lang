@@ -1,0 +1,31 @@
+true
+false
+true
+Point { x = 1, y = 2 }
+Point { x = 1, y = 2 } and Point { x = 1, y = 3 }
+true
+false
+true
+false
+User { name = "ada", home = Point { x = 1, y = 2 }, tags = ["new", "tab\t\"quoted\""], manager = null }
+User { name = "ada", home = null, tags = ["new"], manager = User { name = "grace", home = null, tags = ["new"], manager = null } }
+false
+true
+false
+false
+NotFound("K-1")
+Insufficient(5, Point { x = 1, y = 2 })
+Closed
+true
+false
+1
+false
+[#c, #Rust]
+1
+false
+true
+false
+[Point { x = 1, y = 2 }, Point { x = 1, y = 3 }]
+[]
+["one", "two"]
+words: ["one", "two"]
