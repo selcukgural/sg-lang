@@ -1,0 +1,8 @@
+void fill(read List<int> xs) {
+    xs[0] = 1
+}
+
+void main() {
+    var xs = List<int> { 0 }
+    fill(read xs)
+}

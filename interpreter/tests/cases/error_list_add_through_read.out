@@ -1,0 +1,5 @@
+error: `add` changes the list, but it is reached through a `read` borrow
+  --> error_list_add_through_read.sg:2:5
+ 2 |     xs.add(1)
+   |     ^^
+  hint: take the value as `ref` instead of `read`

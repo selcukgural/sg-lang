@@ -144,6 +144,8 @@ smallness: what each language does best is taken in the form that fits us, and i
 | `string` guarantee | Always valid UTF-8. A bad byte on reading gives `IoError.InvalidText(long position)`, the only way from bytes to text is `string.fromUtf8`, which returns a `Result`, and raw data is read as a `byte` slice. String constants are checked at compile time. A slice through the middle of a character panics. `text[i]` is read only, a byte cannot be written | Core principle: bad data should not silently become `�` (C#), and Unicode operations should not meet garbage |
 | File API | C# names: `File.openText` gives a `StreamReader`, `File.createText` gives a `StreamWriter`. `reader.readLine(ref line)` reuses the buffer and returns `Result<bool, IoError>`. `reader.lines()` gives an owned `string` per line and ends after the first error. `int.parse` returns a `Result` | `Iterator.next` cannot lend from its own buffer, since `next` would change that buffer on the following call. And there is no loop that gives the same error forever |
 | `HashMap.getOrAdd` | `map.getOrAdd(key, initial)` returns `ref V` and copies the key only if it is missing | One hash, one `clone`. `counts[k] += 1` panics if the key is missing |
+| `HashMap.add` and `map[key] = value` | `map.add(key, value)` panics if the key is already there, also inside `HashMap<K, V> { ... }`. `map[key] = value` writes only under a key that is there and panics otherwise, like `map[key]` and `map[key] += 1`. "Put or overwrite" has no notation of its own: it is written with `contains` or `getOrAdd`. Decided on 12 November | Core principle: neither a silent overwrite nor a key that appears silently. C#'s `Add` throws too, but its `map[key] = value` inserts; Rust's `insert` overwrites and returns the old value |
+| Order of a `HashMap` | The language promises no order. The interpreter goes over the entries in the order of their keys, and stays that way. Decided on 12 November | A run always prints the same, which the golden tests need |
 | `dispose` order | The reverse of declaration | What is declared later may have borrowed from what is declared earlier |
 | Close error | `writer.close()` takes `this`, writes the buffer and returns a `Result`. `Closable` is an empty marker (`StreamWriter : Closable`): if a local variable of such a type is dropped at a normal exit without being closed or moved elsewhere, it is a compile error, and the hint is `try writer.close()`. An error exit through `try` is exempt, `dispose` runs there. To give up on purpose, `_ = writer.close()`. If the value is moved into a struct field, a list or a `shared`, the compiler stops tracking it and there is no restriction | A forgotten `close` silently loses the write error. In C# the same idea is an analyser warning (CA2000), in Rust there is no check. It is an error because the language has no concept of a warning and the check is exact. The heavy version that tracked everywhere was removed on 11 November, and this version that looks only at locals was added the same day. Cost: one marker and one rule; a value moved into a field and dropped without being closed is not seen, and the responsibility lies with whoever writes the struct |
 | `checked` borrow duration | An access borrows for the duration of the expression. A borrow at the head of a `for` or `match` lasts for the whole statement. A local variable cannot hold a `checked` borrow, compile error. A block for several lines: `read x as n { }`, `ref x as n { }` | With the "for the duration of the expression" rule it was impossible to loop over a `checked` list. The block has the same form as `lock x as c { }`, no new word is needed, and the duration of the borrow is visible in the code |
@@ -209,8 +211,9 @@ smallness: what each language does best is taken in the form that fits us, and i
 ## Open questions
 
 - Generics. The author's view (12 November 2026): the language can do without user-written generics for a while, perhaps
-  for good, as Go did for years. Not decided yet. The interpreter knows `Result` as a built-in type for now; what this
-  means for `List<T>`, `HashMap<K, V>` and the generic examples is still to be talked through.
+  for good, as Go did for years. Not decided yet. The interpreter knows `Result`, `List` and `HashMap` as built-in
+  types (since the eighth slice); what this means for the generic examples (`TopList<T>`, `report<T>`) is still to be
+  talked through.
 
 - Notation. The [C# variant](02-syntax-draft.md) is the current draft, and it will be stressed with example programs.
 - Library boundary: in a library with more than one folder there is no level for "my own folders can see it, the user cannot"
@@ -268,7 +271,11 @@ This goal holds only with a back end at the level of LLVM. A tree-walking interp
    a `Copyable` value is copied instead of moved, a `Formattable` one is printed (with its own `format` or field by field),
    and the error of `main` must be `Formattable`. The choices made in this slice were made without a round of approval and are still to be talked over:
    [interpreter/README.md](../interpreter/README.md), "Choices made in the seventh slice".
-   The borrow check (`from`, conflicting `ref`) does not exist yet. Next: the built-in `List<T>` and `HashMap<K, V>`. The current state is in
+   Eighth slice (the same day): the built-in `List<T>` and `HashMap<K, V>` (construction, `add`, index, `get`,
+   `getOrAdd`, `for` in its three forms); the calculator keeps its variables in a `HashMap` as in the design, and the
+   log summary runs without the files. Three of its choices (`add` on a key that is there, `map[key] = value` on one that is missing, the order of the entries) were approved on 12 November 2026 and are in the decisions table; the others are still to be talked over:
+   [interpreter/README.md](../interpreter/README.md), "Choices made in the eighth slice".
+   The borrow check (`from`, conflicting `ref`) does not exist yet, and it is the next large piece. The current state is in
    [interpreter/README.md](../interpreter/README.md). The code, comments and error messages are in English. Since 12 November 2026 the design documents are in English too.
 
 ## Dropped decisions

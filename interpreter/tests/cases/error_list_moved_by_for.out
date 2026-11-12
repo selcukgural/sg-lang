@@ -1,0 +1,8 @@
+error: `names` was moved and can no longer be used
+  --> error_list_moved_by_for.sg:6:11
+ 6 |     print(names.length())
+   |           ^^^^^
+  it was moved here:
+  --> error_list_moved_by_for.sg:3:17
+ 3 |     for name in names {
+   |                 ^^^^^

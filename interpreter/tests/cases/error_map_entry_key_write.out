@@ -1,0 +1,5 @@
+error: the key of an entry cannot be changed: the map found the entry by it
+  --> error_map_entry_key_write.sg:4:9
+ 4 |         item.key = "grace"
+   |         ^^^^^^^^
+  hint: remove the entry and add it under the new key: `map.remove(key)`, `map.add(key, value)`

@@ -1,0 +1,4 @@
+error: an entry of a `HashMap` has a `key` and a `value`, no `name`
+  --> error_map_entry_field.sg:4:20
+ 4 |         print(item.name)
+   |                    ^^^^

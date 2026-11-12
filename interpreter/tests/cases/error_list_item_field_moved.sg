@@ -1,0 +1,10 @@
+struct User {
+    string name
+}
+
+void main() {
+    var users = List<User>()
+    users.add(User { name = "ada" })
+    var name = users[0].name
+    print(name)
+}

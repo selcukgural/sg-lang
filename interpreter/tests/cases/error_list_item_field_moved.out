@@ -1,0 +1,5 @@
+error: a `string` cannot be moved out of an item of a collection
+  --> error_list_item_field_moved.sg:8:16
+ 8 |     var name = users[0].name
+   |                ^^^^^^^^^^^^^
+  hint: borrow it: `read users[0].name`, or swap it with `users[0].name.replace(value)`

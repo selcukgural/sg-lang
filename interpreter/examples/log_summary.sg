@@ -1,0 +1,90 @@
+// The log summary from the design, with the lines in the program instead of a file:
+// a `List` of lines, a `HashMap` from the level to what was counted for it.
+
+struct Entry {
+    string level
+    int ms
+}
+
+struct Stats {
+    int count
+    int totalMs
+}
+
+enum LogError : Formattable {
+    BadLine(int number, string text)
+}
+
+// "info 120" gives 120; null if the text is not a number.
+int? parseNumber(read string text) {
+    if text.length() == 0 {
+        return null
+    }
+    int value = 0
+    for i in 0..text.length() {
+        var c = text[i]
+        if c < '0' || c > '9' {
+            return null
+        }
+        value = try value.tryMultiply(10)
+        value = try value.tryAdd(c - '0')
+    }
+    return value
+}
+
+// A line is a level, one space, and the milliseconds.
+Entry? parseLine(read string line) {
+    for i in 0..line.length() {
+        if line[i] == ' ' {
+            int ms = try parseNumber(line[i + 1..])
+            return Entry { level = line[..i].clone(), ms = ms }
+        }
+    }
+    return null
+}
+
+Result<HashMap<string, Stats>, LogError> summarize(read List<string> lines) {
+    var stats = HashMap<string, Stats>()
+    var number = 0
+    for line in lines {
+        number += 1
+        var entry = parseLine(line) ?? return Error(LogError.BadLine(number, line.clone()))
+        var item = stats.getOrAdd(read entry.level, Stats { count = 0, totalMs = 0 })
+        item.count += 1
+        item.totalMs += entry.ms
+    }
+    return Ok(stats)
+}
+
+void report(read HashMap<string, Stats> stats) {
+    for item in stats {
+        print($"{item.key}: {item.value.count} lines, {item.value.totalMs} ms")
+    }
+}
+
+Result<void, LogError> main() {
+    var lines = List<string> {
+        "info 120",
+        "error 15",
+        "info 80",
+        "warn 7",
+        "info 300"
+    }
+    var stats = try summarize(read lines)
+    report(read stats)
+
+    // The slowest level, found by going over the map once more.
+    var slowest = ""
+    var most = -1
+    for item in read stats {
+        if item.value.totalMs > most {
+            most = item.value.totalMs
+            slowest = item.key.clone()
+        }
+    }
+    print($"slowest: {slowest}")
+
+    lines.add("debug fast")
+    _ = try summarize(read lines)
+    return Ok()
+}

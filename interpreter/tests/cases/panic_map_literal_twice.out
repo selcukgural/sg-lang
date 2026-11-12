@@ -1,0 +1,5 @@
+panic: key 1 is already in the map
+  to change what is kept under a key, write `map[key] = value`
+  --> panic_map_literal_twice.sg:2:45
+ 2 |     var ages = HashMap<int, int> { {1, 36}, {1, 37} }
+   |                                             ^^^^^^^

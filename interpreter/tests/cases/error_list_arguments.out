@@ -1,0 +1,5 @@
+error: `List<int>(...)` takes no arguments
+  --> error_list_arguments.sg:2:24
+ 2 |     var xs = List<int>(10)
+   |                        ^^
+  hint: the items are written in braces: `List<int> { 1, 2 }`

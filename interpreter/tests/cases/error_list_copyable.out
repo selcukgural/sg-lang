@@ -1,0 +1,5 @@
+error: `Path` cannot be `Copyable`: `steps` is a `List<int>`, which is not
+  a `List<int>` owns memory on the heap; a copy would have to allocate, and that is written `.clone()`
+  --> error_list_copyable.sg:2:5
+ 2 |     List<int> steps
+   |     ^^^^^^^^^

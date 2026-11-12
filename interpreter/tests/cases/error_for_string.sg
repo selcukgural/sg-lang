@@ -1,0 +1,6 @@
+void main() {
+    var text = "abc"
+    for c in read text {
+        print(c)
+    }
+}

@@ -1,0 +1,5 @@
+error: expected `int`, found `int?`
+  --> error_map_get_as_value.sg:3:15
+ 3 |     int age = ages.get("ada")
+   |               ^^^^^^^^^^^^^^^
+  hint: it may be `null`: give a fallback with `ages.get("ada") ?? ...`, or test it with `is null`

@@ -1,0 +1,4 @@
+void main() {
+    var ages = HashMap<string, int> { {"ada", 36} }
+    ages.add("ada", 37)
+}

@@ -1,0 +1,5 @@
+error: an item of a `HashMap` is a key and a value, in braces of their own
+  --> error_map_item_shape.sg:2:39
+ 2 |     var ages = HashMap<string, int> { "ada", 36 }
+   |                                       ^^^^^
+  hint: `HashMap<string, int> { {"x", 10}, {"y", 20} }`

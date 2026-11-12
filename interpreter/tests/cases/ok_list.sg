@@ -1,0 +1,109 @@
+struct Point : Copyable, Formattable {
+    int x
+    int y
+}
+
+struct Team {
+    string name
+    List<string> members
+}
+
+int sum(read List<int> xs) {
+    int total = 0
+    for x in xs {                        // xs is read, so x is read int
+        total += x
+    }
+    return total
+}
+
+void doubleAll(ref List<int> xs) {
+    for x in xs {                        // xs is ref, so x is ref int
+        x *= 2
+    }
+}
+
+void consume(string name) {
+    print($"consumed {name}")
+}
+
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    xs.add(4)
+    print(xs.length())
+    print(xs[0] + xs[3])
+    xs[1] = 20
+    xs[2] += 5
+    print(sum(read xs))
+    doubleAll(ref xs)
+    print(sum(read xs))
+
+    // An index that may be out of range: `get` gives null where `xs[i]` would panic.
+    print(xs.get(1) ?? -1)
+    print(xs.get(10) ?? -1)
+    var missing = xs.get(-1)
+    print(missing is null)
+
+    for i in 0..xs.length() {
+        print($"{i}: {xs[i]}")
+    }
+
+    print(xs.removeLast() ?? 0)
+    xs.reverse()
+    for x in read xs {
+        print(x)
+    }
+    xs.clear()
+    print(xs.length())
+    print(xs.removeLast() is null)
+
+    // Text is not copied out of the list: `names[0]` lends it.
+    var names = List<string> { "ada", "grace" }
+    names.add("edsger")
+    print(names[0])
+    var first = names[0]
+    print(first.length())
+    string copy = names[1].clone()
+    print(copy)
+    names[1] = "barbara"
+    var old = names[2].replace("tony")
+    print(old)
+    for name in read names {
+        print(name)
+    }
+    for name in names {                  // the list is handed over, each name is owned
+        consume(name)
+    }
+
+    // Structs in a list are changed in place.
+    var points = List<Point>()
+    points.add(Point { x = 1, y = 2 })
+    points.add(Point { x = 3, y = 4 })
+    points[0].x = 10
+    var p = points[1]                    // Copyable: a copy
+    p.y = 99
+    print(points[0])
+    print(points[1])
+    for point in ref points {
+        point.y += 1
+    }
+    print(points[1].y)
+
+    // A list in a field, and a list of lists.
+    var team = Team { name = "core", members = List<string>() }
+    team.members.add("ada")
+    team.members.add("grace")
+    print($"{team.name}: {team.members.length()}")
+    for member in read team.members {
+        print(member)
+    }
+
+    var rows = List<List<int>> {
+        List<int> { 1, 2 },
+        List<int> { 3 }
+    }
+    rows[1].add(4)
+    for row in read rows {
+        print(sum(row))
+    }
+    print(rows[0][1])
+}

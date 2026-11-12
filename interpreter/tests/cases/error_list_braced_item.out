@@ -1,0 +1,5 @@
+error: an item of a `List` is one value, written without braces
+  --> error_list_braced_item.sg:2:26
+ 2 |     var xs = List<int> { {1, 2} }
+   |                          ^^^^^^
+  hint: `List<int> { 1, 2 }`

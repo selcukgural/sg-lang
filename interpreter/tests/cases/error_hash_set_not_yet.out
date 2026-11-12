@@ -1,0 +1,5 @@
+error: `HashSet` is not in the interpreter yet
+  --> error_hash_set_not_yet.sg:2:16
+ 2 |     var seen = HashSet<int>()
+   |                ^^^^^^^^^^^^
+  hint: until then: a `HashMap<T, bool>`, asked with `contains`

@@ -13,18 +13,21 @@ cargo test
 | Area | Supported |
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point. `public` is accepted and has no effect yet |
-| Types | `byte`, `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `read T` and `ref T` in signatures |
+| Types | `byte`, `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `read T` and `ref T` in signatures |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
 | Methods | Written in the struct body with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`. Called as `stack.push(1)`, also through pointers and borrows. A function without `this` is called on the type: `Stack.create()`. `Stack(args)` is short for `Stack.create(args)` |
 | Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)` |
 | `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a name or `_` for each value, `_`, `var other`; a condition with `when`. On an integer the patterns are numbers and characters: `match c { '+' => ... _ => ... }`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
 | Interfaces | Two built-in ones, written after the name: `struct Point : Copyable`, `enum AppError : Formattable`. A `Copyable` value is copied where another would be moved. A `Formattable` value is accepted by `print`, `$"..."` and `f.write`; a struct can write its own `void format(read this, ref Formatter f)`, otherwise the text is made from the fields |
+| `List<T>` | Built in. `List<int>()`, `List<int> { 1, 2 }`; `xs.add(v)`, `xs.length()`, `xs[i]` to read and to write (`xs[i] = v`, `xs[i] += 1`, `xs[i].name = ...`, `ref xs[i]`), `xs.get(i)` gives `null` where `xs[i]` would panic, `xs.removeLast()`, `xs.reverse()`, `xs.clear()` |
+| `HashMap<K, V>` | Built in; a key is an integer, a `bool` or a `string`. `HashMap<string, int>()`, `HashMap<string, int> { {"x", 10} }`; `map.add(key, value)`, `map[key]` to read and to write what is under a key that is there, `map.get(key)` gives `null` for a missing key, `map.getOrAdd(key, initial)` gives a `ref V`, `map.contains(key)`, `map.remove(key)`, `map.length()`, `map.clear()` |
+| `for` over a collection | `for x in xs` hands the collection over and `x` owns each item; `for x in read xs` and `for x in ref xs` lend, and so does a collection that is already borrowed. Over a `HashMap` the variable has a `key` and a `value` |
 | `is` | `if s is Circle(r) { ... }`, `while next() is not End { ... }` |
 | Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`. A variable keeps its type |
-| Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `break`, `continue`, `return` |
+| Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
 | Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x` |
 | Text | `"..."` with `\n \t \r \0 \\ \" \'`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string` |
 | Characters | `'+'`, `'\n'`: a `byte` |
@@ -81,6 +84,16 @@ Design rules that are already enforced:
   `void format(read this, ref Formatter f)`.
 - `print(x)` of a struct or an enum that is not `Formattable` is an error whose hint is the two words to add.
 - The error type of `Result<void, E> main()` must be `Formattable` (or a `string`), because it is printed.
+- An index outside a `List` panics with the index and the length; a key that is not in a `HashMap` panics with
+  the key. The message names `get`, which gives `null` instead.
+- An item is never moved out of a collection through an index: `consume(names[0])` is an error whose hint is
+  `.clone()`, and `var name = users[0].name` is one whose hint is `read` or `replace`.
+- A collection reached through `read` cannot be changed: `add`, `clear`, `xs[i] = v` and the rest are errors
+  whose hint is `ref`.
+- A collection passed where a borrow is expected needs `read` or `ref` written: `count(xs)` is an error whose
+  hint is `count(read xs)`.
+- After `for x in xs` the list is gone (it was handed over); the error shows the loop.
+- `List<int> xs = ...` needs its item type, and a `HashMap` a key type that can be a key.
 
 ## How it is built
 
@@ -233,8 +246,44 @@ test in `tests/cases/`.
 The calculator runs whole (`examples/calculator.sg`): lexer, parser, evaluator, error conversion. It differs
 from the design text where the interpreter lacks something: `Lexer` owns a copy of the input and `Token.Name`
 a copy of the name (no borrowed fields without `from`), so `Token` cannot be `Copyable` and `advance` hands
-over the current token with `replace`; variables are a linked list instead of a `HashMap`, `-x` is
-`0.trySubtract(x)`, and the input is a string in the program instead of a file.
+over the current token with `replace`; `-x` is `0.trySubtract(x)`, and the input is a string in the program
+instead of a file. Since the eighth slice the variables are a `HashMap<string, int>`, as in the design.
+
+`examples/log_summary.sg` is the log summary from the design without the files: a `List` of lines, a
+`HashMap` filled with `getOrAdd`, and a `for` over both.
+
+## Choices made in the eighth slice
+
+Made on 12 November 2026 without a round of approval. Rules 4, 5 and 7 were approved the same day and are in the
+decisions table; the others are still to be talked over. Each has a test in `tests/cases/`.
+
+1. **`List<T>` and `HashMap<K, V>` are built in, like `Result<T, E>`.** There are still no generics of your own.
+   The methods are the ones the design examples call (the tables above); `indexOf`, `contains` on a list, `sort`,
+   `join`, `filter`, `map`, `reserve` and `clone` wait for `Equatable`, `Comparable`, lambdas and `Clonable`.
+   `HashSet<T>` answers "not in the interpreter yet".
+2. **`xs[i]` lends what cannot be copied.** The design says reading `xs[i]` is `xs.at(i)`, which returns
+   `read T`: so `names[0]` is a `read string`, and an `int` item is simply the number. To take an item out there
+   is `removeLast()`, `xs[i].replace(value)`, or `.clone()` for a copy.
+3. **`removeLast()` gives a `T?`**, `null` for an empty list (Rust's `pop`). The design uses the name once and
+   does not say what comes back.
+4. **`map.add(key, value)` panics if the key is already there** (C#'s `Add`), also inside
+   `HashMap<K, V> { ... }`. Rust's `insert` overwrites silently and gives the old value back. Approved.
+5. **`map[key] = value` writes only under a key that is there** and panics otherwise, because the design says
+   writing `xs[i]` is `refAt`. With rule 4 there is no single way to say "put or overwrite" (in C#
+   `map[key] = value` does that): it is written with `contains`, or with `getOrAdd`. Approved: a key that was
+   expected and is missing should not appear silently.
+6. **A method that only looks a key up takes text as `read string`** (`ages.get(read name)`, a literal as it
+   is) and a number or a `bool` by value. `add` takes the key itself, since the map keeps it.
+7. **`for item in map` gives an entry with `key` and `value`.** The value can be written through `ref`
+   (`item.value += 1`), the key never. The entry has no type name that can be written yet. Here the entries come
+   in the order of their keys so that a run always prints the same; the design promises no order. Approved.
+8. **A key is an integer, a `bool` or a `string`**, until `Equatable` and `Hashable` exist.
+9. **`print(xs)` is an error**; the hint is a `for`. A struct that holds a list can be `Formattable` only with
+   a `format` of its own.
+10. **`List<int>(` and `List<int> {` start a value**, so `a < b > (c)` is read as a type too (C#'s rule). In a
+    condition, where `{` starts the block, `List<int> { 1 }` needs parentheses like a struct literal.
+11. **`x ?? fallback` on a borrowed `T?` that can be copied gives the value**, so `xs.get(i) ?? 0` is an `int`.
+    A missing `T` where a `T?` was found now has the hint `??` / `is null`.
 
 ## Not here yet
 
@@ -249,10 +298,13 @@ over the current token with `replace`; variables are a linked list instead of a 
   methods on enums. A struct or an enum cannot be compared with `==` yet.
 - Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Equatable`,
   `Hashable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
-- Generics other than the built-in `Result<T, E>`, lambdas, collections, modules, `test` blocks, threads,
-  `shared` / `weak` / `checked` / `locked`.
+- Generics other than the built-in `Result<T, E>`, `List<T>` and `HashMap<K, V>`; lambdas, modules, `test`
+  blocks, threads, `shared` / `weak` / `checked` / `locked`.
+- Changing a collection while a `for` goes over it is not caught (it is part of the borrow check). Here a
+  list is gone over by position and a map as it was when the loop started.
+- `HashSet<T>`, lists of borrows (`List<read T>`), and the list methods named in the eighth slice.
 - `char` and `text.chars()`, `double` and the other number types.
-- Slices of anything but text (`read byte[]`, `text.asBytes()`, `string.fromUtf8`), `List<T>`, `T[N]`.
+- Slices of anything but text (`read byte[]`, `xs[a..b]`, `text.asBytes()`, `string.fromUtf8`), `T[N]`.
   A slice of a `string` is a copy here, not a window; without a borrow check the difference cannot be seen.
 - `tryToInt` and the other `tryTo...` conversions. Overflow and cast panics print the values but not yet the
   safe alternative.
@@ -263,6 +315,6 @@ error.
 
 ## Next
 
-The built-in collections, `List<T>` and `HashMap<K, V>`, written like `Result<T, E>` without general generics:
-most of the design examples need them, and with `HashMap` the calculator loses its hand-made linked list.
-After that the borrow check (`from`, a `ref` that overlaps another borrow), the largest piece still missing.
+The borrow check (`from`, a `ref` that overlaps another borrow, a collection changed inside its own `for`),
+the largest piece still missing. Smaller steps that could come first: `interface` with `Equatable` and
+`Comparable` (which bring `indexOf`, `sort` and keys of your own types), or `test` blocks.

@@ -1,0 +1,4 @@
+panic: index 0 is out of range: the length is 0
+  --> panic_list_write_index.sg:3:5
+ 3 |     xs[0] = 1
+   |     ^^^^^

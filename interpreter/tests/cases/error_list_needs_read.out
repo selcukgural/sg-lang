@@ -1,0 +1,5 @@
+error: expected `read List<int>`, found `List<int>`
+  --> error_list_needs_read.sg:7:17
+ 7 |     print(count(xs))
+   |                 ^^
+  hint: lend it with `read`: `read xs`

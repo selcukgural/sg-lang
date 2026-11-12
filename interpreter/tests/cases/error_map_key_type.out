@@ -1,0 +1,5 @@
+error: `Point` cannot be the key of a `HashMap`
+  a key must be `Equatable` and `Hashable`; for now that is an integer, a `bool` or a `string`
+  --> error_map_key_type.sg:6:24
+ 6 |     var seen = HashMap<Point, int>()
+   |                        ^^^^^

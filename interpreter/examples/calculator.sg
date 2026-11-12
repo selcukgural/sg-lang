@@ -181,23 +181,6 @@ enum EvalError : Formattable {
     Overflow
 }
 
-struct Binding {
-    string name
-    int value
-    Binding*? next
-}
-
-int? find(read Binding*? vars, read string name) {
-    var cur = vars
-    while cur is not null {
-        if cur.name == name {
-            return cur.value
-        }
-        cur = read cur.next
-    }
-    return null
-}
-
 Result<int, EvalError> apply(Operator op, int a, int b) {
     return match op {
         Add => Ok(a.tryAdd(b) ?? return Error(EvalError.Overflow))
@@ -208,10 +191,10 @@ Result<int, EvalError> apply(Operator op, int a, int b) {
     }
 }
 
-Result<int, EvalError> eval(read Expr e, read Binding*? vars) {
+Result<int, EvalError> eval(read Expr e, read HashMap<string, int> vars) {
     return match e {                     // e is read, so the names in the arms are read too
         Number(v) => Ok(v)
-        Variable(name) => Ok(find(vars, name) ?? return Error(EvalError.UnknownName(name.clone())))
+        Variable(name) => Ok(vars.get(name) ?? return Error(EvalError.UnknownName(name.clone())))
         Negate(operand) => Ok(0.trySubtract(try eval(operand, vars)) ?? return Error(EvalError.Overflow))
         Binary(op, left, right) => {
             var a = try eval(left, vars)
@@ -226,13 +209,13 @@ enum AppError : Formattable {
     Eval(EvalError cause)
 }
 
-Result<int, AppError> run(read string source, read Binding*? vars) {
+Result<int, AppError> run(read string source, read HashMap<string, int> vars) {
     var tree = try parse(source)         // SyntaxError becomes AppError.Syntax
     return Ok(try eval(read tree, vars)) // EvalError becomes AppError.Eval
 }
 
 Result<void, AppError> main() {
-    var vars = new Binding { name = "x", value = 10, next = null }
+    var vars = HashMap<string, int> { {"x", 10} }
 
     print(try run("1 + 2 * (x - 4)", read vars))
     print(try run("-x * -(3 + 4) / 2", read vars))

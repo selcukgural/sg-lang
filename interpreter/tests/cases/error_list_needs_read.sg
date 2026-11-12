@@ -1,0 +1,8 @@
+int count(read List<int> xs) {
+    return (int)xs.length()
+}
+
+void main() {
+    var xs = List<int> { 1 }
+    print(count(xs))
+}

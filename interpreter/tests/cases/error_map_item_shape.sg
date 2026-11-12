@@ -1,0 +1,3 @@
+void main() {
+    var ages = HashMap<string, int> { "ada", 36 }
+}

@@ -1,0 +1,3 @@
+void main() {
+    var xs = List<int> { 1, "two" }
+}

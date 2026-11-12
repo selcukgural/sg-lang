@@ -1,0 +1,6 @@
+void main() {
+    var ages = HashMap<string, int> { {"ada", 36} }
+    for item in ref ages {
+        item.key = "grace"
+    }
+}

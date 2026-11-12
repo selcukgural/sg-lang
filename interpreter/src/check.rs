@@ -24,6 +24,9 @@ const INTERFACES_NOT_YET: &[&str] = &["Clonable", "Disposable", "Equatable", "Ha
 
 const BUILTINS: &[&str] = &["print", "assert", "panic", "Ok", "Error"];
 
+/// Types the language brings along; a program cannot define another one under these names.
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet"];
+
 struct StructInfo {
     fields: Vec<(String, Ty)>,
     /// Functions written in the struct body, with or without `this`.
@@ -65,8 +68,8 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
         .map(|decl| (&decl.name, decl.name_span, TypeKind::Struct))
         .chain(prog.enums.iter().map(|decl| (&decl.name, decl.name_span, TypeKind::Enum)));
     for (name, span, kind) in declared {
-        if name == "Result" {
-            return Err(Diag::error(span, "`Result` is a built-in type and cannot be redefined"));
+        if BUILTIN_TYPES.contains(&name.as_str()) {
+            return Err(Diag::error(span, format!("`{name}` is a built-in type and cannot be redefined")));
         }
         if Ty::from_name(name).is_some() || names.insert(name.clone(), kind).is_some() {
             return Err(Diag::error(span, format!("type `{name}` is defined twice")));
@@ -219,6 +222,9 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
                 format!("`{}` is a built-in function and cannot be redefined", func.name),
             ));
         }
+        if BUILTIN_TYPES.contains(&func.name.as_str()) {
+            return Err(Diag::error(func.name_span, format!("`{}` is a built-in type, so a function cannot have its name", func.name)));
+        }
         if names.contains_key(func.name.as_str()) {
             return Err(Diag::error(func.name_span, format!("`{}` is already the name of a type", func.name)));
         }
@@ -311,11 +317,41 @@ pub fn check(prog: &mut Program, src: &str) -> Res<()> {
 }
 
 fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
-    if ty.name != "Result" && !ty.args.is_empty() {
-        return Err(Diag::error(ty.span, format!("`{}<...>`: generic types are not in the interpreter yet", ty.name))
-            .note("the only type written with `<` and `>` for now is `Result<T, E>`"));
+    if ty.name == "HashSet" {
+        return Err(Diag::error(ty.span, "`HashSet` is not in the interpreter yet")
+            .hint("until then: a `HashMap<T, bool>`, asked with `contains`"));
     }
+    if !matches!(ty.name.as_str(), "Result" | "List" | "HashMap") && !ty.args.is_empty() {
+        return Err(Diag::error(ty.span, format!("`{}<...>`: generic types are not in the interpreter yet", ty.name))
+            .note("the types written with `<` and `>` for now are `Result<T, E>`, `List<T>` and `HashMap<K, V>`"));
+    }
+    let no_borrow = |arg: &TypeExpr, of: &str| match arg.mode {
+        Some(_) => Err(Diag::error(arg.span, format!("a `{of}` that holds borrows is not in the interpreter yet"))
+            .note("it needs the borrow check, which is not here yet")),
+        None => Ok(()),
+    };
     let mut resolved = match Ty::from_name(&ty.name) {
+        _ if ty.name == "List" => {
+            let [item] = ty.args.as_slice() else {
+                return Err(Diag::error(ty.span, "`List` is written with the type of its items: `List<T>`"));
+            };
+            no_borrow(item, "List")?;
+            Ty::List(Box::new(resolve_type(item, names, false)?))
+        }
+        _ if ty.name == "HashMap" => {
+            let [key, value] = ty.args.as_slice() else {
+                return Err(Diag::error(ty.span, "`HashMap` is written with two types: `HashMap<K, V>`")
+                    .note("`K` is the key, `V` is what is kept under it"));
+            };
+            no_borrow(key, "HashMap")?;
+            no_borrow(value, "HashMap")?;
+            let key_ty = resolve_type(key, names, false)?;
+            if !matches!(key_ty, Ty::Int(_) | Ty::Bool | Ty::Str) {
+                return Err(Diag::error(key.span, format!("`{key_ty}` cannot be the key of a `HashMap`"))
+                    .note("a key must be `Equatable` and `Hashable`; for now that is an integer, a `bool` or a `string`"));
+            }
+            Ty::Map(Box::new(key_ty), Box::new(resolve_type(value, names, false)?))
+        }
         _ if ty.name == "Result" => {
             let [ok, error] = ty.args.as_slice() else {
                 return Err(Diag::error(ty.span, "`Result` is written with two types: `Result<T, E>`")
@@ -377,7 +413,7 @@ fn all_copyable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d
         let diag = Diag::error(field.ty.span, format!("`{name}` cannot be `Copyable`: `{}` is a `{ty}`, which is not", field.name));
         return Err(match ty {
             Ty::Struct(inner) | Ty::Enum(inner) => diag.hint(format!("make `{inner}` `Copyable` too, or take `Copyable` off `{name}`")),
-            Ty::Str | Ty::Ptr(_) => diag.note(format!("a `{ty}` owns memory on the heap; a copy would have to allocate, and that is written `.clone()`")),
+            Ty::Str | Ty::Ptr(_) | Ty::List(_) | Ty::Map(..) => diag.note(format!("a `{ty}` owns memory on the heap; a copy would have to allocate, and that is written `.clone()`")),
             _ => diag,
         });
     }
@@ -729,12 +765,6 @@ impl<'a> Checker<'a> {
                 _ => {}
             },
             StmtKind::Assign { target, op, value, through } => {
-                if let ExprKind::Index { recv, .. } = &mut target.kind {
-                    let ty = self.operand(recv, None)?;
-                    self.indexable(&ty, recv.span)?;
-                    return Err(Diag::error(target.span, "a byte cannot be written into a `string`")
-                        .note("a `string` is always valid UTF-8; `text[i]` only reads"));
-                }
                 let target_ty = match &target.kind {
                     ExprKind::Var(name) => {
                         let var = if op.is_some() { self.live_var(name, target.span)? } else { self.var(name, target.span)? };
@@ -755,6 +785,18 @@ impl<'a> Checker<'a> {
                             return Err(Diag::error(target.span, "a variant of an enum is a value, not a place to write to"));
                         };
                         self.check_parts(target, true)?;
+                        if matches!(target.kind, ExprKind::Index { kind: IndexKind::Text, .. }) {
+                            return Err(Diag::error(target.span, "a byte cannot be written into a `string`")
+                                .note("a `string` is always valid UTF-8; `text[i]` only reads"));
+                        }
+                        if !writable && self.is_entry_key(target) {
+                            return Err(Diag::error(target.span, "the key of an entry cannot be changed: the map found the entry by it")
+                                .hint("remove the entry and add it under the new key: `map.remove(key)`, `map.add(key, value)`"));
+                        }
+                        if !writable && target.in_item() {
+                            return Err(Diag::error(target.span, "this item is reached through a `read` borrow and cannot be written")
+                                .hint("take the value as `ref` instead of `read`"));
+                        }
                         if !writable {
                             return Err(Diag::error(target.span, "this field is reached through a `read` borrow and cannot be written")
                                 .hint("take the value as `ref` instead of `read`"));
@@ -835,6 +877,52 @@ impl<'a> Checker<'a> {
                 self.declare_local(var, ty, *var_span)?;
                 self.loop_body(body, None, Vec::new())?;
                 self.pop_scope()?;
+            }
+            StmtKind::ForEach { var, var_span, iter, body, by } => {
+                self.forget_narrowing_of_assigned(body, None);
+                // Like `match`: an owned collection is handed over to the loop, a borrowed one
+                // lends its items.
+                let found = self.expr(iter, None)?;
+                let mut mode = None;
+                let mut inner = &found;
+                loop {
+                    inner = match inner {
+                        Ty::Read(behind) => {
+                            mode = Some(Mode::Read);
+                            behind
+                        }
+                        Ty::Ref(behind) => {
+                            mode = mode.or(Some(Mode::Ref));
+                            behind
+                        }
+                        Ty::Ptr(behind) => behind,
+                        _ => break,
+                    };
+                }
+                let item = match inner {
+                    Ty::List(item) => (**item).clone(),
+                    Ty::Map(key, value) => Ty::Entry(key.clone(), value.clone()),
+                    Ty::Str => {
+                        return Err(Diag::error(iter.span, "`for` does not go over a `string`")
+                            .hint("the bytes: `for i in 0..text.length()` and `text[i]`")
+                            .note("going over the characters (`text.chars()`) is not in the interpreter yet"));
+                    }
+                    Ty::Nullable(_) => {
+                        return Err(Diag::error(iter.span, format!("this is `{found}` and may be `null`; `for` needs a value"))
+                            .hint("test it first with `is not null`, or give a fallback with `??`"));
+                    }
+                    _ => {
+                        return Err(Diag::error(iter.span, format!("`for` goes over a range `a..b`, a `List` or a `HashMap`, found `{found}`")));
+                    }
+                };
+                let item = match mode {
+                    None => item,
+                    Some(Mode::Read) => Ty::Read(Box::new(item)),
+                    Some(Mode::Ref) => Ty::Ref(Box::new(item)),
+                };
+                *by = mode;
+                // The variable is new in every round, so an owned item can be used up.
+                self.loop_body(body, None, vec![(var.clone(), item, *var_span)])?;
             }
             StmtKind::Return(value) => self.returned(value.as_mut(), stmt_span)?,
             StmtKind::Break | StmtKind::Continue => {
@@ -1005,6 +1093,9 @@ impl<'a> Checker<'a> {
             (Ty::Str, Ty::Read(to)) if **to == Ty::Str && matches!(expr.kind, ExprKind::Str(_)) => Ok(()),
             (_, Ty::Read(to)) if found == **to => mismatch(Some(format!("lend it with `read`: `read {text}`"))),
             (_, Ty::Ref(to)) if found == **to => mismatch(Some(format!("lend it with `ref`: `ref {text}`"))),
+            (Ty::Nullable(inner), _) if **inner == *expected => {
+                mismatch(Some(format!("it may be `null`: give a fallback with `{text} ?? ...`, or test it with `is null`")))
+            }
             (_, Ty::Result(ok, _)) if found == **ok => mismatch(Some(format!("success is written `Ok({text})`"))),
             (_, Ty::Result(_, error)) if found == **error => mismatch(Some(format!("an error is written `Error({text})`"))),
             (Ty::Result(ok, _), _) if **ok == *expected => {
@@ -1057,6 +1148,23 @@ impl<'a> Checker<'a> {
                         }
                         Ty::Ptr(inner) => *inner,
                         Ty::Struct(name) => break name,
+                        // What a `for` over a `HashMap` gives. The key stays as it is: the
+                        // map found the entry by it.
+                        Ty::Entry(key, value) => {
+                            let (position, field, writable) = match name.as_str() {
+                                "key" => (0, *key, false),
+                                "value" => (1, *value, writable),
+                                _ => {
+                                    return Err(Diag::error(*name_span, format!("an entry of a `HashMap` has a `key` and a `value`, no `{name}`")));
+                                }
+                            };
+                            *index = position;
+                            return Ok(Some((field, writable)));
+                        }
+                        Ty::List(_) | Ty::Map(..) if matches!(name.as_str(), "length" | "count" | "Count" | "size") => {
+                            return Err(Diag::error(*name_span, format!("`{ty}` has no fields"))
+                                .hint("the number of items is a method: `.length()`"));
+                        }
                         Ty::Nullable(_) => {
                             let diag = Diag::error(recv.span, format!("this is `{ty}` and may be `null`; `.{name}` needs a value"));
                             return Err(match &recv.kind {
@@ -1088,8 +1196,58 @@ impl<'a> Checker<'a> {
                 *index = position;
                 Ok(Some((fields[position].1.clone(), writable)))
             }
+            // An item is a place too: `xs[i] = v`, `xs[i].name`, `ref xs[i]`.
+            ExprKind::Index { recv, index, kind } => {
+                let (ty, mut writable) = match self.place_unchecked(recv)? {
+                    Some(base) => base,
+                    None => (self.expr(recv, None)?, true),
+                };
+                let mut inner = &ty;
+                loop {
+                    inner = match inner {
+                        Ty::Read(behind) => {
+                            writable = false;
+                            behind
+                        }
+                        Ty::Ref(behind) => {
+                            writable = true;
+                            behind
+                        }
+                        Ty::Ptr(behind) => behind,
+                        _ => break,
+                    };
+                }
+                match inner {
+                    Ty::Str => {
+                        self.index(index, "an index")?;
+                        *kind = IndexKind::Text;
+                        Ok(Some((Ty::Int(IntTy::Byte), false)))
+                    }
+                    Ty::List(item) => {
+                        self.index(index, "an index")?;
+                        *kind = IndexKind::List;
+                        Ok(Some(((**item).clone(), writable)))
+                    }
+                    Ty::Map(key, value) => {
+                        self.typed(index, &key_param(key))?;
+                        *kind = IndexKind::Map;
+                        Ok(Some(((**value).clone(), writable)))
+                    }
+                    _ => {
+                        self.indexable(&ty, recv.span)?;
+                        unreachable!("anything that can be indexed is handled above")
+                    }
+                }
+            }
             _ => Ok(None),
         }
+    }
+
+    /// Whether the place is the `key` of what a `for` over a `HashMap` gives.
+    fn is_entry_key(&mut self, expr: &Expr) -> bool {
+        let ExprKind::Field { recv, name, .. } = &expr.kind else { return false };
+        let ExprKind::Var(var) = &recv.kind else { return false };
+        name == "key" && self.find(var).is_some_and(|var| matches!(var.current.strip_borrow(), Ty::Entry(..)))
     }
 
     /// Rejects the use of a place that overlaps a field that was moved out. When `assigning`,
@@ -1117,6 +1275,14 @@ impl<'a> Checker<'a> {
     fn move_out(&mut self, expr: &Expr, ty: &Ty) -> Res<()> {
         let span = expr.span;
         let text = &self.src[span.start..span.end];
+        // A collection cannot be left with a hole where an item was.
+        if expr.in_item() {
+            let hint = match ty {
+                Ty::Nullable(_) => format!("borrow it: `read {text}`, or take it with `{text}.take()`, which leaves `null` there"),
+                _ => format!("borrow it: `read {text}`, or swap it with `{text}.replace(value)`"),
+            };
+            return Err(Diag::error(span, format!("a `{ty}` cannot be moved out of an item of a collection")).hint(hint));
+        }
         let Some((name, path)) = path_of(expr) else { return Ok(()) };
         let Some(var) = self.find(name) else { return Ok(()) };
         if path.is_empty() {
@@ -1162,6 +1328,11 @@ impl<'a> Checker<'a> {
         let span = expr.span;
         if let Some((ty, _)) = self.place(expr)? {
             if !ty.is_copyable(self.copyable) {
+                // `xs[i]` reads the item where it is: what cannot be copied is lent.
+                if matches!(expr.kind, ExprKind::Index { .. }) {
+                    wrap(expr, |inner| ExprKind::Borrow { mutable: false, expr: inner });
+                    return Ok(Ty::Read(Box::new(ty)));
+                }
                 self.move_out(expr, &ty)?;
             }
             return Ok(ty);
@@ -1220,14 +1391,42 @@ impl<'a> Checker<'a> {
                 expr.kind = ExprKind::Int(value, IntTy::Byte);
                 Ok(Ty::Int(IntTy::Byte))
             }
-            ExprKind::Index { recv, index } => {
-                let ty = self.operand(recv, None)?;
-                self.indexable(&ty, recv.span)?;
-                self.index(index, "an index")?;
-                Ok(Ty::Int(IntTy::Byte))
+            ExprKind::Collection { ty, args, items } => {
+                let built = resolve_type(ty, self.names, false)?;
+                if let Some(arg) = args.first() {
+                    return Err(Diag::error(arg.span, format!("`{built}(...)` takes no arguments"))
+                        .hint("the items are written in braces: `List<int> { 1, 2 }`"));
+                }
+                match &built {
+                    Ty::List(item) => {
+                        for given in items.iter_mut().flatten() {
+                            if given.braced {
+                                return Err(Diag::error(given.span, "an item of a `List` is one value, written without braces")
+                                    .hint("`List<int> { 1, 2 }`"));
+                            }
+                            self.typed(&mut given.values[0], item)?;
+                        }
+                    }
+                    Ty::Map(key, value) => {
+                        for given in items.iter_mut().flatten() {
+                            let [key_given, value_given] = given.values.as_mut_slice() else {
+                                return Err(Diag::error(given.span, "an item of a `HashMap` is a key and a value, in braces of their own")
+                                    .hint("`HashMap<string, int> { {\"x\", 10}, {\"y\", 20} }`"));
+                            };
+                            self.typed(key_given, key)?;
+                            self.typed(value_given, value)?;
+                        }
+                    }
+                    other => return Err(Diag::error(ty.span, format!("a `{other}` is not built this way"))),
+                }
+                Ok(built)
             }
             ExprKind::Slice { recv, from, to } => {
                 let ty = self.operand(recv, None)?;
+                if matches!(ty.strip_borrow(), Ty::List(_)) {
+                    return Err(Diag::error(span, "a range of a `List` is a slice (`read T[]`), which is not in the interpreter yet")
+                        .note("for now a range is taken only of a `string`"));
+                }
                 self.indexable(&ty, recv.span)?;
                 if let Some(from) = from {
                     self.index(from, "the start of the range")?;
@@ -1395,7 +1594,15 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Coalesce { left, right, on_result } => {
                 let nullable = expected.filter(|ty| !ty.is_borrow()).map(|ty| Ty::Nullable(Box::new(ty.clone())));
-                let found = self.expr(left, nullable.as_ref())?;
+                let mut found = self.expr(left, nullable.as_ref())?;
+                // A borrowed `T?` that can be copied stands in for the `T?` itself.
+                if let Ty::Read(behind) | Ty::Ref(behind) = &found {
+                    if matches!(**behind, Ty::Nullable(_)) && behind.is_copyable(self.copyable) {
+                        let behind = (**behind).clone();
+                        wrap(left, ExprKind::Load);
+                        found = behind;
+                    }
+                }
                 // On a `Result` the error is dropped and the right side stands in.
                 if let Ty::Result(ok, _) = &found {
                     if **ok == Ty::Void {
@@ -1426,14 +1633,14 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Bool)
             }
             ExprKind::Match { subject, arms, borrowed } => self.match_expr(subject, arms, borrowed, expected, false),
-            ExprKind::Var(_) | ExprKind::Field { .. } => unreachable!("places are handled above"),
+            ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => unreachable!("places are handled above"),
             ExprKind::Widen(..) | ExprKind::Load(_) | ExprKind::Unbox(_) | ExprKind::Variant { .. } => {
                 unreachable!("inserted only after checking")
             }
         }
     }
 
-    /// What `x[i]` and `x[a..b]` can be written on: for now only text, by byte.
+    /// The message for a value that `x[i]` or `x[a..b]` cannot be written on.
     fn indexable(&self, ty: &Ty, span: Span) -> Res<()> {
         match ty.strip_borrow() {
             Ty::Str => Ok(()),
@@ -1441,7 +1648,7 @@ impl<'a> Checker<'a> {
                 .hint("test it first with `is not null`, or give a fallback with `??`")),
             Ty::Fmt => Err(Diag::error(span, "`$\"...\"` is not a `string` and cannot be indexed").hint("add `.toString()` first")),
             other => Err(Diag::error(span, format!("`{other}` cannot be indexed"))
-                .note("for now only a `string` is indexed, byte by byte")),
+                .note("an index is written on a `string` (one byte), a `List` and a `HashMap`")),
         }
     }
 
@@ -1913,6 +2120,8 @@ impl<'a> Checker<'a> {
                 .hint("give a fallback with `??`, or test with `is null`")),
             Ty::Result(..) => Err(Diag::error(span, format!("this is `{ty}`: either a value or an error"))
                 .hint("open it first with `try`, `??` or `match`")),
+            Ty::List(_) | Ty::Map(..) => Err(Diag::error(span, format!("a `{inner}` cannot be written as text"))
+                .hint("write the items one by one: `for item in read ... { print(item) }`")),
             other => Err(Diag::error(span, format!("a `{other}` value cannot be written as text"))),
         }
     }
@@ -2085,6 +2294,9 @@ impl<'a> Checker<'a> {
             "replace" => return self.replace(recv, &recv_ty, writable, is_place, args, callee, span),
             _ => {}
         }
+        if matches!(target, Ty::List(_) | Ty::Map(..)) {
+            return self.collection_method(recv, target, writable, name, name_span, args, span);
+        }
 
         let arity = |count: usize| {
             if args.len() == count {
@@ -2150,6 +2362,120 @@ impl<'a> Checker<'a> {
                 Err(match nearest(name, info.methods.keys().map(String::as_str)) {
                     Some(close) => diag.hint(format!("`{close}`")),
                     None => diag,
+                })
+            }
+        }
+    }
+
+    /// A method of the built-in `List<T>` or `HashMap<K, V>`.
+    #[allow(clippy::too_many_arguments)]
+    fn collection_method(
+        &mut self,
+        recv: &Expr,
+        target: &Ty,
+        writable: bool,
+        name: &str,
+        name_span: Span,
+        args: &mut [Expr],
+        span: Span,
+    ) -> Res<Ty> {
+        let arity = |count: usize| {
+            if args.len() == count {
+                Ok(())
+            } else {
+                Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len())))
+            }
+        };
+        let what = if matches!(target, Ty::List(_)) { "list" } else { "map" };
+        let changes = || {
+            if writable {
+                Ok(())
+            } else {
+                Err(Diag::error(recv.span, format!("`{name}` changes the {what}, but it is reached through a `read` borrow"))
+                    .hint("take the value as `ref` instead of `read`"))
+            }
+        };
+        let nullable = |ty: &Ty| Ty::Nullable(Box::new(ty.clone()));
+        match (target, name) {
+            (_, "length") => {
+                arity(0)?;
+                Ok(Ty::Int(IntTy::Nint))
+            }
+            (_, "clear") => {
+                arity(0)?;
+                changes()?;
+                Ok(Ty::Void)
+            }
+            (Ty::List(item), "add") => {
+                arity(1)?;
+                changes()?;
+                self.typed(&mut args[0], item)?;
+                Ok(Ty::Void)
+            }
+            // `null` where `xs[i]` would panic.
+            (Ty::List(item), "get") => {
+                arity(1)?;
+                self.index(&mut args[0], "an index")?;
+                Ok(Ty::Read(Box::new(nullable(item))))
+            }
+            (Ty::List(item), "removeLast") => {
+                arity(0)?;
+                changes()?;
+                Ok(nullable(item))
+            }
+            (Ty::List(_), "reverse") => {
+                arity(0)?;
+                changes()?;
+                Ok(Ty::Void)
+            }
+            (Ty::Map(key, value), "add") => {
+                arity(2)?;
+                changes()?;
+                self.typed(&mut args[0], key)?;
+                self.typed(&mut args[1], value)?;
+                Ok(Ty::Void)
+            }
+            (Ty::Map(key, value), "get") => {
+                arity(1)?;
+                self.typed(&mut args[0], &key_param(key))?;
+                Ok(Ty::Read(Box::new(nullable(value))))
+            }
+            (Ty::Map(key, _), "contains") => {
+                arity(1)?;
+                self.typed(&mut args[0], &key_param(key))?;
+                Ok(Ty::Bool)
+            }
+            (Ty::Map(key, value), "remove") => {
+                arity(1)?;
+                changes()?;
+                self.typed(&mut args[0], &key_param(key))?;
+                Ok(nullable(value))
+            }
+            (Ty::Map(key, value), "getOrAdd") => {
+                arity(2)?;
+                changes()?;
+                self.typed(&mut args[0], &key_param(key))?;
+                self.typed(&mut args[1], value)?;
+                Ok(Ty::Ref(value.clone()))
+            }
+            _ => {
+                let known: &[&str] = match target {
+                    Ty::List(_) => &["add", "get", "length", "removeLast", "reverse", "clear"],
+                    _ => &["add", "get", "getOrAdd", "contains", "remove", "length", "clear"],
+                };
+                // Names the same thing has in other languages.
+                let other_name = match (target, name) {
+                    (_, "push" | "append" | "insert" | "put" | "set") => Some("add"),
+                    (_, "count" | "size" | "len" | "Count") => Some("length"),
+                    (Ty::List(_), "pop") => Some("removeLast"),
+                    (Ty::Map(..), "containsKey" | "has") => Some("contains"),
+                    (Ty::List(_), "at") => Some("get"),
+                    _ => None,
+                };
+                let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
+                Err(match other_name.or_else(|| nearest(name, known.iter().copied())) {
+                    Some(close) => diag.hint(format!("`{close}`")),
+                    None => diag.note(format!("methods for now: {}", known.join(", "))),
                 })
             }
         }
@@ -2254,6 +2580,10 @@ fn changed_in<'b>(block: &'b Block, names: &mut Vec<&'b str>) {
                 taken_in(to, names);
                 changed_in(body, names);
             }
+            StmtKind::ForEach { iter, body, .. } => {
+                taken_in(iter, names);
+                changed_in(body, names);
+            }
             StmtKind::Return(Some(expr)) | StmtKind::Expr(expr) | StmtKind::Discard(expr) => taken_in(expr, names),
             StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
         }
@@ -2279,7 +2609,11 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
                 }
             }
         }
-        ExprKind::Binary(_, left, right) | ExprKind::Coalesce { left, right, .. } | ExprKind::Index { recv: left, index: right } => {
+        ExprKind::Collection { args, items, .. } => {
+            let given = items.iter().flatten().flat_map(|item| &item.values);
+            args.iter().chain(given).for_each(|value| taken_in(value, names));
+        }
+        ExprKind::Binary(_, left, right) | ExprKind::Coalesce { left, right, .. } | ExprKind::Index { recv: left, index: right, .. } => {
             taken_in(left, names);
             taken_in(right, names);
         }
@@ -2321,6 +2655,14 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
         | ExprKind::Null
         | ExprKind::Var(_)
         | ExprKind::Return(None) => {}
+    }
+}
+
+/// How a method of a `HashMap` takes a key it only looks at: text is lent, the rest is copied.
+fn key_param(key: &Ty) -> Ty {
+    match key {
+        Ty::Str => Ty::Read(Box::new(Ty::Str)),
+        other => other.clone(),
     }
 }
 

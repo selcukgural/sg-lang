@@ -1,0 +1,5 @@
+error: a `List<int>` cannot be written as text
+  --> error_list_print.sg:3:11
+ 3 |     print(xs)
+   |           ^^
+  hint: write the items one by one: `for item in read ... { print(item) }`

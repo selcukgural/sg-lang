@@ -1,0 +1,4 @@
+panic: index 3 is out of range: the length is 3
+  --> panic_list_index.sg:4:11
+ 4 |     print(xs[i])
+   |           ^^^^^

@@ -1,0 +1,5 @@
+panic: key "ada" is already in the map
+  to change what is kept under a key, write `map[key] = value`
+  --> panic_map_add_twice.sg:3:5
+ 3 |     ages.add("ada", 37)
+   |     ^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: expected `read string`, found `string`
+  --> error_map_key_needs_read.sg:4:20
+ 4 |     print(ages.get(name) ?? 0)
+   |                    ^^^^
+  hint: lend it with `read`: `read name`

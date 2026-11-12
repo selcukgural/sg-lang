@@ -1,0 +1,6 @@
+struct Path : Copyable {
+    List<int> steps
+}
+
+void main() {
+}

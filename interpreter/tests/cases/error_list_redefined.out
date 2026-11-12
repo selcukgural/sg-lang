@@ -1,0 +1,4 @@
+error: `List` is a built-in type and cannot be redefined
+  --> error_list_redefined.sg:1:8
+ 1 | struct List {
+   |        ^^^^

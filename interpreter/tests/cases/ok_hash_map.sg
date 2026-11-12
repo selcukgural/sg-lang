@@ -1,0 +1,73 @@
+struct Stats {
+    int count
+    int total
+}
+
+int lookup(read HashMap<string, int> ages, read string name) {
+    return ages.get(name) ?? -1
+}
+
+void main() {
+    var ages = HashMap<string, int> { {"ada", 36}, {"grace", 45} }
+    ages.add("edsger", 72)
+    print(ages.length())
+    print(ages["ada"])
+    ages["ada"] = 37
+    ages["grace"] += 1
+    print(ages["ada"] + ages["grace"])
+    print(lookup(read ages, "edsger"))
+    print(lookup(read ages, "nobody"))
+    print(ages.contains("ada"))
+    print(ages.contains("nobody"))
+
+    string key = "grace"
+    print(ages[read key])
+    print(ages.remove(read key) ?? 0)
+    print(ages.remove(read key) is null)
+    print(ages.length())
+
+    for item in read ages {
+        print($"{item.key} is {item.value}")
+    }
+    for item in ref ages {
+        item.value += 100
+    }
+    print(ages["ada"])
+
+    // One lookup: the value under the key, put there first if it was missing.
+    var stats = HashMap<string, Stats>()
+    var words = List<string> { "info", "error", "info", "info" }
+    var cost = 0
+    for word in read words {
+        cost += 10
+        var item = stats.getOrAdd(word, Stats { count = 0, total = 0 })
+        item.count += 1
+        item.total += cost
+    }
+    for item in read stats {
+        print($"{item.key}: {item.value.count} lines, {item.value.total} ms")
+    }
+    var info = stats.get("info")
+    if info is not null {
+        print(info.count)
+    }
+    stats["error"].count = 7
+    print(stats["error"].count)
+
+    // Integer keys, and a map handed over to the loop.
+    var squares = HashMap<int, string>()
+    for i in 1..4 {
+        squares.add(i * i, $"{i} squared".toString())
+    }
+    print(squares[9])
+    print(squares.get(5) ?? "none")
+    for item in squares {
+        string text = item.value
+        print($"{item.key} = {text}")
+    }
+
+    var flags = HashMap<bool, int> { {true, 1}, {false, 0} }
+    print(flags[true])
+    flags.clear()
+    print(flags.length())
+}

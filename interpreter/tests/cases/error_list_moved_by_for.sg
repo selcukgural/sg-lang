@@ -1,0 +1,7 @@
+void main() {
+    var names = List<string> { "ada" }
+    for name in names {
+        print(name)
+    }
+    print(names.length())
+}

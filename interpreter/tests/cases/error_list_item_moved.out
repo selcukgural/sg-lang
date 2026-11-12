@@ -1,0 +1,5 @@
+error: expected `string`, found `read string`
+  --> error_list_item_moved.sg:7:13
+ 7 |     consume(names[0])
+   |             ^^^^^^^^
+  hint: `read string` only borrows the text; to own a copy write `names[0].clone()`

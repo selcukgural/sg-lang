@@ -412,13 +412,14 @@ impl<'a> Parser<'a> {
                 let (var, var_span) = self.ident("a loop variable")?;
                 self.expect(Tok::In, "`in`")?;
                 let from = self.head_expr(true)?;
-                if *self.peek() != Tok::DotDot {
-                    return Err(self.unexpected("`..`").note("for now `for` only iterates over a range `a..b`"));
+                if self.eat(&Tok::DotDot) {
+                    let to = self.head_expr(true)?;
+                    let body = self.block()?;
+                    StmtKind::For { var, var_span, from, to, body }
+                } else {
+                    let body = self.block()?;
+                    StmtKind::ForEach { var, var_span, iter: from, body, by: None }
                 }
-                self.bump();
-                let to = self.head_expr(true)?;
-                let body = self.block()?;
-                StmtKind::For { var, var_span, from, to, body }
             }
             Tok::Return => {
                 self.bump();
@@ -469,9 +470,8 @@ impl<'a> Parser<'a> {
             _ => {
                 let expr = self.expr()?;
                 if let Some(op) = assign_op(self.peek()) {
-                    // `text[0] = 'a'` gets its own message from the checker.
-                    if !expr.is_place() && !matches!(expr.kind, ExprKind::Index { .. }) {
-                        return Err(Diag::error(expr.span, "the left side of an assignment must be a variable or a field"));
+                    if !expr.is_place() {
+                        return Err(Diag::error(expr.span, "the left side of an assignment must be a variable, a field or an item"));
                     }
                     self.bump();
                     let value = self.expr()?;
@@ -843,7 +843,7 @@ impl<'a> Parser<'a> {
             };
             if !p.eat(&Tok::DotDot) {
                 let index = from.expect("read above when there is no `..`");
-                return Ok(ExprKind::Index { recv, index });
+                return Ok(ExprKind::Index { recv, index, kind: IndexKind::Text });
             }
             let to = match p.peek() {
                 Tok::RBracket => None,
@@ -917,6 +917,12 @@ impl<'a> Parser<'a> {
                 self.expect(Tok::RParen, "`)`")?;
                 return Ok(Expr { kind: inner.kind, span: Span::new(start.start, self.prev_end()) });
             }
+            Tok::Ident(_) if self.at_collection() => {
+                let ty = self.type_expr()?;
+                let args = if *self.peek() == Tok::LParen { self.args()? } else { Vec::new() };
+                let items = if *self.peek() == Tok::LBrace && self.struct_literals { Some(self.items()?) } else { None };
+                ExprKind::Collection { ty, args, items }
+            }
             Tok::Ident(_) => {
                 let (name, name_span) = self.ident("an expression")?;
                 if *self.peek() == Tok::LParen {
@@ -958,6 +964,51 @@ impl<'a> Parser<'a> {
         })?;
         self.expect(Tok::RBrace, "`}`")?;
         Ok(fields)
+    }
+
+    /// Whether a type with `<...>` is written here and then built: `List<int>()`,
+    /// `List<int> { 1, 2 }`. As in C#, `a < b > (c)` is read this way too.
+    fn at_collection(&self) -> bool {
+        if *self.peek_at(1) != Tok::Lt {
+            return false;
+        }
+        let Some(n) = self.type_len(0) else { return false };
+        *self.peek_at(n - 1) == Tok::Gt
+            && (*self.peek_at(n) == Tok::LParen || (*self.peek_at(n) == Tok::LBrace && self.struct_literals))
+    }
+
+    /// `{ 1, 2 }` or `{ {"x", 10}, {"y", 20} }`; line ends do not matter.
+    fn items(&mut self) -> Res<Vec<Item>> {
+        self.bump();
+        let items = self.bracketed(|p| {
+            let mut items = Vec::new();
+            p.skip_newlines();
+            while *p.peek() != Tok::RBrace {
+                let start = p.span();
+                let braced = p.eat(&Tok::LBrace);
+                let mut values = Vec::new();
+                if braced {
+                    while *p.peek() != Tok::RBrace {
+                        values.push(p.expr()?);
+                        if !p.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                    p.expect(Tok::RBrace, "`}`")?;
+                } else {
+                    values.push(p.expr()?);
+                }
+                items.push(Item { values, braced, span: Span::new(start.start, p.prev_end()) });
+                p.skip_newlines();
+                if !p.eat(&Tok::Comma) {
+                    break;
+                }
+                p.skip_newlines();
+            }
+            Ok(items)
+        })?;
+        self.expect(Tok::RBrace, "`}`")?;
+        Ok(items)
     }
 
     fn interp_parts(&mut self, parts: Vec<Part>) -> Res<Vec<InterpPart>> {

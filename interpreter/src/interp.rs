@@ -10,7 +10,7 @@
 //! rejects any use of the old one.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::rc::Rc;
 
@@ -36,12 +36,51 @@ pub enum Value {
     /// The enum's name (`Result` for the built-in one), the variant's position and what it
     /// carries.
     Enum(Rc<str>, usize, Rc<Vec<Cell>>),
+    /// `List<T>`: every item in a cell of its own, so that an item can be lent.
+    List(Rc<RefCell<Vec<Cell>>>),
+    /// `HashMap<K, V>`: under each key, the key as it was given and the cell of the value.
+    /// Kept in the order of the keys so that a run always prints the same; the design
+    /// promises no order.
+    Map(Rc<RefCell<Entries>>),
     /// What `format` writes into.
     Formatter(Rc<RefCell<String>>),
     /// `T*`
     Ptr(Cell),
     /// `read T` / `ref T`
     Borrow(Cell),
+}
+
+type Entries = BTreeMap<Key, (Value, Cell)>;
+
+/// A key of a `HashMap`: an integer, a `bool` or text.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Key {
+    Bool(bool),
+    Int(i64),
+    Str(Rc<str>),
+}
+
+fn key_of(value: &Value) -> Key {
+    match value {
+        Value::Bool(value) => Key::Bool(*value),
+        Value::Int(_, value) => Key::Int(*value),
+        Value::Str(text) => Key::Str(text.clone()),
+        _ => unreachable!("the checker only lets integers, `bool` and text be keys"),
+    }
+}
+
+/// `map.add(key, value)`: a key that is already there is a mistake, not a silent overwrite.
+fn map_add(entries: &mut Entries, key: Value, value: Value, span: Span) -> Result<(), Diag> {
+    match entries.entry(key_of(&key)) {
+        std::collections::btree_map::Entry::Occupied(_) => {
+            Err(Diag::panic(span, format!("key {} is already in the map", key.debug()))
+                .note("to change what is kept under a key, write `map[key] = value`"))
+        }
+        std::collections::btree_map::Entry::Vacant(slot) => {
+            slot.insert((key, cell(value)));
+            Ok(())
+        }
+    }
 }
 
 fn cell(value: Value) -> Cell {
@@ -51,6 +90,14 @@ fn cell(value: Value) -> Cell {
 /// The value behind any borrows.
 fn strip(mut value: Value) -> Value {
     while let Value::Borrow(target) = value {
+        value = target.borrow().clone();
+    }
+    value
+}
+
+/// The value behind any borrows and pointers.
+fn owned(mut value: Value) -> Value {
+    while let Value::Borrow(target) | Value::Ptr(target) = value {
         value = target.borrow().clone();
     }
     value
@@ -329,6 +376,37 @@ impl<'a> Interp<'a> {
                     }
                 }
             }
+            StmtKind::ForEach { var, iter, body, by, .. } => {
+                let collection = owned(self.expr(iter, frame)?);
+                // A map is gone over as it was when the loop started.
+                let entries: Option<Vec<(Value, Cell)>> = match &collection {
+                    Value::Map(entries) => Some(entries.borrow().values().cloned().collect()),
+                    _ => None,
+                };
+                let depth = frame.scopes.len();
+                let mut next = 0;
+                loop {
+                    let item = match (&collection, &entries) {
+                        (_, Some(entries)) => entries.get(next).map(|(key, value)| {
+                            cell(Value::Struct("entry".into(), Rc::new(vec![cell(key.clone()), value.clone()])))
+                        }),
+                        (Value::List(items), _) => items.borrow().get(next).cloned(),
+                        _ => unreachable!("the checker only lets `for` go over a list or a map"),
+                    };
+                    let Some(item) = item else { break };
+                    next += 1;
+                    let bound = if by.is_some() { Value::Borrow(item) } else { item.borrow().clone() };
+                    frame.scopes.push(HashMap::new());
+                    frame.declare(var, bound);
+                    let flow = loop_flow(self.block(body, frame))?;
+                    frame.scopes.truncate(depth);
+                    match flow {
+                        Flow::Break => break,
+                        Flow::Return(value) => return Ok(Flow::Return(value)),
+                        Flow::Next | Flow::Continue => {}
+                    }
+                }
+            }
             StmtKind::Return(value) => {
                 let value = match value {
                     Some(expr) => self.expr(expr, frame)?,
@@ -368,6 +446,34 @@ impl<'a> Interp<'a> {
                     }
                 }
             }
+            ExprKind::Index { recv, index, .. } => {
+                let holder = self.place(recv, frame)?;
+                let holder = owned(holder.borrow().clone());
+                let at = strip(self.expr(index, frame)?);
+                let out_of_range = |at: i64, length: usize| {
+                    Unwind::from(Diag::panic(expr.span, format!("index {at} is out of range: the length is {length}")))
+                };
+                match (holder, &at) {
+                    (Value::Str(text), Value::Int(_, at)) => match usize::try_from(*at).ok().and_then(|at| text.as_bytes().get(at)) {
+                        Some(byte) => Ok(cell(Value::Int(IntTy::Byte, *byte as i64))),
+                        None => Err(out_of_range(*at, text.len())),
+                    },
+                    (Value::List(items), Value::Int(_, at)) => {
+                        let items = items.borrow();
+                        match usize::try_from(*at).ok().and_then(|at| items.get(at)) {
+                            Some(item) => Ok(item.clone()),
+                            None => Err(out_of_range(*at, items.len())),
+                        }
+                    }
+                    (Value::Map(entries), key) => match entries.borrow().get(&key_of(key)) {
+                        Some((_, value)) => Ok(value.clone()),
+                        None => Err(Diag::panic(expr.span, format!("key {} is not in the map", key.debug()))
+                            .note("`map.get(key)` gives `null` for a missing key; `map.add(key, value)` puts one in")
+                            .into()),
+                    },
+                    _ => unreachable!("the checker only lets text, lists and maps be indexed"),
+                }
+            }
             _ => Ok(cell(self.expr(expr, frame)?)),
         }
     }
@@ -391,9 +497,26 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Value::Fmt(text.into()))
             }
-            ExprKind::Var(_) | ExprKind::Field { .. } => {
+            ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
                 let value = fresh(&self.place(expr, frame)?.borrow());
                 Ok(value)
+            }
+            ExprKind::Collection { ty, items, .. } => {
+                let given = items.iter().flatten();
+                if ty.name == "List" {
+                    let mut cells = Vec::new();
+                    for item in given {
+                        cells.push(cell(self.expr(&item.values[0], frame)?));
+                    }
+                    return Ok(Value::List(Rc::new(RefCell::new(cells))));
+                }
+                let mut entries = Entries::new();
+                for item in given {
+                    let key = strip(self.expr(&item.values[0], frame)?);
+                    let value = self.expr(&item.values[1], frame)?;
+                    map_add(&mut entries, key, value, item.span)?;
+                }
+                Ok(Value::Map(Rc::new(RefCell::new(entries))))
             }
             ExprKind::Widen(ty, inner) => match strip(self.expr(inner, frame)?) {
                 Value::Int(_, value) => Ok(Value::Int(*ty, value)),
@@ -425,14 +548,6 @@ impl<'a> Interp<'a> {
                 Ok(binary(*op, left, right, expr.span)?)
             }
             ExprKind::Char(_) => unreachable!("the checker turns a character into a `byte`"),
-            ExprKind::Index { recv, index } => {
-                let text = self.text(recv, frame)?;
-                let at = self.int(index, frame)?;
-                match usize::try_from(at).ok().and_then(|at| text.as_bytes().get(at)) {
-                    Some(byte) => Ok(Value::Int(IntTy::Byte, *byte as i64)),
-                    None => Err(Diag::panic(expr.span, format!("index {at} is out of range: the length is {}", text.len())).into()),
-                }
-            }
             ExprKind::Slice { recv, from, to } => {
                 let text = self.text(recv, frame)?;
                 let length = text.len() as i64;
@@ -646,7 +761,7 @@ impl<'a> Interp<'a> {
                     Ok(old)
                 }
                 Callee::Plain => {
-                    let recv = strip(self.expr(recv, frame)?);
+                    let recv = owned(self.expr(recv, frame)?);
                     // `f.write(x)` inside a `format` method.
                     if let Value::Formatter(written) = &recv {
                         let value = self.expr(&args[0], frame)?;
@@ -657,6 +772,9 @@ impl<'a> Interp<'a> {
                     let mut values = Vec::new();
                     for arg in args {
                         values.push(strip(self.expr(arg, frame)?));
+                    }
+                    if matches!(recv, Value::List(_) | Value::Map(_)) {
+                        return Ok(collection_method(recv, name, values, expr.span)?);
                     }
                     Ok(method(recv, name, values))
                 }
@@ -828,6 +946,58 @@ fn arithmetic(op: BinOp, ty: IntTy, a: i64, b: i64, span: Span) -> Result<Value,
         return Err(Diag::panic(span, format!("overflow: {a} {} {b} does not fit in {}", op.symbol(), ty.name())));
     }
     Ok(Value::Int(ty, result as i64))
+}
+
+/// The methods of `List<T>` and `HashMap<K, V>`.
+fn collection_method(recv: Value, name: &str, mut args: Vec<Value>, span: Span) -> Result<Value, Diag> {
+    let lent = |found: Option<Cell>| found.map_or(Value::Null, Value::Borrow);
+    Ok(match (&recv, name) {
+        (Value::List(items), "length") => Value::Int(IntTy::Nint, items.borrow().len() as i64),
+        (Value::List(items), "clear") => {
+            items.borrow_mut().clear();
+            Value::Void
+        }
+        (Value::List(items), "add") => {
+            items.borrow_mut().push(cell(args.remove(0)));
+            Value::Void
+        }
+        (Value::List(items), "get") => {
+            let Value::Int(_, at) = args[0] else { unreachable!("the checker makes an index an integer") };
+            lent(usize::try_from(at).ok().and_then(|at| items.borrow().get(at).cloned()))
+        }
+        (Value::List(items), "removeLast") => {
+            let last = items.borrow_mut().pop();
+            last.map_or(Value::Null, |item| item.borrow().clone())
+        }
+        (Value::List(items), "reverse") => {
+            items.borrow_mut().reverse();
+            Value::Void
+        }
+        (Value::Map(entries), "length") => Value::Int(IntTy::Nint, entries.borrow().len() as i64),
+        (Value::Map(entries), "clear") => {
+            entries.borrow_mut().clear();
+            Value::Void
+        }
+        (Value::Map(entries), "add") => {
+            let value = args.remove(1);
+            map_add(&mut entries.borrow_mut(), args.remove(0), value, span)?;
+            Value::Void
+        }
+        (Value::Map(entries), "get") => lent(entries.borrow().get(&key_of(&args[0])).map(|(_, value)| value.clone())),
+        (Value::Map(entries), "contains") => Value::Bool(entries.borrow().contains_key(&key_of(&args[0]))),
+        (Value::Map(entries), "remove") => {
+            let removed = entries.borrow_mut().remove(&key_of(&args[0]));
+            removed.map_or(Value::Null, |(_, value)| value.borrow().clone())
+        }
+        (Value::Map(entries), "getOrAdd") => {
+            let initial = args.remove(1);
+            let key = args.remove(0);
+            let mut entries = entries.borrow_mut();
+            let (_, value) = entries.entry(key_of(&key)).or_insert_with(|| (key, cell(initial)));
+            Value::Borrow(value.clone())
+        }
+        _ => unreachable!("the checker only lets known methods through"),
+    })
 }
 
 fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {

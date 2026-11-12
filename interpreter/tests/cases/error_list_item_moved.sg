@@ -1,0 +1,8 @@
+void consume(string name) {
+    print(name)
+}
+
+void main() {
+    var names = List<string> { "ada" }
+    consume(names[0])
+}

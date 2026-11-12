@@ -1,0 +1,5 @@
+error: `List<int>` has no fields
+  --> error_list_length_field.sg:3:14
+ 3 |     print(xs.length)
+   |              ^^^^^^
+  hint: the number of items is a method: `.length()`

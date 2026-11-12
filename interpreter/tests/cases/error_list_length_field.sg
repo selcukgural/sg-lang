@@ -1,0 +1,4 @@
+void main() {
+    var xs = List<int>()
+    print(xs.length)
+}

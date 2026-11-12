@@ -121,6 +121,9 @@ pub enum StmtKind {
     While { cond: Expr, body: Block },
     /// `for i in a..b`
     For { var: String, var_span: Span, from: Expr, to: Expr, body: Block },
+    /// `for x in xs`, `for x in read xs`, `for x in ref xs`. `by`: the items are lent to the
+    /// loop, not handed over (set by the checker).
+    ForEach { var: String, var_span: Span, iter: Expr, body: Block, by: Option<Mode> },
     Return(Option<Expr>),
     Break,
     Continue,
@@ -151,8 +154,11 @@ pub enum ExprKind {
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call { name: String, name_span: Span, args: Vec<Expr>, callee: Callee },
     Method { recv: Box<Expr>, name: String, name_span: Span, args: Vec<Expr>, callee: Callee },
-    /// `text[i]`
-    Index { recv: Box<Expr>, index: Box<Expr> },
+    /// `text[i]`, `xs[i]`, `map[key]`. `kind` is set by the checker.
+    Index { recv: Box<Expr>, index: Box<Expr>, kind: IndexKind },
+    /// `List<int>()`, `List<int> { 1, 2 }`, `HashMap<string, int> { {"x", 10} }`. `items` is
+    /// `None` when no braces were written.
+    Collection { ty: TypeExpr, args: Vec<Expr>, items: Option<Vec<Item>> },
     /// `text[a..b]`, `text[..b]`, `text[a..]`, `text[..]`
     Slice { recv: Box<Expr>, from: Option<Box<Expr>>, to: Option<Box<Expr>> },
     /// `(int)x`
@@ -189,6 +195,22 @@ pub enum ExprKind {
     Widen(IntTy, Box<Expr>),
     /// Inserted by the checker: a borrow of a copyable value used as the value itself.
     Load(Box<Expr>),
+}
+
+/// What `x[i]` reaches into.
+#[derive(Clone, Copy, PartialEq)]
+pub enum IndexKind {
+    /// A `string`: one byte, read only.
+    Text,
+    List,
+    Map,
+}
+
+/// One item between the braces of a collection: `1`, or `{"x", 10}` for a key and a value.
+pub struct Item {
+    pub values: Vec<Expr>,
+    pub braced: bool,
+    pub span: Span,
 }
 
 /// What `try` does when there is no value. Set by the checker.
@@ -291,8 +313,17 @@ impl BinOp {
 }
 
 impl Expr {
-    /// A variable or a field of one: something that has a location and can be borrowed.
+    /// A variable, a field or an item: something that has a location and can be borrowed.
     pub fn is_place(&self) -> bool {
-        matches!(self.kind, ExprKind::Var(_) | ExprKind::Field { .. })
+        matches!(self.kind, ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. })
+    }
+
+    /// Whether the place lies inside an item of a collection: `xs[i]`, `xs[i].name`.
+    pub fn in_item(&self) -> bool {
+        match &self.kind {
+            ExprKind::Index { .. } => true,
+            ExprKind::Field { recv, .. } => recv.in_item(),
+            _ => false,
+        }
     }
 }

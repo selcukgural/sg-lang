@@ -1,0 +1,5 @@
+error: `List<int>` has no method `push`
+  --> error_list_method_other_name.sg:3:8
+ 3 |     xs.push(1)
+   |        ^^^^
+  hint: `add`

@@ -1,0 +1,4 @@
+error: expected `int`, found `string`
+  --> error_list_item_type.sg:2:29
+ 2 |     var xs = List<int> { 1, "two" }
+   |                             ^^^^^

@@ -1,0 +1,6 @@
+void main() {
+    var n = 5
+    for x in n {
+        print(x)
+    }
+}
