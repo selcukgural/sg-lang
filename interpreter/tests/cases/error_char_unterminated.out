@@ -1,0 +1,5 @@
+error: unterminated character
+  --> error_char_unterminated.sg:2:13
+ 2 |     var c = 'a
+   |             ^^
+  hint: close it with `'`: `'+'`

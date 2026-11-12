@@ -1,0 +1,6 @@
+void main() {
+    byte c = '+'
+    if c is Plus {
+        print("plus")
+    }
+}

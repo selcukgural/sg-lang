@@ -1,0 +1,4 @@
+void main() {
+    byte e = 'é'
+    print(e)
+}

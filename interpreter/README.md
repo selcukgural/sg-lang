@@ -13,11 +13,11 @@ cargo test
 | Area | Supported |
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point. `public` is accepted and has no effect yet |
-| Types | `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `read T` and `ref T` in signatures |
+| Types | `byte`, `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `read T` and `ref T` in signatures |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
 | Methods | Written in the struct body with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`. Called as `stack.push(1)`, also through pointers and borrows. A function without `this` is called on the type: `Stack.create()`. `Stack(args)` is short for `Stack.create(args)` |
 | Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)` |
-| `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a name or `_` for each value, `_`, `var other`; a condition with `when`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
+| `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a name or `_` for each value, `_`, `var other`; a condition with `when`. On an integer the patterns are numbers and characters: `match c { '+' => ... _ => ... }`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
 | `is` | `if s is Circle(r) { ... }`, `while next() is not End { ... }` |
 | Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
@@ -25,7 +25,8 @@ cargo test
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`. A variable keeps its type |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `break`, `continue`, `return` |
 | Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x` |
-| Text | `"..."` with `\n \t \r \0 \\ \"`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()` |
+| Text | `"..."` with `\n \t \r \0 \\ \" \'`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string` |
+| Characters | `'+'`, `'\n'`: a `byte` |
 | Built-ins | `print(x)`, `panic("...")`, `assert(condition)` |
 | Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic |
 
@@ -67,6 +68,12 @@ Design rules that are already enforced:
 - A value where a `Result` is expected is an error whose hint is `Ok(x)` or `Error(x)`; a `Result` where its
   value is expected is an error whose hint is `try`.
 - A function that returns `Result<void, E>` ends with `return Ok()`.
+- A `string` is indexed by byte and stays valid UTF-8: `text[i] = 'a'` is an error, an index or a range outside
+  the text panics with the index and the length, and a range that cuts a character in half panics and names
+  the character.
+- A character that takes more than one byte (`'é'`) is an error where a `byte` goes; the hint is `char`.
+- A conversion whose value is known and does not fit is an error, not a panic: `(byte)300`.
+- A `match` on a number needs `_` or `var name` for the values it does not list.
 
 ## How it is built
 
@@ -171,10 +178,34 @@ Placeholders: the error `main` ends with is written by its shape (`AppError.Eval
 `string` error as its text, until `Formattable` exists. `try` on a borrowed `Result` works only if it can be
 copied. A `Result` cannot carry a borrow (`Result<read string, E>`), since `from` is not here.
 
-The calculator runs from the tokens on (`examples/calculator.sg`): parser, evaluator, error conversion. It
-differs from the design text where the interpreter lacks something: the tokens are built by hand (no `char`,
-no string indexing), `Token` is not `Copyable` so the parser swaps the current token with `replace`, variables
-are a linked list instead of a `HashMap`, and `-x` is `0.trySubtract(x)`.
+## Rules from the sixth slice
+
+Approved on 12 November 2026. Each has a test in `tests/cases/`.
+
+1. **An operation happens in the type of its operands.** `byte + byte` is a `byte`, and `200 + 100` in a `byte`
+   panics like any other overflow (Rust). C# computes in `int` instead, which is one more rule to know. A `byte`
+   widens to `int`, `long` and `nint` on its own; the way back is written `(byte)x`.
+2. **A character is a `byte` and nothing more.** `int x = '+'` is 43 through the ordinary widening, and
+   `print('+')` writes `43`, as C# does for a `byte`. Writing it as a character waits for `char`.
+3. **`-b` on a `byte` is an error**, since the result could only be 0 (Rust). The hint is `-(int)b`.
+4. **An index and the ends of a range take any integer that widens to `nint`**: a `byte`, an `int`, a `nint`.
+   A `long` is converted with `(nint)`.
+5. **A range that ends before it starts panics** (`text[3..1]`), it is not an empty text (Rust).
+6. **In a `match` on a number the patterns are numbers and characters, `_` and `var name`.** Listing all 256
+   values of a `byte` still needs `_`: the check does not count. The same number twice, or a number that does
+   not fit the type, is an error.
+7. **`\'` is an escape in both kinds of quotes**, and neither quote has to be escaped inside the other:
+   `'"'`, `"'"`.
+
+8. **A range is written bare**: `text[a..b]` is a `read string` on its own, and `read text[a..b]` is an error
+   whose hint is the bare form. One way to write it. `read items[0]` is something else and stays: that lends
+   one element.
+
+The calculator runs whole (`examples/calculator.sg`): lexer, parser, evaluator, error conversion. It differs
+from the design text where the interpreter lacks something: `Lexer` owns a copy of the input and `Token.Name`
+a copy of the name (no borrowed fields without `from`), `Token` is not `Copyable` so `advance` hands over the
+current token with `replace`, variables are a linked list instead of a `HashMap`, `-x` is `0.trySubtract(x)`,
+and the input is a string in the program instead of a file.
 
 ## Not here yet
 
@@ -185,12 +216,14 @@ are a linked list instead of a `HashMap`, and `-x` is `0.trySubtract(x)`.
   allocating.
 - Narrowing only follows a direct `x is null` / `x is not null` test, not `&&` chains. The same holds for
   the names of `x is Circle(r)`: they exist when the test is the whole condition of an `if` or `while`.
-- Patterns inside patterns (`Negate(Number(v))`), patterns for numbers and text (`match c { '+' => ... }`),
+- Patterns inside patterns (`Negate(Number(v))`), patterns for text (`match word { "if" => ... }`),
   methods and interfaces on enums. An enum cannot be copied, compared with `==` or printed yet.
 - Generics other than the built-in `Result<T, E>`, interfaces (`Copyable`,
   `Formattable`: a struct cannot be copied or printed yet), lambdas, collections, modules, `test` blocks, threads,
   `shared` / `weak` / `checked` / `locked`.
-- `byte`, `char`, `double` and the other number types; character literals; indexing and slices.
+- `char` and `text.chars()`, `double` and the other number types.
+- Slices of anything but text (`read byte[]`, `text.asBytes()`, `string.fromUtf8`), `List<T>`, `T[N]`.
+  A slice of a `string` is a copy here, not a window; without a borrow check the difference cannot be seen.
 - `tryToInt` and the other `tryTo...` conversions. Overflow and cast panics print the values but not yet the
   safe alternative.
 - Freeing a long linked list recurses, the open stack-depth question from the design; here it runs on a 1 GB stack.
@@ -200,5 +233,5 @@ error.
 
 ## Next
 
-`byte`, character literals, string indexing and slices, so the calculator gets its lexer and reads real
-text. After that the interfaces the examples lean on most (`Copyable`, `Formattable`).
+The interfaces the examples lean on most: `Copyable` (so `Token` is copied, as the calculator in the design
+does) and `Formattable` (so a struct, an enum and the error `main` ends with are written as text).

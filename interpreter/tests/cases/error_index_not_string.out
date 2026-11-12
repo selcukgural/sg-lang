@@ -1,0 +1,5 @@
+error: `int` cannot be indexed
+  for now only a `string` is indexed, byte by byte
+  --> error_index_not_string.sg:3:11
+ 3 |     print(n[0])
+   |           ^

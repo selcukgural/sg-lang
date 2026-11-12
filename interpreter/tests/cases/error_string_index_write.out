@@ -1,0 +1,5 @@
+error: a byte cannot be written into a `string`
+  a `string` is always valid UTF-8; `text[i]` only reads
+  --> error_string_index_write.sg:3:5
+ 3 |     text[0] = 'x'
+   |     ^^^^^^^

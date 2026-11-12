@@ -1,0 +1,5 @@
+error: expected `nint`, found `long`
+  --> error_index_long.sg:4:16
+ 4 |     print(text[at])
+   |                ^^
+  hint: convert with `(nint)`; it panics if the value does not fit

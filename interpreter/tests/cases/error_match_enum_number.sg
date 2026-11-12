@@ -1,0 +1,12 @@
+enum Shape {
+    Circle(int radius)
+    Empty
+}
+
+void main() {
+    var s = Shape.Empty
+    match s {
+        0 => print("zero")
+        _ => {}
+    }
+}

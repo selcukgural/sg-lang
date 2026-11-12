@@ -1,0 +1,4 @@
+error: 300 does not fit in byte, so this arm can never run
+  --> error_match_number_too_big.sg:4:9
+ 4 |         300 => print("never")
+   |         ^^^

@@ -18,7 +18,7 @@ use crate::types::{IntTy, Ty};
 type Res<T> = Result<T, Diag>;
 
 const TYPES_NOT_YET: &[&str] =
-    &["byte", "sbyte", "short", "ushort", "uint", "ulong", "nuint", "float", "double", "char"];
+    &["sbyte", "short", "ushort", "uint", "ulong", "nuint", "float", "double", "char"];
 
 const BUILTINS: &[&str] = &["print", "assert", "panic", "Ok", "Error"];
 
@@ -263,10 +263,10 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             } else {
                 Diag::error(ty.span, format!("there is no type named `{}`", ty.name))
             };
-            let known = names.keys().map(String::as_str).chain(["int", "long", "nint", "bool", "string"]);
+            let known = names.keys().map(String::as_str).chain(["byte", "int", "long", "nint", "bool", "string"]);
             return Err(match nearest(&ty.name, known) {
                 Some(close) => diag.hint(format!("`{close}`")),
-                None => diag.note("built-in types for now: int, long, nint, bool, string"),
+                None => diag.note("built-in types for now: byte, int, long, nint, bool, string"),
             });
         }
     };
@@ -591,6 +591,12 @@ impl<'a> Checker<'a> {
                 _ => {}
             },
             StmtKind::Assign { target, op, value, through } => {
+                if let ExprKind::Index { recv, .. } = &mut target.kind {
+                    let ty = self.operand(recv, None)?;
+                    self.indexable(&ty, recv.span)?;
+                    return Err(Diag::error(target.span, "a byte cannot be written into a `string`")
+                        .note("a `string` is always valid UTF-8; `text[i]` only reads"));
+                }
                 let target_ty = match &target.kind {
                     ExprKind::Var(name) => {
                         let var = if op.is_some() { self.live_var(name, target.span)? } else { self.var(name, target.span)? };
@@ -821,7 +827,7 @@ impl<'a> Checker<'a> {
             })
         };
         match (&found, expected) {
-            (Ty::Int(IntTy::Int), Ty::Int(to)) => {
+            (Ty::Int(from), Ty::Int(to)) if from.widens_to(*to) => {
                 wrap(expr, |inner| ExprKind::Widen(*to, inner));
                 Ok(())
             }
@@ -840,6 +846,9 @@ impl<'a> Checker<'a> {
             (Ty::Read(inner) | Ty::Ref(inner), _) if !expected.is_borrow() && inner.is_copyable() => {
                 wrap(expr, ExprKind::Load);
                 self.coerce(expr, (**inner).clone(), expected)
+            }
+            (Ty::Read(inner), Ty::Str) if **inner == Ty::Str => {
+                mismatch(Some(format!("`{found}` only borrows the text; to own a copy write `{text}.clone()`")))
             }
             (Ty::Read(_) | Ty::Ref(_), _) if !expected.is_borrow() => {
                 mismatch(Some(format!("`{found}` only borrows the value; `{expected}` needs to own it")))
@@ -1067,6 +1076,30 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Bool(_) => Ok(Ty::Bool),
             ExprKind::Str(_) => Ok(Ty::Str),
+            // A character is a `byte`; from there it widens like any other integer.
+            ExprKind::Char(value) => {
+                let value = byte_of(*value, span)?;
+                expr.kind = ExprKind::Int(value, IntTy::Byte);
+                Ok(Ty::Int(IntTy::Byte))
+            }
+            ExprKind::Index { recv, index } => {
+                let ty = self.operand(recv, None)?;
+                self.indexable(&ty, recv.span)?;
+                self.index(index, "an index")?;
+                Ok(Ty::Int(IntTy::Byte))
+            }
+            ExprKind::Slice { recv, from, to } => {
+                let ty = self.operand(recv, None)?;
+                self.indexable(&ty, recv.span)?;
+                if let Some(from) = from {
+                    self.index(from, "the start of the range")?;
+                }
+                if let Some(to) = to {
+                    self.index(to, "the end of the range")?;
+                }
+                // A window onto the text, not a copy.
+                Ok(Ty::Read(Box::new(Ty::Str)))
+            }
             ExprKind::Null => Ok(Ty::Null),
             ExprKind::Interp(parts) => {
                 for part in parts {
@@ -1084,6 +1117,11 @@ impl<'a> Checker<'a> {
                 });
                 let found = self.operand(operand, like.map(Ty::Int).as_ref())?;
                 match found.strip_borrow() {
+                    Ty::Int(IntTy::Byte) => {
+                        let text = &self.src[operand.span.start..operand.span.end];
+                        Err(Diag::error(span, "operator `-` is not defined for `byte`: a `byte` is never negative")
+                            .hint(format!("convert first: `-(int){text}`")))
+                    }
                     Ty::Int(ty) => {
                         let ty = Ty::Int(*ty);
                         self.coerce(operand, found, &ty)?;
@@ -1108,6 +1146,12 @@ impl<'a> Checker<'a> {
                     Ty::Int(from) => {
                         let from = Ty::Int(*from);
                         self.coerce(operand, found, &from)?;
+                        // A value that is known here and does not fit is not left to run time.
+                        if let ExprKind::Int(value, _) = operand.kind {
+                            if !ty.fits(value as i128) {
+                                return Err(Diag::error(span, format!("{value} does not fit in {}", ty.name())));
+                            }
+                        }
                         Ok(Ty::Int(*ty))
                     }
                     other => Err(Diag::error(span, format!("a `{other}` value cannot be converted to `{}`", ty.name()))),
@@ -1175,6 +1219,16 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Ptr(Box::new(ty)))
             }
             ExprKind::Borrow { mutable, expr: inner } => {
+                // One way to write it: a range of text is a borrow already.
+                if matches!(inner.kind, ExprKind::Slice { .. }) {
+                    let word = if *mutable { "ref" } else { "read" };
+                    let text = &self.src[inner.span.start..inner.span.end];
+                    let diag = Diag::error(span, format!("a range is already a borrow, so `{word}` is not written in front of it"));
+                    return Err(match *mutable {
+                        false => diag.hint(format!("`{text}`")),
+                        true => diag.note("a range of a `string` is a `read string`; text is never written through"),
+                    });
+                }
                 let (ty, writable) = match self.place(inner)? {
                     Some(place) => place,
                     None if *mutable => {
@@ -1239,6 +1293,24 @@ impl<'a> Checker<'a> {
                 unreachable!("inserted only after checking")
             }
         }
+    }
+
+    /// What `x[i]` and `x[a..b]` can be written on: for now only text, by byte.
+    fn indexable(&self, ty: &Ty, span: Span) -> Res<()> {
+        match ty.strip_borrow() {
+            Ty::Str => Ok(()),
+            Ty::Nullable(_) => Err(Diag::error(span, format!("this is `{ty}` and may be `null`; an index needs a value"))
+                .hint("test it first with `is not null`, or give a fallback with `??`")),
+            Ty::Fmt => Err(Diag::error(span, "`$\"...\"` is not a `string` and cannot be indexed").hint("add `.toString()` first")),
+            other => Err(Diag::error(span, format!("`{other}` cannot be indexed"))
+                .note("for now only a `string` is indexed, byte by byte")),
+        }
+    }
+
+    /// An index or one end of a range: any integer that widens to `nint`.
+    fn index(&mut self, expr: &mut Expr, what: &str) -> Res<()> {
+        let ty = self.int_operand(expr, Some(IntTy::Nint), what)?;
+        self.coerce(expr, Ty::Int(ty), &Ty::Int(IntTy::Nint))
     }
 
     // ---- enums ----
@@ -1417,8 +1489,11 @@ impl<'a> Checker<'a> {
                         .hint("test it first with `is not null`, or give a fallback with `??`"));
                 }
                 _ => {
-                    return Err(Diag::error(span, format!("{what} needs a value of an enum, found `{ty}`"))
-                        .note("patterns for numbers and text are not in the interpreter yet"));
+                    let diag = Diag::error(span, format!("{what} needs a value of an enum, found `{ty}`"));
+                    return Err(match inner {
+                        Ty::Int(_) => diag.hint("a number is compared with `==`, or matched with `match`"),
+                        _ => diag.note("patterns for text are not in the interpreter yet; compare with `==`"),
+                    });
                 }
             };
         }
@@ -1431,6 +1506,9 @@ impl<'a> Checker<'a> {
         let (name, args, index) = match &mut pattern.kind {
             PatternKind::Wildcard => return Ok(Vec::new()),
             PatternKind::Bind(name) => return Ok(vec![(name.clone(), subject.clone(), span)]),
+            PatternKind::Int(_) | PatternKind::Char(_) => {
+                return Err(Diag::error(span, format!("`{}` is an enum; a pattern here names one of its variants", of.owner)));
+            }
             PatternKind::Variant { name, args, index } => (name, args, index),
         };
         let (owner, variants) = (&of.owner, &of.list);
@@ -1473,6 +1551,30 @@ impl<'a> Checker<'a> {
         Ok(binds)
     }
 
+    /// A pattern in a `match` on an integer: a number or a character that fits the type,
+    /// `_`, or `var name`.
+    fn int_pattern(&mut self, pattern: &mut Pattern, ty: IntTy, subject: &Ty) -> Res<Binds> {
+        let span = pattern.span;
+        let value = match &pattern.kind {
+            PatternKind::Wildcard => return Ok(Vec::new()),
+            PatternKind::Bind(name) => return Ok(vec![(name.clone(), subject.clone(), span)]),
+            PatternKind::Int(value) => *value,
+            PatternKind::Char(value) => byte_of(*value, span)?,
+            PatternKind::Variant { name, args, .. } => {
+                let diag = Diag::error(span, format!("this `match` looks at a `{}`, and `{name}` is not a number or a character", ty.name()));
+                return Err(match args {
+                    None => diag.hint(format!("to take any value under this name, write `var {name}`")),
+                    Some(_) => diag,
+                });
+            }
+        };
+        if !ty.fits(value as i128) {
+            return Err(Diag::error(span, format!("{value} does not fit in {}, so this arm can never run", ty.name())));
+        }
+        pattern.kind = PatternKind::Int(value);
+        Ok(Vec::new())
+    }
+
     /// `x is Circle(r)`: looks at the value without taking it, so the names are borrows.
     /// They are in scope only when the test is the whole condition of an `if` or `while`.
     fn is_variant(&mut self, expr: &mut Expr, names_ok: bool) -> Res<Binds> {
@@ -1508,11 +1610,20 @@ impl<'a> Checker<'a> {
     ) -> Res<Ty> {
         // Like `var y = subject`: an owned value is moved in, a borrow stays a borrow.
         let subject_ty = self.expr(subject, None)?;
-        let (of, mode) = self.enum_behind(&subject_ty, subject.span, "`match`")?;
+        // On an integer the arms are numbers; on anything else, the variants of an enum.
+        let number = match subject_ty.strip_borrow() {
+            Ty::Int(ty) => Some(*ty),
+            _ => None,
+        };
+        let (of, mode) = match number {
+            Some(ty) => (Variants { owner: ty.name().to_string(), list: Vec::new() }, None),
+            None => self.enum_behind(&subject_ty, subject.span, "`match`")?,
+        };
         *borrowed = mode.is_some();
         let (owner, variants) = (&of.owner, &of.list);
 
-        let mut handled = vec![false; variants.len()];
+        // What the arms without a condition have settled: variant positions, or numbers.
+        let mut handled: Vec<i64> = Vec::new();
         let mut handled_all = false;
         let mut result: Option<Ty> = expected.cloned();
         let before = self.moves();
@@ -1520,19 +1631,24 @@ impl<'a> Checker<'a> {
         for arm in arms.iter_mut() {
             self.set_moves(&before);
             self.scopes.push(Scope::default());
-            let binds = self.pattern_binds(&mut arm.pattern, &of, mode, &subject_ty)?;
+            let binds = match number {
+                Some(ty) => self.int_pattern(&mut arm.pattern, ty, &subject_ty)?,
+                None => self.pattern_binds(&mut arm.pattern, &of, mode, &subject_ty)?,
+            };
             let position = match &arm.pattern.kind {
-                PatternKind::Variant { index, .. } => Some(*index),
+                PatternKind::Variant { index, .. } => Some(*index as i64),
+                PatternKind::Int(value) => Some(*value),
                 _ => None,
             };
             if handled_all {
                 return Err(Diag::error(arm.pattern.span, "this arm can never run: an arm above takes every value"));
             }
-            if let Some(position) = position.filter(|position| handled[*position]) {
-                return Err(Diag::error(
-                    arm.pattern.span,
-                    format!("this arm can never run: `{}` is already handled above", variants[position].0),
-                ));
+            if let Some(position) = position.filter(|position| handled.contains(position)) {
+                let what = match number {
+                    Some(_) => &self.src[arm.pattern.span.start..arm.pattern.span.end],
+                    None => variants[position as usize].0.as_str(),
+                };
+                return Err(Diag::error(arm.pattern.span, format!("this arm can never run: `{what}` is already handled above")));
             }
             for (name, ty, span) in binds {
                 self.declare_local(&name, ty, span)?;
@@ -1541,7 +1657,7 @@ impl<'a> Checker<'a> {
                 Some(guard) => self.typed(guard, &Ty::Bool)?,
                 // Only an arm without a condition settles its variant.
                 None => match position {
-                    Some(position) => handled[position] = true,
+                    Some(position) => handled.push(position),
                     None => handled_all = true,
                 },
             }
@@ -1581,14 +1697,20 @@ impl<'a> Checker<'a> {
             }
         }
 
+        if !handled_all && number.is_some() {
+            return Err(Diag::error(subject.span, format!("this `match` does not handle every `{owner}` value"))
+                .hint("add `_ => ...` for everything else"));
+        }
         if !handled_all {
-            let missing: Vec<String> =
-                variants.iter().zip(&handled).filter(|(_, done)| !**done).map(|((name, _), _)| format!("`{name}`")).collect();
+            let missing: Vec<String> = (0..variants.len())
+                .filter(|position| !handled.contains(&(*position as i64)))
+                .map(|position| format!("`{}`", variants[position].0))
+                .collect();
             if !missing.is_empty() {
                 let diag = Diag::error(subject.span, format!("this `match` does not handle {}", missing.join(", ")))
                     .hint("add an arm for each, or `_ => ...` for everything else");
                 let guarded = arms.iter().any(|arm| {
-                    arm.guard.is_some() && matches!(&arm.pattern.kind, PatternKind::Variant { index, .. } if !handled[*index])
+                    arm.guard.is_some() && matches!(&arm.pattern.kind, PatternKind::Variant { index, .. } if !handled.contains(&(*index as i64)))
                 });
                 return Err(match guarded {
                     true => diag.note("an arm with `when` does not settle its variant: the condition may be false"),
@@ -1996,9 +2118,15 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
                 }
             }
         }
-        ExprKind::Binary(_, left, right) | ExprKind::Coalesce { left, right, .. } => {
+        ExprKind::Binary(_, left, right) | ExprKind::Coalesce { left, right, .. } | ExprKind::Index { recv: left, index: right } => {
             taken_in(left, names);
             taken_in(right, names);
+        }
+        ExprKind::Slice { recv, from, to } => {
+            taken_in(recv, names);
+            for end in [from, to].into_iter().flatten() {
+                taken_in(end, names);
+            }
         }
         ExprKind::Variant { args, .. } => args.iter().for_each(|arg| taken_in(arg, names)),
         ExprKind::Match { subject, arms, .. } => {
@@ -2025,8 +2153,24 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
         | ExprKind::IsNull { expr: inner, .. }
         | ExprKind::Widen(_, inner)
         | ExprKind::Load(inner) => taken_in(inner, names),
-        ExprKind::Int(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::Return(None) => {}
+        ExprKind::Int(..)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Char(_)
+        | ExprKind::Null
+        | ExprKind::Var(_)
+        | ExprKind::Return(None) => {}
     }
+}
+
+/// The value of a character written where a `byte` goes: it must take one byte in UTF-8.
+fn byte_of(value: char, span: Span) -> Res<i64> {
+    if value.is_ascii() {
+        return Ok(value as i64);
+    }
+    Err(Diag::error(span, format!("`{value}` does not fit in one byte: it takes {} bytes in UTF-8", value.len_utf8()))
+        .hint(format!("the type for any character is `char`: `char c = '{value}'`"))
+        .note("`char` is not in the interpreter yet"))
 }
 
 /// Replaces `expr` with a node built around it.

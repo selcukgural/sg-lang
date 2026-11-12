@@ -1,0 +1,33 @@
+bool isDigit(byte c) {
+    return c >= '0' && c <= '9'
+}
+
+void main() {
+    byte plus = '+'
+    var star = '*'                       // a character is a byte
+    print(plus)
+    print(star)
+    print('\n')
+    print('\'')
+    print(isDigit('7'))
+    print(isDigit(plus))
+
+    byte max = 255
+    int wide = max                       // byte widens on its own
+    long wider = max
+    print(wide + 1)
+    print(wider + 1)
+
+    byte digit = '7' - '0'               // stays a byte
+    int value = digit * 10 + digit
+    print(value)
+    print(max == 255)
+    print(plus < star)
+
+    int big = 200
+    byte back = (byte)big                // narrowing is written
+    print(back)
+    print(back.wrappingAdd(100))
+    print(back.tryAdd(100) ?? 0)
+    print($"{plus} and {star}")
+}

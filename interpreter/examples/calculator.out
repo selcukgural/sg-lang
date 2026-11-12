@@ -1,4 +1,6 @@
-30
+13
+35
 -1
 that one does not parse
-error: AppError.Eval(EvalError.UnknownName("y"))
+that one has a character the calculator does not know
+error: AppError.Syntax(SyntaxError.NumberTooLarge(0))

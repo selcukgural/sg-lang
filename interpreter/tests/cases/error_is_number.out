@@ -1,0 +1,5 @@
+error: `is` needs a value of an enum, found `byte`
+  --> error_is_number.sg:3:8
+ 3 |     if c is Plus {
+   |        ^
+  hint: a number is compared with `==`, or matched with `match`

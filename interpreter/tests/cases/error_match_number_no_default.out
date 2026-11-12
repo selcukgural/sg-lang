@@ -1,0 +1,5 @@
+error: this `match` does not handle every `byte` value
+  --> error_match_number_no_default.sg:3:11
+ 3 |     match c {
+   |           ^
+  hint: add `_ => ...` for everything else

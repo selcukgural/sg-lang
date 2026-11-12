@@ -136,6 +136,8 @@ pub enum ExprKind {
     Int(i64, IntTy),
     Bool(bool),
     Str(String),
+    /// `'+'`. The checker turns it into an `Int` of the type `byte`.
+    Char(char),
     /// `$"{a}: {b}"`
     Interp(Vec<InterpPart>),
     Null,
@@ -146,6 +148,10 @@ pub enum ExprKind {
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call { name: String, name_span: Span, args: Vec<Expr>, callee: Callee },
     Method { recv: Box<Expr>, name: String, name_span: Span, args: Vec<Expr>, callee: Callee },
+    /// `text[i]`
+    Index { recv: Box<Expr>, index: Box<Expr> },
+    /// `text[a..b]`, `text[..b]`, `text[a..]`, `text[..]`
+    Slice { recv: Box<Expr>, from: Option<Box<Expr>>, to: Option<Box<Expr>> },
     /// `(int)x`
     Cast { ty: IntTy, expr: Box<Expr> },
     /// `Node { value = 1, next = null }`
@@ -211,6 +217,10 @@ pub enum PatternKind {
     Wildcard,
     /// `var other`: matches everything and takes the value.
     Bind(String),
+    /// `42`, `-1`: a number, for a `match` on an integer.
+    Int(i64),
+    /// `'+'`. The checker turns it into an `Int`.
+    Char(char),
     /// `Circle(r)`, `Rect(w, _)`, `Empty`. A name is `None` for `_`. `args` is `None` when
     /// no parentheses were written. `index` is the variant's position, set by the checker.
     Variant { name: String, args: Option<Vec<(Option<String>, Span)>>, index: usize },

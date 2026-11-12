@@ -1,0 +1,8 @@
+void main() {
+    byte c = '+'
+    match c {
+        '+' => print("plus")
+        '+' => print("again")
+        _ => {}
+    }
+}

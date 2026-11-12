@@ -1,0 +1,5 @@
+error: there is no character between the quotes
+  --> error_char_empty.sg:2:13
+ 2 |     var c = ''
+   |             ^^
+  hint: a space is written `' '`

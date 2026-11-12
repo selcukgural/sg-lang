@@ -1,0 +1,5 @@
+error: operator `-` is not defined for `byte`: a `byte` is never negative
+  --> error_byte_negate.sg:3:11
+ 3 |     print(-b)
+   |           ^^
+  hint: convert first: `-(int)b`

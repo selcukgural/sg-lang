@@ -1,0 +1,5 @@
+bc
+panic: range 1..4 is out of range: the length is 3
+  --> panic_slice_out_of_range.sg:4:11
+ 4 |     print(text[1..4])
+   |           ^^^^^^^^^^

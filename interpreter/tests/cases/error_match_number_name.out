@@ -1,0 +1,5 @@
+error: this `match` looks at a `byte`, and `plus` is not a number or a character
+  --> error_match_number_name.sg:4:9
+ 4 |         plus => print("plus")
+   |         ^^^^
+  hint: to take any value under this name, write `var plus`

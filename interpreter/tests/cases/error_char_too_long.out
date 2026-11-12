@@ -1,0 +1,5 @@
+error: single quotes hold exactly one character
+  --> error_char_too_long.sg:2:13
+ 2 |     var c = 'ab'
+   |             ^^^^
+  hint: text is written with double quotes: `"ab"`

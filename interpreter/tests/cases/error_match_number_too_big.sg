@@ -1,0 +1,7 @@
+void main() {
+    byte c = '+'
+    match c {
+        300 => print("never")
+        _ => {}
+    }
+}

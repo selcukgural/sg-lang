@@ -1,0 +1,6 @@
+void main() {
+    var text = "abc"
+    var at = 3
+    print(text[2])
+    print(text[at])
+}

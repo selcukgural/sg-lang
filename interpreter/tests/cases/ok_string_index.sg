@@ -1,0 +1,34 @@
+int count(read string text, byte wanted) {
+    int found = 0
+    for i in 0..text.length() {
+        if text[i] == wanted {
+            found += 1
+        }
+    }
+    return found
+}
+
+void main() {
+    var text = "hello world"
+    print(text[0])
+    print(text[text.length() - 1])
+    print(count(read text, 'o'))
+
+    print(text[0..5])
+    print(text[6..])
+    print(text[..5])
+    print(text[..])
+    print(text[3..3].length())
+    print(text[..5] == "hello")
+
+    var part = text[6..]                 // read string: a window, text is still usable
+    string owned = part.clone()
+    print(owned)
+    print(part[1..3])
+    print(text)
+
+    var accented = "né"                  // é takes two bytes
+    print(accented.length())
+    print(accented[1])
+    print(accented[1..3])
+}

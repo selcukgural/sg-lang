@@ -1,0 +1,4 @@
+void main() {
+    var b = (byte)300
+    print(b)
+}

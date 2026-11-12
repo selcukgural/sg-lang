@@ -1,0 +1,5 @@
+99
+panic: index 3 is out of range: the length is 3
+  --> panic_index_out_of_range.sg:5:11
+ 5 |     print(text[at])
+   |           ^^^^^^^^

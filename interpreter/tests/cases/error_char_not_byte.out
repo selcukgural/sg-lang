@@ -1,0 +1,6 @@
+error: `é` does not fit in one byte: it takes 2 bytes in UTF-8
+  `char` is not in the interpreter yet
+  --> error_char_not_byte.sg:2:14
+ 2 |     byte e = 'é'
+   |              ^^^
+  hint: the type for any character is `char`: `char c = 'é'`

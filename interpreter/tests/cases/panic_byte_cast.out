@@ -1,0 +1,4 @@
+panic: value 300 does not fit in byte
+  --> panic_byte_cast.sg:3:11
+ 3 |     print((byte)n)
+   |           ^^^^^^^

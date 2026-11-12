@@ -453,7 +453,8 @@ impl<'a> Parser<'a> {
             _ => {
                 let expr = self.expr()?;
                 if let Some(op) = assign_op(self.peek()) {
-                    if !expr.is_place() {
+                    // `text[0] = 'a'` gets its own message from the checker.
+                    if !expr.is_place() && !matches!(expr.kind, ExprKind::Index { .. }) {
                         return Err(Diag::error(expr.span, "the left side of an assignment must be a variable or a field"));
                     }
                     self.bump();
@@ -559,6 +560,23 @@ impl<'a> Parser<'a> {
                 self.bump();
                 PatternKind::Wildcard
             }
+            Tok::Char(value) => {
+                self.bump();
+                PatternKind::Char(value)
+            }
+            Tok::Int(_) | Tok::Minus => {
+                let negative = self.eat(&Tok::Minus);
+                let Tok::Int(value) = *self.peek() else { return Err(self.unexpected("a number")) };
+                let span = start.to(self.bump().span);
+                let value = if negative { -(value as i128) } else { value as i128 };
+                match i64::try_from(value) {
+                    Ok(value) => PatternKind::Int(value),
+                    Err(_) => return Err(Diag::error(span, format!("{value} does not fit in any integer type"))),
+                }
+            }
+            Tok::Str(_) | Tok::Interp(_) => {
+                return Err(self.unexpected("a pattern").note("patterns for text are not in the interpreter yet; compare with `==`"))
+            }
             Tok::Ident(_) => {
                 let (name, _) = self.ident("a variant name")?;
                 if *self.peek() == Tok::Dot {
@@ -599,7 +617,9 @@ impl<'a> Parser<'a> {
                 PatternKind::Variant { name, args, index: 0 }
             }
             _ => {
-                return Err(self.unexpected("a pattern").note("patterns for now: a variant such as `Circle(r)`, `_`, or `var name`"))
+                return Err(self
+                    .unexpected("a pattern")
+                    .note("patterns for now: a variant such as `Circle(r)`, a number, a character, `_`, or `var name`"))
             }
         };
         Ok(Pattern { kind, span: Span::new(start.start, self.prev_end()) })
@@ -770,8 +790,14 @@ impl<'a> Parser<'a> {
 
     fn postfix(&mut self) -> Res<Expr> {
         let mut expr = self.primary()?;
-        while *self.peek() == Tok::Dot {
-            self.bump();
+        loop {
+            if *self.peek() == Tok::LBracket {
+                expr = self.index_or_slice(expr)?;
+                continue;
+            }
+            if !self.eat(&Tok::Dot) {
+                break;
+            }
             let (name, name_span) = self.ident("a field or method name")?;
             let recv = Box::new(expr);
             let kind = if *self.peek() == Tok::LParen {
@@ -787,6 +813,30 @@ impl<'a> Parser<'a> {
             expr = Expr { kind, span: Span::new(start, self.prev_end()) };
         }
         Ok(expr)
+    }
+
+    /// `text[i]`, or a range of it: `text[a..b]`, `text[..b]`, `text[a..]`, `text[..]`.
+    fn index_or_slice(&mut self, recv: Expr) -> Res<Expr> {
+        self.bump();
+        let start = recv.span.start;
+        let recv = Box::new(recv);
+        let kind = self.bracketed(|p| {
+            let from = match p.peek() {
+                Tok::DotDot => None,
+                _ => Some(Box::new(p.expr()?)),
+            };
+            if !p.eat(&Tok::DotDot) {
+                let index = from.expect("read above when there is no `..`");
+                return Ok(ExprKind::Index { recv, index });
+            }
+            let to = match p.peek() {
+                Tok::RBracket => None,
+                _ => Some(Box::new(p.expr()?)),
+            };
+            Ok(ExprKind::Slice { recv, from, to })
+        })?;
+        self.expect(Tok::RBracket, "`]`")?;
+        Ok(Expr { kind, span: Span::new(start, self.prev_end()) })
     }
 
     /// Runs `inner` between brackets, where a struct literal is always unambiguous.
@@ -835,6 +885,10 @@ impl<'a> Parser<'a> {
             Tok::Str(text) => {
                 self.bump();
                 ExprKind::Str(text)
+            }
+            Tok::Char(value) => {
+                self.bump();
+                ExprKind::Char(value)
             }
             Tok::Interp(parts) => {
                 self.bump();

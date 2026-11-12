@@ -1,0 +1,4 @@
+error: `Shape` is an enum; a pattern here names one of its variants
+  --> error_match_enum_number.sg:9:9
+ 9 |         0 => print("zero")
+   |         ^

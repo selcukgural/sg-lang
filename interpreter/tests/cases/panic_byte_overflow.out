@@ -1,0 +1,4 @@
+panic: overflow: 200 + 100 does not fit in byte
+  --> panic_byte_overflow.sg:3:16
+ 3 |     byte sum = b + 100
+   |                ^^^^^^^

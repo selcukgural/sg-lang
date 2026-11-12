@@ -1,0 +1,40 @@
+string name(byte c) {
+    return match c {
+        '+' => "plus"
+        '-' => "minus"
+        ' ' => "space"
+        _ => "other"
+    }
+}
+
+string size(int n) {
+    return match n {
+        0 => "zero"
+        -1 => "minus one"
+        var other when other < 0 => "negative"
+        1 => "one"
+        var other => $"many: {other}".toString()
+    }
+}
+
+void main() {
+    print(name('+'))
+    print(name('-'))
+    print(name(' '))
+    print(name('x'))
+    print(size(0))
+    print(size(-1))
+    print(size(-5))
+    print(size(1))
+    print(size(7))
+
+    var text = "a-b"
+    int dashes = 0
+    for i in 0..text.length() {
+        match text[i] {
+            '-' => dashes += 1
+            _ => {}
+        }
+    }
+    print(dashes)
+}

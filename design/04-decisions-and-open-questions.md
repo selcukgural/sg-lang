@@ -112,6 +112,14 @@ smallness: what each language does best is taken in the form that fits us, and i
 | `??` on `Result<void, E>` | Compile error; the hint is `try` or `_ = ...` | Success carries nothing, so there is nothing to fall back to |
 | `tryDivide` | Gives `null` for division by zero too, not only for overflow | Rust's `checked_div`. "`null` where the operator would panic" is one rule for the whole `try...` family |
 | `return` in an expression | Written only on the right side of `??` | The one place it reads well; anywhere else it hides an exit in the middle of a line |
+| Arithmetic on small integers | An operation happens in the type of its operands: `byte + byte` is a `byte`, and overflow panics as everywhere else. A `byte` widens to `int`, `long` and `nint` on its own; the way back is `(byte)x` | Rust's rule. C# computes in `int`, which is one more rule to know. Cost: `int x = b + 1000` is an error and is written `(int)b + 1000`. Approved on 12 November with the interpreter's sixth slice, as are the rows below |
+| A character is a `byte` | `'+'` is a `byte` and nothing more: `int x = '+'` is 43 through the ordinary widening, and `print('+')` writes `43` | Follows from the `char` row and the widening rule, no new rule. Writing a byte as a character waits for `char` |
+| `-` on a `byte` | Compile error; the hint is `-(int)b` | The result could only be 0 (Rust). Caught at compile time instead of a panic |
+| Type of an index | An index and the ends of a range take any integer that widens to `nint` (`byte`, `int`, `nint`). A `long` is converted with `(nint)` | The widening rule as it is; no special case for indexes |
+| Backwards range | `text[3..1]` panics, it is not an empty text | Rust. A range that ends before it starts is a mistake in the data, not a request for nothing |
+| `match` on a number | Patterns are numbers and characters, `_` and `var name`. `_` or `var name` is required, even when all 256 values of a `byte` are listed. The same number twice, or a number that does not fit the type, is a compile error | The check does not count values: one simple rule. An arm that can never run is an error, as for enums |
+| Quotes and escapes | `\'` is an escape in both kinds of quotes; neither quote has to be escaped inside the other (`'"'`, `"'"`) | C#'s rule |
+| A range is written bare | `text[a..b]` is a `read string` on its own. `read text[a..b]` is a compile error whose hint is the bare form. `read items[0]` stays: it lends one element | One way to write it; the range already says "a window". Decided on 12 November |
 | Integer overflow | Panic in release too. `tryAdd` returns `int?`, `wrappingAdd` wraps on purpose | The first application of the core principle: a silent wrong result cannot be the default. We deliberately differ from Rust, the cost is below, and a hot loop is rescued with `wrappingAdd` |
 | Implicit conversion | `read T` stands in for `T` if `T` is `Copyable`. A `read T*` can be given to a `read T` parameter | Otherwise a dereference would be needed on every line |
 | `new` | Required. It puts the value on the heap and gives a `T*`, it does not mean creating an object. `HashMap<K, V>()` takes no `new`, it is the value itself | A separate heap allocation should stay visible, and `var` should know which type is wanted. An implicit conversion can be added later, but cannot be removed |
@@ -253,8 +261,10 @@ This goal holds only with a back end at the level of LLVM. A tree-walking interp
    `tryAdd` and its siblings; the calculator runs from the tokens on (`examples/calculator.sg`), and `pop` in the stack
    example is now written with `try` as in the design. The seven small choices made in this slice were approved on 12 November 2026 and are in the decisions table:
    [interpreter/README.md](../interpreter/README.md), "Rules from the fifth slice".
-   The borrow check (`from`, conflicting `ref`) does not exist yet. Next: `byte`, character literals, string indexing and
-   slices (the calculator's lexer). The current state is in
+   Sixth slice (the same day): `byte`, character literals, `text[i]`, `text[a..b]` and a `match` on a number; the
+   calculator now runs whole, with its lexer reading real text. The choices made in this slice were approved on 12 November 2026 and are in the decisions table:
+   [interpreter/README.md](../interpreter/README.md), "Rules from the sixth slice".
+   The borrow check (`from`, conflicting `ref`) does not exist yet. Next: `Copyable` and `Formattable`. The current state is in
    [interpreter/README.md](../interpreter/README.md). The code, comments and error messages are in English. Since 12 November 2026 the design documents are in English too.
 
 ## Dropped decisions

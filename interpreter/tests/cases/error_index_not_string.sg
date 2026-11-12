@@ -1,0 +1,4 @@
+void main() {
+    var n = 123
+    print(n[0])
+}

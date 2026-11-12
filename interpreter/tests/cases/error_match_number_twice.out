@@ -1,0 +1,4 @@
+error: this arm can never run: `'+'` is already handled above
+  --> error_match_number_twice.sg:5:9
+ 5 |         '+' => print("again")
+   |         ^^^

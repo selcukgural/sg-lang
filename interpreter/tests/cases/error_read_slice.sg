@@ -1,0 +1,5 @@
+void main() {
+    var text = "hello world"
+    var part = read text[0..5]
+    print(part)
+}

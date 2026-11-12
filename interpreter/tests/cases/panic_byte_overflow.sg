@@ -1,0 +1,5 @@
+void main() {
+    byte b = 200
+    byte sum = b + 100
+    print(sum)
+}

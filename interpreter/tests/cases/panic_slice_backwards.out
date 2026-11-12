@@ -1,0 +1,4 @@
+panic: range 2..1 ends before it starts
+  --> panic_slice_backwards.sg:4:11
+ 4 |     print(text[from..1])
+   |           ^^^^^^^^^^^^^

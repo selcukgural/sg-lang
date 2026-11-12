@@ -10,6 +10,7 @@ use crate::diag::{Diag, Span};
 pub enum Tok {
     Int(u64),
     Str(String),
+    Char(char),
     Interp(Vec<Part>),
     Ident(String),
 
@@ -126,6 +127,7 @@ impl Tok {
         match self {
             Tok::Int(v) => format!("`{v}`"),
             Tok::Str(_) | Tok::Interp(_) => "a string".to_string(),
+            Tok::Char(_) => "a character".to_string(),
             Tok::Ident(name) => format!("`{name}`"),
             Tok::Newline => "end of line".to_string(),
             Tok::Eof => "end of file".to_string(),
@@ -256,6 +258,7 @@ impl<'a> Lexer<'a> {
                     self.push(Tok::Str(text), start);
                 }
                 b'$' if self.at(1) == Some(b'"') => self.interpolated()?,
+                b'\'' => self.character()?,
                 _ => self.punct()?,
             }
         }
@@ -388,13 +391,53 @@ impl<'a> Lexer<'a> {
             Some(b'0') => 0,
             Some(b'\\') => b'\\',
             Some(b'"') => b'"',
+            Some(b'\'') => b'\'',
             _ => {
                 return Err(Diag::error(Span::new(start, self.pos + 1), "unknown escape sequence")
-                    .hint("valid ones: \\n \\t \\r \\0 \\\\ \\\""))
+                    .hint("valid ones: \\n \\t \\r \\0 \\\\ \\\" \\'"))
             }
         };
         self.pos += 1;
         Ok(value)
+    }
+
+    /// `'+'`, `'\n'`, `'é'`: exactly one character between single quotes.
+    fn character(&mut self) -> Result<(), Diag> {
+        let start = self.pos;
+        self.pos += 1;
+        let unterminated = |lexer: &Self| {
+            Diag::error(Span::new(start, lexer.pos), "unterminated character").hint("close it with `'`: `'+'`")
+        };
+        let value = match self.at(0) {
+            None | Some(b'\n') => return Err(unterminated(self)),
+            Some(b'\'') => {
+                self.pos += 1;
+                return Err(Diag::error(Span::new(start, self.pos), "there is no character between the quotes")
+                    .hint("a space is written `' '`"));
+            }
+            Some(b'\\') => self.escape()? as char,
+            Some(_) => {
+                let ch = self.src[self.pos..self.end].chars().next().expect("a character starts here");
+                self.pos += ch.len_utf8();
+                ch
+            }
+        };
+        if self.at(0) != Some(b'\'') {
+            // More than one character: find the closing quote to mark the whole of it.
+            let mut end = self.pos;
+            while end < self.end && self.bytes[end] != b'\n' && self.bytes[end] != b'\'' {
+                end += 1;
+            }
+            if end == self.end || self.bytes[end] == b'\n' {
+                return Err(unterminated(self));
+            }
+            let text = &self.src[start + 1..end];
+            return Err(Diag::error(Span::new(start, end + 1), "single quotes hold exactly one character")
+                .hint(format!("text is written with double quotes: `\"{text}\"`")));
+        }
+        self.pos += 1;
+        self.push(Tok::Char(value), start);
+        Ok(())
     }
 
     fn interpolated(&mut self) -> Result<(), Diag> {
@@ -519,7 +562,6 @@ impl<'a> Lexer<'a> {
                 let diag = Diag::error(span, format!("unexpected character `{ch}`"));
                 return Err(match ch {
                     ';' => diag.hint("there are no semicolons; a statement ends at the end of the line"),
-                    '\'' => diag.note("character literals are not in the interpreter yet"),
                     _ => diag,
                 });
             }

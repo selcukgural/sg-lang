@@ -1,0 +1,4 @@
+error: 300 does not fit in byte
+  --> error_byte_compare_too_big.sg:3:16
+ 3 |     print(b == 300)
+   |                ^^^

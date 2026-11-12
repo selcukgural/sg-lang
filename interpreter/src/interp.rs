@@ -402,6 +402,43 @@ impl<'a> Interp<'a> {
                 let right = strip(self.expr(right, frame)?);
                 Ok(binary(*op, left, right, expr.span)?)
             }
+            ExprKind::Char(_) => unreachable!("the checker turns a character into a `byte`"),
+            ExprKind::Index { recv, index } => {
+                let text = self.text(recv, frame)?;
+                let at = self.int(index, frame)?;
+                match usize::try_from(at).ok().and_then(|at| text.as_bytes().get(at)) {
+                    Some(byte) => Ok(Value::Int(IntTy::Byte, *byte as i64)),
+                    None => Err(Diag::panic(expr.span, format!("index {at} is out of range: the length is {}", text.len())).into()),
+                }
+            }
+            ExprKind::Slice { recv, from, to } => {
+                let text = self.text(recv, frame)?;
+                let length = text.len() as i64;
+                let from = match from {
+                    Some(from) => self.int(from, frame)?,
+                    None => 0,
+                };
+                let to = match to {
+                    Some(to) => self.int(to, frame)?,
+                    None => length,
+                };
+                if from < 0 || to > length {
+                    return Err(Diag::panic(expr.span, format!("range {from}..{to} is out of range: the length is {length}")).into());
+                }
+                if from > to {
+                    return Err(Diag::panic(expr.span, format!("range {from}..{to} ends before it starts")).into());
+                }
+                let (start, end) = (from as usize, to as usize);
+                if let Some(cut) = [start, end].into_iter().find(|at| !text.is_char_boundary(*at)) {
+                    let inside = text.char_indices().take_while(|(at, _)| *at < cut).last().expect("a character starts before the cut");
+                    let (first, last) = (inside.0, inside.0 + inside.1.len_utf8());
+                    return Err(Diag::panic(expr.span, format!("range {from}..{to} cuts a character in half"))
+                        .note(format!("`{}` takes bytes {first}..{last}; a `string` is always valid UTF-8", inside.1))
+                        .into());
+                }
+                // A window in the design; a copy here, which cannot be told apart.
+                Ok(Value::Str(text[start..end].into()))
+            }
             ExprKind::Cast { ty, expr: inner } => match strip(self.expr(inner, frame)?) {
                 Value::Int(_, value) if ty.fits(value as i128) => Ok(Value::Int(*ty, value)),
                 Value::Int(_, value) => {
@@ -487,7 +524,15 @@ impl<'a> Interp<'a> {
             }
             ExprKind::Match { subject, arms, borrowed } => {
                 let value = self.expr(subject, frame)?;
-                let (index, fields) = enum_parts(value.clone());
+                // A number is compared with the arms; an enum is taken apart.
+                let number = match strip(value.clone()) {
+                    Value::Int(_, number) => Some(number),
+                    _ => None,
+                };
+                let (index, fields) = match number {
+                    Some(_) => (0, Rc::new(Vec::new())),
+                    None => enum_parts(value.clone()),
+                };
                 let depth = frame.scopes.len();
                 for arm in arms {
                     frame.scopes.push(HashMap::new());
@@ -497,6 +542,8 @@ impl<'a> Interp<'a> {
                             frame.declare(name, value.clone());
                             true
                         }
+                        PatternKind::Int(wanted) => number == Some(*wanted),
+                        PatternKind::Char(_) => unreachable!("the checker turns a character into a number"),
                         PatternKind::Variant { index: wanted, args, .. } => {
                             if index == *wanted {
                                 for ((name, _), field) in args.iter().flatten().zip(fields.iter()) {
@@ -585,6 +632,20 @@ impl<'a> Interp<'a> {
                     Ok(method(recv, name, values))
                 }
             },
+        }
+    }
+
+    fn text(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Rc<str>> {
+        match strip(self.expr(expr, frame)?) {
+            Value::Str(text) => Ok(text),
+            _ => unreachable!("the checker only lets a `string` be indexed"),
+        }
+    }
+
+    fn int(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<i64> {
+        match strip(self.expr(expr, frame)?) {
+            Value::Int(_, value) => Ok(value),
+            _ => unreachable!("the checker makes an index an integer"),
         }
     }
 

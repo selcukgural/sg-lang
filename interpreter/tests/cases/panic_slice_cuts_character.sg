@@ -1,0 +1,5 @@
+void main() {
+    var text = "né!"
+    print(text[0..1])
+    print(text[0..2])
+}

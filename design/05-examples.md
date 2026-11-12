@@ -1,6 +1,6 @@
 # Example programs
 
-*6 November 2026. The examples were written by hand, before there was any tool to check them. Since 12 November 2026 the [interpreter](../interpreter/README.md) runs a growing part of the language; the stack example runs there as `examples/stack.sg`, and the calculator from the tokens on as `examples/calculator.sg`. The aim is to
+*6 November 2026. The examples were written by hand, before there was any tool to check them. Since 12 November 2026 the [interpreter](../interpreter/README.md) runs a growing part of the language; the stack example runs there as `examples/stack.sg`, and the calculator as `examples/calculator.sg` (the differences from the text below are listed in the interpreter's README). The aim is to
 put the notation under stress. The decisions are in the [decisions](04-decisions-and-open-questions.md) file.*
 
 ## Calculator
@@ -94,7 +94,7 @@ public struct Lexer<from source> {
         while this.pos < this.input.length() && isLetter(this.input[this.pos]) {
             this.pos += 1
         }
-        return Token.Name(read this.input[start..this.pos])
+        return Token.Name(this.input[start..this.pos])
     }
 }
 ```

@@ -4,6 +4,7 @@ use std::fmt;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum IntTy {
+    Byte,
     Int,
     Long,
     Nint,
@@ -12,6 +13,7 @@ pub enum IntTy {
 impl IntTy {
     pub fn from_name(name: &str) -> Option<IntTy> {
         match name {
+            "byte" => Some(IntTy::Byte),
             "int" => Some(IntTy::Int),
             "long" => Some(IntTy::Long),
             "nint" => Some(IntTy::Nint),
@@ -21,6 +23,7 @@ impl IntTy {
 
     pub fn name(self) -> &'static str {
         match self {
+            IntTy::Byte => "byte",
             IntTy::Int => "int",
             IntTy::Long => "long",
             IntTy::Nint => "nint",
@@ -29,6 +32,7 @@ impl IntTy {
 
     pub fn fits(self, value: i128) -> bool {
         match self {
+            IntTy::Byte => u8::try_from(value).is_ok(),
             IntTy::Int => i32::try_from(value).is_ok(),
             IntTy::Long | IntTy::Nint => i64::try_from(value).is_ok(),
         }
@@ -36,17 +40,32 @@ impl IntTy {
 
     pub fn wrap(self, value: i128) -> i64 {
         match self {
+            IntTy::Byte => value as u8 as i64,
             IntTy::Int => value as i32 as i64,
             IntTy::Long | IntTy::Nint => value as i64,
         }
     }
 
-    /// Common type of two integer types: `int` widens to the other.
+    /// `byte` is narrower than `int`, which is narrower than `long` and `nint`.
+    fn rank(self) -> u8 {
+        match self {
+            IntTy::Byte => 0,
+            IntTy::Int => 1,
+            IntTy::Long | IntTy::Nint => 2,
+        }
+    }
+
+    /// Whether a value of this type becomes `to` on its own, without a cast.
+    pub fn widens_to(self, to: IntTy) -> bool {
+        self.rank() < to.rank()
+    }
+
+    /// Common type of two integer types: the narrower one widens to the other.
     pub fn unify(self, other: IntTy) -> IntTy {
         match (self, other) {
             (a, b) if a == b => a,
-            (IntTy::Int, b) => b,
-            (a, IntTy::Int) => a,
+            (a, b) if a.widens_to(b) => b,
+            (a, b) if b.widens_to(a) => a,
             _ => IntTy::Long,
         }
     }
