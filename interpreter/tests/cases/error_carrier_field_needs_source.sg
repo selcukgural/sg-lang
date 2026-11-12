@@ -1,0 +1,6 @@
+struct Word {
+    read string text
+}
+
+void main() {
+}

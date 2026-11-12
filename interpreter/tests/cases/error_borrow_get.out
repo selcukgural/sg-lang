@@ -5,5 +5,5 @@ error: `xs` cannot be changed here: `first` borrows from it and is used again la
   `first` borrowed it here:
   --> error_borrow_get.sg:3:17
  3 |     var first = xs.get(0)
-   |                 ^^^^^^^^^
+   |                 ^^
   hint: finish with `first` before this line: a borrow ends at its last use

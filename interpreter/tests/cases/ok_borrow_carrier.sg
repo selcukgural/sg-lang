@@ -1,0 +1,82 @@
+// A word is a piece of the text it was found in, not a copy.
+struct Word<from source> : Copyable, Formattable {
+    read string text
+    int start
+}
+
+struct Words<from source> {
+    read string input
+    int pos
+    string label                         // owned by the struct itself
+
+    Words create(read string input) from input {
+        return Words { input = input, pos = 0, label = "words".clone() }
+    }
+
+    // The word comes from the input, not from the `Words`: `from source`.
+    Word? next(ref this) from source {
+        while this.pos < this.input.length() && this.input[this.pos] == ' ' {
+            this.pos += 1
+        }
+        if this.pos >= this.input.length() {
+            return null
+        }
+        var start = this.pos
+        while this.pos < this.input.length() && this.input[this.pos] != ' ' {
+            this.pos += 1
+        }
+        return Word { text = this.input[start..this.pos], start = start }
+    }
+
+    // This one does borrow from the struct itself.
+    read string name(read this) {
+        return read this.label
+    }
+}
+
+// Outside the type the source is written as a path.
+Word? second(ref Words words) from words.source {
+    _ = words.next()
+    return words.next()
+}
+
+Word longer(Word a, Word b) from a, b {
+    if a.text.length() >= b.text.length() {
+        return a
+    }
+    return b
+}
+
+void main() {
+    var text = "the quick brown fox".clone()
+    var words = Words(read text)
+
+    // The lexer goes on while the words it gave are still in use: they borrow the text.
+    var first = words.next() ?? panic("no word")
+    var next = words.next() ?? panic("no word")
+    print(first)
+    print(next)
+    print(longer(first, next).text)
+
+    var all = List<Word>()
+    all.add(first)
+    all.add(next)
+    while true {
+        var word = words.next()
+        if word is null {
+            break
+        }
+        all.add(word)
+    }
+    print(all.length())
+    print(all[3].text)
+    print(words.name())
+
+    var again = Words(read text)
+    var found = second(ref again) ?? panic("no word")
+    print(found.start)
+
+    // When the last word is done with, the text is free again.
+    text = "changed".clone()
+    print(text)
+}

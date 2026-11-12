@@ -52,6 +52,18 @@ struct Names {
     kinds: HashMap<String, TypeKind>,
     /// Types written with `: Hashable`: they can be the key of a `HashMap`.
     keys: HashSet<String>,
+    /// Types that carry a borrow, each with the name of its source: `struct Token<from source>`.
+    carriers: HashMap<String, String>,
+}
+
+/// One place a returned borrow may come from.
+#[derive(Clone, PartialEq)]
+struct Source {
+    /// The parameter, or `this`.
+    param: String,
+    /// Not the parameter itself but what it holds: `from source` in a method, `from lx.source`,
+    /// or a parameter of a type that carries a borrow, taken by value.
+    held: bool,
 }
 
 struct FuncSig {
@@ -59,46 +71,106 @@ struct FuncSig {
     params: Vec<Ty>,
     param_names: Vec<String>,
     ret: Ty,
-    /// For a function that returns a borrow: the parameters it may come from (`this` for the
-    /// receiver). Empty when it can only be a constant.
-    sources: Vec<String>,
+    /// For a function that returns a borrow, or a value that carries one: where it may come
+    /// from. Empty when it can only be a constant.
+    sources: Vec<Source>,
 }
 
-fn func_sig(func: &Func, names: &Names) -> Res<FuncSig> {
+/// Whether a value of this type is a borrow or carries one inside.
+fn lends(ty: &Ty, names: &Names) -> bool {
+    match ty {
+        Ty::Read(_) | Ty::Ref(_) => true,
+        Ty::Struct(name) | Ty::Enum(name) => names.carriers.contains_key(name),
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) => lends(inner, names),
+        Ty::Result(a, b) | Ty::Map(a, b) | Ty::Entry(a, b) => lends(a, names) || lends(b, names),
+        _ => false,
+    }
+}
+
+/// The struct or enum behind borrows and pointers, if it carries a borrow: its name and the
+/// name of its source.
+fn carrier<'n>(ty: &Ty, names: &'n Names) -> Option<(&'n str, &'n str)> {
+    match peel(ty) {
+        Ty::Struct(name) | Ty::Enum(name) => names.carriers.get_key_value(name).map(|(name, source)| (name.as_str(), source.as_str())),
+        _ => None,
+    }
+}
+
+/// `owner`: the struct whose body the function is written in.
+fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
     let mut params = Vec::new();
     for param in &func.params {
         params.push(resolve_type(&param.ty, names, false)?);
     }
     let ret = resolve_type(&func.ret, names, true)?;
     let param_names: Vec<String> = func.params.iter().map(|param| param.name.clone()).collect();
+    let own_source = owner.and_then(|owner| names.carriers.get(owner));
 
-    // Where a returned borrow comes from: the one borrowed parameter, or what `from` names.
-    let receiver = matches!(func.this, Some(This::Read | This::Ref)).then(|| "this".to_string());
-    let borrowed: Vec<String> = receiver
+    // What a result can borrow from: a borrowed parameter, or one whose type carries a borrow.
+    let receiver = match func.this {
+        Some(This::Read | This::Ref) => Some(Source { param: "this".to_string(), held: false }),
+        Some(This::Value) if own_source.is_some() => Some(Source { param: "this".to_string(), held: true }),
+        _ => None,
+    };
+    let lenders = param_names.iter().zip(&params).filter(|(_, ty)| lends(ty, names));
+    let borrowed: Vec<Source> = receiver
         .into_iter()
-        .chain(param_names.iter().zip(&params).filter(|(_, ty)| ty.is_borrow()).map(|(name, _)| name.clone()))
+        .chain(lenders.map(|(name, ty)| Source { param: name.clone(), held: !ty.is_borrow() }))
         .collect();
-    let mut sources = Vec::new();
-    for (name, span) in &func.from {
-        if !ret.is_borrow() {
-            return Err(Diag::error(*span, format!("`from` says where a returned borrow comes from, and `{}` returns `{ret}`", func.name)));
+    let returns_borrow = lends(&ret, names);
+
+    let mut sources: Vec<Source> = Vec::new();
+    for item in &func.from {
+        let (name, span) = (&item.name, item.span);
+        if !returns_borrow {
+            return Err(Diag::error(span, format!("`from` says where a returned borrow comes from, and `{}` returns `{ret}`", func.name)));
         }
-        if !borrowed.contains(name) {
-            let diag = Diag::error(*span, format!("`{name}` is not a borrowed parameter of `{}`", func.name));
-            let by_value = param_names.contains(name) || (name == "this" && func.this == Some(This::Value));
-            return Err(match by_value {
-                true => diag.note(format!("`{name}` is taken by value and is gone when the function returns, so nothing can be borrowed from it")),
-                false => diag,
-            });
+        let source = match &item.source {
+            // `from lx.source`: what the parameter holds, not the parameter itself.
+            Some(field) => {
+                let ty = param_names.iter().position(|param| param == name).map(|position| &params[position]);
+                match ty.and_then(|ty| carrier(ty, names)) {
+                    Some((_, source)) if source == field => Source { param: name.clone(), held: true },
+                    Some((ty, source)) => {
+                        return Err(Diag::error(span, format!("`{ty}` has no source named `{field}`")).hint(format!("`from {name}.{source}`")));
+                    }
+                    None => {
+                        return Err(Diag::error(span, format!("`{name}` is not a parameter whose type carries a borrow"))
+                            .note("`from x.source` names the source of the type of `x`"));
+                    }
+                }
+            }
+            // `from source` in a method: what `this` holds.
+            None if func.this.is_some() && own_source == Some(name) && !param_names.contains(name) => Source { param: "this".to_string(), held: true },
+            None => match borrowed.iter().find(|source| source.param == *name) {
+                Some(source) => source.clone(),
+                None => {
+                    let diag = Diag::error(span, format!("`{name}` is not a borrowed parameter of `{}`", func.name));
+                    let by_value = param_names.contains(name) || (name == "this" && func.this == Some(This::Value));
+                    return Err(match by_value {
+                        true => diag.note(format!("`{name}` is taken by value and is gone when the function returns, so nothing can be borrowed from it")),
+                        false => diag,
+                    });
+                }
+            },
+        };
+        if sources.iter().any(|other| other.param == source.param) {
+            return Err(Diag::error(span, format!("`{name}` is written twice")));
         }
-        if sources.contains(name) {
-            return Err(Diag::error(*span, format!("`{name}` is written twice")));
-        }
-        sources.push(name.clone());
+        sources.push(source);
     }
-    if ret.is_borrow() && func.from.is_empty() {
+    if returns_borrow && func.from.is_empty() {
+        let written = |source: &Source| match (source.param.as_str(), own_source) {
+            ("this", Some(own)) if source.held || !ret.is_borrow() => own.clone(),
+            _ => source.param.clone(),
+        };
+        let list = borrowed.iter().map(written).collect::<Vec<_>>().join(", ");
+        // A borrow hidden in the name of a type is always spelled out.
+        if !ret.is_borrow() && !borrowed.is_empty() {
+            return Err(Diag::error(func.name_span, format!("`{}` returns a `{ret}`, which carries a borrow, so it says where that comes from", func.name))
+                .hint(format!("after the parameters: `from {list}`")));
+        }
         if borrowed.len() > 1 {
-            let list = borrowed.join(", ");
             return Err(Diag::error(func.name_span, format!("`{}` returns a borrow and borrows {} parameters, so it says which of them the result comes from", func.name, borrowed.len()))
                 .hint(format!("after the parameters: `from {list}`, or only the ones it can come from")));
         }
@@ -122,6 +194,25 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
         if Ty::from_name(name).is_some() || names.kinds.insert(name.clone(), kind).is_some() {
             return Err(Diag::error(span, format!("type `{name}` is defined twice")));
+        }
+    }
+
+    // The types that carry a borrow name where it comes from.
+    let sourced = prog
+        .structs
+        .iter()
+        .map(|decl| (&decl.name, &decl.sources))
+        .chain(prog.enums.iter().map(|decl| (&decl.name, &decl.sources)));
+    for (name, sources) in sourced {
+        match sources.as_slice() {
+            [] => {}
+            [(source, _)] => {
+                names.carriers.insert(name.clone(), source.clone());
+            }
+            [_, (_, second), ..] => {
+                return Err(Diag::error(*second, "a type with more than one source is not in the interpreter yet")
+                    .note("for now a type that carries borrows has one source for all of them"));
+            }
         }
     }
 
@@ -168,9 +259,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             if fields.iter().any(|(name, _)| *name == field.name) {
                 return Err(Diag::error(field.span, format!("field `{}` is declared twice", field.name)));
             }
-            if field.ty.mode.is_some() {
-                return Err(Diag::error(field.ty.span, "borrowed fields are not in the interpreter yet")
-                    .note("they need the struct to name its source: `struct Token<from source>`"));
+            if field.ty.mode.is_some() && decl.sources.is_empty() {
+                return Err(Diag::error(field.ty.span, format!("`{}` borrows, so `{}` names where the borrow comes from", field.name, decl.name))
+                    .hint(format!("`struct {}<from source>`", decl.name)));
             }
             fields.push((field.name.clone(), resolve_type(&field.ty, &names, false)?));
         }
@@ -185,7 +276,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                     format!("`{}` is already a field of `{}`", method.name, decl.name),
                 ));
             }
-            if methods.insert(method.name.clone(), func_sig(method, &names)?).is_some() {
+            if methods.insert(method.name.clone(), func_sig(method, &names, Some(&decl.name))?).is_some() {
                 return Err(Diag::error(method.name_span, format!("method `{}` is defined twice", method.name)));
             }
             // The body of `Formattable`, when the struct writes its own.
@@ -213,9 +304,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 if fields.iter().any(|(name, _)| *name == field.name) {
                     return Err(Diag::error(field.span, format!("field `{}` is declared twice", field.name)));
                 }
-                if field.ty.mode.is_some() {
-                    return Err(Diag::error(field.ty.span, "borrowed fields are not in the interpreter yet")
-                        .note("they need the enum to name its source: `enum Token<from source>`"));
+                if field.ty.mode.is_some() && decl.sources.is_empty() {
+                    return Err(Diag::error(field.ty.span, format!("`{}` borrows, so `{}` names where the borrow comes from", field.name, decl.name))
+                        .hint(format!("`enum {}<from source>`", decl.name)));
                 }
                 fields.push((field.name.clone(), resolve_type(&field.ty, &names, false)?));
             }
@@ -242,6 +333,32 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         let fields = decl.variants.iter().flat_map(|variant| &variant.fields);
         let types = enums[&decl.name].variants.iter().flat_map(|(_, fields)| fields);
         contains_itself("enum", &decl.name, fields.zip(types), &members)?;
+    }
+
+    // A type that holds a borrow, or a value that carries one, names its source; and a type
+    // that names a source holds something that borrows.
+    let held = prog
+        .structs
+        .iter()
+        .map(|decl| (&decl.name, decl.name_span, "struct", decl.fields.iter().zip(&structs[&decl.name].fields).collect::<Vec<_>>()))
+        .chain(prog.enums.iter().map(|decl| {
+            let written = decl.variants.iter().flat_map(|variant| &variant.fields);
+            let types = enums[&decl.name].variants.iter().flat_map(|(_, fields)| fields);
+            (&decl.name, decl.name_span, "enum", written.zip(types).collect::<Vec<_>>())
+        }));
+    for (name, name_span, kind, fields) in held {
+        let lender = fields.iter().find(|(_, (_, ty))| lends(ty, &names));
+        match (lender, names.carriers.contains_key(name)) {
+            (Some((field, (_, ty))), false) => {
+                return Err(Diag::error(field.ty.span, format!("`{}` is a `{ty}`, which carries a borrow, so `{name}` names where the borrow comes from", field.name))
+                    .hint(format!("`{kind} {name}<from source>`")));
+            }
+            (None, true) => {
+                return Err(Diag::error(name_span, format!("`{name}` names a source, but nothing in it borrows"))
+                    .hint(format!("`{kind} {name}`")));
+            }
+            _ => {}
+        }
     }
 
     // What a type promises after `:` must hold for everything it carries.
@@ -337,7 +454,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         if names.kinds.contains_key(func.name.as_str()) {
             return Err(Diag::error(func.name_span, format!("`{}` is already the name of a type", func.name)));
         }
-        if sigs.insert(func.name.clone(), func_sig(func, &names)?).is_some() {
+        if sigs.insert(func.name.clone(), func_sig(func, &names, None)?).is_some() {
             return Err(Diag::error(func.name_span, format!("function `{}` is defined twice", func.name)));
         }
     }
@@ -613,7 +730,7 @@ fn has(ty: &Ty, declared: &HashSet<String>, collections: bool) -> bool {
     match ty {
         Ty::Int(_) | Ty::Bool | Ty::Str => true,
         Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-        Ty::Ptr(inner) | Ty::Nullable(inner) => has(inner, declared, collections),
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => has(inner, declared, collections),
         Ty::List(item) | Ty::Set(item) => collections && has(item, declared, collections),
         Ty::Map(key, value) => collections && has(key, declared, collections) && has(value, declared, collections),
         _ => false,
@@ -739,6 +856,9 @@ struct Loan {
     path: String,
     /// Lent as `ref`.
     mutable: bool,
+    /// Not a borrow of `root` itself but of what `root` holds: it lives as long as the
+    /// source of `root`, and `root` stays free.
+    held: bool,
     span: Span,
 }
 
@@ -853,8 +973,8 @@ struct Checker<'a> {
     borrows: Borrows,
     loops: usize,
     ret: Ty,
-    /// The parameters a returned borrow may come from.
-    sources: Vec<String>,
+    /// Where a returned borrow may come from.
+    sources: Vec<Source>,
     func_name: String,
     /// A `test` block is being checked: `try` passes any error on, and the test fails with it.
     in_test: bool,
@@ -1018,64 +1138,141 @@ impl<'a> Checker<'a> {
         self.borrows.next_id
     }
 
-    /// What lending this place gives the borrower: a loan on the place, and whatever the
-    /// variable it starts at has borrowed itself.
-    fn place_loans(&mut self, place: &Expr, mutable: bool, span: Span) -> Vec<Loan> {
-        let Some((name, path)) = store_path(place) else { return self.loans_of(place, mutable) };
-        let Some(var) = self.find(name) else { return Vec::new() };
+    fn var_named(&self, name: &str) -> Option<&Var> {
+        self.scopes.iter().rev().find_map(|scope| scope.vars.iter().rev().find(|var| var.name == name))
+    }
+
+    /// Whether a value of this type is a borrow or carries one.
+    fn holds(&self, ty: &Ty) -> bool {
+        lends(ty, self.names)
+    }
+
+    /// The type of a place that has been checked.
+    fn place_ty(&self, place: &Expr) -> Option<Ty> {
+        match &place.kind {
+            ExprKind::Var(name) => self.var_named(name).map(|var| var.current.clone()),
+            ExprKind::Field { recv, index, .. } => match peel(&self.place_ty(recv)?) {
+                Ty::Struct(name) => self.structs.get(name)?.fields.get(*index).map(|(_, ty)| ty.clone()),
+                Ty::Entry(key, value) => Some(if *index == 0 { (**key).clone() } else { (**value).clone() }),
+                _ => None,
+            },
+            ExprKind::Index { recv, .. } => match peel(&self.place_ty(recv)?) {
+                Ty::List(item) => Some((**item).clone()),
+                Ty::Map(_, value) => Some((**value).clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether the place lies behind a field that is itself a borrow (`this.input`, with
+    /// `read string input`): lending it lends what the field borrowed, not the struct.
+    fn through_borrow(&self, place: &Expr) -> bool {
+        match &place.kind {
+            ExprKind::Field { recv, .. } | ExprKind::Index { recv, .. } => {
+                self.place_ty(place).is_some_and(|ty| self.holds(&ty)) || self.through_borrow(recv)
+            }
+            _ => false,
+        }
+    }
+
+    /// What the variable a place starts at holds: its own loans, and for a parameter the
+    /// mark that says "what this parameter holds".
+    fn held_by(&self, place: &Expr, span: Span) -> Vec<Loan> {
+        let Some((name, _)) = store_path(place) else { return Vec::new() };
+        let Some(var) = self.var_named(name) else { return Vec::new() };
         let mut loans = var.loans.clone();
-        loans.push(Loan { root: var.id, path, mutable, span });
+        if var.param && self.holds(&var.declared) {
+            loans.push(Loan { root: var.id, path: String::new(), mutable: false, held: true, span });
+        }
         loans
     }
 
+    /// What lending this place gives the borrower: a loan on the place, and whatever the
+    /// variable it starts at has borrowed itself.
+    fn place_loans(&self, place: &Expr, mutable: bool, span: Span) -> Vec<Loan> {
+        if self.through_borrow(place) {
+            return self.held_by(place, span);
+        }
+        let Some((name, path)) = store_path(place) else { return self.loans_of(place, mutable) };
+        let Some(var) = self.var_named(name) else { return Vec::new() };
+        let mut loans = self.held_by(place, span);
+        loans.push(Loan { root: var.id, path, mutable, held: false, span });
+        loans
+    }
+
+    /// What an argument gives a result that borrows from it. `held`: only what it holds.
+    fn lent_by(&self, arg: &Expr, held: bool, mutable: bool) -> Vec<Loan> {
+        let place = match &arg.kind {
+            ExprKind::Borrow { expr, .. } => expr,
+            _ => arg,
+        };
+        match held && place.is_place() {
+            true => self.held_by(place, arg.span),
+            false if arg.is_place() => self.place_loans(arg, mutable, arg.span),
+            false => self.loans_of(arg, mutable),
+        }
+    }
+
     /// What the value of an expression has borrowed. `mutable`: the value is a `ref`.
-    fn loans_of(&mut self, expr: &Expr, mutable: bool) -> Vec<Loan> {
+    fn loans_of(&self, expr: &Expr, mutable: bool) -> Vec<Loan> {
+        let union = |parts: &mut dyn Iterator<Item = &Expr>| parts.flat_map(|part| self.loans_of(part, mutable)).collect::<Vec<_>>();
         match &expr.kind {
             ExprKind::Borrow { mutable, expr: inner } => self.place_loans(inner, *mutable, expr.span),
             ExprKind::Slice { recv, .. } => self.place_loans(recv, false, expr.span),
-            // A copy of a borrow has borrowed what the original has.
-            // It also borrows through the variable it is copied from: a `ref` copied out of
-            // `a` keeps `a` from being used, and a parameter is where the borrow comes from.
-            ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
-                let Some((name, path)) = store_path(expr) else { return Vec::new() };
-                let Some(var) = self.find(name) else { return Vec::new() };
+            // A copy of a borrow has borrowed what the original has. It also borrows through
+            // the variable it is copied from: a `ref` copied out of `a` keeps `a` from being
+            // used, and a parameter is where the borrow comes from.
+            ExprKind::Var(name) => {
+                let Some(var) = self.var_named(name) else { return Vec::new() };
                 let mut loans = var.loans.clone();
                 if var.declared.is_borrow() {
-                    loans.push(Loan { root: var.id, path, mutable, span: expr.span });
+                    loans.push(Loan { root: var.id, path: String::new(), mutable, held: false, span: expr.span });
+                } else if var.param && self.holds(&var.declared) {
+                    loans.push(Loan { root: var.id, path: String::new(), mutable: false, held: true, span: expr.span });
                 }
                 loans
             }
-            ExprKind::Load(inner) | ExprKind::Unbox(inner) | ExprKind::Widen(_, inner) | ExprKind::Try { expr: inner, .. } => self.loans_of(inner, mutable),
-            ExprKind::Coalesce { left, right, .. } => {
-                let mut loans = self.loans_of(left, mutable);
-                loans.extend(self.loans_of(right, mutable));
-                loans
+            ExprKind::Field { .. } | ExprKind::Index { .. } => match self.through_borrow(expr) {
+                true => self.held_by(expr, expr.span),
+                false => Vec::new(),
+            },
+            ExprKind::Load(inner) | ExprKind::Unbox(inner) | ExprKind::Widen(_, inner) | ExprKind::New(inner) | ExprKind::Try { expr: inner, .. } => {
+                self.loans_of(inner, mutable)
             }
+            ExprKind::Coalesce { left, right, .. } => union(&mut [&**left, &**right].into_iter()),
+            // A value built from borrows carries them.
+            ExprKind::StructLit { fields, .. } => union(&mut fields.iter().map(|field| &field.value)),
+            ExprKind::Variant { args, .. } => union(&mut args.iter()),
             // What a call returns borrows from what its signature names: the one borrowed
             // parameter, or those after `from`. A built-in method lends from its receiver.
             ExprKind::Method { recv, name, args, callee, .. } => {
+                // `slot.take()` and `slot.replace(v)` give what was in the place.
+                if matches!(callee, Callee::Take | Callee::Replace) {
+                    return self.loans_of(recv, mutable);
+                }
                 let sig = match callee {
                     Callee::Method { owner, .. } | Callee::Static { owner, .. } => self.structs[owner.as_str()].methods.get(name.as_str()),
                     _ => None,
                 };
-                let from_recv = match (sig, callee) {
-                    (Some(sig), _) => sig.sources.iter().any(|source| source == "this"),
-                    (None, Callee::Plain) => true,
-                    (None, _) => false,
-                };
-                let mut loans = match (from_recv, recv.is_place()) {
-                    (false, _) => Vec::new(),
-                    (true, true) => self.place_loans(recv, mutable, expr.span),
-                    (true, false) => self.loans_of(recv, mutable),
+                let source_of = |param: &str| sig.and_then(|sig| sig.sources.iter().find(|source| source.param == param));
+                let mut loans = match (sig, callee) {
+                    (Some(_), _) => match source_of("this") {
+                        Some(source) => self.lent_by(recv, source.held, mutable),
+                        None => Vec::new(),
+                    },
+                    (None, Callee::Plain) => self.lent_by(recv, false, mutable),
+                    (None, _) => Vec::new(),
                 };
                 for (position, arg) in args.iter().enumerate() {
-                    let lends = match (sig, callee) {
-                        (Some(sig), _) => sig.sources.contains(&sig.param_names[position]),
-                        (None, Callee::Plain) => false,
-                        (None, _) => true,
-                    };
-                    if lends {
-                        loans.extend(self.loans_of(arg, mutable));
+                    match (sig, callee) {
+                        (Some(sig), _) => {
+                            if let Some(source) = source_of(&sig.param_names[position]) {
+                                loans.extend(self.lent_by(arg, source.held, mutable));
+                            }
+                        }
+                        (None, Callee::Plain) => {}
+                        (None, _) => loans.extend(self.loans_of(arg, mutable)),
                     }
                 }
                 loans
@@ -1089,14 +1286,49 @@ impl<'a> Checker<'a> {
                 };
                 let mut loans = Vec::new();
                 for (position, arg) in args.iter().enumerate() {
-                    if sig.is_none_or(|sig| sig.param_names.get(position).is_some_and(|param| sig.sources.contains(param))) {
-                        loans.extend(self.loans_of(arg, mutable));
+                    match sig {
+                        Some(sig) => {
+                            let source = sig.param_names.get(position).and_then(|param| sig.sources.iter().find(|source| source.param == *param));
+                            if let Some(source) = source {
+                                loans.extend(self.lent_by(arg, source.held, mutable));
+                            }
+                        }
+                        None => loans.extend(self.loans_of(arg, mutable)),
                     }
                 }
                 loans
             }
             _ => Vec::new(),
         }
+    }
+
+    /// A value that borrows is put into a place: a field, an item, or a variable of a type
+    /// that carries a borrow. A local then holds what the value borrowed. Through a borrow
+    /// (`this.current = token`) the value must come from what that same owner holds.
+    fn stores(&mut self, target: &Expr, value: &Expr) -> Res<()> {
+        let loans = self.loans_of(value, false);
+        let Some((name, path)) = store_path(target) else { return Ok(()) };
+        let Some(var) = self.find(name) else { return Ok(()) };
+        let id = var.id;
+        if var.declared.is_borrow() {
+            if let Some(outside) = loans.iter().find(|loan| !(loan.held && loan.root == id)) {
+                let text = &self.src[value.span.start..value.span.end];
+                let diag = Diag::error(value.span, format!("`{text}` borrows from somewhere else than `{name}` does, and `{name}` would keep that borrow after the call"));
+                let diag = match outside.span == value.span {
+                    true => diag,
+                    false => diag.related(outside.span, "it is borrowed here"),
+                };
+                return Err(diag
+                    .note(format!("storing a borrow from outside into `{name}` is not in the language yet; build the value where its source is known")));
+            }
+            return Ok(());
+        }
+        let loans = loans.into_iter().filter(|loan| loan.root != id);
+        match path.is_empty() {
+            true => var.loans = loans.collect(),
+            false => var.loans.extend(loans),
+        }
+        Ok(())
     }
 
     /// Notes that a place is touched. If a variable holds a borrow that this does not go
@@ -1116,7 +1348,7 @@ impl<'a> Checker<'a> {
             }
             for loan in &var.loans {
                 let overlaps = path.is_empty() || loan.path.is_empty() || within(&path, &loan.path) || within(&loan.path, &path);
-                if loan.root == root && overlaps && (loan.mutable || access != Access::Read) {
+                if loan.root == root && !loan.held && overlaps && (loan.mutable || access != Access::Read) {
                     found.push(Clash {
                         holder: var.id,
                         holder_name: var.name.clone(),
@@ -1180,14 +1412,36 @@ impl<'a> Checker<'a> {
         for loan in loans {
             let Some(var) = self.scopes.iter().flat_map(|scope| &scope.vars).find(|var| var.id == loan.root) else { continue };
             let name = &var.name;
+            let written = |source: &Source| match (source.held, source.param.as_str()) {
+                (true, "this") => self.owner.and_then(|owner| self.names.carriers.get(owner)).cloned().unwrap_or_else(|| "this".to_string()),
+                (true, param) => match self.var_named(param).and_then(|var| carrier(&var.declared, self.names)) {
+                    Some((_, source)) if self.var_named(param).is_some_and(|var| var.declared.is_borrow()) => format!("{param}.{source}"),
+                    _ => param.to_string(),
+                },
+                (false, param) => param.to_string(),
+            };
+            let named = self.sources.iter().find(|source| source.param == *name);
+            let fits = match (loan.held, named) {
+                (_, None) => false,
+                // What the parameter holds is covered by naming the parameter itself too.
+                (true, Some(_)) => true,
+                (false, Some(source)) => !source.held,
+            };
+            if loan.held || (var.declared.is_borrow() && var.param) {
+                if fits {
+                    continue;
+                }
+                let wanted = written(&Source { param: name.clone(), held: loan.held });
+                let said: Vec<String> = self.sources.iter().map(|source| format!("`{}`", written(source))).collect();
+                let all: Vec<String> = self.sources.iter().filter(|source| source.param != *name).map(&written).chain([wanted.clone()]).collect();
+                let diag = match said.is_empty() {
+                    true => Diag::error(value.span, format!("this returns a borrow that comes from `{wanted}`, and the function does not say so")),
+                    false => Diag::error(value.span, format!("this returns a borrow that comes from `{wanted}`, and `from` names only {}", said.join(", "))),
+                };
+                return Err(diag.hint(format!("`from {}`", all.join(", "))));
+            }
             if var.declared.is_borrow() {
                 // A local that holds a borrow: what it borrowed is in the list too.
-                if var.param && !self.sources.contains(name) {
-                    let said: Vec<String> = self.sources.iter().map(|source| format!("`{source}`")).collect();
-                    let all: Vec<&str> = self.sources.iter().map(String::as_str).chain([name.as_str()]).collect();
-                    return Err(Diag::error(value.span, format!("this returns a borrow that comes from `{name}`, and `from` names only {}", said.join(", ")))
-                        .hint(format!("`from {}`", all.join(", "))));
-                }
                 continue;
             }
             let diag = Diag::error(value.span, format!("this returns a borrow of `{name}`, and `{name}` is gone when the function returns"));
@@ -1272,7 +1526,7 @@ impl<'a> Checker<'a> {
         let at = Point { pos: self.borrows.pos, branches: self.borrows.branches.clone(), loops: self.borrows.loops.clone() };
         for owner in scope.vars.iter().filter(|var| !var.declared.is_borrow()) {
             for holder in self.scopes.iter().flat_map(|outer| &outer.vars) {
-                for loan in holder.loans.iter().filter(|loan| loan.root == owner.id) {
+                for loan in holder.loans.iter().filter(|loan| loan.root == owner.id && !loan.held) {
                     self.borrows.clashes.push(Clash {
                         holder: holder.id,
                         holder_name: holder.name.clone(),
@@ -1349,7 +1603,7 @@ impl<'a> Checker<'a> {
     fn declare_binds(&mut self, binds: Binds) -> Res<()> {
         let loans = std::mem::take(&mut self.borrows.binds);
         for (name, ty, span) in binds {
-            let borrows = ty.is_borrow();
+            let borrows = self.holds(&ty);
             self.declare_local(&name, ty, span)?;
             if borrows {
                 self.find(&name).expect("just declared").loans = loans.clone();
@@ -1387,7 +1641,7 @@ impl<'a> Checker<'a> {
                     },
                 };
                 let holds_result = matches!(ty, Ty::Result(..));
-                let loans = match ty.is_borrow() {
+                let loans = match self.holds(&ty) {
                     true => self.loans_of(init, matches!(ty, Ty::Ref(_))),
                     false => Vec::new(),
                 };
@@ -1460,6 +1714,11 @@ impl<'a> Checker<'a> {
                     ));
                 }
                 self.typed(value, &target_ty)?;
+                // A value that borrows, put into a field, an item or a variable of a type that
+                // carries a borrow.
+                if !rebinds && self.holds(&target_ty) {
+                    self.stores(target, value)?;
+                }
                 // A `read` variable pointed at something else holds what the new value borrowed.
                 if rebinds {
                     let loans = self.loans_of(value, false);
@@ -1645,7 +1904,7 @@ impl<'a> Checker<'a> {
             Some(value) => {
                 let ret = self.ret.clone();
                 self.typed(value, &ret)?;
-                match ret.is_borrow() {
+                match self.holds(&ret) {
                     true => self.returned_borrow(value),
                     false => Ok(()),
                 }
@@ -2723,6 +2982,7 @@ impl<'a> Checker<'a> {
         // The names of the arms borrow from what the subject was lent from.
         let subject_loans = match mode {
             Some(mode) => self.loans_of(subject, mode == Mode::Ref),
+            None if self.holds(&subject_ty) => self.loans_of(subject, false),
             None => Vec::new(),
         };
         let node = self.node();
@@ -3297,6 +3557,9 @@ impl<'a> Checker<'a> {
                 arity(1)?;
                 changes()?;
                 self.typed(&mut args[0], item)?;
+                if self.holds(item) {
+                    self.stores(recv, &args[0])?;
+                }
                 Ok(Ty::Void)
             }
             // `null` where `xs[i]` would panic.
@@ -3357,6 +3620,9 @@ impl<'a> Checker<'a> {
                 changes()?;
                 self.typed(&mut args[0], key)?;
                 self.typed(&mut args[1], value)?;
+                if self.holds(value) {
+                    self.stores(recv, &args[1])?;
+                }
                 Ok(Ty::Void)
             }
             (Ty::Map(key, value), "get") => {
@@ -3475,6 +3741,9 @@ impl<'a> Checker<'a> {
         self.not_locked(recv, Access::Write)?;
         let slot = recv_ty.strip_borrow().clone();
         self.typed(&mut args[0], &slot)?;
+        if self.holds(&slot) {
+            self.stores(recv, &args[0])?;
+        }
         *callee = Callee::Replace;
         Ok(slot)
     }

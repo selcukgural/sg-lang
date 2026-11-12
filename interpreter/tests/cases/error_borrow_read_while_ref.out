@@ -5,5 +5,5 @@ error: `totals` cannot be used here: `slot` holds a `ref` borrow of it and is us
   `slot` borrowed it here:
   --> error_borrow_read_while_ref.sg:3:16
  3 |     var slot = totals.getOrAdd("a", 0)
-   |                ^^^^^^^^^^^^^^^^^^^^^^^
+   |                ^^^^^^
   hint: finish with `slot` before this line: a borrow ends at its last use

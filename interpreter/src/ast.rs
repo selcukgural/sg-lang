@@ -21,6 +21,8 @@ pub struct TestDecl {
 pub struct StructDecl {
     pub name: String,
     pub name_span: Span,
+    /// The names in `struct Token<from source>`: where the borrows it carries come from.
+    pub sources: Vec<(String, Span)>,
     /// The names after `:` in `struct Version : Copyable, Formattable`.
     pub interfaces: Vec<(String, Span)>,
     pub fields: Vec<FieldDecl>,
@@ -31,6 +33,7 @@ pub struct StructDecl {
 pub struct EnumDecl {
     pub name: String,
     pub name_span: Span,
+    pub sources: Vec<(String, Span)>,
     pub interfaces: Vec<(String, Span)>,
     pub variants: Vec<VariantDecl>,
 }
@@ -55,9 +58,17 @@ pub struct Func {
     /// How a method takes its receiver. `None` for a function without `this`.
     pub this: Option<This>,
     pub params: Vec<Param>,
-    /// The names after `from`: the parameters a returned borrow comes from.
-    pub from: Vec<(String, Span)>,
+    /// What is written after `from`: where a returned borrow comes from.
+    pub from: Vec<FromItem>,
     pub body: Block,
+}
+
+/// One name after `from`: a parameter (`input`), the source of the type a method belongs to
+/// (`source`), or the source of a parameter's type (`lx.source`).
+pub struct FromItem {
+    pub name: String,
+    pub source: Option<String>,
+    pub span: Span,
 }
 
 /// The first parameter of a method: `this`, `read this` or `ref this`.

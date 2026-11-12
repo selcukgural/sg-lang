@@ -1,0 +1,5 @@
+error: `text` borrows, so `Word` names where the borrow comes from
+  --> error_carrier_field_needs_source.sg:2:5
+ 2 |     read string text
+   |     ^^^^^^^^^^^
+  hint: `struct Word<from source>`

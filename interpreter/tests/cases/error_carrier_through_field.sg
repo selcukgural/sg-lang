@@ -1,0 +1,11 @@
+struct Word<from source> : Copyable {
+    read string text
+}
+
+void main() {
+    var text = "abc".clone()
+    var word = Word { text = read text }
+    var piece = word.text
+    text = "changed".clone()
+    print(piece)
+}

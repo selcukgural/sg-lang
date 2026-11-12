@@ -1,0 +1,9 @@
+error: `text` cannot be changed here: `word` borrows from it and is used again later
+  --> error_carrier_outlives_source.sg:12:5
+ 12 |     text = "changed".clone()
+    |     ^^^^
+  `word` borrowed it here:
+  --> error_carrier_outlives_source.sg:11:22
+ 11 |     var word = first(read text)
+    |                      ^^^^^^^^^
+  hint: finish with `word` before this line: a borrow ends at its last use

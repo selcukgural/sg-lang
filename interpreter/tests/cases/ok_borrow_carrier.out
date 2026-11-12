@@ -1,0 +1,8 @@
+Word { text = "the", start = 0 }
+Word { text = "quick", start = 4 }
+quick
+4
+fox
+words
+4
+changed

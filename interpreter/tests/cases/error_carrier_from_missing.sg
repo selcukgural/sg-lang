@@ -1,0 +1,11 @@
+struct Word<from source> {
+    read string text
+}
+
+Word first(read string input) {
+    return Word { text = input[0..1] }
+}
+
+void main() {
+    print(first("abc").text)
+}

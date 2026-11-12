@@ -1,0 +1,10 @@
+struct Words<from source> {
+    read string input
+
+    void restart(ref this, read string other) {
+        this.input = other
+    }
+}
+
+void main() {
+}

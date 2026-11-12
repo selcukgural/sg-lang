@@ -1,0 +1,5 @@
+error: this returns a borrow that comes from `this`, and `from` names only `source`
+  --> error_carrier_from_wrong.sg:6:16
+ 6 |         return read this.label
+   |                ^^^^^^^^^^^^^^^
+  hint: `from this`

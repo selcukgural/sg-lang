@@ -1,0 +1,9 @@
+error: `text` cannot be changed here: `piece` borrows from it and is used again later
+  --> error_carrier_through_field.sg:9:5
+ 9 |     text = "changed".clone()
+   |     ^^^^
+  `piece` borrowed it here:
+  --> error_carrier_through_field.sg:7:30
+ 7 |     var word = Word { text = read text }
+   |                              ^^^^^^^^^
+  hint: finish with `piece` before this line: a borrow ends at its last use

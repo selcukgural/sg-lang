@@ -1,0 +1,7 @@
+struct Match<from text, from pattern> {
+    read string found
+    read string rule
+}
+
+void main() {
+}

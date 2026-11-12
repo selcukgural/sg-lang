@@ -1,0 +1,6 @@
+struct Point<from source> {
+    int x
+}
+
+void main() {
+}

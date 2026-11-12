@@ -1,0 +1,10 @@
+struct Words<from source> {
+    read string input
+}
+
+read string all(read Words words) from words.input {
+    return words.input
+}
+
+void main() {
+}

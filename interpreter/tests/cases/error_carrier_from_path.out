@@ -1,0 +1,5 @@
+error: `Words` has no source named `input`
+  --> error_carrier_from_path.sg:5:40
+ 5 | read string all(read Words words) from words.input {
+   |                                        ^^^^^^^^^^^
+  hint: `from words.source`

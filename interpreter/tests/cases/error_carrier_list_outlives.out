@@ -1,0 +1,9 @@
+error: `text` cannot be changed here: `words` borrows from it and is used again later
+  --> error_carrier_list_outlives.sg:13:5
+ 13 |     text = "changed".clone()
+    |     ^^^^
+  `words` borrowed it here:
+  --> error_carrier_list_outlives.sg:12:21
+ 12 |     words.add(first(read text))
+    |                     ^^^^^^^^^
+  hint: finish with `words` before this line: a borrow ends at its last use

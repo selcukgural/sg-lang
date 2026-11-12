@@ -1,0 +1,11 @@
+struct Word<from source> {
+    read string text
+}
+
+struct Pair {
+    Word first
+    int count
+}
+
+void main() {
+}

@@ -1,8 +1,8 @@
 // The calculator from the examples: lexer, parser and evaluator pass errors up with
 // `try`, and `main` ends with the error it could not handle.
-enum Token {
+enum Token<from source> {
     Number(int value)
-    Name(string text)                    // a copy; borrowing from the input waits for `from`
+    Name(read string text)               // part of the input, not a copy
     Plus
     Minus
     Star
@@ -26,15 +26,15 @@ bool isLetter(byte c) {
     return c >= 'a' && c <= 'z'
 }
 
-struct Lexer {
-    string input
+struct Lexer<from source> {
+    read string input
     int pos
 
-    Lexer create(read string input) {
-        return Lexer { input = input.clone(), pos = 0 }
+    Lexer create(read string input) from input {
+        return Lexer { input = input, pos = 0 }
     }
 
-    Result<Token, SyntaxError> next(ref this) {
+    Result<Token, SyntaxError> next(ref this) from source {   // the token comes from the input, not from the lexer
         this.skipSpaces()
         if this.pos >= this.input.length() {
             return Ok(Token.End)
@@ -68,7 +68,7 @@ struct Lexer {
         }
     }
 
-    Result<Token, SyntaxError> number(ref this, int start) {
+    Result<Token, SyntaxError> number(ref this, int start) from source {
         int value = 0
         while this.pos < this.input.length() && isDigit(this.input[this.pos]) {
             int digit = this.input[this.pos] - '0'
@@ -79,11 +79,11 @@ struct Lexer {
         return Ok(Token.Number(value))
     }
 
-    Token name(ref this, int start) {
+    Token name(ref this, int start) from source {
         while this.pos < this.input.length() && isLetter(this.input[this.pos]) {
             this.pos += 1
         }
-        return Token.Name(this.input[start..this.pos].clone())
+        return Token.Name(this.input[start..this.pos])
     }
 }
 
@@ -101,19 +101,19 @@ enum Expr {
     Binary(Operator op, Expr* left, Expr* right)
 }
 
-struct Parser {
+struct Parser<from source> {
     Lexer lexer
     Token current
     int start                            // where the current token begins
 
-    Result<Parser, SyntaxError> create(read string input) {
+    Result<Parser, SyntaxError> create(read string input) from input {
         var lexer = Lexer(input)
         var first = try lexer.next()
         return Ok(Parser { lexer = lexer, current = first, start = 0 })
     }
 
     // Gives the current token and reads the next one.
-    Result<Token, SyntaxError> advance(ref this) {
+    Result<Token, SyntaxError> advance(ref this) from source {
         this.start = this.lexer.pos
         var next = try this.lexer.next()
         return Ok(this.current.replace(next))
@@ -151,7 +151,7 @@ struct Parser {
         int position = this.start
         return match try this.advance() {
             Number(v) => Ok(new Expr.Number(v))
-            Name(text) => Ok(new Expr.Variable(text))
+            Name(text) => Ok(new Expr.Variable(text.clone()))   // the tree owns its names
             Minus => Ok(new Expr.Negate(try this.factor()))
             LeftParen => {
                 var inner = try this.expression()

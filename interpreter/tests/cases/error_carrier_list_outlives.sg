@@ -1,0 +1,15 @@
+struct Word<from source> : Copyable {
+    read string text
+}
+
+Word first(read string input) from input {
+    return Word { text = input[0..1] }
+}
+
+void main() {
+    var text = "abc".clone()
+    var words = List<Word>()
+    words.add(first(read text))
+    text = "changed".clone()
+    print(words.length())
+}

@@ -1,0 +1,12 @@
+struct Word<from source> {
+    read string text
+}
+
+Word make() {
+    var text = "abc".clone()
+    return Word { text = read text }
+}
+
+void main() {
+    print(make().text)
+}

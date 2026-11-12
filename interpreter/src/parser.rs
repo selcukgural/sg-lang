@@ -170,6 +170,7 @@ impl<'a> Parser<'a> {
     fn struct_decl(&mut self) -> Res<StructDecl> {
         self.bump();
         let (name, name_span) = self.ident("a struct name")?;
+        let sources = self.sources()?;
         let interfaces = self.interfaces()?;
         self.open_brace()?;
         let mut fields = Vec::new();
@@ -193,7 +194,26 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         }
         self.bump();
-        Ok(StructDecl { name, name_span, interfaces, fields, methods })
+        Ok(StructDecl { name, name_span, sources, interfaces, fields, methods })
+    }
+
+    /// `<from source>` after the name of a struct or an enum that carries a borrow.
+    fn sources(&mut self) -> Res<Vec<(String, Span)>> {
+        let mut list = Vec::new();
+        if self.eat(&Tok::Lt) {
+            loop {
+                if !matches!(self.peek(), Tok::Ident(word) if word == "from") {
+                    return Err(self.unexpected("`from`").note("a type names the source of what it borrows: `struct Token<from source>`; type parameters of your own are deferred"));
+                }
+                self.bump();
+                list.push(self.ident("a name for the source")?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(Tok::Gt, "`>`")?;
+        }
+        Ok(list)
     }
 
     /// `: Copyable, Formattable` after the name of a struct or an enum.
@@ -214,6 +234,7 @@ impl<'a> Parser<'a> {
     fn enum_decl(&mut self) -> Res<EnumDecl> {
         self.bump();
         let (name, name_span) = self.ident("an enum name")?;
+        let sources = self.sources()?;
         let interfaces = self.interfaces()?;
         self.open_brace()?;
         let mut variants = Vec::new();
@@ -251,7 +272,7 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         }
         self.bump();
-        Ok(EnumDecl { name, name_span, interfaces, variants })
+        Ok(EnumDecl { name, name_span, sources, interfaces, variants })
     }
 
     /// The rest of a function after its return type and name. In a struct body the first
@@ -301,12 +322,12 @@ impl<'a> Parser<'a> {
         if matches!(self.peek(), Tok::Ident(word) if word == "from") {
             self.bump();
             loop {
-                let source = self.ident("the name of a parameter")?;
-                if *self.peek() == Tok::Dot {
-                    return Err(Diag::error(self.span(), "`from` with a path is not in the interpreter yet")
-                        .note("it names the source of a type that carries a borrow, and those are not here yet"));
-                }
-                from.push(source);
+                let (name, start) = self.ident("the name of a parameter")?;
+                let source = match self.eat(&Tok::Dot) {
+                    true => Some(self.ident("the name of a source")?.0),
+                    false => None,
+                };
+                from.push(FromItem { name, source, span: Span::new(start.start, self.prev_end()) });
                 if !self.eat(&Tok::Comma) {
                     break;
                 }

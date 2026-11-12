@@ -15,6 +15,7 @@ cargo test
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point. `public` is accepted and has no effect yet |
 | Types | `byte`, `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, `read T` and `ref T` in signatures |
+| Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
 | Methods | Written in the struct body with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`. Called as `stack.push(1)`, also through pointers and borrows. A function without `this` is called on the type: `Stack.create()`. `Stack(args)` is short for `Stack.create(args)` |
 | Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)` |
@@ -116,6 +117,9 @@ Design rules that are already enforced:
   an error that shows what to write. Returning a borrow of a local, of a parameter taken by value, or from a
   parameter `from` does not name is an error. With no borrowed parameter only a constant can be returned.
 - A borrow kept in a variable cannot outlive the block of what it borrowed from.
+- A struct or an enum with a field that borrows names its source (`struct Token<from source>`), and so does
+  one that holds such a type; the errors show what to write. A value of such a type keeps what it borrowed
+  from, like a `read` variable does. A function that returns one always says `from`.
 - A collection that a `for` goes over by borrowing it cannot be changed inside the loop: `xs.add(v)`,
   `xs[i] = v`, `xs = ...`, `ref xs`, moving `xs`, and a `ref this` method on what holds it are errors that show
   the loop. The hint is to go over the positions, or to keep the changes until the loop ends. Looking at it and
@@ -270,11 +274,11 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
 7. **The error `main` ends with** is now written by `Formattable`: `error: Syntax(NumberTooLarge(0))` where
    the placeholder wrote `AppError.Syntax(SyntaxError.NumberTooLarge(0))`. A `string` error is still its text.
 
-The calculator runs whole (`examples/calculator.sg`): lexer, parser, evaluator, error conversion. It differs
-from the design text where the interpreter lacks something: `Lexer` owns a copy of the input and `Token.Name`
-a copy of the name (no borrowed fields without `from`), so `Token` cannot be `Copyable` and `advance` hands
-over the current token with `replace`; `-x` is `0.trySubtract(x)`, and the input is a string in the program
-instead of a file. Since the eighth slice the variables are a `HashMap<string, int>`, as in the design.
+The calculator runs whole (`examples/calculator.sg`): lexer, parser, evaluator, error conversion. Since the
+fifteenth slice the lexer and the tokens borrow the input instead of copying it (`struct Lexer<from source>`,
+`Name(read string text)`), as in the design. What still differs: `Token` is not `Copyable`, so `advance` hands
+over the current token with `replace`; `-x` is `0.trySubtract(x)`; and the input is a string in the program
+instead of a file. The variables are a `HashMap<string, int>`.
 
 `examples/log_summary.sg` is the log summary from the design without the files: a `List` of lines, a
 `HashMap` filled with `getOrAdd`, and a `for` over both.
@@ -444,11 +448,35 @@ The second part of the borrow check: a borrow does not outlive its owner. `from`
 6. **"Gone at the end of its block" is found when the block ends**: a variable declared outside that still
    holds a borrow of something declared inside, and is used afterwards.
 
+## Rules from the fifteenth slice
+
+The third part of the borrow check: types that carry a borrow. The notation is the design's ("Source
+notation", "Types that carry a borrow"); what was chosen here was approved on 12 November 2026. Each has a
+test in `tests/cases/`.
+
+1. **A value of a type that carries a borrow is followed like a `read` variable**: it keeps what it borrowed
+   from, until its last use. So is a list or a map that holds such values, and a struct built from them.
+2. **`from source` in a method means what the value holds, not the value.** After `var word = words.next()`
+   the `words` can be used and changed again while `word` lives: `word` borrows the text. Returning something
+   of the struct's own (`read this.label`) under `from source` is an error whose hint is `from this`.
+3. **Lending a field that is itself a borrow lends what the field borrowed** (`this.input[a..b]`, `word.text`),
+   not the struct it sits in.
+4. **A type that holds a type with a source names a source too** (`struct Parser<from source>` because of its
+   `Lexer`), and a type that names one must hold something that borrows.
+5. **One source per type for now.** Two (`struct Match<from text, from pattern>`) answer "not in the
+   interpreter yet".
+6. **A borrow from outside cannot be stored through `ref`** (`this.input = other`): the design's notation for
+   it (`where r from name`) went away with `where`. A value is built where its source is known; no notation
+   for now (decided: fifteen slices never needed one).
+7. **A function that returns such a type with no borrowed parameter writes no `from`**: it can only return
+   constants.
+
 ## Not here yet
 
-- **The last part of the borrow check: types that carry a borrow.** A field cannot be a `read` or a `ref`
-  (`struct Token<from source>`), a `Result` or a list cannot hold one, and `from` takes only names of
-  parameters, not paths (`from lx.source`).
+- **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
+  pattern>`); storing a borrow from outside into a value reached through `ref` (the design's
+  `where r from name`); a `List<read T>` or a `Result<read T, E>` (a list of a type that carries a borrow
+  works); a `match` used as a value that gives a borrow is not followed.
 - `swap(ref a, ref b)`, and `this` with a type (`read FolderRef this`).
 - A string literal has the type `string` here; in the design it is `read string` that becomes `string` without
   allocating.
@@ -476,6 +504,6 @@ error.
 
 ## Next
 
-The third part of the borrow check: types that carry a borrow (`struct Token<from source>`), with which the
-calculator stops copying its input. After it the question is the back end. After it the question is the
+The borrow check is in place in its three parts. The next question is the back end: the promise "as fast as
+C" can only be shown by compiled code, not by this interpreter. After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

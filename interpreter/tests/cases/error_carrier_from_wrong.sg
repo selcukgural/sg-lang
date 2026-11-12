@@ -1,0 +1,11 @@
+struct Words<from source> {
+    read string input
+    string label
+
+    read string name(ref this) from source {
+        return read this.label
+    }
+}
+
+void main() {
+}

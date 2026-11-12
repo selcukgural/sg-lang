@@ -1,0 +1,5 @@
+error: `Point` names a source, but nothing in it borrows
+  --> error_carrier_source_unused.sg:1:8
+ 1 | struct Point<from source> {
+   |        ^^^^^
+  hint: `struct Point`

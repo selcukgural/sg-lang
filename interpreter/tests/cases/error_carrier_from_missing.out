@@ -1,0 +1,5 @@
+error: `first` returns a `Word`, which carries a borrow, so it says where that comes from
+  --> error_carrier_from_missing.sg:5:6
+ 5 | Word first(read string input) {
+   |      ^^^^^
+  hint: after the parameters: `from input`
