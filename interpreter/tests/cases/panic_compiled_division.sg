@@ -1,0 +1,9 @@
+int ratio(int total, int parts) {
+    return total / parts
+}
+
+void main() {
+    print(ratio(10, 2))
+    var zero = 0
+    print(ratio(7, zero))
+}

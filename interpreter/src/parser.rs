@@ -3,7 +3,7 @@
 use crate::ast::*;
 use crate::diag::{Diag, Span};
 use crate::lexer::{lex, Part, Tok, Token};
-use crate::types::IntTy;
+use crate::types::{IntTy, Ty};
 
 /// Words that are in the design but not in the interpreter yet. They get an explicit
 /// message instead of "unknown name".
@@ -584,7 +584,7 @@ impl<'a> Parser<'a> {
         self.bump();
         self.struct_literals = outer;
         let span = Span::new(start.start, self.prev_end());
-        Ok(Expr { kind: ExprKind::Match { subject: Box::new(subject), arms, borrowed: false }, span })
+        Ok(Expr { ty: Ty::Void, kind: ExprKind::Match { subject: Box::new(subject), arms, borrowed: false }, span })
     }
 
     /// The block of a `match` arm: statements, and the last line may be the value.
@@ -723,12 +723,12 @@ impl<'a> Parser<'a> {
                 Tok::Newline | Tok::RBrace | Tok::RParen | Tok::Comma | Tok::Eof => None,
                 _ => Some(Box::new(self.expr()?)),
             };
-            Expr { kind: ExprKind::Return(value), span: Span::new(start.start, self.prev_end()) }
+            Expr { ty: Ty::Void, kind: ExprKind::Return(value), span: Span::new(start.start, self.prev_end()) }
         } else {
             self.expr()?
         };
         let span = left.span.to(right.span);
-        Ok(Expr { kind: ExprKind::Coalesce { left: Box::new(left), right: Box::new(right), on_result: false }, span })
+        Ok(Expr { ty: Ty::Void, kind: ExprKind::Coalesce { left: Box::new(left), right: Box::new(right), on_result: false }, span })
     }
 
     /// Same precedence as C#: `||`, `&&`, equality, comparison and `is`, additive, multiplicative.
@@ -756,7 +756,7 @@ impl<'a> Parser<'a> {
             self.bump();
             let right = self.binary(level + 1)?;
             let span = left.span.to(right.span);
-            left = Expr { kind: ExprKind::Binary(op, Box::new(left), Box::new(right)), span };
+            left = Expr { ty: Ty::Void, kind: ExprKind::Binary(op, Box::new(left), Box::new(right)), span };
         }
     }
 
@@ -780,14 +780,14 @@ impl<'a> Parser<'a> {
             }
             _ => return Err(self.unexpected("`null` or a variant name").note("`is` tests for `null` or for one variant of an enum")),
         };
-        Ok(Expr { kind, span: Span::new(start, self.prev_end()) })
+        Ok(Expr { ty: Ty::Void, kind, span: Span::new(start, self.prev_end()) })
     }
 
     fn unary(&mut self) -> Res<Expr> {
         let start = self.span();
         let wrap = |kind: fn(Box<Expr>) -> ExprKind, operand: Expr| {
             let span = start.to(operand.span);
-            Expr { kind: kind(Box::new(operand)), span }
+            Expr { ty: Ty::Void, kind: kind(Box::new(operand)), span }
         };
         match self.peek() {
             Tok::Minus => {
@@ -836,7 +836,7 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let operand = self.unary()?;
                     let span = start.to(operand.span);
-                    Ok(Expr { kind: ExprKind::Cast { ty, expr: Box::new(operand) }, span })
+                    Ok(Expr { ty: Ty::Void, kind: ExprKind::Cast { ty, expr: Box::new(operand) }, span })
                 }
                 None => self.postfix(),
             },
@@ -874,7 +874,7 @@ impl<'a> Parser<'a> {
                 ExprKind::Method { recv, .. } | ExprKind::Field { recv, .. } => recv.span.start,
                 _ => unreachable!(),
             };
-            expr = Expr { kind, span: Span::new(start, self.prev_end()) };
+            expr = Expr { ty: Ty::Void, kind, span: Span::new(start, self.prev_end()) };
         }
         Ok(expr)
     }
@@ -900,7 +900,7 @@ impl<'a> Parser<'a> {
             Ok(ExprKind::Slice { recv, from, to })
         })?;
         self.expect(Tok::RBracket, "`]`")?;
-        Ok(Expr { kind, span: Span::new(start, self.prev_end()) })
+        Ok(Expr { ty: Ty::Void, kind, span: Span::new(start, self.prev_end()) })
     }
 
     /// Runs `inner` between brackets, where a struct literal is always unambiguous.
@@ -967,7 +967,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let inner = self.bracketed(|p| p.expr())?;
                 self.expect(Tok::RParen, "`)`")?;
-                return Ok(Expr { kind: inner.kind, span: Span::new(start.start, self.prev_end()) });
+                return Ok(Expr { ty: Ty::Void, kind: inner.kind, span: Span::new(start.start, self.prev_end()) });
             }
             Tok::Ident(_) if self.at_collection() => {
                 let ty = self.type_expr()?;
@@ -992,7 +992,7 @@ impl<'a> Parser<'a> {
             }
             _ => return Err(self.unexpected("an expression")),
         };
-        Ok(Expr { kind, span: Span::new(start.start, self.prev_end()) })
+        Ok(Expr { ty: Ty::Void, kind, span: Span::new(start.start, self.prev_end()) })
     }
 
     /// `{ value = 1, next = null }`; fields are separated by commas, line ends do not matter.
@@ -1098,7 +1098,7 @@ const ADDITIVE: usize = 4;
 
 fn int_literal(value: i128, span: Span) -> Res<Expr> {
     match i64::try_from(value) {
-        Ok(value) => Ok(Expr { kind: ExprKind::Int(value, IntTy::Int), span }),
+        Ok(value) => Ok(Expr { ty: Ty::Void, kind: ExprKind::Int(value, IntTy::Int), span }),
         Err(_) => Err(Diag::error(span, format!("{value} does not fit in any integer type"))),
     }
 }

@@ -1630,6 +1630,7 @@ impl<'a> Checker<'a> {
                         // A borrowed variable used as a value is the value behind it.
                         Ty::Read(inner) | Ty::Ref(inner) if matches!(init.kind, ExprKind::Var(_)) && inner.is_copyable(self.copyable) => {
                             wrap(init, ExprKind::Load);
+                            init.ty = (*inner).clone();
                             *inner
                         }
                         Ty::Void => return Err(Diag::error(init.span, "this call does not return a value")),
@@ -1699,6 +1700,11 @@ impl<'a> Checker<'a> {
                         ty
                     }
                 };
+                if let ExprKind::Var(name) = &target.kind {
+                    if let Some(declared) = self.find(name).map(|var| var.declared.clone()) {
+                        target.ty = declared;
+                    }
+                }
                 // Pointing a `read` variable at something else changes nothing it looked at.
                 let rebinds = match &target.kind {
                     ExprKind::Var(name) => self.find(name).is_some_and(|var| matches!(var.declared, Ty::Read(_))),
@@ -2016,6 +2022,7 @@ impl<'a> Checker<'a> {
         match (&found, expected) {
             (Ty::Int(from), Ty::Int(to)) if from.widens_to(*to) => {
                 wrap(expr, |inner| ExprKind::Widen(*to, inner));
+                expr.ty = Ty::Int(*to);
                 Ok(())
             }
             (Ty::Int(_), Ty::Int(to)) => {
@@ -2032,6 +2039,7 @@ impl<'a> Checker<'a> {
             // A borrow of a copyable value stands in for the value.
             (Ty::Read(inner) | Ty::Ref(inner), _) if !expected.is_borrow() && inner.is_copyable(self.copyable) => {
                 wrap(expr, ExprKind::Load);
+                expr.ty = (**inner).clone();
                 self.coerce(expr, (**inner).clone(), expected)
             }
             (Ty::Read(inner), Ty::Str) if **inner == Ty::Str => {
@@ -2079,6 +2087,14 @@ impl<'a> Checker<'a> {
 
     /// `place` without the check for fields that were moved out.
     fn place_unchecked(&mut self, expr: &mut Expr) -> Res<Option<(Ty, bool)>> {
+        let found = self.place_untyped(expr)?;
+        if let Some((ty, _)) = &found {
+            expr.ty = ty.clone();
+        }
+        Ok(found)
+    }
+
+    fn place_untyped(&mut self, expr: &mut Expr) -> Res<Option<(Ty, bool)>> {
         let span = expr.span;
         // `Shape.Empty` is a value, not a field.
         if let ExprKind::Field { recv, .. } = &expr.kind {
@@ -2299,6 +2315,12 @@ impl<'a> Checker<'a> {
 
     /// Checks an expression whose value is used. A variable of a non-copyable type is moved.
     fn expr(&mut self, expr: &mut Expr, expected: Option<&Ty>) -> Res<Ty> {
+        let ty = self.expr_untyped(expr, expected)?;
+        expr.ty = ty.clone();
+        Ok(ty)
+    }
+
+    fn expr_untyped(&mut self, expr: &mut Expr, expected: Option<&Ty>) -> Res<Ty> {
         let span = expr.span;
         if let Some((ty, _)) = self.place(expr)? {
             if !ty.is_copyable(self.copyable) {
@@ -3869,7 +3891,7 @@ fn byte_of(value: char, span: Span) -> Res<i64> {
 /// Replaces `expr` with a node built around it.
 fn wrap(expr: &mut Expr, build: impl FnOnce(Box<Expr>) -> ExprKind) {
     let span = expr.span;
-    let inner = std::mem::replace(expr, Expr { kind: ExprKind::Null, span });
+    let inner = std::mem::replace(expr, Expr { kind: ExprKind::Null, span, ty: Ty::Void });
     expr.kind = build(Box::new(inner));
 }
 

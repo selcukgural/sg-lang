@@ -1,0 +1,31 @@
+// A release build: `+`, `-`, `*` and unary `-` wrap. The same program panics on its first
+// line of arithmetic in a debug build and in the interpreter.
+int square(int x) {
+    return x * x
+}
+
+void main() {
+    int max = 2147483647
+    print(max + 1)
+    print(square(100000))
+    int min = -2147483647 - 1
+    print(-min)
+    print(min - 1)
+    byte small = 250
+    small += 10
+    print(small)
+    long big = 9223372036854775807
+    print(big + 1)
+
+    // What is written out means the same in every build.
+    print(max.wrappingAdd(1))
+
+    // A cast that does not fit is cut to size.
+    long wide = 5000000000
+    print((int)wide)
+    print((byte)max)
+
+    // Division by zero is not overflow: it panics in every build.
+    var zero = 0
+    print(max / zero)
+}

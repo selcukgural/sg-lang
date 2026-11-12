@@ -3,13 +3,77 @@ use std::process::ExitCode;
 
 use sg::Stop;
 
+/// Writes the program as C. Without `out` the C goes to the output; with it, the C compiler
+/// turns it into a program of that name. `release`: integer overflow wraps and the C compiler
+/// optimises; otherwise a debug build, which checks.
+fn build(path: &str, out: Option<String>, release: bool) -> ExitCode {
+    let src = match std::fs::read_to_string(path) {
+        Ok(src) => src,
+        Err(error) => {
+            eprintln!("error: cannot read {path}: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let code = match sg::emit_c(&src, path, !release) {
+        Ok(code) => code,
+        Err(diag) => {
+            eprint!("{}", diag.render(&src, path));
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(out) = out else {
+        print!("{code}");
+        return ExitCode::SUCCESS;
+    };
+    let c_file = std::env::temp_dir().join(format!("sg-{}.c", std::process::id()));
+    if let Err(error) = std::fs::write(&c_file, code) {
+        eprintln!("error: cannot write {}: {error}", c_file.display());
+        return ExitCode::FAILURE;
+    }
+    let level = if release { "-O2" } else { "-O0" };
+    let status = std::process::Command::new("cc").args(["-std=c11", level, "-o", &out]).arg(&c_file).status();
+    let _ = std::fs::remove_file(&c_file);
+    match status {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(_) => {
+            eprintln!("error: the C compiler did not accept the program; this is a mistake in sg");
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("error: cannot run the C compiler `cc`: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    const USAGE: &str = "usage: sg <file.sg>                             runs the program\n       sg test <file.sg>                        runs its tests\n       sg build <file.sg> [--release] [-o out]  compiles it through C\n       sg emit-c <file.sg> [--release]          prints the C";
     let (path, tests) = match args.as_slice() {
         [path] => (path, false),
         [command, path] if command == "test" => (path, true),
+        [command, rest @ ..] if command == "build" || command == "emit-c" => {
+            // A debug build checks integer overflow; `--release` wraps and optimises.
+            let (mut path, mut out, mut release) = (None, None, false);
+            let mut rest = rest.iter();
+            while let Some(arg) = rest.next() {
+                match arg.as_str() {
+                    "--release" => release = true,
+                    "-o" => out = rest.next().cloned(),
+                    _ if path.is_none() => path = Some(arg),
+                    _ => path = None,
+                }
+            }
+            let Some(path) = path else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let stem = std::path::Path::new(path).file_stem().map(|stem| stem.to_string_lossy().into_owned());
+            let out = (command == "build").then(|| out.or(stem).unwrap_or_else(|| "a.out".to_string()));
+            return build(path, out, release);
+        }
         _ => {
-            eprintln!("usage: sg <file.sg>        runs the program\n       sg test <file.sg>   runs its tests");
+            eprintln!("{USAGE}");
             return ExitCode::from(2);
         }
     };

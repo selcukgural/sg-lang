@@ -4,9 +4,13 @@ A tree-walking interpreter for SG, written in Rust with no dependencies. Its job
 running real programs, not to be fast. Source files end in `.sg`; the crate and the command are named `sg`.
 
 ```
-cargo run -- examples/stack.sg
-cargo run -- test examples/tests_stock.sg
+cargo run -- examples/stack.sg                  # runs the program
+cargo run -- test examples/tests_stock.sg       # runs its tests
+cargo run -- build examples/primes.sg -o primes # compiles it through C (needs `cc`)
+cargo run -- emit-c examples/primes.sg          # prints the C
 cargo test
+cargo run -- build examples/primes.sg --release # the same as a release build: optimised, overflow wraps
+sh bench/run.sh                                 # compiled SG against C written by hand
 ```
 
 ## What runs today (12 November 2026)
@@ -43,7 +47,8 @@ cargo test
 
 Design rules that are already enforced:
 
-- Integer overflow panics, also in a release build. Wrapping is written on purpose with `wrappingAdd`.
+- Integer overflow panics in the interpreter, in tests and in a debug build; a release build wraps (Rust's
+  way). `wrappingAdd` wraps in every build, `tryAdd` is checked in every build.
 - `int` widens to `long` or `nint` on its own. Narrowing is written `(int)x` and panics if the value does not fit.
 - `$"..."` is not a `string`; `string text = $"..."` is an error whose hint is `.toString()`.
 - `assert` prints the expression text and, for a comparison, the value of both sides.
@@ -127,6 +132,56 @@ Design rules that are already enforced:
 - After `for x in xs` the list is gone (it was handed over); the error shows the loop.
 - `List<int> xs = ...` needs its item type, and a `HashMap` a key type that can be a key.
 
+## The C back end
+
+Since the sixteenth slice (12 November 2026) a program can be compiled: `sg build file.sg` writes it as C and
+hands that to the C compiler (`cc -O2`). The interpreter stays as the reference: `cargo test` compiles every
+program the back end accepts and requires the same output as the interpreter, panic messages included (15 of
+288 programs for now).
+
+What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; functions and recursion; `if`, `while`,
+`for i in a..b`, `break`, `continue`; structs of those types, by value, with methods; `read` and `ref`
+(pointers); the checked operators, casts and the wrapping methods; `print` of numbers, `bool`, text constants
+and `$"..."` made of them; `assert` and `panic` with a constant text. Anything else (text as a value, `T?`,
+`T*`, enums, collections, `Result`) is an error that names what is missing: nothing is compiled wrongly in
+silence.
+
+A debug build (`sg build file.sg`) checks integer overflow and is not optimised; a release build
+(`sg build file.sg --release`) wraps on overflow and is optimised. The interpreter and `sg test` behave like a
+debug build; a cast that does not fit follows the same rule. Division by zero, `assert` and `panic` stop the
+program in every build.
+
+Measured (`sh bench/run.sh`, Apple clang 21 on arm64, best of five, `-O2` for all three; the C is written by
+hand with no checks):
+
+| Program | SG, release | SG, overflow checked | C | release / C |
+|---|---|---|---|---|
+| `fib`: recursive `fib(40)` | 0.258 s | 0.372 s | 0.269 s | 0.96 |
+| `primes`: trial division below five million | 0.460 s | 0.449 s | 0.470 s | 0.98 |
+| `collatz`: longest chain below three million | 0.335 s | 0.532 s | 0.335 s | 1.00 |
+
+A release build runs these in the time of C. The middle column is what the overflow check alone costs: nothing
+where arithmetic is rare, 40 to 60% in a loop that is nothing but arithmetic. That measurement is why the rule
+became Rust's (checked in debug, wrapping in release) on 12 November 2026. Three small programs are not a
+benchmark suite, and nothing here uses memory yet.
+
+Choices made here, approved on 12 November 2026:
+
+1. **The back end writes C**, not machine code and not LLVM's form: the smallest path, every platform has a
+   C compiler, and its optimiser does the heavy work.
+2. **In a debug build an overflow check is the C compiler's own overflow builtin** and a branch to a panic
+   that is marked as never the usual path. **In a release build a wrapping operation is written with unsigned
+   arithmetic**, which is defined in C; the plain `a + b` of C would be undefined on overflow, and the C
+   compiler would be free to assume it never happens.
+3. **A compiled program panics with the same text as the interpreter**, the source line included; the lines
+   are kept in the program as constants.
+4. **Deep recursion is not caught in compiled code.** The interpreter counts calls; compiled code would pay
+   for a count on every call, so the open "stack depth" question of the design stays open here.
+5. **`sg build` and `sg emit-c`** are the commands, with `--release` for a release build; the C compiler is
+   `cc`, with `-O0` for a debug build and `-O2` for a release build.
+6. **A cast that does not fit (`(int)big`) follows the overflow rule**: it panics in a debug build and is
+   cut to size in a release build (decided on 12 November 2026).
+
 ## How it is built
 
 | File | Role |
@@ -136,6 +191,7 @@ Design rules that are already enforced:
 | `src/types.rs` | Types as the checker sees them |
 | `src/check.rs` | Static checks: names, types, `null` safety, use after move (per variable and per field), `match` covering every variant, `return` on every path, unused `Result`, what `try` may pass on, what `Copyable` and `Formattable` promise. Writes resolved details (literal types, field indexes, implicit conversions, what each call runs) into the tree |
 | `src/interp.rs` | Runs the checked tree; only data-dependent failures (panics) are left to it |
+| `src/emit_c.rs` | The back end: writes the checked tree as C, with the same panics |
 | `src/diag.rs` | Error and panic messages |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
 
@@ -504,6 +560,7 @@ error.
 
 ## Next
 
-The borrow check is in place in its three parts. The next question is the back end: the promise "as fast as
-C" can only be shown by compiled code, not by this interpreter. After it the question is the
+The back end, one piece of the language at a time, each compared with the interpreter and measured against
+C: text (`string`, `read string`) and the heap (`T*`, `new`, freeing at the end of the owner) first, since
+that is where memory safety and speed meet; then `T?`, enums and `match`, and the collections. After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

@@ -2,7 +2,7 @@
 //! indexes, implicit conversions) so the interpreter does not repeat its work.
 
 use crate::diag::Span;
-use crate::types::IntTy;
+use crate::types::{IntTy, Ty};
 
 pub struct Program {
     pub structs: Vec<StructDecl>,
@@ -162,6 +162,8 @@ pub enum StmtKind {
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
+    /// The type of the value, written by the checker; `void` until then. The back end reads it.
+    pub ty: Ty,
 }
 
 pub enum ExprKind {

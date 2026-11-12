@@ -520,21 +520,24 @@ other.add("z", 30)
 
 ### Integer overflow
 
-The default is safe; the unchecked path is written on purpose:
+Rust's way (decided on 12 November 2026): a debug build and the tests panic on overflow, a release build wraps. Both
+are defined; neither can break memory safety, because an index is still bounds checked. The checked and the wrapping
+form can be written out and then mean the same in every build:
 
 ```
-var a = x + y                                    // panics on overflow, in release too
-var b = x.tryAdd(y) ?? return Error(TooLarge)    // int?, for external input
-var c = x.wrappingAdd(y)                         // wraps on purpose, for hot loops
+var a = x + y                                    // debug and tests: panics on overflow; release: wraps
+var b = x.tryAdd(y) ?? return Error(TooLarge)    // int?, checked in every build, for external input
+var c = x.wrappingAdd(y)                         // wraps in every build, where wrapping is what is meant
+var d = x / y                                    // division by zero panics in every build
 ```
 
 Conversion to a smaller type follows the same rule:
 
 ```
 long big = ...
-var a = (int)big                                 // panics if it does not fit: value 5000000000 does not fit in int; big.tryToInt()
-var b = big.tryToInt() ?? return Error(TooLarge) // int?
-var c = big.wrappingToInt()                      // truncates on purpose
+var a = (int)big                                 // debug and tests: panics if it does not fit; release: cut to size
+var b = big.tryToInt() ?? return Error(TooLarge) // int?, checked in every build
+var c = big.wrappingToInt()                      // cut to size in every build
 var d = (byte)300                                // error: 300 does not fit in byte
 long e = a                                       // widening conversion is implicit
 var f = (int)3.7                                 // 3; NaN or out of range panics

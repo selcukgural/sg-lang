@@ -82,7 +82,7 @@ impl Diag {
 }
 
 /// Location, source line and a marker under the span.
-fn snippet(span: Span, src: &str, path: &str) -> String {
+pub fn snippet(span: Span, src: &str, path: &str) -> String {
     let start = span.start.min(src.len());
     let line_start = src[..start].rfind('\n').map_or(0, |i| i + 1);
     let line_end = src[start..].find('\n').map_or(src.len(), |i| start + i);

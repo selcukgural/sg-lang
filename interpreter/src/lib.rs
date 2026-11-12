@@ -5,6 +5,7 @@
 pub mod ast;
 pub mod check;
 pub mod diag;
+pub mod emit_c;
 pub mod interp;
 pub mod lexer;
 pub mod parser;
@@ -38,6 +39,17 @@ pub fn run_tests(src: &str, path: &str, out: &mut (dyn Write + Send)) -> Result<
         check::check(&mut prog, src, true)?;
         let (_, failed) = interp::run_tests(&prog, src, path, out)?;
         Ok(failed == 0)
+    })
+}
+
+/// The back end: parses and checks the program and writes it as C. `path` names the source
+/// file in the panic messages of the compiled program. `checked`: a debug build, where integer
+/// overflow panics; a release build wraps.
+pub fn emit_c(src: &str, path: &str, checked: bool) -> Result<String, Diag> {
+    on_large_stack(|| {
+        let mut prog = parser::parse(src)?;
+        check::check(&mut prog, src, false)?;
+        emit_c::emit(&prog, src, path, checked)
     })
 }
 

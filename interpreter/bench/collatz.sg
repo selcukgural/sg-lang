@@ -1,0 +1,27 @@
+// 64-bit arithmetic in a tight loop: the longest Collatz chain that starts below three million.
+int steps(long start) {
+    var n = start
+    var count = 0
+    while n != 1 {
+        if n % 2 == 0 {
+            n = n / 2
+        } else {
+            n = 3 * n + 1
+        }
+        count += 1
+    }
+    return count
+}
+
+void main() {
+    var best = 0
+    long bestStart = 0
+    for start in 1..3000000 {
+        var length = steps(start)
+        if length > best {
+            best = length
+            bestStart = start
+        }
+    }
+    print($"{bestStart}: {best} steps")
+}
