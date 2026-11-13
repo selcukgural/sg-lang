@@ -1,0 +1,9 @@
+error: `buffer` cannot be changed here: `head` borrows from it and is used again later
+  --> error_slice_change_while_lent.sg:4:5
+ 4 |     buffer.clear()
+   |     ^^^^^^
+  `head` borrowed it here:
+  --> error_slice_change_while_lent.sg:3:16
+ 3 |     var head = buffer[..2]
+   |                ^^^^^^^^^^^
+  hint: finish with `head` before this line: a borrow ends at its last use

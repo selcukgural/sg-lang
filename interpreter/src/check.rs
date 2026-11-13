@@ -27,7 +27,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "assert", "panic", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -107,6 +107,9 @@ impl Names {
         if self.known(&own) {
             return Ok(Some(own));
         }
+        if written == TEXT_ERROR {
+            return Ok(Some(written.to_string()));
+        }
         let mut found: Vec<String> = Vec::new();
         let mut closed = None;
         for (used, _) in uses {
@@ -168,6 +171,20 @@ fn exposes(what: &str, span: Span, ty: &Ty, names: &Names) -> Res<()> {
 }
 
 /// One place a returned borrow may come from.
+/// What `string.fromUtf8` gives when the bytes are not text.
+const TEXT_ERROR: &str = "TextError";
+
+/// The built-in `struct TextError : Copyable, Formattable, Equatable { public readonly nint
+/// position }`: where the first byte lies that is not valid UTF-8. It is put among the structs
+/// of the program, so everything that works on a struct works on it.
+fn text_error() -> StructDecl {
+    let nowhere = Span::new(0, 0);
+    let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
+    let ty = TypeExpr { mode: None, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+    let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere };
+    StructDecl { public: true, name: TEXT_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: vec![position], methods: Vec::new() }
+}
+
 #[derive(Clone, PartialEq)]
 struct Source {
     /// The parameter, or `this`.
@@ -194,7 +211,7 @@ fn lends(ty: &Ty, names: &Names) -> bool {
     match ty {
         Ty::Read(_) | Ty::Ref(_) => true,
         Ty::Struct(name) | Ty::Enum(name) => names.carriers.contains_key(name),
-        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) => lends(inner, names),
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) => lends(inner, names),
         Ty::Result(a, b) | Ty::Map(a, b) | Ty::Entry(a, b) => lends(a, names) || lends(b, names),
         _ => false,
     }
@@ -340,6 +357,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             return Err(Diag::error(span, format!("type `{name}` is defined twice")));
         }
     }
+    names.kinds.insert(TEXT_ERROR.to_string(), TypeKind::Struct);
+    names.public.insert(TEXT_ERROR.to_string());
+    prog.structs.push(text_error());
 
     // The types that carry a borrow name where it comes from.
     let sourced = prog
@@ -826,11 +846,10 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
                 return Err(Diag::error(ty.span, "`Result` is written with two types: `Result<T, E>`")
                     .note("`T` is what success gives (`void` for nothing), `E` is the error"));
             };
-            for arg in [ok, error] {
-                if arg.mode.is_some() {
-                    return Err(Diag::error(arg.span, "a `Result` that carries a borrow is not in the interpreter yet")
-                        .note("it needs the function to name the source of the borrow with `from`"));
-                }
+            // Success may be a borrow (`Result<read string, TextError>`); a function that
+            // returns one says where it comes from, as for any type that carries a borrow.
+            if error.mode.is_some() {
+                return Err(Diag::error(error.span, "a `Result` whose error is a borrow is not in the interpreter yet"));
             }
             if error.name == "void" {
                 return Err(Diag::error(error.span, "the error of a `Result` cannot be `void`")
@@ -863,7 +882,19 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
         },
     };
     for suffix in &ty.suffixes {
+        if matches!(resolved, Ty::Slice(_)) {
+            return Err(match suffix {
+                Suffix::Nullable => Diag::error(ty.span, "a slice that may be missing is not in the interpreter yet"),
+                _ => bare_slice(ty.span, &resolved),
+            });
+        }
         resolved = match suffix {
+            Suffix::Array(0) => return Err(Diag::error(ty.span, "an array has at least one item")),
+            Suffix::Array(_) if matches!(resolved, Ty::Array(..)) => {
+                return Err(Diag::error(ty.span, "an array of arrays is not in the interpreter yet"));
+            }
+            Suffix::Array(length) => Ty::Array(Box::new(resolved), *length),
+            Suffix::Slice => Ty::Slice(Box::new(resolved)),
             Suffix::Pointer => Ty::Ptr(Box::new(resolved)),
             Suffix::Nullable if matches!(resolved, Ty::Nullable(_)) => {
                 return Err(Diag::error(ty.span, "`??` is not a type: a value is either there or `null`"));
@@ -871,11 +902,38 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             Suffix::Nullable => Ty::Nullable(Box::new(resolved)),
         };
     }
+    if ty.mode.is_none() && matches!(resolved, Ty::Slice(_)) {
+        return Err(bare_slice(ty.span, &resolved));
+    }
     Ok(match ty.mode {
         Some(Mode::Read) => Ty::Read(Box::new(resolved)),
         Some(Mode::Ref) => Ty::Ref(Box::new(resolved)),
         None => resolved,
     })
+}
+
+/// `byte[]` written without `read` or `ref`: a slice owns nothing, so it is not a type alone.
+fn bare_slice(span: Span, slice: &Ty) -> Diag {
+    let Ty::Slice(item) = slice else { unreachable!("called for a slice") };
+    Diag::error(span, format!("`{slice}` is not a type on its own: a slice only looks at items that something else owns"))
+        .hint(format!("`List<{item}>` to own the items, `read {slice}` for a window onto them"))
+}
+
+/// The number an index is known to be before the program runs.
+fn known_int(expr: &Expr) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Int(value, _) => Some(*value),
+        ExprKind::Widen(_, inner) => known_int(inner),
+        _ => None,
+    }
+}
+
+/// Whether a borrow of `from` (a list or an array) can stand where a slice `to` is expected.
+fn as_slice(from: &Ty, to: &Ty) -> bool {
+    match (from, to) {
+        (Ty::List(item) | Ty::Array(item, _), Ty::Slice(wanted)) => item == wanted,
+        _ => false,
+    }
 }
 
 fn not_a_key(span: Span, ty: &Ty, what: &str) -> Diag {
@@ -911,7 +969,7 @@ fn has(ty: &Ty, declared: &HashSet<String>, collections: bool) -> bool {
         Ty::Int(_) | Ty::Bool | Ty::Str => true,
         Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => has(inner, declared, collections),
-        Ty::List(item) | Ty::Set(item) => collections && has(item, declared, collections),
+        Ty::List(item) | Ty::Set(item) | Ty::Array(item, _) | Ty::Slice(item) => collections && has(item, declared, collections),
         Ty::Map(key, value) => collections && has(key, declared, collections) && has(value, declared, collections),
         _ => false,
     }
@@ -921,7 +979,7 @@ fn has(ty: &Ty, declared: &HashSet<String>, collections: bool) -> bool {
 fn lacking<'t>(ty: &'t Ty, declared: &HashSet<String>) -> Option<&'t str> {
     match ty {
         Ty::Struct(name) | Ty::Enum(name) => (!declared.contains(name)).then_some(name.as_str()),
-        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) => lacking(inner, declared),
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) | Ty::Slice(inner) => lacking(inner, declared),
         Ty::Map(key, value) => lacking(key, declared).or_else(|| lacking(value, declared)),
         _ => None,
     }
@@ -974,7 +1032,7 @@ fn can_format(ty: &Ty, formattable: &HashSet<String>) -> bool {
         Ty::Struct(_) | Ty::Enum(_) => unformattable(ty, formattable).is_none(),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => can_format(inner, formattable),
         Ty::Result(ok, error) | Ty::Map(ok, error) => can_format(ok, formattable) && can_format(error, formattable),
-        Ty::List(item) | Ty::Set(item) => can_format(item, formattable),
+        Ty::List(item) | Ty::Set(item) | Ty::Array(item, _) | Ty::Slice(item) => can_format(item, formattable),
         _ => false,
     }
 }
@@ -985,7 +1043,7 @@ fn unformattable<'t>(ty: &'t Ty, formattable: &HashSet<String>) -> Option<&'t st
         Ty::Struct(name) | Ty::Enum(name) => (!formattable.contains(name)).then_some(name.as_str()),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => unformattable(inner, formattable),
         Ty::Result(ok, error) | Ty::Map(ok, error) => unformattable(ok, formattable).or_else(|| unformattable(error, formattable)),
-        Ty::List(item) | Ty::Set(item) => unformattable(item, formattable),
+        Ty::List(item) | Ty::Set(item) | Ty::Array(item, _) | Ty::Slice(item) => unformattable(item, formattable),
         _ => None,
     }
 }
@@ -1010,7 +1068,7 @@ fn contains_itself<'d>(
     fn by_value(ty: &Ty) -> Option<&str> {
         match ty {
             Ty::Struct(name) | Ty::Enum(name) => Some(name),
-            Ty::Nullable(inner) => by_value(inner),
+            Ty::Nullable(inner) | Ty::Array(inner, _) => by_value(inner),
             _ => None,
         }
     }
@@ -1025,6 +1083,20 @@ fn contains_itself<'d>(
         }
     }
     Ok(())
+}
+
+/// The root of a loan on a value that has no name: it is gone when its statement ends.
+const UNNAMED: usize = usize::MAX;
+
+/// Whether the expression gives a value that nothing owns after the statement: what a call
+/// returned, a value being built. A text constant is there for the whole run, and a borrow
+/// is judged by what it borrowed.
+fn unnamed_owner(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::FuncRef(_) => false,
+        ExprKind::Borrow { .. } | ExprKind::Slice { .. } | ExprKind::Unbox(_) | ExprKind::AsSlice(_) => false,
+        _ => !expr.ty.is_borrow() && !matches!(expr.ty, Ty::Void | Ty::Never | Ty::Null),
+    }
 }
 
 /// What a variable that holds a borrow has borrowed: the place it was lent from.
@@ -1423,7 +1495,7 @@ impl<'a> Checker<'a> {
                 _ => None,
             },
             ExprKind::Index { recv, .. } => match peel(&self.place_ty(recv)?) {
-                Ty::List(item) => Some((**item).clone()),
+                Ty::List(item) | Ty::Array(item, _) | Ty::Slice(item) => Some((**item).clone()),
                 Ty::Map(_, value) => Some((**value).clone()),
                 _ => None,
             },
@@ -1460,7 +1532,13 @@ impl<'a> Checker<'a> {
         if self.through_borrow(place) {
             return self.held_by(place, span);
         }
-        let Some((name, path)) = store_path(place) else { return self.loans_of(place, mutable) };
+        let Some((name, path)) = store_path(place) else {
+            let mut loans = self.loans_of(place, mutable);
+            if unnamed_owner(place) {
+                loans.push(Loan { root: UNNAMED, path: String::new(), mutable, held: false, span: place.span });
+            }
+            return loans;
+        };
         let Some(var) = self.var_named(name) else { return Vec::new() };
         let mut loans = self.held_by(place, span);
         loans.push(Loan { root: var.id, path, mutable, held: false, span });
@@ -1476,8 +1554,19 @@ impl<'a> Checker<'a> {
         match held && place.is_place() {
             true => self.held_by(place, arg.span),
             false if arg.is_place() => self.place_loans(arg, mutable, arg.span),
-            false => self.loans_of(arg, mutable),
+            false if held => self.loans_of(arg, mutable),
+            // A value with no name that is lent as it is: a method called on what a call gave.
+            false => self.place_loans(arg, mutable, arg.span),
         }
+    }
+
+    /// A borrow of a value that has no name cannot be kept: the value is gone when the
+    /// statement ends. `keeper`: what would go on looking at it.
+    fn kept_unnamed(&self, loans: &[Loan], value: &Expr, keeper: &str) -> Res<()> {
+        let Some(loan) = loans.iter().find(|loan| loan.root == UNNAMED) else { return Ok(()) };
+        let text = &self.src[loan.span.start..loan.span.end];
+        let diag = Diag::error(value.span, format!("this borrows from `{text}`, a value with no name: it is gone when the line ends, and {keeper} would still look at it"));
+        Err(diag.hint(format!("give the value a name first: `var value = {text}`")))
     }
 
     /// What the value of an expression has borrowed. `mutable`: the value is a `ref`.
@@ -1485,7 +1574,9 @@ impl<'a> Checker<'a> {
         let union = |parts: &mut dyn Iterator<Item = &Expr>| parts.flat_map(|part| self.loans_of(part, mutable)).collect::<Vec<_>>();
         match &expr.kind {
             ExprKind::Borrow { mutable, expr: inner } => self.place_loans(inner, *mutable, expr.span),
-            ExprKind::Slice { recv, .. } => self.place_loans(recv, false, expr.span),
+            // `ref xs[a..b]` is kept as the range alone, with the type of a `ref` slice.
+            ExprKind::Slice { recv, .. } => self.place_loans(recv, matches!(expr.ty, Ty::Ref(_)), expr.span),
+            ExprKind::Array { args, items, .. } => union(&mut args.iter().chain(items.iter().flatten())),
             // A copy of a borrow has borrowed what the original has. It also borrows through
             // the variable it is copied from: a `ref` copied out of `a` keeps `a` from being
             // used, and a parameter is where the borrow comes from.
@@ -1503,7 +1594,7 @@ impl<'a> Checker<'a> {
                 true => self.held_by(expr, expr.span),
                 false => Vec::new(),
             },
-            ExprKind::Load(inner) | ExprKind::Unbox(inner) | ExprKind::Widen(_, inner) | ExprKind::New(inner) | ExprKind::Try { expr: inner, .. } => {
+            ExprKind::Load(inner) | ExprKind::Unbox(inner) | ExprKind::AsSlice(inner) | ExprKind::Widen(_, inner) | ExprKind::New(inner) | ExprKind::Try { expr: inner, .. } => {
                 self.loans_of(inner, mutable)
             }
             ExprKind::Coalesce { left, right, .. } => union(&mut [&**left, &**right].into_iter()),
@@ -1573,6 +1664,7 @@ impl<'a> Checker<'a> {
     /// (`this.current = token`) the value must come from what that same owner holds.
     fn stores(&mut self, target: &Expr, value: &Expr) -> Res<()> {
         let loans = self.loans_of(value, false);
+        self.kept_unnamed(&loans, value, "the place it is put into")?;
         let Some((name, path)) = store_path(target) else { return Ok(()) };
         let Some(var) = self.find(name) else { return Ok(()) };
         let id = var.id;
@@ -1675,6 +1767,7 @@ impl<'a> Checker<'a> {
     /// borrowed parameter. A borrow of something that lives only in the function would dangle.
     fn returned_borrow(&mut self, value: &Expr) -> Res<()> {
         let loans = self.loans_of(value, matches!(self.ret, Ty::Ref(_)));
+        self.kept_unnamed(&loans, value, "the caller")?;
         for loan in loans {
             let Some(var) = self.scopes.iter().flat_map(|scope| &scope.vars).find(|var| var.id == loan.root) else { continue };
             let name = &var.name;
@@ -1928,6 +2021,7 @@ impl<'a> Checker<'a> {
                     true => self.loans_of(init, matches!(ty, Ty::Ref(_))),
                     false => Vec::new(),
                 };
+                self.kept_unnamed(&loans, init, &format!("`{name}`"))?;
                 self.declare_local(name, ty, *name_span)?;
                 self.find(name).expect("just declared").loans = loans;
                 if holds_result {
@@ -2013,6 +2107,7 @@ impl<'a> Checker<'a> {
                 // A `read` variable pointed at something else holds what the new value borrowed.
                 if rebinds {
                     let loans = self.loans_of(value, false);
+                    self.kept_unnamed(&loans, value, "the variable")?;
                     if let ExprKind::Var(name) = &target.kind {
                         let var = self.var(name, target.span)?;
                         let id = var.id;
@@ -2107,6 +2202,11 @@ impl<'a> Checker<'a> {
                     ExprKind::Borrow { expr, .. } => expr,
                     _ => &*iter,
                 };
+                // A range of a list is the list, as far as changing it goes.
+                let source = match &source.kind {
+                    ExprKind::Slice { recv, .. } => recv,
+                    _ => source,
+                };
                 let lock = store_path(source).and_then(|(name, path)| {
                     let text = self.src[source.span.start..source.span.end].to_string();
                     Some(Lock { var: self.var_id(name)?, path, text, positions: false, span: iter.span })
@@ -2129,7 +2229,7 @@ impl<'a> Checker<'a> {
                     };
                 }
                 let item = match inner {
-                    Ty::List(item) => (**item).clone(),
+                    Ty::List(item) | Ty::Array(item, _) | Ty::Slice(item) => (**item).clone(),
                     Ty::Map(key, value) => Ty::Entry(key.clone(), value.clone()),
                     Ty::Set(_) if mode == Some(Mode::Ref) => {
                         return Err(Diag::error(iter.span, "the items of a `HashSet` cannot be changed in place: the set finds them by their value")
@@ -2146,7 +2246,7 @@ impl<'a> Checker<'a> {
                             .hint("test it first with `is not null`, or give a fallback with `??`"));
                     }
                     _ => {
-                        return Err(Diag::error(iter.span, format!("`for` goes over a range `a..b`, a `List`, a `HashMap` or a `HashSet`, found `{found}`")));
+                        return Err(Diag::error(iter.span, format!("`for` goes over a range `a..b`, a `List`, an array, a slice, a `HashMap` or a `HashSet`, found `{found}`")));
                     }
                 };
                 let item = match mode {
@@ -2159,7 +2259,7 @@ impl<'a> Checker<'a> {
                 // A borrowed collection stays as it is until the loop ends.
                 let locked = mode.is_some() && lock.is_some();
                 if locked {
-                    let positions = matches!(found.strip_borrow(), Ty::List(_) | Ty::Ptr(_));
+                    let positions = matches!(found.strip_borrow(), Ty::List(_) | Ty::Ptr(_) | Ty::Array(..) | Ty::Slice(_));
                     self.locks.extend(lock.map(|lock| Lock { positions, ..lock }));
                 }
                 let node = self.node();
@@ -2328,6 +2428,22 @@ impl<'a> Checker<'a> {
             (Ty::Null, _) => Err(Diag::error(expr.span, format!("`{expected}` cannot be `null`"))
                 .hint(format!("a value that may be missing has the type `{expected}?`"))),
             (Ty::Void, _) => Err(Diag::error(expr.span, "this call does not return a value, and one is needed here")),
+            // A borrow of a list or an array where a slice goes: a window onto all of it.
+            (Ty::Read(from) | Ty::Ref(from), Ty::Read(to)) | (Ty::Ref(from), Ty::Ref(to)) if as_slice(from, to) => {
+                wrap(expr, ExprKind::AsSlice);
+                expr.ty = expected.clone();
+                Ok(())
+            }
+            (Ty::List(_) | Ty::Array(..), Ty::Read(to) | Ty::Ref(to)) if as_slice(&found, to) => {
+                let word = if matches!(expected, Ty::Ref(_)) { "ref" } else { "read" };
+                mismatch(Some(format!("lend it with `{word}`: `{word} {text}`")))
+            }
+            (Ty::Str, Ty::Read(to)) if **to == Ty::Slice(Box::new(Ty::Int(IntTy::Byte))) => {
+                mismatch(Some(format!("the bytes of a text: `{text}.asBytes()`")))
+            }
+            (Ty::Read(from), Ty::Read(to)) if **from == Ty::Str && **to == Ty::Slice(Box::new(Ty::Int(IntTy::Byte))) => {
+                mismatch(Some(format!("the bytes of a text: `{text}.asBytes()`")))
+            }
             (Ty::Fmt, Ty::Str) => Err(Diag::error(expr.span, "expected `string`; `$\"...\"` does not become a `string` on its own")
                 .hint("add `.toString()` at the end; that is where the allocation shows")),
             // `T` where `T?` is expected.
@@ -2404,6 +2520,17 @@ impl<'a> Checker<'a> {
     fn place_untyped(&mut self, expr: &mut Expr) -> Res<Option<(Ty, bool)>> {
         let span = expr.span;
         self.settle(expr)?;
+        // `byte[16]`: a type name and a number in brackets build an array of zeros.
+        if let ExprKind::Index { recv, index, .. } = &expr.kind {
+            if let (ExprKind::Var(name), ExprKind::Int(length, _)) = (&recv.kind, &index.kind) {
+                let is_type = Ty::from_name(name).is_some() || self.names.full(name, recv.span)?.is_some_and(|full| self.names.kinds.contains_key(&full));
+                if self.find(name).is_none() && name != "this" && is_type && *length >= 0 {
+                    let ty = TypeExpr { mode: None, name: name.clone(), args: Vec::new(), suffixes: vec![Suffix::Array(*length as usize)], span };
+                    expr.kind = ExprKind::Array { ty, args: Vec::new(), items: None };
+                    return Ok(None);
+                }
+            }
+        }
         // `Shape.Empty` is a value, not a field.
         if let ExprKind::Field { recv, .. } = &expr.kind {
             if self.enum_named(recv).is_some() {
@@ -2524,6 +2651,21 @@ impl<'a> Checker<'a> {
                         self.typed(index, &self.key_param(key))?;
                         *kind = IndexKind::Map;
                         Ok(Some(((**value).clone(), writable)))
+                    }
+                    Ty::Array(item, length) => {
+                        self.index(index, "an index")?;
+                        // Both are known here, so it is not left to run time.
+                        if let Some(at) = known_int(index).filter(|at| *at < 0 || *at >= *length as i64) {
+                            return Err(Diag::error(span, format!("index {at} is out of range: the length is {length}"))
+                                .note(format!("the items of a `{inner}` are at 0 to {}", length - 1)));
+                        }
+                        *kind = IndexKind::Array;
+                        Ok(Some(((**item).clone(), writable)))
+                    }
+                    Ty::Slice(item) => {
+                        self.index(index, "an index")?;
+                        *kind = IndexKind::Array;
+                        Ok(Some(((**item).clone(), writable)))
                     }
                     _ => {
                         self.indexable(&ty, recv.span)?;
@@ -2747,21 +2889,43 @@ impl<'a> Checker<'a> {
                 }
                 Ok(built)
             }
-            ExprKind::Slice { recv, from, to } => {
-                let ty = self.operand(recv, None)?;
-                if matches!(ty.strip_borrow(), Ty::List(_)) {
-                    return Err(Diag::error(span, "a range of a `List` is a slice (`read T[]`), which is not in the interpreter yet")
-                        .note("for now a range is taken only of a `string`"));
+            ExprKind::Slice { recv, from, to } => Ok(self.range(recv, from, to)?.0),
+            ExprKind::Array { ty, args, items } => {
+                let built = resolve_type(ty, self.names, false)?;
+                let Ty::Array(item, length) = &built else {
+                    return Err(Diag::error(ty.span, format!("a `{built}` is not built this way")));
+                };
+                let one_by_one = format!("write the items one by one: `{built} {{ ... }}`");
+                match (items, args.as_mut_slice()) {
+                    (Some(_), [arg, ..]) => {
+                        return Err(Diag::error(arg.span, "an array gets its items in braces or one value for all of them in parentheses, not both"));
+                    }
+                    (Some(items), []) => {
+                        if items.len() != *length {
+                            return Err(Diag::error(span, format!("`{built}` needs {length} item(s), {} written", items.len())));
+                        }
+                        for given in items.iter_mut() {
+                            self.typed(given, item)?;
+                        }
+                    }
+                    (None, [value]) => {
+                        if !item.is_copyable(self.copyable) {
+                            return Err(Diag::error(value.span, format!("`{item}` is not `Copyable`, so one value cannot be put in every item")).hint(one_by_one));
+                        }
+                        self.typed(value, item)?;
+                    }
+                    (None, []) => {
+                        if !matches!(**item, Ty::Int(_) | Ty::Bool | Ty::Nullable(_)) {
+                            return Err(Diag::error(span, format!("`{item}` has no zero value, so `{built}` alone cannot fill the array"))
+                                .note("the zero values are 0 for a number, `false` for a `bool` and `null` for a `T?`")
+                                .hint(one_by_one));
+                        }
+                    }
+                    (None, [_, extra, ..]) => {
+                        return Err(Diag::error(extra.span, format!("`{built}(...)` takes the one value that every item gets")));
+                    }
                 }
-                self.indexable(&ty, recv.span)?;
-                if let Some(from) = from {
-                    self.index(from, "the start of the range")?;
-                }
-                if let Some(to) = to {
-                    self.index(to, "the end of the range")?;
-                }
-                // A window onto the text, not a copy.
-                Ok(Ty::Read(Box::new(Ty::Str)))
+                Ok(built)
             }
             ExprKind::Null => Ok(Ty::Null),
             ExprKind::Interp(parts) => {
@@ -2896,15 +3060,32 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Ptr(Box::new(ty)))
             }
             ExprKind::Borrow { mutable, expr: inner } => {
-                // One way to write it: a range of text is a borrow already.
-                if matches!(inner.kind, ExprKind::Slice { .. }) {
-                    let word = if *mutable { "ref" } else { "read" };
+                // One way to write it: a range is a `read` window already. `ref` in front of
+                // a range of items asks for a window that can be written through.
+                if let ExprKind::Slice { recv, from, to } = &mut inner.kind {
+                    let (window, writable) = self.range(recv, from, to)?;
                     let text = &self.src[inner.span.start..inner.span.end];
-                    let diag = Diag::error(span, format!("a range is already a borrow, so `{word}` is not written in front of it"));
-                    return Err(match *mutable {
-                        false => diag.hint(format!("`{text}`")),
-                        true => diag.note("a range of a `string` is a `read string`; text is never written through"),
-                    });
+                    let Ty::Read(behind) = window else { unreachable!("a range is a `read` window") };
+                    if !*mutable {
+                        return Err(Diag::error(span, "a range is already a borrow, so `read` is not written in front of it").hint(format!("`{text}`")));
+                    }
+                    if *behind == Ty::Str {
+                        return Err(Diag::error(span, "a range is already a borrow, so `ref` is not written in front of it")
+                            .note("a range of a `string` is a `read string`; text is never written through"));
+                    }
+                    if let Some(diag) = self.readonly(recv) {
+                        return Err(diag.note("so a range of it cannot be lent as `ref` either"));
+                    }
+                    if !writable {
+                        return Err(Diag::error(recv.span, "this is reached through a `read` borrow, so a range of it cannot be lent as `ref`"));
+                    }
+                    self.not_locked(recv, Access::Write)?;
+                    // Kept as the range alone; its type says that it can be written through.
+                    let ty = Ty::Ref(behind);
+                    inner.ty = ty.clone();
+                    let range = std::mem::replace(&mut inner.kind, ExprKind::Null);
+                    expr.kind = range;
+                    return Ok(ty);
                 }
                 let (ty, writable) = match self.place(inner)? {
                     Some(place) => place,
@@ -2980,10 +3161,49 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Match { subject, arms, borrowed } => self.match_expr(subject, arms, borrowed, expected, false),
             ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => unreachable!("places are handled above"),
-            ExprKind::Widen(..) | ExprKind::Load(_) | ExprKind::Unbox(_) | ExprKind::Variant { .. } | ExprKind::FuncRef(_) => {
+            ExprKind::Widen(..) | ExprKind::Load(_) | ExprKind::Unbox(_) | ExprKind::AsSlice(_) | ExprKind::Variant { .. } | ExprKind::FuncRef(_) => {
                 unreachable!("inserted only after checking")
             }
         }
+    }
+
+    /// `x[a..b]`: a window onto a text, a list, an array or a slice. Gives its type (as a
+    /// `read` window) and whether the same range could be lent as `ref`.
+    fn range(&mut self, recv: &mut Expr, from: &mut Option<Box<Expr>>, to: &mut Option<Box<Expr>>) -> Res<(Ty, bool)> {
+        let (ty, mut writable, is_place) = match self.place(recv)? {
+            Some((ty, writable)) => (ty, writable, true),
+            None => (self.expr(recv, None)?, true, false),
+        };
+        let mut inner = &ty;
+        loop {
+            inner = match inner {
+                Ty::Read(behind) => {
+                    writable = false;
+                    behind
+                }
+                Ty::Ref(behind) => {
+                    writable = true;
+                    behind
+                }
+                Ty::Ptr(behind) => behind,
+                _ => break,
+            };
+        }
+        let window = match inner {
+            Ty::Str => Ty::Str,
+            Ty::List(item) | Ty::Array(item, _) | Ty::Slice(item) => Ty::Slice(item.clone()),
+            _ => {
+                self.indexable(&ty, recv.span)?;
+                unreachable!("anything a range can be taken of is handled above")
+            }
+        };
+        if let Some(from) = from {
+            self.index(from, "the start of the range")?;
+        }
+        if let Some(to) = to {
+            self.index(to, "the end of the range")?;
+        }
+        Ok((Ty::Read(Box::new(window)), writable && (is_place || ty.is_borrow())))
     }
 
     /// The message for a value that `x[i]` or `x[a..b]` cannot be written on.
@@ -2994,7 +3214,7 @@ impl<'a> Checker<'a> {
                 .hint("test it first with `is not null`, or give a fallback with `??`")),
             Ty::Fmt => Err(Diag::error(span, "`$\"...\"` is not a `string` and cannot be indexed").hint("add `.toString()` first")),
             other => Err(Diag::error(span, format!("`{other}` cannot be indexed"))
-                .note("an index is written on a `string` (one byte), a `List` and a `HashMap`")),
+                .note("an index is written on a `string` (one byte), a `List`, an array, a slice and a `HashMap`")),
         }
     }
 
@@ -3480,7 +3700,7 @@ impl<'a> Checker<'a> {
                 .hint(format!("add `: Comparable` to the definition and write `int compare(read this, read {name} other)`")));
         }
         // A collection is `Equatable` if what it holds is; it has no order of its own.
-        if let (collection @ (Ty::List(_) | Ty::Set(_) | Ty::Map(..)), true, true) = (peel(&left_ty), peel(&left_ty) == peel(&right_ty), op.is_comparison()) {
+        if let (collection @ (Ty::List(_) | Ty::Set(_) | Ty::Map(..) | Ty::Array(..) | Ty::Slice(_)), true, true) = (peel(&left_ty), peel(&left_ty) == peel(&right_ty), op.is_comparison()) {
             let symbol = op.symbol();
             if !matches!(op, BinOp::Eq | BinOp::Ne) {
                 return Err(Diag::error(span, format!("`{symbol}` puts the values in order, and a `{collection}` has no order of its own"))
@@ -3533,8 +3753,8 @@ impl<'a> Checker<'a> {
             Ty::Result(..) => Err(Diag::error(span, format!("this is `{ty}`: either a value or an error"))
                 .hint("open it first with `try`, `??` or `match`")),
             // A collection is written item by item, so the items must have a text.
-            Ty::List(_) | Ty::Map(..) | Ty::Set(_) if can_format(inner, self.formattable) => Ok(()),
-            Ty::List(_) | Ty::Map(..) | Ty::Set(_) => {
+            Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Array(..) | Ty::Slice(_) if can_format(inner, self.formattable) => Ok(()),
+            Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Array(..) | Ty::Slice(_) => {
                 let diag = Diag::error(span, format!("a `{inner}` cannot be written as text"));
                 Err(match unformattable(inner, self.formattable) {
                     Some(item) => diag.hint(format!("its items are written one by one, so add `Formattable` to the definition: `{item} : Formattable`")),
@@ -3669,9 +3889,16 @@ impl<'a> Checker<'a> {
                     return self.static_call(owner, name, name_span, args, callee, span);
                 }
                 // `string.join(", ", read names)`
+                // `string.fromUtf8(bytes)`: the bytes looked at as text, if they are text.
+                if owner == "string" && name == "fromUtf8" {
+                    let bytes = Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+                    self.args(name, args, &[bytes], span)?;
+                    *callee = Callee::FromUtf8;
+                    return Ok(Ty::Result(Box::new(Ty::Read(Box::new(Ty::Str))), Box::new(Ty::Struct(TEXT_ERROR.to_string()))));
+                }
                 if owner == "string" {
                     if name != "join" {
-                        return Err(Diag::error(name_span, format!("`string` has no function `{name}`")).note("functions for now: join"));
+                        return Err(Diag::error(name_span, format!("`string` has no function `{name}`")).note("functions for now: join, fromUtf8"));
                     }
                     let text = Ty::Read(Box::new(Ty::Str));
                     self.args(name, args, &[text, Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))))], span)?;
@@ -3773,6 +4000,17 @@ impl<'a> Checker<'a> {
         if matches!(target, Ty::List(_) | Ty::Map(..) | Ty::Set(_)) {
             return self.collection_method(recv, target, writable, name, name_span, args, span);
         }
+        // An array and a slice have the methods of a list that only look.
+        if let Ty::Array(item, _) | Ty::Slice(item) = target {
+            if !matches!(name, "length" | "get" | "indexOf" | "contains") {
+                let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
+                return Err(match name {
+                    "add" | "removeLast" | "clear" => diag.note(format!("`{target}` has a fixed number of items; a `List<{item}>` grows and shrinks")),
+                    _ => diag.note("methods for now: length, get, indexOf, contains"),
+                });
+            }
+            return self.collection_method(recv, &Ty::List(item.clone()), writable, name, name_span, args, span);
+        }
 
         let arity = |count: usize| {
             if args.len() == count {
@@ -3820,6 +4058,11 @@ impl<'a> Checker<'a> {
             (Ty::Str, "length") => {
                 arity(0)?;
                 Ok(Ty::Int(IntTy::Nint))
+            }
+            // The bytes of the text, looked at where they are.
+            (Ty::Str, "asBytes") => {
+                arity(0)?;
+                Ok(Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte))))))
             }
             // What `==` and `<` are short for, on the built-in types too.
             (Ty::Int(ty), "compare" | "equals") => {
@@ -4212,6 +4455,7 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
             let given = items.iter().flatten().flat_map(|item| &item.values);
             args.iter().chain(given).for_each(|value| taken_in(value, names));
         }
+        ExprKind::Array { args, items, .. } => args.iter().chain(items.iter().flatten()).for_each(|value| taken_in(value, names)),
         ExprKind::Binary(_, left, right) | ExprKind::Coalesce { left, right, .. } | ExprKind::Index { recv: left, index: right, .. } => {
             taken_in(left, names);
             taken_in(right, names);
@@ -4238,6 +4482,7 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
         ExprKind::Field { recv: inner, .. }
         | ExprKind::IsVariant { expr: inner, .. }
         | ExprKind::Unbox(inner)
+        | ExprKind::AsSlice(inner)
         | ExprKind::Try { expr: inner, .. }
         | ExprKind::Return(Some(inner))
         | ExprKind::Unary(_, inner)

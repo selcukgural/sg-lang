@@ -151,6 +151,28 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 Tok::Star => suffixes.push(Suffix::Pointer),
                 Tok::Question => suffixes.push(Suffix::Nullable),
+                // `int[8]` is an array, `byte[]` a slice.
+                Tok::LBracket => {
+                    self.bump();
+                    match *self.peek() {
+                        Tok::RBracket => suffixes.push(Suffix::Slice),
+                        Tok::Int(length) => {
+                            let Ok(length) = usize::try_from(length) else {
+                                return Err(Diag::error(self.span(), "an array cannot have that many items"));
+                            };
+                            suffixes.push(Suffix::Array(length));
+                            self.bump();
+                            if *self.peek() != Tok::RBracket {
+                                return Err(self.unexpected("`]`"));
+                            }
+                        }
+                        _ => {
+                            return Err(self
+                                .unexpected("the number of items or `]`")
+                                .note("the length of an array is a number written in its type: `int[8]`; a slice is written `read int[]`"))
+                        }
+                    }
+                }
                 _ => break,
             }
             self.bump();
@@ -469,8 +491,13 @@ impl<'a> Parser<'a> {
             }
             n += 1;
         }
-        while matches!(self.peek_at(n), Tok::Star | Tok::Question) {
-            n += 1;
+        loop {
+            match self.peek_at(n) {
+                Tok::Star | Tok::Question => n += 1,
+                Tok::LBracket if *self.peek_at(n + 1) == Tok::RBracket => n += 2,
+                Tok::LBracket if matches!(self.peek_at(n + 1), Tok::Int(_)) && *self.peek_at(n + 2) == Tok::RBracket => n += 3,
+                _ => break,
+            }
         }
         Some(n - start)
     }
@@ -1058,6 +1085,24 @@ impl<'a> Parser<'a> {
                 let items = if *self.peek() == Tok::LBrace && self.struct_literals { Some(self.items()?) } else { None };
                 ExprKind::Collection { ty, args, items }
             }
+            Tok::Ident(_) if self.at_array() => {
+                let ty = self.type_expr()?;
+                let args = if *self.peek() == Tok::LParen { self.args()? } else { Vec::new() };
+                let items = match *self.peek() == Tok::LBrace && self.struct_literals {
+                    true => {
+                        let mut values = Vec::new();
+                        for mut item in self.items()? {
+                            if item.braced {
+                                return Err(Diag::error(item.span, "an item of an array is one value, written without braces").hint("`int[3] { 1, 2, 3 }`"));
+                            }
+                            values.push(item.values.remove(0));
+                        }
+                        Some(values)
+                    }
+                    false => None,
+                };
+                ExprKind::Array { ty, args, items }
+            }
             Tok::Ident(_) => {
                 let (name, name_span) = self.ident("an expression")?;
                 if *self.peek() == Tok::LParen {
@@ -1110,6 +1155,19 @@ impl<'a> Parser<'a> {
         let Some(n) = self.type_len(0) else { return false };
         *self.peek_at(n - 1) == Tok::Gt
             && (*self.peek_at(n) == Tok::LParen || (*self.peek_at(n) == Tok::LBrace && self.struct_literals))
+    }
+
+    /// Whether an array is built here: `int[3] { 1, 2, 3 }`, `byte[16](255)`, `int?[4]`. A
+    /// name, a number in brackets and nothing after them (`byte[16]`) reads like an index; the
+    /// checker tells the two apart, since only it knows whether the name is a type.
+    fn at_array(&self) -> bool {
+        let Some(n) = self.type_len(0) else { return false };
+        if *self.peek_at(n - 1) != Tok::RBracket {
+            return false;
+        }
+        let first = (0..n).find(|at| *self.peek_at(*at) == Tok::LBracket).expect("the type ends in `]`");
+        let typed = (0..first).any(|at| matches!(self.peek_at(at), Tok::Lt | Tok::Star | Tok::Question));
+        typed || *self.peek_at(n) == Tok::LParen || (*self.peek_at(n) == Tok::LBrace && self.struct_literals)
     }
 
     /// `{ 1, 2 }` or `{ {"x", 10}, {"y", 20} }`; line ends do not matter.

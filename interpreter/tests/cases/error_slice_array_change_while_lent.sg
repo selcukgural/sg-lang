@@ -1,0 +1,6 @@
+void main() {
+    var values = int[3] { 1, 2, 3 }
+    var window = ref values[1..]
+    values[0] = 9
+    window[0] = 5
+}

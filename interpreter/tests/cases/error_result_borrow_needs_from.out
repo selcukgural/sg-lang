@@ -1,0 +1,5 @@
+error: `load` returns a `Result<read string, TextError>`, which carries a borrow, so it says where that comes from
+  --> error_result_borrow_needs_from.sg:1:32
+ 1 | Result<read string, TextError> load(read byte[] data) {
+   |                                ^^^^
+  hint: after the parameters: `from data`

@@ -1,0 +1,6 @@
+void main() {
+    var bytes = List<byte> { 104, 105 }
+    var text = string.fromUtf8(read bytes) ?? "?"
+    bytes.add(33)
+    print(text)
+}

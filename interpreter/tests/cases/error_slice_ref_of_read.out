@@ -1,0 +1,4 @@
+error: this is reached through a `read` borrow, so a range of it cannot be lent as `ref`
+  --> error_slice_ref_of_read.sg:6:14
+ 6 |     fill(ref values[..2])
+   |              ^^^^^^

@@ -1,0 +1,4 @@
+error: `TextError` is a built-in type and cannot be redefined
+  --> error_text_error_redefined.sg:1:8
+ 1 | struct TextError {
+   |        ^^^^^^^^^

@@ -1,0 +1,5 @@
+3
+panic: index 2 is out of range: the length is 2
+  --> panic_slice_index.sg:2:12
+ 2 |     return values[2]
+   |            ^^^^^^^^^

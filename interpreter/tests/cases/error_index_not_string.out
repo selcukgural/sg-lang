@@ -1,5 +1,5 @@
 error: `int` cannot be indexed
-  an index is written on a `string` (one byte), a `List` and a `HashMap`
+  an index is written on a `string` (one byte), a `List`, an array, a slice and a `HashMap`
   --> error_index_not_string.sg:3:11
  3 |     print(n[0])
    |           ^

@@ -1,0 +1,77 @@
+// Keeps the average of the last 8 measurements and prints the id of the device as hex.
+// Nothing here is on the heap: an array sits where it is declared, on the stack or inside
+// the struct, and a slice is a window onto it.
+
+struct Window {
+    int[8] values
+    nint next
+    nint count
+
+    Window create() {
+        return Window { values = int[8], next = 0, count = 0 }
+    }
+
+    void add(ref this, int value) {
+        this.values[this.next] = value
+        this.next = (this.next + 1) % this.values.length()
+        if this.count < this.values.length() {
+            this.count += 1
+        }
+    }
+
+    int? average(read this) {
+        if this.count == 0 {
+            return null
+        }
+        long total = 0
+        for v in this.values[..this.count] {
+            total += v
+        }
+        return (int)(total / (long)this.count)
+    }
+}
+
+// Turns each byte into two hex characters. The target belongs to the caller; nothing is
+// allocated here.
+void toHex(read byte[] source, ref byte[] target) {
+    var digits = "0123456789abcdef".asBytes()
+    for i in 0..source.length() {
+        target[i * 2] = digits[source[i] / 16]
+        target[i * 2 + 1] = digits[source[i] % 16]
+    }
+}
+
+void main() {
+    var window = Window()
+    print(window.average() ?? -1)
+
+    var readings = int[5] { 20, 22, 21, 90, 23 }
+    for r in readings {
+        window.add(r)
+    }
+    print(window.average() ?? -1)
+
+    // More than the window holds: the oldest ones are written over.
+    for i in 0..6 {
+        window.add(100)
+    }
+    print(window.average() ?? -1)
+    print(window.values)
+
+    var id = byte[4] { 222, 173, 190, 239 }
+    var text = byte[8]
+    toHex(read id, ref text)
+    print(string.fromUtf8(read text) ?? panic("hex is ASCII"))
+
+    var mask = byte[4](255)
+    toHex(read mask, ref text)
+    print(string.fromUtf8(read text) ?? panic("hex is ASCII"))
+
+    // An array of numbers is copied like a number.
+    var copy = id
+    copy[0] = 0
+    print(id)
+    print(copy)
+    print(id[1..3])
+    print(id == copy)
+}

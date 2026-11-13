@@ -1,0 +1,68 @@
+struct Point : Copyable, Formattable, Equatable {
+    int x
+    int y
+}
+
+struct Grid {
+    bool[4] seen
+    int?[2] limits
+}
+
+int sum(int[3] values) {
+    var total = 0
+    for i in 0..values.length() {
+        total += values[i]
+    }
+    return total
+}
+
+void main() {
+    var numbers = int[3] { 1, 2, 3 }
+    print(numbers)
+    print(numbers.length())
+    print(sum(numbers))
+
+    // Zero values: 0, false and null.
+    var grid = Grid { seen = bool[4], limits = int?[2] }
+    grid.seen[2] = true
+    grid.limits[1] = 7
+    print(grid.seen)
+    print(grid.limits[0] ?? -1)
+    print(grid.limits[1] ?? -1)
+
+    // One value in every item.
+    var points = Point[2](Point { x = 1, y = 2 })
+    points[1].x = 9
+    print(points)
+
+    // Text is not copied: the array is moved, and its items are looked at where they are.
+    var names = string[2] { "ada", "grace" }
+    var moved = names
+    print(moved[1].length())
+    for name in read moved {
+        print(name)
+    }
+    for name in moved {
+        print(name)
+    }
+
+    // A copy is a value of its own.
+    var copy = numbers
+    copy[0] = 100
+    numbers[2] += 10
+    print(numbers)
+    print(copy)
+    print(numbers == copy)
+    print(numbers == int[3] { 1, 2, 13 })
+
+    for n in ref numbers {
+        n = n * 2
+    }
+    print(numbers)
+    print(numbers.indexOf(4) ?? -1)
+    print(numbers.contains(5))
+    print(numbers.get(7) ?? -1)
+
+    long[2] wide = long[2](5000000000)
+    print(wide)
+}

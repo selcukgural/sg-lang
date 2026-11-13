@@ -22,7 +22,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
-| Types | `byte`, `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, `read T` and `ref T` in signatures |
+| Types | `byte`, `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
 | Methods | Written in the struct body with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`. Called as `stack.push(1)`, also through pointers and borrows. A function without `this` is called on the type: `Stack.create()`. `Stack(args)` is short for `Stack.create(args)` |
@@ -33,7 +33,9 @@ sh bench/run.sh                                 # compiled SG against C written 
 | `HashMap<K, V>` | Built in; a key is an integer, a `bool`, a `string` or a type written `: Equatable, Hashable`. `HashMap<string, int>()`, `HashMap<string, int> { {"x", 10} }`; `map.add(key, value)`, `map[key]` to read and to write what is under a key that is there, `map.get(key)` gives `null` for a missing key, `map.getOrAdd(key, initial)` gives a `ref V`, `map.contains(key)`, `map.remove(key)`, `map.length()`, `map.clear()` |
 | Text of a collection | `print(xs)`, `$"{xs}"`: `[1, 2, 3]`, `{"ada": 36}`, `{1, 2, 3}`, when the items can be written as text |
 | `HashSet<T>` | Built in; an item is what a key of a `HashMap` can be. `HashSet<int>()`, `HashSet<int> { 1, 2 }`; `set.add(v)` gives `true` if the item was not there, `set.contains(v)`, `set.remove(v)` gives `true` if it was there, `set.length()`, `set.clear()` |
-| `for` over a collection | `for x in xs` hands the collection over and `x` owns each item; `for x in read xs` and `for x in ref xs` lend, and so does a collection that is already borrowed. Over a `HashMap` the variable has a `key` and a `value`; a `HashSet` is gone over by hand-over or `read` |
+| Arrays | `int[8] values`: a fixed number of items, kept where the value is (in the variable, inside the struct), with the length in the type. Built as `int[3] { 1, 2, 3 }` (the items), `byte[16](255)` (one value in every item) or `byte[16]` (zeros: 0, `false`, `null`). `xs[i]` to read and to write, `xs.length()`, `xs.get(i)`, `xs.indexOf(v)`, `xs.contains(v)`, `==`, `print`. An array of items that can be copied is copied like a number; any other is moved |
+| Slices | `read T[]` looks at items that something else owns, `ref T[]` can also write them. `read xs` and `ref xs` give one where a slice is expected, for a `List<T>` and a `T[N]`; a range gives one too: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` for a range that is written through. `s[i]`, `s.length()`, `s.get(i)`, `s.indexOf(v)`, `s.contains(v)`, `==`, `print`, `for`. `text.asBytes()` looks at a text as a `read byte[]`; `string.fromUtf8(bytes)` looks at bytes as text and gives a `Result<read string, TextError>` |
+| `for` over a collection | `for x in xs` hands the collection over and `x` owns each item; `for x in read xs` and `for x in ref xs` lend, and so does a collection that is already borrowed. Over a `HashMap` the variable has a `key` and a `value`; a `HashSet` is gone over by hand-over or `read`. An array is gone over like a list; a slice lends its items |
 | `is` | `if s is Circle(r) { ... }`, `while next() is not End { ... }` |
 | Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
@@ -145,6 +147,21 @@ Design rules that are already enforced:
 - A `public` function, field or method of a module that shows a type which is not `public` is an error
   that shows both places.
 - A `readonly` field cannot be assigned, lent as `ref`, or changed through (`account.history.add(1)`).
+- An index that is known and lies outside an array is an error, not a panic: `buf[16]` with `byte[16] buf`.
+  An index that depends on data panics with the index and the length, as for a list; so does a range
+  outside a list, an array or a slice.
+- An array gets every item when it is built: `int[3] { 1, 2 }` is an error, `string[2]("ada")` is one
+  (text is not copied silently) and so is `string[2]` (text has no zero value). There is no memory that
+  was never written.
+- `byte[]` without `read` or `ref` is an error whose hint is `List<byte>` for an owner and `read byte[]`
+  for a window. A list or an array passed where a slice is expected needs `read` or `ref` written; a text
+  passed where bytes are expected gets the hint `.asBytes()`.
+- A slice is a borrow: while one is kept and used later, what it looks at cannot be changed or moved; one
+  cannot be returned if it looks at a local; a struct that keeps one names its source (`struct
+  Packet<from data>`). A `read T[]` cannot be written through or turned into a `ref T[]`.
+- A borrow of a value that has no name cannot be kept: `var part = make()[..5]`, `var label =
+  make().label()`, `return first(read make())` and the same put into a field are errors whose hint is to
+  give the value a name. Inside one line it is fine: `print(make()[..5])`.
 
 ## The C back end
 
@@ -153,7 +170,8 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (100 of 342 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (100 of 383 programs for now; the others are programs the checker rejects, on purpose,
+and the programs with arrays and slices, which the back end does not compile yet).
 
 What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -1033,6 +1051,61 @@ Choices made in the twenty-ninth slice (the test command on compiled code), appr
     again under the sanitizers, and every test that passes is run once more on its own to see that it
     left no memory behind. A test that fails stops where it is and frees nothing, so it is not looked at.
 
+Choices made in the thirtieth slice (slices and fixed-size arrays; the checker and the interpreter, the back
+end comes after), approved on 13 November 2026:
+
+90. **A range of items is a `read T[]`; `ref` in front of it asks for a `ref T[]`.** `xs[a..b]` on a
+    list, an array or a slice only looks, as a range of text does. `ref xs[a..b]` is the window that can
+    be written through (`fill(ref list[4..], 0)`); it needs what `ref xs` needs. `read xs[a..b]` stays an
+    error whose hint is the bare range. The design had the two slice types but no way to write a range
+    that is written through. Rust writes `&mut xs[a..b]`.
+91. **An array is built as the design says, and `byte[16]` alone is told from an index by the name.**
+    `int[3] { 1, 2, 3 }` and `byte[16](255)` cannot be anything else. `byte[16]` reads like "item 16 of
+    `byte`": it builds an array when `byte` is the name of a type and no variable has that name (a
+    variable wins, as it does for `Shape.Circle`). In a condition and in the head of a `for`,
+    `int[3] { ... }` needs parentheses, as a struct literal does there.
+92. **`T[0]` is an error, and an array of arrays is refused for now.** An array with no items has no use
+    and no natural form in C. The design left the notation for two dimensions open on purpose.
+93. **A slice that may be missing (`read T[]?`) is refused for now**; nothing needed it yet.
+94. **An array and a slice have the methods of a list that only look**: `length`, `get`, `indexOf`,
+    `contains`. `add`, `clear` and `removeLast` are errors that say the number of items is fixed and
+    name `List<T>`. `sort` and `reverse` through a `ref T[]`, `addAll` on a list and looking for a run
+    of items (`data.indexOf(other)`) are not here yet.
+95. **`==` on two arrays or two slices compares the items in order** when the items are `Equatable`,
+    as for a list; `print` writes `[1, 2, 3]`. An array is not a key of a `HashMap` for now. An array
+    and a slice are not compared with each other: `read a == s` has two different types.
+96. **Only an index on an array is looked at before the program runs.** The ends of a range, and any
+    index on a slice or a list, panic when they are wrong, with the same messages as text.
+97. **`TextError` is a built-in struct**: `struct TextError : Copyable, Formattable, Equatable` with
+    one field, `public readonly nint position`, the place of the first byte that is not valid UTF-8
+    (Rust's `Utf8Error::valid_up_to`). It prints as `TextError { position = 2 }`, is seen from every
+    module with nothing written, and its name cannot be given to another type. The design named the
+    type and nothing more.
+98. **`Result<read T, E>` can be written**, since `string.fromUtf8` gives one and a function must be
+    able to pass it on. Such a function says where the borrow comes from (`from data`), as for any
+    type that carries a borrow. A borrow as the error is still refused.
+99. **A borrow of a value that has no name cannot be kept** (a hole in the borrow check, found here
+    and closed). `var part = make()[..5]` was accepted, and in compiled code `part` looked at memory
+    that was freed when the line ended: the address sanitizer shows it. The value a call returns is
+    kept only until its statement ends (choice 9), so a borrow of it may be used inside that statement
+    and nowhere else. Now an error in a variable, in a field or an item, and in `return`, for every
+    form of borrow: a range, `read make()` given to a function that returns a borrow, a method that
+    returns one, `asBytes()`. A text constant is exempt: it is there for the whole run. Rust has the
+    same rule ("temporary value dropped while borrowed"). Cost: none at run time.
+100. **`for` over a slice lends the items** (`read` or `ref`, as the slice is); over an array it works
+     as over a list: handed over, `read` or `ref`. A list cannot be changed inside a `for` over a
+     range of it.
+101. **In the interpreter a slice of items is a real window**: it holds the cells of the items, so
+     what is written through a `ref T[]` lands in the list or the array. The bytes of a text are
+     copied for `asBytes()`, and a range of text is still a copy; neither can be told apart from a
+     window, since text is never written through.
+102. **The sensor window example differs from the design in two lines**: the hex digit is found with
+     `/ 16` and `% 16`, and the id is written in decimal, because the bit operators (`>>`, `&`) and
+     hex numbers are not in the interpreter; and the average divides by `(long)this.count`, since a
+     `long` and an `nint` do not mix on their own (the design text is corrected).
+103. **The back end refuses arrays and slices** with the usual "not in the C back end yet". That is
+     the next slice: an array as a C array inside a struct, a slice as a pointer and a length.
+
 ## Not here yet
 
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
@@ -1056,8 +1129,9 @@ Choices made in the twenty-ninth slice (the test command on compiled code), appr
 - Lists of borrows (`List<read T>`); `reserve`, `clone`; a `Hashable`
   type with its own `equals` or `hash`.
 - `char` and `text.chars()`, `double` and the other number types.
-- Slices of anything but text (`read byte[]`, `xs[a..b]`, `text.asBytes()`, `string.fromUtf8`), `T[N]`.
-  A slice of a `string` is a copy here, not a window; without a borrow check the difference cannot be seen.
+- Arrays and slices in compiled code. Arrays of arrays, `read T[]?`, an array as a key, `sort` and
+  `reverse` through a `ref T[]`, `list.addAll(slice)`, looking for a run of items in a slice. The bit
+  operators (`& | ^ << >>`) and hex numbers (`0xde`).
 - `tryToInt` and the other `tryTo...` conversions. Overflow and cast panics print the values but not yet the
   safe alternative.
 - Freeing a long linked list recurses, the open stack-depth question from the design; here it runs on a 1 GB stack.
@@ -1072,5 +1146,6 @@ sanitizers and measured against C. Every example that runs in the interpreter an
 now compiled, and printing a value allocates nothing. Modules (`use`, `public`, `readonly`) are compiled
 too, and with them the stock and invoice example. A `match` gives its value inside a larger expression, and
 `try` and `?? return` stand after a value that owns memory and has no name; the few positions still refused are
-listed in 81. The test command runs on compiled code too (`sg test --compiled`). After it the question is the
-back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.
+listed in 81. The test command runs on compiled code too (`sg test --compiled`). Arrays (`T[N]`) and slices
+(`read T[]`, `ref T[]`) run in the interpreter; compiling them is next, and with it the measurement that
+matters for them: a buffer on the stack against the same buffer in C.

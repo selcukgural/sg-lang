@@ -1,0 +1,5 @@
+error: this borrows from `make()`, a value with no name: it is gone when the line ends, and `letter` would still look at it
+  --> error_borrow_unnamed_argument.sg:10:18
+ 10 |     var letter = first(read make())
+    |                  ^^^^^^^^^^^^^^^^^^
+  hint: give the value a name first: `var value = make()`

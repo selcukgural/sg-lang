@@ -1,0 +1,8 @@
+void take(string name) {
+    print(name)
+}
+
+void main() {
+    var names = string[2] { "ada", "grace" }
+    take(names[0])
+}

@@ -700,6 +700,9 @@ void fill(ref byte[] target, byte value)                        // Rust: &mut [u
 
 parse(read buffer)                               // a List<byte> is passed as a slice, like string → read string
 var part = data[..4]                             // slice of a slice, no copy. Ends may be omitted: [..b], [a..], [..]
+fill(ref buffer[4..], 0)                         // a range that is written through: ref in front, a ref byte[]
+var part = make()[..4]                           // error: borrows from a value with no name, gone when the line ends.
+                                                 // Hint: give the value a name first
 var raw = "GET /".asBytes()                      // from text to bytes, free
 var text = try string.fromUtf8(data[..end])      // from bytes to text: validates, does not copy
 byte[] copy = data                               // error: byte[] is not a type on its own.

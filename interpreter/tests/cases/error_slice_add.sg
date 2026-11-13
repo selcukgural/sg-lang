@@ -1,0 +1,6 @@
+void grow(ref int[] values) {
+    values.add(1)
+}
+
+void main() {
+}

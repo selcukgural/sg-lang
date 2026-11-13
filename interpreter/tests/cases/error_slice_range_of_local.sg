@@ -1,0 +1,7 @@
+read int[] make() {
+    var values = List<int> { 1, 2, 3 }
+    return values[1..]
+}
+
+void main() {
+}

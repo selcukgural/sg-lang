@@ -1,0 +1,68 @@
+int total(read int[] values) {
+    var sum = 0
+    for v in values {
+        sum += v
+    }
+    return sum
+}
+
+void fill(ref int[] target, int value) {
+    for i in 0..target.length() {
+        target[i] = value
+    }
+}
+
+// A slice that comes from the parameter: nothing is written after the parameters.
+read int[] firstHalf(read int[] values) {
+    return values[..values.length() / 2]
+}
+
+int longest(read string[] words) {
+    var best = 0
+    for word in words {
+        if word.length() > best {
+            best = (int)word.length()
+        }
+    }
+    return best
+}
+
+void main() {
+    var list = List<int> { 1, 2, 3, 4, 5, 6 }
+    var array = int[4] { 10, 20, 30, 40 }
+
+    // A list and an array are lent where a slice is expected.
+    print(total(read list))
+    print(total(read array))
+
+    // A range is a window, not a copy.
+    print(total(list[1..3]))
+    print(total(array[2..]))
+    print(list[..2])
+    print(list[..].length())
+
+    var half = firstHalf(read list)
+    print(half)
+    print(firstHalf(half))
+    print(half[1])
+    print(half == list[0..3])
+    print(half.indexOf(3) ?? -1)
+
+    // Written through a `ref` slice: the list and the array change.
+    fill(ref array, 7)
+    print(array)
+    fill(ref list[4..], 0)
+    print(list)
+    var tail = ref list[..2]
+    tail[0] = 99
+    fill(tail, 5)
+    print(list)
+
+    var words = List<string> { "a", "bcd", "ef" }
+    print(longest(read words))
+    print(longest(words[..1]))
+    print(words[1..][0])
+
+    // An empty window is fine.
+    print(total(list[3..3]))
+}

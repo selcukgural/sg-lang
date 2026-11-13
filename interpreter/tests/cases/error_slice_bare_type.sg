@@ -1,0 +1,6 @@
+void show(byte[] data) {
+    print(data.length())
+}
+
+void main() {
+}

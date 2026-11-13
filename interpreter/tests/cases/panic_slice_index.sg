@@ -1,0 +1,9 @@
+int third(read int[] values) {
+    return values[2]
+}
+
+void main() {
+    var values = List<int> { 1, 2, 3 }
+    print(third(read values))
+    print(third(values[1..]))
+}

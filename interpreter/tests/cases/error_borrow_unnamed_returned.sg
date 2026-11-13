@@ -1,0 +1,11 @@
+string make() {
+    return "hello".clone()
+}
+
+read string part() {
+    return make()[1..]
+}
+
+void main() {
+    print(part())
+}

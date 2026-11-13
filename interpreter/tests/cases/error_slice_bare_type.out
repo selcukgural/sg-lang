@@ -1,0 +1,5 @@
+error: `byte[]` is not a type on its own: a slice only looks at items that something else owns
+  --> error_slice_bare_type.sg:1:11
+ 1 | void show(byte[] data) {
+   |           ^^^^^^
+  hint: `List<byte>` to own the items, `read byte[]` for a window onto them

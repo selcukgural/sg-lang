@@ -1,0 +1,19 @@
+// A type that keeps a slice names where it comes from, like one that keeps a `read string`.
+struct Packet<from data> {
+    read byte[] header
+    read byte[] body
+}
+
+Packet split(read byte[] data) from data {
+    return Packet { header = data[..2], body = data[2..] }
+}
+
+void main() {
+    var data = byte[5] { 1, 2, 3, 4, 5 }
+    var packet = split(read data)
+    print(packet.header)
+    print(packet.body.length())
+    for b in packet.body {
+        print(b)
+    }
+}

@@ -1,0 +1,8 @@
+List<int> make() {
+    return List<int> { 1, 2, 3 }
+}
+
+void main() {
+    var part = make()[..2]
+    print(part)
+}

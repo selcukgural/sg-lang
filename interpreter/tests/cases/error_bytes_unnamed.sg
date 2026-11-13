@@ -1,0 +1,8 @@
+string make() {
+    return "abc".clone()
+}
+
+void main() {
+    var bytes = make().asBytes()
+    print(bytes)
+}

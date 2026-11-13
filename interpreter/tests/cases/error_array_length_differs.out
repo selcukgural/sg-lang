@@ -1,0 +1,4 @@
+error: expected `byte[4]`, found `byte[16]`
+  --> error_array_length_differs.sg:3:21
+ 3 |     byte[4] small = buf
+   |                     ^^^

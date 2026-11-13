@@ -1,0 +1,14 @@
+struct Word<from source> {
+    read string text
+}
+
+string make() {
+    return "hello".clone()
+}
+
+void main() {
+    var text = "abc".clone()
+    var word = Word { text = text[..1] }
+    word.text = make()[..2]
+    print(word.text)
+}

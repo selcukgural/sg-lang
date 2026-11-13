@@ -104,6 +104,10 @@ pub enum Ty {
     Entry(Box<Ty>, Box<Ty>),
     /// What a `format` method writes into: `ref Formatter f`.
     Formatter,
+    /// `T[N]`: a fixed number of items, kept where the value is.
+    Array(Box<Ty>, usize),
+    /// `T[]`: the items a slice looks at. Only ever behind `read` or `ref`.
+    Slice(Box<Ty>),
     /// `read T`: read-only borrow.
     Read(Box<Ty>),
     /// `ref T`: writable borrow.
@@ -127,10 +131,10 @@ impl Ty {
     pub fn is_copyable(&self, declared: &HashSet<String>) -> bool {
         match self {
             Ty::Int(_) | Ty::Bool | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) | Ty::Func(..) => true,
-            Ty::Nullable(inner) => inner.is_copyable(declared),
+            Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-            Ty::Str | Ty::Ptr(_) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) => false,
+            Ty::Str | Ty::Ptr(_) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) => false,
         }
     }
 
@@ -173,6 +177,8 @@ impl fmt::Display for Ty {
                 write!(f, "{ret}>")
             }
             Ty::Entry(key, value) => write!(f, "entry of HashMap<{key}, {value}>"),
+            Ty::Array(item, length) => write!(f, "{item}[{length}]"),
+            Ty::Slice(item) => write!(f, "{item}[]"),
             Ty::Read(inner) => write!(f, "read {inner}"),
             Ty::Ref(inner) => write!(f, "ref {inner}"),
         }

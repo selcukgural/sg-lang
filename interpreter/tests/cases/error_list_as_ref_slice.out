@@ -1,0 +1,5 @@
+error: expected `ref int[]`, found `List<int>`
+  --> error_list_as_ref_slice.sg:7:11
+ 7 |     clear(xs)
+   |           ^^
+  hint: lend it with `ref`: `ref xs`

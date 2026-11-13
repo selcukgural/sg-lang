@@ -1,0 +1,9 @@
+error: this returns a borrow of `bytes`, and `bytes` is gone when the function returns
+  --> error_result_borrow_of_local.sg:4:12
+ 4 |     return Ok(text)
+   |            ^^^^^^^^
+  it is borrowed here:
+  --> error_result_borrow_of_local.sg:3:36
+ 3 |     var text = try string.fromUtf8(read bytes)
+   |                                    ^^^^^^^^^^
+  hint: return the value itself instead of a borrow of it

@@ -1,0 +1,6 @@
+error: `string` has no zero value, so `string[2]` alone cannot fill the array
+  the zero values are 0 for a number, `false` for a `bool` and `null` for a `T?`
+  --> error_array_no_zero.sg:2:17
+ 2 |     var names = string[2]
+   |                 ^^^^^^^^^
+  hint: write the items one by one: `string[2] { ... }`

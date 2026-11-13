@@ -1,0 +1,4 @@
+error: `Row` cannot be `Copyable`: `cells` is a `string[2]`, which is not
+  --> error_array_not_copyable_field.sg:2:5
+ 2 |     string[2] cells
+   |     ^^^^^^^^^

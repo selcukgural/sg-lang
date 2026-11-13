@@ -1,0 +1,6 @@
+void wipe(read byte[] data) {
+    data[0] = 0
+}
+
+void main() {
+}

@@ -1,0 +1,8 @@
+Result<read string, TextError> load() {
+    var bytes = byte[2] { 104, 105 }
+    var text = try string.fromUtf8(read bytes)
+    return Ok(text)
+}
+
+void main() {
+}

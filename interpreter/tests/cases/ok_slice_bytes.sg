@@ -1,0 +1,46 @@
+enum LoadError : Formattable {
+    Empty
+    NotText(TextError cause)
+}
+
+// The first word of the data, as text, without copying it.
+Result<read string, LoadError> firstWord(read byte[] data) from data {
+    if data.length() == 0 {
+        return Error(LoadError.Empty)
+    }
+    var end = data.indexOf(' ') ?? data.length()
+    var word = try string.fromUtf8(data[..end])
+    return Ok(word)
+}
+
+void main() {
+    var bytes = "hello world".asBytes()
+    print(bytes.length())
+    print(bytes[0])
+    print(bytes[..5])
+    print(bytes[..5] == "hello".asBytes())
+
+    var text = "one two"
+    print(string.fromUtf8(text.asBytes()) ?? "?")
+    print(firstWord(text.asBytes()) ?? "?")
+
+    var buffer = List<byte> { 104, 105, 32, 33 }
+    print(firstWord(read buffer) ?? "?")
+
+    // 195 starts a character of two bytes and nothing follows it.
+    var broken = byte[3] { 111, 107, 195 }
+    match string.fromUtf8(read broken) {
+        Ok(found) => print(found)
+        Error(cause) => {
+            print(cause)
+            print(cause.position)
+        }
+    }
+    if firstWord(read broken) is Error(cause) {
+        print(cause)
+    }
+    if firstWord(buffer[..0]) is Error(cause) {
+        print(cause)
+    }
+    print(string.fromUtf8(broken[..2]) ?? "?")
+}

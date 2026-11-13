@@ -1,0 +1,9 @@
+error: `bytes` cannot be changed here: `text` borrows from it and is used again later
+  --> error_result_borrow_outlives.sg:4:5
+ 4 |     bytes.add(33)
+   |     ^^^^^
+  `text` borrowed it here:
+  --> error_result_borrow_outlives.sg:3:32
+ 3 |     var text = string.fromUtf8(read bytes) ?? "?"
+   |                                ^^^^^^^^^^
+  hint: finish with `text` before this line: a borrow ends at its last use

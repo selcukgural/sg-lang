@@ -125,6 +125,8 @@ pub enum Callee {
     Method { owner: String, this: This },
     /// `string.join(separator, read names)`
     Join,
+    /// `string.fromUtf8(bytes)`
+    FromUtf8,
     /// A call through a function value kept in a variable: `test(order)`.
     Value,
     /// A call through a function value kept in a field: `this.test(order)`; the field's position.
@@ -158,6 +160,10 @@ pub enum Suffix {
     Pointer,
     /// `?`
     Nullable,
+    /// `[8]`: a fixed number of items.
+    Array(usize),
+    /// `[]`: a slice, behind `read` or `ref`.
+    Slice,
 }
 
 pub struct Param {
@@ -226,7 +232,11 @@ pub enum ExprKind {
     /// `List<int>()`, `List<int> { 1, 2 }`, `HashMap<string, int> { {"x", 10} }`. `items` is
     /// `None` when no braces were written.
     Collection { ty: TypeExpr, args: Vec<Expr>, items: Option<Vec<Item>> },
-    /// `text[a..b]`, `text[..b]`, `text[a..]`, `text[..]`
+    /// `int[3] { 1, 2, 3 }`, `byte[16](255)`, `byte[16]`. `ty` is the whole type, `int[3]`.
+    /// `items` is `None` when no braces were written.
+    Array { ty: TypeExpr, args: Vec<Expr>, items: Option<Vec<Expr>> },
+    /// `text[a..b]`, `text[..b]`, `text[a..]`, `text[..]`, and the same on a list, an array or
+    /// a slice.
     Slice { recv: Box<Expr>, from: Option<Box<Expr>>, to: Option<Box<Expr>> },
     /// `(int)x`
     Cast { ty: IntTy, expr: Box<Expr> },
@@ -261,6 +271,8 @@ pub enum ExprKind {
     /// Built by the checker from the name of a function used as a value: `isPaid`.
     FuncRef(String),
 
+    /// Inserted by the checker: a borrow of a list or an array used as a slice.
+    AsSlice(Box<Expr>),
     /// Inserted by the checker: `int` value used where a wider integer is expected.
     Widen(IntTy, Box<Expr>),
     /// Inserted by the checker: a borrow of a copyable value used as the value itself.
@@ -274,6 +286,8 @@ pub enum IndexKind {
     Text,
     List,
     Map,
+    /// A `T[N]` or a slice.
+    Array,
 }
 
 /// One item between the braces of a collection: `1`, or `{"x", 10}` for a key and a value.

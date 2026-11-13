@@ -1,0 +1,6 @@
+struct Row : Copyable {
+    string[2] cells
+}
+
+void main() {
+}

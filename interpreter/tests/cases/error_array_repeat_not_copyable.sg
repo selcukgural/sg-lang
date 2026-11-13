@@ -1,0 +1,3 @@
+void main() {
+    var names = string[2]("ada")
+}

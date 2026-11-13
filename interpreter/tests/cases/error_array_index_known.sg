@@ -1,0 +1,4 @@
+void main() {
+    var buf = byte[16]
+    buf[16] = 1
+}

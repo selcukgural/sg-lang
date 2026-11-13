@@ -1,0 +1,9 @@
+error: `values[0]` cannot be changed here: `window` borrows from it and is used again later
+  --> error_slice_array_change_while_lent.sg:4:5
+ 4 |     values[0] = 9
+   |     ^^^^^^^^^
+  `window` borrowed it here:
+  --> error_slice_array_change_while_lent.sg:3:18
+ 3 |     var window = ref values[1..]
+   |                  ^^^^^^^^^^^^^^^
+  hint: finish with `window` before this line: a borrow ends at its last use

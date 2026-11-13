@@ -1,0 +1,17 @@
+use wire
+
+void main() {
+    var frame = byte[4] { 3, 97, 100, 97 }
+    print(name(read frame) ?? "?")
+    print(sizes(read frame))
+    if name(frame[..1]) is Error(cause) {
+        print(cause)
+    }
+    var broken = byte[2] { 1, 255 }
+    match wire.name(read broken) {
+        Ok(text) => print(text)
+        Error(cause) => print(cause)
+    }
+    TextError? none = null
+    print(none is null)
+}

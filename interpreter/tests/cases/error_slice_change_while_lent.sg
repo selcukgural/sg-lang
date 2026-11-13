@@ -1,0 +1,6 @@
+void main() {
+    var buffer = List<byte> { 1, 2, 3 }
+    var head = buffer[..2]
+    buffer.clear()
+    print(head[0])
+}

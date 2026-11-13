@@ -1,0 +1,5 @@
+[2, 3]
+panic: range 2..4 is out of range: the length is 3
+  --> panic_list_range.sg:4:11
+ 4 |     print(values[2..4])
+   |           ^^^^^^^^^^^^

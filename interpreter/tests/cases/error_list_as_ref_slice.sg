@@ -1,0 +1,8 @@
+void clear(ref int[] target) {
+    target[0] = 0
+}
+
+void main() {
+    var xs = List<int> { 1, 2 }
+    clear(xs)
+}

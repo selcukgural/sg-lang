@@ -1,5 +1,0 @@
-error: a range of a `List` is a slice (`read T[]`), which is not in the interpreter yet
-  for now a range is taken only of a `string`
-  --> error_list_range.sg:3:16
- 3 |     var part = xs[0..2]
-   |                ^^^^^^^^

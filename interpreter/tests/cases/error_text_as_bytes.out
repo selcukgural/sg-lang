@@ -1,0 +1,5 @@
+error: expected `read byte[]`, found `string`
+  --> error_text_as_bytes.sg:6:17
+ 6 |     print(first("GET /"))
+   |                 ^^^^^^^
+  hint: the bytes of a text: `"GET /".asBytes()`

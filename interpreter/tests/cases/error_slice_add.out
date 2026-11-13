@@ -1,0 +1,5 @@
+error: `int[]` has no method `add`
+  `int[]` has a fixed number of items; a `List<int>` grows and shrinks
+  --> error_slice_add.sg:2:12
+ 2 |     values.add(1)
+   |            ^^^

@@ -1360,7 +1360,7 @@ struct Window {
         for v in this.values[..this.count] { // slice of the filled part, no copy
             total += v
         }
-        return (int)(total / this.count)
+        return (int)(total / (long)this.count)
     }
 }
 

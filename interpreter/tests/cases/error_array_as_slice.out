@@ -1,0 +1,5 @@
+error: expected `read byte[]`, found `byte[4]`
+  --> error_array_as_slice.sg:7:17
+ 7 |     print(first(id))
+   |                 ^^
+  hint: lend it with `read`: `read id`

@@ -1,0 +1,8 @@
+int first(read byte[] data) {
+    return data[0]
+}
+
+void main() {
+    var id = byte[4] { 1, 2, 3, 4 }
+    print(first(id))
+}

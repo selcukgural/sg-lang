@@ -1,0 +1,5 @@
+error: this borrows from `make()`, a value with no name: it is gone when the line ends, and the caller would still look at it
+  --> error_borrow_unnamed_returned.sg:6:12
+ 6 |     return make()[1..]
+   |            ^^^^^^^^^^^
+  hint: give the value a name first: `var value = make()`

@@ -1,0 +1,5 @@
+error: a range is already a borrow, so `read` is not written in front of it
+  --> error_slice_read_range.sg:3:16
+ 3 |     var part = read values[..2]
+   |                ^^^^^^^^^^^^^^^^
+  hint: `values[..2]`

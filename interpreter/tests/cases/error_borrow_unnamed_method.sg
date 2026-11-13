@@ -1,0 +1,16 @@
+struct Person {
+    string name
+
+    read string label(read this) {
+        return this.name
+    }
+}
+
+Person make() {
+    return Person { name = "ada".clone() }
+}
+
+void main() {
+    var label = make().label()
+    print(label)
+}

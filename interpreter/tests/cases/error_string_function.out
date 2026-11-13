@@ -1,5 +1,5 @@
 error: `string` has no function `concat`
-  functions for now: join
+  functions for now: join, fromUtf8
   --> error_string_function.sg:2:18
  2 |     print(string.concat("a", "b"))
    |                  ^^^^^^

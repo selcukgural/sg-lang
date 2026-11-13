@@ -1,0 +1,10 @@
+void fill(ref int[] target) {
+    target[0] = 1
+}
+
+void wipe(read List<int> values) {
+    fill(ref values[..2])
+}
+
+void main() {
+}

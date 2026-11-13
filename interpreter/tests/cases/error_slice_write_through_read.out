@@ -1,0 +1,5 @@
+error: this item is reached through a `read` borrow and cannot be written
+  --> error_slice_write_through_read.sg:2:5
+ 2 |     data[0] = 0
+   |     ^^^^^^^
+  hint: take the value as `ref` instead of `read`

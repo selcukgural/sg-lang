@@ -1,0 +1,7 @@
+read byte[] make() {
+    var buf = byte[16]
+    return read buf
+}
+
+void main() {
+}

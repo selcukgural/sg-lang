@@ -1,0 +1,5 @@
+error: `string` is not `Copyable`, so one value cannot be put in every item
+  --> error_array_repeat_not_copyable.sg:2:27
+ 2 |     var names = string[2]("ada")
+   |                           ^^^^^
+  hint: write the items one by one: `string[2] { ... }`

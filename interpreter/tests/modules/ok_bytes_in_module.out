@@ -1,0 +1,5 @@
+ada
+[4, 3]
+TooShort
+NotText(TextError { position = 0 })
+true

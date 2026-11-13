@@ -1,0 +1,12 @@
+read string first(read string text) {
+    return text[..1]
+}
+
+string make() {
+    return "hello".clone()
+}
+
+void main() {
+    var letter = first(read make())
+    print(letter)
+}

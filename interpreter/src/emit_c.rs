@@ -879,6 +879,8 @@ fn may_leave(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Try { .. } | ExprKind::Return(_) | ExprKind::Match { .. } => true,
         ExprKind::Int(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) => false,
+        ExprKind::Array { args, items, .. } => any(&mut args.iter().chain(items.iter().flatten())),
+        ExprKind::AsSlice(inner) => may_leave(inner),
         ExprKind::Field { recv: inner, .. }
         | ExprKind::New(inner)
         | ExprKind::Load(inner)
@@ -1472,6 +1474,7 @@ impl<'a> Emitter<'a> {
             found = match suffix {
                 Suffix::Pointer => Ty::Ptr(Box::new(found)),
                 Suffix::Nullable => Ty::Nullable(Box::new(found)),
+                Suffix::Array(_) | Suffix::Slice => return Err(unknown()),
             };
             if mangle(&found).is_none() {
                 return Err(unknown());
@@ -3062,7 +3065,8 @@ impl<'a> Emitter<'a> {
                 own.max(of(recv)).max(all(&mut args.iter()))
             }
             ExprKind::Try { .. } | ExprKind::Return(_) => Effect::Acts,
-            ExprKind::Match { .. } | ExprKind::Collection { .. } => Effect::Changes,
+            ExprKind::Match { .. } | ExprKind::Collection { .. } | ExprKind::Array { .. } => Effect::Changes,
+            ExprKind::AsSlice(inner) => of(inner),
         }
     }
 
@@ -3970,6 +3974,7 @@ impl<'a> Emitter<'a> {
                 let loc = self.loc(expr.span);
                 Ok(sequence(&names, format!("sg_at({}, {}, {loc})", values[0], values[1])))
             }
+            ExprKind::Slice { .. } if !is_text_view(&expr.ty) => Err(not_yet(expr.span, "a slice of items")),
             ExprKind::Slice { recv, from, to } => {
                 let text = self.view(recv)?;
                 if from.is_none() && to.is_none() {

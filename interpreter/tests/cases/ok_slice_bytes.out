@@ -1,0 +1,12 @@
+11
+104
+[104, 101, 108, 108, 111]
+true
+one two
+one
+hi
+TextError { position = 2 }
+2
+NotText(TextError { position = 2 })
+Empty
+ok

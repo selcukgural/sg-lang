@@ -1,0 +1,4 @@
+error: an array gets its items in braces or one value for all of them in parentheses, not both
+  --> error_array_both.sg:2:21
+ 2 |     var xs = int[2](0) { 1, 2 }
+   |                     ^

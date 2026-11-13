@@ -1,0 +1,5 @@
+error: this returns a borrow of `values`, and `values` is gone when the function returns
+  --> error_slice_range_of_local.sg:3:12
+ 3 |     return values[1..]
+   |            ^^^^^^^^^^^
+  hint: return the value itself instead of a borrow of it

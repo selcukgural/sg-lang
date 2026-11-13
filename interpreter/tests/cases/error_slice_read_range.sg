@@ -1,0 +1,4 @@
+void main() {
+    var values = List<int> { 1, 2, 3 }
+    var part = read values[..2]
+}

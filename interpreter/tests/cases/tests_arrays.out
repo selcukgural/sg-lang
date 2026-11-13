@@ -1,0 +1,16 @@
+ok    a ref slice writes into the array
+FAIL  a failed assert writes both arrays
+panic: assert failed: a == int[2] { 1, 3 }
+  left: [1, 2]
+  right: [1, 3]
+  --> tests_arrays.sg:17:5
+ 17 |     assert(a == int[2] { 1, 3 })
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FAIL  a failed assert writes both slices
+panic: assert failed: xs[..2] == xs[1..]
+  left: [1, 2]
+  right: [2, 3]
+  --> tests_arrays.sg:22:5
+ 22 |     assert(xs[..2] == xs[1..])
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+2 of 3 test(s) failed

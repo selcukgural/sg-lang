@@ -1,0 +1,17 @@
+// A module that works on bytes: the built-in `TextError` is seen here with nothing written.
+public enum FrameError : Formattable {
+    TooShort
+    NotText(TextError cause)
+}
+
+public Result<read string, FrameError> name(read byte[] frame) from frame {
+    if frame.length() < 2 {
+        return Error(FrameError.TooShort)
+    }
+    var text = try string.fromUtf8(frame[1..])
+    return Ok(text)
+}
+
+public int[2] sizes(read byte[] frame) {
+    return int[2] { (int)frame.length(), frame[0] }
+}

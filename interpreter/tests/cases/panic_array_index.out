@@ -1,0 +1,5 @@
+3
+panic: index 3 is out of range: the length is 3
+  --> panic_array_index.sg:6:11
+ 6 |     print(values[at])
+   |           ^^^^^^^^^^

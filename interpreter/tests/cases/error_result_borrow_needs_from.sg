@@ -1,0 +1,6 @@
+Result<read string, TextError> load(read byte[] data) {
+    return string.fromUtf8(data)
+}
+
+void main() {
+}

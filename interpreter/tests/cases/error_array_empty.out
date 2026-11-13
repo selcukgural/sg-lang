@@ -1,0 +1,4 @@
+error: an array has at least one item
+  --> error_array_empty.sg:2:5
+ 2 |     int[0] none = int[0]
+   |     ^^^^^^

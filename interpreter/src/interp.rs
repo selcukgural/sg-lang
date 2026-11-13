@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use crate::ast::*;
 use crate::diag::{Diag, Span};
-use crate::types::IntTy;
+use crate::types::{IntTy, Ty};
 
 /// Limit on nested calls. Past it the program gets a readable panic instead of a crash.
 pub const MAX_DEPTH: usize = 5000;
@@ -41,6 +41,10 @@ pub enum Value {
     /// `HashMap<K, V>`: under each key, the key as it was given and the cell of the value.
     /// A hash table; the design promises no order (see `Table`).
     Map(Rc<RefCell<Entries>>),
+    /// `T[N]`: every item in a cell of its own. A value: a copy gets cells of its own.
+    Array(Rc<Vec<Cell>>),
+    /// `read T[]` / `ref T[]`: the cells of the items it looks at.
+    Slice(Rc<Vec<Cell>>),
     /// The address of a named function: its name.
     Func(Rc<str>),
     /// `HashSet<T>`: the items, each under itself as the key.
@@ -186,7 +190,37 @@ fn fresh(value: &Value) -> Value {
     match value {
         Value::Struct(name, fields) => Value::Struct(name.clone(), cells(fields)),
         Value::Enum(name, index, fields) => Value::Enum(name.clone(), *index, cells(fields)),
+        Value::Array(items) => Value::Array(cells(items)),
         other => other.clone(),
+    }
+}
+
+/// A list, an array or a slice as the cells of its items; text as its bytes, which a slice
+/// only reads.
+fn cells_of(value: &Value) -> Rc<Vec<Cell>> {
+    match value {
+        Value::List(items) => Rc::new(items.borrow().clone()),
+        Value::Array(items) | Value::Slice(items) => items.clone(),
+        Value::Str(text) => Rc::new(text.bytes().map(|byte| cell(Value::Int(IntTy::Byte, byte as i64))).collect()),
+        _ => unreachable!("the checker only lets a slice look at items"),
+    }
+}
+
+/// What a method of a list finds when it is called on an array or a slice: the same cells.
+fn as_list(value: Value) -> Value {
+    match value {
+        Value::Array(items) | Value::Slice(items) => Value::List(Rc::new(RefCell::new((*items).clone()))),
+        other => other,
+    }
+}
+
+/// The value every item of `byte[16]` starts with.
+fn zero(ty: &Ty) -> Value {
+    match ty {
+        Ty::Int(ty) => Value::Int(*ty, 0),
+        Ty::Bool => Value::Bool(false),
+        Ty::Nullable(_) => Value::Null,
+        _ => unreachable!("the checker only lets a type with a zero value be filled this way"),
     }
 }
 
@@ -539,6 +573,7 @@ impl<'a> Interp<'a> {
                     let item = match (&collection, &snapshot) {
                         (_, Some(items)) => items.get(next).cloned(),
                         (Value::List(items), _) => items.borrow().get(next).cloned(),
+                        (Value::Array(items) | Value::Slice(items), _) => items.get(next).cloned(),
                         _ => unreachable!("the checker only lets `for` go over a collection"),
                     };
                     let Some(item) = item else { break };
@@ -613,6 +648,10 @@ impl<'a> Interp<'a> {
                             None => Err(out_of_range(*at, items.len())),
                         }
                     }
+                    (Value::Array(items) | Value::Slice(items), Value::Int(_, at)) => match usize::try_from(*at).ok().and_then(|at| items.get(at)) {
+                        Some(item) => Ok(item.clone()),
+                        None => Err(out_of_range(*at, items.len())),
+                    },
                     (Value::Map(entries), key) => match entries.borrow().get(&key_of(key)) {
                         Some((_, value)) => Ok(value.clone()),
                         None => {
@@ -718,9 +757,34 @@ impl<'a> Interp<'a> {
                 self.binary(*op, left, right, expr.span)
             }
             ExprKind::Char(_) => unreachable!("the checker turns a character into a `byte`"),
+            ExprKind::Array { args, items, .. } => {
+                let Ty::Array(item, length) = &expr.ty else { unreachable!("the checker gives an array its type") };
+                let mut cells = Vec::new();
+                match (items, args.first()) {
+                    (Some(items), _) => {
+                        for given in items {
+                            cells.push(cell(self.expr(given, frame)?));
+                        }
+                    }
+                    (None, Some(value)) => {
+                        let value = self.expr(value, frame)?;
+                        cells.extend((0..*length).map(|_| cell(fresh(&value))));
+                    }
+                    (None, None) => cells.extend((0..*length).map(|_| cell(zero(item)))),
+                }
+                Ok(Value::Array(Rc::new(cells)))
+            }
+            ExprKind::AsSlice(inner) => Ok(Value::Slice(cells_of(&owned(self.expr(inner, frame)?)))),
             ExprKind::Slice { recv, from, to } => {
-                let text = self.text(recv, frame)?;
-                let length = text.len() as i64;
+                // The items where they are, not a copy of them: a place is looked into.
+                let holder = match recv.is_place() {
+                    true => owned(self.place(recv, frame)?.borrow().clone()),
+                    false => owned(self.expr(recv, frame)?),
+                };
+                let length = match &holder {
+                    Value::Str(text) => text.len() as i64,
+                    other => cells_of(other).len() as i64,
+                };
                 let from = match from {
                     Some(from) => self.int(from, frame)?,
                     None => 0,
@@ -735,6 +799,9 @@ impl<'a> Interp<'a> {
                 if from > to {
                     return Err(Diag::panic(expr.span, format!("range {from}..{to} ends before it starts")).into());
                 }
+                let Value::Str(text) = holder else {
+                    return Ok(Value::Slice(Rc::new(cells_of(&holder)[from as usize..to as usize].to_vec())));
+                };
                 let (start, end) = (from as usize, to as usize);
                 if let Some(cut) = [start, end].into_iter().find(|at| !text.is_char_boundary(*at)) {
                     let inside = text.char_indices().take_while(|(at, _)| *at < cut).last().expect("a character starts before the cut");
@@ -949,6 +1016,21 @@ impl<'a> Interp<'a> {
                     let parts: Vec<String> = items.borrow().iter().map(|item| item.borrow().format()).collect();
                     Ok(Value::Str(parts.join(&separator).into()))
                 }
+                Callee::FromUtf8 => {
+                    let cells = cells_of(&owned(self.expr(&args[0], frame)?));
+                    let bytes: Vec<u8> = cells.iter().map(|item| match &*item.borrow() {
+                        Value::Int(_, byte) => *byte as u8,
+                        _ => unreachable!("the checker makes the items bytes"),
+                    }).collect();
+                    Ok(match String::from_utf8(bytes) {
+                        Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
+                        Err(error) => {
+                            let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i64));
+                            let cause = Value::Struct("TextError".into(), Rc::new(vec![position]));
+                            Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
+                        }
+                    })
+                }
                 Callee::Take => {
                     let slot = behind_borrows(self.place(recv, frame)?);
                     let old = slot.replace(Value::Null);
@@ -973,19 +1055,13 @@ impl<'a> Interp<'a> {
                     for arg in args {
                         values.push(strip(self.expr(arg, frame)?));
                     }
+                    let recv = as_list(recv);
                     if matches!(recv, Value::List(_) | Value::Map(_) | Value::Set(_)) {
                         return self.collection_method(recv, name, values, expr.span);
                     }
                     Ok(method(recv, name, values))
                 }
             },
-        }
-    }
-
-    fn text(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Rc<str>> {
-        match strip(self.expr(expr, frame)?) {
-            Value::Str(text) => Ok(text),
-            _ => unreachable!("the checker only lets a `string` be indexed"),
         }
     }
 
@@ -1046,7 +1122,7 @@ impl<'a> Interp<'a> {
                         let mut shown = Vec::new();
                         for side in [&left, &right] {
                             shown.push(match owned(side.clone()) {
-                                Value::Struct(..) | Value::Enum(..) | Value::List(_) | Value::Set(_) | Value::Map(_) => self.show(side, true, cond.span)?,
+                                Value::Struct(..) | Value::Enum(..) | Value::List(_) | Value::Set(_) | Value::Map(_) | Value::Array(_) | Value::Slice(_) => self.show(side, true, cond.span)?,
                                 _ => side.debug(),
                             });
                         }
@@ -1077,6 +1153,7 @@ impl<'a> Interp<'a> {
                 let value = inner.borrow().clone();
                 self.show(&value, inside, span)
             }
+            Value::Array(_) | Value::Slice(_) => self.show(&as_list(value.clone()), inside, span),
             Value::Str(text) if inside => Ok(format!("{text:?}")),
             Value::Null => Ok("null".to_string()),
             Value::Void => Ok(String::new()),
@@ -1131,7 +1208,7 @@ impl<'a> Interp<'a> {
     /// An operator on two values. On a struct or an enum `==` is `equals` and `<` is `compare`.
     fn binary(&mut self, op: BinOp, left: Value, right: Value, span: Span) -> Res<Value> {
         use std::cmp::Ordering;
-        let (left, right) = (owned(left), owned(right));
+        let (left, right) = (as_list(owned(left)), as_list(owned(right)));
         let by_method = |value: &Value| matches!(value, Value::Struct(..) | Value::Enum(..) | Value::List(_) | Value::Set(_) | Value::Map(_));
         if !by_method(&left) {
             return Ok(binary(op, left, right, span)?);
@@ -1163,7 +1240,7 @@ impl<'a> Interp<'a> {
 
     /// `a.equals(b)`: the struct's own `equals`, or field by field.
     fn equal(&mut self, left: &Value, right: &Value, span: Span) -> Res<bool> {
-        let (left, right) = (owned(left.clone()), owned(right.clone()));
+        let (left, right) = (as_list(owned(left.clone())), as_list(owned(right.clone())));
         if let Some(result) = self.compared("equals", &left, &right, span)? {
             return Ok(matches!(result, Value::Bool(true)));
         }
@@ -1407,6 +1484,7 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
             }
         }
         (Value::Str(_), "clone", []) => recv,
+        (Value::Str(_), "asBytes", []) => Value::Slice(cells_of(&recv)),
         (_, "equals", [other]) => Value::Bool(key_of(&recv) == key_of(other)),
         (_, "compare", [other]) => Value::Int(IntTy::Int, key_of(&recv).cmp(&key_of(other)) as i64),
         (Value::Int(ty, a), _, [Value::Int(_, b)]) => {

@@ -1,0 +1,7 @@
+void main() {
+    var values = int[3] { 1, 2, 3 }
+    var at = 2
+    print(values[at])
+    at += 1
+    print(values[at])
+}
