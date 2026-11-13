@@ -1,0 +1,38 @@
+// A `Result` whose success is a look at a value someone else owns: a struct, a window.
+struct Point : Formattable {
+    int x
+}
+
+Result<read Point, string> first(read List<Point> points) from points {
+    if points.length() == 0 {
+        return Error("empty".clone())
+    }
+    return Ok(read points[0])
+}
+
+Result<read int[], string> tail(read int[] values) from values {
+    if values.length() == 0 {
+        return Error("empty".clone())
+    }
+    return Ok(values[1..])
+}
+
+void main() {
+    var points = List<Point> { Point { x = 4 } }
+    match first(read points) {
+        Ok(point) => print(point.x)
+        Error(cause) => print(cause)
+    }
+    var values = int[3] { 1, 2, 3 }
+    match tail(read values) {
+        Ok(rest) => print(rest)
+        Error(cause) => print(cause)
+    }
+    var none = List<int>()
+    match tail(read none) {
+        Ok(rest) => print(rest)
+        Error(cause) => print(cause)
+    }
+    var rest = tail(read values) ?? values[..0]
+    print(rest.length())
+}

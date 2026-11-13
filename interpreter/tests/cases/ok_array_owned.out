@@ -1,0 +1,28 @@
+["ada", "grace"]
+3
+grace
+["lovelace", "grace"]
+true
+false
+a
+1
+-1
+["first", "loaded"]
+no
+30
+37
+[2, 30]
+4
+none
+there
+[null, "again"]
+[Point { x = 0, y = 0 }, Point { x = 5, y = 0 }, Point { x = 5, y = 0 }]
+1
+false
+1
+points: [Point { x = 0, y = 0 }, Point { x = 5, y = 0 }, Point { x = 5, y = 0 }], first: Point { x = 0, y = 0 }
+[[1, 2], [3, 4]]
+3
+[1, 20]
+true
+9

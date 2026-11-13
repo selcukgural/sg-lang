@@ -1,0 +1,20 @@
+Dots([3, 4])
+7
+Named(["a", "b"])
+b
+2
+true
+false
+Grid { size = [2, 3], flags = [false, true, false] }
+[104, 105]
+hi
+6
+hi!
+[1, 5]
+6
+[12, 34]
+bad digit 120
+18
+p
+q
+q

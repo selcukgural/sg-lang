@@ -1,0 +1,4 @@
+panic: range 4..3 is out of range: the length is 3
+  --> panic_array_range.sg:4:11
+ 4 |     print(numbers[from..])
+   |           ^^^^^^^^^^^^^^^

@@ -170,8 +170,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (100 of 383 programs for now; the others are programs the checker rejects, on purpose,
-and the programs with arrays and slices, which the back end does not compile yet).
+memory behind (117 of 390 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -211,8 +210,12 @@ has no name, a right side of `&&`, `||` or `??` that needs a text or a list for 
 message with a struct in it on the right of `??`.
 Since the twenty-eighth slice a `match` gives its value inside a larger expression, and `try` and
 `?? return` stand after an argument or a field that owns memory and has no name.
+Since the thirty-first slice arrays and slices: `T[N]` in a variable, a field, a variant, a parameter and
+a return type, built in its three forms, copied or moved as its items ask; `read T[]` and `ref T[]` from
+a list, an array or a range of either; `x[i]`, `length`, `get`, `indexOf`, `contains`, `==`, `print` and
+`for` on both; `text.asBytes()` and `string.fromUtf8`. The sensor window example is compiled.
 What is still missing is an error that names it (not silence): the few positions listed with the choices
-below (81).
+below (81, 111).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
 value (a `string`, a `T*`, a struct, an enum or a `T?` that holds one) is freed where its variable ends, on every way
@@ -241,6 +244,7 @@ hand with no checks):
 | `counts`: a million numbers counted in a `HashMap` of fifty thousand keys, read back and a third removed, twenty times | 0.382 s | 0.376 s | 0.319 s | 1.20 |
 | `show`: two million structs and half a million lists of numbers printed, one on each line | 0.214 s | 0.191 s | 0.374 s | 0.57 |
 | `lookup`: three hundred million lookups in a list of records of 128 bytes, through a function that gives back a `read Record?` | 0.498 s | 0.488 s | 0.491 s | 1.01 |
+| `buffer`: 32 bytes on the stack written as hex into a buffer of 64 through a `ref byte[]`, added up through a `read byte[]` and a range of it, fifteen million times | 0.280 s | 0.733 s | 0.283 s | 0.99 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -283,7 +287,17 @@ turned into digits by a few lines of the runtime instead of `printf`. The C it i
 programmer writes first, a `printf` with a format, and `printf` reads that format again on every call; that
 is the whole difference, not something C cannot do. The honest reading is "printing a struct costs no more
 than a `printf`", not "twice as fast as C".
-The numbers move by a few percent from run to run, and ten small programs are not a benchmark suite.
+`buffer` is the first program with arrays and slices: an id of 32 bytes on the stack is written as hex
+into a buffer of 64 bytes through a `ref byte[]`, and the hex is added up through a `read byte[]` and
+through a range of it, fifteen million times. The C it is compared with passes a pointer and a count by
+hand and checks nothing. The two take the same time (0.99, the same over three runs): the arrays are
+C arrays and a slice is the pointer and the count the C program passes by hand. Every index and the
+range are checked in the C that is generated; here the C compiler, once it has put the small functions
+into `main`, sees both lengths and removes every one of those checks, so the built program holds none.
+That is this program, not a promise: where a length is not known, the check stays, one comparison that
+is never taken. The overflow-checked build takes 2.6 times as long: the checks on `i * 2`, on the sum
+and on the cast to `byte` keep the C compiler from handling several bytes at a time.
+The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
 
@@ -1104,14 +1118,51 @@ end comes after), approved on 13 November 2026:
      hex numbers are not in the interpreter; and the average divides by `(long)this.count`, since a
      `long` and an `nint` do not mix on their own (the design text is corrected).
 103. **The back end refuses arrays and slices** with the usual "not in the C back end yet". That is
-     the next slice: an array as a C array inside a struct, a slice as a pointer and a length.
+     the next slice: an array as a C array inside a struct, a slice as a pointer and a length. (Done
+     in the thirty-first slice: 104 to 112.)
+
+Choices made in the thirty-first slice (arrays and slices in compiled code), approved on 13 November 2026:
+
+104. **An array is a C array inside a struct.** C neither hands a bare array to a function nor gives
+     one back; inside a struct it is a value like any other. So an `int[8]` lies where its variable
+     or its field lies, nothing is allocated for it, and passing, returning or assigning it copies its
+     eight numbers, as the same struct would be copied in C. `values.length()` is the number 8 in the
+     C. `values[i]` is checked in every build; where the index is a constant the C compiler sees that
+     the check cannot fail, and the checker has already refused the constant that would.
+105. **A slice is a pointer and a count, and `read T[]` and `ref T[]` are one C type.** Sixteen bytes,
+     handed over in two registers; what `read` forbids is the checker's work, not the C compiler's.
+     It is the same whatever the items are kept in: a list, an array, another slice.
+106. **`asBytes()` and `string.fromUtf8` copy nothing.** The bytes of a text are the pointer and the
+     length the text already is. `fromUtf8` reads the bytes once to see that they are text and gives
+     the same pointer and length back as a `read string`. The check is written in the runtime, byte
+     by byte; `ok_from_utf8` compares it with the interpreter (Rust's check) on the cases where the
+     rules change: characters cut off by the end, surrogates, more bytes than a character needs.
+107. **A range checks its two ends once.** After that an index into the window is checked against
+     the window's own count, so no index reaches outside the range it was given. Inside
+     `for i in 0..s.length()` the C compiler removes the check, as it does for a list.
+108. **An end that lies outside is said first** (a change to the interpreter too). `xs[4..]` on three
+     items said "range 4..3 ends before it starts"; it now says "range 4..3 is out of range: the
+     length is 3", and so does a range of text. "ends before it starts" is left for a range whose two
+     ends are both inside (`xs[2..1]`).
+109. **An array whose items own something is freed item by item** where its variable ends. Moving it
+     empties every item, so the later free finds nothing. A `for` that is handed such an array gives
+     each item to its round and frees the ones after it if the loop is left early. An array of numbers
+     has none of this: there is nothing to free.
+110. **The success of a `Result` can be a borrow in compiled code**: a `read string`, a slice, or a
+     `read` of a struct, an enum or a collection (a pointer inside the `Result`). A `read T?` as the
+     success is still refused there.
+111. **Still refused in compiled code, by name**: a `for` that is handed an array behind a pointer
+     (`for x in boxed` with a `T[N]*`), as for a list behind a pointer. `for x in read boxed` is
+     compiled.
+112. **The measurement is `buffer`** (above): buffers on the stack and slices onto them, against C
+     that passes a pointer and a count.
 
 ## Not here yet
 
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
   pattern>`); storing a borrow from outside into a value reached through `ref` (the design's
-  `where r from name`); a `List<read T>` or a `Result<read T, E>` (a list of a type that carries a borrow
-  works); a `match` used as a value that gives a borrow is not followed.
+  `where r from name`); a `List<read T>`, and a borrow as the error of a `Result` (a list of a type that
+  carries a borrow works); a `match` used as a value that gives a borrow is not followed.
 - `swap(ref a, ref b)`, and `this` with a type (`read FolderRef this`).
 - A string literal has the type `string` here; in the design it is `read string` that becomes `string` without
   allocating.
@@ -1129,7 +1180,7 @@ end comes after), approved on 13 November 2026:
 - Lists of borrows (`List<read T>`); `reserve`, `clone`; a `Hashable`
   type with its own `equals` or `hash`.
 - `char` and `text.chars()`, `double` and the other number types.
-- Arrays and slices in compiled code. Arrays of arrays, `read T[]?`, an array as a key, `sort` and
+- Arrays of arrays, `read T[]?`, an array as a key, `sort` and
   `reverse` through a `ref T[]`, `list.addAll(slice)`, looking for a run of items in a slice. The bit
   operators (`& | ^ << >>`) and hex numbers (`0xde`).
 - `tryToInt` and the other `tryTo...` conversions. Overflow and cast panics print the values but not yet the
@@ -1147,5 +1198,7 @@ now compiled, and printing a value allocates nothing. Modules (`use`, `public`, 
 too, and with them the stock and invoice example. A `match` gives its value inside a larger expression, and
 `try` and `?? return` stand after a value that owns memory and has no name; the few positions still refused are
 listed in 81. The test command runs on compiled code too (`sg test --compiled`). Arrays (`T[N]`) and slices
-(`read T[]`, `ref T[]`) run in the interpreter; compiling them is next, and with it the measurement that
-matters for them: a buffer on the stack against the same buffer in C.
+(`read T[]`, `ref T[]`) are compiled, and a buffer on the stack takes the time of the same buffer in C.
+
+Candidates for what comes next: the bit operators and hex numbers (the sensor example as the design wrote
+it), `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases (`using`), `double`, threads.

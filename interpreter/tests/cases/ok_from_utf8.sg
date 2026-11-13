@@ -1,0 +1,108 @@
+// `string.fromUtf8` on bytes that are text and on bytes that are not: the position is that of
+// the first byte of the character that is wrong.
+void check(read byte[] bytes) {
+    match string.fromUtf8(bytes) {
+        Ok(text) => print(text.length())
+        Error(cause) => print($"bad at {cause.position}")
+    }
+}
+
+void main() {
+    var empty = List<byte>()
+    check(read empty)
+    // The euro sign.
+    check(read List<byte> { 226, 130, 172 })
+    // Cut off after two of three bytes.
+    check(read List<byte> { 226, 130 })
+    // Cut off after one.
+    check(read List<byte> { 226 })
+    // Four bytes.
+    check(read List<byte> { 240, 159, 152, 128 })
+    // Four bytes, cut off.
+    check(read List<byte> { 240, 159, 152 })
+    // A surrogate.
+    check(read List<byte> { 237, 160, 128 })
+    // The last character before the surrogates.
+    check(read List<byte> { 237, 159, 191 })
+    // Three bytes for what fits in one.
+    check(read List<byte> { 224, 128, 128 })
+    // The first character of three bytes.
+    check(read List<byte> { 224, 160, 128 })
+    // The last character there is.
+    check(read List<byte> { 244, 143, 191, 191 })
+    // One past the last character.
+    check(read List<byte> { 244, 144, 128, 128 })
+    // Two bytes for what fits in one.
+    check(read List<byte> { 192, 128 })
+    // Text.
+    check(read List<byte> { 65, 195, 169, 66 })
+    // A letter where a third byte belongs.
+    check(read List<byte> { 65, 226, 130, 65 })
+    // Cut off at the end.
+    check(read List<byte> { 65, 66, 240, 144, 128 })
+    // A byte that only continues.
+    check(read List<byte> { 128 })
+    // A byte that is never used.
+    check(read List<byte> { 255 })
+    // Bytes drawn from the ones where the rules change.
+    check(read List<byte> { 238, 255, 225, 225 })
+    check(read List<byte> { 239, 159, 144, 237, 236 })
+    check(read List<byte> { 240, 144, 128, 225, 192, 143 })
+    check(read List<byte> { 238 })
+    check(read List<byte> { 244, 241, 65, 240, 223, 225, 241 })
+    check(read List<byte> { 240, 241, 144, 240, 0, 237 })
+    check(read List<byte> { 65 })
+    check(read List<byte> { 159 })
+    check(read List<byte> { 240, 0 })
+    check(read List<byte> { 225, 193, 225, 239, 159, 237, 160 })
+    check(read List<byte> { 192, 236, 0, 243, 127, 225 })
+    check(read List<byte> { 191, 224, 238, 127, 244, 191 })
+    check(read List<byte> { 255, 160, 237 })
+    check(read List<byte> { 0, 127, 239 })
+    check(read List<byte> { 128, 223, 128, 192, 223, 127, 0 })
+    check(read List<byte> { 243, 0, 159, 159, 65, 236, 223 })
+    check(read List<byte> { 223, 224, 127, 239, 241, 159 })
+    check(read List<byte> { 243, 191, 193, 127, 192, 193, 0 })
+    check(read List<byte> { 255, 128, 143, 160 })
+    check(read List<byte> { 128, 0, 65, 225, 236, 144 })
+    check(read List<byte> { 238, 159, 225, 237, 159, 245 })
+    check(read List<byte> { 143, 224, 241, 223, 128, 223, 224 })
+    check(read List<byte> { 0, 191 })
+    check(read List<byte> { 239, 192, 0, 159, 144, 223, 240 })
+    check(read List<byte> { 239, 128, 65, 143, 159, 225 })
+    check(read List<byte> { 0, 255, 240 })
+    check(read List<byte> { 192, 223, 127 })
+    check(read List<byte> { 127 })
+    check(read List<byte> { 239, 241 })
+    check(read List<byte> { 0, 240 })
+    check(read List<byte> { 194, 240, 225 })
+    check(read List<byte> { 239, 236 })
+    check(read List<byte> { 239, 143, 223, 144, 241, 143, 192 })
+    check(read List<byte> { 240, 160 })
+    check(read List<byte> { 159, 144, 245, 241, 238, 159 })
+    check(read List<byte> { 223, 236, 240, 127, 224, 65 })
+    check(read List<byte> { 128 })
+    check(read List<byte> { 237 })
+    check(read List<byte> { 160, 245, 244 })
+    check(read List<byte> { 191, 224, 240, 236 })
+    check(read List<byte> { 237, 144, 245 })
+    check(read List<byte> { 143 })
+    check(read List<byte> { 236, 238 })
+    check(read List<byte> { 240, 240, 127, 191, 159, 159 })
+    check(read List<byte> { 0, 127, 191, 224, 225, 160 })
+    check(read List<byte> { 65 })
+    check(read List<byte> { 192, 194 })
+    check(read List<byte> { 239, 143, 127, 194, 143 })
+    check(read List<byte> { 193, 243, 245, 244 })
+    check(read List<byte> { 239, 143, 239, 65, 0 })
+    check(read List<byte> { 194, 244, 192, 65 })
+    check(read List<byte> { 240 })
+    check(read List<byte> { 127, 236, 127, 245, 192, 193 })
+    check(read List<byte> { 127, 127 })
+    check(read List<byte> { 238, 194, 245, 65 })
+    check(read List<byte> { 245, 244, 143, 193, 194, 127 })
+    check(read List<byte> { 236, 127, 224, 0, 236, 239 })
+    check(read List<byte> { 240 })
+    check(read List<byte> { 223, 223, 239, 0, 240, 127 })
+    check(read List<byte> { 127 })
+}

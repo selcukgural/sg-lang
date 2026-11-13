@@ -1,0 +1,115 @@
+// Arrays whose items own something: moved, handed to a `for`, left early, kept in other values.
+struct Holder {
+    string[2] names
+    int[3] sizes
+}
+
+struct Point : Copyable, Formattable, Equatable {
+    int x
+    int y
+}
+
+string[2] pair(read string a, read string b) {
+    return string[2] { a.clone(), b.clone() }
+}
+
+int count(string[2] names) {
+    return (int)(names[0].length() + names[1].length())
+}
+
+Result<string, string> load(bool ok) {
+    if ok {
+        return Ok("loaded".clone())
+    }
+    return Error("no".clone())
+}
+
+Result<string[2], string> both(bool ok) {
+    return Ok(string[2] { "first".clone(), try load(ok) })
+}
+
+int firstLong(string[3] words) {
+    var at = 0
+    for word in words {
+        if word.length() > 3 {
+            return at
+        }
+        at += 1
+    }
+    return -1
+}
+
+void main() {
+    var names = pair("ada", "grace")
+    print(names)
+    print(count(pair("x", "yz")))
+    var holder = Holder { names = names, sizes = int[3] { 1, 2, 3 } }
+    print(holder.names[1])
+    holder.names[0] = "lovelace".clone()
+    print(holder.names)
+    var taken = holder.names
+    print(taken == pair("lovelace", "grace"))
+    print(taken != pair("lovelace", "grace"))
+
+    var three = string[3] { "a".clone(), "bb".clone(), "ccc".clone() }
+    for word in three {
+        if word == "bb" {
+            break
+        }
+        print(word)
+    }
+    print(firstLong(string[3] { "a".clone(), "bbbb".clone(), "ccc".clone() }))
+    print(firstLong(string[3] { "a".clone(), "bb".clone(), "ccc".clone() }))
+
+    match both(true) {
+        Ok(found) => print(found)
+        Error(cause) => print(cause)
+    }
+    match both(false) {
+        Ok(found) => print(found)
+        Error(cause) => print(cause)
+    }
+
+    var boxed = new int[4] { 1, 2, 3, 4 }
+    boxed[2] = 30
+    print(boxed[2])
+    var sum = 0
+    for n in read boxed {
+        sum += n
+    }
+    print(sum)
+    print(boxed[1..3])
+    print(boxed.length())
+
+    string?[2] maybe = string?[2]
+    maybe[1] = "there".clone()
+    print(maybe[0] ?? "none")
+    print(maybe[1] ?? "none")
+    maybe[1] = "again".clone()
+    print(maybe)
+
+    var points = Point[3](Point { x = 0, y = 0 })
+    for p in ref points[1..] {
+        p.x = 5
+    }
+    print(points)
+    print(points.indexOf(Point { x = 5, y = 0 }) ?? -1)
+    print(points.contains(Point { x = 7, y = 0 }))
+    print(points[..2].indexOf(Point { x = 5, y = 0 }) ?? -1)
+    print($"points: {points}, first: {points[0]}")
+
+    var lists = List<int[2]>()
+    lists.add(int[2] { 1, 2 })
+    lists.add(int[2] { 3, 4 })
+    print(lists)
+    print(lists[1][0])
+    lists[0][1] = 20
+    print(lists[0])
+
+    int[3]? none = null
+    int[3]? some = int[3] { 7, 8, 9 }
+    print(none is null)
+    if some is not null {
+        print(some[2])
+    }
+}

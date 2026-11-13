@@ -793,7 +793,9 @@ impl<'a> Interp<'a> {
                     Some(to) => self.int(to, frame)?,
                     None => length,
                 };
-                if from < 0 || to > length {
+                // An end that lies outside is said first: `xs[4..]` on three items is out of
+                // range, not a range that ends before it starts.
+                if from < 0 || from > length || to < 0 || to > length {
                     return Err(Diag::panic(expr.span, format!("range {from}..{to} is out of range: the length is {length}")).into());
                 }
                 if from > to {

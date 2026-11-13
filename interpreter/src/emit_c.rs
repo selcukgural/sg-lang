@@ -5,9 +5,9 @@
 //! overflow, division by zero, a cast that does not fit, `assert` and `panic`.
 //!
 //! Only a part of the language is compiled so far: integers, `bool`, text, functions, structs,
-//! enums with `match` and `is`, `Result` and `try`, `List`, `HashMap` and `HashSet`, function
-//! values, `T*` and `new`, `T?`, `read` and `ref`, and `print`. Anything else is an error that names what is missing, so nothing is compiled
-//! wrongly in silence.
+//! enums with `match` and `is`, `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
+//! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, and `print`. Anything else
+//! is an error that names what is missing, so nothing is compiled wrongly in silence.
 //!
 //! How values are represented: `byte`, `int`, `long` and `nint` are fixed-size C integers; a
 //! struct is a C struct passed by value; `read T` / `ref T` are pointers; a `string` is its
@@ -18,6 +18,12 @@
 //! A `Result<T, E>` is such an enum with the variants `Ok(T value)` and `Error(E cause)`; `try`
 //! is one test on the tag and, on an error, a `return`. A `List<T>` is a pointer to its items,
 //! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index.
+//!
+//! An array `T[N]` is a C array inside a struct, so that it is passed, returned and copied by
+//! value like any other value: it lies where its variable or its field lies, and nothing is
+//! allocated for it. A slice (`read T[]`, `ref T[]`) is a window: a pointer to the first item
+//! and a count, whatever the items are kept in. A range `xs[a..b]` checks its two ends once and
+//! gives such a window; an index into a window is checked against the count.
 //!
 //! Writing and comparing: for each struct, enum and list that is written or compared, one
 //! helper is made that writes it into a text (`sg_show_...`) and one that tells whether two
@@ -171,7 +177,7 @@ SG_COLD static _Noreturn void sg_index_fail(long long at, long long len, const c
 }
 SG_COLD static _Noreturn void sg_range_fail(sg_str s, long long from, long long to, const char* loc) {
     fflush(stdout);
-    if (from < 0 || to > s.len) {
+    if (from < 0 || from > s.len || to < 0 || to > s.len) {
         fprintf(stderr, "panic: range %lld..%lld is out of range: the length is %lld\n", from, to, (long long)s.len);
     } else if (from > to) {
         fprintf(stderr, "panic: range %lld..%lld ends before it starts\n", from, to);
@@ -197,6 +203,35 @@ static inline sg_str sg_slice(sg_str s, int64_t from, int64_t to, const char* lo
             || (from < s.len && (s.ptr[from] & 0xC0) == 0x80) || (to < s.len && (s.ptr[to] & 0xC0) == 0x80), 0))
         sg_range_fail(s, from, to, loc);
     return (sg_str){ s.ptr + from, to - from };
+}
+/* A range of items: its ends are checked in every build, like an index. */
+SG_COLD static _Noreturn void sg_span_fail(long long from, long long to, long long len, const char* loc) {
+    fflush(stdout);
+    if (from < 0 || from > len || to < 0 || to > len) fprintf(stderr, "panic: range %lld..%lld is out of range: the length is %lld\n", from, to, len);
+    else fprintf(stderr, "panic: range %lld..%lld ends before it starts\n", from, to);
+    sg_die(loc);
+}
+/* Where the first byte lies that is not part of valid UTF-8, or -1 when the bytes are text. */
+static int64_t sg_utf8_bad(const uint8_t* bytes, int64_t len) {
+    int64_t at = 0;
+    while (at < len) {
+        uint8_t first = bytes[at];
+        if (first < 0x80) { at++; continue; }
+        int64_t more;
+        uint8_t low = 0x80, high = 0xBF;
+        if (first >= 0xC2 && first <= 0xDF) more = 1;
+        else if (first >= 0xE0 && first <= 0xEF) { more = 2; if (first == 0xE0) low = 0xA0; if (first == 0xED) high = 0x9F; }
+        else if (first >= 0xF0 && first <= 0xF4) { more = 3; if (first == 0xF0) low = 0x90; if (first == 0xF4) high = 0x8F; }
+        else return at;
+        if (at + more >= len) {
+            /* The character is cut off by the end: it is still bad from its first byte on. */
+            return at;
+        }
+        if (bytes[at + 1] < low || bytes[at + 1] > high) return at;
+        for (int64_t i = 2; i <= more; i++) if ((bytes[at + i] & 0xC0) != 0x80) return at;
+        at += more + 1;
+    }
+    return -1;
 }
 static sg_string sg_format(const char* format, ...) {
     va_list count, write;
@@ -728,7 +763,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
 
 fn not_yet(span: Span, what: &str) -> Diag {
     Diag::error(span, format!("{what} is not in the C back end yet"))
-        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, the collections, function values, `T*`, `T?`, `read` and `ref`, and `print`")
+        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, the collections, arrays and slices, function values, `T*`, `T?`, `read` and `ref`, and `print`")
 }
 
 /// A C string literal for any text.
@@ -739,7 +774,7 @@ fn has_helper(ty: &Ty) -> bool {
     while let Ty::Ptr(inner) = core {
         core = inner;
     }
-    matches!(core, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_))
+    matches!(core, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Array(..) | Ty::Slice(_))
 }
 
 /// The C statement that adds this text to what `out` is writing.
@@ -797,6 +832,21 @@ fn is_text_view(ty: &Ty) -> bool {
     matches!(flat(ty), Ty::Read(inner) if **inner == Ty::Str)
 }
 
+/// `read T[]` and `ref T[]`: a window onto items, kept as where they are and how many. Like
+/// `read string`, it is a value of its own and not a pointer to one.
+fn is_window(ty: &Ty) -> bool {
+    matches!(flat(ty), Ty::Read(inner) | Ty::Ref(inner) if matches!(**inner, Ty::Slice(_)))
+}
+
+/// The array or the slice a value is or leads to, behind borrows and pointers.
+fn items_behind(ty: &Ty) -> Option<&Ty> {
+    let mut ty = ty.strip_borrow();
+    while let Ty::Ptr(inner) = ty {
+        ty = inner;
+    }
+    matches!(ty, Ty::Array(..) | Ty::Slice(_)).then_some(ty)
+}
+
 fn is_text(ty: &Ty) -> bool {
     *ty.strip_borrow() == Ty::Str
 }
@@ -828,6 +878,13 @@ fn mangle(ty: &Ty) -> Option<String> {
             _ => format!("O_{}", mangle(inner)?),
         },
         Ty::List(item) => format!("L_{}", mangle(item)?),
+        // An array has its length in its name: `int[3]` and `int[4]` are two types.
+        Ty::Array(item, length) => format!("A{length}_{}", mangle(item)?),
+        // A window onto items, whether it is read through or written through.
+        Ty::Slice(item) => format!("V_{}", mangle(item)?),
+        Ty::Read(_) | Ty::Ref(_) if is_window(ty) => mangle(flat(ty).strip_borrow())?,
+        // A look at a text, where it is held by something else: `Result<read string, E>`.
+        Ty::Read(_) | Ty::Ref(_) if is_text_view(ty) => "str".to_string(),
         Ty::Set(item) => format!("H_{}", mangle(item)?),
         Ty::Map(key, value) => {
             let key = mangle(key)?;
@@ -851,7 +908,12 @@ fn mangle(ty: &Ty) -> Option<String> {
         }
         // The length of the first name keeps two different pairs from sharing a name.
         Ty::Result(ok, error) => {
-            let ok = if **ok == Ty::Void { "void".to_string() } else { mangle(ok)? };
+            let ok = match &**ok {
+                Ty::Void => "void".to_string(),
+                // Success that is a look at a value someone else owns: a pointer to it.
+                Ty::Read(inner) if !is_text_view(ok) && !is_window(ok) && !inner.is_borrow() && lent_option(ok).is_none() => format!("B_{}", mangle(inner)?),
+                _ => mangle(ok)?,
+            };
             format!("R{}_{ok}_{}", ok.len(), mangle(error)?)
         }
         _ => return None,
@@ -925,7 +987,7 @@ fn lent_option(ty: &Ty) -> Option<&Ty> {
 fn held_types<'t>(ty: &'t Ty, found: &mut Vec<&'t str>) {
     match ty {
         Ty::Struct(name) | Ty::Enum(name) => found.push(name),
-        Ty::Nullable(inner) | Ty::Ptr(inner) => held_types(inner, found),
+        Ty::Nullable(inner) | Ty::Ptr(inner) | Ty::Array(inner, _) => held_types(inner, found),
         Ty::Result(ok, error) => {
             held_types(ok, found);
             held_types(error, found);
@@ -1152,7 +1214,9 @@ impl<'a> Emitter<'a> {
             Ty::Str | Ty::Formatter => "sg_string".to_string(),
             Ty::Struct(name) => format!("S_{}", cname(name)),
             Ty::Enum(name) => format!("E_{}", cname(name)),
-            Ty::Result(..) | Ty::List(_) | Ty::Func(..) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) => {
+            // A window is one C type whether it is read through or written through.
+            Ty::Read(inner) | Ty::Ref(inner) if matches!(**inner, Ty::Slice(_)) => self.ctype(inner, span)?,
+            Ty::Result(..) | Ty::List(_) | Ty::Func(..) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Array(..) | Ty::Slice(_) => {
                 // An entry is known where its map is.
                 if let Ty::Entry(key, value) = ty {
                     self.need(&Ty::Map(key.clone(), value.clone()), span)?;
@@ -1408,6 +1472,54 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(self.glue, "static inline void sg_clear_{name}({list}* v) {{ {}v->len = 0; }}", drop_items("0"));
                 self.sigs.insert(format!("sg_add_{name}"), vec![(**item).clone()]);
             }
+            // An array: its items, where the value is. C does not hand a bare array to a
+            // function or give one back, so it is the one member of a struct.
+            Ty::Array(item, length) => {
+                if !self.made.insert(name.clone()) {
+                    return Ok(());
+                }
+                let held = self.ctype(item, span)?;
+                let array = format!("sg_{name}");
+                let _ = writeln!(self.types, "typedef struct {{ {held} items[{length}]; }} {array};");
+                // An item, as the place it is in. The index is checked in every build; where
+                // it is a constant, the C compiler sees that the check never fails.
+                let _ = writeln!(
+                    self.glue,
+                    "static inline {held}* sg_at_{name}({array}* v, int64_t at, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t){length}, 0)) sg_index_fail(at, {length}, loc); return &v->items[at]; }}"
+                );
+                if self.droppable(item) {
+                    let (drop, forget) = (self.drop_of(item, "v->items[i]"), self.move_of(item, "v->items[i]"));
+                    let _ = writeln!(
+                        self.glue_protos,
+                        "static void sg_drop_from_{name}({array}* v, int64_t from);\nstatic inline void sg_drop_{name}({array}* v);\nstatic inline {array} sg_move_{name}({array}* v);"
+                    );
+                    // What a `for` that was handed the array leaves behind: the items from `from` on.
+                    let _ = writeln!(self.glue, "static void sg_drop_from_{name}({array}* v, int64_t from) {{ for (int64_t i = from; i < {length}; i++) {drop} }}");
+                    let _ = writeln!(self.glue, "static inline void sg_drop_{name}({array}* v) {{ sg_drop_from_{name}(v, 0); }}");
+                    let _ = writeln!(self.glue, "static inline {array} sg_move_{name}({array}* v) {{ {array} out = *v; for (int64_t i = 0; i < {length}; i++) (void){forget}; return out; }}");
+                }
+            }
+            // A window onto items that something else holds: where they are and how many.
+            Ty::Slice(item) => {
+                if !self.made.insert(name.clone()) {
+                    return Ok(());
+                }
+                let held = self.ctype(item, span)?;
+                let window = format!("sg_{name}");
+                let _ = writeln!(self.types, "typedef struct {{ {held}* ptr; int64_t len; }} {window};");
+                let _ = writeln!(
+                    self.glue,
+                    "static inline {held}* sg_at_{name}({window} v, int64_t at, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t)v.len, 0)) sg_index_fail(at, v.len, loc); return &v.ptr[at]; }}"
+                );
+                // A part of the window. An empty list has no block, and nothing is added to
+                // a pointer that points nowhere.
+                let _ = writeln!(
+                    self.glue,
+                    "static inline {window} sg_cut_{name}({window} v, int64_t from, int64_t to, const char* loc) {{ if (__builtin_expect(from < 0 || to > v.len || from > to, 0)) sg_span_fail(from, to, v.len, loc); return ({window}){{ from ? v.ptr + from : v.ptr, to - from }}; }}"
+                );
+                let _ = writeln!(self.glue, "static inline {window} sg_after_{name}({window} v, int64_t from, const char* loc) {{ return sg_cut_{name}(v, from, v.len, loc); }}");
+                let _ = writeln!(self.glue, "static inline {window} sg_before_{name}({window} v, int64_t to, const char* loc) {{ return sg_cut_{name}(v, 0, to, loc); }}");
+            }
             // The same shape as an enum with the variants `Ok(T value)` and `Error(E cause)`,
             // so `match` and `is` read both in one way.
             Ty::Result(ok, error) => {
@@ -1446,6 +1558,10 @@ impl<'a> Emitter<'a> {
         if known(&own) {
             return Some(own);
         }
+        // The built-in `TextError` is seen from every module with nothing written.
+        if name == "TextError" {
+            return Some(name.to_string());
+        }
         let public = |full: &str| self.structs.get(full).map(|decl| decl.public).or(self.enums.get(full).map(|decl| decl.public)) == Some(true);
         file.uses.iter().map(|(used, _)| format!("{used}.{name}")).find(|full| public(full))
     }
@@ -1474,7 +1590,8 @@ impl<'a> Emitter<'a> {
             found = match suffix {
                 Suffix::Pointer => Ty::Ptr(Box::new(found)),
                 Suffix::Nullable => Ty::Nullable(Box::new(found)),
-                Suffix::Array(_) | Suffix::Slice => return Err(unknown()),
+                Suffix::Array(length) => Ty::Array(Box::new(found), *length),
+                Suffix::Slice => Ty::Slice(Box::new(found)),
             };
             if mangle(&found).is_none() {
                 return Err(unknown());
@@ -1492,7 +1609,7 @@ impl<'a> Emitter<'a> {
         match ty {
             Ty::Str | Ty::Ptr(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) => true,
             Ty::Entry(key, value) => self.droppable(key) || self.droppable(value),
-            Ty::Nullable(inner) => self.droppable(inner),
+            Ty::Nullable(inner) | Ty::Array(inner, _) => self.droppable(inner),
             Ty::Result(ok, error) => self.droppable(ok) || self.droppable(error),
             Ty::Struct(name) => self.structs[name.as_str()].fields.iter().any(|field| self.written(&field.ty).is_ok_and(|ty| self.droppable(&ty))),
             Ty::Enum(name) => {
@@ -1604,6 +1721,18 @@ impl<'a> Emitter<'a> {
                     self.shower(item, span)?
                 );
             }
+            // An array and a window are written like a list.
+            Ty::Array(item, _) | Ty::Slice(item) => {
+                let (count, items) = match ty {
+                    Ty::Array(_, length) => (length.to_string(), "items"),
+                    _ => ("v->len".to_string(), "ptr"),
+                };
+                let _ = write!(
+                    body,
+                    "sg_put(out, \"[\", 1); for (int64_t i = 0; i < {count}; i++) {{ if (i) sg_put(out, \", \", 2); {}(out, &v->{items}[i]); }} sg_put(out, \"]\", 1);",
+                    self.shower(item, span)?
+                );
+            }
             Ty::Map(key, value) => {
                 let (key, value) = (self.show_at(key, "v->entries[i].m_key", span)?, self.show_at(value, "v->entries[i].m_value", span)?);
                 let _ = write!(body, "sg_put(out, \"{{\", 1); for (int64_t i = 0; i < v->len; i++) {{ if (i) sg_put(out, \", \", 2); {key} sg_put(out, \": \", 2); {value} }} sg_put(out, \"}}\", 1);");
@@ -1623,6 +1752,8 @@ impl<'a> Emitter<'a> {
     fn show_at(&mut self, ty: &Ty, place: &str, span: Span) -> Res<String> {
         match ty {
             _ if is_text_view(ty) => Ok(format!("sg_put_quoted(out, {place});")),
+            // A window is a value of its own: it is written from where it is kept.
+            _ if is_window(ty) => Ok(format!("{}(out, &{place});", self.shower(flat(ty).strip_borrow(), span)?)),
             Ty::Read(inner) if is_option(inner) => {
                 let Ty::Nullable(held) = &**inner else { unreachable!("an option is a `T?`") };
                 let shown = self.show_at(&Ty::Read(held.clone()), place, span)?;
@@ -1637,6 +1768,7 @@ impl<'a> Emitter<'a> {
     fn same_at(&mut self, ty: &Ty, a: &str, b: &str, span: Span) -> Res<String> {
         match ty {
             _ if is_text_view(ty) => Ok(format!("sg_eq({a}, {b})")),
+            _ if is_window(ty) => Ok(format!("{}(&{a}, &{b})", self.equaler(flat(ty).strip_borrow(), span)?)),
             Ty::Read(inner) if is_option(inner) => {
                 let Ty::Nullable(held) = &**inner else { unreachable!("an option is a `T?`") };
                 let same = self.same_at(&Ty::Read(held.clone()), a, b, span)?;
@@ -1708,6 +1840,17 @@ impl<'a> Emitter<'a> {
                     self.equaler(item, span)?
                 );
             }
+            Ty::Array(item, length) => {
+                let _ = write!(body, "for (int64_t i = 0; i < {length}; i++) if (!{}(&a->items[i], &b->items[i])) return false; return true;", self.equaler(item, span)?);
+            }
+            // Two windows are equal when they show the same items, wherever those are kept.
+            Ty::Slice(item) => {
+                let _ = write!(
+                    body,
+                    "if (a->len != b->len) return false; for (int64_t i = 0; i < a->len; i++) if (!{}(&a->ptr[i], &b->ptr[i])) return false; return true;",
+                    self.equaler(item, span)?
+                );
+            }
             // Two tables are equal when they hold the same, in whatever order.
             Ty::Map(_, value) => {
                 let same = self.same_at(value, "a->entries[i].m_value", "b->entries[at].m_value", span)?;
@@ -1730,10 +1873,90 @@ impl<'a> Emitter<'a> {
 
     /// A pointer to a value that is only looked at: `read x`, or a value kept for the statement.
     fn pointer(&mut self, expr: &'a Expr) -> Res<String> {
-        if expr.ty.is_borrow() && !expr.is_place() {
+        // A window is not a pointer to its items: it is pointed at where it is kept.
+        if expr.ty.is_borrow() && !expr.is_place() && !is_window(&expr.ty) {
             return self.value(expr);
         }
         Ok(format!("(&{})", self.look(expr)?))
+    }
+
+    /// The items an expression is, borrows or points at, as a window: where they are and how
+    /// many. A window is given as it is; a list or an array gives a window onto all of it.
+    fn window(&mut self, expr: &'a Expr) -> Res<String> {
+        if is_window(&expr.ty) {
+            return self.value(expr);
+        }
+        let mut core = expr.ty.strip_borrow();
+        while let Ty::Ptr(inner) = core {
+            core = inner;
+        }
+        let (Ty::List(item) | Ty::Array(item, _)) = core else { return Err(not_yet(expr.span, &format!("a `{}` used as a slice", expr.ty))) };
+        let slice = Ty::Slice(item.clone());
+        let ctype = self.ctype(&slice, expr.span)?;
+        let from = self.ctype(core, expr.span)?;
+        let address = self.list_address(expr)?;
+        match core {
+            Ty::Array(_, length) => Ok(format!("(({ctype}){{ {address}->items, {length} }})")),
+            _ => {
+                let helper = format!("sg_all_{}", mangle(core).expect("it has a C type"));
+                if self.made.insert(helper.clone()) {
+                    let _ = writeln!(self.glue, "static inline {ctype} {helper}(const {from}* v) {{ return ({ctype}){{ v->ptr, v->len }}; }}");
+                }
+                Ok(format!("{helper}({address})"))
+            }
+        }
+    }
+
+    /// Writes, once, the helpers of a window that are needed only where they are used: `get`
+    /// (it gives a look at an item, or `null`) and the search behind `indexOf` and `contains`.
+    fn window_helper(&mut self, slice: &Ty, what: &str, span: Span) -> Res<String> {
+        let Ty::Slice(item) = slice else { unreachable!("only called for a slice") };
+        let missing = || not_yet(span, &format!("`{what}` on a `{slice}`"));
+        let name = mangle(slice).ok_or_else(missing)?;
+        let helper = format!("sg_{what}_{name}");
+        let (window, held) = (self.ctype(slice, span)?, self.ctype(item, span)?);
+        if !self.made.insert(helper.clone()) {
+            return Ok(helper);
+        }
+        match what {
+            "get" => {
+                let option = Ty::Nullable(item.clone());
+                if mangle(&option).is_none() {
+                    return Err(missing());
+                }
+                let option_c = self.ctype(&option, span)?;
+                let _ = match is_option(&option) {
+                    // A look at the item where it is: a pointer to it, or none.
+                    true => {
+                        let lent_c = self.ctype(&Ty::Read(Box::new(option.clone())), span)?;
+                        let at = if **item == Ty::Str { "sg_view(&v.ptr[at])" } else { "&v.ptr[at]" };
+                        writeln!(
+                            self.glue,
+                            "static inline {lent_c} {helper}({window} v, int64_t at) {{ if ((uint64_t)at >= (uint64_t)v.len) return {}; return {at}; }}",
+                            self.lent_none(&option)
+                        )
+                    }
+                    false => writeln!(self.glue, "static inline {option_c} {helper}({window} v, int64_t at) {{ if ((uint64_t)at >= (uint64_t)v.len) return NULL; return v.ptr[at]; }}"),
+                };
+                self.sigs.insert(helper.clone(), vec![Ty::Int(IntTy::Nint)]);
+            }
+            // The position of the first item that is equal, or -1.
+            "index" => {
+                let (given, equal) = match &**item {
+                    Ty::Int(_) | Ty::Bool => (held.clone(), "v.ptr[i] == item".to_string()),
+                    Ty::Str => ("sg_str".to_string(), "sg_eq(sg_view(&v.ptr[i]), item)".to_string()),
+                    _ => (format!("{held} const*"), format!("{}(&v.ptr[i], item)", self.equaler(item, span)?)),
+                };
+                let _ = writeln!(
+                    self.glue,
+                    "static inline int64_t {helper}({window} v, {given} item) {{ for (int64_t i = 0; i < v.len; i++) if ({equal}) return i; return -1; }}"
+                );
+                let key = if **item == Ty::Str { Ty::Read(item.clone()) } else { (**item).clone() };
+                self.sigs.insert(helper.clone(), vec![key]);
+            }
+            _ => unreachable!("the helpers are named here"),
+        }
+        Ok(helper)
     }
 
     /// The test `l op r` on two pointers to values of a struct, an enum, a `Result` or a list:
@@ -1950,9 +2173,13 @@ impl<'a> Emitter<'a> {
         Ok(helper)
     }
 
-    /// A pointer to the list that `recv` is, borrows or points at.
+    /// A pointer to the list, the table or the array that `recv` is, borrows or points at.
     fn list_address(&mut self, recv: &'a Expr) -> Res<String> {
-        let boxes = list_behind(&recv.ty).or(table_behind(&recv.ty)).map_or(0, |(_, boxes)| boxes);
+        let mut boxes = 0;
+        let mut behind = recv.ty.strip_borrow();
+        while let Ty::Ptr(inner) = behind {
+            (behind, boxes) = (inner, boxes + 1);
+        }
         let mut address = match recv.is_place() {
             true => self.address(recv)?,
             false if recv.ty.is_borrow() => self.value(recv)?,
@@ -2469,6 +2696,61 @@ impl<'a> Emitter<'a> {
                         self.loops.pop();
                         self.scopes.pop();
                         let _ = writeln!(out, "{inner}}}\n{inner}{rest}\n{pad}}}");
+                    }
+                }
+            }
+            StmtKind::ForEach { var, iter, body, by, .. } if items_behind(&iter.ty).is_some() => {
+                let items = items_behind(&iter.ty).expect("just tested").clone();
+                let (Ty::Array(item, _) | Ty::Slice(item)) = &items else { unreachable!("it is an array or a slice") };
+                let (it, at) = (self.temp(), self.temp());
+                let inner = format!("{pad}    ");
+                self.nothing_gone();
+                match by {
+                    // Borrowed items are gone over through a window, one position after the
+                    // other; an array that is lent gives a window onto all of it.
+                    Some(mode) => {
+                        let window_c = self.ctype(&Ty::Slice(item.clone()), iter.span)?;
+                        let window = self.window(iter)?;
+                        self.flush_pre(&pad, out);
+                        let kept = self.hold();
+                        let _ = writeln!(out, "{pad}{{");
+                        let _ = writeln!(out, "{inner}{window_c} {it} = {window};");
+                        let _ = writeln!(out, "{inner}for (int64_t {at} = 0; {at} < {it}.len; {at}++) {{");
+                        let ty = if *mode == Mode::Ref { Ty::Ref(item.clone()) } else { Ty::Read(item.clone()) };
+                        let lent = self.borrowed_name(var, ty, &format!("{it}.ptr[{at}]"), iter.span)?;
+                        self.loops.push(self.scopes.len());
+                        self.block_with(body, depth + 2, out, vec![lent])?;
+                        self.loops.pop();
+                        let _ = writeln!(out, "{inner}}}");
+                        self.release(kept, &inner, out);
+                        let _ = writeln!(out, "{pad}}}");
+                    }
+                    // An array that is handed over gives each item to the round it is for;
+                    // the items after the one of this round are freed when the loop is left.
+                    None => {
+                        let Ty::Array(_, length) = &iter.ty else { return Err(not_yet(iter.span, &format!("a `for` over a `{}`", iter.ty))) };
+                        let (array_c, held, name) = (self.ctype(&iter.ty, iter.span)?, self.ctype(item, iter.span)?, mangle(&iter.ty).expect("it has a C type"));
+                        let value = self.value(iter)?;
+                        self.flush_pre(&pad, out);
+                        let _ = writeln!(out, "{pad}{{");
+                        let _ = writeln!(out, "{inner}{array_c} {it} = {value}; int64_t {at} = 0;");
+                        self.flush_post(&inner, out);
+                        let rest = self.droppable(item).then(|| format!("sg_drop_from_{name}(&{it}, {at} + 1);"));
+                        self.scopes.push(vec![Local { name: String::new(), cname: it.clone(), ty: Ty::Void, gone: false, drop: rest.clone() }]);
+                        let _ = writeln!(out, "{inner}for (; {at} < {length}; {at}++) {{");
+                        self.temps += 1;
+                        let cname = format!("v_{var}_{}", self.temps);
+                        let line = format!("{held} {cname} = {it}.items[{at}];");
+                        let owned = Local { name: var.clone(), cname, ty: (**item).clone(), gone: false, drop: None };
+                        self.loops.push(self.scopes.len());
+                        self.block_with(body, depth + 2, out, vec![(owned, line)])?;
+                        self.loops.pop();
+                        self.scopes.pop();
+                        let _ = writeln!(out, "{inner}}}");
+                        if let Some(rest) = rest {
+                            let _ = writeln!(out, "{inner}{rest}");
+                        }
+                        let _ = writeln!(out, "{pad}}}");
                     }
                 }
             }
@@ -3065,7 +3347,9 @@ impl<'a> Emitter<'a> {
                 own.max(of(recv)).max(all(&mut args.iter()))
             }
             ExprKind::Try { .. } | ExprKind::Return(_) => Effect::Acts,
-            ExprKind::Match { .. } | ExprKind::Collection { .. } | ExprKind::Array { .. } => Effect::Changes,
+            ExprKind::Match { .. } | ExprKind::Collection { .. } => Effect::Changes,
+            // An array is its items and nothing else: nothing is allocated for it.
+            ExprKind::Array { args, items, .. } => all(&mut args.iter().chain(items.iter().flatten())),
             ExprKind::AsSlice(inner) => of(inner),
         }
     }
@@ -3342,7 +3626,7 @@ impl<'a> Emitter<'a> {
         if let ExprKind::Binary(op, left, right) = &cond.kind {
             // Two structs, enums or lists: on failure each is written as `print` would write it.
             let ty = left.ty.strip_borrow().clone();
-            if op.is_comparison() && matches!(ty, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Result(..)) {
+            if op.is_comparison() && matches!(ty, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Result(..) | Ty::Array(..) | Ty::Slice(_)) {
                 let (l, r, ctype) = (self.temp(), self.temp(), self.ctype(&ty, left.span)?);
                 let (left, right) = (self.pointer(left)?, self.pointer(right)?);
                 let (test, shower) = (self.compared(*op, &ty, &l, &r, cond.span)?, self.shower(&ty, cond.span)?);
@@ -3414,7 +3698,8 @@ impl<'a> Emitter<'a> {
                         false => self.boxed(&cname, &option, expr.span),
                     };
                 }
-                let place = if expr.ty.is_borrow() && !is_text_view(&self.local(name).ty) { format!("(*{cname})") } else { cname };
+                let local = &self.local(name).ty;
+                let place = if expr.ty.is_borrow() && !is_text_view(local) && !is_window(local) { format!("(*{cname})") } else { cname };
                 Ok(if self.narrowed(name, &expr.ty) { format!("{place}.value") } else { place })
             }
             // A field is reached through any number of `T*` on its own.
@@ -3432,7 +3717,7 @@ impl<'a> Emitter<'a> {
                 if let Some(option) = lent_option(&expr.ty) {
                     return self.boxed(&field, option, expr.span);
                 }
-                Ok(if expr.ty.is_borrow() && !is_text_view(&expr.ty) { format!("(*{field})") } else { field })
+                Ok(if expr.ty.is_borrow() && !is_text_view(&expr.ty) && !is_window(&expr.ty) { format!("(*{field})") } else { field })
             }
             // An item of a list: the index is checked, and the item is used where it is.
             ExprKind::Index { recv, index, kind: IndexKind::List } => {
@@ -3446,6 +3731,33 @@ impl<'a> Emitter<'a> {
                 let (address, at) = (self.list_address(recv)?, self.value(index)?);
                 let loc = self.loc(expr.span);
                 let found = format!("sg_at_{name}({address}, {at}, {loc})");
+                if !once {
+                    return Ok(format!("(*{found})"));
+                }
+                let temp = self.temp();
+                self.pre.push(format!("{held}* {temp} = {found};"));
+                Ok(format!("(*{temp})"))
+            }
+            // An item of an array or of a window, where it is: the index is checked.
+            ExprKind::Index { recv, index, kind: IndexKind::Array } => {
+                let Some(items) = items_behind(&recv.ty) else { return Err(not_yet(expr.span, "this place")) };
+                let (Ty::Array(item, _) | Ty::Slice(item)) = items else { unreachable!("it is an array or a slice") };
+                let (name, held) = (mangle(items).ok_or_else(|| not_yet(expr.span, &format!("the type `{items}`")))?, self.ctype(item, expr.span)?);
+                self.ctype(items, expr.span)?;
+                let once = self.effect(index).max(self.effect(recv)) >= Effect::Acts;
+                // A window is given as it is, an array through a pointer to it.
+                let before = self.mark();
+                let (from, from_ty) = match items {
+                    Ty::Slice(_) => (self.window(recv)?, Ty::Read(Box::new(items.clone()))),
+                    _ => (self.list_address(recv)?, Ty::Ref(Box::new(items.clone()))),
+                };
+                let mut parts = vec![self.part(recv, &from_ty, from, before)];
+                let before = self.mark();
+                let at = self.value(index)?;
+                parts.push(self.part(index, &index.ty, at, before));
+                let (values, names) = self.in_order(parts)?;
+                let loc = self.loc(expr.span);
+                let found = sequence(&names, format!("sg_at_{name}({}, {}, {loc})", values[0], values[1]));
                 if !once {
                     return Ok(format!("(*{found})"));
                 }
@@ -3495,11 +3807,11 @@ impl<'a> Emitter<'a> {
     /// A value that is only looked at, as something C can name more than once. A value that
     /// has no name and owns something is kept in a temporary and dropped after the statement.
     fn look(&mut self, expr: &'a Expr) -> Res<String> {
-        if matches!(expr.kind, ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List | IndexKind::Map, .. }) {
+        if matches!(expr.kind, ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List | IndexKind::Map | IndexKind::Array, .. }) {
             return self.lvalue(expr);
         }
         let value = self.value(expr)?;
-        if expr.ty.is_borrow() {
+        if expr.ty.is_borrow() && !is_window(&expr.ty) {
             return Ok(format!("(*{value})"));
         }
         let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
@@ -3529,7 +3841,9 @@ impl<'a> Emitter<'a> {
             (ExprKind::Borrow { expr: inner, .. }, _) if is_text(&inner.ty) => self.view(inner),
             (_, ty) if is_text_view(ty) => self.value(expr),
             (_, Ty::Ref(_)) => Ok(format!("sg_view({})", self.value(expr)?)),
-            (ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List | IndexKind::Map, .. }, Ty::Str) => Ok(format!("sg_view(&{})", self.lvalue(expr)?)),
+            (ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List | IndexKind::Map | IndexKind::Array, .. }, Ty::Str) => {
+                Ok(format!("sg_view(&{})", self.lvalue(expr)?))
+            }
             (_, Ty::Str) => {
                 let (value, temp) = (self.value(expr)?, self.temp());
                 self.pre.push(format!("sg_string {temp} = {value};"));
@@ -3625,7 +3939,7 @@ impl<'a> Emitter<'a> {
                 }
                 Ok(format!("{place}.m_{name}"))
             }
-            ExprKind::Field { .. } if expr.ty.is_borrow() && !is_text_view(&expr.ty) => Ok(format!("(&{})", self.lvalue(expr)?)),
+            ExprKind::Field { .. } if expr.ty.is_borrow() && !is_text_view(&expr.ty) && !is_window(&expr.ty) => Ok(format!("(&{})", self.lvalue(expr)?)),
             ExprKind::Field { .. } => self.lvalue(expr),
             // The name of a function, as a value: its address.
             ExprKind::FuncRef(name) => Ok(format!("f_{}", cname(name))),
@@ -3792,6 +4106,8 @@ impl<'a> Emitter<'a> {
                 self.lend(&address, option, expr.span)
             }
             ExprKind::Borrow { expr: inner, .. } if is_text_view(&expr.ty) => self.view(inner),
+            // A window that is lent again is the same window.
+            ExprKind::Borrow { expr: inner, .. } if is_window(&expr.ty) => self.window(inner),
             ExprKind::Borrow { expr: inner, .. } if inner.is_place() => self.address(inner),
             // A value that has no name, lent: it is kept until the statement ends.
             ExprKind::Borrow { expr: inner, .. } if !inner.ty.is_borrow() => Ok(format!("(&{})", self.look(inner)?)),
@@ -3885,14 +4201,21 @@ impl<'a> Emitter<'a> {
                 }))
             }
             // Structs, enums and lists are compared where they are, through pointers.
-            ExprKind::Binary(op, left, right) if matches!(left.ty.strip_borrow(), Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Result(..)) => {
+            ExprKind::Binary(op, left, right)
+                if matches!(left.ty.strip_borrow(), Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Result(..) | Ty::Array(..) | Ty::Slice(_)) =>
+            {
                 let ty = left.ty.strip_borrow().clone();
                 let lent = Ty::Read(Box::new(ty.clone()));
                 let mut parts = Vec::new();
                 for side in [left, right] {
                     let before = self.mark();
                     let value = self.pointer(side)?;
-                    parts.push(self.part(side, &lent, value, before));
+                    let mut part = self.part(side, &lent, value, before);
+                    // A window is compared through a pointer to where it is kept.
+                    if matches!(ty, Ty::Slice(_)) {
+                        part.ctype = format!("{}*", self.ctype(&ty, side.span)?);
+                    }
+                    parts.push(part);
                 }
                 let (values, names) = self.in_order(parts)?;
                 Ok(sequence(&names, self.compared(*op, &ty, &values[0], &values[1], expr.span)?))
@@ -3917,7 +4240,35 @@ impl<'a> Emitter<'a> {
                 let loc = self.loc(expr.span);
                 Ok(format!("sg_cast_{}((int64_t)({inner}), {loc})", int_name(*ty)))
             }
-            ExprKind::Index { kind: IndexKind::List | IndexKind::Map, .. } => self.lvalue(expr),
+            ExprKind::Index { kind: IndexKind::List | IndexKind::Map | IndexKind::Array, .. } => self.lvalue(expr),
+            // A borrow of a list or of an array, used as a window onto all of it.
+            ExprKind::AsSlice(inner) => self.window(inner),
+            // A new array. With braces, each item is written; with one value in parentheses,
+            // every item gets it; with neither, every item is zero.
+            ExprKind::Array { args, items, .. } => {
+                let Ty::Array(item, length) = &expr.ty else { return Err(not_yet(expr.span, &format!("a `{}`", expr.ty))) };
+                let ctype = self.ctype(&expr.ty, expr.span)?;
+                match (items, args.as_slice()) {
+                    (Some(items), _) => {
+                        let mut parts = Vec::new();
+                        let mut taking = Taking { head, handed: Vec::new() };
+                        for (position, given) in items.iter().enumerate() {
+                            let before = self.mark();
+                            let value = self.first_as(given, item, taking.head)?;
+                            parts.push(self.taken(given, value, item, before, items[position + 1..].iter().any(may_leave), &mut taking)?);
+                        }
+                        let (values, names) = self.in_order(parts)?;
+                        let made = self.handed_over(format!("(({ctype}){{ {{ {} }} }})", values.join(", ")), &expr.ty, &taking.handed, expr.span)?;
+                        Ok(sequence(&names, made))
+                    }
+                    (None, [value]) => {
+                        let (held, temp) = (self.ctype(item, expr.span)?, self.temp());
+                        let value = self.first_as(value, item, head)?;
+                        Ok(format!("({{ {ctype} {temp}; {held} {temp}v = {value}; for (int64_t {temp}i = 0; {temp}i < {length}; {temp}i++) {temp}.items[{temp}i] = {temp}v; {temp}; }})"))
+                    }
+                    (None, _) => Ok(format!("(({ctype}){{ 0 }})")),
+                }
+            }
             // A new list: the items are added one after the other.
             // A new map or set: an entry is added for each item; a key written twice stops the program.
             ExprKind::Collection { items, .. } if matches!(expr.ty, Ty::Map(..) | Ty::Set(_)) => {
@@ -3974,7 +4325,30 @@ impl<'a> Emitter<'a> {
                 let loc = self.loc(expr.span);
                 Ok(sequence(&names, format!("sg_at({}, {}, {loc})", values[0], values[1])))
             }
-            ExprKind::Slice { .. } if !is_text_view(&expr.ty) => Err(not_yet(expr.span, "a slice of items")),
+            // A range of items: a window onto a part of them. The ends are checked in every build.
+            ExprKind::Slice { recv, from, to } if !is_text_view(&expr.ty) => {
+                let slice = flat(&expr.ty).strip_borrow().clone();
+                let name = mangle(&slice).ok_or_else(|| not_yet(expr.span, &format!("the type `{slice}`")))?;
+                let before = self.mark();
+                let whole = self.window(recv)?;
+                if from.is_none() && to.is_none() {
+                    return Ok(whole);
+                }
+                let mut parts = vec![self.part(recv, &expr.ty, whole, before)];
+                for end in from.iter().chain(to) {
+                    let before = self.mark();
+                    let value = self.value(end)?;
+                    parts.push(self.part(end, &end.ty, value, before));
+                }
+                let (values, names) = self.in_order(parts)?;
+                let helper = match (from, to) {
+                    (Some(_), Some(_)) => "cut",
+                    (Some(_), None) => "after",
+                    _ => "before",
+                };
+                let loc = self.loc(expr.span);
+                Ok(sequence(&names, format!("sg_{helper}_{name}({}, {loc})", values.join(", "))))
+            }
             ExprKind::Slice { recv, from, to } => {
                 let text = self.view(recv)?;
                 if from.is_none() && to.is_none() {
@@ -4231,7 +4605,69 @@ impl<'a> Emitter<'a> {
                         _ => Ok(called),
                     }
                 }
+                // An array and a window have the methods of a list that only look.
+                Callee::Plain if items_behind(&recv.ty).is_some() => {
+                    let items = items_behind(&recv.ty).expect("just tested").clone();
+                    let (Ty::Array(item, _) | Ty::Slice(item)) = &items else { unreachable!("it is an array or a slice") };
+                    let slice = Ty::Slice(item.clone());
+                    self.ctype(&slice, expr.span)?;
+                    let helper = match (name.as_str(), &items) {
+                        // The length of an array is part of its type.
+                        ("length", Ty::Array(_, length)) if self.effect(recv) == Effect::Reads => return Ok(format!("((int64_t){length})")),
+                        ("length", _) => return Ok(format!("{}.len", self.window(recv)?)),
+                        ("get", _) => self.window_helper(&slice, "get", expr.span)?,
+                        ("indexOf" | "contains", _) => self.window_helper(&slice, "index", expr.span)?,
+                        _ => return Err(not_yet(expr.span, &format!("the method `{name}`"))),
+                    };
+                    let before = self.mark();
+                    let window = self.window(recv)?;
+                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Bool | Ty::Str);
+                    let called = if by_pointer {
+                        format!("{helper}({window}, {})", self.pointer(&args[0])?)
+                    } else {
+                        let receiver = self.part(recv, &Ty::Read(Box::new(slice.clone())), window, before);
+                        self.call(helper, Some(receiver), args, false, &expr.ty)?
+                    };
+                    match name.as_str() {
+                        // See `get` of a list.
+                        "get" if is_option(&Ty::Nullable(item.clone())) => Ok(called),
+                        "get" => {
+                            let (ctype, temp) = (self.ctype(&Ty::Nullable(item.clone()), expr.span)?, self.temp());
+                            self.pre.push(format!("{ctype} {temp} = {called};"));
+                            Ok(format!("(&{temp})"))
+                        }
+                        "indexOf" => {
+                            let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+                            Ok(format!("({{ int64_t {temp} = {called}; (({ctype}){{ {temp} >= 0, {temp} }}); }})"))
+                        }
+                        _ => Ok(format!("({called} >= 0)")),
+                    }
+                }
+                // `string.fromUtf8(bytes)`: the bytes are looked at as text where they are, if
+                // they are text; otherwise the error says where the first bad byte lies.
+                Callee::FromUtf8 => {
+                    let bytes = Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+                    let (given, gives) = (self.ctype(&bytes, expr.span)?, self.ctype(&expr.ty, expr.span)?);
+                    if self.made.insert("sg_from_utf8".to_string()) {
+                        let _ = writeln!(
+                            self.glue,
+                            "static {gives} sg_from_utf8({given} bytes) {{ int64_t bad = sg_utf8_bad(bytes.ptr, bytes.len); \
+                             if (bad < 0) return ({gives}){{ .tag = 0, .u.v0 = {{ (sg_str){{ bytes.ptr, bytes.len }} }} }}; \
+                             return ({gives}){{ .tag = 1, .u.v1 = {{ (S_TextError){{ .m_position = bad }} }} }}; }}"
+                        );
+                        self.sigs.insert("sg_from_utf8".to_string(), vec![bytes]);
+                    }
+                    self.call("sg_from_utf8".to_string(), None, args, head, &expr.ty)
+                }
                 Callee::Plain if is_text(&recv.ty) || is_text_behind_pointer(&recv.ty) => match name.as_str() {
+                    // The bytes of the text, looked at where they are.
+                    "asBytes" => {
+                        let window = self.ctype(&expr.ty, expr.span)?;
+                        if self.made.insert("sg_bytes".to_string()) {
+                            let _ = writeln!(self.glue, "static inline {window} sg_bytes(sg_str s) {{ return ({window}){{ (uint8_t*)s.ptr, s.len }}; }}");
+                        }
+                        Ok(format!("sg_bytes({})", self.view(recv)?))
+                    }
                     // The position of the first such byte, or `null`.
                     "indexOf" => {
                         let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());

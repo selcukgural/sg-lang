@@ -1,0 +1,119 @@
+// Arrays inside enums, structs and collections, and methods that give a window onto a field.
+enum Shape : Formattable {
+    Dots(int[2] at)
+    Named(string[2] names)
+    None
+}
+
+struct Grid : Formattable, Equatable {
+    int[2] size
+    bool[3] flags
+}
+
+struct Buffer {
+    byte[8] bytes
+    nint used
+
+    void put(ref this, byte value) {
+        this.bytes[this.used] = value
+        this.used += 1
+    }
+
+    read byte[] filled(read this) {
+        return this.bytes[..this.used]
+    }
+
+    ref byte[] rest(ref this) {
+        return ref this.bytes[this.used..]
+    }
+}
+
+int sum(read int[] values) {
+    var total = 0
+    for v in values {
+        total += v
+    }
+    return total
+}
+
+Result<int, string> parse(read byte[] digits) {
+    var value = 0
+    for d in digits {
+        if d < '0' || d > '9' {
+            return Error($"bad digit {d}".toString())
+        }
+        value = value * 10 + (int)(d - '0')
+    }
+    return Ok(value)
+}
+
+Result<int[2], string> pairOf(read string a, read string b) {
+    return Ok(int[2] { try parse(a.asBytes()), try parse(b.asBytes()) })
+}
+
+void main() {
+    var shape = Shape.Dots(int[2] { 3, 4 })
+    print(shape)
+    match shape {
+        Dots(at) => print(at[0] + at[1])
+        Named(names) => print(names)
+        None => print("none")
+    }
+    var named = Shape.Named(string[2] { "a".clone(), "b".clone() })
+    print(named)
+    if named is Named(names) {
+        print(names[1])
+        print(names.length())
+    }
+
+    var grid = Grid { size = int[2] { 2, 3 }, flags = bool[3] }
+    var other = Grid { size = int[2] { 2, 3 }, flags = bool[3] }
+    print(grid == other)
+    other.flags[1] = true
+    print(grid == other)
+    print(other)
+
+    var buffer = Buffer { bytes = byte[8], used = 0 }
+    buffer.put('h')
+    buffer.put('i')
+    print(buffer.filled())
+    print(string.fromUtf8(buffer.filled()) ?? "?")
+    var rest = buffer.rest()
+    rest[0] = '!'
+    print(rest.length())
+    buffer.used += 1
+    print(string.fromUtf8(buffer.filled()) ?? "?")
+
+    var map = HashMap<string, int[2]>()
+    map.add("a".clone(), int[2] { 1, 2 })
+    map["a"][1] = 5
+    print(map["a"])
+    print(sum(read map["a"]))
+
+    print(pairOf("12", "34") ?? int[2])
+    match pairOf("12", "3x") {
+        Ok(found) => print(found)
+        Error(cause) => print(cause)
+    }
+    var total = 0
+    for round in 0..3 {
+        var local = int[4](round)
+        total += sum(read local) + sum(local[1..3])
+    }
+    print(total)
+    var nested = List<string[2]>()
+    nested.add(string[2] { "p".clone(), "q".clone() })
+    for pair in read nested {
+        for name in pair {
+            print(name)
+        }
+    }
+    for pair in nested {
+        for name in pair {
+            if name == "p" {
+                continue
+            }
+            print(name)
+        }
+    }
+}

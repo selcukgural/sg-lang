@@ -1,0 +1,32 @@
+// Buffers on the stack: an id of 32 bytes is filled, written as hex into a buffer of 64
+// bytes through a `ref` slice, and the hex is added up through a `read` slice. Nothing is
+// allocated. Fifteen million times.
+void toHex(read byte[] source, ref byte[] target) {
+    var digits = "0123456789abcdef".asBytes()
+    for i in 0..source.length() {
+        target[i * 2] = digits[source[i] / 16]
+        target[i * 2 + 1] = digits[source[i] % 16]
+    }
+}
+
+long total(read byte[] bytes) {
+    long sum = 0
+    for b in bytes {
+        sum += b
+    }
+    return sum
+}
+
+void main() {
+    long sum = 0
+    var id = byte[32]
+    var text = byte[64]
+    for round in 0..15000000 {
+        for i in 0..id.length() {
+            id[i] = (byte)((round + i * 7) % 256)
+        }
+        toHex(read id, ref text)
+        sum += total(read text) + total(text[round % 32..])
+    }
+    print(sum)
+}
