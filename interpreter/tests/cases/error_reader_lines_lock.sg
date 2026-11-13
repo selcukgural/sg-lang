@@ -1,0 +1,9 @@
+// `lines()` reads through the reader as long as the loop runs.
+Result<void, IoError> main() {
+    var r = try File.openText("x.txt")
+    string line = ""
+    for item in r.lines() {
+        _ = r.readLine(ref line)
+    }
+    return Ok()
+}

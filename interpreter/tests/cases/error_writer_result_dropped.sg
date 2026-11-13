@@ -1,0 +1,4 @@
+// What a write gives is a `Result`, which is not dropped silently.
+void main() {
+    Stdout.writeLine("x")
+}

@@ -1,0 +1,7 @@
+// A variable given another writer while the one it holds is open.
+Result<void, IoError> main() {
+    var w = try File.createText("x.txt")
+    w = try File.createText("y.txt")
+    try w.close()
+    return Ok()
+}

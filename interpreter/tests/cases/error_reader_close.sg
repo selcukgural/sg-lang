@@ -1,0 +1,5 @@
+// A reader has no `close`: its file is closed when it ends.
+void main() {
+    var r = File.openText("x.txt") ?? return
+    r.close()
+}

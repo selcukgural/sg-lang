@@ -1,0 +1,6 @@
+error: `close` takes the writer and uses it up, but this writer is only borrowed
+  whoever owns the writer closes it
+  --> error_close_borrowed.sg:3:9
+ 3 |     _ = w.close()
+   |         ^
+  hint: `flush()` writes what it holds through a borrow

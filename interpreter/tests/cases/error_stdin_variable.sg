@@ -1,0 +1,4 @@
+// `Stdin`, `Stdout` and `Stderr` are the streams of the program, not names for variables.
+void main() {
+    var Stdin = 3
+}

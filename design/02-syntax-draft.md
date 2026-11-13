@@ -872,8 +872,9 @@ s += "x"                                         // error, hint: s.write("x")
 
 ### Files, the input and the command line
 
-A file is read or written whole, and each call gives a `Result` whose error is the built-in `IoError`. The words
-of the command line come to `main`; the input is read line by line into one text:
+A file is read or written whole, or piece by piece through a `StreamReader` and a `StreamWriter`; each call gives a
+`Result` whose error is the built-in `IoError`. The words of the command line come to `main`; the input is read line by
+line into one text:
 
 ```
 public enum IoError : Copyable, Formattable, Equatable {   // built in
@@ -897,8 +898,29 @@ Result<void, IoError> main(List<string> args) {  // the words after the program'
         print(line)                              // without its \n or \r\n
     }
     var rest = try Stdin.readText()              // what is left of the input
+
+    var reader = try File.openText("app.log")    // StreamReader, read in blocks of 64 KB
+    while try reader.readLine(ref line) { }      // the same methods as Stdin
+    for item in reader.lines() {                 // item: Result<string, IoError>, a text of its own
+        var next = try item
+    }
+    var writer = try File.createText("out.txt")  // StreamWriter, made or emptied
+    try writer.write(42)                         // what print takes
+    try writer.writeLine($" lines")
+    try writer.close()                           // closing is checked: see below
     return Ok()
 }
+```
+
+`Stdin` is a `StreamReader`, and `Stdout` and `Stderr` are `StreamWriter`s. Every function has them, as if the program
+had lent them as `ref` parameters, so one function serves a file and the program's own streams:
+
+```
+Result<int, IoError> count(ref StreamReader from) { ... }
+var lines = try count(ref Stdin)                 // or: try count(ref reader)
+try Stdout.writeLine("done")                     // where print writes, in order with it
+Stdout.close()                                   // error: Stdout stays open until the program ends
+var Stdin = 3                                    // error: the name of a stream of the program
 ```
 
 `printError` writes like `print`, to the standard error. `exit` ends the program with a code; it takes a `byte`, since
@@ -930,7 +952,9 @@ Result<void, IoError> save(read string path) {
 ```
 
 `StreamWriter : Closable` is a marker, an empty one like `Copyable`. If a local variable of this type is dropped on a
-normal exit without being closed or moved elsewhere, it is a compile error:
+normal exit without being closed or moved elsewhere, it is a compile error. A normal exit is the end of its block,
+`return`, `break`, `continue`, `exit`, and giving the variable another writer; an exit with an error (`try`,
+`return Error(...)`) is exempt, because the caller gets the error that made the function stop:
 
 ```
 Result<void, IoError> save(read string path) {
@@ -940,10 +964,17 @@ Result<void, IoError> save(read string path) {
 }
 
 _ = writer.close()                               // giving up the close error on purpose
+
+if short {
+    try writer.close()
+}                                                // error: writer is closed on some paths but not on all
+return Error(SaveError.Empty)                    // exempt: the writer writes its buffer as it ends
+exit(2)                                          // error: exit ends the program, the buffer would be lost
 ```
 
 The check looks only at local variables. If the value is moved into a struct field or a list, the compiler stops
-tracking it, and closing becomes the responsibility of whoever wrote that struct. In C# the same idea is an analyzer
+tracking it, and closing becomes the responsibility of whoever wrote that struct. A writer that ends without `close`
+writes its buffer and loses the error; a panic does not unwind, so there what the buffer holds is lost. In C# the same idea is an analyzer
 warning (CA2000); Rust has no such check.
 
 ### Function values

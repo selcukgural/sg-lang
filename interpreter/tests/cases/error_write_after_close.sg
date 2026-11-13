@@ -1,0 +1,7 @@
+// `close` takes the writer, so nothing is written after it.
+Result<void, IoError> main() {
+    var w = try File.createText("x.txt")
+    try w.close()
+    try w.writeLine("late")
+    return Ok()
+}

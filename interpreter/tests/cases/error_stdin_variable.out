@@ -1,0 +1,4 @@
+error: `Stdin` is the input of the program, so a variable cannot have its name
+  --> error_stdin_variable.sg:3:9
+ 3 |     var Stdin = 3
+   |         ^^^^^

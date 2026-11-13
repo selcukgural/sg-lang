@@ -1,0 +1,10 @@
+error: `w` is not closed at this `exit`, so an error writing its buffer would be lost
+  `exit` ends the program at once: a writer that is not closed loses what its buffer holds
+  --> error_closable_exit.sg:4:5
+ 4 |     exit(2)
+   |     ^^^^^^^
+  it is opened here:
+  --> error_closable_exit.sg:3:9
+ 3 |     var w = File.createText("x.txt") ?? return
+   |         ^
+  hint: `try w.close()`; to drop the error on purpose, `_ = w.close()`

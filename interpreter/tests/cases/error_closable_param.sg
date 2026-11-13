@@ -1,0 +1,7 @@
+// A writer given by value is closed by the function that got it.
+void take(StreamWriter w) {
+}
+void main() {
+    var w = File.createText("x.txt") ?? return
+    take(w)
+}

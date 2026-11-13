@@ -1,0 +1,9 @@
+error: `w` is not closed at this `return`, so an error writing its buffer would be lost
+  --> error_closable_return.sg:5:5
+ 5 |     return Ok()
+   |     ^^^^^^^^^^^
+  it is opened here:
+  --> error_closable_return.sg:3:9
+ 3 |     var w = try File.createText("x.txt")
+   |         ^
+  hint: `try w.close()`; to drop the error on purpose, `_ = w.close()`

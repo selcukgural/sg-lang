@@ -1,0 +1,16 @@
+// A line that is not UTF-8 is `InvalidText` with its place from the start; `lines()` ends
+// after the first error. The input is `ok_stream_bad_text.in`.
+
+Result<void, IoError> main() {
+    for item in Stdin.lines() {
+        match item {
+            Ok(line) => print($"line: [{line}]")
+            Error(cause) => print($"error: {cause}")
+        }
+    }
+    // The bad line was used up: reading goes on after it.
+    string line = ""
+    print(try Stdin.readLine(ref line))
+    print($"[{line}]")
+    return Ok()
+}

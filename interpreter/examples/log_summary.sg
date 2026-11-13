@@ -1,5 +1,7 @@
-// The log summary from the design, with the lines in the program instead of a file:
-// a `List` of lines, a `HashMap` from the level to what was counted for it.
+// The log summary from the design: a log read line by line with `File.openText` into one
+// text, a `HashMap` from the level to what was counted for it, and a report written with
+// `File.createText`. The command line names the log, a log with a bad line, and the report
+// (see `log_summary.args`).
 
 struct Entry<from line> {
     read string level                    // part of the line, not a copy
@@ -13,6 +15,7 @@ struct Stats {
 
 enum LogError : Formattable {
     BadLine(int number, string text)
+    Io(IoError cause)                    // what `try` turns an `IoError` into
 }
 
 // A line is a level, one space, and the milliseconds: "info 120".
@@ -24,35 +27,35 @@ Entry? parseLine(read string line) from line {
     return Entry { level = level, ms = ms }
 }
 
-Result<HashMap<string, Stats>, LogError> summarize(read List<string> lines) {
+Result<HashMap<string, Stats>, LogError> summarize(read string path) {
+    var reader = try File.openText(path)
     var stats = HashMap<string, Stats>()
-    var number = 0
-    for line in lines {
+    string line = ""                     // capacity 0, grows on the first read
+    int number = 0
+    while try reader.readLine(ref line) {
         number += 1
-        var entry = parseLine(line) ?? return Error(LogError.BadLine(number, line.clone()))
+        var entry = parseLine(read line) ?? return Error(LogError.BadLine(number, line.clone()))
         var item = stats.getOrAdd(entry.level, Stats { count = 0, totalMs = 0 })
         item.count += 1
         item.totalMs += entry.ms
     }
     return Ok(stats)
-}
+}                                        // reader is closed on every exit, including an exit through try
 
-void report(read HashMap<string, Stats> stats) {
+Result<void, IoError> writeReport(read HashMap<string, Stats> stats, read string path) {
+    var writer = try File.createText(path)
     for item in stats {
-        print($"{item.key}: {item.value.count} lines, {item.value.totalMs} ms")
+        try writer.writeLine($"{item.key}: {item.value.count} lines, {item.value.totalMs} ms")
     }
+    try writer.close()                   // the buffer is written to disk here, the error shows up here
+    return Ok()
 }
 
-Result<void, LogError> main() {
-    var lines = List<string> {
-        "info 120",
-        "error 15",
-        "info 80",
-        "warn 7",
-        "info 300"
-    }
-    var stats = try summarize(read lines)
-    report(read stats)
+Result<void, LogError> main(List<string> args) {
+    var stats = try summarize(read args[0])
+    try writeReport(read stats, read args[2])
+    var report = try File.readText(read args[2])
+    try Stdout.write(report)              // the report ends with its own line end
 
     // The slowest level, found by going over the map once more.
     var slowest = ""
@@ -65,7 +68,6 @@ Result<void, LogError> main() {
     }
     print($"slowest: {slowest}")
 
-    lines.add("debug fast")
-    _ = try summarize(read lines)
+    _ = try summarize(read args[1])
     return Ok()
 }

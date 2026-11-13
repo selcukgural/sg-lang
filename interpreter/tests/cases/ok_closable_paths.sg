@@ -1,0 +1,84 @@
+// The ways a `StreamWriter` kept in a local variable is closed, or let go, before it ends.
+
+enum SaveError : Formattable {
+    Empty
+    Io(IoError cause)
+}
+
+// Closed on both paths of an `if`.
+Result<void, IoError> both(read string path, bool short) {
+    var w = try File.createText(path)
+    if short {
+        try w.close()
+    } else {
+        try w.writeLine("long")
+        try w.close()
+    }
+    return Ok()
+}
+
+// An exit with an error lets the writer go: it writes its buffer as it ends.
+Result<void, SaveError> early(read string path, read string text) {
+    var w = File.createText(path) ?? return Error(SaveError.Empty)
+    if text.length() == 0 {
+        return Error(SaveError.Empty)
+    }
+    _ = w.write(text)
+    _ = w.close()
+    return Ok()
+}
+
+// Given back to the caller, who closes it.
+Result<StreamWriter, IoError> open(read string path) {
+    var w = try File.createText(path)
+    try w.writeLine("opened")
+    return Ok(w)
+}
+
+// One writer for each round of a loop, closed in each round.
+Result<void, IoError> rounds(read string dir) {
+    for i in 0..3 {
+        var w = try File.createText(read $"{dir}/round{i}.txt".toString())
+        try w.writeLine(i)
+        if i == 1 {
+            try w.close()
+            continue
+        }
+        try w.close()
+    }
+    return Ok()
+}
+
+// Closed in each arm of a `match`.
+Result<void, IoError> arms(read string path, int which) {
+    var w = try File.createText(path)
+    match which {
+        0 => try w.close()
+        _ => {
+            try w.writeLine("other")
+            try w.close()
+        }
+    }
+    return Ok()
+}
+
+Result<void, IoError> main(List<string> args) {
+    var dir = args[0]
+    var path = $"{dir}/a.txt".toString()
+    try both(read path, false)
+    print(try File.readText(read path))
+    if early(read path, "") is Error(cause) {
+        print($"early: {cause}")
+    }
+    var left = try File.readText(read path)
+    print($"[{left}]")
+    var w = try open(read path)
+    try w.writeLine("and more")
+    try w.close()
+    print(try File.readText(read path))
+    try rounds(read dir)
+    print(try File.readText(read $"{dir}/round2.txt".toString()))
+    try arms(read path, 1)
+    print(try File.readText(read path))
+    return Ok()
+}

@@ -1,0 +1,4 @@
+// `Stdout` stays open until the program ends.
+void main() {
+    _ = Stdout.close()
+}

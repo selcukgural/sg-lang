@@ -1,0 +1,24 @@
+// `Stdout` and `Stderr` in tests: what a test wrote to the standard error is shown under its
+// `FAIL` line and dropped when it passes, as with `printError`.
+
+Result<int, IoError> doubled(ref StreamWriter log, int value) {
+    try log.writeLine($"checking {value}")
+    return Ok(value * 2)
+}
+
+test "a test that passes says nothing" {
+    var doubled = try doubled(ref Stderr, 2)
+    assert(doubled == 4)
+}
+
+test "a test that fails shows what it wrote" {
+    var doubled = try doubled(ref Stderr, 3)
+    try Stderr.write("then ")
+    try Stderr.writeLine("more")
+    assert(doubled == 7)
+}
+
+test "the output is written as it is" {
+    var doubled = try doubled(ref Stdout, 5)
+    assert(doubled == 10)
+}

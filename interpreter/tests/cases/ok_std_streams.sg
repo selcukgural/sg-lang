@@ -1,0 +1,53 @@
+// `Stdin` is a `StreamReader` and `Stdout` and `Stderr` are `StreamWriter`s: every function
+// has them, and lends them on with `ref`. The input is `ok_std_streams.in`.
+
+// One function for a file and for the input.
+Result<int, IoError> countUntil(ref StreamReader from, read string stop) {
+    string line = ""
+    int count = 0
+    while try from.readLine(ref line) {
+        if line == stop {
+            break
+        }
+        count += 1
+    }
+    return Ok(count)
+}
+
+// One function for a file and for the output.
+Result<void, IoError> report(ref StreamWriter to, int count) {
+    try to.write("lines before third: ")
+    try to.writeLine(count)
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var count = try countUntil(ref Stdin, "third")
+    try report(ref Stdout, count)
+    // `Stdout` writes where `print` writes, in the order they were written.
+    print("printed")
+    try Stdout.writeLine("written")
+    print("printed again")
+    // `Stderr` writes where `printError` writes; what was written before goes out first.
+    try Stderr.writeLine("to the standard error")
+    printError("printError too")
+    try Stdout.flush()
+    try Stderr.flush()
+
+    var lines = Stdin.lines()
+    var next = lines.next()
+    if next is not null {
+        var first = try next
+        print($"next: [{first}]")
+    }
+    for item in lines {
+        var line = try item
+        print($"line: [{line}]")
+        if line == "the rest" {
+            break
+        }
+    }
+    var rest = try Stdin.readText()
+    print($"rest: [{rest}]")
+    return Ok()
+}

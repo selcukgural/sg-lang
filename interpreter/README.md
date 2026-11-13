@@ -51,7 +51,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Characters | `char`: one Unicode character. `'+'`, `'é'`, `'\n'`, `'\u{e9}'` is a `char`, and a `byte` where an integer goes (`byte b = '+'`, `text[i] == ':'`). `(int)c` is its code, `(char)n` the character of a code, `n.tryToChar()` gives `null` where `(char)n` would panic. `==`, `<`, `match`, keys, `sort`, `print`. `isAsciiDigit()`, `isAsciiLetter()`, `isAsciiAlphanumeric()`, `isAsciiUpper()`, `isAsciiLower()`, `isAsciiWhitespace()`, `isAscii()`, `toAsciiUpper()`, `toAsciiLower()` on `char` and on `byte`; `isWhitespace()` and `utf8Length()` on `char` |
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
 | Built-ins | `print(x)`, `printError(x)` (the same, to the standard error), `panic("...")`, `assert(condition)`, `exit(code)` (ends the program with that code) |
-| Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `Stdin.readLine(ref line)` puts the next line of the input into `line` and gives `false` at its end; `Stdin.readText()` gives what is left of it. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `InvalidText(long position)` / `Other(int code) }` |
+| Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`. A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left) and `lines()` (each line as a `Result<string, IoError>`); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `flush()` and `close()`, each with a `Result<void, IoError>`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `InvalidText(long position)` / `Other(int code) }` |
 | Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A normal run leaves the tests out |
 | Comparing by name | `a.compare(b)` on numbers, `char` and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
 | Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic. `tryToInt()` and the others give `null` where a cast would panic, `wrappingToInt()` and the others keep the bits that fit; `min`, `max` |
@@ -82,9 +82,17 @@ Design rules that are already enforced:
   `tryTo...` or `wrappingTo...` that cannot fail is an error, and so is `wrappingTo...` on a fractional
   number. A constant is a value of its type: `uint u = int.MaxValue` needs `(uint)`.
 - `$"..."` is not a `string`; `string text = $"..."` is an error whose hint is `.toString()`.
-- A file is read and written whole. `readText` and `readLine` check the text: a byte that is not UTF-8
-  is `IoError.InvalidText` with its place, counted from the start of the file or of the input. A path is
-  a `read string`; one with a zero byte in it is `NotFound`. A line comes without its `\n` or `\r\n`.
+- `readText`, `readLine` and `lines()` check the text: a byte that is not UTF-8 is
+  `IoError.InvalidText` with its place, counted from the start of the file or of the input. A path is a
+  `read string`; one with a zero byte in it is `NotFound`. A line comes without its `\n` or `\r\n`.
+- A `StreamWriter` kept in a local variable (or given to a function by value) is closed, or moved
+  somewhere, on every path before it ends: at the end of its block, at `return`, `break`, `continue` and
+  `exit`, and before the variable gets another writer. An exit with an error (`try`, `return Error(...)`)
+  lets it go: it writes its buffer as it ends. The hint is `try w.close()`, or `_ = w.close()` to drop the
+  error on purpose. A writer in a field, a list or a `T?` is not followed. A panic and `exit` end the
+  program without writing what a writer still holds.
+- `Stdin`, `Stdout` and `Stderr` are lent, never moved or closed, and no variable may have their names.
+  Reading and writing go on from where a stream is, so they need it as `ref`, not `read`.
 - `exit` takes a `byte`, so `exit(256)` is a compile error. It gives no value, so a function that ends in
   it needs no `return`. In a test it fails the test.
 - `write` and `clear` change the text, so they need it where it may change: not through `read` (the hint is
@@ -211,7 +219,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (161 of 556 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (165 of 575 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -263,7 +271,9 @@ slice `parse`, the constants, the conversions that do not panic and the math met
 Since the thirty-sixth slice `char`, `chars`, `split`, `splitWhitespace`, `lines`, `trim` and the
 searches in a text, the same way. Since the thirty-seventh slice building a text with `write`, `clear` and
 `string.withCapacity`, the same way. Since the thirty-eighth slice files read and written whole, the input
-read line by line, the command line, `printError` and `exit`, the same way.
+read line by line, the command line, `printError` and `exit`, the same way. Since the thirty-ninth slice
+files read and written piece by piece (`StreamReader`, `StreamWriter`, `Stdin`, `Stdout`, `Stderr`), the
+same way.
 What is still missing is an error that names it (not silence): the few positions listed with the choices
 below (81, 111).
 
@@ -301,6 +311,7 @@ hand with no checks):
 | `numbers`: a million lines of whole and fractional numbers read ten times with `long.parse` and `double.parse` and added up | 0.186 s | 0.191 s | 0.196 s | 0.95 |
 | `fields`: a million lines like ` Ada17 , 120, -45 ,6789` gone over twenty times with `lines`, `split`, `trim`, `long.parse` and `chars` | 1.228 s | 1.259 s | 1.202 s | 1.02 |
 | `lines`: two million lines of a log (125 MB) read from the input with `Stdin.readLine`, each checked to be UTF-8, and counted | 0.096 s | 0.097 s | 0.089 s | 1.08 |
+| `copy`: the same log read from a file with `File.openText` and written to another, each line with its number in front, through `File.createText` | 0.252 s | 0.253 s | 0.270 s | 0.93 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -417,6 +428,13 @@ every line is UTF-8, which `getline` does not make: with the check taken out of 
 program takes 0.058 s against 0.090 s, since it finds a line with `memchr` in a block of its own where
 `getline` goes through `FILE*`. The check first took the program to about 1.15 times; looking at eight
 bytes at a time while they are ASCII brought it to 1.08 (choice 202). The rest is in "Slower than C".
+
+`copy` reads the same log from a file, opened with `File.openText` and read with `readLine` into one
+text, and writes each line with its number in front (`17: INFO 350 ...`) with `writeLine` through a
+writer from `File.createText`, 140 MB in all. The C program reads with `getline` and writes with
+`fprintf` into a `FILE*` with a buffer of 64 KB. SG takes 0.93 times its time (0.25 s against 0.27 s,
+over three runs of five): it checks every line and still reads faster, as `lines` showed, and the
+writing is a `vsnprintf` into the writer's block where C's is an `fprintf`.
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
@@ -1798,6 +1816,74 @@ back end together), approved on 13 November 2026:
      error comes after what it printed, and an exit code other than 0 and 1 is a last line of the output
      (`exit code 3`). The example `wc` counts the files named on its command line.
 
+Choices made in the thirty-ninth slice (files read and written piece by piece; checker, interpreter and
+back end together), approved on 13 November 2026:
+
+205. **`StreamReader` and `StreamWriter` are built-in types** that a program writes: a parameter
+     (`ref StreamReader from`), a field, an item of a list, a `T?`, a return value. They are moved, never
+     copied, and are not `Formattable` or `Equatable`. The names are the design's (row "File API", C#'s);
+     Rust has `BufReader<File>` and `BufWriter<File>`, Go `bufio.Reader` and `bufio.Writer`.
+206. **`File.openText(path)`** gives a `Result<StreamReader, IoError>`, and **`File.createText(path)`** a
+     `Result<StreamWriter, IoError>` into a file that is made, or emptied. A folder opens on Linux and
+     macOS and fails at the first read; here `openText` tells `IsDirectory` at once, in both. Writing
+     piece by piece after what a file holds is not here yet (`File.appendText` adds a whole text).
+207. **A reader** has the methods of `Stdin` (197): `readLine(ref line)` into one text, `readText()` for
+     what is left, and **`lines()`**, which gives each line as a text of its own, a
+     `Result<string, IoError>`, and ends after the first error (row "File API": no loop meets the same
+     error forever). `for item in reader.lines()` goes over them, and `next()` gives a
+     `Result<string, IoError>?`. While `lines()` is used it reads through the reader, so the reader
+     cannot be used beside it (as a text and its parts, 172). A reader has no `close`: reading loses
+     nothing, and its file is closed when it ends.
+208. **A writer** has `write(x)` and `writeLine(x)`, which take what `print` takes (numbers, text,
+     `$"..."`, a `Formattable` struct, a list), `flush()`, and `close()`, which takes the writer (row "Close
+     error"); each gives a `Result<void, IoError>`, and a `Result` is never dropped silently. Writing goes
+     on from where the writer is, so it needs the writer as `ref`; through `read` it is an error, and
+     `close` through any borrow is one too, since whoever owns a writer closes it.
+209. **The buffer is 64 KB, in the interpreter and in compiled code**: a write that brings it to 64 KB
+     writes it out, `flush` and `close` write what is left. A program that reads its own file back before
+     a `flush` sees the same bytes in both. **The first error is kept**: every later `write`, `flush` and
+     `close` gives it again, as C's `ferror` keeps it, so a `close` reports a full disk even when the
+     writes before it were dropped with `_ =`.
+210. **The `Closable` check** (row "Close error"): a `StreamWriter` kept in a local variable, a parameter
+     taken by value, a name of a pattern or the item of a `for` must be closed, or moved somewhere, on
+     every path before it ends: at the end of its block, at `return`, `break`, `continue` and `exit`, and
+     before the variable gets another writer. Closed on one path of an `if` and not on the other is an
+     error of its own ("closed on some paths but not on all"). The hint is `try w.close()`, or
+     `_ = w.close()` to drop the error on purpose. Not followed, as the design says: a writer in a field,
+     a list or a `T?`; it writes its buffer when it ends, and its error is lost.
+211. **An exit with an error lets a writer go**: through `try`, as the design wrote, and also through
+     `return Error(...)`, `?? return Error(...)` among them. The caller gets the error that made the
+     function stop; a second one from closing would not be read, and the writer writes its buffer as it
+     ends. Without this a function would have to close every writer by hand before each `return Error`.
+     New beside the design's text.
+212. **`exit` is checked, a panic is not**: `exit` ends the program at once and nothing runs after it
+     (199), so a writer still open there would lose its buffer, and that is an error where the checker
+     can see it (a local). A panic is a bug and does not unwind (row "Copy and cleanup"): what a writer
+     holds is lost. The interpreter does the same: a writer that ends while the program stops with a
+     panic or `exit` writes nothing.
+213. **`Stdin`, `Stdout` and `Stderr`** are the streams of the program, which every function and test has
+     as if the program had lent them as `ref` parameters: `Stdin` is a `StreamReader`, `Stdout` and
+     `Stderr` are `StreamWriter`s. A function that reads a file or the input, or writes a file or the
+     output, takes a `ref StreamReader` or a `ref StreamWriter` and is given `ref Stdin` or `ref Stdout`.
+     They are never moved, given another value or closed (the hint for `close` is `flush`), and no
+     variable or parameter may have their names. `Stdout` writes where `print` writes, in the order they
+     were written; `Stderr` where `printError` writes, after what was printed (in a test, under its `FAIL`
+     line). This is what 197 kept the names for. `print` and `printError` stay as they are, giving
+     nothing (02, "`print` does not return an error"). Go has `os.Stdin` as a variable, Rust `io::stdin()`
+     as a call, C# `Console.In` and `Console.Out`.
+214. **Compiled code**: a reader is a block of 64 KB with its file, read with the calls of the system as
+     the input was (201), and `Stdin` is the same struct over the input; a writer is a text that serves as
+     its block, with its file, written with `write`, and `writer.write(x)` is the code of `text.write(x)`
+     into that block. `Stdout` and `Stderr` go through C's `stdout` and `stderr`, so that they keep their
+     order with `print`. Compared with the interpreter with both C compilers, in a debug and a release
+     build, and on eight random files of up to 180 MB with bad bytes, `\r\n` and lines longer than a
+     block.
+215. **The measurement and the example**: `copy` (above) reads the log of `lines` from a file and writes
+     every line with its number into another; it takes 0.93 times the time of `getline` and `fprintf` in
+     C. The log summary is now the design's (05): it reads its log with `File.openText` and `readLine`,
+     writes its report with `File.createText` and `close`, and `try` turns an `IoError` into the
+     `LogError` variant that carries it.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -1867,9 +1953,8 @@ check off.
 - Arrays of arrays, `read T[]?`, an array as a key, `sort` and
   `reverse` through a `ref T[]`, `list.addAll(slice)`, looking for a run of items in a slice.
 - A panic of `-x` and of a shift names no way out: there is no `tryNegate` or `tryShiftLeft` yet.
-- A file read or written piece by piece (`File.openText`, `File.createText`, `reader.lines()`, the
-  `Closable` check of the design) and `Stdout` and `Stderr` with a `Result`; until then a
-  file is read and written whole. Folders, removing or renaming a file, asking whether one is there; the
+- Writing piece by piece after what a file holds (a writer that appends), reading raw bytes piece by
+  piece, `Closable` and `Disposable` on a type of your own. Folders, removing or renaming a file, asking whether one is there; the
   variables of the environment; the command line as bytes (a word that is not UTF-8 stops the program).
   `IoError` does not carry the path (choice 195). `PermissionDenied` and `NoSpace` are mapped but have no
   test: the tests cannot make a file they may not read or fill a disk.
@@ -1899,8 +1984,11 @@ written as the design wrote it. A text is built piece by piece where it is (`wri
 A program reads and writes files whole, reads its input line by line into one text, and sees its command
 line (`main(List<string> args)`); it writes to the standard error with `printError` and ends with a code of
 its choice with `exit`. Reading two million lines takes 1.08 times `getline` in C, which does not check
-that they are text.
+that they are text. A file is read and written piece by piece through a `StreamReader` and a
+`StreamWriter`, `Stdin`, `Stdout` and `Stderr` are such streams, and a writer left open in a local
+variable is a compile error; copying the log line by line into another file takes 0.93 times the time
+of `getline` and `fprintf` in C.
 
-Candidates for what comes next: files read and written piece by piece (`StreamReader`, `StreamWriter`,
-`Closable`), `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases (`using`), threads, the
-places that are slower than C.
+Candidates for what comes next: `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases
+(`using`), threads, a writer that appends and reading bytes piece by piece, the places that are slower
+than C.

@@ -1,0 +1,6 @@
+// A writer still open at a `return`: the error of writing its buffer would be lost.
+Result<void, IoError> main() {
+    var w = try File.createText("x.txt")
+    try w.writeLine("done")
+    return Ok()
+}

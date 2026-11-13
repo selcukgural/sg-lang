@@ -355,6 +355,16 @@ struct FuncSig {
     sources: Vec<Source>,
 }
 
+/// What `Stdin`, `Stdout` and `Stderr` are, for messages; `None` for any other name.
+fn std_stream(name: &str) -> Option<&'static str> {
+    match name {
+        "Stdin" => Some("the input"),
+        "Stdout" => Some("the output"),
+        "Stderr" => Some("the standard error"),
+        _ => None,
+    }
+}
+
 /// Whether a value of this type is a borrow or carries one inside.
 fn lends(ty: &Ty, names: &Names) -> bool {
     match ty {
@@ -863,6 +873,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             locks: Vec::new(),
             borrows: Borrows::default(),
             loops: 0,
+            loop_depths: Vec::new(),
             ret: sig.ret.clone(),
             sources: sig.sources.clone(),
             func_name: func.name.clone(),
@@ -882,10 +893,18 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             checker.find("this").expect("just declared").param = true;
         }
         for (param, ty) in func.params.iter().zip(&sig.params) {
+            if let Some(what) = std_stream(&param.name) {
+                return Err(Diag::error(param.span, format!("`{}` is {what} of the program, so a parameter cannot have its name", param.name)));
+            }
             checker.declare(&param.name, ty.clone(), param.span)?;
             checker.find(&param.name).expect("just declared").param = true;
         }
+        checker.declare_streams(func.name_span)?;
         checker.block(&mut func.body, None)?;
+        // A writer given to the function by value is closed before its end.
+        if !leaves(&func.body, false) {
+            checker.unclosed(0, None)?;
+        }
         checker.borrow_conflicts()?;
         if sig.ret != Ty::Void && !leaves(&func.body, false) {
             let diag = Diag::error(
@@ -931,6 +950,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             locks: Vec::new(),
             borrows: Borrows::default(),
             loops: 0,
+            loop_depths: Vec::new(),
             ret: Ty::Void,
             sources: Vec::new(),
             func_name: "test".to_string(),
@@ -939,6 +959,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             module: names.module(test_span),
             src,
         };
+        checker.declare_streams(test_span)?;
         checker.block(&mut prog.tests[position].body, None)?;
         checker.borrow_conflicts()?;
     }
@@ -1415,6 +1436,8 @@ struct Var {
     moved: Moved,
     /// Counts assignments, to notice that a narrowing no longer holds.
     assigned: u32,
+    /// Where it is declared.
+    at: Span,
 }
 
 /// What has been moved out of a variable.
@@ -1424,6 +1447,9 @@ struct Moved {
     whole: Option<Span>,
     /// Fields that were moved out on their own: path (`next`, `first.name`) and where.
     parts: Vec<(String, Span)>,
+    /// The whole value was moved out on some of the paths that reach here, not on all:
+    /// what tells a `StreamWriter` closed in one branch only.
+    partly: bool,
 }
 
 #[derive(Default)]
@@ -1453,6 +1479,8 @@ struct Checker<'a> {
     locks: Vec<Lock>,
     borrows: Borrows,
     loops: usize,
+    /// How many scopes were open where each enclosing loop starts: a `break` ends those above.
+    loop_depths: Vec<usize>,
     ret: Ty,
     /// Where a returned borrow may come from.
     sources: Vec<Source>,
@@ -1558,7 +1586,7 @@ impl<'a> Checker<'a> {
         let id = self.borrows.next_id;
         self.borrows.next_id += 1;
         let decl_loops = self.borrows.loops.clone();
-        scope.vars.push(Var { id, decl_loops, loans: Vec::new(), param: false, name: name.to_string(), unopened: None, declared: ty.clone(), current: ty, moved, assigned: 0 });
+        scope.vars.push(Var { id, decl_loops, loans: Vec::new(), param: false, name: name.to_string(), unopened: None, declared: ty.clone(), current: ty, moved, assigned: 0, at: span });
         Ok(())
     }
 
@@ -1567,7 +1595,48 @@ impl<'a> Checker<'a> {
         if name == "this" {
             return Err(Diag::error(span, "`this` is the receiver of a method and cannot name a variable"));
         }
+        if let Some(what) = std_stream(name) {
+            return Err(Diag::error(span, format!("`{name}` is {what} of the program, so a variable cannot have its name")));
+        }
         self.declare(name, ty, span)
+    }
+
+    /// `Stdin`, `Stdout` and `Stderr`: every function and test has them, as `ref` parameters
+    /// that the program gives. They are lent on and written through, never moved.
+    fn declare_streams(&mut self, span: Span) -> Res<()> {
+        for (name, ty) in [("Stdin", Ty::Reader), ("Stdout", Ty::Writer), ("Stderr", Ty::Writer)] {
+            self.declare(name, Ty::Ref(Box::new(ty)), span)?;
+            self.find(name).expect("just declared").param = true;
+        }
+        Ok(())
+    }
+
+    /// The `Closable` check: a `StreamWriter` kept in a local of the scopes from `from` on must
+    /// be closed, or moved somewhere, before they end, since `close` is where the error of
+    /// writing its buffer shows up. `exit`: the `return`, `break`, `continue` or `exit` that
+    /// ends them, or `None` for the end of the innermost block.
+    fn unclosed(&self, from: usize, exit: Option<(Span, &str)>) -> Res<()> {
+        for var in self.scopes[from..].iter().flat_map(|scope| &scope.vars) {
+            if var.declared != Ty::Writer || (var.moved.whole.is_some() && !var.moved.partly) {
+                continue;
+            }
+            let name = &var.name;
+            let hint = format!("`try {name}.close()`; to drop the error on purpose, `_ = {name}.close()`");
+            let ends = if var.param { "the function ends" } else { "its block ends" };
+            let diag = match (exit, var.moved.whole.is_some()) {
+                (_, true) => Diag::error(var.at, format!("`{name}` is closed on some paths but not on all of them, so an error writing its buffer could be lost"))
+                    .note("close it on every path, or once where the paths meet"),
+                (Some((span, word)), false) => Diag::error(span, format!("`{name}` is not closed at this `{word}`, so an error writing its buffer would be lost"))
+                    .related(var.at, "it is opened here"),
+                (None, false) => Diag::error(var.at, format!("`{name}` is not closed before {ends}, so an error writing its buffer would be lost")),
+            };
+            let diag = match exit {
+                Some((_, "exit")) => diag.note("`exit` ends the program at once: a writer that is not closed loses what its buffer holds"),
+                _ => diag,
+            };
+            return Err(diag.hint(hint));
+        }
+        Ok(())
     }
 
     fn find(&mut self, name: &str) -> Option<&mut Var> {
@@ -1839,8 +1908,15 @@ impl<'a> Checker<'a> {
                 }
                 // A part that an iterator gives borrows the text, not the iterator: after
                 // `var word = words.next()` the `words` is free to go on.
+                if matches!(recv.ty.strip_borrow(), Ty::TextIter(TextIter::ReadLines)) {
+                    return Vec::new();
+                }
                 if matches!(recv.ty.strip_borrow(), Ty::TextIter(_)) {
                     return self.lent_by(recv, true, mutable);
+                }
+                // `reader.lines()` reads through the reader as long as it is used.
+                if matches!(callee, Callee::Stream(StreamCall::Lines)) {
+                    return self.lent_by(recv, false, true);
                 }
                 // `split` looks at its separator as long as it looks at the text.
                 if name == "split" && matches!(expr.ty, Ty::TextIter(_)) && args[0].ty.is_borrow() {
@@ -2162,7 +2238,10 @@ impl<'a> Checker<'a> {
 
     /// Closes the scope. A `Result` kept in a variable that nothing looked at is an error:
     /// the failure it may hold would be lost silently.
-    fn pop_scope(&mut self) -> Res<()> {
+    fn pop_scope(&mut self, reached: bool) -> Res<()> {
+        if reached {
+            self.unclosed(self.scopes.len() - 1, None)?;
+        }
         let scope = self.scopes.pop().expect("an open scope");
         // A variable outside that still holds a borrow of an owner that ends here.
         let at = Point { pos: self.borrows.pos, branches: self.borrows.branches.clone(), loops: self.borrows.loops.clone() };
@@ -2211,6 +2290,7 @@ impl<'a> Checker<'a> {
     fn merge_moves(&mut self, other: &Moves) {
         for (scope, saved) in self.scopes.iter_mut().zip(other) {
             for (var, moved) in scope.vars.iter_mut().zip(saved) {
+                var.moved.partly = var.moved.partly || moved.partly || var.moved.whole.is_some() != moved.whole.is_some();
                 var.moved.whole = var.moved.whole.or(moved.whole);
                 for part in &moved.parts {
                     if !var.moved.parts.iter().any(|(path, _)| *path == part.0) {
@@ -2253,7 +2333,8 @@ impl<'a> Checker<'a> {
         for stmt in block.iter_mut() {
             self.stmt(stmt)?;
         }
-        self.pop_scope()
+        let reached = !leaves(block, self.loops > 0);
+        self.pop_scope(reached)
     }
 
     /// Declares the names of a pattern. Those that are borrows hold what the pattern's value
@@ -2420,6 +2501,15 @@ impl<'a> Checker<'a> {
                 }
                 match path_of(target) {
                     Some((name, path)) if path.is_empty() => {
+                        if let Some(what) = std_stream(name) {
+                            return Err(Diag::error(target.span, format!("`{name}` is {what} of the program and cannot be given another value")));
+                        }
+                        let var = self.var(name, target.span)?;
+                        if var.declared == Ty::Writer && (var.moved.whole.is_none() || var.moved.partly) {
+                            return Err(Diag::error(target.span, format!("`{name}` is given another writer while the one it holds is still open, so an error writing its buffer would be lost"))
+                                .related(var.at, "it is declared here")
+                                .hint(format!("close it first: `try {name}.close()`; to drop the error on purpose, `_ = {name}.close()`")));
+                        }
                         let var = self.var(name, target.span)?;
                         var.moved = Moved::default();
                         var.assigned += 1;
@@ -2494,7 +2584,7 @@ impl<'a> Checker<'a> {
                 let result = self.loop_body(body, None, Vec::new());
                 self.borrows.loops.pop();
                 result?;
-                self.pop_scope()?;
+                self.pop_scope(true)?;
             }
             StmtKind::ForEach { var, var_span, iter, body, by } => {
                 self.forget_narrowing_of_assigned(body, None);
@@ -2603,10 +2693,12 @@ impl<'a> Checker<'a> {
             }
             StmtKind::Return(value) => self.returned(value.as_mut(), stmt_span)?,
             StmtKind::Break | StmtKind::Continue => {
+                let word = if matches!(stmt.kind, StmtKind::Break) { "break" } else { "continue" };
                 if self.loops == 0 {
-                    let word = if matches!(stmt.kind, StmtKind::Break) { "break" } else { "continue" };
                     return Err(Diag::error(stmt_span, format!("`{word}` can only be written inside a loop")));
                 }
+                let depth = *self.loop_depths.last().expect("inside a loop");
+                self.unclosed(depth, Some((stmt_span, word)))?;
             }
             StmtKind::Expr(expr) => {
                 self.unused(expr)?;
@@ -2617,6 +2709,17 @@ impl<'a> Checker<'a> {
 
     /// `return` or `return value`, as a statement or on the right side of `??`.
     fn returned(&mut self, value: Option<&mut Expr>, span: Span) -> Res<()> {
+        // An exit with an error is let go, as an exit through `try` is: the error the caller
+        // gets is the one that counts, and the writer's buffer is written as it ends.
+        let error = value.as_ref().is_some_and(|value| matches!(&value.kind, ExprKind::Call { name, .. } if name == "Error"));
+        self.returned_value(value, span)?;
+        if !error {
+            self.unclosed(0, Some((span, "return")))?;
+        }
+        Ok(())
+    }
+
+    fn returned_value(&mut self, value: Option<&mut Expr>, span: Span) -> Res<()> {
         match value {
             Some(value) if self.ret == Ty::Void => {
                 Err(Diag::error(value.span, format!("`{}` is void and cannot return a value", self.func_name)))
@@ -2676,8 +2779,11 @@ impl<'a> Checker<'a> {
     fn loop_body(&mut self, body: &mut Block, narrow: Option<&str>, binds: Binds) -> Res<()> {
         let before = self.moves();
         self.loops += 1;
-        self.block_with(body, narrow, binds)?;
+        self.loop_depths.push(self.scopes.len());
+        let result = self.block_with(body, narrow, binds);
+        self.loop_depths.pop();
         self.loops -= 1;
+        result?;
         if leaves(body, true) {
             return Ok(());
         }
@@ -4199,7 +4305,7 @@ impl<'a> Checker<'a> {
                         .hint("the last line of the block is the value of the arm"));
                 }
             }
-            self.pop_scope()?;
+            self.pop_scope(!leaves)?;
             self.borrows.branches.pop();
             // An arm that leaves does not reach the code after the `match`.
             if !leaves {
@@ -4441,6 +4547,7 @@ impl<'a> Checker<'a> {
             "exit" => {
                 arity(1)?;
                 self.typed(&mut args[0], &Ty::Int(IntTy::Byte)).map_err(|diag| diag.note("an exit code is a `byte`: the system keeps eight bits, so 256 would end as 0"))?;
+                self.unclosed(0, Some((span, "exit")))?;
                 Ok(Ty::Never)
             }
             "assert" => {
@@ -4528,19 +4635,15 @@ impl<'a> Checker<'a> {
             ("File", "writeText") => (IoCall::WriteText, vec![text(), text()], Ty::Void),
             ("File", "writeBytes") => (IoCall::WriteBytes, vec![text(), bytes], Ty::Void),
             ("File", "appendText") => (IoCall::AppendText, vec![text(), text()], Ty::Void),
-            ("Stdin", "readLine") => (IoCall::ReadLine, vec![Ty::Ref(Box::new(Ty::Str))], Ty::Bool),
-            ("Stdin", "readText") => (IoCall::ReadInput, Vec::new(), Ty::Str),
+            ("File", "openText") => (IoCall::OpenText, vec![text()], Ty::Reader),
+            ("File", "createText") => (IoCall::CreateText, vec![text()], Ty::Writer),
             _ => {
-                let (known, later): (&[&str], &str) = match owner {
-                    "File" => (&["readText", "readBytes", "writeText", "writeBytes", "appendText"], "a file read or written piece by piece (`File.openText`, `File.createText`) comes later"),
-                    _ => (&["readLine", "readText"], "`print` and `printError` write; `Stdout` and `Stderr` come later"),
-                };
+                let known = ["readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "createText"];
                 let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
-                let diag = match nearest(name, known.iter().copied()) {
+                return Err(match nearest(name, known.iter().copied()) {
                     Some(close) => diag.hint(format!("`{close}`")),
                     None => diag.note(format!("functions for now: {}", known.join(", "))),
-                };
-                return Err(diag.note(later));
+                });
             }
         };
         self.args(name, args, &params, span)?;
@@ -4576,13 +4679,8 @@ impl<'a> Checker<'a> {
                 if self.structs.contains_key(owner.as_str()) {
                     return self.static_call(owner, name, name_span, args, callee, span);
                 }
-                if owner == "File" || owner == "Stdin" {
+                if owner == "File" {
                     return self.io_call(owner, name, name_span, args, callee, span);
-                }
-                // The writing side of `Stdin`, kept for the writers of a later slice.
-                if owner == "Stdout" || owner == "Stderr" {
-                    let instead = if owner == "Stdout" { "print(x)" } else { "printError(x)" };
-                    return Err(Diag::error(recv.span, format!("`{owner}` is not in the interpreter yet")).hint(format!("`{instead}` writes a line")));
                 }
                 // `string.join(", ", read names)`
                 // `string.fromUtf8(bytes)`: the bytes looked at as text, if they are text.
@@ -4701,6 +4799,10 @@ impl<'a> Checker<'a> {
         }
         if matches!(target, Ty::List(_) | Ty::Map(..) | Ty::Set(_)) {
             return self.collection_method(recv, target, writable, name, name_span, args, span);
+        }
+        if matches!(target, Ty::Reader | Ty::Writer) {
+            let target = target.clone();
+            return self.stream_method(recv, &target, writable, borrowed, name, name_span, args, callee, span);
         }
         // An array and a slice have the methods of a list that only look.
         if let Ty::Array(item, _) | Ty::Slice(item) = target {
@@ -4953,6 +5055,7 @@ impl<'a> Checker<'a> {
                 }
                 Ok(match kind.item() {
                     Ty::Char => Ty::Nullable(Box::new(Ty::Char)),
+                    item @ Ty::Result(..) => Ty::Nullable(Box::new(item)),
                     _ => Ty::Read(Box::new(Ty::Nullable(Box::new(Ty::Str)))),
                 })
             }
@@ -5214,6 +5317,105 @@ impl<'a> Checker<'a> {
                 })
             }
         }
+    }
+
+    /// The methods of `StreamReader` and `StreamWriter`. Reading and writing go on from where
+    /// the stream is, so they need it as `ref`; `close` takes the writer.
+    #[allow(clippy::too_many_arguments)]
+    fn stream_method(
+        &mut self,
+        recv: &mut Expr,
+        target: &Ty,
+        writable: bool,
+        borrowed: bool,
+        name: &str,
+        name_span: Span,
+        args: &mut [Expr],
+        callee: &mut Callee,
+        span: Span,
+    ) -> Res<Ty> {
+        let arity = |count: usize| match args.len() == count {
+            true => Ok(()),
+            false => Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len()))),
+        };
+        let result = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
+        let call = match (target, name) {
+            (Ty::Reader, "readLine") => StreamCall::ReadLine,
+            (Ty::Reader, "readText") => StreamCall::ReadText,
+            (Ty::Reader, "lines") => StreamCall::Lines,
+            (Ty::Writer, "write") => StreamCall::Write,
+            (Ty::Writer, "writeLine") => StreamCall::WriteLine,
+            (Ty::Writer, "flush") => StreamCall::Flush,
+            (Ty::Writer, "close") => StreamCall::Close,
+            _ => {
+                let known: &[&str] = match target {
+                    Ty::Reader => &["readLine", "readText", "lines"],
+                    _ => &["write", "writeLine", "flush", "close"],
+                };
+                let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
+                let diag = match nearest(name, known.iter().copied()) {
+                    Some(close) => diag.hint(format!("`{close}`")),
+                    None => diag.note(format!("methods: {}", known.join(", "))),
+                };
+                return Err(match (target, name) {
+                    (Ty::Reader, "close") => diag.note("a reader has nothing to lose: its file is closed when it ends"),
+                    (Ty::Reader, "write" | "writeLine" | "flush") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr` and `File.createText(path)` give a `StreamWriter`"),
+                    (Ty::Writer, "readLine" | "readText" | "lines") => diag.note("a `StreamWriter` writes; `Stdin` and `File.openText(path)` give a `StreamReader`"),
+                    _ => diag,
+                });
+            }
+        };
+        *callee = Callee::Stream(call);
+        if call == StreamCall::Close {
+            arity(0)?;
+            if let ExprKind::Var(var) = &recv.kind {
+                if let Some(what) = std_stream(var) {
+                    return Err(Diag::error(recv.span, format!("`{var}` is {what} of the program and stays open until it ends"))
+                        .hint(format!("`try {var}.flush()` writes what it holds")));
+                }
+            }
+            if borrowed {
+                return Err(Diag::error(recv.span, "`close` takes the writer and uses it up, but this writer is only borrowed")
+                    .note("whoever owns the writer closes it")
+                    .hint("`flush()` writes what it holds through a borrow"));
+            }
+            self.move_out(recv, &Ty::Writer)?;
+            recv.moved = true;
+            return Ok(result(Ty::Void));
+        }
+        if !writable {
+            if let Some(diag) = self.readonly(recv) {
+                return Err(diag.note(format!("`{name}` goes on from where the stream is")));
+            }
+            return Err(Diag::error(recv.span, format!("`{name}` goes on from where the stream is, but it is reached through a `read` borrow"))
+                .hint(format!("take it as `ref {target}` instead of `read {target}`")));
+        }
+        let ty = match call {
+            StreamCall::ReadLine => {
+                self.args(name, args, &[Ty::Ref(Box::new(Ty::Str))], span)?;
+                result(Ty::Bool)
+            }
+            StreamCall::ReadText => {
+                arity(0)?;
+                result(Ty::Str)
+            }
+            StreamCall::Lines => {
+                arity(0)?;
+                Ty::TextIter(TextIter::ReadLines)
+            }
+            StreamCall::Write | StreamCall::WriteLine => {
+                arity(1)?;
+                let ty = self.operand(&mut args[0], None)?;
+                self.printable(&ty, args[0].span)?;
+                result(Ty::Void)
+            }
+            StreamCall::Flush | StreamCall::Close => {
+                arity(0)?;
+                result(Ty::Void)
+            }
+        };
+        self.not_locked(recv, Access::Write)?;
+        Ok(ty)
     }
 
     /// `slot.take()`: gives the value of a `T?` place and leaves `null` there.

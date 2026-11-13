@@ -1,0 +1,28 @@
+1: [# notes]
+2: [number 42]
+3: [2.5]
+4: [x]
+5: [true]
+6: [[1, 2, 3]]
+7: [Point { x = 1, y = 2 }]
+8: [3 + 4 = 7]
+9: []
+10: [end]
+false
+found [number 42]
+next: [# notes]
+next: [number 42]
+rest: 58 bytes
+before flush: []
+after flush: [waiting]
+after 70000 bytes: 70007 bytes
+after close: 70012 bytes
+kept: [kept in a field
+]
+part1: [part
+]
+openText: NotFound
+openText: IsDirectory
+openText: NotFound
+createText: NotFound
+createText: IsDirectory

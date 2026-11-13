@@ -1,0 +1,8 @@
+// Closed on one path of an `if` only.
+Result<void, IoError> main() {
+    var w = try File.createText("x.txt")
+    if true {
+        try w.close()
+    }
+    return Ok()
+}

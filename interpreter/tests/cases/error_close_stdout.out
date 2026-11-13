@@ -1,0 +1,5 @@
+error: `Stdout` is the output of the program and stays open until it ends
+  --> error_close_stdout.sg:3:9
+ 3 |     _ = Stdout.close()
+   |         ^^^^^^
+  hint: `try Stdout.flush()` writes what it holds

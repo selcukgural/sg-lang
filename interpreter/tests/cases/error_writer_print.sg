@@ -1,0 +1,6 @@
+// A writer is not text.
+void main() {
+    var w = File.createText("x.txt") ?? return
+    print(w)
+    _ = w.close()
+}

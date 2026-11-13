@@ -1,0 +1,6 @@
+// A writer still open where its block ends.
+void save() {
+    var w = File.createText("x.txt") ?? return
+    _ = w.writeLine("done")
+}
+void main() { save() }

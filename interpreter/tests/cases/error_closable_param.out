@@ -1,0 +1,5 @@
+error: `w` is not closed before the function ends, so an error writing its buffer would be lost
+  --> error_closable_param.sg:2:24
+ 2 | void take(StreamWriter w) {
+   |                        ^
+  hint: `try w.close()`; to drop the error on purpose, `_ = w.close()`

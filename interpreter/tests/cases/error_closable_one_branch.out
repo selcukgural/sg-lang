@@ -1,0 +1,6 @@
+error: `w` is closed on some paths but not on all of them, so an error writing its buffer could be lost
+  close it on every path, or once where the paths meet
+  --> error_closable_one_branch.sg:3:9
+ 3 |     var w = try File.createText("x.txt")
+   |         ^
+  hint: `try w.close()`; to drop the error on purpose, `_ = w.close()`

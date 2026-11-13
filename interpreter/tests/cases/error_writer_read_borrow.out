@@ -1,0 +1,5 @@
+error: `writeLine` goes on from where the stream is, but it is reached through a `read` borrow
+  --> error_writer_read_borrow.sg:3:9
+ 3 |     _ = w.writeLine("x")
+   |         ^
+  hint: take it as `ref StreamWriter` instead of `read StreamWriter`

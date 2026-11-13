@@ -1,5 +1,0 @@
-error: `Stdout` is not in the interpreter yet
-  --> error_stdout_not_yet.sg:3:9
- 3 |     try Stdout.writeLine("hello")
-   |         ^^^^^^
-  hint: `print(x)` writes a line

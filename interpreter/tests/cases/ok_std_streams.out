@@ -1,0 +1,10 @@
+lines before third: 2
+printed
+written
+printed again
+next: [fourth]
+line: [fifth]
+line: [the rest]
+rest: [of it]
+to the standard error
+printError too

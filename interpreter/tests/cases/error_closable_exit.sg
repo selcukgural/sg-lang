@@ -1,0 +1,5 @@
+// `exit` ends the program at once: a writer that is not closed loses its buffer.
+void main() {
+    var w = File.createText("x.txt") ?? return
+    exit(2)
+}

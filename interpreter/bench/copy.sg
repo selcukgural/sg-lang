@@ -1,0 +1,19 @@
+// A file read and written piece by piece: the log of `lines` (two million lines, 125 MB) is
+// opened with `File.openText`, read with `readLine` into one text that is used again for
+// every line, and each line is written with its number in front (`17: INFO 350 ...`) through
+// a `StreamWriter` from `File.createText`, which writes in blocks of 64 KB. Each line is
+// checked to be UTF-8 as it is read. `run.sh` makes the log; both files are in
+// `target/bench`.
+Result<void, IoError> main() {
+    var reader = try File.openText("target/bench/lines.in")
+    var writer = try File.createText("target/bench/copy-sg.out")
+    string line = ""
+    long lines = 0
+    while try reader.readLine(ref line) {
+        lines += 1
+        try writer.writeLine($"{lines}: {line}")
+    }
+    try writer.close()
+    print($"{lines} lines copied")
+    return Ok()
+}

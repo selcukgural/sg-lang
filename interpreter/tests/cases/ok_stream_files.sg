@@ -1,0 +1,153 @@
+// Files read and written piece by piece: `File.createText` gives a `StreamWriter`, and
+// `File.openText` a `StreamReader`. The folder is the first word of the command line.
+
+struct Point : Formattable {
+    int x
+    int y
+}
+
+// A writer is lent as `ref`; whoever owns it closes it.
+Result<void, IoError> header(ref StreamWriter to, read string title) {
+    try to.writeLine($"# {title}")
+    return Ok()
+}
+
+// A writer given by value is closed by the one that got it.
+Result<void, IoError> finish(StreamWriter to) {
+    try to.write("end")
+    try to.close()
+    return Ok()
+}
+
+// A writer kept in a field is not tracked: it writes its buffer when the struct ends.
+struct Log {
+    StreamWriter out
+    int lines
+}
+
+Result<void, IoError> main(List<string> args) {
+    var path = $"{args[0]}/notes.txt".toString()
+
+    // Whatever `print` takes is written, with or without a line end.
+    var out = try File.createText(read path)
+    try header(ref out, "notes")
+    try out.write("number ")
+    try out.writeLine(42)
+    try out.writeLine(2.5)
+    try out.writeLine('x')
+    try out.writeLine(true)
+    try out.writeLine(List<int> { 1, 2, 3 })
+    try out.writeLine(Point { x = 1, y = 2 })
+    try out.writeLine($"{3} + {4} = {3 + 4}")
+    try out.writeLine("")
+    try finish(out)
+
+    // Line by line into one text, without the line ends.
+    var reader = try File.openText(read path)
+    string line = ""
+    int count = 0
+    while try reader.readLine(ref line) {
+        count += 1
+        print($"{count}: [{line}]")
+    }
+    print(try reader.readLine(ref line))
+
+    // `lines()` gives each line as a text of its own.
+    var again = try File.openText(read path)
+    for item in again.lines() {
+        var text = try item
+        if text.startsWith("number") {
+            print($"found [{text}]")
+        }
+    }
+
+    // `readText()` gives what is left, and `next()` goes one line at a time.
+    var third = try File.openText(read path)
+    var lines = third.lines()
+    showLine(lines.next())
+    showLine(lines.next())
+    var rest = try third.readText()
+    print($"rest: {rest.length()} bytes")
+
+    // What waits in the buffer is not in the file yet; `flush` writes it.
+    var other = $"{args[0]}/other.txt".toString()
+    var w = try File.createText(read other)
+    try w.write("waiting")
+    var seen = try File.readText(read other)
+    print($"before flush: [{seen}]")
+    try w.flush()
+    seen = try File.readText(read other)
+    print($"after flush: [{seen}]")
+    // 64 KB in the buffer: it is written without a flush.
+    var big = string.withCapacity(70000)
+    for i in 0..7000 {
+        big.write("0123456789")
+    }
+    try w.write(read big)
+    try w.write("small")
+    seen = try File.readText(read other)
+    print($"after 70000 bytes: {seen.length()} bytes")
+    try w.close()
+    seen = try File.readText(read other)
+    print($"after close: {seen.length()} bytes")
+
+    // A writer in a struct writes its buffer when the struct ends.
+    var kept = $"{args[0]}/kept.txt".toString()
+    if true {
+        var log = Log { out = try File.createText(read kept), lines = 0 }
+        try log.out.writeLine("kept in a field")
+        log.lines += 1
+    }
+    seen = try File.readText(read kept)
+    print($"kept: [{seen}]")
+
+    // A list of writers: each is closed when the list ends, its error lost.
+    var many = List<StreamWriter> {}
+    for i in 0..3 {
+        var name = $"{args[0]}/part{i}.txt".toString()
+        var made = try File.createText(read name)
+        many.add(made)
+    }
+    for part in ref many {
+        try part.writeLine("part")
+    }
+    many.clear()
+    seen = try File.readText(read $"{args[0]}/part1.txt".toString())
+    print($"part1: [{seen}]")
+
+    // The errors a program tells apart.
+    show(File.openText(read $"{args[0]}/missing.txt".toString()))
+    show(File.openText(read args[0]))
+    show(File.openText("a\0b"))
+    showWriter(File.createText(read $"{args[0]}/no/such/folder.txt".toString()))
+    showWriter(File.createText(read args[0]))
+    return Ok()
+}
+
+void show(Result<StreamReader, IoError> opened) {
+    match opened {
+        Ok(_) => print("opened")
+        Error(cause) => print($"openText: {cause}")
+    }
+}
+
+void showWriter(Result<StreamWriter, IoError> made) {
+    match made {
+        Ok(writer) => {
+            _ = writer.close()
+            print("made")
+        }
+        Error(cause) => print($"createText: {cause}")
+    }
+}
+
+void showLine(Result<string, IoError>? item) {
+    if item is null {
+        print("no line")
+        return
+    }
+    match item {
+        Ok(text) => print($"next: [{text}]")
+        Error(cause) => print($"next: {cause}")
+    }
+}

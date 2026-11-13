@@ -204,6 +204,9 @@ pub enum TextIter {
     Split,
     SplitWhitespace,
     Lines,
+    /// `reader.lines()`: each line of a file or of the input as a text of its own, until the
+    /// end or the first error. It writes through the reader it reads from.
+    ReadLines,
 }
 
 impl TextIter {
@@ -214,6 +217,7 @@ impl TextIter {
             TextIter::Split => "Split",
             TextIter::SplitWhitespace => "SplitWhitespace",
             TextIter::Lines => "Lines",
+            TextIter::ReadLines => "ReadLines",
         }
     }
 
@@ -221,6 +225,7 @@ impl TextIter {
     pub fn item(self) -> Ty {
         match self {
             TextIter::Chars => Ty::Char,
+            TextIter::ReadLines => Ty::Result(Box::new(Ty::Str), Box::new(Ty::Enum("IoError".to_string()))),
             _ => Ty::Read(Box::new(Ty::Str)),
         }
     }
@@ -267,6 +272,11 @@ pub enum Ty {
     Slice(Box<Ty>),
     /// What `text.chars()`, `text.split(...)` and the others give: it borrows the text.
     TextIter(TextIter),
+    /// `StreamReader`: a file or the input, read piece by piece. Closed when it ends.
+    Reader,
+    /// `StreamWriter`: a file or an output, written piece by piece through a buffer. A local
+    /// one must be closed (`Closable`): `close` gives the error that writing the buffer met.
+    Writer,
     /// `read T`: read-only borrow.
     Read(Box<Ty>),
     /// `ref T`: writable borrow.
@@ -286,6 +296,8 @@ impl Ty {
             "string" => Some(Ty::Str),
             "void" => Some(Ty::Void),
             "Formatter" => Some(Ty::Formatter),
+            "StreamReader" => Some(Ty::Reader),
+            "StreamWriter" => Some(Ty::Writer),
             _ => IntTy::from_name(name).map(Ty::Int).or_else(|| FloatTy::from_name(name).map(Ty::Float)),
         }
     }
@@ -299,7 +311,7 @@ impl Ty {
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-            Ty::Str | Ty::Ptr(_) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) => false,
+            Ty::Str | Ty::Ptr(_) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader | Ty::Writer => false,
         }
     }
 
@@ -347,6 +359,8 @@ impl fmt::Display for Ty {
             Ty::Array(item, length) => write!(f, "{item}[{length}]"),
             Ty::Slice(item) => write!(f, "{item}[]"),
             Ty::TextIter(kind) => f.write_str(kind.name()),
+            Ty::Reader => f.write_str("StreamReader"),
+            Ty::Writer => f.write_str("StreamWriter"),
             Ty::Read(inner) => write!(f, "read {inner}"),
             Ty::Ref(inner) => write!(f, "ref {inner}"),
         }

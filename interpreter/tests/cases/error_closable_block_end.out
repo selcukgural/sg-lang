@@ -1,0 +1,5 @@
+error: `w` is not closed before its block ends, so an error writing its buffer would be lost
+  --> error_closable_block_end.sg:3:9
+ 3 |     var w = File.createText("x.txt") ?? return
+   |         ^
+  hint: `try w.close()`; to drop the error on purpose, `_ = w.close()`

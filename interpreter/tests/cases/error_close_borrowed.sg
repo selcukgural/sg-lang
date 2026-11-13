@@ -1,0 +1,5 @@
+// `close` takes the writer: through a borrow it cannot.
+void f(ref StreamWriter w) {
+    _ = w.close()
+}
+void main() {}

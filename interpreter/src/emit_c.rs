@@ -13,8 +13,8 @@
 //! `write` and `clear`, which add to a text where it is, as `f.write` does), functions, structs,
 //! enums with `match` and `is`, `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
 //! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, `print` and `printError`, files
-//! read and written whole, the input read line by line, the command line and `exit` (see
-//! `IO_RUNTIME`). Anything else is an error that names what is missing, so nothing is compiled
+//! read and written whole or piece by piece (`StreamReader`, `StreamWriter`, and `Stdin`, `Stdout`
+//! and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`). Anything else is an error that names what is missing, so nothing is compiled
 //! wrongly in silence.
 //!
 //! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`), and
@@ -1119,42 +1119,47 @@ static int sg_write_file(sg_str path, const uint8_t* bytes, int64_t len, bool ap
     if (close(fd) != 0 && !code) code = errno;
     return code;
 }
-/* The input of the program, read in blocks. `done` counts the bytes given out: where an
-   `InvalidText` lies. On a terminal, what was printed goes out before the program waits. */
+/* A file or the input, read in blocks of 64 KB that the reader keeps. `done` counts the bytes
+   given out: where an `InvalidText` lies. A reader that was moved has no block. On a terminal,
+   what was printed goes out before the program waits for the input. */
+typedef struct { int fd; uint8_t* block; int64_t at, len, done; bool ended; } sg_reader;
 static uint8_t sg_in_block[65536];
-static struct { int64_t at, len, done; bool ended; int terminal; } sg_in = { 0, 0, 0, false, -1 };
-static int sg_in_fill(void) {
-    if (sg_in.terminal < 0) sg_in.terminal = isatty(0);
-    if (sg_in.terminal) fflush(stdout);
+static sg_reader sg_stdin = { 0, sg_in_block, 0, 0, 0, false };
+static int sg_in_terminal = -1;
+static int sg_reader_fill(sg_reader* r) {
+    if (r == &sg_stdin) {
+        if (sg_in_terminal < 0) sg_in_terminal = isatty(0);
+        if (sg_in_terminal) fflush(stdout);
+    }
     for (;;) {
-        ssize_t got = read(0, sg_in_block, sizeof sg_in_block);
+        ssize_t got = read(r->fd, r->block, 65536);
         if (got < 0) { if (errno == EINTR) continue; return errno; }
-        sg_in.at = 0;
-        sg_in.len = got;
-        if (got == 0) sg_in.ended = true;
+        r->at = 0;
+        r->len = got;
+        if (got == 0) r->ended = true;
         return 0;
     }
 }
-/* The next line into `line`, without its `\n` or `\r\n`: 0 with `*more` false at the end of
-   the input, the code the system gave, or -1 with `*bad` where the line is not UTF-8. */
-static int sg_read_line(sg_string* line, bool* more, int64_t* bad) {
+/* The next line into `line`, without its `\n` or `\r\n`: 0 with `*more` false at the end,
+   the code the system gave, or -1 with `*bad` where the line is not UTF-8. */
+static int sg_read_line(sg_reader* r, sg_string* line, bool* more, int64_t* bad) {
     line->len = 0;
-    int64_t start = sg_in.done;
+    int64_t start = r->done;
     bool any = false;
     for (;;) {
-        if (sg_in.at == sg_in.len) {
-            if (sg_in.ended) break;
-            int code = sg_in_fill();
+        if (r->at == r->len) {
+            if (r->ended) break;
+            int code = sg_reader_fill(r);
             if (code) return code;
             continue;
         }
         any = true;
-        const uint8_t* from = sg_in_block + sg_in.at;
-        const uint8_t* end = memchr(from, '\n', (size_t)(sg_in.len - sg_in.at));
-        int64_t n = end ? end - from + 1 : sg_in.len - sg_in.at;
+        const uint8_t* from = r->block + r->at;
+        const uint8_t* end = memchr(from, '\n', (size_t)(r->len - r->at));
+        int64_t n = end ? end - from + 1 : r->len - r->at;
         sg_put(line, from, n);
-        sg_in.at += n;
-        sg_in.done += n;
+        r->at += n;
+        r->done += n;
         if (end) break;
     }
     *more = any;
@@ -1167,19 +1172,118 @@ static int sg_read_line(sg_string* line, bool* more, int64_t* bad) {
     if (at >= 0) { line->len = 0; *bad = start + at; return -1; }
     return 0;
 }
-/* What is left of the input. */
-static int sg_read_input(sg_string* text) {
+/* What is left. */
+static int sg_read_rest(sg_reader* r, sg_string* text) {
     *text = SG_LIT("", 0);
     for (;;) {
-        if (sg_in.at < sg_in.len) {
-            sg_put(text, sg_in_block + sg_in.at, sg_in.len - sg_in.at);
-            sg_in.done += sg_in.len - sg_in.at;
-            sg_in.at = sg_in.len;
+        if (r->at < r->len) {
+            sg_put(text, r->block + r->at, r->len - r->at);
+            r->done += r->len - r->at;
+            r->at = r->len;
         }
-        if (sg_in.ended) return 0;
-        int code = sg_in_fill();
+        if (r->ended) return 0;
+        int code = sg_reader_fill(r);
         if (code) { sg_drop_string(text); *text = SG_LIT("", 0); return code; }
     }
+}
+/* A folder opens, but cannot be read: it is told at once. */
+static int sg_open_reader(sg_str path, sg_reader* out) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    int fd = open(name, O_RDONLY);
+    free(name);
+    if (fd < 0) return errno;
+    struct stat info;
+    if (fstat(fd, &info) == 0 && S_ISDIR(info.st_mode)) { close(fd); return EISDIR; }
+    uint8_t* block = malloc(65536);
+    if (!block) abort();
+    *out = (sg_reader){ fd, block, 0, 0, 0, false };
+    return 0;
+}
+static inline void sg_drop_reader(sg_reader* r) {
+    if (!r->block) return;
+    close(r->fd);
+    free(r->block);
+    r->block = NULL;
+}
+static inline sg_reader sg_move_reader(sg_reader* r) { sg_reader out = *r; r->block = NULL; return out; }
+/* `reader.lines()`: where it reads from, and whether it has met the end or an error. */
+typedef struct { sg_reader* r; bool done; } sg_read_lines;
+
+/* A file written through a block of 64 KB, or the output and the standard error (`std` 1 and
+   2), written through C's `stdout` and `stderr` so that they keep their order with `print`.
+   `failed`: the first error, which every later call gives again. A writer that was moved or
+   closed has `fd` -1. */
+typedef struct { int fd; int std; int failed; sg_string buf; } sg_writer;
+static sg_writer sg_stdout = { 1, 1, 0, { (uint8_t*)"", 0, 0 } };
+static sg_writer sg_stderr = { 2, 2, 0, { (uint8_t*)"", 0, 0 } };
+static int sg_write_all(int fd, const uint8_t* bytes, int64_t len) {
+    while (len > 0) {
+        ssize_t put = write(fd, bytes, (size_t)len);
+        if (put < 0) { if (errno == EINTR) continue; return errno; }
+        bytes += put;
+        len -= put;
+    }
+    return 0;
+}
+static int sg_writer_out(sg_writer* w) {
+    int code = sg_write_all(w->fd, w->buf.ptr, w->buf.len);
+    w->buf.len = 0;
+    if (code) w->failed = code;
+    return code;
+}
+/* After something was put into the block: a standard stream writes it at once, a file when the
+   block holds 64 KB. */
+static int sg_writer_wrote(sg_writer* w) {
+    if (w->failed) { w->buf.len = 0; return w->failed; }
+    if (w->std) {
+        if (w->std == 2) fflush(stdout);
+        size_t len = (size_t)w->buf.len;
+        w->buf.len = 0;
+        if (len > 0 && fwrite(w->buf.ptr, 1, len, w->std == 1 ? stdout : stderr) != len) return w->failed = errno ? errno : EIO;
+        return 0;
+    }
+    return w->buf.len >= 65536 ? sg_writer_out(w) : 0;
+}
+static int sg_writer_flush(sg_writer* w) {
+    if (w->failed) return w->failed;
+    if (w->std) return fflush(w->std == 1 ? stdout : stderr) == 0 ? 0 : (w->failed = errno ? errno : EIO);
+    return sg_writer_out(w);
+}
+/* The block goes out and the file is closed; the first error is given. */
+static int sg_writer_close(sg_writer* w) {
+    int code = w->failed ? w->failed : sg_writer_out(w);
+    if (close(w->fd) != 0 && !code) code = errno;
+    w->fd = -1;
+    sg_drop_string(&w->buf);
+    w->buf = (sg_string){ (uint8_t*)"", 0, 0 };
+    return code;
+}
+/* A writer that ends without `close` writes its block and closes, and the error is lost. */
+static inline void sg_drop_writer(sg_writer* w) {
+    if (w->fd < 0 || w->std) return;
+    if (!w->failed) (void)sg_write_all(w->fd, w->buf.ptr, w->buf.len);
+    close(w->fd);
+    w->fd = -1;
+    sg_drop_string(&w->buf);
+    w->buf = (sg_string){ (uint8_t*)"", 0, 0 };
+}
+static inline sg_writer sg_move_writer(sg_writer* w) {
+    sg_writer out = *w;
+    w->fd = -1;
+    w->buf = (sg_string){ (uint8_t*)"", 0, 0 };
+    return out;
+}
+static int sg_create_writer(sg_str path, sg_writer* out) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    int fd = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    free(name);
+    if (fd < 0) return errno;
+    *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 } };
+    return 0;
 }
 "#;
 
@@ -1389,6 +1493,15 @@ fn not_yet(span: Span, what: &str) -> Diag {
 /// A C string literal for any text.
 /// Whether a value of this type is written by the helper of its type: a struct, an enum
 /// or a collection, also behind a borrow or a pointer.
+/// `Stdin`, `Stdout` and `Stderr`: every function has them, as `ref` parameters the program
+/// gives, which are the streams of the runtime.
+fn streams() -> Vec<Local> {
+    [("Stdin", "sg_stdin", Ty::Reader), ("Stdout", "sg_stdout", Ty::Writer), ("Stderr", "sg_stderr", Ty::Writer)]
+        .into_iter()
+        .map(|(name, global, ty)| Local { name: name.to_string(), cname: format!("(&{global})"), ty: Ty::Ref(Box::new(ty)), gone: false, drop: None })
+        .collect()
+}
+
 /// The runtime function that moves an iterator over a text on.
 fn next_of(kind: TextIter) -> &'static str {
     match kind {
@@ -1396,6 +1509,7 @@ fn next_of(kind: TextIter) -> &'static str {
         TextIter::Split => "sg_split_next",
         TextIter::SplitWhitespace => "sg_words_next",
         TextIter::Lines => "sg_lines_next",
+        TextIter::ReadLines => "sg_read_lines_next",
     }
 }
 
@@ -1588,6 +1702,8 @@ fn mangle(ty: &Ty) -> Option<String> {
         Ty::Bool => "bool".to_string(),
         Ty::Char => "char".to_string(),
         Ty::Str => "string".to_string(),
+        Ty::Reader => "reader".to_string(),
+        Ty::Writer => "writer".to_string(),
         Ty::Struct(name) => format!("S_{}", cname(name)),
         Ty::Enum(name) => format!("E_{}", cname(name)),
         Ty::Ptr(inner) => format!("P_{}", mangle(inner)?),
@@ -1931,6 +2047,15 @@ impl<'a> Emitter<'a> {
             Ty::Float(ty) => float_ctype(*ty).to_string(),
             Ty::Bool => "bool".to_string(),
             Ty::Char => "uint32_t".to_string(),
+            Ty::TextIter(TextIter::ReadLines) | Ty::Reader | Ty::Writer => {
+                self.made.insert("io".to_string());
+                match ty {
+                    Ty::Reader => "sg_reader",
+                    Ty::Writer => "sg_writer",
+                    _ => "sg_read_lines",
+                }
+                .to_string()
+            }
             Ty::TextIter(_) => "sg_iter".to_string(),
             Ty::Void => "void".to_string(),
             // A `Formatter` is the text being written.
@@ -2309,7 +2434,7 @@ impl<'a> Emitter<'a> {
                 let params = params.iter().map(|param| self.written(param)).collect::<Res<Vec<Ty>>>()?;
                 Ty::Func(params, Box::new(self.written(ret)?))
             }
-            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter)), []) => base,
+            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter | Ty::Reader | Ty::Writer)), []) => base,
             (None, []) => match self.full(&ty.name, ty.span) {
                 Some(full) if self.structs.contains_key(full.as_str()) => Ty::Struct(full),
                 Some(full) => Ty::Enum(full),
@@ -2338,7 +2463,7 @@ impl<'a> Emitter<'a> {
     /// Whether a value of this type owns something that is freed when it ends.
     fn droppable(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Str | Ty::Ptr(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) => true,
+            Ty::Str | Ty::Ptr(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader | Ty::Writer => true,
             Ty::Entry(key, value) => self.droppable(key) || self.droppable(value),
             Ty::Nullable(inner) | Ty::Array(inner, _) => self.droppable(inner),
             Ty::Result(ok, error) => self.droppable(ok) || self.droppable(error),
@@ -3083,7 +3208,7 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(bodies, "{head} {{");
         self.ret = Ty::Void;
         self.temps = 0;
-        self.scopes = vec![Vec::new()];
+        self.scopes = vec![streams()];
         self.in_test = true;
         let written = self.stmts(&test.body, 1, bodies);
         self.in_test = false;
@@ -3105,7 +3230,7 @@ impl<'a> Emitter<'a> {
             None => format!("f_{}", cname(&func.name)),
         };
         let mut params = Vec::new();
-        let mut scope = Vec::new();
+        let mut scope = streams();
         if let (Some(this), Some(owner)) = (func.this, owner) {
             let owner_ty = Ty::Struct(owner.to_string());
             let ty = match this {
@@ -3525,13 +3650,17 @@ impl<'a> Emitter<'a> {
             StmtKind::ForEach { var, iter, body, .. } if matches!(iter.ty, Ty::TextIter(_)) => {
                 let Ty::TextIter(kind) = iter.ty else { unreachable!("tested above") };
                 let item = kind.item();
+                if kind == TextIter::ReadLines {
+                    self.read_lines_glue(iter.span)?;
+                }
+                let iter_c = self.ctype(&iter.ty, iter.span)?;
                 let (held, it, at) = (self.ctype(&item, iter.span)?, self.temp(), self.temp());
                 let inner = format!("{pad}    ");
                 self.nothing_gone();
                 let value = self.value(iter)?;
                 self.flush_pre(&pad, out);
                 let _ = writeln!(out, "{pad}{{");
-                let _ = writeln!(out, "{inner}sg_iter {it} = {value}; {held} {at};");
+                let _ = writeln!(out, "{inner}{iter_c} {it} = {value}; {held} {at};");
                 self.flush_post(&inner, out);
                 let _ = writeln!(out, "{inner}while ({}(&{it}, &{at})) {{", next_of(kind));
                 self.temps += 1;
@@ -4463,6 +4592,27 @@ impl<'a> Emitter<'a> {
         self.made.insert("io".to_string());
         let span = expr.span;
         let gives = self.ctype(&expr.ty, span)?;
+        self.io_error(span)?;
+        let failed = |cause: &str| format!("return ({gives}){{ .tag = 1, .u.v1 = {{ {cause} }} }};");
+        let text = Ty::Read(Box::new(Ty::Str));
+        let (fname, params, body) = match call {
+            IoCall::OpenText | IoCall::CreateText => {
+                let (fname, open, ctype) = match call {
+                    IoCall::OpenText => ("sg_file_open_text", "sg_open_reader", "sg_reader"),
+                    _ => ("sg_file_create_text", "sg_create_writer", "sg_writer"),
+                };
+                (fname, vec![text], format!("{ctype} s; int code = {open}(a0, &s); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ s }} }};", failed("sg_io_error(code)")))
+            }
+            _ => return self.io_whole(call, args, head, expr),
+        };
+        self.io_glue(fname, &params, &body, &gives, span)?;
+        self.call(fname.to_string(), None, args, head, &expr.ty)
+    }
+
+    /// `sg_io_error(code)` and `sg_io_bad_text(at)`: the `IoError` for a code the system gave,
+    /// and for a byte that is not UTF-8.
+    fn io_error(&mut self, span: Span) -> Res<()> {
+        self.made.insert("io".to_string());
         let error_c = self.ctype(&Ty::Enum("IoError".to_string()), span)?;
         if self.made.insert("sg_io_error".to_string()) {
             let _ = writeln!(
@@ -4472,6 +4622,28 @@ impl<'a> Emitter<'a> {
                  static {error_c} sg_io_bad_text(int64_t at) {{ return ({error_c}){{ .tag = 4, .u.v4 = {{ at }} }}; }}"
             );
         }
+        Ok(())
+    }
+
+    /// A function of the glue that the calls of `File` and the methods of the streams go
+    /// through, written once.
+    fn io_glue(&mut self, fname: &str, params: &[Ty], body: &str, gives: &str, span: Span) -> Res<()> {
+        if self.made.insert(fname.to_string()) {
+            let mut written = Vec::new();
+            for (index, param) in params.iter().enumerate() {
+                written.push(format!("{} a{index}", self.ctype(param, span)?));
+            }
+            let written = if written.is_empty() { "void".to_string() } else { written.join(", ") };
+            let _ = writeln!(self.glue, "static {gives} {fname}({written}) {{ {body} }}");
+            self.sigs.insert(fname.to_string(), params.to_vec());
+        }
+        Ok(())
+    }
+
+    /// The functions of `File` that read or write a whole file.
+    fn io_whole(&mut self, call: IoCall, args: &'a [Expr], head: bool, expr: &'a Expr) -> Res<String> {
+        let span = expr.span;
+        let gives = self.ctype(&expr.ty, span)?;
         let failed = |cause: &str| format!("return ({gives}){{ .tag = 1, .u.v1 = {{ {cause} }} }};");
         let text = Ty::Read(Box::new(Ty::Str));
         let (fname, params, body) = match call {
@@ -4479,7 +4651,7 @@ impl<'a> Emitter<'a> {
                 "sg_file_read_text",
                 vec![text],
                 format!(
-                    "uint8_t* bytes; int64_t n; int code = sg_read_file(a0, &bytes, &n); if (code) {} \
+                    "uint8_t* bytes = NULL; int64_t n = 0; int code = sg_read_file(a0, &bytes, &n); if (code) {} \
                      int64_t bad = sg_utf8_bad(bytes, n); if (bad >= 0) {{ free(bytes); {} }} \
                      if (n == 0) {{ free(bytes); return ({gives}){{ .tag = 0, .u.v0 = {{ SG_LIT(\"\", 0) }} }}; }} \
                      return ({gives}){{ .tag = 0, .u.v0 = {{ (sg_string){{ bytes, n, n }} }} }};",
@@ -4493,7 +4665,7 @@ impl<'a> Emitter<'a> {
                     "sg_file_read_bytes",
                     vec![text],
                     format!(
-                        "uint8_t* bytes; int64_t n; int code = sg_read_file(a0, &bytes, &n); if (code) {} \
+                        "uint8_t* bytes = NULL; int64_t n = 0; int code = sg_read_file(a0, &bytes, &n); if (code) {} \
                          if (n == 0) {{ free(bytes); return ({gives}){{ .tag = 0, .u.v0 = {{ ({list}){{ 0 }} }} }}; }} \
                          return ({gives}){{ .tag = 0, .u.v0 = {{ ({list}){{ bytes, n, n }} }} }};",
                         failed("sg_io_error(code)")
@@ -4516,38 +4688,98 @@ impl<'a> Emitter<'a> {
                     ),
                 )
             }
-            IoCall::ReadLine => (
-                "sg_stdin_read_line",
-                vec![Ty::Ref(Box::new(Ty::Str))],
-                format!(
-                    "bool more = false; int64_t bad = 0; int code = sg_read_line(a0, &more, &bad); \
-                     if (code == -1) {} if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ more }} }};",
-                    failed("sg_io_bad_text(bad)"),
-                    failed("sg_io_error(code)")
-                ),
-            ),
-            IoCall::ReadInput => (
-                "sg_stdin_read_text",
-                Vec::new(),
-                format!(
-                    "int64_t start = sg_in.done; sg_string text; int code = sg_read_input(&text); if (code) {} \
-                     int64_t bad = sg_utf8_bad(text.ptr, text.len); \
-                     if (bad >= 0) {{ sg_drop_string(&text); {} }} return ({gives}){{ .tag = 0, .u.v0 = {{ text }} }};",
-                    failed("sg_io_error(code)"),
-                    failed("sg_io_bad_text(start + bad)")
-                ),
-            ),
+            IoCall::OpenText | IoCall::CreateText => unreachable!("written by `io`"),
         };
-        if self.made.insert(fname.to_string()) {
-            let mut written = Vec::new();
-            for (index, param) in params.iter().enumerate() {
-                written.push(format!("{} a{index}", self.ctype(param, span)?));
-            }
-            let written = if written.is_empty() { "void".to_string() } else { written.join(", ") };
-            let _ = writeln!(self.glue, "static {gives} {fname}({written}) {{ {body} }}");
-            self.sigs.insert(fname.to_string(), params);
-        }
+        self.io_glue(fname, &params, &body, &gives, span)?;
         self.call(fname.to_string(), None, args, head, &expr.ty)
+    }
+
+    /// The methods of `StreamReader` and `StreamWriter`. Reading and writing go through the
+    /// stream's address; `close` takes the writer.
+    fn stream(&mut self, call: StreamCall, recv: &'a Expr, args: &'a [Expr], head: bool, expr: &'a Expr) -> Res<String> {
+        let span = expr.span;
+        self.io_error(span)?;
+        let gives = self.ctype(&expr.ty, span)?;
+        let failed = |cause: &str| format!("return ({gives}){{ .tag = 1, .u.v1 = {{ {cause} }} }};");
+        // `Ok()`, or the error a code stands for.
+        let done = |code: &str| format!("({{ int c_ = {code}; c_ ? ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_error(c_) }} }} : ({gives}){{ .tag = 0 }}; }})");
+        let before = self.mark();
+        match call {
+            StreamCall::Close => {
+                let value = match recv.is_place() {
+                    true => {
+                        let place = self.lvalue(recv)?;
+                        self.move_of(&Ty::Writer, &place)
+                    }
+                    false => self.value(recv)?,
+                };
+                let receiver = self.part(recv, &Ty::Writer, value, before);
+                let body = format!("int code = sg_writer_close(&a0); if (code) {} return ({gives}){{ .tag = 0 }};", failed("sg_io_error(code)"));
+                self.io_glue("sg_writer_close_r", &[Ty::Writer], &body, &gives, span)?;
+                self.call("sg_writer_close_r".to_string(), Some(receiver), args, head, &expr.ty)
+            }
+            StreamCall::Lines => Ok(format!("((sg_read_lines){{ {}, false }})", self.list_address(recv)?)),
+            StreamCall::Flush => Ok(done(&format!("sg_writer_flush({})", self.list_address(recv)?))),
+            StreamCall::Write | StreamCall::WriteLine => {
+                let temp = self.temp();
+                let out = self.list_address(recv)?;
+                let written = self.write_into(&format!("(&{temp}->buf)"), &args[0])?;
+                let end = if call == StreamCall::WriteLine { format!(" sg_put(&{temp}->buf, \"\\n\", 1);") } else { String::new() };
+                Ok(format!("({{ sg_writer* {temp} = {out}; {written};{end} {}; }})", done(&format!("sg_writer_wrote({temp})"))))
+            }
+            StreamCall::ReadLine | StreamCall::ReadText => {
+                let reader = Ty::Ref(Box::new(Ty::Reader));
+                let receiver = self.list_address(recv)?;
+                let receiver = self.part(recv, &reader, receiver, before);
+                let (fname, params, body) = match call {
+                    StreamCall::ReadLine => (
+                        "sg_reader_line_r",
+                        vec![reader, Ty::Ref(Box::new(Ty::Str))],
+                        format!(
+                            "bool more = false; int64_t bad = 0; int code = sg_read_line(a0, a1, &more, &bad); \
+                             if (code == -1) {} if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ more }} }};",
+                            failed("sg_io_bad_text(bad)"),
+                            failed("sg_io_error(code)")
+                        ),
+                    ),
+                    _ => (
+                        "sg_reader_text_r",
+                        vec![reader],
+                        format!(
+                            "int64_t start = a0->done; sg_string text; int code = sg_read_rest(a0, &text); if (code) {} \
+                             int64_t bad = sg_utf8_bad(text.ptr, text.len); \
+                             if (bad >= 0) {{ sg_drop_string(&text); {} }} return ({gives}){{ .tag = 0, .u.v0 = {{ text }} }};",
+                            failed("sg_io_error(code)"),
+                            failed("sg_io_bad_text(start + bad)")
+                        ),
+                    ),
+                };
+                self.io_glue(fname, &params, &body, &gives, span)?;
+                // The receiver is not one of the arguments the signature lists.
+                let listed = params[1..].to_vec();
+                self.sigs.insert(fname.to_string(), listed);
+                self.call(fname.to_string(), Some(receiver), args, head, &expr.ty)
+            }
+        }
+    }
+
+    /// `sg_read_lines_next`: the next line of `reader.lines()` as a text of its own, or the
+    /// error that ends it. `item`: the `Result<string, IoError>` it gives.
+    fn read_lines_glue(&mut self, span: Span) -> Res<()> {
+        if !self.made.insert("sg_read_lines_next".to_string()) {
+            return Ok(());
+        }
+        self.io_error(span)?;
+        let item = self.ctype(&TextIter::ReadLines.item(), span)?;
+        let _ = writeln!(
+            self.glue,
+            "static bool sg_read_lines_next(sg_read_lines* it, {item}* out) {{ if (it->done) return false; \
+             sg_string line = SG_LIT(\"\", 0); bool more = false; int64_t bad = 0; int code = sg_read_line(it->r, &line, &more, &bad); \
+             if (code == 0 && more) {{ *out = ({item}){{ .tag = 0, .u.v0 = {{ line }} }}; return true; }} \
+             sg_drop_string(&line); it->done = true; if (code == 0) return false; \
+             *out = ({item}){{ .tag = 1, .u.v1 = {{ code == -1 ? sg_io_bad_text(bad) : sg_io_error(code) }} }}; return true; }}"
+        );
+        Ok(())
     }
 
     /// `exit(code)`: what was printed goes out and the program ends. In a test it fails the
@@ -5708,6 +5940,7 @@ impl<'a> Emitter<'a> {
                     self.call("sg_from_utf8".to_string(), None, args, head, &expr.ty)
                 }
                 Callee::Io(call) => self.io(*call, args, head, expr),
+                Callee::Stream(call) => self.stream(*call, recv, args, head, expr),
                 // `int.parse(text)`: one function for each type, made where it is first used.
                 Callee::Parse => {
                     let Ty::Result(ty, _) = &expr.ty else { return Err(not_yet(expr.span, "`parse`")) };
@@ -5746,12 +5979,16 @@ impl<'a> Emitter<'a> {
                 Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::TextIter(_)) => {
                     let Ty::TextIter(kind) = recv.ty.strip_borrow() else { unreachable!("tested above") };
                     let (step, temp) = (next_of(*kind), self.temp());
+                    if *kind == TextIter::ReadLines {
+                        self.read_lines_glue(expr.span)?;
+                    }
+                    let iter_c = self.ctype(recv.ty.strip_borrow(), recv.span)?;
                     let (start, at) = match recv.is_place() {
                         true => (String::new(), format!("&{}", self.lvalue(recv)?)),
-                        false => (format!("sg_iter {temp}i = {}; ", self.value(recv)?), format!("&{temp}i")),
+                        false => (format!("{iter_c} {temp}i = {}; ", self.value(recv)?), format!("&{temp}i")),
                     };
                     Ok(match kind {
-                        TextIter::Chars => {
+                        TextIter::Chars | TextIter::ReadLines => {
                             let option = self.ctype(&expr.ty, expr.span)?;
                             format!("({{ {start}{option} {temp}; {temp}.has = {step}({at}, &{temp}.value); {temp}; }})")
                         }

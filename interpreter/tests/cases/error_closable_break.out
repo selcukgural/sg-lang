@@ -1,0 +1,9 @@
+error: `w` is not closed at this `break`, so an error writing its buffer would be lost
+  --> error_closable_break.sg:6:13
+ 6 |             break
+   |             ^^^^^
+  it is opened here:
+  --> error_closable_break.sg:4:13
+ 4 |         var w = File.createText("x.txt") ?? return
+   |             ^
+  hint: `try w.close()`; to drop the error on purpose, `_ = w.close()`

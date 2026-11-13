@@ -1,0 +1,4 @@
+error: a `StreamWriter` value cannot be written as text
+  --> error_writer_print.sg:4:11
+ 4 |     print(w)
+   |           ^

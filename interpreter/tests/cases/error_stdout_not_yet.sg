@@ -1,5 +1,0 @@
-// `Stdout` and `Stderr` are kept for the writers that come later; `print` and `printError` write now.
-Result<void, IoError> main() {
-    try Stdout.writeLine("hello")
-    return Ok()
-}

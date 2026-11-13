@@ -1,0 +1,8 @@
+error: `w` was moved and can no longer be used
+  --> error_write_after_close.sg:5:9
+ 5 |     try w.writeLine("late")
+   |         ^
+  it was moved here:
+  --> error_write_after_close.sg:4:9
+ 4 |     try w.close()
+   |         ^

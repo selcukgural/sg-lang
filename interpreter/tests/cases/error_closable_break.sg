@@ -1,0 +1,10 @@
+// A writer of one round of a loop, still open at a `break`.
+void main() {
+    for i in 0..3 {
+        var w = File.createText("x.txt") ?? return
+        if i == 1 {
+            break
+        }
+        _ = w.close()
+    }
+}

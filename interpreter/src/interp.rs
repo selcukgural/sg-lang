@@ -9,9 +9,9 @@
 //! between the old and the new owner here, which cannot be observed because the checker
 //! rejects any use of the old one.
 
-use std::cell::RefCell;
+use std::cell::{Cell as Flag, RefCell};
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::rc::Rc;
 
 use crate::ast::*;
@@ -63,6 +63,88 @@ pub enum Value {
     /// What goes over a text: `text.chars()`, `text.split(',')`. A copy goes on with the
     /// same place in the text, but the checker lets it be used from one name only.
     Iter(Rc<RefCell<Cursor>>),
+    /// `StreamReader`. A moved reader is shared with its old place, as every value is here.
+    Reader(Rc<RefCell<Reader>>),
+    /// `StreamWriter`. A moved writer is taken out of its old place, so that it ends where
+    /// compiled code ends it, and writes its buffer there.
+    Writer(Rc<RefCell<Writer>>),
+    /// `reader.lines()`.
+    Lines(Rc<RefCell<Lines>>),
+}
+
+/// How many bytes a writer keeps before it writes them, in the interpreter and in compiled
+/// code alike: a program that reads its own file back sees the same bytes in both.
+const STREAM_BUFFER: usize = 65536;
+
+thread_local! {
+    /// `Stdin`, `Stdout` and `Stderr` of the program running on this thread.
+    static STREAMS: RefCell<Option<[Cell; 3]>> = const { RefCell::new(None) };
+    /// The program is ending with a panic or `exit`: a writer that ends now does not write
+    /// its buffer, as in compiled code, where nothing runs after them.
+    static ENDING: Flag<bool> = const { Flag::new(false) };
+}
+
+/// Makes `Stdin`, `Stdout` and `Stderr` for a program that starts.
+fn open_streams() {
+    let writer = |sink| cell(Value::Writer(Rc::new(RefCell::new(Writer { sink, buffer: Vec::new(), failed: None }))));
+    let stdin = cell(Value::Reader(Rc::new(RefCell::new(Reader { file: None, done: 0 }))));
+    STREAMS.with(|streams| *streams.borrow_mut() = Some([stdin, writer(Sink::Stdout), writer(Sink::Stderr)]));
+    ENDING.with(|ending| ending.set(false));
+}
+
+/// What `Stdin`, `Stdout` or `Stderr` names: a `ref` to the stream.
+fn stream_slot(name: &str) -> Option<Cell> {
+    let at = ["Stdin", "Stdout", "Stderr"].iter().position(|known| *known == name)?;
+    STREAMS.with(|streams| streams.borrow().as_ref().map(|streams| cell(Value::Borrow(streams[at].clone()))))
+}
+
+fn ending() {
+    ENDING.with(|ending| ending.set(true));
+}
+
+/// A `StreamReader`: a file read through a buffer, or, with no file, the input of the program.
+#[derive(Debug)]
+pub struct Reader {
+    file: Option<std::io::BufReader<std::fs::File>>,
+    /// The bytes given out so far: where an `InvalidText` lies.
+    done: u64,
+}
+
+#[derive(Debug)]
+enum Sink {
+    /// `None` once it is closed.
+    File(Option<std::fs::File>),
+    Stdout,
+    Stderr,
+}
+
+/// A `StreamWriter`. Into a file, what is written waits in a buffer; `Stdout` writes where
+/// `print` writes, and `Stderr` where `printError` does.
+#[derive(Debug)]
+pub struct Writer {
+    sink: Sink,
+    buffer: Vec<u8>,
+    /// The first error writing met: every later call gives it again.
+    failed: Option<Value>,
+}
+
+/// A writer that ends without `close` (in a field, a list, after an exit through `try`)
+/// writes its buffer and loses the error, if one comes.
+impl Drop for Writer {
+    fn drop(&mut self) {
+        if let Sink::File(Some(file)) = &mut self.sink {
+            if self.failed.is_none() && !ENDING.with(Flag::get) {
+                let _ = file.write_all(&self.buffer);
+            }
+        }
+    }
+}
+
+/// `reader.lines()`: where it reads from, and whether it has met the end or an error.
+#[derive(Debug)]
+pub struct Lines {
+    reader: Rc<RefCell<Reader>>,
+    done: bool,
 }
 
 /// Where an iterator over a text is.
@@ -129,6 +211,7 @@ impl Cursor {
                 };
                 Some(Value::Str(line.to_string().into()))
             }
+            TextIter::ReadLines => unreachable!("the lines of a reader are `Value::Lines`"),
         }
     }
 }
@@ -377,6 +460,15 @@ impl InvalidText for Value {
 
 /// Writes the bytes into the file, which is made if it is not there; `append` keeps what
 /// it holds and puts them after it.
+/// Bytes read as text: `Ok`, or `InvalidText` with the place of the first bad byte, counted
+/// from `at`.
+fn text_read(bytes: Vec<u8>, at: u64) -> Value {
+    match String::from_utf8(bytes) {
+        Ok(text) => ok(Value::Str(Rc::new(text))),
+        Err(error) => failed(io_cause(None, None).invalid_text(at + error.utf8_error().valid_up_to() as u64)),
+    }
+}
+
 fn write_file(path: &str, bytes: &[u8], append: bool) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     match append {
@@ -540,6 +632,7 @@ enum Unwind {
 
 impl From<Diag> for Unwind {
     fn from(diag: Diag) -> Unwind {
+        ending();
         Unwind::Stop(Stop::Diag(diag))
     }
 }
@@ -587,12 +680,10 @@ struct Frame {
 
 impl Frame {
     fn slot(&self, name: &str) -> Cell {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.get(name))
-            .expect("names are checked before running")
-            .clone()
+        match self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
+            Some(slot) => slot.clone(),
+            None => stream_slot(name).expect("names are checked before running"),
+        }
     }
 
     fn declare(&mut self, name: &str, value: Value) {
@@ -608,7 +699,8 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
     }
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
-    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, input_at: 0, in_test: false, test_err: String::new() };
+    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, in_test: false, test_err: String::new() };
+    open_streams();
     let main = interp.funcs["main"];
     // `main(List<string> args)`: the words of the command line, each checked to be text.
     let mut args = Vec::new();
@@ -648,12 +740,13 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     }
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
-    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, input_at: 0, in_test: true, test_err: String::new() };
+    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, in_test: true, test_err: String::new() };
     let (mut passed, mut failed) = (0, 0);
     for test in &prog.tests {
         // Nothing is shared between tests: each starts with variables of its own.
         interp.depth = 0;
         interp.test_err.clear();
+        open_streams();
         let mut frame = Frame { scopes: vec![HashMap::new()] };
         let ended = match interp.block(&test.body, &mut frame) {
             Ok(Flow::Return(value)) | Err(Unwind::Return(value)) => Ok(value),
@@ -718,8 +811,6 @@ struct Interp<'a> {
     out: &'a mut dyn Write,
     depth: usize,
     world: World<'a>,
-    /// How many bytes of the input were read: where an `InvalidText` lies.
-    input_at: u64,
     /// Running the test command: `exit` fails the test instead of ending the program.
     in_test: bool,
     /// What the running test wrote with `printError`: it is shown under the test's `FAIL`
@@ -845,6 +936,7 @@ impl<'a> Interp<'a> {
                     let item = match (&collection, &snapshot) {
                         (_, Some(items)) => items.get(next).cloned(),
                         (Value::Iter(cursor), _) => cursor.borrow_mut().next().map(cell),
+                        (Value::Lines(lines), _) => self.next_line(lines)?.map(cell),
                         (Value::List(items), _) => items.borrow().get(next).cloned(),
                         (Value::Array(items) | Value::Slice(items), _) => items.get(next).cloned(),
                         _ => unreachable!("the checker only lets `for` go over a collection"),
@@ -970,6 +1062,7 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Value::Fmt(text.into()))
             }
+            ExprKind::Var(_) if expr.moved && expr.ty == Ty::Writer => Ok(self.place(expr, frame)?.replace(Value::Null)),
             ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
                 let value = fresh(&self.place(expr, frame)?.borrow());
                 Ok(value)
@@ -1356,6 +1449,7 @@ impl<'a> Interp<'a> {
                     })
                 }
                 Callee::Io(call) => self.io(*call, args, frame),
+                Callee::Stream(call) => self.stream(*call, recv, args, frame),
                 Callee::Take => {
                     let slot = behind_borrows(self.place(recv, frame)?);
                     let old = slot.replace(Value::Null);
@@ -1396,6 +1490,9 @@ impl<'a> Interp<'a> {
                 }
                 Callee::Plain => {
                     let recv = owned(self.expr(recv, frame)?);
+                    if let Value::Lines(lines) = &recv {
+                        return Ok(self.next_line(lines)?.unwrap_or(Value::Null));
+                    }
                     // `f.write(x)` inside a `format` method.
                     if let Value::Formatter(written) = &recv {
                         let value = self.expr(&args[0], frame)?;
@@ -1471,6 +1568,7 @@ impl<'a> Interp<'a> {
                 if self.in_test {
                     return Err(Diag::panic(expr.span, format!("`exit({code})` in a test: a test cannot end the program")).into());
                 }
+                ending();
                 Err(Unwind::Stop(Stop::Exit(code)))
             }
             "assert" => self.assert(expr, &args[0], frame),
@@ -1738,33 +1836,15 @@ impl<'a> Interp<'a> {
     }
 
     fn flush_out(&mut self) -> Res<()> {
-        self.out.flush().map_err(|error| match error.kind() {
-            std::io::ErrorKind::BrokenPipe => Unwind::Stop(Stop::OutputClosed),
-            _ => Unwind::Stop(Stop::OutputFailed(error.to_string())),
-        })
+        self.out.flush().map_err(output_failed)
     }
 
     /// `File.readText(path)` and the others: each gives `Ok` with what it read, or `Error`
     /// with an `IoError`.
     fn io(&mut self, call: IoCall, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
-        // `Stdin.readLine(ref line)` keeps its borrow; the others are looked at as values.
-        let lent = match call {
-            IoCall::ReadLine => Some(self.expr(&args[0], frame)?),
-            _ => None,
-        };
-        let mut values = match call {
-            IoCall::ReadLine => Vec::new(),
-            _ => self.values(args, frame)?,
-        }
-        .into_iter()
-        .map(strip);
-        let path = match call {
-            IoCall::ReadLine | IoCall::ReadInput => String::new(),
-            _ => match values.next() {
-                Some(Value::Str(path)) => path.to_string(),
-                _ => unreachable!("the checker makes a path text"),
-            },
-        };
+        let mut values = self.values(args, frame)?.into_iter().map(strip);
+        let Some(Value::Str(path)) = values.next() else { unreachable!("the checker makes a path text") };
+        let path = path.to_string();
         // No file has a name with a zero byte in it; the system would see the name end there.
         if path.contains('\0') {
             return Ok(failed(io_cause(None, Some(2))));
@@ -1773,13 +1853,9 @@ impl<'a> Interp<'a> {
             Ok(value) => ok(value),
             Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
         };
-        let text = |bytes: Vec<u8>, at: u64| match String::from_utf8(bytes) {
-            Ok(text) => ok(Value::Str(Rc::new(text))),
-            Err(error) => failed(io_cause(None, None).invalid_text(at + error.utf8_error().valid_up_to() as u64)),
-        };
         Ok(match call {
             IoCall::ReadText => match std::fs::read(&path) {
-                Ok(bytes) => text(bytes, 0),
+                Ok(bytes) => text_read(bytes, 0),
                 Err(error) => done(Err(error)),
             },
             IoCall::ReadBytes => done(std::fs::read(&path).map(|bytes| {
@@ -1796,74 +1872,197 @@ impl<'a> Interp<'a> {
                 }).collect();
                 done(write_file(&path, &bytes, false).map(|()| Value::Void))
             }
-            IoCall::ReadLine => {
-                let Some(Value::Borrow(slot)) = lent else { unreachable!("the checker makes the line a `ref string`") };
-                let slot = behind_borrows(slot);
+            // A folder opens, but cannot be read: it is told at once, as compiled code does.
+            IoCall::OpenText => done(std::fs::File::open(&path).and_then(|file| match file.metadata()?.is_dir() {
+                true => Err(std::io::Error::from_raw_os_error(21)),
+                false => Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(std::io::BufReader::with_capacity(STREAM_BUFFER, file)), done: 0 })))),
+            })),
+            IoCall::CreateText => done(std::fs::File::create(&path).map(|file| {
+                Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None })))
+            })),
+        })
+    }
+
+    /// The methods of a `StreamReader` and a `StreamWriter`.
+    fn stream(&mut self, call: StreamCall, recv: &'a Expr, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
+        let stream = owned(self.expr(recv, frame)?);
+        match (call, stream) {
+            (StreamCall::ReadLine, Value::Reader(reader)) => {
+                let Value::Borrow(slot) = self.expr(&args[0], frame)? else { unreachable!("the checker makes the line a `ref string`") };
+                self.read_line(&reader, &behind_borrows(slot))
+            }
+            (StreamCall::ReadText, Value::Reader(reader)) => {
+                let mut bytes = Vec::new();
+                let start = reader.borrow().done;
+                let read = match reader.borrow_mut().file.as_mut() {
+                    Some(file) => file.read_to_end(&mut bytes),
+                    None => {
+                        if self.world.input_is_terminal {
+                            self.flush_out()?;
+                        }
+                        self.world.input.read_to_end(&mut bytes)
+                    }
+                };
+                reader.borrow_mut().done += bytes.len() as u64;
+                Ok(match read {
+                    Ok(_) => text_read(bytes, start),
+                    Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+                })
+            }
+            (StreamCall::Lines, Value::Reader(reader)) => Ok(Value::Lines(Rc::new(RefCell::new(Lines { reader, done: false })))),
+            (StreamCall::Write | StreamCall::WriteLine, Value::Writer(writer)) => {
+                let value = self.expr(&args[0], frame)?;
+                let mut text = self.show(&value, false, args[0].span)?;
+                if call == StreamCall::WriteLine {
+                    text.push('\n');
+                }
+                self.write_stream(&writer, text.as_bytes(), false)
+            }
+            (StreamCall::Flush, Value::Writer(writer)) => self.write_stream(&writer, &[], true),
+            (StreamCall::Close, Value::Writer(writer)) => {
+                let result = self.write_stream(&writer, &[], true)?;
+                let mut writer = writer.borrow_mut();
+                // The buffer is written, or its error is in `result`: nothing is left to do
+                // when it ends.
+                writer.buffer.clear();
+                writer.failed.get_or_insert(Value::Void);
+                writer.sink = Sink::File(None);
+                Ok(result)
+            }
+            _ => unreachable!("the checker gives each method its stream"),
+        }
+    }
+
+    /// The next line into `slot`, without its `\n` or `\r\n`: `Ok(true)`, `Ok(false)` at the
+    /// end, or `Error`. A line that is not text is used up, and `slot` is left empty.
+    fn read_line(&mut self, reader: &Rc<RefCell<Reader>>, slot: &Cell) -> Res<Value> {
+        let mut bytes = Vec::new();
+        let read = match reader.borrow_mut().file.as_mut() {
+            Some(file) => file.read_until(b'\n', &mut bytes),
+            None => {
                 if self.world.input_is_terminal {
                     self.flush_out()?;
                 }
-                let mut bytes = Vec::new();
-                let read = self.world.input.read_until(b'\n', &mut bytes);
-                let start = self.input_at;
-                self.input_at += bytes.len() as u64;
-                // The line goes into the text that is there, which keeps its room.
-                let put = |line: &str| {
-                    let mut current = slot.borrow_mut();
-                    let Value::Str(text) = &mut *current else { unreachable!("the checker makes the line text") };
-                    let text = Rc::make_mut(text);
-                    text.clear();
-                    text.push_str(line);
-                };
-                match read {
+                self.world.input.read_until(b'\n', &mut bytes)
+            }
+        };
+        let start = reader.borrow().done;
+        reader.borrow_mut().done += bytes.len() as u64;
+        // The line goes into the text that is there, which keeps its room.
+        let put = |line: &str| {
+            let mut current = slot.borrow_mut();
+            let Value::Str(text) = &mut *current else { unreachable!("the checker makes the line text") };
+            let text = Rc::make_mut(text);
+            text.clear();
+            text.push_str(line);
+        };
+        Ok(match read {
+            Err(error) => {
+                put("");
+                failed(io_cause(Some(&error), error.raw_os_error()))
+            }
+            Ok(0) => {
+                put("");
+                ok(Value::Bool(false))
+            }
+            Ok(_) => {
+                if bytes.last() == Some(&b'\n') {
+                    bytes.pop();
+                    if bytes.last() == Some(&b'\r') {
+                        bytes.pop();
+                    }
+                }
+                match std::str::from_utf8(&bytes) {
+                    Ok(line) => {
+                        put(line);
+                        ok(Value::Bool(true))
+                    }
                     Err(error) => {
                         put("");
-                        failed(io_cause(Some(&error), error.raw_os_error()))
+                        failed(io_cause(None, None).invalid_text(start + error.valid_up_to() as u64))
                     }
-                    Ok(0) => {
-                        put("");
-                        ok(Value::Bool(false))
-                    }
-                    Ok(_) => {
-                        if bytes.last() == Some(&b'\n') {
-                            bytes.pop();
-                            if bytes.last() == Some(&b'\r') {
-                                bytes.pop();
-                            }
-                        }
-                        match std::str::from_utf8(&bytes) {
-                            Ok(line) => {
-                                put(line);
-                                ok(Value::Bool(true))
-                            }
-                            Err(error) => {
-                                put("");
-                                failed(io_cause(None, None).invalid_text(start + error.valid_up_to() as u64))
-                            }
-                        }
-                    }
-                }
-            }
-            IoCall::ReadInput => {
-                if self.world.input_is_terminal {
-                    self.flush_out()?;
-                }
-                let mut bytes = Vec::new();
-                let read = self.world.input.read_to_end(&mut bytes);
-                let start = self.input_at;
-                self.input_at += bytes.len() as u64;
-                match read {
-                    Ok(_) => text(bytes, start),
-                    Err(error) => done(Err(error)),
                 }
             }
         })
     }
 
-    fn write_line(&mut self, text: &str) -> Res<()> {
-        writeln!(self.out, "{text}").map_err(|error| match error.kind() {
-            std::io::ErrorKind::BrokenPipe => Unwind::Stop(Stop::OutputClosed),
-            _ => Unwind::Stop(Stop::OutputFailed(error.to_string())),
+    /// What `reader.lines()` gives next: a line of its own, or the error that ends it.
+    fn next_line(&mut self, lines: &Rc<RefCell<Lines>>) -> Res<Option<Value>> {
+        if lines.borrow().done {
+            return Ok(None);
+        }
+        let reader = lines.borrow().reader.clone();
+        let line = cell(Value::Str(Rc::new(String::new())));
+        let result = self.read_line(&reader, &line)?;
+        Ok(match result {
+            Value::Enum(_, 0, fields) if matches!(*fields[0].borrow(), Value::Bool(true)) => Some(ok(line.borrow().clone())),
+            Value::Enum(_, 0, _) => {
+                lines.borrow_mut().done = true;
+                None
+            }
+            error => {
+                lines.borrow_mut().done = true;
+                Some(error)
+            }
         })
+    }
+
+    /// Writes `bytes` through a writer; `flush`: what its buffer holds goes out too. Gives
+    /// `Ok()`, or the first error the writer met.
+    fn write_stream(&mut self, writer: &Rc<RefCell<Writer>>, bytes: &[u8], flush: bool) -> Res<Value> {
+        let mut writer = writer.borrow_mut();
+        if let Some(cause) = &writer.failed {
+            return Ok(failed(cause.clone()));
+        }
+        let writer = &mut *writer;
+        let result = match &mut writer.sink {
+            Sink::Stdout => match self.out.write_all(bytes).and_then(|()| if flush { self.out.flush() } else { Ok(()) }) {
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => return Err(output_failed(error)),
+                other => other,
+            },
+            // As `printError`: in a test it is kept for the `FAIL` line.
+            Sink::Stderr if self.in_test => {
+                self.test_err.push_str(&String::from_utf8_lossy(bytes));
+                Ok(())
+            }
+            Sink::Stderr => {
+                self.flush_out()?;
+                self.world.err.write_all(bytes).and_then(|()| if flush { self.world.err.flush() } else { Ok(()) })
+            }
+            Sink::File(file) => {
+                writer.buffer.extend_from_slice(bytes);
+                match flush || writer.buffer.len() >= STREAM_BUFFER {
+                    true => {
+                        let file = file.as_mut().expect("a closed writer is moved");
+                        let result = file.write_all(&writer.buffer);
+                        writer.buffer.clear();
+                        result
+                    }
+                    false => Ok(()),
+                }
+            }
+        };
+        Ok(match result {
+            Ok(()) => ok(Value::Void),
+            Err(error) => {
+                let cause = io_cause(Some(&error), error.raw_os_error());
+                writer.failed = Some(cause.clone());
+                failed(cause)
+            }
+        })
+    }
+
+    fn write_line(&mut self, text: &str) -> Res<()> {
+        writeln!(self.out, "{text}").map_err(output_failed)
+    }
+}
+
+/// Writing where `print` writes failed: the program stops.
+fn output_failed(error: std::io::Error) -> Unwind {
+    ending();
+    match error.kind() {
+        std::io::ErrorKind::BrokenPipe => Unwind::Stop(Stop::OutputClosed),
+        _ => Unwind::Stop(Stop::OutputFailed(error.to_string())),
     }
 }
 

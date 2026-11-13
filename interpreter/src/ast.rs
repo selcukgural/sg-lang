@@ -131,8 +131,11 @@ pub enum Callee {
     WithCapacity,
     /// `int.parse(text)`, `double.parse(text)`: the type is the one in the `Result` it gives.
     Parse,
-    /// `File.readText(path)`, `Stdin.readLine(ref line)` and the others of `File` and `Stdin`.
+    /// `File.readText(path)`, `File.openText(path)` and the other functions of `File`.
     Io(IoCall),
+    /// `reader.readLine(ref line)`, `writer.write(x)` and the other methods of a
+    /// `StreamReader` or a `StreamWriter`, `Stdin` and `Stdout` among them.
+    Stream(StreamCall),
     /// A call through a function value kept in a variable: `test(order)`.
     Value,
     /// A call through a function value kept in a field: `this.test(order)`; the field's position.
@@ -157,24 +160,45 @@ pub enum IoCall {
     WriteBytes,
     /// `File.appendText(path, text)`: the text goes after what the file holds; a missing file is made.
     AppendText,
-    /// `Stdin.readLine(ref line)`: the next line of the input into `line`, `false` at its end.
-    ReadLine,
-    /// `Stdin.readText()`: what is left of the input, as text.
-    ReadInput,
+    /// `File.openText(path)`: a `StreamReader` that reads the file piece by piece.
+    OpenText,
+    /// `File.createText(path)`: a `StreamWriter` into the file, which is made or emptied.
+    CreateText,
 }
 
 impl IoCall {
     /// The name as it is written after the dot.
     pub fn name(self) -> &'static str {
         match self {
-            IoCall::ReadText | IoCall::ReadInput => "readText",
+            IoCall::ReadText => "readText",
             IoCall::ReadBytes => "readBytes",
             IoCall::WriteText => "writeText",
             IoCall::WriteBytes => "writeBytes",
             IoCall::AppendText => "appendText",
-            IoCall::ReadLine => "readLine",
+            IoCall::OpenText => "openText",
+            IoCall::CreateText => "createText",
         }
     }
+}
+
+/// The methods of `StreamReader` and `StreamWriter`. Each that reads or writes gives a
+/// `Result` whose error is `IoError`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum StreamCall {
+    /// `reader.readLine(ref line)`: the next line into `line`, `false` at the end.
+    ReadLine,
+    /// `reader.readText()`: what is left, as text.
+    ReadText,
+    /// `reader.lines()`: each line as a text of its own.
+    Lines,
+    /// `writer.write(x)`: what `print` takes, without a line end.
+    Write,
+    /// `writer.writeLine(x)`: as `write`, and a `\n`.
+    WriteLine,
+    /// `writer.flush()`: what the buffer holds goes out.
+    Flush,
+    /// `writer.close()`: the buffer goes out and the file is closed; takes the writer.
+    Close,
 }
 
 /// A type as written: `read Node*?`

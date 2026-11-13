@@ -1,0 +1,9 @@
+error: `w` is given another writer while the one it holds is still open, so an error writing its buffer would be lost
+  --> error_closable_reassign.sg:4:5
+ 4 |     w = try File.createText("y.txt")
+   |     ^
+  it is declared here:
+  --> error_closable_reassign.sg:3:9
+ 3 |     var w = try File.createText("x.txt")
+   |         ^
+  hint: close it first: `try w.close()`; to drop the error on purpose, `_ = w.close()`

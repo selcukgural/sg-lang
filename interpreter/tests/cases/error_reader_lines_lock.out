@@ -1,0 +1,9 @@
+error: `r` cannot be changed or moved while a `for` goes over `r`
+  --> error_reader_lines_lock.sg:6:13
+ 6 |         _ = r.readLine(ref line)
+   |             ^
+  the loop is here:
+  --> error_reader_lines_lock.sg:5:17
+ 5 |     for item in r.lines() {
+   |                 ^^^^^^^^^
+  hint: keep the changes in a list until the loop ends, and apply them after it

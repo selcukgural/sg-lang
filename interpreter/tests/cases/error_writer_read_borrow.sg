@@ -1,0 +1,5 @@
+// Writing goes on from where the writer is, so it needs `ref`.
+void f(read StreamWriter w) {
+    _ = w.writeLine("x")
+}
+void main() {}
