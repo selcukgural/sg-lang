@@ -10,7 +10,7 @@
 //! rejects any use of the old one.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
 
@@ -39,13 +39,12 @@ pub enum Value {
     /// `List<T>`: every item in a cell of its own, so that an item can be lent.
     List(Rc<RefCell<Vec<Cell>>>),
     /// `HashMap<K, V>`: under each key, the key as it was given and the cell of the value.
-    /// Kept in the order of the keys so that a run always prints the same; the design
-    /// promises no order.
+    /// A hash table; the design promises no order (see `Table`).
     Map(Rc<RefCell<Entries>>),
     /// The address of a named function: its name.
     Func(Rc<str>),
     /// `HashSet<T>`: the items, each under itself as the key.
-    Set(Rc<RefCell<BTreeMap<Key, Value>>>),
+    Set(Rc<RefCell<Table<Value>>>),
     /// What `format` writes into.
     Formatter(Rc<RefCell<String>>),
     /// `T*`
@@ -54,11 +53,76 @@ pub enum Value {
     Borrow(Cell),
 }
 
-type Entries = BTreeMap<Key, (Value, Cell)>;
+type Entries = Table<(Value, Cell)>;
+
+/// The hash table behind `HashMap` and `HashSet`, built the way compiled code builds it, so
+/// that a program prints the same in both: the entries lie one after the other in the order
+/// they were added, and an entry that is removed is replaced by the last one. The language
+/// promises no order; this is only what falls out of the table.
+#[derive(Debug)]
+pub struct Table<V> {
+    keys: Vec<Key>,
+    held: Vec<V>,
+    index: HashMap<Key, usize>,
+}
+
+impl<V> Table<V> {
+    fn new() -> Table<V> {
+        Table { keys: Vec::new(), held: Vec::new(), index: HashMap::new() }
+    }
+
+    fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    fn clear(&mut self) {
+        self.keys.clear();
+        self.held.clear();
+        self.index.clear();
+    }
+
+    fn get(&self, key: &Key) -> Option<&V> {
+        self.index.get(key).map(|at| &self.held[*at])
+    }
+
+    fn contains_key(&self, key: &Key) -> bool {
+        self.index.contains_key(key)
+    }
+
+    /// Puts the value under the key; gives what was there before, if anything.
+    fn insert(&mut self, key: Key, value: V) -> Option<V> {
+        if let Some(at) = self.index.get(&key) {
+            return Some(std::mem::replace(&mut self.held[*at], value));
+        }
+        self.index.insert(key.clone(), self.keys.len());
+        self.keys.push(key);
+        self.held.push(value);
+        None
+    }
+
+    /// Takes the entry out; the last entry moves into its place.
+    fn remove(&mut self, key: &Key) -> Option<V> {
+        let at = self.index.remove(key)?;
+        self.keys.swap_remove(at);
+        let value = self.held.swap_remove(at);
+        if let Some(moved) = self.keys.get(at) {
+            self.index.insert(moved.clone(), at);
+        }
+        Some(value)
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &Key> {
+        self.keys.iter()
+    }
+
+    fn values(&self) -> impl Iterator<Item = &V> {
+        self.held.iter()
+    }
+}
 
 /// A key of a `HashMap` or an item of a `HashSet`: an integer, a `bool`, text, or a struct
 /// or an enum made of such parts (an enum starts with the position of its variant).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Key {
     Null,
     Bool(bool),
@@ -85,16 +149,13 @@ fn key_of(value: &Value) -> Key {
 
 /// `map.add(key, value)`: a key that is already there is a mistake, not a silent overwrite.
 fn map_add(entries: &mut Entries, key: Value, value: Value, shown: String, span: Span) -> Result<(), Diag> {
-    match entries.entry(key_of(&key)) {
-        std::collections::btree_map::Entry::Occupied(_) => {
-            Err(Diag::panic(span, format!("key {shown} is already in the map"))
-                .note("to change what is kept under a key, write `map[key] = value`"))
-        }
-        std::collections::btree_map::Entry::Vacant(slot) => {
-            slot.insert((key, cell(value)));
-            Ok(())
-        }
+    let under = key_of(&key);
+    if entries.contains_key(&under) {
+        return Err(Diag::panic(span, format!("key {shown} is already in the map"))
+            .note("to change what is kept under a key, write `map[key] = value`"));
     }
+    entries.insert(under, (key, cell(value)));
+    Ok(())
 }
 
 fn cell(value: Value) -> Cell {
@@ -596,7 +657,7 @@ impl<'a> Interp<'a> {
                     return Ok(Value::List(Rc::new(RefCell::new(cells))));
                 }
                 if ty.name == "HashSet" {
-                    let mut set = BTreeMap::new();
+                    let mut set = Table::new();
                     for item in given {
                         let value = strip(self.expr(&item.values[0], frame)?);
                         set.insert(key_of(&value), value);
@@ -1101,13 +1162,16 @@ impl<'a> Interp<'a> {
                 }
                 a.iter().cloned().zip(b.iter().cloned()).collect()
             }
-            (Value::Set(a), Value::Set(b)) => return Ok(a.borrow().keys().eq(b.borrow().keys())),
+            (Value::Set(a), Value::Set(b)) => {
+                let (a, b) = (a.borrow(), b.borrow());
+                return Ok(a.len() == b.len() && a.keys().all(|key| b.contains_key(key)));
+            }
             (Value::Map(a), Value::Map(b)) => {
                 let (a, b) = (a.borrow(), b.borrow());
-                if !a.keys().eq(b.keys()) {
+                if a.len() != b.len() || !a.keys().all(|key| b.contains_key(key)) {
                     return Ok(false);
                 }
-                a.values().zip(b.values()).map(|((_, a), (_, b))| (a.clone(), b.clone())).collect()
+                a.keys().zip(a.values()).map(|(key, (_, value))| (value.clone(), b.get(key).expect("just tested").1.clone())).collect()
             }
             _ => Vec::new(),
         };
@@ -1299,8 +1363,11 @@ fn collection_method(recv: Value, name: &str, mut args: Vec<Value>) -> Value {
             let initial = args.remove(1);
             let key = args.remove(0);
             let mut entries = entries.borrow_mut();
-            let (_, value) = entries.entry(key_of(&key)).or_insert_with(|| (key, cell(initial)));
-            Value::Borrow(value.clone())
+            let under = key_of(&key);
+            if !entries.contains_key(&under) {
+                entries.insert(under.clone(), (key, cell(initial)));
+            }
+            Value::Borrow(entries.get(&under).expect("just put there").1.clone())
         }
         _ => unreachable!("the checker only lets known methods through"),
     }

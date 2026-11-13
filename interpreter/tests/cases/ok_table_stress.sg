@@ -1,0 +1,107 @@
+// A hash table that grows, loses entries and gets them back: the interpreter and compiled
+// code build it the same way, so they also go over it in the same order.
+struct Cell : Copyable, Equatable, Hashable {
+    int row
+    int column
+}
+
+enum Tag : Equatable, Hashable {
+    Named(string name)
+    Numbered(int number)
+    None
+}
+
+void main() {
+    var squares = HashMap<int, long>()
+    for i in 0..5000 {
+        squares.add(i, (long)i * i)
+    }
+    long sum = 0
+    for i in 0..5000 {
+        if i % 3 == 0 {
+            sum += squares.remove(i) ?? -1
+        }
+    }
+    print(squares.length())
+    print(sum)
+    print(squares.contains(3))
+    print(squares.contains(4))
+    for i in 0..5000 {
+        if i % 6 == 0 {
+            squares.add(i, 1)
+        }
+    }
+    sum = 0
+    var steps = 0
+    for item in read squares {
+        sum += item.value
+        if steps < 5 {
+            print($"{item.key}: {item.value}")
+        }
+        steps += 1
+    }
+    print(sum)
+    print(squares[4998])
+
+    var names = HashMap<string, int>()
+    for i in 0..2000 {
+        names.add($"name {i}".toString(), i)
+    }
+    for i in 0..2000 {
+        if i % 2 == 1 {
+            string key = $"name {i}".toString()
+            _ = names.remove(read key)
+        }
+    }
+    print(names.length())
+    print(names["name 1998"])
+    print(names.get("name 1999") is null)
+    var counter = names.getOrAdd("name 7", 100)
+    counter += 1
+    print(names["name 7"])
+    var total = 0
+    for item in names {                  // handed over: the keys and the map are freed here
+        total += item.value
+        if item.value == 1000 {
+            break
+        }
+    }
+    print(total)
+
+    var seen = HashSet<string>()
+    for i in 0..300 {
+        _ = seen.add($"{i % 100}".toString())
+    }
+    print(seen.length())
+    print(seen.remove("42"))
+    print(seen.contains("42"))
+    print(seen.length())
+
+    var board = HashMap<Cell, string>()
+    for row in 0..20 {
+        for column in 0..20 {
+            board.add(Cell { row = row, column = column }, $"{row},{column}".toString())
+        }
+    }
+    print(board[Cell { row = 19, column = 7 }])
+    print(board.remove(Cell { row = 3, column = 3 }) ?? "gone".clone())
+    print(board.contains(Cell { row = 3, column = 3 }))
+    print(board.length())
+
+    var tags = HashSet<Tag> { Tag.Named("a"), Tag.Numbered(1), Tag.None }
+    print(tags.add(Tag.Named("a")))
+    print(tags.add(Tag.Named("b")))
+    print(tags.contains(read Tag.Numbered(1)))
+    print(tags.contains(read Tag.Numbered(2)))
+    print(tags.length())
+
+    var copy = HashMap<int, long>()
+    var other = HashMap<int, long>()
+    for i in 0..50 {
+        copy.add(i, i)
+        other.add(49 - i, 49 - i)
+    }
+    print(copy == other)
+    other[0] = 5
+    print(copy == other)
+}

@@ -15,7 +15,7 @@ true
 rook
 empty
 true
-{Point { x = 1, y = 2 }: "rook", Point { x = 2, y = 1 }: "knight"}
+{Point { x = 2, y = 1 }: "knight", Point { x = 1, y = 2 }: "rook"}
 true
 false
 1

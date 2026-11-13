@@ -1,0 +1,24 @@
+// A hash table: a million numbers are counted under fifty thousand keys with `getOrAdd`,
+// every count is read back with `for`, and a part of the keys is removed. Twenty times.
+void main() {
+    long total = 0
+    for round in 0..20 {
+        var counts = HashMap<int, int>()
+        long x = 12345 + round
+        for i in 0..1000000 {
+            x = (x * 1103515245 + 12345) % 2147483648
+            var count = counts.getOrAdd((int)(x % 50000), 0)
+            count += 1
+        }
+        for item in read counts {
+            total += item.key % 7 * item.value
+        }
+        for key in 0..50000 {
+            if key % 3 == 0 {
+                total += counts.remove(key) ?? 0
+            }
+        }
+        total += (long)counts.length()
+    }
+    print(total)
+}

@@ -5,8 +5,8 @@
 //! overflow, division by zero, a cast that does not fit, `assert` and `panic`.
 //!
 //! Only a part of the language is compiled so far: integers, `bool`, text, functions, structs,
-//! enums with `match` and `is`, `Result` and `try`, `List`, `T*` and `new`, `T?`, `read` and
-//! `ref`, and `print`. Anything else is an error that names what is missing, so nothing is compiled
+//! enums with `match` and `is`, `Result` and `try`, `List`, `HashMap` and `HashSet`, function
+//! values, `T*` and `new`, `T?`, `read` and `ref`, and `print`. Anything else is an error that names what is missing, so nothing is compiled
 //! wrongly in silence.
 //!
 //! How values are represented: `byte`, `int`, `long` and `nint` are fixed-size C integers; a
@@ -25,6 +25,10 @@
 //!
 //! Borrows inside values: a field that borrows is the same pointer a borrowed variable is,
 //! and a function value is the address of the function.
+//!
+//! Hash tables: a `HashMap` and a `HashSet` keep their entries one after the other and, beside
+//! them, the slots that find an entry from the hash of its key (see `TABLE`). The hash has a
+//! key drawn when the program starts.
 //!
 //! Who frees: the checker has decided who owns each value, so the back end only follows it.
 //! An owned value is dropped where its variable ends. A use that moves the value (marked by
@@ -214,6 +218,51 @@ SG_COLD static _Noreturn void sg_panicf(const char* loc, const char* format, ...
     fputc('\n', stderr);
     sg_die(loc);
 }
+/* Hash tables. The hash is SipHash-1-3 with a key drawn when the program starts, so that
+   nobody who chooses the keys can make them all land in one place. */
+static uint64_t sg_seed[2];
+static void sg_seed_init(void) {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+    arc4random_buf(sg_seed, sizeof sg_seed);
+#else
+    FILE* source = fopen("/dev/urandom", "rb");
+    if (!source || fread(sg_seed, sizeof sg_seed, 1, source) != 1) abort();
+    fclose(source);
+#endif
+}
+#define SG_ROTL(x, b) (((x) << (b)) | ((x) >> (64 - (b))))
+#define SG_SIPROUND \
+    v0 += v1; v1 = SG_ROTL(v1, 13); v1 ^= v0; v0 = SG_ROTL(v0, 32); \
+    v2 += v3; v3 = SG_ROTL(v3, 16); v3 ^= v2; \
+    v0 += v3; v3 = SG_ROTL(v3, 21); v3 ^= v0; \
+    v2 += v1; v1 = SG_ROTL(v1, 17); v1 ^= v2; v2 = SG_ROTL(v2, 32);
+/* `h`: the hash of what came before, for a key made of several parts. */
+static uint64_t sg_hash_bytes(uint64_t h, const uint8_t* data, int64_t len) {
+    uint64_t k0 = sg_seed[0] ^ h, k1 = sg_seed[1] ^ SG_ROTL(h, 32);
+    uint64_t v0 = k0 ^ 0x736f6d6570736575ULL, v1 = k1 ^ 0x646f72616e646f6dULL, v2 = k0 ^ 0x6c7967656e657261ULL, v3 = k1 ^ 0x7465646279746573ULL;
+    int64_t whole = len & ~(int64_t)7;
+    for (int64_t i = 0; i < whole; i += 8) {
+        uint64_t m;
+        memcpy(&m, data + i, 8);
+        v3 ^= m; SG_SIPROUND v0 ^= m;
+    }
+    uint64_t last = (uint64_t)len << 56;
+    for (int64_t i = whole; i < len; i++) last |= (uint64_t)data[i] << (8 * (i - whole));
+    v3 ^= last; SG_SIPROUND v0 ^= last;
+    v2 ^= 0xff;
+    SG_SIPROUND SG_SIPROUND SG_SIPROUND
+    return v0 ^ v1 ^ v2 ^ v3;
+}
+static inline uint64_t sg_hash_word(uint64_t h, uint64_t word) {
+    uint64_t k0 = sg_seed[0] ^ h, k1 = sg_seed[1] ^ SG_ROTL(h, 32);
+    uint64_t v0 = k0 ^ 0x736f6d6570736575ULL, v1 = k1 ^ 0x646f72616e646f6dULL, v2 = k0 ^ 0x6c7967656e657261ULL, v3 = k1 ^ 0x7465646279746573ULL;
+    v3 ^= word; SG_SIPROUND v0 ^= word;
+    uint64_t last = (uint64_t)8 << 56;
+    v3 ^= last; SG_SIPROUND v0 ^= last;
+    v2 ^= 0xff;
+    SG_SIPROUND SG_SIPROUND SG_SIPROUND
+    return v0 ^ v1 ^ v2 ^ v3;
+}
 /* A list that is full gets room for twice as many items. */
 static void* sg_grow(void* items, int64_t* cap, size_t size) {
     int64_t room = *cap ? *cap * 2 : 4;
@@ -335,6 +384,118 @@ SG_COLD static _Noreturn void sg_assert_fail_s(const char* text, sg_str l, sg_st
 }
 "#;
 
+/// The hash table behind a `HashMap` or a `HashSet`, written once for each type of table.
+/// The entries lie one after the other in `entries`, in the order they were added; `slots`
+/// says, for each place a hash can point at, which entry is there (its position plus one, 0 for
+/// none). An entry that is removed is replaced by the last one. `@N` is the name of the type,
+/// `@K` the key, `@P` the key as it is given to look something up; the lines between `@V{`
+/// and `@V}` are for a map only.
+const TABLE: &str = r#"
+static int64_t sg_find_@N(const sg_@N* m, @P key) {
+    if (m->len == 0) return -1;
+    uint64_t at = sg_khash_@N(key) & (uint64_t)m->mask;
+    for (;;) {
+        uint32_t slot = m->slots[at];
+        if (slot == 0) return -1;
+        if (sg_keq_@N(&m->entries[slot - 1].m_key, key)) return (int64_t)slot - 1;
+        at = (at + 1) & (uint64_t)m->mask;
+    }
+}
+static void sg_place_@N(sg_@N* m, int64_t entry) {
+    uint64_t at = sg_khash_@N(sg_kof_@N(&m->entries[entry].m_key)) & (uint64_t)m->mask;
+    while (m->slots[at] != 0) at = (at + 1) & (uint64_t)m->mask;
+    m->slots[at] = (uint32_t)entry + 1;
+}
+/* Room for one more entry; the slots are kept at most three quarters full. */
+static void sg_room_@N(sg_@N* m) {
+    if (m->len == m->cap) {
+        if (m->len >= 0x7fffffff) abort();
+        m->entries = sg_grow(m->entries, &m->cap, sizeof(sg_E_@N));
+    }
+    if (!m->slots || (m->len + 1) * 4 > (m->mask + 1) * 3) {
+        int64_t size = m->slots ? (m->mask + 1) * 2 : 8;
+        free(m->slots);
+        m->slots = calloc((size_t)size, sizeof(uint32_t));
+        if (!m->slots) abort();
+        m->mask = size - 1;
+        for (int64_t i = 0; i < m->len; i++) sg_place_@N(m, i);
+    }
+}
+/* A key that is known not to be there yet. */
+static inline void sg_put_@N(sg_@N* m, @K key@V{, @W value@V}) {
+    sg_room_@N(m);
+    m->entries[m->len].m_key = key;@V{
+    m->entries[m->len].m_value = value;@V}
+    m->len++;
+    sg_place_@N(m, m->len - 1);
+}
+/* Takes the entry out of the table without freeing what it holds. The slots after it move
+   up so that every key is still found from its own place; the last entry takes its room. */
+static void sg_take_@N(sg_@N* m, int64_t entry) {
+    uint64_t mask = (uint64_t)m->mask;
+    uint64_t hole = sg_khash_@N(sg_kof_@N(&m->entries[entry].m_key)) & mask;
+    while (m->slots[hole] != (uint32_t)entry + 1) hole = (hole + 1) & mask;
+    for (uint64_t next = (hole + 1) & mask; m->slots[next] != 0; next = (next + 1) & mask) {
+        uint64_t home = sg_khash_@N(sg_kof_@N(&m->entries[m->slots[next] - 1].m_key)) & mask;
+        if (((next - home) & mask) >= ((next - hole) & mask)) {
+            m->slots[hole] = m->slots[next];
+            hole = next;
+        }
+    }
+    m->slots[hole] = 0;
+    int64_t last = m->len - 1;
+    if (entry != last) {
+        uint64_t at = sg_khash_@N(sg_kof_@N(&m->entries[last].m_key)) & mask;
+        while (m->slots[at] != (uint32_t)last + 1) at = (at + 1) & mask;
+        m->slots[at] = (uint32_t)entry + 1;
+        m->entries[entry] = m->entries[last];
+    }
+    m->len = last;
+}
+SG_COLD static _Noreturn void sg_fail_@N(@P key, bool missing, const char* loc) {
+    sg_string text = SG_LIT("", 0);
+    sg_kshow_@N(&text, key);
+    if (missing) sg_panicf(loc, "key %.*s is not in the map\n  `map.get(key)` gives `null` for a missing key; `map.add(key, value)` puts one in", (int)text.len, (const char*)text.ptr);
+    sg_panicf(loc, "key %.*s is already in the map\n  to change what is kept under a key, write `map[key] = value`", (int)text.len, (const char*)text.ptr);
+}
+static inline bool sg_contains_@N(const sg_@N* m, @P key) { return sg_find_@N(m, key) >= 0; }
+static void sg_drop_from_@N(sg_@N* m, int64_t from) {
+    for (int64_t i = from; i < m->len; i++) { @DROPE(m->entries[i]) }
+    free(m->entries);
+    free(m->slots);
+}
+static inline void sg_drop_@N(sg_@N* m) { sg_drop_from_@N(m, 0); }
+static inline sg_@N sg_move_@N(sg_@N* m) { sg_@N out = *m; *m = (sg_@N){ 0 }; return out; }
+static void sg_clear_@N(sg_@N* m) {
+    for (int64_t i = 0; i < m->len; i++) { @DROPE(m->entries[i]) }
+    m->len = 0;
+    if (m->slots) memset(m->slots, 0, (size_t)(m->mask + 1) * sizeof(uint32_t));
+}@V{
+static inline void sg_add_@N(sg_@N* m, @K key, @W value, const char* loc) {
+    if (__builtin_expect(sg_find_@N(m, sg_kof_@N(&key)) >= 0, 0)) sg_fail_@N(sg_kof_@N(&key), false, loc);
+    sg_put_@N(m, key, value);
+}
+static inline @W* sg_at_@N(const sg_@N* m, @P key, const char* loc) {
+    int64_t entry = sg_find_@N(m, key);
+    if (__builtin_expect(entry < 0, 0)) sg_fail_@N(key, true, loc);
+    return &m->entries[entry].m_value;
+}@V}@S{
+static inline bool sg_add_@N(sg_@N* m, @K key) {
+    if (sg_find_@N(m, sg_kof_@N(&key)) >= 0) { @DROPK(key) return false; }
+    sg_put_@N(m, key);
+    return true;
+}
+static inline bool sg_remove_@N(sg_@N* m, @P key) {
+    int64_t entry = sg_find_@N(m, key);
+    if (entry < 0) return false;
+    @K gone = m->entries[entry].m_key;
+    sg_take_@N(m, entry);
+    @DROPK(gone)
+    (void)gone;
+    return true;
+}@S}
+"#;
+
 /// Writes the program as C. `path` names the source file in the panic messages. `checked`: a
 /// debug build, where `+`, `-`, `*` and unary `-` panic on overflow; without it, a release
 /// build, where they wrap.
@@ -362,6 +523,7 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
         maybe: 0,
         head: false,
         exits: 0,
+        late_types: String::new(),
     };
     // Every struct and enum is named first, so that a type can point at itself or at a later
     // one. Then the types themselves, each after the types it holds by value.
@@ -431,9 +593,16 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
         _ => "int main(void) {\n    f_main();\n    return 0;\n}\n".to_string(),
     };
 
+    // A program with a hash table draws the key of its hash before anything else runs.
+    let start = match emitter.made.contains("tables") {
+        true => start.replacen("int main(void) {\n", "int main(void) {\n    sg_seed_init();\n", 1),
+        false => start,
+    };
+
     let mut out = String::from(RUNTIME);
     out.push('\n');
     out.push_str(&emitter.types);
+    out.push_str(&emitter.late_types);
     out.push('\n');
     out.push_str(&emitter.glue_protos);
     out.push('\n');
@@ -452,7 +621,7 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
 
 fn not_yet(span: Span, what: &str) -> Diag {
     Diag::error(span, format!("{what} is not in the C back end yet"))
-        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, `List`, function values, `T*`, `T?`, `read` and `ref`, and `print`")
+        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, the collections, function values, `T*`, `T?`, `read` and `ref`, and `print`")
 }
 
 /// A C string literal for any text.
@@ -537,6 +706,13 @@ fn mangle(ty: &Ty) -> Option<String> {
             _ => format!("O_{}", mangle(inner)?),
         },
         Ty::List(item) => format!("L_{}", mangle(item)?),
+        Ty::Set(item) => format!("H_{}", mangle(item)?),
+        Ty::Map(key, value) => {
+            let key = mangle(key)?;
+            format!("M{}_{key}_{}", key.len(), mangle(value)?)
+        }
+        // What a `for` over a map gives: an entry of that map.
+        Ty::Entry(key, value) => format!("E_{}", mangle(&Ty::Map(key.clone(), value.clone()))?),
         // A function type is named after the way it is written, letter by letter.
         Ty::Func(..) => {
             let mut name = String::from("F_");
@@ -586,6 +762,48 @@ fn list_behind(ty: &Ty) -> Option<(&Ty, usize)> {
         (ty, boxes) = (inner, boxes + 1);
     }
     matches!(ty, Ty::List(_)).then_some((ty, boxes))
+}
+
+/// The map or set a value is or leads to, behind borrows and pointers, and how many pointers.
+fn table_behind(ty: &Ty) -> Option<(&Ty, usize)> {
+    let mut ty = ty.strip_borrow();
+    let mut boxes = 0;
+    while let Ty::Ptr(inner) = ty {
+        (ty, boxes) = (inner, boxes + 1);
+    }
+    matches!(ty, Ty::Map(..) | Ty::Set(_)).then_some((ty, boxes))
+}
+
+/// The table template for a map (`map`) or for a set: keeps the lines meant for it.
+fn table_lines(map: bool) -> String {
+    let mut out = String::new();
+    let mut rest = TABLE;
+    let (mut keep, mut stack) = (true, Vec::new());
+    while let Some(at) = rest.find('@') {
+        let (before, mark) = rest.split_at(at);
+        if keep {
+            out.push_str(before);
+        }
+        let open = mark.starts_with("@V{") || mark.starts_with("@S{");
+        let close = mark.starts_with("@V}") || mark.starts_with("@S}");
+        if open {
+            stack.push(keep);
+            keep = keep && (mark.starts_with("@V{") == map);
+            rest = &mark[3..];
+        } else if close {
+            keep = stack.pop().expect("the template closes what it opened");
+            rest = &mark[3..];
+        } else {
+            if keep {
+                out.push('@');
+            }
+            rest = &mark[1..];
+        }
+    }
+    if keep {
+        out.push_str(rest);
+    }
+    out
 }
 
 /// A value that is written out in full where it is used: when it is computed cannot matter.
@@ -698,6 +916,8 @@ struct Emitter<'a> {
     head: bool,
     /// How many ways out of the function were written inside expressions.
     exits: usize,
+    /// What the entries of the hash tables are made of: written after every struct is whole.
+    late_types: String,
 }
 
 impl<'a> Emitter<'a> {
@@ -729,7 +949,11 @@ impl<'a> Emitter<'a> {
             Ty::Str | Ty::Formatter => "sg_string".to_string(),
             Ty::Struct(name) => format!("S_{name}"),
             Ty::Enum(name) => format!("E_{name}"),
-            Ty::Result(..) | Ty::List(_) | Ty::Func(..) => {
+            Ty::Result(..) | Ty::List(_) | Ty::Func(..) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) => {
+                // An entry is known where its map is.
+                if let Ty::Entry(key, value) = ty {
+                    self.need(&Ty::Map(key.clone(), value.clone()), span)?;
+                }
                 let Some(name) = mangle(ty) else { return Err(not_yet(span, &format!("the type `{ty}`"))) };
                 self.need(ty, span)?;
                 format!("sg_{name}")
@@ -814,6 +1038,82 @@ impl<'a> Emitter<'a> {
                 }
             }
             Ty::Nullable(inner) => self.need(inner, span)?,
+            // A hash table: the entries one after the other, and the slots that find them.
+            Ty::Map(key, _) | Ty::Set(key) => {
+                if !self.made.insert(name.clone()) {
+                    return Ok(());
+                }
+                self.made.insert("tables".to_string());
+                let value = match ty {
+                    Ty::Map(_, value) => Some((**value).clone()),
+                    _ => None,
+                };
+                let key_c = self.ctype(key, span)?;
+                let value_c = match &value {
+                    Some(value) => self.ctype(value, span)?,
+                    None => String::new(),
+                };
+                // The entry is only pointed at by the table, so a struct can hold a map of
+                // its own kind; what the entry is made of is written after all the structs.
+                let _ = writeln!(self.types, "typedef struct sg_E_{name} sg_E_{name};");
+                let _ = writeln!(self.types, "typedef struct {{ sg_E_{name}* entries; uint32_t* slots; int64_t len; int64_t cap; int64_t mask; }} sg_{name};");
+                let held = if value.is_some() { format!(" {value_c} m_value;") } else { String::new() };
+                let _ = writeln!(self.late_types, "struct sg_E_{name} {{ {key_c} m_key;{held} }};");
+                // How a key is given, hashed, compared and written.
+                let (given, hash, equal, of, show) = match &**key {
+                    Ty::Int(_) | Ty::Bool => (
+                        key_c.clone(),
+                        "sg_hash_word(0, (uint64_t)key)".to_string(),
+                        "*held == key".to_string(),
+                        "*held".to_string(),
+                        if **key == Ty::Bool { "sg_puts(out, key ? \"true\" : \"false\");".to_string() } else { "sg_putf(out, \"%lld\", (long long)key);".to_string() },
+                    ),
+                    Ty::Str => (
+                        "sg_str".to_string(),
+                        "sg_hash_bytes(0, key.ptr, key.len)".to_string(),
+                        "sg_eq(sg_view(held), key)".to_string(),
+                        "sg_view(held)".to_string(),
+                        "sg_put_quoted(out, key);".to_string(),
+                    ),
+                    _ => (
+                        format!("{key_c} const*"),
+                        format!("{}(key, 0)", self.hasher(key, span)?),
+                        format!("{}(held, key)", self.equaler(key, span)?),
+                        "held".to_string(),
+                        format!("{}(out, key);", self.shower(key, span)?),
+                    ),
+                };
+                let mut code = String::new();
+                let _ = writeln!(code, "static inline uint64_t sg_khash_{name}({given} key) {{ return {hash}; }}");
+                let _ = writeln!(code, "static inline bool sg_keq_{name}({key_c} const* held, {given} key) {{ return {equal}; }}");
+                let _ = writeln!(code, "static inline {given} sg_kof_{name}({key_c} const* held) {{ return {of}; }}");
+                let _ = writeln!(code, "static void sg_kshow_{name}(sg_string* out, {given} key) {{ {show} }}");
+                let drop_key = if self.droppable(key) { self.drop_of(key, "$") } else { String::new() };
+                let drop_value = match &value {
+                    Some(value) if self.droppable(value) => self.drop_of(value, "$.m_value"),
+                    _ => String::new(),
+                };
+                let mut lines = table_lines(value.is_some());
+                // `@DROPE(x)` frees an entry, `@DROPK(x)` a key.
+                for (mark, drop) in [("@DROPE(", format!("{} {drop_value}", drop_key.replace('$', "$.m_key"))), ("@DROPK(", drop_key.clone())] {
+                    while let Some(at) = lines.find(mark) {
+                        let end = at + lines[at..].find(')').expect("the mark is closed");
+                        let place = lines[at + mark.len()..end].to_string();
+                        lines.replace_range(at..=end, &drop.replace('$', &place));
+                    }
+                }
+                code.push_str(&lines.replace("@N", &name).replace("@K", &key_c).replace("@P", &given).replace("@W", &value_c));
+                // What frees one entry: the `for` that was handed the map owns them one by one.
+                if value.is_some() && (!drop_key.is_empty() || !drop_value.is_empty()) {
+                    let _ = writeln!(self.glue_protos, "static inline void sg_drop_E_{name}(sg_E_{name}* v);");
+                    let _ = writeln!(code, "static inline void sg_drop_E_{name}(sg_E_{name}* v) {{ {} {} }}", drop_key.replace('$', "v->m_key"), drop_value.replace('$', "(*v)"));
+                }
+                let _ = writeln!(
+                    self.glue_protos,
+                    "static void sg_drop_from_{name}(sg_{name}* m, int64_t from);\nstatic inline void sg_drop_{name}(sg_{name}* m);\nstatic inline sg_{name} sg_move_{name}(sg_{name}* m);"
+                );
+                self.glue.push_str(&code);
+            }
             // A function value is the address of a function: one pointer.
             Ty::Func(params, ret) => {
                 if !self.made.insert(name.clone()) {
@@ -900,6 +1200,8 @@ impl<'a> Emitter<'a> {
         let mut found = match (Ty::from_name(&ty.name), ty.args.as_slice()) {
             (None, [ok, error]) if ty.name == "Result" => Ty::Result(Box::new(self.written(ok)?), Box::new(self.written(error)?)),
             (None, [item]) if ty.name == "List" => Ty::List(Box::new(self.written(item)?)),
+            (None, [item]) if ty.name == "HashSet" => Ty::Set(Box::new(self.written(item)?)),
+            (None, [key, value]) if ty.name == "HashMap" => Ty::Map(Box::new(self.written(key)?), Box::new(self.written(value)?)),
             (None, [params @ .., ret]) if ty.name == "Func" => {
                 let params = params.iter().map(|param| self.written(param)).collect::<Res<Vec<Ty>>>()?;
                 Ty::Func(params, Box::new(self.written(ret)?))
@@ -928,7 +1230,8 @@ impl<'a> Emitter<'a> {
     /// Whether a value of this type owns something that is freed when it ends.
     fn droppable(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Str | Ty::Ptr(_) | Ty::List(_) => true,
+            Ty::Str | Ty::Ptr(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) => true,
+            Ty::Entry(key, value) => self.droppable(key) || self.droppable(value),
             Ty::Nullable(inner) => self.droppable(inner),
             Ty::Result(ok, error) => self.droppable(ok) || self.droppable(error),
             Ty::Struct(name) => self.structs[name.as_str()].fields.iter().any(|field| self.written(&field.ty).is_ok_and(|ty| self.droppable(&ty))),
@@ -1041,6 +1344,14 @@ impl<'a> Emitter<'a> {
                     self.shower(item, span)?
                 );
             }
+            Ty::Map(key, value) => {
+                let (key, value) = (self.show_at(key, "v->entries[i].m_key", span)?, self.show_at(value, "v->entries[i].m_value", span)?);
+                let _ = write!(body, "sg_puts(out, \"{{\"); for (int64_t i = 0; i < v->len; i++) {{ if (i) sg_puts(out, \", \"); {key} sg_puts(out, \": \"); {value} }} sg_puts(out, \"}}\");");
+            }
+            Ty::Set(key) => {
+                let key = self.show_at(key, "v->entries[i].m_key", span)?;
+                let _ = write!(body, "sg_puts(out, \"{{\"); for (int64_t i = 0; i < v->len; i++) {{ if (i) sg_puts(out, \", \"); {key} }} sg_puts(out, \"}}\");");
+            }
             other => return Err(not_yet(span, &format!("writing a `{other}` as text"))),
         }
         let _ = writeln!(self.glue, "static void {helper}(sg_string* out, {ctype} const* v) {{ {body} }}");
@@ -1126,6 +1437,20 @@ impl<'a> Emitter<'a> {
                     self.equaler(item, span)?
                 );
             }
+            // Two tables are equal when they hold the same, in whatever order.
+            Ty::Map(_, value) => {
+                let same = self.same_at(value, "a->entries[i].m_value", "b->entries[at].m_value", span)?;
+                let _ = write!(
+                    body,
+                    "if (a->len != b->len) return false; for (int64_t i = 0; i < a->len; i++) {{ int64_t at = sg_find_{name}(b, sg_kof_{name}(&a->entries[i].m_key)); if (at < 0 || !{same}) return false; }} return true;"
+                );
+            }
+            Ty::Set(_) => {
+                let _ = write!(
+                    body,
+                    "if (a->len != b->len) return false; for (int64_t i = 0; i < a->len; i++) if (sg_find_{name}(b, sg_kof_{name}(&a->entries[i].m_key)) < 0) return false; return true;"
+                );
+            }
             other => return Err(not_yet(span, &format!("`==` on `{other}`"))),
         }
         let _ = writeln!(self.glue, "static bool {helper}({ctype} const* a, {ctype} const* b) {{ {body} }}");
@@ -1149,6 +1474,117 @@ impl<'a> Emitter<'a> {
             (_, Ty::Struct(owner)) if self.own_method(owner, "compare") => Ok(format!("(f_{owner}_compare({l}, {r}) {} 0)", op.symbol())),
             _ => Err(not_yet(span, &format!("`{}` on `{ty}`", op.symbol()))),
         }
+    }
+
+    /// The helper that hashes a key of this type on top of the hash `h` of what came before
+    /// it, written once: a struct field after field, an enum its variant and what it carries.
+    fn hasher(&mut self, ty: &Ty, span: Span) -> Res<String> {
+        let name = mangle(ty).ok_or_else(|| not_yet(span, &format!("a `{ty}` as a key")))?;
+        let helper = format!("sg_hash_{name}");
+        let ctype = self.ctype(ty, span)?;
+        if !self.made.insert(helper.clone()) {
+            return Ok(helper);
+        }
+        let _ = writeln!(self.glue_protos, "static uint64_t {helper}({ctype} const* v, uint64_t h);");
+        let mut body = String::new();
+        match ty {
+            Ty::Int(_) | Ty::Bool => body.push_str("return sg_hash_word(h, (uint64_t)*v);"),
+            Ty::Str => body.push_str("return sg_hash_bytes(h, v->ptr, v->len);"),
+            Ty::Nullable(inner) if is_option(ty) => {
+                let _ = write!(body, "return v->has ? {}(&v->value, sg_hash_word(h, 1)) : sg_hash_word(h, 0);", self.hasher(inner, span)?);
+            }
+            Ty::Struct(owner) => {
+                let decl: &'a StructDecl = self.structs[owner.as_str()];
+                for field in &decl.fields {
+                    let field_ty = self.written(&field.ty)?;
+                    let _ = write!(body, "h = {}(&v->m_{}, h); ", self.hasher(&field_ty, span)?, field.name);
+                }
+                body.push_str("return h;");
+            }
+            Ty::Enum(_) => {
+                let variants = self.variants(ty, span)?.expect("an enum");
+                body.push_str("h = sg_hash_word(h, v->tag); switch (v->tag) {");
+                for (index, fields) in variants.iter().enumerate().filter(|(_, fields)| !fields.is_empty()) {
+                    let _ = write!(body, " case {index}:");
+                    for (field, field_ty, _) in fields {
+                        let _ = write!(body, " h = {}(&v->u.v{index}.m_{field}, h);", self.hasher(field_ty, span)?);
+                    }
+                    body.push_str(" break;");
+                }
+                body.push_str(" default: break; } return h;");
+            }
+            other => return Err(not_yet(span, &format!("a `{other}` as a key"))),
+        }
+        let _ = writeln!(self.glue, "static uint64_t {helper}({ctype} const* v, uint64_t h) {{ {body} }}");
+        Ok(helper)
+    }
+
+    /// A key as a table takes it to look something up: a number as it is, text as a look at
+    /// it, anything else through a pointer.
+    fn key(&mut self, table: &Ty, arg: &'a Expr) -> Res<String> {
+        let (Ty::Map(key, _) | Ty::Set(key)) = table else { unreachable!("only called for a table") };
+        match &**key {
+            Ty::Int(_) | Ty::Bool => self.value(arg),
+            Ty::Str => self.view(arg),
+            _ => self.pointer(arg),
+        }
+    }
+
+    /// Writes, once, the helpers of a table that give a `V?` (`get` and `remove` of a map) and
+    /// the one that needs a copy of the key (`getOrAdd`).
+    fn table_helper(&mut self, table: &Ty, what: &str, span: Span) -> Res<String> {
+        let Ty::Map(key, value) = table else { return Err(not_yet(span, &format!("`{what}` on a `{table}`"))) };
+        let name = mangle(table).ok_or_else(|| not_yet(span, &format!("the type `{table}`")))?;
+        let helper = format!("sg_{what}_{name}");
+        let (key_c, value_c) = (self.ctype(key, span)?, self.ctype(value, span)?);
+        if !self.made.insert(helper.clone()) {
+            return Ok(helper);
+        }
+        let given = match &**key {
+            Ty::Int(_) | Ty::Bool => key_c.clone(),
+            Ty::Str => "sg_str".to_string(),
+            _ => format!("{key_c} const*"),
+        };
+        if what == "getOrAdd" {
+            // The key is only lent; if it has to be kept, the table keeps a copy.
+            let copy = match &**key {
+                Ty::Int(_) | Ty::Bool => "key",
+                Ty::Str => "sg_clone(key)",
+                other if !self.droppable(other) => "*key",
+                other => return Err(not_yet(span, &format!("`getOrAdd` with a key of the type `{other}`"))),
+            };
+            let drop = if self.droppable(value) { self.drop_of(value, "value") } else { String::new() };
+            let _ = writeln!(
+                self.glue,
+                "static inline {value_c}* {helper}(sg_{name}* m, {given} key, {value_c} value) {{ int64_t entry = sg_find_{name}(m, key); \
+                 if (entry >= 0) {{ {drop} return &m->entries[entry].m_value; }} sg_put_{name}(m, {copy}, value); return &m->entries[m->len - 1].m_value; }}"
+            );
+            return Ok(helper);
+        }
+        let option = Ty::Nullable(value.clone());
+        if mangle(&option).is_none() {
+            return Err(not_yet(span, &format!("`{what}` on a `{table}`")));
+        }
+        let option_c = self.ctype(&option, span)?;
+        let (some, none) = match is_option(&option) {
+            true => (format!("({option_c}){{ true, m->entries[entry].m_value }}"), format!("({option_c}){{ false }}")),
+            false => ("m->entries[entry].m_value".to_string(), "NULL".to_string()),
+        };
+        // The key is freed once the entry is out: taking it out reads the key.
+        let drop_key = if self.droppable(key) { self.drop_of(key, "gone") } else { String::new() };
+        let _ = match what {
+            // A look at the value: the map still owns it.
+            "get" => writeln!(
+                self.glue,
+                "static inline {option_c} {helper}(const sg_{name}* m, {given} key) {{ int64_t entry = sg_find_{name}(m, key); if (entry < 0) return {none}; return {some}; }}"
+            ),
+            _ => writeln!(
+                self.glue,
+                "static inline {option_c} {helper}(sg_{name}* m, {given} key) {{ int64_t entry = sg_find_{name}(m, key); if (entry < 0) return {none}; \
+                 {option_c} out = {some}; {key_c} gone = m->entries[entry].m_key; sg_take_{name}(m, entry); {drop_key} (void)gone; return out; }}"
+            ),
+        };
+        Ok(helper)
     }
 
     /// Writes, once, the helpers of a list that are needed only where they are used: `get`
@@ -1226,7 +1662,7 @@ impl<'a> Emitter<'a> {
 
     /// A pointer to the list that `recv` is, borrows or points at.
     fn list_address(&mut self, recv: &'a Expr) -> Res<String> {
-        let boxes = list_behind(&recv.ty).map_or(0, |(_, boxes)| boxes);
+        let boxes = list_behind(&recv.ty).or(table_behind(&recv.ty)).map_or(0, |(_, boxes)| boxes);
         let mut address = match recv.is_place() {
             true => self.address(recv)?,
             false if recv.ty.is_borrow() => self.value(recv)?,
@@ -1594,6 +2030,56 @@ impl<'a> Emitter<'a> {
                 self.loops.pop();
                 self.scopes.pop();
                 let _ = writeln!(out, "{pad}}}\n{pad}}}");
+            }
+            StmtKind::ForEach { var, iter, body, by, .. } if table_behind(&iter.ty).is_some_and(|(_, boxes)| by.is_some() || boxes == 0) => {
+                let table = table_behind(&iter.ty).expect("just tested").0.clone();
+                let (table_c, name) = (self.ctype(&table, iter.span)?, mangle(&table).expect("it has a C type"));
+                // A map gives its entries (a key and a value), a set its items.
+                let (item, at_item) = match &table {
+                    Ty::Map(key, value) => (Ty::Entry(key.clone(), value.clone()), ""),
+                    Ty::Set(key) => ((**key).clone(), ".m_key"),
+                    _ => unreachable!("it is a table"),
+                };
+                let (it, at) = (self.temp(), self.temp());
+                let inner = format!("{pad}    ");
+                self.nothing_gone();
+                match by {
+                    Some(mode) => {
+                        let address = self.list_address(iter)?;
+                        self.flush_pre(&pad, out);
+                        if !self.post.is_empty() {
+                            return Err(not_yet(iter.span, "a `for` over a borrowed table that has no name").hint("give it a name first"));
+                        }
+                        let _ = writeln!(out, "{pad}{{");
+                        let _ = writeln!(out, "{inner}const {table_c}* {it} = {address};");
+                        let _ = writeln!(out, "{inner}for (int64_t {at} = 0; {at} < {it}->len; {at}++) {{");
+                        let ty = if *mode == Mode::Ref { Ty::Ref(Box::new(item)) } else { Ty::Read(Box::new(item)) };
+                        let lent = self.borrowed_name(var, ty, &format!("{it}->entries[{at}]{at_item}"), iter.span)?;
+                        self.loops.push(self.scopes.len());
+                        self.block_with(body, depth + 2, out, vec![lent])?;
+                        self.loops.pop();
+                        let _ = writeln!(out, "{inner}}}\n{pad}}}");
+                    }
+                    None => {
+                        let value = self.value(iter)?;
+                        self.flush_pre(&pad, out);
+                        let _ = writeln!(out, "{pad}{{");
+                        let _ = writeln!(out, "{inner}{table_c} {it} = {value}; int64_t {at} = 0;");
+                        self.flush_post(&inner, out);
+                        let rest = format!("sg_drop_from_{name}(&{it}, {at} + 1);");
+                        self.scopes.push(vec![Local { name: String::new(), cname: it.clone(), ty: table.clone(), gone: false, drop: Some(rest.clone()) }]);
+                        let _ = writeln!(out, "{inner}for (; {at} < {it}.len; {at}++) {{");
+                        self.temps += 1;
+                        let cname = format!("v_{var}_{}", self.temps);
+                        let line = format!("{} {cname} = {it}.entries[{at}]{at_item};", self.ctype(&item, iter.span)?);
+                        let owned = Local { name: var.clone(), cname, ty: item, gone: false, drop: None };
+                        self.loops.push(self.scopes.len());
+                        self.block_with(body, depth + 2, out, vec![(owned, line)])?;
+                        self.loops.pop();
+                        self.scopes.pop();
+                        let _ = writeln!(out, "{inner}}}\n{inner}{rest}\n{pad}}}");
+                    }
+                }
             }
             StmtKind::ForEach { var, iter, body, by, .. } => {
                 let list = match (by, list_behind(&iter.ty)) {
@@ -1990,18 +2476,30 @@ impl<'a> Emitter<'a> {
         value
     }
 
-    /// Opens a `T?` or a `Result` kept in `temp`: gives what it holds, or runs `exit` (which
-    /// leaves the function) when there is no value.
-    fn open(&mut self, ty: &Ty, temp: &str, value: String, exit: Vec<String>, span: Span) -> Res<String> {
-        let ctype = self.ctype(ty, span)?;
-        let (test, held) = match ty {
+    /// The test that the `T?` or `Result` kept in `temp` holds a value, and that value. A
+    /// borrowed `T?` (what `get` gives) holds a borrow of the value.
+    fn held_in(&self, ty: &Ty, temp: &str) -> Option<(String, String)> {
+        Some(match ty {
             // Success that carries nothing gives nothing: the expression is a `void` one.
             Ty::Result(ok, _) if **ok == Ty::Void => (format!("{temp}.tag == 0"), String::new()),
             Ty::Result(..) => (format!("{temp}.tag == 0"), format!("{temp}.u.v0.m_value")),
             Ty::Nullable(_) if is_option(ty) => (format!("{temp}.has"), format!("{temp}.value")),
             Ty::Nullable(_) => (temp.to_string(), temp.to_string()),
-            _ => return Err(not_yet(span, &format!("opening a `{ty}`"))),
-        };
+            Ty::Read(inner) | Ty::Ref(inner) => match &**inner {
+                Ty::Nullable(value) if is_option(inner) && **value == Ty::Str && matches!(ty, Ty::Read(_)) => (format!("{temp}->has"), format!("sg_view(&{temp}->value)")),
+                Ty::Nullable(_) if is_option(inner) => (format!("{temp}->has"), format!("(&{temp}->value)")),
+                Ty::Nullable(_) => (format!("(*{temp})"), temp.to_string()),
+                _ => return None,
+            },
+            _ => return None,
+        })
+    }
+
+    /// Opens a `T?` or a `Result` kept in `temp`: gives what it holds, or runs `exit` (which
+    /// leaves the function) when there is no value.
+    fn open(&mut self, ty: &Ty, temp: &str, value: String, exit: Vec<String>, span: Span) -> Res<String> {
+        let ctype = self.ctype(ty, span)?;
+        let Some((test, held)) = self.held_in(ty, temp) else { return Err(not_yet(span, &format!("opening a `{ty}`"))) };
         self.exits += 1;
         Ok(format!("({{ {ctype} {temp} = {value}; if (!({test})) {{ {} }} {held}; }})", exit.join(" ")))
     }
@@ -2101,6 +2599,7 @@ impl<'a> Emitter<'a> {
                     // A list is only read by these.
                     Callee::Plain if list_behind(&recv.ty).is_some() && matches!(name.as_str(), "length" | "get" | "indexOf" | "contains") => Effect::Reads,
                     Callee::Plain if list_behind(&recv.ty).is_some() => Effect::Changes,
+                    Callee::Plain if table_behind(&recv.ty).is_some() && matches!(name.as_str(), "length" | "get" | "contains") => Effect::Reads,
                     Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::Map(..) | Ty::Set(_) | Ty::Formatter) => Effect::Changes,
                     Callee::Plain if name == "clone" || name == "toString" => Effect::Acts,
                     Callee::Plain => Effect::Reads,
@@ -2253,7 +2752,7 @@ impl<'a> Emitter<'a> {
         while let Ty::Ptr(inner) = core {
             core = inner;
         }
-        if matches!(core, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_)) {
+        if matches!(core, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_)) {
             let shower = self.shower(expr.ty.strip_borrow(), expr.span)?;
             let (at, temp) = (self.pointer(expr)?, self.temp());
             self.pre.push(format!("sg_string {temp} = SG_LIT(\"\", 0); {shower}(&{temp}, {at});"));
@@ -2332,7 +2831,7 @@ impl<'a> Emitter<'a> {
         if let ExprKind::Binary(op, left, right) = &cond.kind {
             // Two structs, enums or lists: on failure each is written as `print` would write it.
             let ty = left.ty.strip_borrow().clone();
-            if op.is_comparison() && matches!(ty, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Result(..)) {
+            if op.is_comparison() && matches!(ty, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Result(..)) {
                 let (l, r, ctype) = (self.temp(), self.temp(), self.ctype(&ty, left.span)?);
                 let (left, right) = (self.pointer(left)?, self.pointer(right)?);
                 let (test, shower) = (self.compared(*op, &ty, &l, &r, cond.span)?, self.shower(&ty, cond.span)?);
@@ -2429,6 +2928,24 @@ impl<'a> Emitter<'a> {
                 self.pre.push(format!("{held}* {temp} = {found};"));
                 Ok(format!("(*{temp})"))
             }
+            // What a map keeps under a key: the key has to be there.
+            ExprKind::Index { recv, index, kind: IndexKind::Map } => {
+                let Some((table, _)) = table_behind(&recv.ty) else { return Err(not_yet(expr.span, "this place")) };
+                let table = table.clone();
+                let Ty::Map(_, value) = &table else { return Err(not_yet(expr.span, "this place")) };
+                let (name, held) = (mangle(&table).ok_or_else(|| not_yet(expr.span, &format!("the type `{table}`")))?, self.ctype(value, expr.span)?);
+                self.ctype(&table, expr.span)?;
+                let once = self.effect(index).max(self.effect(recv)) >= Effect::Acts;
+                let (address, key) = (self.list_address(recv)?, self.key(&table, index)?);
+                let loc = self.loc(expr.span);
+                let found = format!("sg_at_{name}({address}, {key}, {loc})");
+                if !once {
+                    return Ok(format!("(*{found})"));
+                }
+                let temp = self.temp();
+                self.pre.push(format!("{held}* {temp} = {found};"));
+                Ok(format!("(*{temp})"))
+            }
             _ => Err(not_yet(expr.span, "this place")),
         }
     }
@@ -2453,7 +2970,7 @@ impl<'a> Emitter<'a> {
     /// A value that is only looked at, as something C can name more than once. A value that
     /// has no name and owns something is kept in a temporary and dropped after the statement.
     fn look(&mut self, expr: &'a Expr) -> Res<String> {
-        if matches!(expr.kind, ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List, .. }) {
+        if matches!(expr.kind, ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List | IndexKind::Map, .. }) {
             return self.lvalue(expr);
         }
         let value = self.value(expr)?;
@@ -2487,7 +3004,7 @@ impl<'a> Emitter<'a> {
             (ExprKind::Borrow { expr: inner, .. }, _) if is_text(&inner.ty) => self.view(inner),
             (_, ty) if is_text_view(ty) => self.value(expr),
             (_, Ty::Ref(_)) => Ok(format!("sg_view({})", self.value(expr)?)),
-            (ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List, .. }, Ty::Str) => Ok(format!("sg_view(&{})", self.lvalue(expr)?)),
+            (ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List | IndexKind::Map, .. }, Ty::Str) => Ok(format!("sg_view(&{})", self.lvalue(expr)?)),
             (_, Ty::Str) => {
                 let (value, temp) = (self.value(expr)?, self.temp());
                 self.pre.push(format!("sg_string {temp} = {value};"));
@@ -2626,7 +3143,7 @@ impl<'a> Emitter<'a> {
             ExprKind::Coalesce { left, right, on_result } => {
                 let error = match (&left.ty, on_result) {
                     (Ty::Result(_, error), true) => Some(&**error),
-                    (Ty::Nullable(_), false) => None,
+                    (_, false) if self.held_in(&left.ty, "").is_some() => None,
                     _ => return Err(not_yet(left.span, &format!("`??` on `{}`", left.ty))),
                 };
                 let value = self.first(left, head)?;
@@ -2639,11 +3156,7 @@ impl<'a> Emitter<'a> {
                     return Err(not_yet(right.span, "a value that needs a temporary on the right of `??`"));
                 }
                 let (ctype, temp) = (self.ctype(&left.ty, left.span)?, self.temp());
-                let (holds, held) = match &left.ty {
-                    Ty::Result(..) => (format!("{temp}.tag == 0"), format!("{temp}.u.v0.m_value")),
-                    ty if is_option(ty) => (format!("{temp}.has"), format!("{temp}.value")),
-                    _ => (temp.clone(), temp.clone()),
-                };
+                let (holds, held) = self.held_in(&left.ty, &temp).expect("tested above");
                 // A right side that never gives a value (`panic`) still has to have the type in C.
                 let fallback = if right.ty == Ty::Never { format!("({fallback}, {held})") } else { fallback };
                 let fallback = match error.filter(|error| self.droppable(error)) {
@@ -2749,7 +3262,7 @@ impl<'a> Emitter<'a> {
                 }))
             }
             // Structs, enums and lists are compared where they are, through pointers.
-            ExprKind::Binary(op, left, right) if matches!(left.ty.strip_borrow(), Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Result(..)) => {
+            ExprKind::Binary(op, left, right) if matches!(left.ty.strip_borrow(), Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Result(..)) => {
                 let ty = left.ty.strip_borrow().clone();
                 let lent = Ty::Read(Box::new(ty.clone()));
                 let mut parts = Vec::new();
@@ -2781,8 +3294,37 @@ impl<'a> Emitter<'a> {
                 let loc = self.loc(expr.span);
                 Ok(format!("sg_cast_{}((int64_t)({inner}), {loc})", int_name(*ty)))
             }
-            ExprKind::Index { kind: IndexKind::List, .. } => self.lvalue(expr),
+            ExprKind::Index { kind: IndexKind::List | IndexKind::Map, .. } => self.lvalue(expr),
             // A new list: the items are added one after the other.
+            // A new map or set: an entry is added for each item; a key written twice stops the program.
+            ExprKind::Collection { items, .. } if matches!(expr.ty, Ty::Map(..) | Ty::Set(_)) => {
+                let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+                let name = mangle(&expr.ty).expect("it has a C type");
+                let wanted: Vec<Ty> = match &expr.ty {
+                    Ty::Map(key, value) => vec![(**key).clone(), (**value).clone()],
+                    Ty::Set(key) => vec![(**key).clone()],
+                    _ => unreachable!("matched above"),
+                };
+                let mut parts = Vec::new();
+                let mut spans = Vec::new();
+                for given in items.iter().flatten() {
+                    spans.push(given.span);
+                    for (value, want) in given.values.iter().zip(&wanted) {
+                        let before = self.mark();
+                        let written = self.value_as(value, want)?;
+                        parts.push(self.part(value, want, written, before));
+                    }
+                }
+                let (values, names) = self.in_order(parts)?;
+                let mut adds = String::new();
+                for (entry, span) in values.chunks(wanted.len()).zip(spans) {
+                    let _ = match wanted.len() {
+                        2 => write!(adds, "sg_add_{name}(&{temp}, {}, {}, {}); ", entry[0], entry[1], self.loc(span)),
+                        _ => write!(adds, "sg_add_{name}(&{temp}, {}); ", entry[0]),
+                    };
+                }
+                Ok(format!("({{ {names}{ctype} {temp} = {{ 0 }}; {adds}{temp}; }})"))
+            }
             ExprKind::Collection { items, .. } => {
                 let Ty::List(item) = &expr.ty else { return Err(not_yet(expr.span, &format!("a `{}`", expr.ty))) };
                 let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
@@ -2947,6 +3489,57 @@ impl<'a> Emitter<'a> {
                         self.sigs.insert("sg_join_list".to_string(), vec![text, Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))))]);
                     }
                     self.call("sg_join_list".to_string(), None, args, false)
+                }
+                Callee::Plain if table_behind(&recv.ty).is_some() => {
+                    let (table, _) = table_behind(&recv.ty).expect("just tested");
+                    let table = table.clone();
+                    let base = mangle(&table).ok_or_else(|| not_yet(expr.span, &format!("the type `{table}`")))?;
+                    self.ctype(&table, expr.span)?;
+                    let address = self.list_address(recv)?;
+                    let is_map = matches!(table, Ty::Map(..));
+                    match (name.as_str(), is_map) {
+                        ("length", _) => Ok(format!("{address}->len")),
+                        ("clear", _) => Ok(format!("sg_clear_{base}({address})")),
+                        ("contains", _) => Ok(format!("sg_contains_{base}({address}, {})", self.key(&table, &args[0])?)),
+                        // The key and the value are computed before the table is touched.
+                        ("add", true) => {
+                            let Ty::Map(key, value) = &table else { unreachable!("it is a map") };
+                            let mut parts = Vec::new();
+                            for (arg, want) in args.iter().zip([&**key, &**value]) {
+                                let before = self.mark();
+                                let written = self.value_as(arg, want)?;
+                                parts.push(self.part(arg, want, written, before));
+                            }
+                            let (values, names) = self.in_order(parts)?;
+                            let loc = self.loc(expr.span);
+                            Ok(sequence(&names, format!("sg_add_{base}({address}, {}, {}, {loc})", values[0], values[1])))
+                        }
+                        ("add", false) => {
+                            let Ty::Set(key) = &table else { unreachable!("it is a set") };
+                            Ok(format!("sg_add_{base}({address}, {})", self.value_as(&args[0], key)?))
+                        }
+                        ("remove", false) => Ok(format!("sg_remove_{base}({address}, {})", self.key(&table, &args[0])?)),
+                        ("remove", true) => {
+                            let helper = self.table_helper(&table, "remove", expr.span)?;
+                            Ok(format!("{helper}({address}, {})", self.key(&table, &args[0])?))
+                        }
+                        // A look at a value that may not be there; see `get` of a list.
+                        ("get", true) => {
+                            let Ty::Map(_, value) = &table else { unreachable!("it is a map") };
+                            let helper = self.table_helper(&table, "get", expr.span)?;
+                            let called = format!("{helper}({address}, {})", self.key(&table, &args[0])?);
+                            let (ctype, temp) = (self.ctype(&Ty::Nullable(value.clone()), expr.span)?, self.temp());
+                            self.pre.push(format!("{ctype} {temp} = {called};"));
+                            Ok(format!("(&{temp})"))
+                        }
+                        ("getOrAdd", true) => {
+                            let Ty::Map(_, value) = &table else { unreachable!("it is a map") };
+                            let helper = self.table_helper(&table, "getOrAdd", expr.span)?;
+                            let key = self.key(&table, &args[0])?;
+                            Ok(format!("{helper}({address}, {key}, {})", self.value_as(&args[1], value)?))
+                        }
+                        _ => Err(not_yet(expr.span, &format!("the method `{name}`"))),
+                    }
                 }
                 Callee::Plain if list_behind(&recv.ty).is_some() => {
                     let (list, _) = list_behind(&recv.ty).expect("just tested");

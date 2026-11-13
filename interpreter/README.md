@@ -137,7 +137,7 @@ Design rules that are already enforced:
 Since the sixteenth slice (12 November 2026) a program can be compiled: `sg build file.sg` writes it as C and
 hands that to the C compiler. The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, and then runs the
-same C once more under the address and undefined-behaviour sanitizers (69 of 306 programs for now).
+same C once more under the address and undefined-behaviour sanitizers (83 of 307 programs for now).
 
 What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -166,8 +166,12 @@ Since the twenty-third slice types that carry a borrow (`struct Word<from source
 field, an enum whose variants borrow, a `read Config` field) and function values (`Func<A, R>` in a
 variable, a parameter, a field, a variant or a list, and calls through them); the order rules example is
 compiled.
-Anything else (`HashMap`, `HashSet`) is an error that names what is missing: nothing is compiled wrongly
-in silence. The calculator waits for `HashMap` alone.
+Since the twenty-fourth slice `HashMap<K, V>` and `HashSet<T>`: building them with and without items,
+`add`, `map[key]` as a value and as a place, `get`, `getOrAdd`, `contains`, `remove`, `length`, `clear`,
+`for` in its three forms (a map gives entries with `key` and `value`), `print` and `==`, with numbers,
+`bool`, text and `Hashable` structs and enums as keys. The calculator and the log summary are compiled.
+What is still missing is an error that names it (not silence): `.toString()` on a struct, and the few
+positions listed with the choices below.
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
 value (a `string`, a `T*`, a struct, an enum or a `T?` that holds one) is freed where its variable ends, on every way
@@ -193,6 +197,7 @@ hand with no checks):
 | `expr`: a tree of enum values built, evaluated twenty times with `match`, rewritten and freed | 0.309 s | 0.302 s | 0.303 s | 1.02 |
 | `parse`: numbers read out of text, an error found three calls deep and passed up with `try` | 0.290 s | 0.320 s | 0.293 s | 0.99 |
 | `vector`: a list of a million numbers filled with `add`, changed through `xs[i]`, added up with `for`, turned around and freed, six hundred times | 0.331 s | 0.682 s | 0.324 s | 1.02 |
+| `counts`: a million numbers counted in a `HashMap` of fifty thousand keys, read back and a third removed, twenty times | 0.382 s | 0.376 s | 0.319 s | 1.20 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -221,7 +226,14 @@ arithmetic wraps, which is defined, and the same compiler then keeps two more in
 eight. With `i % 1000` in both programs they take the same time. This is a cost of the overflow rule that
 the three integer programs did not show: where a loop is nothing but arithmetic on its counter, wrapping
 can cost what C's undefined overflow saves. Rust wraps in release in the same way and gets the same code.
-The numbers move by a few percent from run to run, and eight small programs are not a benchmark suite.
+`counts` is the first program with a hash table, and the first that is clearly slower than its C: 1.20
+times. All of it is the hash. The C program hashes a key with one multiplication, as a C programmer does;
+SG uses SipHash-1-3 with a key drawn when the program starts, as Rust does, so that someone who chooses
+the keys (a request, a file) cannot make them all land in one place and turn every lookup into a walk
+through the whole table. With the C program's hash put into the generated code the two take the same time
+(0.316 s against 0.319 s): the table itself costs nothing. Whether the safe hash stays the default is an
+open choice (50).
+The numbers move by a few percent from run to run, and nine small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
 
@@ -515,6 +527,7 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
 7. **`for item in map` gives an entry with `key` and `value`.** The value can be written through `ref`
    (`item.value += 1`), the key never. The entry has no type name that can be written yet. Here the entries come
    in the order of their keys so that a run always prints the same; the design promises no order.
+   (Changed in the twenty-fourth slice: a map and a set are hash tables here too, see choice 48.)
 8. **A key is an integer, a `bool` or a `string`**; since the tenth slice also a type written
    `: Equatable, Hashable`.
 9. **A collection is written as text if its items are**: `print(xs)` writes `[1, 2, 3]`, a map
@@ -769,6 +782,34 @@ Choices made in the twenty-third slice (types that carry a borrow, function valu
 47. **A field of a value that has no name can be read** (`longer(a, b).text`): the value is kept for the
     statement and freed after it.
 
+Choices made in the twenty-fourth slice (`HashMap` and `HashSet`), approved on 13 November 2026:
+
+48. **A `HashMap` and a `HashSet` are hash tables**: the entries lie one after the other in one block,
+    and a second block of slots says, for each place a hash can point at, which entry is there (open
+    addressing, at most three quarters full, twice the room when that is passed). Going over the table is
+    walking the first block. An entry that is removed is replaced by the last one. The interpreter now
+    builds its tables the same way, so a program prints the same in both; that is the only reason the
+    two agree, and the language still promises no order. What falls out: the order of adding, until
+    something is removed. Rust's `HashMap` mixes the order on purpose; C#'s `Dictionary` and Python's
+    `dict` are built like this one.
+49. **`map[key]` is the value where it is; a missing key stops the program** with the key in the message,
+    as decided before. `get` is a look or `null`, `getOrAdd` keeps a copy of the key only when it has to
+    add it, `remove` gives the value back.
+50. **The hash has a secret key** (SipHash-1-3, the key drawn from the system when the program starts), so
+    that keys chosen by someone else cannot all be made to collide. Rust does the same by default. It is
+    the whole difference to C in the measurement above (1.20 against 0.99 with a plain hash). By the
+    criterion of 12 November (a check that memory safety does not need gives way to speed) this is not a
+    memory-safety check: a table full of collisions is slow, not unsafe. By the first principle (the
+    default is the one that cannot go wrong) it stays. Decided on 13 November: the keyed hash stays the
+    default; a plain, faster hash can be offered later as something asked for by name.
+51. **Keys are numbers, `bool`, text and the structs and enums written `: Hashable`**; a struct is
+    hashed field after field. `getOrAdd` with a key that owns memory other than text is not compiled yet
+    (the key would have to be copied).
+52. **A `for` over a map that is handed over gives each entry to its round**, as with a list; leaving
+    early frees the rest.
+53. **A table holds at most about two thousand million entries** (the slots are 32 bits wide, half the
+    memory of 64); beyond that the program stops.
+
 ## Not here yet
 
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
@@ -803,7 +844,7 @@ error.
 ## Next
 
 The back end, one piece of the language at a time, each compared with the interpreter, run under the
-sanitizers and measured against C: next `HashMap` and `HashSet` (as hash tables, with no promised
-order; the interpreter changes to that too), which lets the calculator be compiled. Then printing a struct
-without an allocation, and modules (`use`). After it the question is the
+sanitizers and measured against C. Every example that runs in the interpreter and has no `test` block is
+now compiled. Next: printing a struct without an allocation, `.toString()` on a struct, and the places where
+the back end still asks for a name; then modules (`use`). After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

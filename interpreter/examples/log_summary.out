@@ -1,5 +1,5 @@
-error: 1 lines, 15 ms
 info: 3 lines, 500 ms
+error: 1 lines, 15 ms
 warn: 1 lines, 7 ms
 slowest: info
 error: BadLine(6, "debug fast")
