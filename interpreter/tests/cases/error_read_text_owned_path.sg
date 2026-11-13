@@ -1,0 +1,7 @@
+// A path is lent: the call does not take the text.
+Result<void, IoError> main() {
+    var path = "notes.txt".clone()
+    var text = try File.readText(path)
+    print(text)
+    return Ok()
+}

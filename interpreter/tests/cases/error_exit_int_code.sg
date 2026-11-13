@@ -1,0 +1,5 @@
+// A code of another integer type is converted, and the conversion is checked.
+void main() {
+    int code = 3
+    exit(code)
+}

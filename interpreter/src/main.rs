@@ -70,11 +70,24 @@ fn test_compiled(path: &str) -> ExitCode {
     }
 }
 
+/// A word of the command line as the system gave it.
+fn bytes(word: std::ffi::OsString) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        std::os::unix::ffi::OsStringExt::into_vec(word)
+    }
+    #[cfg(not(unix))]
+    {
+        word.to_string_lossy().into_owned().into_bytes()
+    }
+}
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    const USAGE: &str = "usage: sg <file.sg | folder>                                      runs the program\n       sg test <file.sg | folder> [--compiled]                    runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg emit-c <file.sg | folder> [--release] [--test]          prints the C";
+    // A word that is not UTF-8 is left as it is for the program, which checks it.
+    let words: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let args: Vec<String> = words.iter().map(|word| word.to_string_lossy().into_owned()).collect();
+    const USAGE: &str = "usage: sg <file.sg | folder> [args...]                            runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled]                    runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg emit-c <file.sg | folder> [--release] [--test]          prints the C";
     let (path, tests) = match args.as_slice() {
-        [path] => (path, false),
         [command, path] if command == "test" => (path, true),
         [command, first, second] if command == "test" && (first == "--compiled" || second == "--compiled") => {
             return test_compiled(if first == "--compiled" { second } else { first });
@@ -100,7 +113,12 @@ fn main() -> ExitCode {
             let out = (command == "build").then(|| out.or(stem).unwrap_or_else(|| "a.out".to_string()));
             return build(path, out, release, tests);
         }
-        _ => {
+        [command, ..] if command == "test" => {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+        [path, ..] => (path, false),
+        [] => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
         }
@@ -118,7 +136,13 @@ fn main() -> ExitCode {
     let mut out = std::io::BufWriter::new(std::io::stdout());
     // A failed test is reported like an error of the program: exit code 1.
     let result = match tests {
-        false => sg::run_sources(&sources, &mut out),
+        false => {
+            use std::io::IsTerminal;
+            let (mut input, mut err) = (std::io::BufReader::new(std::io::stdin()), std::io::stderr());
+            let input_is_terminal = std::io::stdin().is_terminal();
+            let program_args = words.into_iter().skip(1).map(bytes).collect();
+            sg::run_sources_in(&sources, &mut out, sg::World { args: program_args, input: &mut input, input_is_terminal, err: &mut err })
+        }
         true => sg::test_sources(&sources, &mut out).and_then(|passed| match passed {
             true => Ok(()),
             false => Err(Stop::TestsFailed),
@@ -145,6 +169,14 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
         Err(Stop::TestsFailed) => ExitCode::FAILURE,
+        // What was printed is out; an output that was closed meanwhile does not change the code.
+        Err(Stop::Exit(code)) => match flushed {
+            Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => {
+                eprintln!("error: cannot write output: {error}");
+                ExitCode::FAILURE
+            }
+            _ => ExitCode::from(code),
+        },
         Err(Stop::OutputClosed) => ExitCode::SUCCESS,
         Err(Stop::OutputFailed(error)) => {
             eprintln!("error: cannot write output: {error}");

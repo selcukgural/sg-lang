@@ -5,6 +5,7 @@ running real programs, not to be fast. Source files end in `.sg`; the crate and 
 
 ```
 cargo run -- examples/stack.sg                  # runs the program
+cargo run -- examples/wc.sg examples/hello.sg   # the words after the file are the program's command line
 cargo run -- test examples/tests_stock.sg       # runs its tests
 cargo run -- examples/shop/main.sg              # a program with modules: the folders next to the file
 cargo run -- test examples/shop                 # the tests of every module of the program in that folder
@@ -20,7 +21,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 
 | Area | Supported |
 |---|---|
-| Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point |
+| Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
 | Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
@@ -49,7 +50,8 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Going over text | `for c in text.chars()` gives each `char`; `text.split(',')` (a `char` or a `read string`), `text.splitWhitespace()` and `text.lines()` give each part as a `read string`, nothing copied. Kept in a `var`, the iterator gives the next part with `parts.next()`, `null` at the end |
 | Characters | `char`: one Unicode character. `'+'`, `'é'`, `'\n'`, `'\u{e9}'` is a `char`, and a `byte` where an integer goes (`byte b = '+'`, `text[i] == ':'`). `(int)c` is its code, `(char)n` the character of a code, `n.tryToChar()` gives `null` where `(char)n` would panic. `==`, `<`, `match`, keys, `sort`, `print`. `isAsciiDigit()`, `isAsciiLetter()`, `isAsciiAlphanumeric()`, `isAsciiUpper()`, `isAsciiLower()`, `isAsciiWhitespace()`, `isAscii()`, `toAsciiUpper()`, `toAsciiLower()` on `char` and on `byte`; `isWhitespace()` and `utf8Length()` on `char` |
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
-| Built-ins | `print(x)`, `panic("...")`, `assert(condition)` |
+| Built-ins | `print(x)`, `printError(x)` (the same, to the standard error), `panic("...")`, `assert(condition)`, `exit(code)` (ends the program with that code) |
+| Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `Stdin.readLine(ref line)` puts the next line of the input into `line` and gives `false` at its end; `Stdin.readText()` gives what is left of it. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `InvalidText(long position)` / `Other(int code) }` |
 | Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A normal run leaves the tests out |
 | Comparing by name | `a.compare(b)` on numbers, `char` and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
 | Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic. `tryToInt()` and the others give `null` where a cast would panic, `wrappingToInt()` and the others keep the bits that fit; `min`, `max` |
@@ -80,6 +82,11 @@ Design rules that are already enforced:
   `tryTo...` or `wrappingTo...` that cannot fail is an error, and so is `wrappingTo...` on a fractional
   number. A constant is a value of its type: `uint u = int.MaxValue` needs `(uint)`.
 - `$"..."` is not a `string`; `string text = $"..."` is an error whose hint is `.toString()`.
+- A file is read and written whole. `readText` and `readLine` check the text: a byte that is not UTF-8
+  is `IoError.InvalidText` with its place, counted from the start of the file or of the input. A path is
+  a `read string`; one with a zero byte in it is `NotFound`. A line comes without its `\n` or `\r\n`.
+- `exit` takes a `byte`, so `exit(256)` is a compile error. It gives no value, so a function that ends in
+  it needs no `return`. In a test it fails the test.
 - `write` and `clear` change the text, so they need it where it may change: not through `read` (the hint is
   `ref string`) and not in a `readonly` field. Writing a text into itself, or anything that looks at it
   (`s.write(s[..3])`, `s.write(s.trim())`), is an error whose hint is `.clone()`; a number computed from
@@ -204,7 +211,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (154 of 535 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (161 of 556 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -255,7 +262,8 @@ the interpreter. Since the thirty-fourth slice `float` and `double`, the same wa
 slice `parse`, the constants, the conversions that do not panic and the math methods, the same way.
 Since the thirty-sixth slice `char`, `chars`, `split`, `splitWhitespace`, `lines`, `trim` and the
 searches in a text, the same way. Since the thirty-seventh slice building a text with `write`, `clear` and
-`string.withCapacity`, the same way.
+`string.withCapacity`, the same way. Since the thirty-eighth slice files read and written whole, the input
+read line by line, the command line, `printError` and `exit`, the same way.
 What is still missing is an error that names it (not silence): the few positions listed with the choices
 below (81, 111).
 
@@ -292,6 +300,7 @@ hand with no checks):
 | `nbody`: the sun and the four giant planets moved twenty million steps in `double`, a square root for each pair at each step | 0.661 s | 0.662 s | 0.679 s | 0.97 |
 | `numbers`: a million lines of whole and fractional numbers read ten times with `long.parse` and `double.parse` and added up | 0.186 s | 0.191 s | 0.196 s | 0.95 |
 | `fields`: a million lines like ` Ada17 , 120, -45 ,6789` gone over twenty times with `lines`, `split`, `trim`, `long.parse` and `chars` | 1.228 s | 1.259 s | 1.202 s | 1.02 |
+| `lines`: two million lines of a log (125 MB) read from the input with `Stdin.readLine`, each checked to be UTF-8, and counted | 0.096 s | 0.097 s | 0.089 s | 1.08 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -399,6 +408,15 @@ only ASCII), and building it with `write` takes about the same (0.149 s against 
 each line was a text of its own, joined at the end). A
 search for a separator of one byte without the `memcmp` after `memchr` was tried and made the program
 slower (1.54 s, in every run); why was not looked into, and the change was left out.
+
+`lines` reads its input: two million lines of a log, 125 MB with some `\r\n` ends and a `café` here
+and there, read with `Stdin.readLine` into one text that is used for every line, and counted (the
+lines, their bytes, the longest, the ones that start with `ERROR`). The C program reads them with
+`getline` into one buffer, as one does. SG takes 1.08 times its time, and all of that is the check that
+every line is UTF-8, which `getline` does not make: with the check taken out of the generated C the SG
+program takes 0.058 s against 0.090 s, since it finds a line with `memchr` in a block of its own where
+`getline` goes through `FILE*`. The check first took the program to about 1.15 times; looking at eight
+bytes at a time while they are ASCII brought it to 1.08 (choice 202). The rest is in "Slower than C".
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
@@ -534,7 +552,10 @@ checks.
 
 Tests are golden files: every `.sg` file in `examples/` and `tests/cases/` is run and its output (what it
 printed, then the error or panic message) is compared with the `.out` file next to it. After an intended change,
-regenerate them with `UPDATE_GOLDEN=1 cargo test` and review the diff.
+regenerate them with `UPDATE_GOLDEN=1 cargo test` and review the diff. What the program wrote to the standard
+error comes after what it printed, and an exit code other than 0 and 1 is a last line (`exit code 3`). A
+`.args` file next to a program gives its command line, one word on each line, where `{dir}` is an empty folder
+of its own to write files into (it is written back as `{dir}` in the output); a `.in` file gives its input.
 
 Programs with modules are in `tests/modules/`: the folders there (`stock`, `billing`, `shop/parts`, `leaky`) are
 modules, and each `.sg` file next to them is a program of one file that uses them. A folder with a `main.sg`
@@ -1695,6 +1716,88 @@ together), approved on 13 November 2026:
      joined them. Building takes the time of C (0.056 s against 0.055 s, 0.149 s against 0.145 s; it was
      0.071 s and 0.17 s), and "Building a text out of many small ones" is gone from "Slower than C".
 
+Choices made in the thirty-eighth slice (files, the input and the command line; checker, interpreter and
+back end together), approved on 13 November 2026:
+
+192. **A file is read or written whole**: `File.readText(path)` gives a `Result<string, IoError>`,
+     `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)` and
+     `File.writeBytes(path, bytes)` make the file, or empty it, and write; `File.appendText(path, text)`
+     writes after what the file holds and makes one that is missing. The names follow the design's
+     `File.readText` (C#'s `File.ReadAllText` without the `All`); Rust has `fs::read_to_string` and
+     `fs::write`, Go `os.ReadFile` and `os.WriteFile`. A file read piece by piece (`File.openText`,
+     `File.createText`, the row "File API") needs the `Closable` check and comes in a slice of its own.
+193. **A path is a `read string`**: a constant, a variable lent with `read`, or `read $"...".toString()`.
+     There is no path type: a path is text, as in C# and Go (Rust's `Path` can hold names that are not
+     UTF-8, which a `string` cannot). A path with a zero byte in it names no file, because the system
+     would read the name as ending there (`"a.txt\0.png"` would open `a.txt`); it gives `NotFound`, and
+     nothing is cut off.
+194. **`readText` checks the text**: a byte that is not UTF-8 gives `IoError.InvalidText(position)`, the
+     place counted from the start of the file (the row "`string` guarantee"). Raw data is read with
+     `readBytes`, and `string.fromUtf8` looks at bytes as text where they are.
+195. **`IoError` is a built-in enum**: `NotFound`, `PermissionDenied`, `IsDirectory`, `NoSpace`,
+     `InvalidText(long position)`, `Other(int code)`; `Copyable`, `Formattable` and `Equatable`, like
+     `NumberError`. The first four are what a program tells apart (make a default when the file is
+     missing, tell the user it may not be read); `Other` keeps the code the system gave. The codes map the
+     same on Linux and macOS: `ENOENT` and `ENOTDIR` are `NotFound`, `EPERM`, `EACCES` and `EROFS`
+     `PermissionDenied`, `EISDIR` `IsDirectory`, `ENOSPC` and `EDQUOT` `NoSpace`. The error does not carry
+     the path: that would make it own a text and stop being `Copyable`, and the caller has the path to put
+     in its own error (as `wc` does). Rust's `io::Error` leaves the path out too; Go's `PathError` and
+     C#'s message keep it. `print` and an error of `main` write the variant: `NotFound`, `InvalidText(12)`.
+196. **`main(List<string> args)`** gets the words after the program's name; `void main()` stays, and so does
+     `Result<void, E> main(...)`. The program's own name is not among them, as in C# (`args[0]` is the
+     first word); C, Rust and Go put the name first. The list is the program's own: it can change it and
+     move its texts. In compiled code each text looks at the word where the system keeps it (a text of
+     capacity 0, 8), and nothing is copied unless the program writes into it. A word that is not UTF-8
+     stops the program before `main` with `error: args[1] is not valid UTF-8` and exit code 1, as Rust's
+     `env::args` stops; a form that gives the words as bytes can come when a program needs it.
+197. **`Stdin.readLine(ref line)`** puts the next line of the input into `line`, without its `\n` or
+     `\r\n`, and gives a `Result<bool, IoError>` that is `false` at the end of the input. The same text
+     is used for every line, so a loop takes memory once (the design's `reader.readLine(ref line)`, row
+     "File API"), and a part of the line kept past the next `readLine` is the borrow error of the log
+     summary in 05. A line that is not UTF-8 is `InvalidText` with its place counted from the start of
+     the input; that line is used up and `line` is left empty, so the next call goes on with the next line
+     and no loop meets the same error forever. `Stdin.readText()` gives what is left of the input. On a
+     terminal what was printed goes out before the program waits for a line, so a prompt shows; on a
+     pipe the output keeps its buffer. The name is `Stdin`, as in C (`stdin`), Go (`os.Stdin`), Rust
+     (`io::stdin()`) and Zig (`getStdIn`), not C#'s `Console`: the input is often a pipe or a file and not
+     a console, and once files are read piece by piece `Stdin` becomes a reader of the same type that
+     `File.openText` gives, so `readLine`, `lines()` and `readText()` are one set of methods for both.
+     `Stdout` and `Stderr` are kept for the writing side (using them now is an error whose hint is
+     `print` or `printError`); the row "`print` error" and 02, which wrote
+     `Console.out`, now write `Stdout` (chosen on 13 November).
+198. **`printError(x)`** writes as `print` does, to the standard error, and gives nothing: there is no one
+     to tell that the standard error cannot be written. What `print` wrote before goes out first, so on a
+     terminal the two come in the order they were written. Rust's `eprintln!`, C#'s
+     `Console.Error.WriteLine`. `Stdout` and `Stderr` with a `Result` (02, "`print` does not
+     return an error") come with the writers of 192. In a test, what `printError` wrote is shown under its
+     `FAIL` line and dropped when the test passes, as compiled tests already did.
+199. **`exit(code)`** ends the program at once with that code, after what was printed goes out; nothing is
+     freed (the system takes the memory back) and nothing after it runs. The code is a `byte`: the system
+     keeps eight bits, so `exit(256)` would end as 0; here it is a compile error, and an `int` needs
+     `(byte)`, which panics when it does not fit. `exit` gives no value, so it stands where one is needed
+     (`int n = x ?? exit(2)`) and a function that ends in it needs no `return`. In a test it fails the
+     test: a test cannot end the run of the others, and with each compiled test in a process of its own
+     `exit(0)` would make it pass. Rust's `process::exit`, Go's `os.Exit`, C#'s `Environment.Exit`.
+200. **The command line of the interpreter**: `sg file.sg a b c` runs the program with the words `a b c`;
+     `sg test` and `sg build` are as they were. A compiled program gets its words from the system.
+201. **Compiled code** uses the calls of the system (`open`, `read`, `write`, `fstat`), not C's `FILE*`: a
+     file is read into one block of its size, and the input in blocks of 64 KB that the program keeps,
+     where a line is found with `memchr` and copied once into the text. This part of the runtime is put
+     only into a program that uses it. Compared with the interpreter with both C compilers, and on random
+     inputs of several megabytes with bad bytes and long lines across the blocks.
+202. **Checking UTF-8 looks at eight bytes at a time** while none of them has its high bit set, and at one
+     byte at a time from there; `readText`, `readLine`, the command line and `string.fromUtf8` all use it.
+     It took the `lines` program below from about 1.15 to 1.08 times the time of C.
+203. **The measurement**: `lines` (above) reads two million lines of a log, 125 MB, with
+     `Stdin.readLine`, and counts them, their bytes, the longest and the ones that start with `ERROR`.
+     It takes 1.08 times the time of `getline` in C, which does not look at what it reads. Without the
+     check the SG program takes 0.058 s against 0.090 s: the reading is faster than `getline`, and the
+     difference is the guarantee. A new entry in "Slower than C".
+204. **Tests**: a `.args` file next to a program gives its command line, one word on each line, `{dir}`
+     being an empty folder of its own; a `.in` file gives its input. What a program wrote to the standard
+     error comes after what it printed, and an exit code other than 0 and 1 is a last line of the output
+     (`exit code 3`). The example `wc` counts the files named on its command line.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -1724,6 +1827,11 @@ check off.
 - **Wrapping arithmetic in a loop that is only arithmetic** (`vector`'s first version, 1.28 times): C may
   assume a signed overflow never happens and turn `i * 7 + round` into a counter; wrapping is defined, so
   the C compiler keeps the arithmetic. Rust pays the same. No candidate yet.
+- **Checking that a line is UTF-8** (`lines`, 1.08 times `getline`, which checks nothing; without the
+  check the SG program takes 0.058 s against 0.090 s): the check looks at eight bytes at a time while they
+  are ASCII and at one byte at a time from the first that is not (choice 202). Candidates: a check with
+  vector instructions (as `simdutf` does, and Rust's `from_utf8` in part), used by every place that
+  checks: `readText`, `readLine`, the command line, `string.fromUtf8`.
 
 ## Not here yet
 
@@ -1759,6 +1867,12 @@ check off.
 - Arrays of arrays, `read T[]?`, an array as a key, `sort` and
   `reverse` through a `ref T[]`, `list.addAll(slice)`, looking for a run of items in a slice.
 - A panic of `-x` and of a shift names no way out: there is no `tryNegate` or `tryShiftLeft` yet.
+- A file read or written piece by piece (`File.openText`, `File.createText`, `reader.lines()`, the
+  `Closable` check of the design) and `Stdout` and `Stderr` with a `Result`; until then a
+  file is read and written whole. Folders, removing or renaming a file, asking whether one is there; the
+  variables of the environment; the command line as bytes (a word that is not UTF-8 stops the program).
+  `IoError` does not carry the path (choice 195). `PermissionDenied` and `NoSpace` are mapped but have no
+  test: the tests cannot make a file they may not read or fill a disk.
 - Freeing a long linked list recurses, the open stack-depth question from the design; here it runs on a 1 GB stack.
 
 Words from the design that are not implemented produce "is not in the interpreter yet" instead of a confusing
@@ -1782,6 +1896,11 @@ million numbers out of text takes about the time of `strtoll` and `strtod`. So a
 text (`chars`, `split`, `splitWhitespace`, `lines`), `trim` and the searches, and the log summary is
 written as the design wrote it. A text is built piece by piece where it is (`write`, `clear`,
 `string.withCapacity`), and building a million lines takes the time of `sprintf` into one buffer in C.
+A program reads and writes files whole, reads its input line by line into one text, and sees its command
+line (`main(List<string> args)`); it writes to the standard error with `printError` and ends with a code of
+its choice with `exit`. Reading two million lines takes 1.08 times `getline` in C, which does not check
+that they are text.
 
-Candidates for what comes next: `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases
-(`using`), threads, the places that are slower than C.
+Candidates for what comes next: files read and written piece by piece (`StreamReader`, `StreamWriter`,
+`Closable`), `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases (`using`), threads, the
+places that are slower than C.

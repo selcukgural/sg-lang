@@ -1,0 +1,8 @@
+// `readLine` writes into the text it is lent, so it is lent with `ref`.
+Result<void, IoError> main() {
+    string line = ""
+    while try Stdin.readLine(line) {
+        print(line)
+    }
+    return Ok()
+}

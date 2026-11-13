@@ -12,8 +12,10 @@
 //! text (with `trim`, the searches, the iterators `chars`, `split`, `splitWhitespace` and `lines`, and
 //! `write` and `clear`, which add to a text where it is, as `f.write` does), functions, structs,
 //! enums with `match` and `is`, `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
-//! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, and `print`. Anything else
-//! is an error that names what is missing, so nothing is compiled wrongly in silence.
+//! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, `print` and `printError`, files
+//! read and written whole, the input read line by line, the command line and `exit` (see
+//! `IO_RUNTIME`). Anything else is an error that names what is missing, so nothing is compiled
+//! wrongly in silence.
 //!
 //! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`), and
 //! `float` and `double` are C's, computed with no fused multiply-add (see `RUNTIME`); a
@@ -454,6 +456,12 @@ SG_COLD static _Noreturn void sg_span_fail(long long from, long long to, long lo
 static int64_t sg_utf8_bad(const uint8_t* bytes, int64_t len) {
     int64_t at = 0;
     while (at < len) {
+        /* Eight bytes at a time while none of them has its high bit set: plain ASCII. */
+        if (at + 8 <= len) {
+            uint64_t word;
+            memcpy(&word, bytes + at, 8);
+            if (!(word & 0x8080808080808080ULL)) { at += 8; continue; }
+        }
         uint8_t first = bytes[at];
         if (first < 0x80) { at++; continue; }
         int64_t more;
@@ -488,6 +496,15 @@ static sg_string sg_format(const char* format, ...) {
     else vsnprintf((char*)bytes, (size_t)n + 1, format, write);
     va_end(write);
     return (sg_string){ bytes, n, n };
+}
+SG_COLD static _Noreturn void sg_panicf(const char* loc, const char* format, ...);
+/* Set by the program of tests: there `exit` fails the test, as in the interpreter. */
+static bool sg_in_tests = false;
+/* `exit(code)`: what was printed goes out, and nothing is freed: the system takes it all. */
+static _Noreturn void sg_exit(uint8_t code, const char* loc) {
+    if (sg_in_tests) sg_panicf(loc, "`exit(%d)` in a test: a test cannot end the program", (int)code);
+    fflush(stdout);
+    exit(code);
 }
 SG_COLD static _Noreturn void sg_panicf(const char* loc, const char* format, ...) {
     va_list args;
@@ -1025,6 +1042,147 @@ static void sg_test_failed(sg_str text) {
 }
 "#;
 
+/// What a program that reads or writes files, or reads its input, needs: the calls of the
+/// system (`open`, `read`, `write`) and the input in blocks of its own. Added only to such a
+/// program.
+const IO_RUNTIME: &str = r#"
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+/* The variant of `IoError` for a code the system gave: 0 NotFound, 1 PermissionDenied,
+   2 IsDirectory, 3 NoSpace; 5 is Other, which keeps the code. */
+static int sg_io_kind(int code) {
+    switch (code) {
+    case ENOENT: case ENOTDIR: return 0;
+    case EPERM: case EACCES: case EROFS: return 1;
+    case EISDIR: return 2;
+    case ENOSPC:
+#ifdef EDQUOT
+    case EDQUOT:
+#endif
+        return 3;
+    default: return 5;
+    }
+}
+/* A path as the system takes it, ended by a zero byte. No file has a zero byte in its name
+   (the system would see the name end there), so such a path is not found. */
+static char* sg_path(sg_str path, int* code) {
+    if (path.len > 0 && memchr(path.ptr, 0, (size_t)path.len)) { *code = ENOENT; return NULL; }
+    char* name = malloc((size_t)path.len + 1);
+    if (!name) abort();
+    if (path.len > 0) memcpy(name, path.ptr, (size_t)path.len);
+    name[path.len] = 0;
+    return name;
+}
+/* The whole file into a block of its own: 0, or the code the system gave. */
+static int sg_read_file(sg_str path, uint8_t** bytes, int64_t* len) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    int fd = open(name, O_RDONLY);
+    free(name);
+    if (fd < 0) return errno;
+    struct stat info;
+    size_t cap = fstat(fd, &info) == 0 && S_ISREG(info.st_mode) && info.st_size > 0 ? (size_t)info.st_size + 1 : 4096;
+    uint8_t* block = malloc(cap);
+    if (!block) abort();
+    size_t n = 0;
+    for (;;) {
+        if (n == cap) { cap *= 2; block = realloc(block, cap); if (!block) abort(); }
+        ssize_t got = read(fd, block + n, cap - n);
+        if (got < 0) { if (errno == EINTR) continue; code = errno; break; }
+        if (got == 0) break;
+        n += (size_t)got;
+    }
+    close(fd);
+    if (code) { free(block); return code; }
+    *bytes = block;
+    *len = (int64_t)n;
+    return 0;
+}
+/* The bytes into the file, which is made if it is not there; `append` keeps what it holds. */
+static int sg_write_file(sg_str path, const uint8_t* bytes, int64_t len, bool append) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    int fd = open(name, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC), 0666);
+    free(name);
+    if (fd < 0) return errno;
+    int64_t done = 0;
+    while (done < len) {
+        ssize_t put = write(fd, bytes + done, (size_t)(len - done));
+        if (put < 0) { if (errno == EINTR) continue; code = errno; break; }
+        done += put;
+    }
+    if (close(fd) != 0 && !code) code = errno;
+    return code;
+}
+/* The input of the program, read in blocks. `done` counts the bytes given out: where an
+   `InvalidText` lies. On a terminal, what was printed goes out before the program waits. */
+static uint8_t sg_in_block[65536];
+static struct { int64_t at, len, done; bool ended; int terminal; } sg_in = { 0, 0, 0, false, -1 };
+static int sg_in_fill(void) {
+    if (sg_in.terminal < 0) sg_in.terminal = isatty(0);
+    if (sg_in.terminal) fflush(stdout);
+    for (;;) {
+        ssize_t got = read(0, sg_in_block, sizeof sg_in_block);
+        if (got < 0) { if (errno == EINTR) continue; return errno; }
+        sg_in.at = 0;
+        sg_in.len = got;
+        if (got == 0) sg_in.ended = true;
+        return 0;
+    }
+}
+/* The next line into `line`, without its `\n` or `\r\n`: 0 with `*more` false at the end of
+   the input, the code the system gave, or -1 with `*bad` where the line is not UTF-8. */
+static int sg_read_line(sg_string* line, bool* more, int64_t* bad) {
+    line->len = 0;
+    int64_t start = sg_in.done;
+    bool any = false;
+    for (;;) {
+        if (sg_in.at == sg_in.len) {
+            if (sg_in.ended) break;
+            int code = sg_in_fill();
+            if (code) return code;
+            continue;
+        }
+        any = true;
+        const uint8_t* from = sg_in_block + sg_in.at;
+        const uint8_t* end = memchr(from, '\n', (size_t)(sg_in.len - sg_in.at));
+        int64_t n = end ? end - from + 1 : sg_in.len - sg_in.at;
+        sg_put(line, from, n);
+        sg_in.at += n;
+        sg_in.done += n;
+        if (end) break;
+    }
+    *more = any;
+    if (!any) return 0;
+    if (line->len > 0 && line->ptr[line->len - 1] == '\n') {
+        line->len--;
+        if (line->len > 0 && line->ptr[line->len - 1] == '\r') line->len--;
+    }
+    int64_t at = sg_utf8_bad(line->ptr, line->len);
+    if (at >= 0) { line->len = 0; *bad = start + at; return -1; }
+    return 0;
+}
+/* What is left of the input. */
+static int sg_read_input(sg_string* text) {
+    *text = SG_LIT("", 0);
+    for (;;) {
+        if (sg_in.at < sg_in.len) {
+            sg_put(text, sg_in_block + sg_in.at, sg_in.len - sg_in.at);
+            sg_in.done += sg_in.len - sg_in.at;
+            sg_in.at = sg_in.len;
+        }
+        if (sg_in.ended) return 0;
+        int code = sg_in_fill();
+        if (code) { sg_drop_string(text); *text = SG_LIT("", 0); return code; }
+    }
+}
+"#;
+
 /// What a program of tests ends with: each `test` block runs in a process of its own, so a
 /// panic ends that test and not the ones after it. What the test writes as it stops (the
 /// panic, or the error a `try` met) is caught and written under its `FAIL` line. With
@@ -1042,6 +1200,7 @@ static int sg_run_test(const sg_test* test) {
     return sg_test_error;
 }
 static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) {
+    sg_in_tests = true;
     if (argc == 3 && strcmp(argv[1], "--only") == 0) {
         long only = strtol(argv[2], NULL, 10);
         if (only < 0 || only >= count) return 3;
@@ -1194,6 +1353,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     };
 
     let mut out = String::from(RUNTIME);
+    if emitter.made.contains("io") {
+        out.push_str(IO_RUNTIME);
+    }
     if tests {
         out.push_str(TEST_SUPPORT);
     }
@@ -2864,6 +3026,24 @@ impl<'a> Emitter<'a> {
     /// Where a program starts. An error that `main` ends with is written out, and the program
     /// ends with the exit code 1.
     fn start(&mut self, main: &Func) -> Res<String> {
+        // `main(List<string> args)`: the words after the program's name, looked at where the
+        // system keeps them (a text of capacity 0 owns nothing), each checked to be UTF-8.
+        let (head, call) = match main.params.is_empty() {
+            true => ("int main(void) {\n".to_string(), "f_main()"),
+            false => {
+                let list = self.ctype(&Ty::List(Box::new(Ty::Str)), main.name_span)?;
+                (
+                    format!(
+                        "int main(int argc, char** argv) {{\n    {list} args = {{ malloc(sizeof(sg_string) * (size_t)(argc > 1 ? argc - 1 : 1)), argc > 1 ? argc - 1 : 0, argc > 1 ? argc - 1 : 0 }};\n    \
+                         if (!args.ptr) abort();\n    \
+                         for (int i = 1; i < argc; i++) {{\n        int64_t n = (int64_t)strlen(argv[i]);\n        \
+                         if (sg_utf8_bad((const uint8_t*)argv[i], n) >= 0) {{ fprintf(stderr, \"error: args[%d] is not valid UTF-8\\n\", i - 1); free(args.ptr); return 1; }}\n        \
+                         args.ptr[i - 1] = SG_LIT(argv[i], n);\n    }}\n"
+                    ),
+                    "f_main(args)",
+                )
+            }
+        };
         Ok(match self.written(&main.ret)? {
             ret @ Ty::Result(..) => {
                 let Ty::Result(_, error) = &ret else { unreachable!("matched above") };
@@ -2887,11 +3067,11 @@ impl<'a> Emitter<'a> {
                     }
                 };
                 format!(
-                    "int main(void) {{\n    {ctype} result = f_main();\n    if (result.tag != 0) {{\n        fflush(stdout);\n        {shown}\
+                    "{head}    {ctype} result = {call};\n    if (result.tag != 0) {{\n        fflush(stdout);\n        {shown}\
                      fprintf(stderr, \"error: {format}\\n\", {values});\n        {drop}\n        return 1;\n    }}\n    return 0;\n}}\n"
                 )
             }
-            _ => "int main(void) {\n    f_main();\n    return 0;\n}\n".to_string(),
+            _ => format!("{head}    {call};\n    return 0;\n}}\n"),
         })
     }
 
@@ -3444,6 +3624,13 @@ impl<'a> Emitter<'a> {
         let pad = "    ".repeat(depth);
         match &expr.kind {
             ExprKind::Call { name, args, callee: Callee::Plain, .. } if name == "print" => self.print(&args[0], &pad, out)?,
+            ExprKind::Call { name, args, callee: Callee::Plain, .. } if name == "printError" => self.print_error(&args[0], &pad, out)?,
+            ExprKind::Call { callee: Callee::Plain, name, .. } if name == "exit" => {
+                let stop = self.exit(expr)?;
+                self.flush_pre(&pad, out);
+                let _ = writeln!(out, "{pad}{stop};");
+                self.post.clear();
+            }
             ExprKind::Call { name, args, callee: Callee::Plain, .. } if name == "assert" => self.assert(expr, &args[0], &pad, out)?,
             ExprKind::Call { name, args, callee: Callee::Plain, .. } if name == "panic" => {
                 let (format, values) = self.format(&args[0])?;
@@ -4267,6 +4454,120 @@ impl<'a> Emitter<'a> {
             Ty::Char => self.char_text(&value, format, values),
             other => return Err(not_yet(expr.span, &format!("writing a `{other}` as text"))),
         }
+        Ok(())
+    }
+
+    /// `File.readText(path)` and the others: one function each, made where it is first used,
+    /// that calls the runtime (`IO_RUNTIME`) and puts what it gives into the `Result`.
+    fn io(&mut self, call: IoCall, args: &'a [Expr], head: bool, expr: &'a Expr) -> Res<String> {
+        self.made.insert("io".to_string());
+        let span = expr.span;
+        let gives = self.ctype(&expr.ty, span)?;
+        let error_c = self.ctype(&Ty::Enum("IoError".to_string()), span)?;
+        if self.made.insert("sg_io_error".to_string()) {
+            let _ = writeln!(
+                self.glue,
+                "static {error_c} sg_io_error(int code) {{ int kind = sg_io_kind(code); \
+                 if (kind == 5) return ({error_c}){{ .tag = 5, .u.v5 = {{ code }} }}; return ({error_c}){{ .tag = (uint8_t)kind }}; }}\n\
+                 static {error_c} sg_io_bad_text(int64_t at) {{ return ({error_c}){{ .tag = 4, .u.v4 = {{ at }} }}; }}"
+            );
+        }
+        let failed = |cause: &str| format!("return ({gives}){{ .tag = 1, .u.v1 = {{ {cause} }} }};");
+        let text = Ty::Read(Box::new(Ty::Str));
+        let (fname, params, body) = match call {
+            IoCall::ReadText => (
+                "sg_file_read_text",
+                vec![text],
+                format!(
+                    "uint8_t* bytes; int64_t n; int code = sg_read_file(a0, &bytes, &n); if (code) {} \
+                     int64_t bad = sg_utf8_bad(bytes, n); if (bad >= 0) {{ free(bytes); {} }} \
+                     if (n == 0) {{ free(bytes); return ({gives}){{ .tag = 0, .u.v0 = {{ SG_LIT(\"\", 0) }} }}; }} \
+                     return ({gives}){{ .tag = 0, .u.v0 = {{ (sg_string){{ bytes, n, n }} }} }};",
+                    failed("sg_io_error(code)"),
+                    failed("sg_io_bad_text(bad)")
+                ),
+            ),
+            IoCall::ReadBytes => {
+                let list = self.ctype(&Ty::List(Box::new(Ty::Int(IntTy::Byte))), span)?;
+                (
+                    "sg_file_read_bytes",
+                    vec![text],
+                    format!(
+                        "uint8_t* bytes; int64_t n; int code = sg_read_file(a0, &bytes, &n); if (code) {} \
+                         if (n == 0) {{ free(bytes); return ({gives}){{ .tag = 0, .u.v0 = {{ ({list}){{ 0 }} }} }}; }} \
+                         return ({gives}){{ .tag = 0, .u.v0 = {{ ({list}){{ bytes, n, n }} }} }};",
+                        failed("sg_io_error(code)")
+                    ),
+                )
+            }
+            IoCall::WriteText | IoCall::AppendText | IoCall::WriteBytes => {
+                let (fname, second) = match call {
+                    IoCall::WriteText => ("sg_file_write_text", text.clone()),
+                    IoCall::AppendText => ("sg_file_append_text", text.clone()),
+                    _ => ("sg_file_write_bytes", Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))))),
+                };
+                (
+                    fname,
+                    vec![text, second],
+                    format!(
+                        "int code = sg_write_file(a0, a1.ptr, a1.len, {}); if (code) {} return ({gives}){{ .tag = 0 }};",
+                        call == IoCall::AppendText,
+                        failed("sg_io_error(code)")
+                    ),
+                )
+            }
+            IoCall::ReadLine => (
+                "sg_stdin_read_line",
+                vec![Ty::Ref(Box::new(Ty::Str))],
+                format!(
+                    "bool more = false; int64_t bad = 0; int code = sg_read_line(a0, &more, &bad); \
+                     if (code == -1) {} if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ more }} }};",
+                    failed("sg_io_bad_text(bad)"),
+                    failed("sg_io_error(code)")
+                ),
+            ),
+            IoCall::ReadInput => (
+                "sg_stdin_read_text",
+                Vec::new(),
+                format!(
+                    "int64_t start = sg_in.done; sg_string text; int code = sg_read_input(&text); if (code) {} \
+                     int64_t bad = sg_utf8_bad(text.ptr, text.len); \
+                     if (bad >= 0) {{ sg_drop_string(&text); {} }} return ({gives}){{ .tag = 0, .u.v0 = {{ text }} }};",
+                    failed("sg_io_error(code)"),
+                    failed("sg_io_bad_text(start + bad)")
+                ),
+            ),
+        };
+        if self.made.insert(fname.to_string()) {
+            let mut written = Vec::new();
+            for (index, param) in params.iter().enumerate() {
+                written.push(format!("{} a{index}", self.ctype(param, span)?));
+            }
+            let written = if written.is_empty() { "void".to_string() } else { written.join(", ") };
+            let _ = writeln!(self.glue, "static {gives} {fname}({written}) {{ {body} }}");
+            self.sigs.insert(fname.to_string(), params);
+        }
+        self.call(fname.to_string(), None, args, head, &expr.ty)
+    }
+
+    /// `exit(code)`: what was printed goes out and the program ends. In a test it fails the
+    /// test instead, as the interpreter does (`sg_exit` looks at `sg_in_tests`).
+    fn exit(&mut self, expr: &'a Expr) -> Res<String> {
+        let ExprKind::Call { args, .. } = &expr.kind else { unreachable!("`exit` is a call") };
+        let code = self.value_as(&args[0], &Ty::Int(IntTy::Byte))?;
+        Ok(format!("sg_exit({code}, {})", self.loc(expr.span)))
+    }
+
+    /// `printError(x)`: as `print`, to the standard error; what was printed before goes out first.
+    fn print_error(&mut self, arg: &'a Expr, pad: &str, out: &mut String) -> Res<()> {
+        self.head = !matches!(arg.kind, ExprKind::Interp(_));
+        let formatted = self.format(arg);
+        self.head = false;
+        let (mut format, values) = formatted?;
+        format.push('\n');
+        self.flush_pre(pad, out);
+        let _ = writeln!(out, "{pad}fflush(stdout); fprintf(stderr, {}{values});", c_string(&format));
+        self.flush_post(pad, out);
         Ok(())
     }
 
@@ -5131,7 +5432,15 @@ impl<'a> Emitter<'a> {
                     let stop = format!("sg_panicf({loc}, {}{values})", c_string(&format));
                     Ok(if made.is_empty() { stop } else { format!("({{ {made}{stop}; }})") })
                 }
-                Callee::Plain if matches!(name.as_str(), "print" | "assert") => Err(not_yet(expr.span, &format!("`{name}` used as a value"))),
+                // `x ?? exit(2)`: as `panic` above.
+                Callee::Plain if name == "exit" => {
+                    let before = (self.pre.len(), self.post.len());
+                    let stop = self.exit(expr)?;
+                    let made: String = self.pre.drain(before.0..).map(|line| format!("{line} ")).collect();
+                    self.post.truncate(before.1);
+                    Ok(if made.is_empty() { stop } else { format!("({{ {made}{stop}; }})") })
+                }
+                Callee::Plain if matches!(name.as_str(), "print" | "printError" | "assert") => Err(not_yet(expr.span, &format!("`{name}` used as a value"))),
                 Callee::Plain => self.call(format!("f_{}", cname(name)), None, args, head, &expr.ty),
                 Callee::Static { owner, name } => self.call(format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
                 // A call through a function value kept in a variable.
@@ -5398,6 +5707,7 @@ impl<'a> Emitter<'a> {
                     }
                     self.call("sg_from_utf8".to_string(), None, args, head, &expr.ty)
                 }
+                Callee::Io(call) => self.io(*call, args, head, expr),
                 // `int.parse(text)`: one function for each type, made where it is first used.
                 Callee::Parse => {
                     let Ty::Result(ty, _) = &expr.ty else { return Err(not_yet(expr.span, "`parse`")) };

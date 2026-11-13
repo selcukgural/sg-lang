@@ -1,0 +1,24 @@
+// The input of the program, line by line into one text, then what is left of it at once.
+// The input is `ok_stdin_lines.in`.
+
+Result<void, IoError> main() {
+    string line = ""
+    int count = 0
+    // A line comes without its `\n`, and without the `\r` of a `\r\n`.
+    while try Stdin.readLine(ref line) {
+        count += 1
+        print($"{count}: [{line}] {line.length()} bytes")
+        if line == "stop" {
+            break
+        }
+    }
+    var rest = try Stdin.readText()
+    print($"rest: [{rest}]")
+    // At the end of the input there is no line, and the text is left empty.
+    line.write("kept?")
+    print(try Stdin.readLine(ref line))
+    print($"[{line}]")
+    var nothing = try Stdin.readText()
+    print($"[{nothing}]")
+    return Ok()
+}

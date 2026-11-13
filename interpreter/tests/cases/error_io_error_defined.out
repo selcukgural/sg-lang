@@ -1,0 +1,4 @@
+error: `IoError` is a built-in type and cannot be redefined
+  --> error_io_error_defined.sg:2:6
+ 2 | enum IoError {
+   |      ^^^^^^^

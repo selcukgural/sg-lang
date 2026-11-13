@@ -1,0 +1,4 @@
+// The error of a write cannot be lost by not looking at it.
+void main() {
+    File.writeText("notes.txt", "hello")
+}

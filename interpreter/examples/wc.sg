@@ -1,0 +1,65 @@
+// `wc`: the lines, words and bytes of each file named on the command line, and their total;
+// with no file, those of the input. A file that cannot be read is told on the standard error,
+// the others are still counted, and the program then ends with exit code 1. A file is read as
+// text, so one that is not UTF-8 is an error that says where (`InvalidText(position)`).
+// `wc.args` names three files, one of which is not there.
+
+struct Counts : Copyable {
+    long lines
+    long words
+    long bytes
+}
+
+Counts count(read string text) {
+    long lines = 0
+    for i in 0..text.length() {
+        if text[i] == '\n' {
+            lines += 1
+        }
+    }
+    long words = 0
+    for _ in text.splitWhitespace() {
+        words += 1
+    }
+    return Counts { lines = lines, words = words, bytes = text.length() }
+}
+
+void show(Counts counts, read string name) {
+    print($"{counts.lines} {counts.words} {counts.bytes} {name}")
+}
+
+void main(List<string> args) {
+    if args.length() == 0 {
+        match Stdin.readText() {
+            Ok(text) => show(count(read text), "")
+            Error(cause) => {
+                printError($"wc: the input: {cause}")
+                exit(1)
+            }
+        }
+        return
+    }
+    var total = Counts { lines = 0, words = 0, bytes = 0 }
+    bool failed = false
+    for name in read args {
+        match File.readText(name) {
+            Ok(text) => {
+                var counts = count(read text)
+                total.lines += counts.lines
+                total.words += counts.words
+                total.bytes += counts.bytes
+                show(counts, name)
+            }
+            Error(cause) => {
+                printError($"wc: {name}: {cause}")
+                failed = true
+            }
+        }
+    }
+    if args.length() > 1 {
+        show(total, "total")
+    }
+    if failed {
+        exit(1)
+    }
+}

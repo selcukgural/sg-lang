@@ -1,0 +1,16 @@
+// `exit(code)` ends the program at once with that code: what was printed goes out, the rest
+// of `main` does not run. It never gives a value, so it can stand where one is needed.
+
+int count(read string text) {
+    if text.length() > 3 {
+        return (int)text.length()
+    }
+    exit(4)
+}
+
+void main() {
+    print(count("long text"))
+    int? none = null
+    int value = none ?? exit(3)
+    print(value)
+}

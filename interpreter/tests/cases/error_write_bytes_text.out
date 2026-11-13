@@ -1,0 +1,5 @@
+error: expected `read byte[]`, found `string`
+  --> error_write_bytes_text.sg:3:38
+ 3 |     try File.writeBytes("notes.txt", "hello")
+   |                                      ^^^^^^^
+  hint: the bytes of a text: `"hello".asBytes()`

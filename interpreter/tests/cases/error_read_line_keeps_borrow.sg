@@ -1,0 +1,9 @@
+// `readLine` changes the text, so a part of the last line cannot be kept past it.
+Result<void, IoError> main() {
+    string line = ""
+    _ = try Stdin.readLine(ref line)
+    var first = line.trim()
+    _ = try Stdin.readLine(ref line)
+    print(first)
+    return Ok()
+}

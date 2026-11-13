@@ -1,0 +1,20 @@
+// The words after the program's name on the command line (`ok_main_args.args`), without the
+// name itself. The list is the program's own: it can change it.
+
+struct Options {
+    string name
+    int times
+}
+
+Result<void, NumberError> main(List<string> args) {
+    print(args)
+    print(args.length())
+    var options = Options { name = args[0].clone(), times = try int.parse(read args[1]) }
+    args[0].write("!")
+    args.add("added")
+    print(args)
+    for _ in 0..options.times {
+        print($"hello {options.name}")
+    }
+    return Ok()
+}

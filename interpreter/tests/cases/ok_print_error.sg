@@ -1,0 +1,15 @@
+// `printError` writes as `print` does, to the standard error. Whatever was printed before
+// goes out first, so on a terminal the two come in the order they were written.
+
+struct Point : Formattable {
+    int x
+    int y
+}
+
+void main() {
+    print("to the output")
+    printError("to the standard error")
+    printError(Point { x = 1, y = 2 })
+    printError($"{40 + 2} and {true}")
+    print("output again")
+}

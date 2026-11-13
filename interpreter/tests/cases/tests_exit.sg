@@ -1,0 +1,22 @@
+// `exit` in a test fails that test: a test cannot end the run of the others, and the code it
+// asked for would say nothing about the test.
+
+int positive(int value) {
+    if value < 0 {
+        printError("negative")
+        exit(2)
+    }
+    return value
+}
+
+test "a value that passes" {
+    assert(positive(3) == 3)
+}
+
+test "a value that exits" {
+    assert(positive(-1) == -1)
+}
+
+test "the run goes on" {
+    assert(positive(0) == 0)
+}

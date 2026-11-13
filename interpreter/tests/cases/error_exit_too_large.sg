@@ -1,0 +1,4 @@
+// An exit code is a `byte`: the system keeps only eight bits, so 256 would end with 0.
+void main() {
+    exit(256)
+}

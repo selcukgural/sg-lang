@@ -11,7 +11,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::rc::Rc;
 
 use crate::ast::*;
@@ -334,6 +334,58 @@ fn map_add(entries: &mut Entries, key: Value, value: Value, shown: String, span:
     Ok(())
 }
 
+fn ok(value: Value) -> Value {
+    Value::Enum("Result".into(), 0, Rc::new(vec![cell(value)]))
+}
+
+fn failed(cause: Value) -> Value {
+    Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
+}
+
+/// The `IoError` for what the system said. The codes are the same on Linux and macOS, except
+/// for a full quota.
+fn io_cause(error: Option<&std::io::Error>, code: Option<i32>) -> Value {
+    const QUOTA: i32 = if cfg!(target_os = "linux") { 122 } else { 69 };
+    let variant = |at: usize, fields: Vec<Value>| Value::Enum("IoError".into(), at, Rc::new(fields.into_iter().map(cell).collect()));
+    match code {
+        // ENOENT, ENOTDIR
+        Some(2 | 20) => variant(0, Vec::new()),
+        // EPERM, EACCES, EROFS
+        Some(1 | 13 | 30) => variant(1, Vec::new()),
+        // EISDIR
+        Some(21) => variant(2, Vec::new()),
+        // ENOSPC, EDQUOT
+        Some(28) => variant(3, Vec::new()),
+        Some(code) if code == QUOTA => variant(3, Vec::new()),
+        Some(code) => variant(5, vec![Value::Int(IntTy::Int, code as i128)]),
+        // An error that did not come from the system: EIO.
+        None if error.is_some() => variant(5, vec![Value::Int(IntTy::Int, 5)]),
+        None => Value::Void,
+    }
+}
+
+trait InvalidText {
+    fn invalid_text(self, at: u64) -> Value;
+}
+
+impl InvalidText for Value {
+    /// `IoError.InvalidText(at)`
+    fn invalid_text(self, at: u64) -> Value {
+        Value::Enum("IoError".into(), 4, Rc::new(vec![cell(Value::Int(IntTy::Long, at as i128))]))
+    }
+}
+
+/// Writes the bytes into the file, which is made if it is not there; `append` keeps what
+/// it holds and puts them after it.
+fn write_file(path: &str, bytes: &[u8], append: bool) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    match append {
+        true => options.append(true).create(true),
+        false => options.write(true).create(true).truncate(true),
+    };
+    options.open(path)?.write_all(bytes)
+}
+
 fn cell(value: Value) -> Cell {
     Rc::new(RefCell::new(value))
 }
@@ -454,6 +506,20 @@ pub enum Stop {
     Failed(String),
     /// The test command ran and at least one test failed; the report is already written.
     TestsFailed,
+    /// `exit(code)`: the program ends with this code.
+    Exit(u8),
+}
+
+/// What a program sees around it besides its output: the words of its command line, its
+/// input and the standard error.
+pub struct World<'w> {
+    /// The words after the program's name, as the system gave them: they are checked to be
+    /// UTF-8 when `main` takes them.
+    pub args: Vec<Vec<u8>>,
+    pub input: &'w mut (dyn BufRead + Send + 'static),
+    /// The input is a terminal: what was printed goes out before the program waits for a line.
+    pub input_is_terminal: bool,
+    pub err: &'w mut (dyn Write + Send + 'static),
 }
 
 impl From<Diag> for Stop {
@@ -534,7 +600,7 @@ impl Frame {
     }
 }
 
-pub fn run_program(prog: &Program, src: &str, out: &mut dyn Write) -> Result<(), Stop> {
+pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, world: World<'a>) -> Result<(), Stop> {
     let funcs = prog.funcs.iter().map(|func| (func.name.as_str(), func)).collect();
     let mut methods: HashMap<&str, HashMap<&str, &Func>> = HashMap::new();
     for decl in &prog.structs {
@@ -542,9 +608,21 @@ pub fn run_program(prog: &Program, src: &str, out: &mut dyn Write) -> Result<(),
     }
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
-    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0 };
+    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, input_at: 0, in_test: false, test_err: String::new() };
     let main = interp.funcs["main"];
-    let result = match interp.call(main, None, Vec::new(), main.name_span) {
+    // `main(List<string> args)`: the words of the command line, each checked to be text.
+    let mut args = Vec::new();
+    if !main.params.is_empty() {
+        let mut words = Vec::new();
+        for (number, word) in std::mem::take(&mut interp.world.args).into_iter().enumerate() {
+            match String::from_utf8(word) {
+                Ok(word) => words.push(cell(Value::Str(Rc::new(word)))),
+                Err(_) => return Err(Stop::Failed(format!("args[{number}] is not valid UTF-8"))),
+            }
+        }
+        args.push(Value::List(Rc::new(RefCell::new(words))));
+    }
+    let result = match interp.call(main, None, args, main.name_span) {
         // `Result<void, E> main()` ended with `Error(cause)`: the cause is written out.
         Ok(Value::Enum(_, 1, fields)) => {
             let cause = fields[0].borrow().clone();
@@ -561,7 +639,7 @@ pub fn run_program(prog: &Program, src: &str, out: &mut dyn Write) -> Result<(),
 
 /// Runs every `test` block and writes one line for each: `ok` or `FAIL` with the reason.
 /// Gives how many passed and how many failed. A test that fails does not stop the others.
-pub fn run_tests(prog: &Program, sources: &crate::source::Sources, out: &mut dyn Write) -> Result<(usize, usize), Stop> {
+pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out: &'a mut dyn Write, world: World<'a>) -> Result<(usize, usize), Stop> {
     let src = sources.text.as_str();
     let funcs = prog.funcs.iter().map(|func| (func.name.as_str(), func)).collect();
     let mut methods: HashMap<&str, HashMap<&str, &Func>> = HashMap::new();
@@ -570,11 +648,12 @@ pub fn run_tests(prog: &Program, sources: &crate::source::Sources, out: &mut dyn
     }
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
-    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0 };
+    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, input_at: 0, in_test: true, test_err: String::new() };
     let (mut passed, mut failed) = (0, 0);
     for test in &prog.tests {
         // Nothing is shared between tests: each starts with variables of its own.
         interp.depth = 0;
+        interp.test_err.clear();
         let mut frame = Frame { scopes: vec![HashMap::new()] };
         let ended = match interp.block(&test.body, &mut frame) {
             Ok(Flow::Return(value)) | Err(Unwind::Return(value)) => Ok(value),
@@ -596,6 +675,7 @@ pub fn run_tests(prog: &Program, sources: &crate::source::Sources, out: &mut dyn
             Err(Unwind::Stop(stop)) => return Err(stop),
             Err(_) => unreachable!("`break` and `continue` end at their loop"),
         };
+        let reason = reason.map(|reason| format!("{}{reason}", interp.test_err));
         // A test of a module is written with its module in front: `stock: nothing ships ...`.
         let name = match sources.file_at(test.name_span.start).module.as_str() {
             "" => test.name.clone(),
@@ -637,6 +717,14 @@ struct Interp<'a> {
     src: &'a str,
     out: &'a mut dyn Write,
     depth: usize,
+    world: World<'a>,
+    /// How many bytes of the input were read: where an `InvalidText` lies.
+    input_at: u64,
+    /// Running the test command: `exit` fails the test instead of ending the program.
+    in_test: bool,
+    /// What the running test wrote with `printError`: it is shown under the test's `FAIL`
+    /// line, and dropped when the test passes, as compiled tests do.
+    test_err: String,
 }
 
 impl<'a> Interp<'a> {
@@ -1267,6 +1355,7 @@ impl<'a> Interp<'a> {
                         }
                     })
                 }
+                Callee::Io(call) => self.io(*call, args, frame),
                 Callee::Take => {
                     let slot = behind_borrows(self.place(recv, frame)?);
                     let old = slot.replace(Value::Null);
@@ -1359,9 +1448,30 @@ impl<'a> Interp<'a> {
                 self.write_line(&text)?;
                 Ok(Value::Void)
             }
+            "printError" => {
+                let value = self.expr(&args[0], frame)?;
+                let text = self.show(&value, false, args[0].span)?;
+                // What was printed before comes first, as it does on a terminal. Nothing can
+                // be told when the standard error cannot be written, so that is not an error.
+                if self.in_test {
+                    self.test_err.push_str(&text);
+                    self.test_err.push('\n');
+                    return Ok(Value::Void);
+                }
+                self.flush_out()?;
+                let _ = writeln!(self.world.err, "{text}");
+                Ok(Value::Void)
+            }
             "panic" => {
                 let text = strip(self.expr(&args[0], frame)?).format();
                 Err(Diag::panic(expr.span, text).into())
+            }
+            "exit" => {
+                let code = self.int(&args[0], frame)? as u8;
+                if self.in_test {
+                    return Err(Diag::panic(expr.span, format!("`exit({code})` in a test: a test cannot end the program")).into());
+                }
+                Err(Unwind::Stop(Stop::Exit(code)))
             }
             "assert" => self.assert(expr, &args[0], frame),
             _ => {
@@ -1625,6 +1735,128 @@ impl<'a> Interp<'a> {
             }
             _ => Ok(collection_method(recv, name, args)),
         }
+    }
+
+    fn flush_out(&mut self) -> Res<()> {
+        self.out.flush().map_err(|error| match error.kind() {
+            std::io::ErrorKind::BrokenPipe => Unwind::Stop(Stop::OutputClosed),
+            _ => Unwind::Stop(Stop::OutputFailed(error.to_string())),
+        })
+    }
+
+    /// `File.readText(path)` and the others: each gives `Ok` with what it read, or `Error`
+    /// with an `IoError`.
+    fn io(&mut self, call: IoCall, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
+        // `Stdin.readLine(ref line)` keeps its borrow; the others are looked at as values.
+        let lent = match call {
+            IoCall::ReadLine => Some(self.expr(&args[0], frame)?),
+            _ => None,
+        };
+        let mut values = match call {
+            IoCall::ReadLine => Vec::new(),
+            _ => self.values(args, frame)?,
+        }
+        .into_iter()
+        .map(strip);
+        let path = match call {
+            IoCall::ReadLine | IoCall::ReadInput => String::new(),
+            _ => match values.next() {
+                Some(Value::Str(path)) => path.to_string(),
+                _ => unreachable!("the checker makes a path text"),
+            },
+        };
+        // No file has a name with a zero byte in it; the system would see the name end there.
+        if path.contains('\0') {
+            return Ok(failed(io_cause(None, Some(2))));
+        }
+        let done = |result: std::io::Result<Value>| match result {
+            Ok(value) => ok(value),
+            Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+        };
+        let text = |bytes: Vec<u8>, at: u64| match String::from_utf8(bytes) {
+            Ok(text) => ok(Value::Str(Rc::new(text))),
+            Err(error) => failed(io_cause(None, None).invalid_text(at + error.utf8_error().valid_up_to() as u64)),
+        };
+        Ok(match call {
+            IoCall::ReadText => match std::fs::read(&path) {
+                Ok(bytes) => text(bytes, 0),
+                Err(error) => done(Err(error)),
+            },
+            IoCall::ReadBytes => done(std::fs::read(&path).map(|bytes| {
+                Value::List(Rc::new(RefCell::new(bytes.into_iter().map(|byte| cell(Value::Int(IntTy::Byte, byte as i128))).collect())))
+            })),
+            IoCall::WriteText | IoCall::AppendText => {
+                let Some(Value::Str(text)) = values.next() else { unreachable!("the checker makes the second argument text") };
+                done(write_file(&path, text.as_bytes(), call == IoCall::AppendText).map(|()| Value::Void))
+            }
+            IoCall::WriteBytes => {
+                let bytes: Vec<u8> = cells_of(&values.next().expect("bytes")).iter().map(|item| match &*item.borrow() {
+                    Value::Int(_, byte) => *byte as u8,
+                    _ => unreachable!("the checker makes the items bytes"),
+                }).collect();
+                done(write_file(&path, &bytes, false).map(|()| Value::Void))
+            }
+            IoCall::ReadLine => {
+                let Some(Value::Borrow(slot)) = lent else { unreachable!("the checker makes the line a `ref string`") };
+                let slot = behind_borrows(slot);
+                if self.world.input_is_terminal {
+                    self.flush_out()?;
+                }
+                let mut bytes = Vec::new();
+                let read = self.world.input.read_until(b'\n', &mut bytes);
+                let start = self.input_at;
+                self.input_at += bytes.len() as u64;
+                // The line goes into the text that is there, which keeps its room.
+                let put = |line: &str| {
+                    let mut current = slot.borrow_mut();
+                    let Value::Str(text) = &mut *current else { unreachable!("the checker makes the line text") };
+                    let text = Rc::make_mut(text);
+                    text.clear();
+                    text.push_str(line);
+                };
+                match read {
+                    Err(error) => {
+                        put("");
+                        failed(io_cause(Some(&error), error.raw_os_error()))
+                    }
+                    Ok(0) => {
+                        put("");
+                        ok(Value::Bool(false))
+                    }
+                    Ok(_) => {
+                        if bytes.last() == Some(&b'\n') {
+                            bytes.pop();
+                            if bytes.last() == Some(&b'\r') {
+                                bytes.pop();
+                            }
+                        }
+                        match std::str::from_utf8(&bytes) {
+                            Ok(line) => {
+                                put(line);
+                                ok(Value::Bool(true))
+                            }
+                            Err(error) => {
+                                put("");
+                                failed(io_cause(None, None).invalid_text(start + error.valid_up_to() as u64))
+                            }
+                        }
+                    }
+                }
+            }
+            IoCall::ReadInput => {
+                if self.world.input_is_terminal {
+                    self.flush_out()?;
+                }
+                let mut bytes = Vec::new();
+                let read = self.world.input.read_to_end(&mut bytes);
+                let start = self.input_at;
+                self.input_at += bytes.len() as u64;
+                match read {
+                    Ok(_) => text(bytes, start),
+                    Err(error) => done(Err(error)),
+                }
+            }
+        })
     }
 
     fn write_line(&mut self, text: &str) -> Res<()> {

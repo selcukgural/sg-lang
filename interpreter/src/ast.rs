@@ -131,6 +131,8 @@ pub enum Callee {
     WithCapacity,
     /// `int.parse(text)`, `double.parse(text)`: the type is the one in the `Result` it gives.
     Parse,
+    /// `File.readText(path)`, `Stdin.readLine(ref line)` and the others of `File` and `Stdin`.
+    Io(IoCall),
     /// A call through a function value kept in a variable: `test(order)`.
     Value,
     /// A call through a function value kept in a field: `this.test(order)`; the field's position.
@@ -139,6 +141,40 @@ pub enum Callee {
     Take,
     /// `slot.replace(value)`: gives the old value and leaves the new one.
     Replace,
+}
+
+/// The functions that read and write files and the input of the program. Each gives a
+/// `Result` whose error is `IoError`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum IoCall {
+    /// `File.readText(path)`: the whole file as text, checked to be UTF-8.
+    ReadText,
+    /// `File.readBytes(path)`: the whole file as a `List<byte>`.
+    ReadBytes,
+    /// `File.writeText(path, text)`: the file is made, or emptied, and gets the text.
+    WriteText,
+    /// `File.writeBytes(path, bytes)`
+    WriteBytes,
+    /// `File.appendText(path, text)`: the text goes after what the file holds; a missing file is made.
+    AppendText,
+    /// `Stdin.readLine(ref line)`: the next line of the input into `line`, `false` at its end.
+    ReadLine,
+    /// `Stdin.readText()`: what is left of the input, as text.
+    ReadInput,
+}
+
+impl IoCall {
+    /// The name as it is written after the dot.
+    pub fn name(self) -> &'static str {
+        match self {
+            IoCall::ReadText | IoCall::ReadInput => "readText",
+            IoCall::ReadBytes => "readBytes",
+            IoCall::WriteText => "writeText",
+            IoCall::WriteBytes => "writeBytes",
+            IoCall::AppendText => "appendText",
+            IoCall::ReadLine => "readLine",
+        }
+    }
 }
 
 /// A type as written: `read Node*?`

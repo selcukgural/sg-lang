@@ -1,0 +1,6 @@
+error: expected `byte`, found `int`
+  an exit code is a `byte`: the system keeps eight bits, so 256 would end as 0
+  --> error_exit_int_code.sg:4:10
+ 4 |     exit(code)
+   |          ^^^^
+  hint: convert with `(byte)`; it panics if the value does not fit

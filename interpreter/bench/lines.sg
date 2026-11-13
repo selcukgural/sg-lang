@@ -1,0 +1,25 @@
+// The input read line by line: two million lines of a log like `ERROR 350 could not reach
+// the database` (some with a `café`, some ended by `\r\n`), 125 MB, read with
+// `Stdin.readLine` into one text that is used again for every line. Each line is checked
+// to be UTF-8 as it is read. The lines, their bytes, the longest one and the lines that start
+// with `ERROR` are counted. `run.sh` gives the input (`lines.in`).
+Result<void, IoError> main() {
+    string line = ""
+    long lines = 0
+    long bytes = 0
+    long longest = 0
+    long errors = 0
+    while try Stdin.readLine(ref line) {
+        lines += 1
+        long length = line.length()
+        bytes += length
+        if length > longest {
+            longest = length
+        }
+        if line.startsWith("ERROR") {
+            errors += 1
+        }
+    }
+    print($"{lines} lines, {bytes} bytes, longest {longest}, {errors} errors")
+    return Ok()
+}

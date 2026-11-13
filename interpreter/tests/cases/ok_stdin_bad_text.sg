@@ -1,0 +1,16 @@
+// A line that is not UTF-8 is an error that says where, counted from the start of the input;
+// the line is used up, and reading goes on with the next one. The input is the `.in` file.
+
+void main() {
+    string line = ""
+    for _ in 0..4 {
+        match Stdin.readLine(ref line) {
+            Ok(more) => print($"{more} [{line}]")
+            Error(cause) => print($"error: {cause} [{line}]")
+        }
+    }
+    match Stdin.readText() {
+        Ok(text) => print(text)
+        Error(cause) => print($"error: {cause}")
+    }
+}

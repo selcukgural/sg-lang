@@ -1,0 +1,5 @@
+error: 256 does not fit in byte
+  an exit code is a `byte`: the system keeps eight bits, so 256 would end as 0
+  --> error_exit_too_large.sg:3:10
+ 3 |     exit(256)
+   |          ^^^

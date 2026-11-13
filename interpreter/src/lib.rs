@@ -15,7 +15,7 @@ pub mod types;
 use std::io::Write;
 
 pub use diag::Diag;
-pub use interp::Stop;
+pub use interp::{Stop, World};
 pub use source::{load, Sources};
 
 /// The tree is walked recursively, so deep calls need stack. `interp::MAX_DEPTH` sets the limit;
@@ -67,11 +67,19 @@ pub fn run(src: &str, out: &mut (dyn Write + Send)) -> Result<(), Stop> {
     run_sources(&Sources::single(src, ""), out)
 }
 
-/// Parses, checks and runs the program.
+/// Parses, checks and runs the program, with no words on its command line, an empty input,
+/// and the standard error of this process.
 pub fn run_sources(sources: &Sources, out: &mut (dyn Write + Send)) -> Result<(), Stop> {
+    let (mut input, mut err) = (std::io::empty(), std::io::stderr());
+    run_sources_in(sources, out, World { args: Vec::new(), input: &mut input, input_is_terminal: false, err: &mut err })
+}
+
+/// Parses, checks and runs the program in the world it is given: its command line, its input
+/// and its standard error.
+pub fn run_sources_in(sources: &Sources, out: &mut (dyn Write + Send), world: World) -> Result<(), Stop> {
     on_large_stack(|| {
         let prog = check_all(sources, false)?;
-        interp::run_program(&prog, &sources.text, out)
+        interp::run_program(&prog, &sources.text, out, world)
     })
 }
 
@@ -85,7 +93,9 @@ pub fn run_tests(src: &str, path: &str, out: &mut (dyn Write + Send)) -> Result<
 pub fn test_sources(sources: &Sources, out: &mut (dyn Write + Send)) -> Result<bool, Stop> {
     on_large_stack(|| {
         let prog = check_all(sources, true)?;
-        let (_, failed) = interp::run_tests(&prog, sources, out)?;
+        let (mut input, mut err) = (std::io::empty(), std::io::stderr());
+        let world = World { args: Vec::new(), input: &mut input, input_is_terminal: false, err: &mut err };
+        let (_, failed) = interp::run_tests(&prog, sources, out, world)?;
         Ok(failed == 0)
     })
 }

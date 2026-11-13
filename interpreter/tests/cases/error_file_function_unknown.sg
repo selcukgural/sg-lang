@@ -1,0 +1,6 @@
+// A misspelled function of `File` names the one that is meant.
+Result<void, IoError> main() {
+    var text = try File.readAll("notes.txt")
+    print(text)
+    return Ok()
+}

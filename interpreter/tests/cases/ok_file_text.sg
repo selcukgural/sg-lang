@@ -1,0 +1,78 @@
+// Files read and written whole: text, bytes, and the errors a program tells apart.
+// The folder to write into is the first word of the command line (see `ok_file_text.args`).
+
+void show(Result<string, IoError> result) {
+    match result {
+        Ok(text) => print($"text: [{text}]")
+        Error(cause) => print($"error: {cause}")
+    }
+}
+
+Result<void, IoError> main(List<string> args) {
+    var dir = args[0]
+    var path = $"{dir}/notes.txt".toString()
+
+    // Made, then emptied and written again.
+    try File.writeText(read path, "old text that goes away")
+    try File.writeText(read path, "first\nsecond\r\n")
+    try File.appendText(read path, "third")
+    var text = try File.readText(read path)
+    for line in text.lines() {
+        print($"line: {line}")
+    }
+
+    // `appendText` makes a file that is not there.
+    var log = $"{dir}/log.txt".toString()
+    try File.appendText(read log, "one ")
+    try File.appendText(read log, "two")
+    show(File.readText(read log))
+
+    // An empty file is an empty text.
+    var empty = $"{dir}/empty.txt".toString()
+    try File.writeText(read empty, "")
+    show(File.readText(read empty))
+
+    // Bytes go in and come out as they are; text that is not UTF-8 is an error that says where.
+    var rawFile = $"{dir}/raw.bin".toString()
+    var bytes = List<byte> { 104, 105, 0, 255, 10 }
+    try File.writeBytes(read rawFile, read bytes)
+    var back = try File.readBytes(read rawFile)
+    print(back)
+    print(back == bytes)
+    show(File.readText(read rawFile))
+    var none = try File.readBytes(read empty)
+    print(none.length())
+
+    // UTF-8 that is cut off at the end of the file.
+    var cut = $"{dir}/cut.txt".toString()
+    try File.writeBytes(read cut, read List<byte> { 97, 226, 130 })
+    show(File.readText(read cut))
+    var euro = $"{dir}/euro.txt".toString()
+    try File.writeText(read euro, "5 €")
+    show(File.readText(read euro))
+
+    // What the system says.
+    show(File.readText(read $"{dir}/missing.txt".toString()))
+    show(File.readText(read dir))
+    show(File.readText(read $"{dir}/notes.txt/inside".toString()))
+    show(File.readText("a\0b"))
+    match File.writeText(read $"{dir}/no/such/folder.txt".toString(), "x") {
+        Ok => print("written")
+        Error(cause) => print($"write: {cause}")
+    }
+
+    // `IoError` is `Equatable`, and a `match` reads what it carries.
+    var missing = File.readBytes(read $"{dir}/missing.txt".toString())
+    if missing is Error(cause) {
+        print(cause == IoError.NotFound)
+        print(cause == IoError.IsDirectory)
+    }
+    var notText = File.readText(read rawFile)
+    if notText is Error(cause) {
+        match cause {
+            InvalidText(at) => print($"not text from byte {at}")
+            _ => print(cause)
+        }
+    }
+    return Ok()
+}

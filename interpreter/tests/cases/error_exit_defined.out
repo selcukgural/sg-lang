@@ -1,0 +1,4 @@
+error: `exit` is a built-in function and cannot be redefined
+  --> error_exit_defined.sg:2:6
+ 2 | void exit(int code) {
+   |      ^^^^

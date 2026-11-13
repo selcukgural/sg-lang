@@ -4,23 +4,65 @@
 
 use std::path::{Path, PathBuf};
 
+/// What a program is given besides its source: the words of its command line, one on each
+/// line of the `.args` file next to it, and its input, the `.in` file. `{dir}` in a word is a
+/// folder of its own that the program can write into; the folder is written back as `{dir}`
+/// in what the program prints.
+struct Given {
+    args: Vec<String>,
+    input: Vec<u8>,
+    dir: PathBuf,
+}
+
+fn given(path: &Path, work: &Path) -> Given {
+    let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+    let dir = work.join(&stem);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let args = match std::fs::read_to_string(path.with_extension("args")) {
+        Ok(text) => text.lines().map(|line| line.replace("{dir}", &dir.display().to_string())).collect(),
+        Err(_) => Vec::new(),
+    };
+    let input = std::fs::read(path.with_extension("in")).unwrap_or_default();
+    Given { args, input, dir }
+}
+
+/// The exit code is part of what a program did when it is neither 0 nor 1 (1 is also what a
+/// panic and an error of `main` end with).
+fn exit_line(code: Option<i32>) -> String {
+    match code {
+        Some(0 | 1) => String::new(),
+        Some(code) => format!("exit code {code}\n"),
+        None => "ended by a signal\n".to_string(),
+    }
+}
+
 fn run_file(path: &Path) -> String {
     let src = std::fs::read_to_string(path).unwrap();
     let name = path.file_name().unwrap().to_string_lossy();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let given = given(path, &root.join("target").join("io").join("interpreted"));
     let mut out = Vec::new();
+    let (mut input, mut err) = (std::io::Cursor::new(given.input), Vec::new());
     // A file named `tests_...` is run by the test command.
     let result = match name.starts_with("tests_") {
         true => sg::run_tests(&src, &name, &mut out).map(|_| ()),
-        false => sg::run(&src, &mut out),
+        false => {
+            let args = given.args.iter().map(|arg| arg.clone().into_bytes()).collect();
+            let world = sg::World { args, input: &mut input, input_is_terminal: false, err: &mut err };
+            sg::run_sources_in(&sg::Sources::single(&src, ""), &mut out, world)
+        }
     };
     let mut text = String::from_utf8(out).unwrap();
+    text.push_str(&String::from_utf8(err).unwrap());
     match result {
         Ok(()) => {}
         Err(sg::Stop::Diag(diag)) => text.push_str(&diag.render(&src, &name)),
         Err(sg::Stop::Failed(error)) => text.push_str(&format!("error: {error}\n")),
+        Err(sg::Stop::Exit(code)) => text.push_str(&exit_line(Some(code as i32))),
         Err(other) => text.push_str(&format!("{other:?}\n")),
     }
-    text
+    text.replace(&given.dir.display().to_string(), "{dir}")
 }
 
 /// A program of several files: `path` is its main file, or its folder. With `tests` the test
@@ -49,10 +91,11 @@ fn run_program(path: &Path, tests: bool, within: &Path) -> String {
 /// On macOS the sanitizer does not look for leaks, so the system's `leaks` tool runs the plain
 /// program. Elsewhere the sanitizer does, when the program ends. A tool that cannot be run is
 /// an error, not a pass.
-fn left_behind(plain: &Path, sanitized: &Path, args: &[&str]) -> Option<String> {
+fn left_behind(plain: &Path, sanitized: &Path, args: &[&str], input: &Path) -> Option<String> {
+    let stdin = || std::fs::File::open(input).map_or_else(|_| std::process::Stdio::null(), std::process::Stdio::from);
     if cfg!(target_os = "macos") {
         let _ = sanitized;
-        let run = match std::process::Command::new("leaks").arg("--atExit").arg("--").arg(plain).args(args).output() {
+        let run = match std::process::Command::new("leaks").arg("--atExit").arg("--").arg(plain).args(args).stdin(stdin()).output() {
             Ok(run) => run,
             Err(error) => return Some(format!("the `leaks` tool could not be run: {error}")),
         };
@@ -64,7 +107,7 @@ fn left_behind(plain: &Path, sanitized: &Path, args: &[&str]) -> Option<String> 
             None => Some(format!("`leaks` gave no count:\n{report}{}", String::from_utf8_lossy(&run.stderr))),
         }
     } else {
-        let run = match std::process::Command::new(sanitized).args(args).env("ASAN_OPTIONS", "detect_leaks=1").output() {
+        let run = match std::process::Command::new(sanitized).args(args).stdin(stdin()).env("ASAN_OPTIONS", "detect_leaks=1").output() {
             Ok(run) => run,
             Err(error) => return Some(format!("the sanitized program could not be run: {error}")),
         };
@@ -84,7 +127,7 @@ fn leak_check_sees_a_leak(work: &Path) {
         let cc = std::process::Command::new("cc").arg("-std=c11").args(flags).arg("-o").arg(out).arg(&leaky_c).output().unwrap();
         assert!(cc.status.success(), "the C compiler rejected the program that leaks on purpose:\n{}", String::from_utf8_lossy(&cc.stderr));
     }
-    let seen = left_behind(&leaky, &leaky_san, &[]);
+    let seen = left_behind(&leaky, &leaky_san, &[], Path::new(""));
     assert!(
         seen.as_deref().is_some_and(|report| (report.contains("leak") || report.contains("Leak")) && !report.contains("could not be run")),
         "the leak check does not see a leak that is there, so it cannot be trusted: {seen:?}"
@@ -211,7 +254,9 @@ fn compiled() {
     let mut compiled = 0;
     let mut failures = Vec::new();
     // The programs to look at for leaks: the name, the program, the program under the sanitizers.
-    let mut built: Vec<(String, PathBuf, PathBuf)> = Vec::new();
+    // The programs to look at for leaks: the name, the program, the program under the
+    // sanitizers, its command line and the file of its input.
+    let mut built: Vec<(String, PathBuf, PathBuf, Vec<String>, PathBuf)> = Vec::new();
     for path in &files {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         // Deep recursion is caught by the interpreter's own count of calls; compiled code has
@@ -243,9 +288,32 @@ fn compiled() {
             failures.push(format!("--- {name}: the C compiler rejected it\n{}", String::from_utf8_lossy(&cc.stderr)));
             continue;
         }
-        let run = std::process::Command::new(&binary).output().unwrap();
+        let given = given(path, &work.join("io"));
+        // Each run starts with an empty folder, so a file one run made is not there for the next.
+        let run_given = |binary: &Path| {
+            let _ = std::fs::remove_dir_all(&given.dir);
+            std::fs::create_dir_all(&given.dir).unwrap();
+            let mut child = std::process::Command::new(binary)
+                .args(&given.args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut stdin = child.stdin.take().unwrap();
+            let input = given.input.clone();
+            let feeding = std::thread::spawn(move || {
+                use std::io::Write;
+                let _ = stdin.write_all(&input);
+            });
+            let run = child.wait_with_output().unwrap();
+            feeding.join().unwrap();
+            run
+        };
+        let run = run_given(&binary);
         let shown = |run: &std::process::Output| {
-            let text = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+            let text = format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
+            let text = text.replace(&given.dir.display().to_string(), "{dir}");
             if within.is_empty() { text } else { text.replace(&within, "") }
         };
         let actual = shown(&run);
@@ -270,13 +338,13 @@ fn compiled() {
                 .output()
                 .unwrap();
             if cc.status.success() {
-                let run = std::process::Command::new(&checked_binary).output().unwrap();
+                let run = run_given(&checked_binary);
                 let actual = shown(&run);
                 if actual != expected {
                     failures.push(format!("--- {name}, under the sanitizers\nexpected:\n{expected}\nactual:\n{actual}"));
                 }
                 sanitized += 1;
-                built.push((name.clone(), binary.clone(), checked_binary));
+                built.push((name.clone(), binary.clone(), checked_binary, given.args.clone(), path.with_extension("in")));
             } else {
                 failures.push(format!("--- {name}: the C compiler rejected it under the sanitizers\n{}", String::from_utf8_lossy(&cc.stderr)));
             }
@@ -296,8 +364,9 @@ fn compiled() {
             for _ in 0..workers {
                 scope.spawn(|| loop {
                     let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some((name, plain, checked)) = built.get(index) else { break };
-                    if let Some(report) = left_behind(plain, checked, &[]) {
+                    let Some((name, plain, checked, args, input)) = built.get(index) else { break };
+                    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                    if let Some(report) = left_behind(plain, checked, &args, input) {
                         found.lock().unwrap().push(format!("--- {name}: memory was left behind\n{report}"));
                     }
                 });
@@ -412,7 +481,7 @@ fn compiled_tests() {
                     // There is no test of this number: all of them were looked at.
                     Some(3) => break,
                     Some(0) => {
-                        if let Some(report) = left_behind(&plain, &checked, &["--only", &only]) {
+                        if let Some(report) = left_behind(&plain, &checked, &["--only", &only], Path::new("")) {
                             failures.push(format!("--- {name}, test {number}: memory was left behind\n{report}"));
                         }
                         alone += 1;

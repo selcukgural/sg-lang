@@ -1,0 +1,5 @@
+error: expected `read string`, found `string`
+  --> error_read_text_owned_path.sg:4:34
+ 4 |     var text = try File.readText(path)
+   |                                  ^^^^
+  hint: lend it with `read`: `read path`

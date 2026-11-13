@@ -1,0 +1,5 @@
+true [good]
+error: InvalidText(7) []
+true [fine]
+error: InvalidText(20) []
+

@@ -1,0 +1,19 @@
+line: first
+line: second
+line: third
+text: [one two]
+text: []
+[104, 105, 0, 255, 10]
+true
+error: InvalidText(3)
+0
+error: InvalidText(1)
+text: [5 €]
+error: NotFound
+error: IsDirectory
+error: NotFound
+error: NotFound
+write: NotFound
+true
+false
+not text from byte 3

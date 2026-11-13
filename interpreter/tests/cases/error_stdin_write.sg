@@ -1,0 +1,4 @@
+// `Stdin` reads the input; writing is `print` and `printError` for now.
+void main() {
+    _ = Stdin.writeLine("hello")
+}

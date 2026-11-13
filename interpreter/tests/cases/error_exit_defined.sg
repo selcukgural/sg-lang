@@ -1,0 +1,6 @@
+// `exit` is built in.
+void exit(int code) {
+}
+
+void main() {
+}

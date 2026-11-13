@@ -1,0 +1,4 @@
+// `main` takes the words of the command line as texts, or nothing.
+void main(List<int> args) {
+    print(args)
+}

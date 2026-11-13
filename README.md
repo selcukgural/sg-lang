@@ -153,8 +153,10 @@ and `??`; `List`, `HashMap` and `HashSet`; fixed-size arrays (`int[8]`) and slic
 function values; ownership, moves and the borrow check; modules (`use`, `public`, `readonly`); `test`
 blocks.
 
-Designed but not built yet: threads and shared ownership. Generics of your own are put off. There is nothing for files or the network
-yet, no standard library, no package manager and no editor support.
+Programs read and write files whole, read their input line by line and see their command line; a file
+read piece by piece comes later. Designed but not built yet: threads and shared ownership. Generics of your
+own are put off. There is nothing for the network yet, no standard library, no package manager and no
+editor support.
 
 When the language is complete, the plan is to write a well-known, widely used program in it,
 one that has not been rewritten in Rust yet, and see how the claim holds on real software.

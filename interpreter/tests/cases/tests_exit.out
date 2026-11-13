@@ -1,0 +1,9 @@
+ok    a value that passes
+FAIL  a value that exits
+negative
+panic: `exit(2)` in a test: a test cannot end the program
+  --> tests_exit.sg:7:9
+ 7 |         exit(2)
+   |         ^^^^^^^
+ok    the run goes on
+1 of 3 test(s) failed

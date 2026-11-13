@@ -1,0 +1,4 @@
+error: `File` is a built-in type and cannot be redefined
+  --> error_file_defined.sg:2:8
+ 2 | struct File {
+   |        ^^^^

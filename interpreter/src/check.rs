@@ -24,10 +24,10 @@ const INTERFACES_NOT_YET: &[&str] = &["Clonable", "Disposable", "Closable", "Ite
 
 const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable", "Comparable"];
 
-const BUILTINS: &[&str] = &["print", "assert", "panic", "Ok", "Error"];
+const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "File", "Stdin", "Stdout", "Stderr"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -107,7 +107,7 @@ impl Names {
         if self.known(&own) {
             return Ok(Some(own));
         }
-        if written == TEXT_ERROR || written == NUMBER_ERROR {
+        if written == TEXT_ERROR || written == NUMBER_ERROR || written == IO_ERROR {
             return Ok(Some(written.to_string()));
         }
         let mut found: Vec<String> = Vec::new();
@@ -307,6 +307,33 @@ fn number_error() -> EnumDecl {
     EnumDecl { public: true, name: NUMBER_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants }
 }
 
+/// What reading or writing a file, or the input of the program, gives when it fails.
+const IO_ERROR: &str = "IoError";
+
+/// The built-in `enum IoError : Copyable, Formattable, Equatable { NotFound, PermissionDenied,
+/// IsDirectory, NoSpace, InvalidText(long position), Other(int code) }`. The first four are
+/// what a program most often tells apart; `InvalidText` is a byte that is not UTF-8 where text
+/// was read, counted from the start of the file or of the input; `Other` keeps the code the
+/// system gave.
+fn io_error() -> EnumDecl {
+    let nowhere = Span::new(0, 0);
+    let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
+    let field = |ty: &str, name: &str| {
+        let ty = TypeExpr { mode: None, name: ty.to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+        FieldDecl { public: true, readonly: true, ty, name: name.to_string(), span: nowhere }
+    };
+    let variant = |name: &str, fields: Vec<FieldDecl>| VariantDecl { name: name.to_string(), span: nowhere, fields };
+    let variants = vec![
+        variant("NotFound", Vec::new()),
+        variant("PermissionDenied", Vec::new()),
+        variant("IsDirectory", Vec::new()),
+        variant("NoSpace", Vec::new()),
+        variant("InvalidText", vec![field("long", "position")]),
+        variant("Other", vec![field("int", "code")]),
+    ];
+    EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants }
+}
+
 #[derive(Clone, PartialEq)]
 struct Source {
     /// The parameter, or `this`.
@@ -485,6 +512,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     names.kinds.insert(NUMBER_ERROR.to_string(), TypeKind::Enum);
     names.public.insert(NUMBER_ERROR.to_string());
     prog.enums.push(number_error());
+    names.kinds.insert(IO_ERROR.to_string(), TypeKind::Enum);
+    names.public.insert(IO_ERROR.to_string());
+    prog.enums.push(io_error());
 
     // The types that carry a borrow name where it comes from.
     let sourced = prog
@@ -792,8 +822,15 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 Ty::Result(ok, _) => **ok == Ty::Void,
                 _ => false,
             };
-            if !ret_ok || !main.params.is_empty() {
-                return Err(Diag::error(main.name_span, "`main` is written `void main()` or `Result<void, E> main()`"));
+            // The words after the program's name on the command line: `main(List<string> args)`.
+            let args_ok = match sigs["main"].params.as_slice() {
+                [] => true,
+                [Ty::List(item)] => **item == Ty::Str,
+                _ => false,
+            };
+            if !ret_ok || !args_ok {
+                return Err(Diag::error(main.name_span, "`main` is written `void main()` or `Result<void, E> main()`")
+                    .note("to see the command line: `void main(List<string> args)`"));
             }
             // The error `main` ends with is written out.
             if let Ty::Result(_, error) = &sigs["main"].ret {
@@ -4392,11 +4429,19 @@ impl<'a> Checker<'a> {
             return Ok(*ret);
         }
         match name {
-            "print" => {
+            // `printError(x)` writes like `print`, to the standard error.
+            "print" | "printError" => {
                 arity(1)?;
                 let ty = self.operand(&mut args[0], None)?;
                 self.printable(&ty, args[0].span)?;
                 Ok(Ty::Void)
+            }
+            // `exit(code)` ends the program at once with that code. A `byte`, so a code the
+            // system would cut to its last eight bits (`exit(256)` is 0) is a compile error.
+            "exit" => {
+                arity(1)?;
+                self.typed(&mut args[0], &Ty::Int(IntTy::Byte)).map_err(|diag| diag.note("an exit code is a `byte`: the system keeps eight bits, so 256 would end as 0"))?;
+                Ok(Ty::Never)
             }
             "assert" => {
                 arity(1)?;
@@ -4472,6 +4517,37 @@ impl<'a> Checker<'a> {
         Ok(sig.ret.clone())
     }
 
+    /// `File.readText(path)`, `Stdin.readLine(ref line)`: what reads and writes files and
+    /// the input. A path is a `read string`; each gives a `Result` with an `IoError`.
+    fn io_call(&mut self, owner: &str, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+        let text = || Ty::Read(Box::new(Ty::Str));
+        let bytes = Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+        let (call, params, ok) = match (owner, name) {
+            ("File", "readText") => (IoCall::ReadText, vec![text()], Ty::Str),
+            ("File", "readBytes") => (IoCall::ReadBytes, vec![text()], Ty::List(Box::new(Ty::Int(IntTy::Byte)))),
+            ("File", "writeText") => (IoCall::WriteText, vec![text(), text()], Ty::Void),
+            ("File", "writeBytes") => (IoCall::WriteBytes, vec![text(), bytes], Ty::Void),
+            ("File", "appendText") => (IoCall::AppendText, vec![text(), text()], Ty::Void),
+            ("Stdin", "readLine") => (IoCall::ReadLine, vec![Ty::Ref(Box::new(Ty::Str))], Ty::Bool),
+            ("Stdin", "readText") => (IoCall::ReadInput, Vec::new(), Ty::Str),
+            _ => {
+                let (known, later): (&[&str], &str) = match owner {
+                    "File" => (&["readText", "readBytes", "writeText", "writeBytes", "appendText"], "a file read or written piece by piece (`File.openText`, `File.createText`) comes later"),
+                    _ => (&["readLine", "readText"], "`print` and `printError` write; `Stdout` and `Stderr` come later"),
+                };
+                let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
+                let diag = match nearest(name, known.iter().copied()) {
+                    Some(close) => diag.hint(format!("`{close}`")),
+                    None => diag.note(format!("functions for now: {}", known.join(", "))),
+                };
+                return Err(diag.note(later));
+            }
+        };
+        self.args(name, args, &params, span)?;
+        *callee = Callee::Io(call);
+        Ok(Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string()))))
+    }
+
     fn method(
         &mut self,
         recv: &mut Expr,
@@ -4499,6 +4575,14 @@ impl<'a> Checker<'a> {
             if self.find(owner).is_none() && owner != "this" {
                 if self.structs.contains_key(owner.as_str()) {
                     return self.static_call(owner, name, name_span, args, callee, span);
+                }
+                if owner == "File" || owner == "Stdin" {
+                    return self.io_call(owner, name, name_span, args, callee, span);
+                }
+                // The writing side of `Stdin`, kept for the writers of a later slice.
+                if owner == "Stdout" || owner == "Stderr" {
+                    let instead = if owner == "Stdout" { "print(x)" } else { "printError(x)" };
+                    return Err(Diag::error(recv.span, format!("`{owner}` is not in the interpreter yet")).hint(format!("`{instead}` writes a line")));
                 }
                 // `string.join(", ", read names)`
                 // `string.fromUtf8(bytes)`: the bytes looked at as text, if they are text.
@@ -5391,7 +5475,7 @@ fn leaves(block: &Block, in_loop: bool) -> bool {
 /// all leave.
 fn never_returns(expr: &Expr, in_loop: bool) -> bool {
     match &expr.kind {
-        ExprKind::Call { name, .. } => name == "panic",
+        ExprKind::Call { name, callee: Callee::Plain, .. } => name == "panic" || name == "exit",
         ExprKind::Match { arms, .. } => arms.iter().all(|arm| arm_leaves(arm, in_loop)),
         _ => false,
     }

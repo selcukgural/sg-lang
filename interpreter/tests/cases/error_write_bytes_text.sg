@@ -1,0 +1,5 @@
+// `writeBytes` takes bytes; a text is written with `writeText`.
+Result<void, IoError> main() {
+    try File.writeBytes("notes.txt", "hello")
+    return Ok()
+}

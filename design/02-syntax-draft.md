@@ -659,11 +659,11 @@ match x { 0.5 => ... }                           // error: a fractional number c
 ```
 
 `print` does not return an error; if it cannot write, the program stops. Whoever wants to handle the error uses
-`Console.out`:
+`Stdout`:
 
 ```
 print("hello")                                   // stops if the output is closed, exit code 1
-try Console.out.writeLine("hello")               // Result<void, IoError>
+try Stdout.writeLine("hello")                    // Result<void, IoError>
 ```
 
 ### Numbers from text, constants and math
@@ -868,6 +868,52 @@ s.write($"{s.length()}")                         // fine: the number is computed
 var head = s[..3]
 s.write("x")                                     // error while head is used later
 s += "x"                                         // error, hint: s.write("x")
+```
+
+### Files, the input and the command line
+
+A file is read or written whole, and each call gives a `Result` whose error is the built-in `IoError`. The words
+of the command line come to `main`; the input is read line by line into one text:
+
+```
+public enum IoError : Copyable, Formattable, Equatable {   // built in
+    NotFound
+    PermissionDenied
+    IsDirectory
+    NoSpace
+    InvalidText(long position)                   // a byte that is not UTF-8, from the start of the file
+    Other(int code)                              // the code the system gave
+}
+
+Result<void, IoError> main(List<string> args) {  // the words after the program's name
+    var text = try File.readText(read args[0])   // checked to be UTF-8
+    var bytes = try File.readBytes("data.bin")   // List<byte>
+    try File.writeText("out.txt", read text)     // made, or emptied, and written
+    try File.appendText("log.txt", "done\n")      // added at the end, made if missing
+    try File.writeBytes("copy.bin", read bytes)
+
+    string line = ""                             // one text for every line
+    while try Stdin.readLine(ref line) {         // false at the end of the input
+        print(line)                              // without its \n or \r\n
+    }
+    var rest = try Stdin.readText()              // what is left of the input
+    return Ok()
+}
+```
+
+`printError` writes like `print`, to the standard error. `exit` ends the program with a code; it takes a `byte`, since
+the system keeps eight bits, and it gives no value, so it can stand where one is needed:
+
+```
+printError($"wc: {name}: {cause}")               // what print wrote before goes out first
+exit(256)                                        // error: 256 does not fit in byte
+int n = int.parse(text) ?? exit(2)
+var loaded = File.readText(path)
+if loaded is Error(cause) {
+    if cause == IoError.NotFound {               // IoError is Equatable
+        print("no such file")
+    }
+}
 ```
 
 ### Closing files
