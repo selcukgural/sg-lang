@@ -9,6 +9,33 @@ pub struct Program {
     pub enums: Vec<EnumDecl>,
     pub funcs: Vec<Func>,
     pub tests: Vec<TestDecl>,
+    /// The files the program was read from, in the order of their text.
+    pub files: Vec<FileScope>,
+}
+
+/// One file: where its text lies, the module it belongs to (empty for the root, otherwise the
+/// path of its folder: `shop.stock`) and the modules it names with `use`.
+///
+/// A type or a function of a module is kept under its full name (`stock.Product`); in the root
+/// the full name is the name alone. The checker turns every name written in the program into
+/// the full one.
+#[derive(Clone)]
+pub struct FileScope {
+    pub start: usize,
+    pub end: usize,
+    pub module: String,
+    pub uses: Vec<(String, Span)>,
+}
+
+/// The module in a full name: `shop.stock` in `shop.stock.Product`, nothing for a name of the
+/// root.
+pub fn module_of(full: &str) -> &str {
+    full.rsplit_once('.').map_or("", |(module, _)| module)
+}
+
+/// A full name as it is written out by `print`: without its module.
+pub fn short_name(full: &str) -> &str {
+    full.rsplit_once('.').map_or(full, |(_, name)| name)
 }
 
 /// `test "name" { ... }`: compiled and run only by the test command.
@@ -19,6 +46,8 @@ pub struct TestDecl {
 }
 
 pub struct StructDecl {
+    /// Written with `public`: other modules see it.
+    pub public: bool,
     pub name: String,
     pub name_span: Span,
     /// The names in `struct Token<from source>`: where the borrows it carries come from.
@@ -31,6 +60,7 @@ pub struct StructDecl {
 }
 
 pub struct EnumDecl {
+    pub public: bool,
     pub name: String,
     pub name_span: Span,
     pub sources: Vec<(String, Span)>,
@@ -46,12 +76,16 @@ pub struct VariantDecl {
 }
 
 pub struct FieldDecl {
+    pub public: bool,
+    /// `readonly`: given when the value is built, never changed afterwards.
+    pub readonly: bool,
     pub ty: TypeExpr,
     pub name: String,
     pub span: Span,
 }
 
 pub struct Func {
+    pub public: bool,
     pub ret: TypeExpr,
     pub name: String,
     pub name_span: Span,
@@ -104,6 +138,7 @@ pub enum Callee {
 /// A type as written: `read Node*?`
 pub struct TypeExpr {
     pub mode: Option<Mode>,
+    /// With its module when one is written: `billing.Line`.
     pub name: String,
     /// The types between `<` and `>`: `Result<int, ParseError>`.
     pub args: Vec<TypeExpr>,

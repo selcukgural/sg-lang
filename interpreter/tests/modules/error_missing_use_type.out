@@ -1,0 +1,6 @@
+error: there is no type named `Product`
+  built-in types for now: byte, int, long, nint, bool, string
+  --> error_missing_use_type.sg:2:10
+ 2 |     List<Product> products = List<Product>()
+   |          ^^^^^^^
+  hint: `use stock` at the top of the file

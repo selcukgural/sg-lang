@@ -1,0 +1,6 @@
+use stock
+
+void main() {
+    var pen = Product("K-1", 1500)
+    pen.recount(3)
+}

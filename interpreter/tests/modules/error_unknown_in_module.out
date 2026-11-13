@@ -1,0 +1,5 @@
+error: there is no function named `stock.triple`
+  --> error_unknown_in_module.sg:2:17
+ 2 |     print(stock.triple(2))
+   |                 ^^^^^^
+  hint: `stock.double`

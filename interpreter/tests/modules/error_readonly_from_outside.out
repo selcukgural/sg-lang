@@ -1,0 +1,4 @@
+error: `code` is `readonly`: it is given when the value is built and not changed afterwards
+  --> error_readonly_from_outside.sg:5:9
+ 5 |     pen.code = "K-2"
+   |         ^^^^

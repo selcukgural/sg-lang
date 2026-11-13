@@ -1,0 +1,31 @@
+public struct Product {
+    public readonly string code
+    public readonly string name
+    public long price                        // in cents; read and written from outside
+    int quantity                             // no public: only the stock module sees it
+
+    public Product create(string code, string name, long price) {
+        return Product { code = code, name = name, price = price, quantity = 0 }
+    }
+
+    public int available(read this) {
+        return this.quantity
+    }
+}
+
+public enum StockError : Formattable, Equatable {    // the variants are visible together with the enum
+    UnknownProduct(string code)
+    NotEnough(string code, int wanted, int available)
+}
+
+// no public: every file inside stock can call it, the outside cannot see it
+nint? indexOf(read List<Product> products, read string code) {
+    nint i = 0
+    while i < products.length() {
+        if products[i].code == code {
+            return i
+        }
+        i += 1
+    }
+    return null
+}

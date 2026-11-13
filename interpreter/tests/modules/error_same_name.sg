@@ -1,0 +1,6 @@
+use stock
+use billing
+
+void main() {
+    print(double(1))
+}

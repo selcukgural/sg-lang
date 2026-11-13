@@ -31,6 +31,10 @@ const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func"]
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
+    /// For each field: whether other modules see it (`public`).
+    open: Vec<bool>,
+    /// For each field: whether it is `readonly`.
+    readonly: Vec<bool>,
     /// Functions written in the struct body, with or without `this`.
     methods: HashMap<String, FuncSig>,
 }
@@ -54,6 +58,113 @@ struct Names {
     keys: HashSet<String>,
     /// Types that carry a borrow, each with the name of its source: `struct Token<from source>`.
     carriers: HashMap<String, String>,
+    /// The files of the program: a name is looked up from the file it is written in.
+    files: Vec<FileScope>,
+    /// The modules of the program besides the root.
+    modules: HashSet<String>,
+    /// The functions, by full name.
+    funcs: HashSet<String>,
+    /// The types and functions written with `public`, by full name.
+    public: HashSet<String>,
+    /// Where each type and function is defined.
+    spans: HashMap<String, Span>,
+}
+
+impl Names {
+    fn file(&self, at: Span) -> Option<&FileScope> {
+        self.files.iter().find(|file| at.start <= file.end)
+    }
+
+    /// The module of the file a position is in; empty for the root.
+    fn module(&self, at: Span) -> &str {
+        self.file(at).map_or("", |file| file.module.as_str())
+    }
+
+    fn known(&self, full: &str) -> bool {
+        self.kinds.contains_key(full) || self.funcs.contains(full)
+    }
+
+    /// The full name of the type or function that `written` means in the file at `at`: a name
+    /// of the file's own module first, then a `public` name of a module the file names with
+    /// `use`. With a module in front (`billing.Line`) no `use` is needed.
+    fn full(&self, written: &str, at: Span) -> Res<Option<String>> {
+        let (module, uses) = self.file(at).map_or(("", &[][..]), |file| (file.module.as_str(), file.uses.as_slice()));
+        let hidden = |name: &str, from: &str, full: &str| {
+            let diag = Diag::error(at, format!("`{name}` exists in the `{from}` module but is not public"));
+            match self.spans.get(full) {
+                Some(span) => diag.related(*span, "it is defined here, without `public`"),
+                None => diag,
+            }
+        };
+        if let Some((from, name)) = written.rsplit_once('.') {
+            return match self.known(written) {
+                true if from == module || self.public.contains(written) => Ok(Some(written.to_string())),
+                true => Err(hidden(name, from, written)),
+                false => Ok(None),
+            };
+        }
+        let own = if module.is_empty() { written.to_string() } else { format!("{module}.{written}") };
+        if self.known(&own) {
+            return Ok(Some(own));
+        }
+        let mut found: Vec<String> = Vec::new();
+        let mut closed = None;
+        for (used, _) in uses {
+            let full = format!("{used}.{written}");
+            match self.known(&full) {
+                true if self.public.contains(&full) => found.push(full),
+                true => closed = Some((used, full)),
+                false => {}
+            }
+        }
+        match found.len() {
+            1 => Ok(found.pop()),
+            0 => match closed {
+                Some((used, full)) => Err(hidden(written, used, &full)),
+                None => Ok(None),
+            },
+            _ => {
+                let modules: Vec<String> = found.iter().map(|full| format!("`{}`", module_of(full))).collect();
+                Err(Diag::error(at, format!("`{written}` exists in {}", modules.join(" and ")))
+                    .hint(format!("write the module in front: `{}`", found[0])))
+            }
+        }
+    }
+
+    /// For a name that was not found: the `use` line that would bring it in.
+    fn use_hint(&self, written: &str, at: Span) -> Option<String> {
+        let uses = self.file(at).map_or(&[][..], |file| file.uses.as_slice());
+        let mut modules: Vec<&String> = self.modules.iter().collect();
+        modules.sort();
+        let module = modules.into_iter().find(|module| {
+            let full = format!("{module}.{written}");
+            self.known(&full) && self.public.contains(&full) && !uses.iter().any(|(used, _)| used == *module)
+        })?;
+        Some(format!("`use {module}` at the top of the file"))
+    }
+}
+
+/// The first type in `ty` that other modules cannot see.
+fn closed_in<'t>(ty: &'t Ty, names: &Names) -> Option<&'t str> {
+    match ty {
+        Ty::Struct(name) | Ty::Enum(name) => (!names.public.contains(name)).then_some(name.as_str()),
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Read(inner) | Ty::Ref(inner) => closed_in(inner, names),
+        Ty::Result(a, b) | Ty::Map(a, b) | Ty::Entry(a, b) => closed_in(a, names).or_else(|| closed_in(b, names)),
+        Ty::Func(params, ret) => params.iter().find_map(|param| closed_in(param, names)).or_else(|| closed_in(ret, names)),
+        _ => None,
+    }
+}
+
+/// A `public` name of a module shows a type the other modules cannot name.
+fn exposes(what: &str, span: Span, ty: &Ty, names: &Names) -> Res<()> {
+    let Some(closed) = closed_in(ty, names) else { return Ok(()) };
+    let short = short_name(closed);
+    let diag = Diag::error(span, format!("`{what}` is public, but it shows `{short}`, which is not"))
+        .hint(format!("write `public` in front of `{short}`, or take it off `{what}`"));
+    Err(match names.spans.get(closed) {
+        Some(defined) => diag.related(*defined, format!("`{short}` is defined here, without `public`")),
+        None => diag,
+    })
 }
 
 /// One place a returned borrow may come from.
@@ -67,6 +178,8 @@ struct Source {
 }
 
 struct FuncSig {
+    /// Written with `public`: other modules can call it.
+    public: bool,
     this: Option<This>,
     params: Vec<Ty>,
     param_names: Vec<String>,
@@ -176,23 +289,54 @@ fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
         }
         sources = borrowed;
     }
-    Ok(FuncSig { this: func.this, params, param_names, ret, sources })
+    Ok(FuncSig { public: func.public, this: func.this, params, param_names, ret, sources })
 }
 
 /// With `tests` the `test` blocks are checked too and `main` may be missing: that is what the
 /// test command compiles. A normal run leaves the tests out.
 pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
-    let mut names = Names::default();
+    let mut names = Names { files: prog.files.clone(), ..Names::default() };
+    names.modules = prog.files.iter().filter(|file| !file.module.is_empty()).map(|file| file.module.clone()).collect();
+    for file in &prog.files {
+        for (module, span) in &file.uses {
+            if names.modules.contains(module) {
+                continue;
+            }
+            let diag = Diag::error(*span, format!("there is no module named `{module}`"));
+            return Err(match nearest(module, names.modules.iter().map(String::as_str)) {
+                Some(close) => diag.hint(format!("`use {close}`")),
+                None => diag.note(format!("a module is a folder with source files, next to the files of the program: `{}/`", module.replace('.', "/"))),
+            });
+        }
+    }
+    for func in &prog.funcs {
+        names.funcs.insert(func.name.clone());
+        names.spans.insert(func.name.clone(), func.name_span);
+        if func.public {
+            names.public.insert(func.name.clone());
+        }
+    }
+    let types = prog
+        .structs
+        .iter()
+        .map(|decl| (&decl.name, decl.name_span, decl.public))
+        .chain(prog.enums.iter().map(|decl| (&decl.name, decl.name_span, decl.public)));
+    for (name, span, public) in types {
+        names.spans.entry(name.clone()).or_insert(span);
+        if public {
+            names.public.insert(name.clone());
+        }
+    }
     let declared = prog
         .structs
         .iter()
         .map(|decl| (&decl.name, decl.name_span, TypeKind::Struct))
         .chain(prog.enums.iter().map(|decl| (&decl.name, decl.name_span, TypeKind::Enum)));
     for (name, span, kind) in declared {
-        if BUILTIN_TYPES.contains(&name.as_str()) {
-            return Err(Diag::error(span, format!("`{name}` is a built-in type and cannot be redefined")));
+        if BUILTIN_TYPES.contains(&short_name(name)) {
+            return Err(Diag::error(span, format!("`{}` is a built-in type and cannot be redefined", short_name(name))));
         }
-        if Ty::from_name(name).is_some() || names.kinds.insert(name.clone(), kind).is_some() {
+        if Ty::from_name(short_name(name)).is_some() || names.kinds.insert(name.clone(), kind).is_some() {
             return Err(Diag::error(span, format!("type `{name}` is defined twice")));
         }
     }
@@ -289,7 +433,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 }
             }
         }
-        structs.insert(decl.name.clone(), StructInfo { fields, methods });
+        let open = decl.fields.iter().map(|field| field.public).collect();
+        let readonly = decl.fields.iter().map(|field| field.readonly).collect();
+        structs.insert(decl.name.clone(), StructInfo { fields, open, readonly, methods });
     }
 
     let mut enums: HashMap<String, EnumInfo> = HashMap::new();
@@ -442,14 +588,12 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
 
     let mut sigs: HashMap<String, FuncSig> = HashMap::new();
     for func in &prog.funcs {
-        if BUILTINS.contains(&func.name.as_str()) {
-            return Err(Diag::error(
-                func.name_span,
-                format!("`{}` is a built-in function and cannot be redefined", func.name),
-            ));
+        let short = short_name(&func.name);
+        if BUILTINS.contains(&short) {
+            return Err(Diag::error(func.name_span, format!("`{short}` is a built-in function and cannot be redefined")));
         }
-        if BUILTIN_TYPES.contains(&func.name.as_str()) {
-            return Err(Diag::error(func.name_span, format!("`{}` is a built-in type, so a function cannot have its name", func.name)));
+        if BUILTIN_TYPES.contains(&short) {
+            return Err(Diag::error(func.name_span, format!("`{short}` is a built-in type, so a function cannot have its name")));
         }
         if names.kinds.contains_key(func.name.as_str()) {
             return Err(Diag::error(func.name_span, format!("`{}` is already the name of a type", func.name)));
@@ -459,14 +603,42 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
     }
 
+    // What a module shows to the others is made of what they can see. The root has no name, so
+    // nothing can `use` it and `public` says nothing there.
+    for func in prog.funcs.iter().filter(|func| func.public && !module_of(&func.name).is_empty()) {
+        let sig = &sigs[&func.name];
+        for ty in sig.params.iter().chain([&sig.ret]) {
+            exposes(short_name(&func.name), func.name_span, ty, &names)?;
+        }
+    }
+    for decl in prog.structs.iter().filter(|decl| decl.public && !module_of(&decl.name).is_empty()) {
+        let info = &structs[&decl.name];
+        for (field, (_, ty)) in decl.fields.iter().zip(&info.fields).filter(|(field, _)| field.public) {
+            exposes(&field.name, field.span, ty, &names)?;
+        }
+        for method in decl.methods.iter().filter(|method| method.public) {
+            let sig = &info.methods[&method.name];
+            for ty in sig.params.iter().chain([&sig.ret]) {
+                exposes(&method.name, method.name_span, ty, &names)?;
+            }
+        }
+    }
+    for decl in prog.enums.iter().filter(|decl| decl.public && !module_of(&decl.name).is_empty()) {
+        let types = enums[&decl.name].variants.iter().flat_map(|(_, fields)| fields);
+        for (field, (_, ty)) in decl.variants.iter().flat_map(|variant| &variant.fields).zip(types) {
+            exposes(short_name(&decl.name), field.span, ty, &names)?;
+        }
+    }
+
+    let root_end = prog.files.first().map_or(src.len(), |file| file.end);
     match prog.funcs.iter().find(|func| func.name == "main") {
         None if tests => {}
         None if !prog.tests.is_empty() => {
-            return Err(Diag::error(Span::new(src.len(), src.len()), "there is no `main` function")
+            return Err(Diag::error(Span::new(root_end, root_end), "there is no `main` function")
                 .hint("this file holds tests; they are run by the test command: `sg test <file>`"))
         }
         None => {
-            return Err(Diag::error(Span::new(src.len(), src.len()), "there is no `main` function")
+            return Err(Diag::error(Span::new(root_end, root_end), "there is no `main` function")
                 .hint("a program starts at `void main() { ... }`"))
         }
         Some(main) => {
@@ -514,6 +686,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             func_name: func.name.clone(),
             in_test: false,
             owner,
+            module: names.module(func.name_span),
             src,
         };
         if let (Some(this), Some(owner)) = (func.this, owner) {
@@ -558,7 +731,8 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     }
     for position in 0..prog.tests.len() {
         let test = &prog.tests[position];
-        if let Some(first) = prog.tests[..position].iter().find(|other| other.name == test.name) {
+        let test_span = test.name_span;
+        if let Some(first) = prog.tests[..position].iter().find(|other| other.name == test.name && names.module(other.name_span) == names.module(test_span)) {
             return Err(Diag::error(test.name_span, format!("there are two tests named \"{}\"", test.name))
                 .related(first.name_span, "the other one is here"));
         }
@@ -580,6 +754,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             func_name: "test".to_string(),
             in_test: true,
             owner: None,
+            module: names.module(test_span),
             src,
         };
         checker.block(&mut prog.tests[position].body, None)?;
@@ -667,20 +842,25 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             return Err(Diag::error(ty.span, "`void` can only be a return type"));
         }
         Some(base) => base,
-        None if names.kinds.get(ty.name.as_str()) == Some(&TypeKind::Struct) => Ty::Struct(ty.name.clone()),
-        None if names.kinds.contains_key(ty.name.as_str()) => Ty::Enum(ty.name.clone()),
-        None => {
+        None => match names.full(&ty.name, ty.span)?.and_then(|full| names.kinds.get(&full).map(|kind| (full, *kind))) {
+            Some((full, TypeKind::Struct)) => Ty::Struct(full),
+            Some((full, TypeKind::Enum)) => Ty::Enum(full),
+            None => {
             let diag = if TYPES_NOT_YET.contains(&ty.name.as_str()) {
                 Diag::error(ty.span, format!("type `{}` is not in the interpreter yet", ty.name))
             } else {
                 Diag::error(ty.span, format!("there is no type named `{}`", ty.name))
             };
+            if let Some(hint) = names.use_hint(&ty.name, ty.span) {
+                return Err(diag.hint(hint));
+            }
             let known = names.kinds.keys().map(String::as_str).chain(["byte", "int", "long", "nint", "bool", "string"]);
             return Err(match nearest(&ty.name, known) {
                 Some(close) => diag.hint(format!("`{close}`")),
                 None => diag.note("built-in types for now: byte, int, long, nint, bool, string"),
             });
-        }
+            }
+        },
     };
     for suffix in &ty.suffixes {
         resolved = match suffix {
@@ -980,6 +1160,8 @@ struct Checker<'a> {
     in_test: bool,
     /// The struct whose method is being checked.
     owner: Option<&'a str>,
+    /// The module the code being checked is in; empty for the root.
+    module: &'a str,
     src: &'a str,
 }
 
@@ -1109,10 +1291,94 @@ impl<'a> Checker<'a> {
         if is_field && has_this {
             return diag.hint(format!("a field is reached through `this`: `this.{name}`"));
         }
+        if let Some(hint) = self.names.use_hint(name, span) {
+            return diag.hint(hint);
+        }
         let visible = self.scopes.iter().flat_map(|scope| scope.vars.iter().map(|var| var.name.as_str()));
         match nearest(name, visible) {
             Some(close) => diag.hint(format!("`{close}`")),
             None => diag,
+        }
+    }
+
+    // ---- modules ----
+
+    /// Whether the code being checked is in the module of this type: there it sees every
+    /// field and function, elsewhere only the `public` ones.
+    fn inside(&self, owner: &str) -> bool {
+        module_of(owner) == self.module
+    }
+
+    fn not_public(&self, member: &str, owner: &str, span: Span) -> Diag {
+        Diag::error(span, format!("`{member}` is not public: it stays inside the `{}` module", module_of(owner)))
+    }
+
+    /// The module an expression names when it is written in front of a dot: `stock` in
+    /// `stock.Product`. A variable of that name wins.
+    fn module_named(&mut self, expr: &Expr) -> Option<String> {
+        let mut head = expr;
+        while let ExprKind::Field { recv, .. } = &head.kind {
+            head = recv;
+        }
+        let ExprKind::Var(first) = &head.kind else { return None };
+        if first == "this" || self.find(first).is_some() {
+            return None;
+        }
+        crate::parser::dotted(expr).filter(|path| self.names.modules.contains(path))
+    }
+
+    /// Turns the name of a type or a function into its full name, as the rest of the checker
+    /// and the interpreter know it: `Product` is `stock.Product` after `use stock`, and
+    /// `stock.count(xs)` is a call of the function `stock.count`.
+    fn settle(&mut self, expr: &mut Expr) -> Res<()> {
+        if let ExprKind::Field { recv, .. } | ExprKind::Method { recv, .. } = &mut expr.kind {
+            let module = match self.names.modules.is_empty() {
+                true => None,
+                false => self.module_named(recv),
+            };
+            match module {
+                Some(module) => {
+                    expr.kind = match std::mem::replace(&mut expr.kind, ExprKind::Null) {
+                        ExprKind::Field { name, .. } => ExprKind::Var(format!("{module}.{name}")),
+                        ExprKind::Method { name, name_span, args, .. } => {
+                            ExprKind::Call { name: format!("{module}.{name}"), name_span, args, callee: Callee::Plain }
+                        }
+                        _ => unreachable!("matched above"),
+                    };
+                }
+                None if matches!(recv.kind, ExprKind::Var(_) | ExprKind::Field { .. }) => self.settle(recv)?,
+                None => {}
+            }
+        }
+        let span = expr.span;
+        let (ExprKind::Var(written) | ExprKind::Call { name: written, .. } | ExprKind::StructLit { name: written, .. }) = &expr.kind else {
+            return Ok(());
+        };
+        if written == "this" || BUILTINS.contains(&written.as_str()) || self.find(written).is_some() {
+            return Ok(());
+        }
+        let (ExprKind::Var(name) | ExprKind::Call { name, .. } | ExprKind::StructLit { name, .. }) = &mut expr.kind else {
+            unreachable!("matched above")
+        };
+        if let Some(full) = self.names.full(name, span)? {
+            *name = full;
+        }
+        Ok(())
+    }
+
+    /// The `readonly` field a place lies in or behind, as the error for writing to it.
+    fn readonly(&self, place: &Expr) -> Option<Diag> {
+        match &place.kind {
+            ExprKind::Field { recv, name, name_span, index } => {
+                if let Some(Ty::Struct(owner)) = self.place_ty(recv).as_ref().map(peel) {
+                    if self.structs.get(owner).is_some_and(|info| info.readonly.get(*index) == Some(&true)) {
+                        return Some(Diag::error(*name_span, format!("`{name}` is `readonly`: it is given when the value is built and not changed afterwards")));
+                    }
+                }
+                self.readonly(recv)
+            }
+            ExprKind::Index { recv, .. } => self.readonly(recv),
+            _ => None,
         }
     }
 
@@ -1701,6 +1967,9 @@ impl<'a> Checker<'a> {
                             return Err(Diag::error(target.span, "a byte cannot be written into a `string`")
                                 .note("a `string` is always valid UTF-8; `text[i]` only reads"));
                         }
+                        if let Some(diag) = self.readonly(target) {
+                            return Err(diag);
+                        }
                         if !writable && self.is_entry_key(target) {
                             return Err(Diag::error(target.span, "the key of an entry cannot be changed: the map found the entry by it")
                                 .hint("remove the entry and add it under the new key: `map.remove(key)`, `map.add(key, value)`"));
@@ -2134,6 +2403,7 @@ impl<'a> Checker<'a> {
 
     fn place_untyped(&mut self, expr: &mut Expr) -> Res<Option<(Ty, bool)>> {
         let span = expr.span;
+        self.settle(expr)?;
         // `Shape.Empty` is a value, not a field.
         if let ExprKind::Field { recv, .. } = &expr.kind {
             if self.enum_named(recv).is_some() {
@@ -2211,8 +2481,12 @@ impl<'a> Checker<'a> {
                         None => diag,
                     });
                 };
+                let info = &self.structs[&struct_name];
+                if !info.open[position] && !self.inside(&struct_name) {
+                    return Err(self.not_public(name, &struct_name, *name_span));
+                }
                 *index = position;
-                Ok(Some((fields[position].1.clone(), writable)))
+                Ok(Some((fields[position].1.clone(), writable && !info.readonly[position])))
             }
             // An item is a place too: `xs[i] = v`, `xs[i].name`, `ref xs[i]`.
             ExprKind::Index { recv, index, kind } => {
@@ -2553,11 +2827,25 @@ impl<'a> Checker<'a> {
             ExprKind::StructLit { name, name_span, fields } => {
                 let Some(info) = self.structs.get(name.as_str()) else {
                     let diag = Diag::error(*name_span, format!("there is no struct named `{name}`"));
+                    if let Some(hint) = self.names.use_hint(name, span) {
+                        return Err(diag.hint(hint));
+                    }
                     return Err(match nearest(name, self.structs.keys().map(String::as_str)) {
                         Some(close) => diag.hint(format!("`{close}`")),
                         None => diag,
                     });
                 };
+                // A field that cannot be seen cannot be given a value.
+                if !self.inside(name) {
+                    if let Some(position) = info.open.iter().position(|open| !open) {
+                        let (short, field) = (short_name(name), &info.fields[position].0);
+                        let diag = Diag::error(*name_span, format!("`{field}` is not public, so a `{short}` cannot be built field by field outside the `{}` module", module_of(name)));
+                        return Err(match info.methods.get("create") {
+                            Some(create) if create.public => diag.hint(format!("`{short}({})`", create.param_names.join(", "))),
+                            _ => diag,
+                        });
+                    }
+                }
                 let mut given = vec![false; info.fields.len()];
                 for init in fields.iter_mut() {
                     let Some(position) = info.fields.iter().position(|(field, _)| *field == init.name) else {
@@ -2631,6 +2919,9 @@ impl<'a> Checker<'a> {
                 let base = Box::new(ty.strip_borrow().clone());
                 if !*mutable {
                     return Ok(Ty::Read(base));
+                }
+                if let Some(diag) = self.readonly(inner) {
+                    return Err(diag.note("so it cannot be lent as `ref` either"));
                 }
                 if !writable {
                     return Err(Diag::error(inner.span, "this is reached through a `read` borrow and cannot be lent as `ref`"));
@@ -3316,6 +3607,9 @@ impl<'a> Checker<'a> {
                 let sigs = self.sigs;
                 let Some(sig) = sigs.get(name) else {
                     let diag = Diag::error(name_span, format!("there is no function named `{name}`"));
+                    if let Some(hint) = self.names.use_hint(name, name_span) {
+                        return Err(diag.hint(hint));
+                    }
                     let known = sigs.keys().map(String::as_str).chain(BUILTINS.iter().copied());
                     return Err(match nearest(name, known) {
                         Some(close) => diag.hint(format!("`{close}`")),
@@ -3347,6 +3641,9 @@ impl<'a> Checker<'a> {
                 None => diag,
             });
         };
+        if !sig.public && !self.inside(owner) {
+            return Err(self.not_public(name, owner, name_span));
+        }
         if sig.this.is_some() {
             return Err(Diag::error(name_span, format!("`{name}` works on a value, not on the type `{owner}`"))
                 .hint(format!("call it on a `{owner}` value: `value.{name}(...)`")));
@@ -3382,6 +3679,9 @@ impl<'a> Checker<'a> {
                     return Ok(Ty::Str);
                 }
                 let diag = Diag::error(recv.span, format!("there is no variable or type named `{owner}`"));
+                if let Some(hint) = self.names.use_hint(owner, recv.span) {
+                    return Err(diag.hint(hint));
+                }
                 let vars = self.scopes.iter().flat_map(|scope| scope.vars.iter().map(|var| var.name.as_str()));
                 return Err(match nearest(owner, vars.chain(self.structs.keys().map(String::as_str))) {
                     Some(close) => diag.hint(format!("`{close}`")),
@@ -3415,6 +3715,9 @@ impl<'a> Checker<'a> {
         let structs = self.structs;
         if let Ty::Struct(owner) = target {
             if let Some(sig) = structs[owner].methods.get(name) {
+                if !sig.public && !self.inside(owner) {
+                    return Err(self.not_public(name, owner, name_span));
+                }
                 let Some(this) = sig.this else {
                     return Err(Diag::error(name_span, format!("`{name}` does not take `this`, so it is called on the type"))
                         .hint(format!("`{owner}.{name}(...)`")));
@@ -3422,6 +3725,9 @@ impl<'a> Checker<'a> {
                 match this {
                     This::Read => {}
                     This::Ref if !writable => {
+                        if let Some(diag) = self.readonly(recv) {
+                            return Err(diag.note(format!("`{name}` takes `ref this` and may change it")));
+                        }
                         return Err(Diag::error(recv.span, format!("`{name}` takes `ref this`, but this value is reached through a `read` borrow"))
                             .hint("take the value as `ref` instead of `read`"));
                     }
@@ -3450,6 +3756,9 @@ impl<'a> Checker<'a> {
             let fields = &structs[owner].fields;
             if let Some(position) = fields.iter().position(|(field, _)| field == name) {
                 if let Ty::Func(params, ret) = &fields[position].1 {
+                    if !structs[owner].open[position] && !self.inside(owner) {
+                        return Err(self.not_public(name, owner, name_span));
+                    }
                     self.args(name, args, params, span)?;
                     *callee = Callee::FieldValue(position);
                     return Ok((**ret).clone());
@@ -3595,6 +3904,11 @@ impl<'a> Checker<'a> {
         let changing = matches!(name, "add" | "clear" | "removeLast" | "reverse" | "remove" | "getOrAdd" | "sort");
         if changing && writable {
             self.not_locked(recv, Access::Write)?;
+        }
+        if changing && !writable {
+            if let Some(diag) = self.readonly(recv) {
+                return Err(diag.note(format!("`{name}` changes the {what}")));
+            }
         }
         // What `indexOf`, `contains` and `sort` can compare until `Equatable` and `Comparable` exist.
         let item = match target {
@@ -3784,6 +4098,9 @@ impl<'a> Checker<'a> {
             return Err(Diag::error(recv.span, format!("`take` leaves `null` behind, so it needs a `T?`; this is `{slot}`"))
                 .hint(format!("to put another value in its place: `{text}.replace(value)`")));
         }
+        if let Some(diag) = self.readonly(recv) {
+            return Err(diag);
+        }
         if !writable {
             return Err(Diag::error(recv.span, "this is reached through a `read` borrow, so nothing can be taken out of it")
                 .hint("take the value as `ref` instead of `read`"));
@@ -3815,6 +4132,9 @@ impl<'a> Checker<'a> {
         }
         if !is_place {
             return Err(Diag::error(recv.span, "`replace` needs a variable or a field to put the new value in"));
+        }
+        if let Some(diag) = self.readonly(recv) {
+            return Err(diag);
         }
         if !writable {
             return Err(Diag::error(recv.span, "this is reached through a `read` borrow and cannot be replaced")

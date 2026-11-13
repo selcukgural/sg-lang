@@ -1,0 +1,33 @@
+// The same folder as `product.sg`, so the same module: no `use` for `Product` and `indexOf`.
+public struct Warehouse {
+    List<Product> products
+
+    public Warehouse create() {
+        return Warehouse { products = List<Product>() }
+    }
+
+    public void add(ref this, Product product) {
+        this.products.add(product)
+    }
+
+    public Result<void, StockError> receive(ref this, read string code, int count) {
+        var i = indexOf(read this.products, code) ?? return Error(StockError.UnknownProduct(code.clone()))
+        this.products[i].quantity += count   // same module: quantity is visible
+        return Ok()
+    }
+
+    public Result<void, StockError> ship(ref this, read string code, int count) {
+        var i = indexOf(read this.products, code) ?? return Error(StockError.UnknownProduct(code.clone()))
+        var have = this.products[i].quantity
+        if have < count {
+            return Error(StockError.NotEnough(code.clone(), count, have))
+        }
+        this.products[i].quantity -= count
+        return Ok()
+    }
+
+    public read Product? get(read this, read string code) from this {
+        var i = indexOf(read this.products, code) ?? return null
+        return read this.products[i]
+    }
+}

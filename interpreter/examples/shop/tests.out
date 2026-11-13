@@ -1,0 +1,5 @@
+ok    billing: invoice total and stock change together
+ok    stock: indexOf returns null for an unknown code
+ok    stock: received goods are added to stock
+ok    stock: nothing ships when stock is short
+4 test(s) passed

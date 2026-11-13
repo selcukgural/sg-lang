@@ -1,0 +1,4 @@
+error: `readonly` is written on a field, not on a function
+  --> error_readonly_function.sg:2:5
+ 2 |     readonly int balance() {
+   |     ^^^^^^^^

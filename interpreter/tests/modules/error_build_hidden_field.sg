@@ -1,0 +1,5 @@
+use stock
+
+void main() {
+    var pen = Product { code = "X", price = 1, quantity = 9 }
+}

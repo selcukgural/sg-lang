@@ -343,7 +343,8 @@ pub fn run_program(prog: &Program, src: &str, out: &mut dyn Write) -> Result<(),
 
 /// Runs every `test` block and writes one line for each: `ok` or `FAIL` with the reason.
 /// Gives how many passed and how many failed. A test that fails does not stop the others.
-pub fn run_tests(prog: &Program, src: &str, path: &str, out: &mut dyn Write) -> Result<(usize, usize), Stop> {
+pub fn run_tests(prog: &Program, sources: &crate::source::Sources, out: &mut dyn Write) -> Result<(usize, usize), Stop> {
+    let src = sources.text.as_str();
     let funcs = prog.funcs.iter().map(|func| (func.name.as_str(), func)).collect();
     let mut methods: HashMap<&str, HashMap<&str, &Func>> = HashMap::new();
     for decl in &prog.structs {
@@ -373,18 +374,23 @@ pub fn run_tests(prog: &Program, src: &str, path: &str, out: &mut dyn Write) -> 
                 }
             }
             Ok(_) => None,
-            Err(Unwind::Stop(Stop::Diag(diag))) => Some(diag.render(src, path)),
+            Err(Unwind::Stop(Stop::Diag(diag))) => Some(diag.render_in(sources)),
             Err(Unwind::Stop(stop)) => return Err(stop),
             Err(_) => unreachable!("`break` and `continue` end at their loop"),
+        };
+        // A test of a module is written with its module in front: `stock: nothing ships ...`.
+        let name = match sources.file_at(test.name_span.start).module.as_str() {
+            "" => test.name.clone(),
+            module => format!("{module}: {}", test.name),
         };
         let line = match &reason {
             None => {
                 passed += 1;
-                format!("ok    {}", test.name)
+                format!("ok    {name}")
             }
             Some(reason) => {
                 failed += 1;
-                format!("FAIL  {}\n{}", test.name, reason.trim_end())
+                format!("FAIL  {name}\n{}", reason.trim_end())
             }
         };
         match interp.write_line(&line) {
@@ -1086,7 +1092,7 @@ impl<'a> Interp<'a> {
                 let decl = self.structs[&**name];
                 let parts = list(self, fields)?;
                 let named: Vec<String> = decl.fields.iter().zip(parts).map(|(field, text)| format!("{} = {text}", field.name)).collect();
-                Ok(format!("{name} {{ {} }}", named.join(", ")))
+                Ok(format!("{} {{ {} }}", short_name(name), named.join(", ")))
             }
             Value::Enum(name, index, fields) => {
                 let word = match &**name {

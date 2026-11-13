@@ -1,0 +1,5 @@
+error: `double` exists in `stock` and `billing`
+  --> error_same_name.sg:5:11
+ 5 |     print(double(1))
+   |           ^^^^^^^^^
+  hint: write the module in front: `stock.double`

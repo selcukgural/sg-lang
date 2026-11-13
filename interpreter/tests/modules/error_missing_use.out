@@ -1,0 +1,5 @@
+error: there is no function named `Product`
+  --> error_missing_use.sg:2:15
+ 2 |     var pen = Product("K-1", 1500)
+   |               ^^^^^^^
+  hint: `use stock` at the top of the file

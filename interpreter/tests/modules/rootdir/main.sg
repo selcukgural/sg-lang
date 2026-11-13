@@ -1,0 +1,7 @@
+// A folder as a program: every file in it is the root module.
+use util
+
+void main() {
+    print(greeting("ada"))
+    print(shout(helper()))
+}

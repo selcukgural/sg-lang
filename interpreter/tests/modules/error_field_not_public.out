@@ -1,0 +1,4 @@
+error: `quantity` is not public: it stays inside the `stock` module
+  --> error_field_not_public.sg:5:9
+ 5 |     pen.quantity = 5
+   |         ^^^^^^^^

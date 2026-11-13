@@ -1,0 +1,31 @@
+// Inside the stock module: no `use`, and what is not `public` is visible too.
+
+// An ordinary function: there is no separate feature for shared setup
+Result<Warehouse, StockError> penStock(int count) {
+    var warehouse = Warehouse()
+    warehouse.add(Product("K-1", "pen", 1500))
+    try warehouse.receive("K-1", count)
+    return Ok(warehouse)
+}
+
+test "indexOf returns null for an unknown code" {
+    var products = List<Product> { Product("K-1", "pen", 1500) }
+    assert(indexOf(read products, "K-1") is not null)
+    assert(indexOf(read products, "X-9") is null)
+}
+
+test "received goods are added to stock" {
+    var warehouse = try penStock(100)                // if an error is returned the test fails, the error is printed
+    try warehouse.receive("K-1", 20)
+    assert(warehouse.products[0].quantity == 120)    // same module: the non-public field is visible
+}
+
+test "nothing ships when stock is short" {
+    var warehouse = try penStock(20)
+
+    match warehouse.ship("K-1", 30) {
+        Error(e) => assert(e == StockError.NotEnough("K-1", 30, 20))
+        _ => panic("the shipment should have been rejected")
+    }
+    assert(warehouse.products[0].quantity == 20)     // stock did not change
+}

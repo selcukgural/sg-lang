@@ -1,0 +1,8 @@
+struct Account {
+    readonly int balance() {
+        return 0
+    }
+}
+
+void main() {
+}

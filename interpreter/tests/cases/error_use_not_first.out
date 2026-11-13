@@ -1,0 +1,4 @@
+error: `use` is written at the top of the file, before everything else
+  --> error_use_not_first.sg:4:1
+ 4 | use stock
+   | ^^^

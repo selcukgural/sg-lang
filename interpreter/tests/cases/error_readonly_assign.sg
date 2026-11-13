@@ -1,0 +1,11 @@
+struct Account {
+    readonly string owner
+    long balance
+}
+
+void rename(ref Account account) {
+    account.owner = "grace"
+}
+
+void main() {
+}

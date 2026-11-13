@@ -1,0 +1,11 @@
+public string greeting(read string name) {
+    return $"hello, {name}".toString()
+}
+
+public string shout(string text) {
+    return $"{text}!".toString()
+}
+
+test "greeting" {
+    assert(greeting("x") == "hello, x")
+}

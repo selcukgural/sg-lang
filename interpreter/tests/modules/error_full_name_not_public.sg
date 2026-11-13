@@ -1,0 +1,3 @@
+void main() {
+    var shelf = stock.Shelf { row = 1 }
+}

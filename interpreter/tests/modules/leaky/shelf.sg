@@ -1,0 +1,7 @@
+struct Shelf {
+    int row
+}
+
+public Shelf firstShelf() {
+    return Shelf { row = 1 }
+}

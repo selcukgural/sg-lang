@@ -1,0 +1,23 @@
+// The second file of the module: it sees `Product`, `Shelf` and `secret` without `use`.
+
+public long total(read List<Product> products) {
+    long sum = 0
+    for product in products {
+        sum += product.price * product.quantity
+    }
+    return sum
+}
+
+public int double(int n) {
+    return n * 2
+}
+
+public int reveal() {
+    var shelf = Shelf { row = secret() }
+    return shelf.row
+}
+
+// The other module is named in full, so no `use` is written; `shop.parts` names `stock` too.
+public nint partCount(read List<shop.parts.Part> parts) {
+    return parts.length()
+}

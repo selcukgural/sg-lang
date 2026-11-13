@@ -1,0 +1,19 @@
+Product { code = "K-1", price = 1750, quantity = 5 }
+5
+K-1
+8750
+Point { x = 1 }
+Point { x = 2, y = 3 }
+255
+Red
+Custom(7)
+Line { name = "K-1", total = 5250 }
+5
+Point { column = 4 }
+8
+9
+8
+7
+2
+Part { name = "door", color = Green }
+9

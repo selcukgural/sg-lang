@@ -1,0 +1,33 @@
+use stock
+
+public struct Line {
+    public readonly string name
+    public readonly int count
+    public readonly long total
+}
+
+public struct Invoice {
+    public readonly string customer
+    List<Line> lines
+
+    public Invoice create(string customer) {
+        return Invoice { customer = customer, lines = List<Line>() }
+    }
+
+    public Result<void, StockError> add(ref this, ref Warehouse warehouse, read string code, int count) {
+        var product = warehouse.get(code) ?? return Error(StockError.UnknownProduct(code.clone()))
+        var name = product.name.clone()
+        var total = product.price * count    // last use of product, the read borrow ends here
+        try warehouse.ship(code, count)      // if stock is short, no invoice line is added
+        this.lines.add(Line { name = name, count = count, total = total })
+        return Ok()
+    }
+
+    public long total(read this) {
+        long sum = 0
+        for line in read this.lines {
+            sum += line.total
+        }
+        return sum
+    }
+}

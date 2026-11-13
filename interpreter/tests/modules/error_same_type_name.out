@@ -1,0 +1,5 @@
+error: `Point` exists in `stock` and `billing`
+  --> error_same_type_name.sg:5:5
+ 5 |     Point? point = null
+   |     ^^^^^^
+  hint: write the module in front: `stock.Point`

@@ -1,0 +1,19 @@
+use stock
+
+public struct Line : Formattable {
+    public string name
+    public long total
+}
+
+// `stock` has a `Point` and a `double` too.
+public struct Point : Formattable {
+    public int column
+}
+
+public int double(int n) {
+    return n + n + 1
+}
+
+public Line lineFor(read Product product, int count) {
+    return Line { name = product.code.clone(), total = product.price * count }
+}

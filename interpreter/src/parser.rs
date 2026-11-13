@@ -8,16 +8,35 @@ use crate::types::{IntTy, Ty};
 /// Words that are in the design but not in the interpreter yet. They get an explicit
 /// message instead of "unknown name".
 const NOT_YET: &[&str] = &[
-    "interface", "use", "shared", "weak", "checked", "locked", "raw", "unsafe", "lock",
-    "spawn", "share", "using", "readonly",
+    "interface", "shared", "weak", "checked", "locked", "raw", "unsafe", "lock",
+    "spawn", "share", "using",
 ];
 
 type Res<T> = Result<T, Diag>;
 
 pub fn parse(src: &str) -> Res<Program> {
-    let toks = lex(src, Span::new(0, src.len()), false)?;
-    let mut parser = Parser { src, toks, i: 0, struct_literals: true };
-    parser.program()
+    parse_files(src, &[(0, src.len(), String::new())])
+}
+
+/// Parses the files of a program, each given as where it lies in `src` and the module it
+/// belongs to. What a module defines gets its full name here: `Product` in the folder `stock`
+/// is `stock.Product`.
+pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> {
+    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), files: Vec::new() };
+    for (start, end, module) in files {
+        let toks = lex(src, Span::new(*start, *end), false)?;
+        let mut parser = Parser { src, toks, i: 0, struct_literals: true };
+        let (structs, enums, funcs) = (program.structs.len(), program.enums.len(), program.funcs.len());
+        let uses = parser.file(&mut program)?;
+        if !module.is_empty() {
+            let full = |name: &mut String| *name = format!("{module}.{name}");
+            program.structs[structs..].iter_mut().for_each(|decl| full(&mut decl.name));
+            program.enums[enums..].iter_mut().for_each(|decl| full(&mut decl.name));
+            program.funcs[funcs..].iter_mut().for_each(|func| full(&mut func.name));
+        }
+        program.files.push(FileScope { start: *start, end: *end, module: module.clone(), uses });
+    }
+    Ok(program)
 }
 
 struct Parser<'a> {
@@ -111,7 +130,12 @@ impl<'a> Parser<'a> {
         if mode.is_some() {
             self.bump();
         }
-        let (name, _) = self.ident("a type name")?;
+        let (mut name, _) = self.ident("a type name")?;
+        // `billing.Line`: the module is written in front.
+        while *self.peek() == Tok::Dot && matches!(self.peek_at(1), Tok::Ident(_)) {
+            self.bump();
+            name = format!("{name}.{}", self.ident("a type name")?.0);
+        }
         let mut args = Vec::new();
         if self.eat(&Tok::Lt) {
             loop {
@@ -134,37 +158,76 @@ impl<'a> Parser<'a> {
         Ok(TypeExpr { mode, name, args, suffixes, span: Span::new(start.start, self.prev_end()) })
     }
 
-    fn program(&mut self) -> Res<Program> {
-        let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new() };
+    /// `use stock` / `use shop.stock`, one on a line.
+    fn use_line(&mut self) -> Res<(String, Span)> {
+        self.bump();
+        let (mut module, start) = self.ident("the name of a module")?;
+        while self.eat(&Tok::Dot) {
+            module = format!("{module}.{}", self.ident("the name of a module")?.0);
+        }
+        Ok((module, Span::new(start.start, self.prev_end())))
+    }
+
+    /// One file: its `use` lines, then structs, enums, functions and tests. Gives the modules
+    /// the file names with `use`.
+    fn file(&mut self, program: &mut Program) -> Res<Vec<(String, Span)>> {
+        let mut uses: Vec<(String, Span)> = Vec::new();
+        let mut first = true;
         self.skip_newlines();
         while *self.peek() != Tok::Eof {
-            // One module for now, so `public` changes nothing yet.
-            self.eat(&Tok::Public);
+            if *self.peek() == Tok::Use {
+                let line = self.span();
+                if !first {
+                    return Err(Diag::error(line, "`use` is written at the top of the file, before everything else"));
+                }
+                let (module, span) = self.use_line()?;
+                if uses.iter().any(|(other, _)| *other == module) {
+                    return Err(Diag::error(span, format!("`use {module}` is written twice")));
+                }
+                uses.push((module, span));
+                if *self.peek() != Tok::Eof {
+                    self.expect(Tok::Newline, "end of line")?;
+                }
+                self.skip_newlines();
+                continue;
+            }
+            first = false;
+            let public_span = self.span();
+            let public = self.eat(&Tok::Public);
             // `test` is a word only here, in front of the name of a test.
             let at_test = matches!(self.peek(), Tok::Ident(word) if word == "test") && matches!(self.peek_at(1), Tok::Str(_));
             if at_test {
+                if public {
+                    return Err(Diag::error(public_span, "a test is not `public`: only the test command runs it"));
+                }
                 self.bump();
                 let Tok::Str(name) = self.peek().clone() else { unreachable!("checked above") };
                 let name_span = self.bump().span;
                 let body = self.block()?;
                 program.tests.push(TestDecl { name, name_span, body });
             } else if *self.peek() == Tok::Struct {
-                program.structs.push(self.struct_decl()?);
+                let mut decl = self.struct_decl()?;
+                decl.public = public;
+                program.structs.push(decl);
             } else if *self.peek() == Tok::Enum {
-                program.enums.push(self.enum_decl()?);
+                let mut decl = self.enum_decl()?;
+                decl.public = public;
+                program.enums.push(decl);
             } else {
                 let ret = self.type_expr().map_err(|d| {
                     d.hint("only structs, enums, functions and tests are written at the top level: `void main() { ... }`")
                 })?;
                 let (name, name_span) = self.ident("a function name")?;
-                program.funcs.push(self.func(ret, name, name_span, false)?);
+                let mut func = self.func(ret, name, name_span, false)?;
+                func.public = public;
+                program.funcs.push(func);
             }
             if *self.peek() != Tok::Eof {
                 self.expect(Tok::Newline, "end of line")?;
             }
             self.skip_newlines();
         }
-        Ok(program)
+        Ok(uses)
     }
 
     fn struct_decl(&mut self) -> Res<StructDecl> {
@@ -180,13 +243,20 @@ impl<'a> Parser<'a> {
             if *self.peek() == Tok::Eof {
                 return Err(self.unexpected("`}`"));
             }
-            self.eat(&Tok::Public);
+            let public = self.eat(&Tok::Public);
+            let readonly_span = self.span();
+            let readonly = self.eat(&Tok::Readonly);
             let ty = self.type_expr()?;
             let (member, span) = self.ident("a field or method name")?;
             if *self.peek() == Tok::LParen {
-                methods.push(self.func(ty, member, span, true)?);
+                if readonly {
+                    return Err(Diag::error(readonly_span, "`readonly` is written on a field, not on a function"));
+                }
+                let mut method = self.func(ty, member, span, true)?;
+                method.public = public;
+                methods.push(method);
             } else {
-                fields.push(FieldDecl { ty, name: member, span });
+                fields.push(FieldDecl { public, readonly, ty, name: member, span });
             }
             if *self.peek() != Tok::RBrace {
                 self.expect(Tok::Newline, "end of line")?;
@@ -194,7 +264,7 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         }
         self.bump();
-        Ok(StructDecl { name, name_span, sources, interfaces, fields, methods })
+        Ok(StructDecl { public: false, name, name_span, sources, interfaces, fields, methods })
     }
 
     /// `<from source>` after the name of a struct or an enum that carries a borrow.
@@ -250,7 +320,7 @@ impl<'a> Parser<'a> {
                 while *self.peek() != Tok::RParen {
                     let ty = self.type_expr()?;
                     let (field, span) = self.ident("a field name")?;
-                    fields.push(FieldDecl { ty, name: field, span });
+                    fields.push(FieldDecl { public: true, readonly: false, ty, name: field, span });
                     if !self.eat(&Tok::Comma) {
                         break;
                     }
@@ -272,7 +342,7 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         }
         self.bump();
-        Ok(EnumDecl { name, name_span, sources, interfaces, variants })
+        Ok(EnumDecl { public: false, name, name_span, sources, interfaces, variants })
     }
 
     /// The rest of a function after its return type and name. In a struct body the first
@@ -334,7 +404,7 @@ impl<'a> Parser<'a> {
             }
         }
         let body = self.block()?;
-        Ok(Func { ret, name, name_span, this, params, from, body })
+        Ok(Func { public: false, ret, name, name_span, this, params, from, body })
     }
 
     fn open_brace(&mut self) -> Res<()> {
@@ -381,6 +451,9 @@ impl<'a> Parser<'a> {
             return None;
         }
         let mut n = start + 1;
+        while *self.peek_at(n) == Tok::Dot && matches!(self.peek_at(n + 1), Tok::Ident(_)) {
+            n += 2;
+        }
         if *self.peek_at(n) == Tok::Lt {
             loop {
                 n += 1;
@@ -863,6 +936,16 @@ impl<'a> Parser<'a> {
                 break;
             }
             let (name, name_span) = self.ident("a field or method name")?;
+            // `billing.Line { ... }`: a struct with its module written in front.
+            if *self.peek() == Tok::LBrace && self.struct_literals {
+                if let Some(module) = dotted(&expr) {
+                    let start = expr.span.start;
+                    let fields = self.struct_fields()?;
+                    let kind = ExprKind::StructLit { name: format!("{module}.{name}"), name_span: Span::new(start, name_span.end), fields };
+                    expr = Expr { ty: Ty::Void, moved: false, kind, span: Span::new(start, self.prev_end()) };
+                    continue;
+                }
+            }
             let recv = Box::new(expr);
             let kind = if *self.peek() == Tok::LParen {
                 let args = self.args()?;
@@ -1095,6 +1178,15 @@ enum Tail {
 
 const COMPARISON: usize = 3;
 const ADDITIVE: usize = 4;
+
+/// `a.b.c` written with names only, as one text.
+pub fn dotted(expr: &Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Var(name) => Some(name.clone()),
+        ExprKind::Field { recv, name, .. } => Some(format!("{}.{name}", dotted(recv)?)),
+        _ => None,
+    }
+}
 
 fn int_literal(value: i128, span: Span) -> Res<Expr> {
     match i64::try_from(value) {

@@ -1,0 +1,4 @@
+error: `recount` is not public: it stays inside the `stock` module
+  --> error_method_not_public.sg:5:9
+ 5 |     pen.recount(3)
+   |         ^^^^^^^

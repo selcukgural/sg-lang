@@ -1,0 +1,9 @@
+error: `firstShelf` is public, but it shows `Shelf`, which is not
+  --> leaky/shelf.sg:5:14
+ 5 | public Shelf firstShelf() {
+   |              ^^^^^^^^^^
+  `Shelf` is defined here, without `public`:
+  --> leaky/shelf.sg:1:8
+ 1 | struct Shelf {
+   |        ^^^^^
+  hint: write `public` in front of `Shelf`, or take it off `firstShelf`

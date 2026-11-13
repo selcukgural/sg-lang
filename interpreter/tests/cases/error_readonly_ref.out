@@ -1,0 +1,5 @@
+error: `history` is `readonly`: it is given when the value is built and not changed afterwards
+  `add` changes the list
+  --> error_readonly_ref.sg:7:13
+ 7 |     account.history.add(1)
+   |             ^^^^^^^

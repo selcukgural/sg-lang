@@ -1,0 +1,55 @@
+use stock
+use shop.parts
+
+// A name of the file's own module comes first: this is not `stock.Point`.
+struct Point : Formattable {
+    int x
+}
+
+void main() {
+    var pen = Product("K-1", 1500)
+    pen.price = 1750                        // a `public` field is written from outside
+    pen.receive(5)
+    print(pen)
+    print(pen.available())
+    print(pen.code)                         // `public readonly`: read from outside
+
+    var products = List<Product> { pen, Product("D-1", 4000) }
+    print(total(read products))
+
+    var mine = Point { x = 1 }
+    var theirs = stock.Point { x = 2, y = 3 }
+    stock.Point copy = theirs
+    print(mine)
+    print(copy)
+
+    var color = Color.Custom(255)
+    match color {
+        Custom(rgb) => print(rgb)
+        _ => print("another color")
+    }
+    print(stock.Color.Red)
+    print(stock.Color.Custom(7))
+
+    // The full name works without `use`.
+    var line = billing.lineFor(read products[0], 3)
+    print(line)
+    billing.Line second = billing.Line { name = "box", total = 5 }
+    print(second.total)
+    print(billing.Point { column = 4 })
+
+    // A function of a module is a value like any other function.
+    var twice = double
+    print(twice(4))
+    print(billing.double(4))
+    print(stock.double(4))
+    print(reveal())
+
+    var parts = List<Part> { Part("wheel"), shop.parts.Part.create("door") }
+    print(partCount(read parts))
+    print(parts[1])
+
+    // A variable wins over a module of the same name.
+    var billing = Point { x = 9 }
+    print(billing.x)
+}

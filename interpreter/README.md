@@ -6,6 +6,8 @@ running real programs, not to be fast. Source files end in `.sg`; the crate and 
 ```
 cargo run -- examples/stack.sg                  # runs the program
 cargo run -- test examples/tests_stock.sg       # runs its tests
+cargo run -- examples/shop/main.sg              # a program with modules: the folders next to the file
+cargo run -- test examples/shop                 # the tests of every module of the program in that folder
 cargo run -- build examples/primes.sg -o primes # compiles it through C (needs `cc`)
 cargo run -- emit-c examples/primes.sg          # prints the C
 cargo test
@@ -13,11 +15,12 @@ cargo run -- build examples/primes.sg --release # the same as a release build: o
 sh bench/run.sh                                 # compiled SG against C written by hand
 ```
 
-## What runs today (12 November 2026)
+## What runs today (13 November 2026)
 
 | Area | Supported |
 |---|---|
-| Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point. `public` is accepted and has no effect yet |
+| Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point |
+| Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). Interpreter only; the back end does not take a program with modules yet |
 | Types | `byte`, `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, `read T` and `ref T` in signatures |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
@@ -131,6 +134,16 @@ Design rules that are already enforced:
   changing other fields is fine.
 - After `for x in xs` the list is gone (it was handed over); the error shows the loop.
 - `List<int> xs = ...` needs its item type, and a `HashMap` a key type that can be a key.
+- A name of another module that is not `public` (a type, a function, a field, a method) is an error that
+  names the module and, for a type or a function, shows where it is defined. A struct with a field that is
+  not `public` cannot be built field by field outside its module; the hint is `T(args)` when the struct has
+  a `public` `create`.
+- A name that two modules named with `use` both have is an error where it is used; the hint is the full
+  name (`stock.Point`). A name that is not found but is `public` in some module gets the hint `use stock`.
+  `use` of a folder that is not there, `use` written twice and `use` below the first definition are errors.
+- A `public` function, field or method of a module that shows a type which is not `public` is an error
+  that shows both places.
+- A `readonly` field cannot be assigned, lent as `ref`, or changed through (`account.history.add(1)`).
 
 ## The C back end
 
@@ -372,6 +385,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/interp.rs` | Runs the checked tree; only data-dependent failures (panics) are left to it |
 | `src/emit_c.rs` | The back end: writes the checked tree as C, with the same panics |
 | `src/diag.rs` | Error and panic messages |
+| `src/source.rs` | The files of a program: which folders are modules and which of them are read. All files are kept as one text, so a position says which file it is in |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
 
 It is a library with a thin command line on top, so that a language server can later reuse the parser and the
@@ -380,6 +394,11 @@ checks.
 Tests are golden files: every `.sg` file in `examples/` and `tests/cases/` is run and its output (what it
 printed, then the error or panic message) is compared with the `.out` file next to it. After an intended change,
 regenerate them with `UPDATE_GOLDEN=1 cargo test` and review the diff.
+
+Programs with modules are in `tests/modules/`: the folders there (`stock`, `billing`, `shop/parts`, `leaky`) are
+modules, and each `.sg` file next to them is a program of one file that uses them. A folder with a `main.sg`
+(`tests/modules/rootdir`, `examples/shop`) is a program run as a folder; its output is in `main.out` and what
+the test command prints for it in `tests.out`.
 
 ## Grammar rules
 
@@ -864,6 +883,54 @@ Choices made in the twenty-fifth slice (printing without an allocation, values t
 59. **A method called on a `T*` that has no name** (`make(3).total()`): the box is kept until the statement
     ends; a method that takes `this` gets the value and the box is freed.
 
+Choices made in the twenty-sixth slice (modules: `use`, `public`, `readonly`; checker and interpreter),
+approved on 13 November. The rules of 11 November (a folder is a module, `use`, visibility, what follows from
+visibility) are in the decision table and are built as written there; these are what building them asked for:
+
+60. **A file is a program of one file; a folder is a program.** `sg main.sg`: that file alone is the root
+    module, and the folders next to it are the modules it can name. `sg shop`: every `.sg` file in the
+    folder is the root module. The design says "the files of a folder are one module", and for a folder
+    that is so; the first form is there so that a folder can hold many small programs (`examples/`,
+    `tests/cases/`), each with its own `main`. Go does the same (`go run file.go` against `go run .`).
+61. **A module is read when a file names it**, with `use` or with a full name (`billing.Line`), and then
+    what that module names, and so on. A folder nobody names is not read, so a mistake in it does not
+    stop the program. The test command with a folder (`sg test shop`) reads every folder under it and
+    runs the tests of all of them; with a file it runs the tests of that file only.
+62. **A module is named by its whole path from the root of the program**: `use shop.stock`, also from
+    inside `shop`. There is no short form from a neighbour. The root has no name, so no module can `use`
+    it, and `public` says nothing there: the rule "a `public` name does not show a type that is not
+    `public`" is checked in the modules, not in the root.
+63. **A name of the file's own module comes before the names brought in by `use`**, and a variable comes
+    before both. A `Point` of your own next to `use stock` (which has a `Point` too) is yours and no
+    error; theirs is `stock.Point`. C# and Rust do the same. Without this, adding a name to a module
+    could break every file that uses the module.
+64. **The same name in two modules named with `use` is an error where it is used**, as decided, for
+    functions as for types; the hint is the full name. Naming both modules is no error by itself.
+65. **`readonly` goes all the way down**: nothing behind the field can be changed either. `account.owner =
+    ...` is an error, and so are `ref account.owner`, a `ref this` method on it and `account.history.add(1)`
+    for a `readonly List`. The value that holds the field can still be replaced as a whole (`account =
+    Account("grace")`). It holds inside the module too. C#'s `readonly` stops only the assignment for a
+    class and goes all the way for a struct; here every value is owned like a C# struct, so the second
+    reading fits. No cost at run time.
+66. **`print` writes the name of a type without its module**: `Product { code = "K-1" }`. Error messages
+    of the checker write the full name (`stock.Product`) for a type of another module.
+67. **The test command writes the module in front of a test's name** (`ok    stock: nothing ships when
+    stock is short`), nothing for a test of the root. Two tests may have the same name in two modules,
+    not in one. The summary is one line for the whole program, not one for each module as in the design's
+    sketch.
+68. **The hint for a name that was not found looks into the folders nobody named**: `Product("K-1", 1500)`
+    without a `use` says `use stock`. It is the only time those folders are read.
+69. **`use` lines stand before everything else in the file**, one module on a line; the same line twice
+    and a folder that is not there (or holds no `.sg` file) are errors. An unused `use` is fine, as
+    decided.
+70. **What `public` on a module's name promises is checked for**: the parameters and the result of a
+    `public` function, the `public` fields and the `public` methods of a `public` struct, and every value
+    of a `public` enum's variants. A `public` field or method in a struct that is not `public` is allowed
+    and says nothing.
+71. **A folder is a module only if its name can be written as a name** (letters, digits, `_`; no `-`, no
+    dot in front).
+72. **A program with modules is not compiled yet**: `sg build` says so. The interpreter runs it.
+
 ## Not here yet
 
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
@@ -879,7 +946,8 @@ Choices made in the twenty-fifth slice (printing without an allocation, values t
   methods on enums.
 - Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
-  in the design); modules, threads, `shared` / `weak` / `checked` / `locked`.
+  in the design); threads, `shared` / `weak` / `checked` / `locked`.
+- Modules in the back end. Type aliases (`using`). Running the tests of one module only.
 - A collection changed inside its own `for` through another `ref` to it is not caught (it is part of the
   borrow check); the direct forms are. Here a list is gone over by position and a map or a set as it was when
   the loop started.
@@ -899,7 +967,7 @@ error.
 
 The back end, one piece of the language at a time, each compared with the interpreter, run under the
 sanitizers and measured against C. Every example that runs in the interpreter and has no `test` block is
-now compiled, and printing a value allocates nothing. Next: modules (`use`), in the checker and the
-interpreter first and then in the back end. What the back end still does not take: a `match` inside a larger
+now compiled, and printing a value allocates nothing. Modules (`use`, `public`, `readonly`) are in the
+checker and the interpreter; next they go into the back end. What the back end still does not take: a `match` inside a larger
 expression, and `try` or `?? return` after a value that owns memory and has no name. After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

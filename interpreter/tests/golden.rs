@@ -23,6 +23,64 @@ fn run_file(path: &Path) -> String {
     text
 }
 
+/// A program of several files: `path` is its main file, or its folder. With `tests` the test
+/// command is run on it. The folder the program is in is left out of the paths in the output.
+fn run_program(path: &Path, tests: bool, within: &Path) -> String {
+    let sources = sg::load(path, tests).unwrap();
+    let mut out = Vec::new();
+    let result = match tests {
+        true => sg::test_sources(&sources, &mut out).map(|_| ()),
+        false => sg::run_sources(&sources, &mut out),
+    };
+    let mut text = String::from_utf8(out).unwrap();
+    match result {
+        Ok(()) => {}
+        Err(sg::Stop::Diag(diag)) => text.push_str(&diag.render_in(&sources)),
+        Err(sg::Stop::Failed(error)) => text.push_str(&format!("error: {error}\n")),
+        Err(other) => text.push_str(&format!("{other:?}\n")),
+    }
+    text.replace(&format!("{}/", within.display()), "")
+}
+
+/// Programs with modules. `tests/modules` holds a few modules (folders) and, next to them,
+/// programs of one file that use them. A folder with a `main.sg` is a program of its own: it
+/// is run as a folder, and so are its tests.
+#[test]
+fn modules() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let update = std::env::var_os("UPDATE_GOLDEN").is_some();
+    // (what is run, with the test command, the expected output, the folder left out of paths)
+    let mut runs: Vec<(PathBuf, bool, PathBuf, PathBuf)> = Vec::new();
+    let dir = root.join("tests/modules");
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().path()).collect();
+    entries.push(root.join("examples/shop"));
+    entries.sort();
+    for path in entries {
+        if path.extension().is_some_and(|ext| ext == "sg") {
+            runs.push((path.clone(), false, path.with_extension("out"), dir.clone()));
+        } else if path.join("main.sg").exists() {
+            let within = path.parent().unwrap().to_path_buf();
+            runs.push((path.clone(), false, path.join("main.out"), within.clone()));
+            runs.push((path.clone(), true, path.join("tests.out"), within));
+        }
+    }
+    assert!(runs.len() > 10);
+
+    let mut failures = Vec::new();
+    for (path, tests, golden, within) in &runs {
+        let actual = run_program(path, *tests, within);
+        if update {
+            std::fs::write(golden, &actual).unwrap();
+            continue;
+        }
+        let expected = std::fs::read_to_string(golden).unwrap_or_default();
+        if actual != expected {
+            failures.push(format!("--- {}\nexpected:\n{expected}\nactual:\n{actual}", golden.strip_prefix(root).unwrap().display()));
+        }
+    }
+    assert!(failures.is_empty(), "{} program(s) differ:\n{}", failures.len(), failures.join("\n"));
+}
+
 #[test]
 fn golden() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

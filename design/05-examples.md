@@ -1,6 +1,6 @@
 # Example programs
 
-*6 November 2026. The examples were written by hand, before there was any tool to check them. Since 12 November 2026 the [interpreter](../interpreter/README.md) runs a growing part of the language; the stack example runs there as `examples/stack.sg`, and the calculator as `examples/calculator.sg` (the differences from the text below are listed in the interpreter's README). The aim is to
+*6 November 2026. The examples were written by hand, before there was any tool to check them. Since 12 November 2026 the [interpreter](../interpreter/README.md) runs a growing part of the language; the stack example runs there as `examples/stack.sg`, and the calculator as `examples/calculator.sg` (the differences from the text below are listed in the interpreter's README); the stock and invoice example with its tests runs as `examples/shop`. The aim is to
 put the notation under stress. The decisions are in the [decisions](04-decisions-and-open-questions.md) file.*
 
 ## Calculator
@@ -1031,7 +1031,7 @@ public struct Warehouse {
         return Ok()
     }
 
-    public read Product? get(read this, read string code) {
+    public read Product? get(read this, read string code) from this {
         var i = indexOf(read this.products, code) ?? return null
         return read this.products[i]
     }

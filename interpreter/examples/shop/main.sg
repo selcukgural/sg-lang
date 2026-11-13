@@ -1,0 +1,20 @@
+// The program of the "Stock and invoice" example: three folders, three modules.
+// Run it with `sg examples/shop/main.sg`, its tests with `sg test examples/shop`.
+use stock
+use billing
+
+Result<void, StockError> main() {
+    var warehouse = Warehouse()
+    warehouse.add(Product("K-1", "pen", 1500))
+    warehouse.add(Product("D-1", "notebook", 4000))
+    try warehouse.receive("K-1", 100)
+    try warehouse.receive("D-1", 20)
+
+    var invoice = Invoice("ada")
+    try invoice.add(ref warehouse, "K-1", 10)
+    try invoice.add(ref warehouse, "D-1", 2)
+    print($"{invoice.customer}: {invoice.total()} cents")    // ada: 23000 cents
+
+    try invoice.add(ref warehouse, "D-1", 50)                // NotEnough("D-1", 50, 18), exit code 1
+    return Ok()
+}

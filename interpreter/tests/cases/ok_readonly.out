@@ -1,0 +1,3 @@
+ada
+Account { owner = "ada", balance = 50 }
+Account { owner = "grace", balance = 0 }

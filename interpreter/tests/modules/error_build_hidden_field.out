@@ -1,0 +1,5 @@
+error: `quantity` is not public, so a `Product` cannot be built field by field outside the `stock` module
+  --> error_build_hidden_field.sg:4:15
+ 4 |     var pen = Product { code = "X", price = 1, quantity = 9 }
+   |               ^^^^^^^
+  hint: `Product(code, price)`

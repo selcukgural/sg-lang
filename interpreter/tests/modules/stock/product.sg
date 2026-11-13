@@ -1,0 +1,40 @@
+public struct Product : Formattable {
+    public readonly string code
+    public long price
+    int quantity
+
+    public Product create(string code, long price) {
+        return Product { code = code, price = price, quantity = 0 }
+    }
+
+    public int available(read this) {
+        return this.quantity
+    }
+
+    void recount(ref this, int quantity) {
+        this.quantity = quantity
+    }
+
+    public void receive(ref this, int count) {
+        this.recount(this.quantity + count)
+    }
+}
+
+public enum Color : Formattable, Copyable {
+    Red
+    Green
+    Custom(int rgb)
+}
+
+public struct Point : Copyable, Formattable {
+    public int x
+    public int y
+}
+
+struct Shelf {
+    int row
+}
+
+int secret() {
+    return 7
+}

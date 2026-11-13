@@ -1,0 +1,2 @@
+ada: 23000 cents
+error: NotEnough("D-1", 50, 18)

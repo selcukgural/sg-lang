@@ -1,0 +1,8 @@
+error: `secret` exists in the `stock` module but is not public
+  --> error_function_not_public.sg:4:11
+ 4 |     print(secret())
+   |           ^^^^^^^^
+  it is defined here, without `public`:
+  --> stock/product.sg:38:5
+ 38 | int secret() {
+    |     ^^^^^^

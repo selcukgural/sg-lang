@@ -1,0 +1,10 @@
+use stock
+
+public struct Part : Formattable {
+    public string name
+    public Color color
+
+    public Part create(string name) {
+        return Part { name = name, color = Color.Green }
+    }
+}

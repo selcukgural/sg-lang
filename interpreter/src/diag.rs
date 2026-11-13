@@ -61,6 +61,11 @@ impl Diag {
 
     /// Renders the message with the source line and a marker under the span.
     pub fn render(&self, src: &str, path: &str) -> String {
+        self.render_in(&crate::source::Sources::single(src, path))
+    }
+
+    /// The same for a program of several files: each place is shown in its own file.
+    pub fn render_in(&self, sources: &crate::source::Sources) -> String {
         let label = match self.kind {
             Kind::Error => "error",
             Kind::Panic => "panic",
@@ -69,10 +74,10 @@ impl Diag {
         for note in &self.notes {
             text.push_str(&format!("  {note}\n"));
         }
-        text.push_str(&snippet(self.span, src, path));
+        text.push_str(&sources.snippet(self.span));
         if let Some((span, note)) = self.related.as_deref() {
             text.push_str(&format!("  {note}:\n"));
-            text.push_str(&snippet(*span, src, path));
+            text.push_str(&sources.snippet(*span));
         }
         if let Some(hint) = &self.hint {
             text.push_str(&format!("  hint: {hint}\n"));
@@ -102,13 +107,14 @@ pub fn snippet(span: Span, src: &str, path: &str) -> String {
     )
 }
 
-/// Finds the closest name, for "did you mean" hints.
+/// Finds the closest name, for "did you mean" hints. Of two names equally close the first in
+/// the alphabet wins, so the hint does not depend on the order the candidates come in.
 pub fn nearest<'a>(name: &str, candidates: impl Iterator<Item = &'a str>) -> Option<&'a str> {
     let limit = (name.chars().count() / 3).max(1);
     candidates
         .map(|c| (distance(name, c), c))
         .filter(|(d, _)| *d <= limit)
-        .min_by_key(|(d, _)| *d)
+        .min()
         .map(|(_, c)| c)
 }
 

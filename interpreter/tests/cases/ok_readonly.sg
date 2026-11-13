@@ -1,0 +1,22 @@
+struct Account : Formattable {
+    readonly string owner
+    long balance
+
+    Account create(string owner) {
+        return Account { owner = owner, balance = 0 }
+    }
+
+    void deposit(ref this, long amount) {
+        this.balance += amount
+    }
+}
+
+void main() {
+    var account = Account("ada")
+    account.deposit(50)
+    print(account.owner)
+    print(account)
+    // The whole value can still be replaced: the new one is built with its own owner.
+    account = Account("grace")
+    print(account)
+}

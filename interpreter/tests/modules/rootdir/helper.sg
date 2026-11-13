@@ -1,0 +1,3 @@
+string helper() {
+    return "from the second file"
+}

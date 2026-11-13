@@ -1,0 +1,210 @@
+//! The files of a program. A folder is a module: the files in it are one module, named by the
+//! path of the folder from the root of the program (`shop/stock` is `shop.stock`). The root
+//! itself is the module without a name, where `main` is.
+//!
+//! All the files are kept as one text, one after the other, so a position in that text says
+//! which file it is in.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use crate::diag::{snippet, Span};
+use crate::lexer::{lex, Tok};
+
+pub struct SourceFile {
+    /// As it is written in messages.
+    pub path: String,
+    /// The module the file belongs to; empty for the root.
+    pub module: String,
+    /// Where the file lies in the text of the program.
+    pub start: usize,
+    pub end: usize,
+    /// Whether the test command runs the `test` blocks of this file.
+    pub tested: bool,
+}
+
+pub struct Sources {
+    pub text: String,
+    pub files: Vec<SourceFile>,
+    /// The folder the modules are looked for in; `None` for a program that is one text.
+    root: Option<PathBuf>,
+}
+
+impl Sources {
+    /// A program that is one text.
+    pub fn single(src: &str, path: &str) -> Sources {
+        let file = SourceFile { path: path.to_string(), module: String::new(), start: 0, end: src.len(), tested: true };
+        Sources { text: src.to_string(), files: vec![file], root: None }
+    }
+
+    fn add(&mut self, path: String, module: &str, text: &str, tested: bool) -> usize {
+        if !self.text.is_empty() {
+            self.text.push('\n');
+        }
+        let start = self.text.len();
+        self.text.push_str(text);
+        self.files.push(SourceFile { path, module: module.to_string(), start, end: self.text.len(), tested });
+        self.files.len() - 1
+    }
+
+    pub fn file_at(&self, offset: usize) -> &SourceFile {
+        self.files.iter().find(|file| offset <= file.end).unwrap_or_else(|| self.files.last().expect("a program has a file"))
+    }
+
+    /// Location, source line and a marker under the span, in the file the span is in.
+    pub fn snippet(&self, span: Span) -> String {
+        let file = self.file_at(span.start);
+        let start = span.start.clamp(file.start, file.end) - file.start;
+        let end = span.end.clamp(file.start, file.end) - file.start;
+        snippet(Span::new(start, end), &self.text[file.start..file.end], &file.path)
+    }
+
+    /// The same program with the modules no file names read in after it, so every position
+    /// stays where it was. `None` if there is no such module. This is how the hint for a name
+    /// that was not found can say which `use` line is missing.
+    pub fn with_every_module(&self) -> Option<Sources> {
+        let root = self.root.as_ref()?;
+        let mut modules = Vec::new();
+        modules_under(root, "", &mut modules);
+        modules.retain(|module| !self.files.iter().any(|file| file.module == *module));
+        if modules.is_empty() {
+            return None;
+        }
+        let files = self.files.iter().map(|file| SourceFile { path: file.path.clone(), module: file.module.clone(), ..*file }).collect();
+        let mut all = Sources { text: self.text.clone(), files, root: None };
+        for module in modules {
+            let folder = module.split('.').fold(root.clone(), |folder, part| folder.join(part));
+            for file in sg_files(&folder) {
+                let text = std::fs::read_to_string(&file).ok()?;
+                all.add(file.to_string_lossy().into_owned(), &module, &text, false);
+            }
+        }
+        Some(all)
+    }
+}
+
+fn sg_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = match std::fs::read_dir(dir) {
+        Ok(entries) => entries.flatten().map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|ext| ext == "sg") && path.is_file()).collect(),
+        Err(_) => Vec::new(),
+    };
+    files.sort();
+    files
+}
+
+/// The folders under `dir` that hold source files, as module names, with the folders inside
+/// them.
+fn modules_under(dir: &Path, prefix: &str, found: &mut Vec<String>) {
+    let mut folders: Vec<PathBuf> = match std::fs::read_dir(dir) {
+        Ok(entries) => entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).collect(),
+        Err(_) => return,
+    };
+    folders.sort();
+    for folder in folders {
+        let Some(name) = folder.file_name().and_then(|name| name.to_str()) else { continue };
+        if !is_module_name(name) {
+            continue;
+        }
+        let module = if prefix.is_empty() { name.to_string() } else { format!("{prefix}.{name}") };
+        if !sg_files(&folder).is_empty() {
+            found.push(module.clone());
+        }
+        modules_under(&folder, &module, found);
+    }
+}
+
+/// A folder is a module only if its name can be written in the language.
+fn is_module_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The modules a file names: after `use`, or in front of a dot (`billing.Line`). Every chain of
+/// names is tried; whether a folder of that name exists is asked by the caller.
+fn named_paths(text: &str, range: Span) -> Vec<String> {
+    let Ok(toks) = lex(text, range, false) else { return Vec::new() };
+    let mut paths = Vec::new();
+    let mut i = 0;
+    while i < toks.len() {
+        let Tok::Ident(first) = &toks[i].tok else {
+            i += 1;
+            continue;
+        };
+        let after_use = i > 0 && toks[i - 1].tok == Tok::Use;
+        let mut chain = vec![first.as_str()];
+        i += 1;
+        while i + 1 < toks.len() && toks[i].tok == Tok::Dot {
+            let Tok::Ident(next) = &toks[i + 1].tok else { break };
+            chain.push(next);
+            i += 2;
+        }
+        // The last name of `billing.Line` is what is taken from the module; after `use` the
+        // whole chain is the module.
+        let longest = if after_use { chain.len() } else { chain.len() - 1 };
+        for length in 1..=longest {
+            paths.push(chain[..length].join("."));
+        }
+    }
+    paths
+}
+
+/// Reads the program at `path`. A file is a program of one file: it is the root module alone.
+/// A folder is a program whose root module is every file in it. The folders next to the root
+/// files are the modules; one is read when a file names it. With `every_module` all of them
+/// are read and their tests run: that is what the test command does with a folder.
+pub fn load(path: &Path, every_module: bool) -> Result<Sources, String> {
+    let shown = |path: &Path| path.to_string_lossy().into_owned();
+    let read = |path: &Path| std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", shown(path)));
+    let mut sources = Sources { text: String::new(), files: Vec::new(), root: None };
+    let root = if path.is_dir() {
+        let files = sg_files(path);
+        if files.is_empty() {
+            return Err(format!("there is no `.sg` file in {}", shown(path)));
+        }
+        for file in files {
+            sources.add(shown(&file), "", &read(&file)?, true);
+        }
+        path.to_path_buf()
+    } else {
+        sources.add(shown(path), "", &read(path)?, true);
+        path.parent().map(Path::to_path_buf).unwrap_or_default()
+    };
+    let root = if root.as_os_str().is_empty() { PathBuf::from(".") } else { root };
+    sources.root = Some(root.clone());
+
+    let mut wanted: Vec<String> = Vec::new();
+    if every_module && path.is_dir() {
+        modules_under(&root, "", &mut wanted);
+    }
+    let mut asked: HashMap<String, bool> = HashMap::new();
+    let mut loaded: HashSet<String> = HashSet::new();
+    let mut scanned = 0;
+    loop {
+        // What the files read so far name.
+        while scanned < sources.files.len() {
+            let file = &sources.files[scanned];
+            for module in named_paths(&sources.text, Span::new(file.start, file.end)) {
+                let exists = *asked.entry(module.clone()).or_insert_with(|| {
+                    let folder = module.split('.').fold(root.clone(), |folder, part| folder.join(part));
+                    module.split('.').all(is_module_name) && !sg_files(&folder).is_empty()
+                });
+                if exists {
+                    wanted.push(module);
+                }
+            }
+            scanned += 1;
+        }
+        if wanted.is_empty() {
+            break;
+        }
+        let module = wanted.remove(0);
+        if !loaded.insert(module.clone()) {
+            continue;
+        }
+        let folder = module.split('.').fold(root.clone(), |folder, part| folder.join(part));
+        for file in sg_files(&folder) {
+            sources.add(shown(&file), &module, &read(&file)?, every_module);
+        }
+    }
+    Ok(sources)
+}

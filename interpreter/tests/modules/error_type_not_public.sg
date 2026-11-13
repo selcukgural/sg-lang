@@ -1,0 +1,7 @@
+use stock
+
+void show(read Shelf shelf) {
+}
+
+void main() {
+}

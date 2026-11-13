@@ -1,0 +1,8 @@
+struct Account {
+    readonly List<int> history
+}
+
+void main() {
+    var account = Account { history = List<int>() }
+    account.history.add(1)
+}
