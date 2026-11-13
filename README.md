@@ -158,8 +158,11 @@ their input line by line and see their command line. Designed but not built yet:
 own are put off. There is nothing for the network yet, no standard library, no package manager and no
 editor support.
 
-When the language is complete, the plan is to write a well-known, widely used program in it,
-one that has not been rewritten in Rust yet, and see how the claim holds on real software.
+The plan is to write a well-known, widely used program in it, one that has not been rewritten in
+Rust yet, and see how the claim holds on real software. The program is
+[gifsicle](https://www.lcdf.org/gifsicle/), the C tool that shrinks and edits GIF images: its work is
+bytes and bits, so it can be measured against the C original, and it has had a heap overflow of the kind
+SG rules out. What it needs next decides what the language gets next.
 
 ## What is in this repository
 
