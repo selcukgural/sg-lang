@@ -1,0 +1,6 @@
+void main() {
+    var s = "ab"
+    for c in s.chars() {
+        s.write(c)
+    }
+}

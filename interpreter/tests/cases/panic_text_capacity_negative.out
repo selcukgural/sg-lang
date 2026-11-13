@@ -1,0 +1,4 @@
+panic: the capacity of a text cannot be negative: -1
+  --> panic_text_capacity_negative.sg:3:13
+ 3 |     var s = string.withCapacity(n)
+   |             ^^^^^^^^^^^^^^^^^^^^^^

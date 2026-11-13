@@ -838,6 +838,38 @@ for word in readLine().split(' ') { }            // error: the text has no name 
 line.split("")                                   // error: the separator is empty
 ```
 
+### Building text
+
+A `string` is where a text is built; there is no separate builder type. `write` adds at its end whatever `print`
+takes, and a `$"..."` is written straight in, with no text in between:
+
+```
+var line = ""
+line.write($"{name}: {count}")                   // the constant is copied on the first write
+line.write(',')
+var out = string.withCapacity(1 << 20)           // room for a megabyte, taken once
+for entry in read entries {
+    out.write($"{entry.name},{entry.size}\n")
+}
+line.clear()                                     // empty again; the memory is kept for the next round
+
+void row(ref string out, int n) {                // built across functions through `ref string`
+    out.write(n)
+}
+```
+
+`write` changes the text, so what looks at it keeps it from being written, and a text is not written into itself:
+it may move to a larger block while it grows.
+
+```
+s.write(s)                                       // error, hint: var copy = s.clone()
+s.write(s.trim())                                // error: the part looks at s
+s.write($"{s.length()}")                         // fine: the number is computed before anything is written
+var head = s[..3]
+s.write("x")                                     // error while head is used later
+s += "x"                                         // error, hint: s.write("x")
+```
+
 ### Closing files
 
 `dispose` cannot return an error. Whoever wants to see the write error calls `close`, which returns a `Result`:

@@ -148,9 +148,10 @@ language as it is today.
 
 Working today, in the interpreter and in compiled code: integers, `float` and `double` with their
 constants, math and reading out of text, `bool`, `char` and text (split, trimmed and searched without
-copying); structs, enums and `match`; `T*`, `T?` and `Result` with `try` and `??`; `List`, `HashMap`
-and `HashSet`; fixed-size arrays (`int[8]`) and slices (`read byte[]`); function values; ownership,
-moves and the borrow check; modules (`use`, `public`, `readonly`); `test` blocks.
+copying, built piece by piece in place); structs, enums and `match`; `T*`, `T?` and `Result` with `try`
+and `??`; `List`, `HashMap` and `HashSet`; fixed-size arrays (`int[8]`) and slices (`read byte[]`);
+function values; ownership, moves and the borrow check; modules (`use`, `public`, `readonly`); `test`
+blocks.
 
 Designed but not built yet: threads and shared ownership. Generics of your own are put off. There is nothing for files or the network
 yet, no standard library, no package manager and no editor support.

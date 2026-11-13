@@ -9,7 +9,8 @@
 //!
 //! Only a part of the language is compiled so far: integers, `float` and `double` (with their
 //! constants, `parse`, the conversions that do not panic and the math of `<math.h>`), `bool`, `char`,
-//! text (with `trim`, the searches and the iterators `chars`, `split`, `splitWhitespace` and `lines`), functions, structs,
+//! text (with `trim`, the searches, the iterators `chars`, `split`, `splitWhitespace` and `lines`, and
+//! `write` and `clear`, which add to a text where it is, as `f.write` does), functions, structs,
 //! enums with `match` and `is`, `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
 //! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, and `print`. Anything else
 //! is an error that names what is missing, so nothing is compiled wrongly in silence.
@@ -564,36 +565,57 @@ static sg_string sg_join(sg_str separator, const sg_string* items, int64_t count
     }
     return (sg_string){ bytes, len, len };
 }
-/* Text that is put together piece by piece: what a `Formatter` writes into. */
+/* Text that is put together piece by piece: what a `Formatter` writes into. Room for `count`
+   more bytes: the block doubles (at least 32 bytes), and a text with no block of its own (a
+   constant in the program) is copied out first. */
+static void sg_room(sg_string* out, int64_t count) {
+    if (out->len + count <= out->cap) return;
+    int64_t room = out->cap ? out->cap * 2 : 32;
+    while (room < out->len + count) room *= 2;
+    uint8_t* grown = out->cap ? realloc(out->ptr, (size_t)room) : malloc((size_t)room);
+    if (!grown) abort();
+    if (!out->cap && out->len) memcpy(grown, out->ptr, (size_t)out->len);
+    out->ptr = grown;
+    out->cap = room;
+}
 static void sg_put(sg_string* out, const void* bytes, int64_t count) {
     if (count <= 0) return;
-    if (out->len + count > out->cap) {
-        int64_t room = out->cap ? out->cap * 2 : 32;
-        while (room < out->len + count) room *= 2;
-        uint8_t* grown = out->cap ? realloc(out->ptr, (size_t)room) : malloc((size_t)room);
-        if (!grown) abort();
-        out->ptr = grown;
-        out->cap = room;
-    }
+    sg_room(out, count);
     memcpy(out->ptr + out->len, bytes, (size_t)count);
     out->len += count;
 }
+/* `string.withCapacity(n)`: an empty text with room for `n` bytes; none is taken for 0. */
+SG_COLD static _Noreturn void sg_capacity_bad(int64_t n, const char* loc) {
+    fflush(stdout);
+    if (n < 0) fprintf(stderr, "panic: the capacity of a text cannot be negative: %lld\n", (long long)n);
+    else fprintf(stderr, "panic: there is no memory for a text of %lld bytes\n", (long long)n);
+    sg_die(loc);
+}
+static sg_string sg_with_capacity(int64_t n, const char* loc) {
+    if (__builtin_expect(n < 0, 0)) sg_capacity_bad(n, loc);
+    if (n == 0) return (sg_string){ (uint8_t*)"", 0, 0 };
+    uint8_t* bytes = malloc((size_t)n);
+    if (!bytes) sg_capacity_bad(n, loc);
+    return (sg_string){ bytes, 0, n };
+}
 static void sg_puts(sg_string* out, const char* text) { sg_put(out, text, (int64_t)strlen(text)); }
 static void sg_putf(sg_string* out, const char* format, ...) {
-    char small[128];
     va_list count, write;
     va_start(count, format);
     va_copy(write, count);
-    int n = vsnprintf(small, sizeof small, format, count);
+    /* Straight into the block, where it fits (the usual case once a text has grown). */
+    int64_t room = out->cap - out->len;
+    char small[128];
+    int n = out->cap ? vsnprintf((char*)out->ptr + out->len, (size_t)room, format, count) : vsnprintf(small, sizeof small, format, count);
     va_end(count);
-    if (n < (int)sizeof small) {
+    if (out->cap && n < room) {
+        out->len += n;
+    } else if (!out->cap && n < (int)sizeof small) {
         sg_put(out, small, n);
     } else {
-        char* large = malloc((size_t)n + 1);
-        if (!large) abort();
-        vsnprintf(large, (size_t)n + 1, format, write);
-        sg_put(out, large, n);
-        free(large);
+        sg_room(out, (int64_t)n + 1);
+        vsnprintf((char*)out->ptr + out->len, (size_t)n + 1, format, write);
+        out->len += n;
     }
     va_end(write);
 }
@@ -3928,6 +3950,7 @@ impl<'a> Emitter<'a> {
                     Callee::Plain if list_behind(&recv.ty).is_some() => Effect::Changes,
                     Callee::Plain if table_behind(&recv.ty).is_some() && matches!(name.as_str(), "length" | "get" | "contains") => Effect::Reads,
                     Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::Map(..) | Ty::Set(_) | Ty::Formatter) => Effect::Changes,
+                    Callee::Plain if matches!(name.as_str(), "write" | "clear") && (is_text(&recv.ty) || is_text_behind_pointer(&recv.ty)) => Effect::Changes,
                     Callee::Plain if name == "clone" || name == "toString" => Effect::Acts,
                     // `next` moves the iterator on; `split` stops at a separator that is empty.
                     Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::TextIter(_)) => Effect::Changes,
@@ -4464,6 +4487,23 @@ impl<'a> Emitter<'a> {
             self.post.push(self.drop_of(&expr.ty, &temp));
         }
         Ok(temp)
+    }
+
+    /// What `f.write(x)` and `text.write(x)` become: each piece of `x` added at the end of the
+    /// text that `out` points to.
+    fn write_into(&mut self, out: &str, arg: &'a Expr) -> Res<String> {
+        let lines: Vec<String> = self.pieces(arg, true)?.into_iter().map(|piece| match piece {
+            Piece::Text(format, values) if values.is_empty() => {
+                let text = format.replace("%%", "%");
+                format!("sg_put({out}, {}, {})", c_string(&text), text.len())
+            }
+            Piece::Text(format, values) => format!("sg_putf({out}, {}{values})", c_string(&format)),
+            Piece::Show(shower, at) => format!("{shower}({out}, {at})"),
+        }).collect();
+        match lines.len() {
+            1 => Ok(lines.concat()),
+            _ => Ok(format!("({{ {}; }})", lines.join("; "))),
+        }
     }
 
     /// The address of a place, for `read x`, `ref x` and the receiver of a method.
@@ -5336,6 +5376,12 @@ impl<'a> Emitter<'a> {
                         _ => Ok(format!("({called} >= 0)")),
                     }
                 }
+                // `string.withCapacity(n)`: a block of `n` bytes, or a panic that says why not.
+                Callee::WithCapacity => {
+                    let room = self.value_as(&args[0], &Ty::Int(IntTy::Nint))?;
+                    let loc = self.loc(expr.span);
+                    Ok(format!("sg_with_capacity({room}, {loc})"))
+                }
                 // `string.fromUtf8(bytes)`: the bytes are looked at as text where they are, if
                 // they are text; otherwise the error says where the first bad byte lies.
                 Callee::FromUtf8 => {
@@ -5402,6 +5448,19 @@ impl<'a> Emitter<'a> {
                         _ => format!("({{ {start}sg_str {temp}; if (!{step}({at}, &{temp})) {temp} = SG_NO_STR; {temp}; }})"),
                     })
                 }
+                // `text.write(x)` adds at the end of the text, as `f.write` does; `clear` keeps
+                // the block for what is written next.
+                Callee::Plain if matches!(name.as_str(), "write" | "clear") && (is_text(&recv.ty) || is_text_behind_pointer(&recv.ty)) => {
+                    let out = self.list_address(recv)?;
+                    match name.as_str() {
+                        "clear" => Ok(format!("(({out})->len = 0)")),
+                        _ => {
+                            let temp = self.temp();
+                            let written = self.write_into(&temp, &args[0])?;
+                            Ok(format!("({{ sg_string* {temp} = {out}; {written}; }})"))
+                        }
+                    }
+                }
                 Callee::Plain if is_text(&recv.ty) || is_text_behind_pointer(&recv.ty) => match name.as_str() {
                     // The bytes of the text, looked at where they are.
                     "asBytes" => {
@@ -5458,18 +5517,7 @@ impl<'a> Emitter<'a> {
                 // `f.write(...)` adds to the text a `format` method is writing.
                 Callee::Plain if *recv.ty.strip_borrow() == Ty::Formatter => {
                     let out = self.value(recv)?;
-                    let lines: Vec<String> = self.pieces(&args[0], true)?.into_iter().map(|piece| match piece {
-                        Piece::Text(format, values) if values.is_empty() => {
-                            let text = format.replace("%%", "%");
-                            format!("sg_put({out}, {}, {})", c_string(&text), text.len())
-                        }
-                        Piece::Text(format, values) => format!("sg_putf({out}, {}{values})", c_string(&format)),
-                        Piece::Show(shower, at) => format!("{shower}({out}, {at})"),
-                    }).collect();
-                    match lines.len() {
-                        1 => Ok(lines.concat()),
-                        _ => Ok(format!("({{ {}; }})", lines.join("; "))),
-                    }
+                    self.write_into(&out, &args[0])
                 }
                 Callee::Plain if matches!(name.as_str(), "equals" | "compare") && matches!(recv.ty.strip_borrow(), Ty::Int(_) | Ty::Bool) => {
                     let (values, names) = self.two(recv, &args[0], head)?;

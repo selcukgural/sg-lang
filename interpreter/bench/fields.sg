@@ -7,7 +7,8 @@ ulong next(ulong state) {
 }
 
 void main() {
-    var parts = List<string>()
+    // Written into one block with room for the whole text, as the C program does.
+    var all = string.withCapacity(1 << 25)
     ulong state = 11
     for i in 0..1000000 {
         state = next(state)
@@ -18,10 +19,8 @@ void main() {
         if i % 7 == 0 {
             name = "Renée"
         }
-        parts.add($" {name}{i % 1000} , {a}, {b} ,{c}".toString())
+        all.write($" {name}{i % 1000} , {a}, {b} ,{c}\r\n")
     }
-    var text = string.join("\r\n", read parts)
-    var all = $"{text}\r\n".toString()
 
     long total = 0
     long letters = 0

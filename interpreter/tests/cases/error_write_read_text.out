@@ -1,0 +1,5 @@
+error: `write` changes the text, but it is reached through a `read` borrow
+  --> error_write_read_text.sg:2:5
+ 2 |     s.write("x")
+   |     ^
+  hint: take the text as `ref string` instead of `read string`

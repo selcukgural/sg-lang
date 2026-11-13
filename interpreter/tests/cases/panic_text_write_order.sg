@@ -1,0 +1,17 @@
+// The place is found first, then the values of the line, then they are written.
+int at(int i) {
+    print($"at {i}")
+    return i
+}
+
+string word(read string w) {
+    print($"word {w}")
+    return w.clone()
+}
+
+void main() {
+    var xs = List<string> { "a", "b" }
+    xs[at(1)].write($"{at(7)}{word("x")}{at(8)}")
+    print(xs)
+    xs[at(5)].write($"{word("y")}")
+}

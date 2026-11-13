@@ -1,0 +1,6 @@
+error: `s` is written into itself
+  `s` may move to a larger block while it grows, and what is written would be read from the old one
+  --> error_write_itself.sg:3:13
+ 3 |     s.write(s)
+   |             ^
+  hint: copy it first: `var copy = s.clone()`

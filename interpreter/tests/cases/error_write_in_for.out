@@ -1,0 +1,9 @@
+error: `s` cannot be changed or moved while a `for` goes over `s`
+  --> error_write_in_for.sg:4:9
+ 4 |         s.write(c)
+   |         ^
+  the loop is here:
+  --> error_write_in_for.sg:3:14
+ 3 |     for c in s.chars() {
+   |              ^^^^^^^^^
+  hint: keep the changes in a list until the loop ends, and apply them after it

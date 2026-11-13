@@ -1,0 +1,7 @@
+struct A {
+    readonly string name
+}
+void main() {
+    var a = A { name = "x" }
+    a.name.write("y")
+}

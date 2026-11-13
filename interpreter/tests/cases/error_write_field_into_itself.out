@@ -1,0 +1,6 @@
+error: `this.out` is written into itself
+  `this.out` may move to a larger block while it grows, and what is written would be read from the old one
+  --> error_write_field_into_itself.sg:4:24
+ 4 |         this.out.write(this.out)
+   |                        ^^^^^^^^
+  hint: copy it first: `var copy = this.out.clone()`

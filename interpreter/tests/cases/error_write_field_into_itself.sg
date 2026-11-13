@@ -1,0 +1,8 @@
+struct R {
+    string out
+    void go(ref this) {
+        this.out.write(this.out)
+    }
+}
+void main() {
+}

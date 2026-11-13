@@ -1,0 +1,5 @@
+void main() {
+    var s = "ab"
+    s.clear()
+    var t = string.builder()
+}

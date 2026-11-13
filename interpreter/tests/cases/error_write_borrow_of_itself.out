@@ -1,0 +1,6 @@
+error: `w.part` looks at `s`, which this call writes into
+  `s` may move to a larger block while it grows, and `w.part` would be read from the old one
+  --> error_write_borrow_of_itself.sg:7:13
+ 7 |     s.write(w.part)
+   |             ^^^^^^
+  hint: copy it first: `var copy = w.part.clone()`

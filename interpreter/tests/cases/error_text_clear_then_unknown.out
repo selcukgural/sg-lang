@@ -1,0 +1,5 @@
+error: `string` has no function `builder`
+  functions for now: join, fromUtf8, withCapacity
+  --> error_text_clear_then_unknown.sg:4:20
+ 4 |     var t = string.builder()
+   |                    ^^^^^^^

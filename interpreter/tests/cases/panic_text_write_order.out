@@ -1,0 +1,10 @@
+at 1
+at 7
+word x
+at 8
+["a", "b7x8"]
+at 5
+panic: index 5 is out of range: the length is 2
+  --> panic_text_write_order.sg:16:5
+ 16 |     xs[at(5)].write($"{word("y")}")
+    |     ^^^^^^^^^

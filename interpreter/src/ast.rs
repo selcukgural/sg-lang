@@ -127,6 +127,8 @@ pub enum Callee {
     Join,
     /// `string.fromUtf8(bytes)`
     FromUtf8,
+    /// `string.withCapacity(n)`
+    WithCapacity,
     /// `int.parse(text)`, `double.parse(text)`: the type is the one in the `Result` it gives.
     Parse,
     /// A call through a function value kept in a variable: `test(order)`.

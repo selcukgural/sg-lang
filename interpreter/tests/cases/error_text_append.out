@@ -1,0 +1,5 @@
+error: type `string` has no method `append`
+  --> error_text_append.sg:3:10
+ 3 |     line.append("x")
+   |          ^^^^^^
+  hint: `write` adds at the end of the text: `text.write(...)`

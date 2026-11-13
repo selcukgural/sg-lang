@@ -32,8 +32,8 @@ pub enum Value {
     Float(FloatTy, f64),
     Bool(bool),
     Char(char),
-    Str(Rc<str>),
-    Fmt(Rc<str>),
+    Str(Rc<String>),
+    Fmt(Rc<String>),
     Void,
     Null,
     /// The struct's name and its fields in declaration order.
@@ -69,7 +69,7 @@ pub enum Value {
 #[derive(Debug)]
 pub struct Cursor {
     kind: TextIter,
-    text: Rc<str>,
+    text: Rc<String>,
     /// The byte the next part starts at.
     at: usize,
     /// What `split` splits at.
@@ -103,14 +103,14 @@ impl Cursor {
                         rest
                     }
                 };
-                Some(Value::Str(part.into()))
+                Some(Value::Str(part.to_string().into()))
             }
             TextIter::SplitWhitespace => {
                 let start = rest.find(|found: char| !found.is_whitespace())?;
                 let word = &rest[start..];
                 let end = word.find(char::is_whitespace).unwrap_or(word.len());
                 self.at += start + end;
-                Some(Value::Str(word[..end].into()))
+                Some(Value::Str(word[..end].to_string().into()))
             }
             // A line ends at `\n`, and a `\r` right before it is not part of the line.
             TextIter::Lines => {
@@ -127,7 +127,7 @@ impl Cursor {
                         rest
                     }
                 };
-                Some(Value::Str(line.into()))
+                Some(Value::Str(line.to_string().into()))
             }
         }
     }
@@ -230,7 +230,7 @@ pub enum Key {
     /// A fractional number in its total order (see `float_key`). Never the key of a map:
     /// it is what `equals` and `compare` look at.
     Float(i64),
-    Str(Rc<str>),
+    Str(Rc<String>),
     Parts(Vec<Key>),
 }
 
@@ -398,6 +398,14 @@ fn zero(ty: &Ty) -> Value {
 }
 
 /// The cell a `ref` or `read` variable stands for.
+/// A `string`, also behind borrows and pointers: `p.write(x)` with `string* p`.
+fn is_text_behind(mut ty: &Ty) -> bool {
+    while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Ptr(inner) = ty {
+        ty = inner;
+    }
+    *ty == Ty::Str
+}
+
 fn behind_borrows(mut target: Cell) -> Cell {
     loop {
         let inner = match &*target.borrow() {
@@ -850,7 +858,7 @@ impl<'a> Interp<'a> {
             ExprKind::Int(value, ty) => Ok(Value::Int(*ty, *value)),
             ExprKind::Float(text, ty) => Ok(Value::Float(*ty, float_literal(text, *ty))),
             ExprKind::Bool(value) => Ok(Value::Bool(*value)),
-            ExprKind::Str(text) => Ok(Value::Str(text.as_str().into())),
+            ExprKind::Str(text) => Ok(Value::Str(text.as_str().to_string().into())),
             ExprKind::Null => Ok(Value::Null),
             ExprKind::Interp(parts) => {
                 // The values are computed first, from left to right; they are written after
@@ -993,7 +1001,7 @@ impl<'a> Interp<'a> {
                         .into());
                 }
                 // A window in the design; a copy here, which cannot be told apart.
-                Ok(Value::Str(text[start..end].into()))
+                Ok(Value::Str(text[start..end].to_string().into()))
             }
             ExprKind::Cast { ty, expr: inner } => match (strip(self.expr(inner, frame)?), ty) {
                 (Value::Int(_, value), Ty::Int(to)) if to.fits(value) => Ok(Value::Int(*to, value)),
@@ -1217,6 +1225,17 @@ impl<'a> Interp<'a> {
                     let parts: Vec<String> = items.borrow().iter().map(|item| item.borrow().format()).collect();
                     Ok(Value::Str(parts.join(&separator).into()))
                 }
+                Callee::WithCapacity => {
+                    let room = self.int(&args[0], frame)?;
+                    let Ok(room) = usize::try_from(room) else {
+                        return Err(Diag::panic(expr.span, format!("the capacity of a text cannot be negative: {room}")).into());
+                    };
+                    let mut text = String::new();
+                    if text.try_reserve(room).is_err() {
+                        return Err(Diag::panic(expr.span, format!("there is no memory for a text of {room} bytes")).into());
+                    }
+                    Ok(Value::Str(Rc::new(text)))
+                }
                 Callee::FromUtf8 => {
                     let cells = cells_of(&owned(self.expr(&args[0], frame)?));
                     let bytes: Vec<u8> = cells.iter().map(|item| match &*item.borrow() {
@@ -1258,6 +1277,33 @@ impl<'a> Interp<'a> {
                     let new = self.expr(&args[0], frame)?;
                     let old = slot.replace(new);
                     Ok(old)
+                }
+                // `text.write(x)` and `text.clear()` change the text where it is. A text that
+                // nothing else holds grows in place; one that is shared is copied first.
+                Callee::Plain if matches!(name.as_str(), "write" | "clear") && is_text_behind(&recv.ty) => {
+                    let mut slot = self.place(recv, frame)?;
+                    loop {
+                        let inner = match &*slot.borrow() {
+                            Value::Borrow(inner) | Value::Ptr(inner) => inner.clone(),
+                            _ => break,
+                        };
+                        slot = inner;
+                    }
+                    let added = match args.first() {
+                        Some(arg) => {
+                            let value = self.expr(arg, frame)?;
+                            self.show(&value, false, arg.span)?
+                        }
+                        None => String::new(),
+                    };
+                    let mut value = slot.borrow_mut();
+                    let Value::Str(text) = &mut *value else { unreachable!("the checker makes the receiver a text") };
+                    let text = Rc::make_mut(text);
+                    if name == "clear" {
+                        text.clear();
+                    }
+                    text.push_str(&added);
+                    Ok(Value::Void)
                 }
                 Callee::Plain => {
                     let recv = owned(self.expr(recv, frame)?);
@@ -2056,9 +2102,9 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
         (Value::Str(text), "contains", [part]) => Value::Bool(find_bytes(text.as_bytes(), &needle(part), false).is_some()),
         (Value::Str(text), "startsWith", [part]) => Value::Bool(text.as_bytes().starts_with(&needle(part))),
         (Value::Str(text), "endsWith", [part]) => Value::Bool(text.as_bytes().ends_with(&needle(part))),
-        (Value::Str(text), "trim", []) => Value::Str(text.trim().into()),
-        (Value::Str(text), "trimStart", []) => Value::Str(text.trim_start().into()),
-        (Value::Str(text), "trimEnd", []) => Value::Str(text.trim_end().into()),
+        (Value::Str(text), "trim", []) => Value::Str(text.trim().to_string().into()),
+        (Value::Str(text), "trimStart", []) => Value::Str(text.trim_start().to_string().into()),
+        (Value::Str(text), "trimEnd", []) => Value::Str(text.trim_end().to_string().into()),
         (Value::Str(text), "equalsIgnoreAsciiCase", [Value::Str(other)]) => Value::Bool(text.eq_ignore_ascii_case(other)),
         (Value::Str(text), "chars" | "split" | "splitWhitespace" | "lines", _) => {
             let kind = match name {

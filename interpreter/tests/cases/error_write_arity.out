@@ -1,0 +1,4 @@
+error: `write` takes 1 argument(s), 2 given
+  --> error_write_arity.sg:3:5
+ 3 |     s.write("x", "y")
+   |     ^^^^^^^^^^^^^^^^^

@@ -1,0 +1,6 @@
+error: `s[..1]` looks at `s`, which this call writes into
+  `s` may move to a larger block while it grows, and `s[..1]` would be read from the old one
+  --> error_write_part_of_itself.sg:3:29
+ 3 |     s.write($"{s.length()} {s[..1]}")
+   |                             ^^^^^^
+  hint: copy it first: `var copy = s[..1].clone()`

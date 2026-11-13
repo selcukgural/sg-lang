@@ -1,0 +1,5 @@
+error: `name` is `readonly`: it is given when the value is built and not changed afterwards
+  `write` changes the text
+  --> error_write_readonly.sg:6:7
+ 6 |     a.name.write("y")
+   |       ^^^^

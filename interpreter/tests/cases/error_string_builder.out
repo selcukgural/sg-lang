@@ -1,0 +1,5 @@
+error: there is no function named `StringBuilder`
+  --> error_string_builder.sg:2:16
+ 2 |     var text = StringBuilder()
+   |                ^^^^^^^^^^^^^
+  hint: a `string` is built where it is: `var text = ""`, then `text.write(...)`

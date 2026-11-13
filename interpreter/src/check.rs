@@ -230,11 +230,14 @@ const CHAR_METHODS: &[&str] = &[
     "toAsciiUpper", "toAsciiLower", "isWhitespace", "utf8Length", "toString", "equals", "compare",
 ];
 const TEXT_METHODS: &[&str] = &[
-    "length", "clone", "asBytes", "indexOf", "lastIndexOf", "contains", "startsWith", "endsWith", "trim", "trimStart", "trimEnd",
+    "length", "clone", "asBytes", "write", "clear", "indexOf", "lastIndexOf", "contains", "startsWith", "endsWith", "trim", "trimStart", "trimEnd",
     "chars", "split", "splitWhitespace", "lines", "equalsIgnoreAsciiCase", "equals", "compare",
 ];
 
 /// A method a `char` or a `string` does not have: the one it may have meant.
+/// What a `StringBuilder` of C# is here.
+const STRING_BUILDER: &str = "a `string` is built where it is: `var text = \"\"`, then `text.write(...)`";
+
 fn text_method_hint(diag: Diag, target: &Ty, name: &str) -> Diag {
     let text = *target == Ty::Str;
     let lower = name.to_lowercase();
@@ -260,6 +263,9 @@ fn text_method_hint(diag: Diag, target: &Ty, name: &str) -> Diag {
         "equalsignorecase" if text => return diag.hint("`equalsIgnoreAsciiCase`: it treats the ASCII letters alone as the same in either case"),
         "charat" | "at" if text => return diag.hint("the characters, one after the other: `for c in text.chars()`; one byte: `text[i]`"),
         "len" | "count" | "size" if text => return diag.hint("`length()`: the number of bytes"),
+        "append" | "appendline" | "push" | "pushstr" | "push_str" | "add" | "concat" | "insert" if text => {
+            return diag.hint("`write` adds at the end of the text: `text.write(...)`")
+        }
         _ => {}
     }
     let names = if text { TEXT_METHODS } else { CHAR_METHODS };
@@ -992,6 +998,9 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             let diag = {
                 Diag::error(ty.span, format!("there is no type named `{}`", ty.name))
             };
+            if ty.name == "StringBuilder" {
+                return Err(diag.hint(STRING_BUILDER));
+            }
             if let Some(hint) = names.use_hint(&ty.name, ty.span) {
                 return Err(diag.hint(hint));
             }
@@ -2036,6 +2045,44 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// `text.write(x)` where `x` looks at `text`: the text may move to a larger block while
+    /// it is written, and `x` would be read from the old one. Numbers, `bool`s and characters
+    /// in a `$"..."` are computed before anything is written, so they may come from it.
+    fn written_into_itself(&self, recv: &Expr, arg: &Expr) -> Res<()> {
+        let Some((name, path)) = store_path(recv) else { return Ok(()) };
+        let Some(root) = self.var_named(name).map(|var| var.id) else { return Ok(()) };
+        let overlaps = |other: &str| path.is_empty() || other.is_empty() || within(&path, other) || within(other, &path);
+        let mut parts = vec![arg];
+        while let Some(part) = parts.pop() {
+            if let ExprKind::Interp(pieces) = &part.kind {
+                parts.extend(pieces.iter().filter_map(|piece| match piece {
+                    InterpPart::Expr(inner) => Some(inner),
+                    _ => None,
+                }));
+                continue;
+            }
+            if matches!(part.ty.strip_borrow(), Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char) {
+                continue;
+            }
+            let same_place = store_path(part).is_some_and(|(other, other_path)| self.var_named(other).is_some_and(|var| var.id == root) && overlaps(&other_path));
+            let lent = self.loans_of(part, false).iter().any(|loan| loan.root == root && overlaps(&loan.path));
+            if same_place || lent {
+                let (text, into) = (&self.src[part.span.start..part.span.end], &self.src[recv.span.start..recv.span.end]);
+                let diag = match text == into {
+                    true => Diag::error(part.span, format!("`{into}` is written into itself"))
+                        .note(format!("`{into}` may move to a larger block while it grows, and what is written would be read from the old one")),
+                    false => Diag::error(part.span, format!("`{text}` looks at `{into}`, which this call writes into"))
+                        .note(format!("`{into}` may move to a larger block while it grows, and `{text}` would be read from the old one")),
+                };
+                return Err(match part.ty.strip_borrow() {
+                    Ty::Str => diag.hint(format!("copy it first: `var copy = {text}.clone()`")),
+                    _ => diag.hint("write it into a text of its own first"),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Which variable a name means right now: scope and position in the scope.
     /// Where the variable with this id is: its scope and its position in the scope.
     fn var_at(&self, id: usize) -> Option<(usize, usize)> {
@@ -2296,6 +2343,10 @@ impl<'a> Checker<'a> {
                         return Err(Diag::error(stmt_span, format!("`{}=` needs an integer on the left, found `{target_ty}`", op.symbol()))
                             .note("the bit operators work on integers"));
                     }
+                } else if op == &Some(BinOp::Add) && target_ty == Ty::Str {
+                    let text = &self.src[target.span.start..target.span.end];
+                    return Err(Diag::error(stmt_span, "`+=` needs a number on the left, found `string`")
+                        .hint(format!("a text grows with `write`: `{text}.write(...)`")));
                 } else if op.is_some() && !matches!(target_ty, Ty::Int(_)) {
                     return Err(Diag::error(
                         stmt_span,
@@ -4372,6 +4423,9 @@ impl<'a> Checker<'a> {
                 let sigs = self.sigs;
                 let Some(sig) = sigs.get(name) else {
                     let diag = Diag::error(name_span, format!("there is no function named `{name}`"));
+                    if name == "StringBuilder" {
+                        return Err(diag.hint(STRING_BUILDER));
+                    }
                     if let Some(hint) = self.names.use_hint(name, name_span) {
                         return Err(diag.hint(hint));
                     }
@@ -4454,9 +4508,15 @@ impl<'a> Checker<'a> {
                     *callee = Callee::FromUtf8;
                     return Ok(Ty::Result(Box::new(Ty::Read(Box::new(Ty::Str))), Box::new(Ty::Struct(TEXT_ERROR.to_string()))));
                 }
+                // `string.withCapacity(n)`: an empty text with room for `n` bytes.
+                if owner == "string" && name == "withCapacity" {
+                    self.args(name, args, &[Ty::Int(IntTy::Nint)], span)?;
+                    *callee = Callee::WithCapacity;
+                    return Ok(Ty::Str);
+                }
                 if owner == "string" {
                     if name != "join" {
-                        return Err(Diag::error(name_span, format!("`string` has no function `{name}`")).note("functions for now: join, fromUtf8"));
+                        return Err(Diag::error(name_span, format!("`string` has no function `{name}`")).note("functions for now: join, fromUtf8, withCapacity"));
                     }
                     let text = Ty::Read(Box::new(Ty::Str));
                     self.args(name, args, &[text, Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))))], span)?;
@@ -4648,6 +4708,25 @@ impl<'a> Checker<'a> {
             (Ty::Str, "length") => {
                 arity(0)?;
                 Ok(Ty::Int(IntTy::Nint))
+            }
+            // A text grows at its end: `line.write($"{name}: {count}")`, and is emptied with
+            // `clear`, which keeps its memory for the next round.
+            (Ty::Str, "write" | "clear") => {
+                arity(if name == "write" { 1 } else { 0 })?;
+                if !writable {
+                    if let Some(diag) = self.readonly(recv) {
+                        return Err(diag.note(format!("`{name}` changes the text")));
+                    }
+                    return Err(Diag::error(recv.span, format!("`{name}` changes the text, but it is reached through a `read` borrow"))
+                        .hint("take the text as `ref string` instead of `read string`"));
+                }
+                if name == "write" {
+                    let ty = self.operand(&mut args[0], None)?;
+                    self.printable(&ty, args[0].span)?;
+                    self.written_into_itself(recv, &args[0])?;
+                }
+                self.not_locked(recv, Access::Write)?;
+                Ok(Ty::Void)
             }
             // The bytes of the text, looked at where they are.
             (Ty::Str, "asBytes") => {

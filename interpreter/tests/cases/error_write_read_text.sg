@@ -1,0 +1,5 @@
+void f(read string s) {
+    s.write("x")
+}
+void main() {
+}

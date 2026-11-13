@@ -1,0 +1,5 @@
+error: `+=` needs a number on the left, found `string`
+  --> error_text_plus_assign.sg:3:5
+ 3 |     s += "c"
+   |     ^^^^^^^^
+  hint: a text grows with `write`: `s.write(...)`

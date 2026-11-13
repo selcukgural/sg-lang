@@ -45,6 +45,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x`. On integers `& \| ^ ~ << >>`; they bind tighter than a comparison, so `flags & mask == 0` tests the masked value |
 | Numbers | `42`, `0xde`, `0b1010`, and `_` between digits: `1_000_000`, `0xdead_beef` |
 | Text | `"..."` with `\n \t \r \0 \\ \" \'` and `\u{1F600}`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string`. `trim()`, `trimStart()`, `trimEnd()` give a `read string`; `indexOf(x)` and `lastIndexOf(x)` a `nint?` in bytes; `contains(x)`, `startsWith(x)`, `endsWith(x)`, where `x` is a `char` or a `read string` (or a `byte` for the two positions); `equalsIgnoreAsciiCase(other)` |
+| Building text | A `string` grows at its end: `line.write(x)` adds whatever `print` takes (`$"{name}: {count}\n"`, a number, a `char`, a text, a `Formattable` value), `line.clear()` empties it and keeps its memory, `string.withCapacity(n)` is an empty text with room for `n` bytes |
 | Going over text | `for c in text.chars()` gives each `char`; `text.split(',')` (a `char` or a `read string`), `text.splitWhitespace()` and `text.lines()` give each part as a `read string`, nothing copied. Kept in a `var`, the iterator gives the next part with `parts.next()`, `null` at the end |
 | Characters | `char`: one Unicode character. `'+'`, `'é'`, `'\n'`, `'\u{e9}'` is a `char`, and a `byte` where an integer goes (`byte b = '+'`, `text[i] == ':'`). `(int)c` is its code, `(char)n` the character of a code, `n.tryToChar()` gives `null` where `(char)n` would panic. `==`, `<`, `match`, keys, `sort`, `print`. `isAsciiDigit()`, `isAsciiLetter()`, `isAsciiAlphanumeric()`, `isAsciiUpper()`, `isAsciiLower()`, `isAsciiWhitespace()`, `isAscii()`, `toAsciiUpper()`, `toAsciiLower()` on `char` and on `byte`; `isWhitespace()` and `utf8Length()` on `char` |
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
@@ -79,6 +80,10 @@ Design rules that are already enforced:
   `tryTo...` or `wrappingTo...` that cannot fail is an error, and so is `wrappingTo...` on a fractional
   number. A constant is a value of its type: `uint u = int.MaxValue` needs `(uint)`.
 - `$"..."` is not a `string`; `string text = $"..."` is an error whose hint is `.toString()`.
+- `write` and `clear` change the text, so they need it where it may change: not through `read` (the hint is
+  `ref string`) and not in a `readonly` field. Writing a text into itself, or anything that looks at it
+  (`s.write(s[..3])`, `s.write(s.trim())`), is an error whose hint is `.clone()`; a number computed from
+  it is fine (`s.write($"{s.length()}")`). `text += "x"` is an error whose hint is `write`.
 - `assert` prints the expression text and, for a comparison, the value of both sides.
 - Deep recursion ends in a readable panic (limit: 5000 nested calls), not a crash.
 - Errors come with the source line, a marker and, where the fix is known, a hint.
@@ -199,7 +204,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (151 of 518 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (154 of 535 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -249,7 +254,8 @@ types, `sbyte`, `short`, `ushort`, `uint`, `ulong` and `nuint`, also written tog
 the interpreter. Since the thirty-fourth slice `float` and `double`, the same way. Since the thirty-fifth
 slice `parse`, the constants, the conversions that do not panic and the math methods, the same way.
 Since the thirty-sixth slice `char`, `chars`, `split`, `splitWhitespace`, `lines`, `trim` and the
-searches in a text, the same way.
+searches in a text, the same way. Since the thirty-seventh slice building a text with `write`, `clear` and
+`string.withCapacity`, the same way.
 What is still missing is an error that names it (not silence): the few positions listed with the choices
 below (81, 111).
 
@@ -284,8 +290,8 @@ hand with no checks):
 | `bits`: a sieve below sixty-four million with one bit for each number, then thirty million numbers written seven bits at a time into a buffer on the stack and read back | 0.322 s | 0.321 s | 0.407 s | 0.79 |
 | `hash`: XXH64, the 64-bit xxHash, written with `ulong`, over one megabyte, two thousand times | 0.134 s | 0.488 s | 0.133 s | 1.01 |
 | `nbody`: the sun and the four giant planets moved twenty million steps in `double`, a square root for each pair at each step | 0.661 s | 0.662 s | 0.679 s | 0.97 |
-| `numbers`: a million lines of whole and fractional numbers read ten times with `long.parse` and `double.parse` and added up | 0.201 s | 0.202 s | 0.194 s | 1.04 |
-| `fields`: a million lines like ` Ada17 , 120, -45 ,6789` gone over twenty times with `lines`, `split`, `trim`, `long.parse` and `chars` | 1.319 s | 1.329 s | 1.224 s | 1.08 |
+| `numbers`: a million lines of whole and fractional numbers read ten times with `long.parse` and `double.parse` and added up | 0.186 s | 0.191 s | 0.196 s | 0.95 |
+| `fields`: a million lines like ` Ada17 , 120, -45 ,6789` gone over twenty times with `lines`, `split`, `trim`, `long.parse` and `chars` | 1.228 s | 1.259 s | 1.202 s | 1.02 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -370,10 +376,11 @@ two energies, digit for digit.
 `numbers` reads numbers out of text: a million lines, whole numbers and fractional ones in turn, read
 ten times over and added up. The SG program finds each line end and gives the line to `long.parse` or
 `double.parse`; the C program gives the place to `strtoll` or `strtod`, which find the end themselves.
-The text is built once at the start, in both from whole numbers (`12.1345` is two of them and a point).
-Reading alone takes a little less time than in C (0.135 s against 0.143 s for the ten rounds), and
-building the text takes more (0.071 s against 0.056 s): it is made of a million small texts, each from
-`toString`, put together with `string.join`, where the C program writes into one buffer. The first version took 2.7 times
+The text is built once at the start, in both from whole numbers (`12.1345` is two of them and a point),
+and in both into one block taken for the whole text: `write` in SG, `sprintf` in C. Reading alone takes a
+little less time than in C (0.135 s against 0.143 s for the ten rounds), and building the text takes the
+same (0.056 s against 0.055 s). Until the thirty-seventh slice the text was a million small ones, each
+from `toString`, put together with `string.join` (0.071 s). The first version took 2.7 times
 the time of C, for three reasons. The fractional numbers were built with `toString`, and printing a
 `double` tries up to seventeen lengths ("Slower than C" below); every text made by `toString` was written
 twice, once to find its length (now once, choice 166); and every fractional number went to `strtod`
@@ -388,7 +395,8 @@ name are counted with `chars()`. The C program is what one writes by hand: `memc
 comma, a loop that skips ASCII spaces, `strtoll` straight on the field (it skips the spaces itself), and
 the bytes that do not continue a character counted. Going over the text takes about the time of C (1.15 s
 against 1.08 s for the twenty rounds; SG's `trim` reads characters and knows Unicode's spaces, the C loop
-only ASCII), and building it takes more (0.17 s against 0.14 s), for the reason given for `numbers`. A
+only ASCII), and building it with `write` takes about the same (0.149 s against 0.145 s; 0.17 s when
+each line was a text of its own, joined at the end). A
 search for a separator of one byte without the `memcmp` after `memchr` was tried and made the program
 slower (1.54 s, in every run); why was not looked into, and the change was left out.
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
@@ -1639,6 +1647,54 @@ constant takes where it is used, `text.chars()`) and wrote `text.split(' ')`, `t
      twenty times with `lines`, `split`, `trim`, `long.parse` and `chars`, against C written by hand with
      `memchr` and `strtoll`.
 
+Choices made in the thirty-seventh slice (building a text piece by piece; checker, interpreter and back end
+together), approved on 13 November 2026:
+
+182. **A `string` is what a text is built in: `text.write(x)` adds at its end.** There is no builder type
+     beside it. A `string` already is a pointer, a length and a capacity (7), which is all a builder is,
+     and the finished text needs no copy at the end (C#'s `sb.ToString()`). Rust's `String` is its own
+     builder too (`push_str`, `write!`); C# and Java keep an immutable `string` and a `StringBuilder`, Go a
+     `strings.Builder`.
+183. **`write` takes what `print` takes**: a `$"..."`, a number, a `bool`, a `char`, a text, a
+     `Formattable` value, a collection. It is the name and the rule of `f.write` inside `format`, so there
+     is one way to add to a text. A `$"..."` is written straight into the block, as `print` writes it: no
+     text is made for it. Rust has `push`, `push_str` and `write!`; C# `Append` with an overload per type.
+184. **`write` and `clear` need the text where it may change**: a variable, a `ref string` parameter, a
+     field reached through `ref`, an item of a list, a value in a map, a text behind a `T*`. Through `read`
+     they are an error whose hint is `ref string`, and a `readonly` field cannot be written. They are
+     `ref this` methods, so the borrow rules hold as they are: a part kept from the text (`var head =
+     s[..3]`) and a `for` over it keep it from being written.
+185. **A text is not written into itself**: `s.write(s)`, `s.write(s[..3])`, `s.write(s.trim())`, and a
+     value that borrows from `s`, are errors whose hint is `.clone()`, because the text may move to a
+     larger block while it grows and what is written would be read from the old one. A number, a `bool` or
+     a `char` computed from it is fine (`s.write($"{s.length()}")`): the values of a line are computed
+     before anything is written (55). Rust's rule; C#'s `Append(sb)` copies first, which a block that moves
+     in the middle of the copy cannot do.
+186. **`text.clear()` empties the text and keeps its block**, so a line that is built again in every round
+     of a loop takes memory once. Rust's `clear`, C#'s `Clear()`.
+187. **`string.withCapacity(n)`** is an empty text with room for `n` bytes, so that a text whose size is
+     known grows no more than once (Rust's `String::with_capacity`, C#'s `new StringBuilder(n)`). `0` takes
+     no memory. A negative `n` panics in every build, and so does an `n` the memory cannot hold, with the
+     size in the message. Without it the block starts at 32 bytes and doubles when it is full.
+188. **`text += "x"` stays an error**, now with the hint `text.write("x")`; `a + b` keeps its hint
+     `$"{a}{b}"`, and `StringBuilder`, `append` and `push` get the hint `write` too. One way to add to a
+     text: a `+=` that wrote in place would be a second spelling of `write`, and `+` would make a new text
+     every time (in C# that cost is why `StringBuilder` exists).
+189. **A constant is copied on the first write**: `var line = ""` takes no memory until something is
+     written, and the text of the program is never written. In compiled code a constant is a text with no
+     capacity (8); the first write that needs room takes a block and copies the bytes over. The
+     interpreter keeps a text that nothing else holds and grows it where it is.
+190. **Compiled code**: `write` is the code of `f.write`: each piece is put straight into the block (one
+     `vsnprintf` for the numbers and texts of a `$"..."`, a helper for a struct, an enum or a list), and
+     `clear` sets the length to 0. The `vsnprintf` now writes into the block itself where it has room,
+     instead of into a small buffer that is then copied; that is also what `print` and `f.write` use.
+     The place is found before the values of the line are computed, as in the interpreter. Compared with
+     the interpreter with both C compilers, in a debug and a release build.
+191. **The measurement**: `numbers` and `fields` (above) now build their text with `write` into a block
+     taken at the start, as the C programs do with `sprintf`, where they made a text for every line and
+     joined them. Building takes the time of C (0.056 s against 0.055 s, 0.149 s against 0.145 s; it was
+     0.071 s and 0.17 s), and "Building a text out of many small ones" is gone from "Slower than C".
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -1665,10 +1721,6 @@ check off.
   back (choice 150), up to seventeen `snprintf` and `strtod` for one number, where C's `printf("%g")` is
   one. The interpreter finds them the same way. Candidates: a shortest-digits algorithm (Ryu, as Rust
   uses), in both, so that they still agree by construction.
-- **Building a text out of many small ones** (`numbers` and `fields`, 1.2 to 1.3 times for that part of
-  the program): each `$"...".toString()` takes a block of its own and `string.join` copies them all once
-  more, where the C program writes into one buffer. Candidate: a way to build a text piece by piece (a
-  `StringBuilder`), which is not here yet.
 - **Wrapping arithmetic in a loop that is only arithmetic** (`vector`'s first version, 1.28 times): C may
   assume a signed overflow never happens and turn `i * 7 + round` into a counter; wrapping is defined, so
   the C compiler keeps the arithmetic. Rust pays the same. No candidate yet.
@@ -1696,10 +1748,10 @@ check off.
 - Lists of borrows (`List<read T>`); `reserve`, `clone`; a `Hashable`
   type with its own `equals` or `hash`.
 - What text needs Unicode tables for: changing the case of a text (`toUpper`), letters and digits beyond
-  ASCII (`isLetter`), comparing without case beyond ASCII. Building a text piece by piece (a
-  `StringBuilder`), `replace`, `repeat`, `padLeft`; the positions of the characters (`charIndices`);
-  splitting at most n times; `match` on text. Writing the type of an iterator, and a `for` over a type of
-  your own that has `next` (with generics).
+  ASCII (`isLetter`), comparing without case beyond ASCII. `replace`, `repeat`, `padLeft`; the positions
+  of the characters (`charIndices`); splitting at most n times; `match` on text. Writing the type of an
+  iterator, and a `for` over a type of your own that has `next` (with generics). `text.capacity()` and
+  `text.reserve(n)`; a `ref string` given to a `format` method in place of its `Formatter`.
 - A number is written in decimal only (`print`, `$"..."`) and read in decimal only
   (`parse`); there is no hex output or input. No way to read a number out of bytes in one step
   (`ulong.fromLittleEndian(bytes)`): it is put together from the bytes by hand (see 136). `abs` and
@@ -1728,7 +1780,8 @@ and `double`, and the n-body simulation takes the time of the same program in C.
 constants of the number types, the conversions that do not panic and the math methods, and reading a
 million numbers out of text takes about the time of `strtoll` and `strtod`. So are `char`, going over a
 text (`chars`, `split`, `splitWhitespace`, `lines`), `trim` and the searches, and the log summary is
-written as the design wrote it.
+written as the design wrote it. A text is built piece by piece where it is (`write`, `clear`,
+`string.withCapacity`), and building a million lines takes the time of `sprintf` into one buffer in C.
 
-Candidates for what comes next: `list.addAll(slice)` and `sort` through a `ref T[]`, building a text piece
-by piece, type aliases (`using`), threads, the places that are slower than C.
+Candidates for what comes next: `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases
+(`using`), threads, the places that are slower than C.

@@ -1,0 +1,9 @@
+error: `s` cannot be changed here: `head` borrows from it and is used again later
+  --> error_write_while_borrowed.sg:4:5
+ 4 |     s.write("x")
+   |     ^
+  `head` borrowed it here:
+  --> error_write_while_borrowed.sg:3:16
+ 3 |     var head = s[..1]
+   |                ^^^^^^
+  hint: finish with `head` before this line: a borrow ends at its last use

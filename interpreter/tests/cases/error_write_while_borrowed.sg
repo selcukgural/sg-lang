@@ -1,0 +1,6 @@
+void main() {
+    var s = "ab"
+    var head = s[..1]
+    s.write("x")
+    print(head)
+}

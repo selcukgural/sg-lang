@@ -1,0 +1,8 @@
+struct W<from text> {
+    read string part
+}
+void main() {
+    var s = "ab"
+    var w = W { part = s[..1] }
+    s.write(w.part)
+}

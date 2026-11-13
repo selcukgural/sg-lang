@@ -1,0 +1,136 @@
+// A text grows at its end with `write` and is emptied with `clear`.
+
+struct Point : Formattable {
+    int x
+    int y
+}
+
+struct Report {
+    string out
+    int lines
+
+    void add(ref this, read string name, int count) {
+        this.out.write($"{name}: {count}\n")
+        this.lines += 1
+    }
+}
+
+void row(ref string out, int n) {
+    out.write(n)
+    out.write(',')
+    out.write("x")
+}
+
+void first() {
+    var s = ""
+    s.write("ab")
+    s.write($"{1 + 2}{'c'}")
+    s.write(Point { x = 1, y = 2 })
+    print(s)
+    print(s.length())
+    s.write($" {s.length()}")
+    print(s)
+    var t = "const"
+    t.write("ant")
+    print(t)
+    var copy = t.clone()
+    t.clear()
+    t.write("new")
+    print($"{t} {copy}")
+    var b = string.withCapacity(100)
+    print(b.length())
+    row(ref b, 7)
+    print(b)
+    var r = Report { out = "", lines = 0 }
+    r.add("a", 1)
+    r.add("b", 2)
+    print(r.out)
+    var xs = List<string> { "p", "q" }
+    xs[0].write("!")
+    print(xs)
+    string* p = new "heap"
+    p.write("ed")
+    print(p)
+}
+
+struct Node {
+    string name
+    Node*? next
+}
+
+enum Shape : Formattable {
+    Circle(int r)
+    Empty
+}
+
+struct Pair : Formattable {
+    string a
+    int b
+
+    void format(read this, ref Formatter f) {
+        f.write($"<{this.a}|{this.b}>")
+    }
+}
+
+void second() {
+    var groups = HashMap<string, string>()
+    for word in "ant bee ape bat cow".split(' ') {
+        var line = groups.getOrAdd(word[..1], "")
+        line.write($"{word};")
+    }
+    var keys = List<string>()
+    for entry in read groups {
+        keys.add(entry.key.clone())
+    }
+    keys.sort()
+    for k in read keys {
+        print($"{k}={groups[k]}")
+    }
+    groups["a"].write("!")
+    print(groups["a"])
+    Node* n = new Node { name = "n", next = null }
+    n.name.write("1")
+    print(n.name)
+    var s = string.withCapacity(4)
+    s.write("abcdefghijklmnopqrstuvwxyz0123456789")
+    s.write(Shape.Circle(3))
+    s.write(Shape.Empty)
+    s.write(Pair { a = "x", b = 2 })
+    s.write(List<int> { 1, 2 })
+    s.write(1.5)
+    s.write(true)
+    s.write('é')
+    s.write(-7)
+    print(s)
+    s.clear()
+    print(s.length())
+    s.write("again")
+    print(s)
+    var big = ""
+    for i in 0..1000 {
+        big.write($"{i},")
+    }
+    print(big.length())
+    var z = string.withCapacity(0)
+    z.write("")
+    print($"[{z}]")
+}
+
+struct Line {
+    string out
+    string name
+
+    // A number made from the text it is written into is computed first: allowed.
+    void go(ref this) {
+        this.out.write(this.name)
+        this.out.write($" {this.out.length()}")
+    }
+}
+
+void main() {
+    first()
+    second()
+    var line = Line { out = "", name = "n" }
+    line.go()
+    print(line.out)
+}

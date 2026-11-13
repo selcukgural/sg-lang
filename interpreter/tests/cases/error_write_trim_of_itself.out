@@ -1,0 +1,6 @@
+error: `s.trim()` looks at `s`, which this call writes into
+  `s` may move to a larger block while it grows, and `s.trim()` would be read from the old one
+  --> error_write_trim_of_itself.sg:3:13
+ 3 |     s.write(s.trim())
+   |             ^^^^^^^^
+  hint: copy it first: `var copy = s.trim().clone()`
