@@ -1,0 +1,6 @@
+// The buffer of `readBytes` holds bytes.
+Result<void, IoError> main() {
+    var buffer = List<int> { 0, 0, 0 }
+    _ = try Stdin.readBytes(ref buffer)
+    return Ok()
+}

@@ -13,8 +13,8 @@
 //! `write` and `clear`, which add to a text where it is, as `f.write` does), functions, structs,
 //! enums with `match` and `is`, `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
 //! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, `print` and `printError`, files
-//! read and written whole or piece by piece (`StreamReader`, `StreamWriter`, and `Stdin`, `Stdout`
-//! and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`). Anything else is an error that names what is missing, so nothing is compiled
+//! read and written whole or piece by piece, as text or as bytes (`StreamReader`, `StreamWriter`,
+//! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`). Anything else is an error that names what is missing, so nothing is compiled
 //! wrongly in silence.
 //!
 //! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`), and
@@ -1186,6 +1186,38 @@ static int sg_read_rest(sg_reader* r, sg_string* text) {
         if (code) { sg_drop_string(text); *text = SG_LIT("", 0); return code; }
     }
 }
+/* Bytes into `to`, as many as `len` unless the end comes first; `*got` says how many. What the
+   block holds goes first, and a rest of 64 KB or more is read straight into `to`. */
+static int sg_read_bytes(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
+    int64_t n = 0;
+    int code = 0;
+    while (n < len) {
+        if (r->at < r->len) {
+            int64_t take = r->len - r->at < len - n ? r->len - r->at : len - n;
+            memcpy(to + n, r->block + r->at, (size_t)take);
+            r->at += take;
+            n += take;
+            continue;
+        }
+        if (r->ended) break;
+        if (len - n < 65536) {
+            code = sg_reader_fill(r);
+            if (code) break;
+            continue;
+        }
+        if (r == &sg_stdin) {
+            if (sg_in_terminal < 0) sg_in_terminal = isatty(0);
+            if (sg_in_terminal) fflush(stdout);
+        }
+        ssize_t put = read(r->fd, to + n, (size_t)(len - n));
+        if (put < 0) { if (errno == EINTR) continue; code = errno; break; }
+        if (put == 0) { r->ended = true; break; }
+        n += put;
+    }
+    r->done += n;
+    *got = n;
+    return code;
+}
 /* A folder opens, but cannot be read: it is told at once. */
 static int sg_open_reader(sg_str path, sg_reader* out) {
     int code = 0;
@@ -1275,11 +1307,33 @@ static inline sg_writer sg_move_writer(sg_writer* w) {
     w->buf = (sg_string){ (uint8_t*)"", 0, 0 };
     return out;
 }
-static int sg_create_writer(sg_str path, sg_writer* out) {
+/* The bytes as they are: a standard stream writes them at once, a file puts them into its block,
+   or, when they are 64 KB or more, writes the block and then them straight. */
+static int sg_writer_bytes(sg_writer* w, const uint8_t* bytes, int64_t len) {
+    if (w->failed) return w->failed;
+    if (len == 0) return 0;
+    if (w->std) {
+        if (w->std == 2) fflush(stdout);
+        if (fwrite(bytes, 1, (size_t)len, w->std == 1 ? stdout : stderr) != (size_t)len) return w->failed = errno ? errno : EIO;
+        return 0;
+    }
+    if (len < 65536) {
+        sg_put(&w->buf, bytes, len);
+        return sg_writer_wrote(w);
+    }
+    int code = sg_writer_out(w);
+    if (code) return code;
+    code = sg_write_all(w->fd, bytes, len);
+    if (code) w->failed = code;
+    return code;
+}
+/* `File.createText` makes or empties the file; `File.openAppend` (`append`) makes a missing one
+   and writes after what it holds. */
+static int sg_open_writer(sg_str path, bool append, sg_writer* out) {
     int code = 0;
     char* name = sg_path(path, &code);
     if (!name) return code;
-    int fd = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    int fd = open(name, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC), 0666);
     free(name);
     if (fd < 0) return errno;
     *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 } };
@@ -4596,12 +4650,13 @@ impl<'a> Emitter<'a> {
         let failed = |cause: &str| format!("return ({gives}){{ .tag = 1, .u.v1 = {{ {cause} }} }};");
         let text = Ty::Read(Box::new(Ty::Str));
         let (fname, params, body) = match call {
-            IoCall::OpenText | IoCall::CreateText => {
+            IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend => {
                 let (fname, open, ctype) = match call {
-                    IoCall::OpenText => ("sg_file_open_text", "sg_open_reader", "sg_reader"),
-                    _ => ("sg_file_create_text", "sg_create_writer", "sg_writer"),
+                    IoCall::OpenText => ("sg_file_open_text", "sg_open_reader(a0, ", "sg_reader"),
+                    IoCall::CreateText => ("sg_file_create_text", "sg_open_writer(a0, false, ", "sg_writer"),
+                    _ => ("sg_file_open_append", "sg_open_writer(a0, true, ", "sg_writer"),
                 };
-                (fname, vec![text], format!("{ctype} s; int code = {open}(a0, &s); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ s }} }};", failed("sg_io_error(code)")))
+                (fname, vec![text], format!("{ctype} s; int code = {open}&s); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ s }} }};", failed("sg_io_error(code)")))
             }
             _ => return self.io_whole(call, args, head, expr),
         };
@@ -4688,7 +4743,7 @@ impl<'a> Emitter<'a> {
                     ),
                 )
             }
-            IoCall::OpenText | IoCall::CreateText => unreachable!("written by `io`"),
+            IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend => unreachable!("written by `io`"),
         };
         self.io_glue(fname, &params, &body, &gives, span)?;
         self.call(fname.to_string(), None, args, head, &expr.ty)
@@ -4727,11 +4782,29 @@ impl<'a> Emitter<'a> {
                 let end = if call == StreamCall::WriteLine { format!(" sg_put(&{temp}->buf, \"\\n\", 1);") } else { String::new() };
                 Ok(format!("({{ sg_writer* {temp} = {out}; {written};{end} {}; }})", done(&format!("sg_writer_wrote({temp})"))))
             }
-            StreamCall::ReadLine | StreamCall::ReadText => {
-                let reader = Ty::Ref(Box::new(Ty::Reader));
+            StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::WriteBytes => {
+                let reader = match call {
+                    StreamCall::WriteBytes => Ty::Ref(Box::new(Ty::Writer)),
+                    _ => Ty::Ref(Box::new(Ty::Reader)),
+                };
                 let receiver = self.list_address(recv)?;
                 let receiver = self.part(recv, &reader, receiver, before);
+                let bytes = |mode: fn(Box<Ty>) -> Ty| mode(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
                 let (fname, params, body) = match call {
+                    StreamCall::ReadBytes => (
+                        "sg_reader_bytes_r",
+                        vec![reader, bytes(Ty::Ref)],
+                        format!(
+                            "int64_t got = 0; int code = sg_read_bytes(a0, a1.ptr, a1.len, &got); if (code) {} \
+                             return ({gives}){{ .tag = 0, .u.v0 = {{ got }} }};",
+                            failed("sg_io_error(code)")
+                        ),
+                    ),
+                    StreamCall::WriteBytes => (
+                        "sg_writer_bytes_r",
+                        vec![reader, bytes(Ty::Read)],
+                        format!("int code = sg_writer_bytes(a0, a1.ptr, a1.len); if (code) {} return ({gives}){{ .tag = 0 }};", failed("sg_io_error(code)")),
+                    ),
                     StreamCall::ReadLine => (
                         "sg_reader_line_r",
                         vec![reader, Ty::Ref(Box::new(Ty::Str))],

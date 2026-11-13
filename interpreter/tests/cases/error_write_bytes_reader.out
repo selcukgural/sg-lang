@@ -1,0 +1,6 @@
+error: `StreamReader` has no method `writeBytes`
+  methods: readLine, readText, lines, readBytes
+  a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)` and `File.openAppend(path)` give a `StreamWriter`
+  --> error_write_bytes_reader.sg:3:15
+ 3 |     try Stdin.writeBytes("x".asBytes())
+   |               ^^^^^^^^^^

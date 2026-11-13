@@ -1,0 +1,127 @@
+// Bytes read and written piece by piece, and a writer that appends: `reader.readBytes(ref buffer)`,
+// `writer.writeBytes(bytes)` and `File.openAppend(path)`. The folder is the first word of the
+// command line.
+
+Result<void, IoError> main(List<string> args) {
+    var path = $"{args[0]}/data.bin".toString()
+
+    // Bytes go out as they are, through the same buffer as text.
+    var out = try File.createText(read path)
+    byte[4] head = byte[4] { 0x47, 0x49, 0x46, 0x00 }
+    try out.writeBytes(read head)
+    var values = List<byte> {}
+    for i in 0..300 {
+        values.add((byte)(i % 256))
+    }
+    try out.writeBytes(read values)
+    try out.writeBytes(values[0..0])
+    try out.write("tail\n")
+    try out.close()
+    var whole = try File.readBytes(read path)
+    print($"written: {whole.length()} bytes, first {whole[0]} {whole[1]} {whole[2]} {whole[3]}")
+
+    // `readBytes` fills the buffer unless the end comes first, and says how many it put in.
+    var reader = try File.openText(read path)
+    byte[100] buffer = byte[100]
+    nint total = 0
+    var pieces = 0
+    while true {
+        var got = try reader.readBytes(ref buffer)
+        if got == 0 {
+            break
+        }
+        pieces += 1
+        total += got
+        print($"piece {pieces}: {got} bytes, first {buffer[0]}")
+    }
+    print($"read: {total} bytes in {pieces} pieces")
+    var last = try reader.readBytes(ref buffer)
+    print($"at the end: {last}")
+
+    // Into a part of a list: what is read lands in the list.
+    var again = try File.openText(read path)
+    var into = List<byte> { 9, 9, 9, 9, 9, 9 }
+    var got = try again.readBytes(ref into[1..5])
+    print($"into a range: {got} {into}")
+    // An empty buffer gets nothing and reads nothing.
+    var none = List<byte> {}
+    var nothing = try again.readBytes(ref none)
+    print($"empty buffer: {nothing}")
+
+    // Bytes and lines from one reader: a line starts where the bytes stopped.
+    var text = $"{args[0]}/mixed.txt".toString()
+    try File.writeText(read text, "ab\ncd\nef\n")
+    var mixed = try File.openText(read text)
+    byte[4] four = byte[4]
+    _ = try mixed.readBytes(ref four)
+    print($"four bytes: {four}")
+    string line = ""
+    while try mixed.readLine(ref line) {
+        print($"then the line [{line}]")
+    }
+
+    // A text that is not UTF-8 is told from the start of the file, bytes read before included.
+    var bad = $"{args[0]}/bad.txt".toString()
+    byte[6] badBytes = byte[6] { 0x61, 0x62, 0x0a, 0x63, 0xff, 0x0a }
+    try File.writeBytes(read bad, read badBytes)
+    var badReader = try File.openText(read bad)
+    byte[3] skip = byte[3]
+    _ = try badReader.readBytes(ref skip)
+    match badReader.readLine(ref line) {
+        Ok(more) => print($"line: {more}")
+        Error(cause) => print($"line: {cause}")
+    }
+
+    // A writer that appends: what the file holds stays, and a missing file is made.
+    var log = $"{args[0]}/log.txt".toString()
+    try File.writeText(read log, "first\n")
+    var adding = try File.openAppend(read log)
+    try adding.writeLine("second")
+    try adding.writeBytes("third\n".asBytes())
+    try adding.close()
+    var more = try File.openAppend(read log)
+    try more.writeLine("fourth")
+    try more.close()
+    print(try File.readText(read log))
+    var fresh = $"{args[0]}/fresh.txt".toString()
+    var made = try File.openAppend(read fresh)
+    try made.writeLine("made by openAppend")
+    try made.close()
+    print(try File.readText(read fresh))
+
+    // 64 KB and more at once: what waits in the buffer goes first.
+    var big = $"{args[0]}/big.bin".toString()
+    var large = try File.createText(read big)
+    try large.write("<")
+    var lots = List<byte> {}
+    for i in 0..70000 {
+        lots.add((byte)(i % 7))
+    }
+    try large.writeBytes(read lots)
+    try large.write(">")
+    try large.close()
+    var back = try File.readBytes(read big)
+    print($"big: {back.length()} bytes, {back[0]} {back[1]} {back[70000]} {back[70001]}")
+    var bigReader = try File.openText(read big)
+    var bigBuffer = List<byte> {}
+    for i in 0..70005 {
+        bigBuffer.add(0)
+    }
+    var bigGot = try bigReader.readBytes(ref bigBuffer)
+    print($"big read: {bigGot}, last {bigBuffer[70001]}")
+
+    // The errors a program tells apart.
+    show(File.openAppend(read args[0]))
+    show(File.openAppend(read $"{args[0]}/no/such/folder.txt".toString()))
+    return Ok()
+}
+
+void show(Result<StreamWriter, IoError> opened) {
+    match opened {
+        Ok(writer) => {
+            _ = writer.close()
+            print("opened")
+        }
+        Error(cause) => print($"openAppend: {cause}")
+    }
+}

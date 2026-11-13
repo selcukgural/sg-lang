@@ -4637,8 +4637,9 @@ impl<'a> Checker<'a> {
             ("File", "appendText") => (IoCall::AppendText, vec![text(), text()], Ty::Void),
             ("File", "openText") => (IoCall::OpenText, vec![text()], Ty::Reader),
             ("File", "createText") => (IoCall::CreateText, vec![text()], Ty::Writer),
+            ("File", "openAppend") => (IoCall::OpenAppend, vec![text()], Ty::Writer),
             _ => {
-                let known = ["readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "createText"];
+                let known = ["readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "createText", "openAppend"];
                 let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
                 return Err(match nearest(name, known.iter().copied()) {
                     Some(close) => diag.hint(format!("`{close}`")),
@@ -5343,14 +5344,16 @@ impl<'a> Checker<'a> {
             (Ty::Reader, "readLine") => StreamCall::ReadLine,
             (Ty::Reader, "readText") => StreamCall::ReadText,
             (Ty::Reader, "lines") => StreamCall::Lines,
+            (Ty::Reader, "readBytes") => StreamCall::ReadBytes,
             (Ty::Writer, "write") => StreamCall::Write,
             (Ty::Writer, "writeLine") => StreamCall::WriteLine,
+            (Ty::Writer, "writeBytes") => StreamCall::WriteBytes,
             (Ty::Writer, "flush") => StreamCall::Flush,
             (Ty::Writer, "close") => StreamCall::Close,
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Reader => &["readLine", "readText", "lines"],
-                    _ => &["write", "writeLine", "flush", "close"],
+                    Ty::Reader => &["readLine", "readText", "lines", "readBytes"],
+                    _ => &["write", "writeLine", "writeBytes", "flush", "close"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 let diag = match nearest(name, known.iter().copied()) {
@@ -5359,8 +5362,8 @@ impl<'a> Checker<'a> {
                 };
                 return Err(match (target, name) {
                     (Ty::Reader, "close") => diag.note("a reader has nothing to lose: its file is closed when it ends"),
-                    (Ty::Reader, "write" | "writeLine" | "flush") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr` and `File.createText(path)` give a `StreamWriter`"),
-                    (Ty::Writer, "readLine" | "readText" | "lines") => diag.note("a `StreamWriter` writes; `Stdin` and `File.openText(path)` give a `StreamReader`"),
+                    (Ty::Reader, "write" | "writeLine" | "writeBytes" | "flush") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)` and `File.openAppend(path)` give a `StreamWriter`"),
+                    (Ty::Writer, "readLine" | "readText" | "lines" | "readBytes") => diag.note("a `StreamWriter` writes; `Stdin` and `File.openText(path)` give a `StreamReader`"),
                     _ => diag,
                 });
             }
@@ -5402,6 +5405,18 @@ impl<'a> Checker<'a> {
             StreamCall::Lines => {
                 arity(0)?;
                 Ty::TextIter(TextIter::ReadLines)
+            }
+            StreamCall::ReadBytes => {
+                let lent_read = args.first().is_some_and(|arg| self.src[arg.span.start..arg.span.end].starts_with("read "));
+                self.args(name, args, &[Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))))], span).map_err(|diag| match lent_read {
+                    true => diag.hint("`readBytes` writes into the buffer, so it is lent with `ref`"),
+                    false => diag,
+                })?;
+                result(Ty::Int(IntTy::Nint))
+            }
+            StreamCall::WriteBytes => {
+                self.args(name, args, &[Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))))], span)?;
+                result(Ty::Void)
             }
             StreamCall::Write | StreamCall::WriteLine => {
                 arity(1)?;

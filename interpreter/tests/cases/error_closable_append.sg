@@ -1,0 +1,6 @@
+// A writer from `File.openAppend` is a `StreamWriter`, and is closed as every other.
+Result<void, IoError> main() {
+    var log = try File.openAppend("log.txt")
+    try log.writeLine("done")
+    return Ok()
+}

@@ -1,0 +1,22 @@
+// Bytes read and written piece by piece: the log of `lines` (125 MB) is read with
+// `readBytes` into a buffer of 4 KB on the stack, and each piece is written with `writeBytes`
+// to a writer from `File.openAppend`, after the file is emptied. The reader and the writer
+// each go through a block of 64 KB. `run.sh` makes the log; both files are in `target/bench`.
+Result<void, IoError> main() {
+    try File.writeText("target/bench/bytes-sg.out", "")
+    var reader = try File.openText("target/bench/lines.in")
+    var writer = try File.openAppend("target/bench/bytes-sg.out")
+    byte[4096] buffer = byte[4096]
+    long total = 0
+    while true {
+        var got = try reader.readBytes(ref buffer)
+        if got == 0 {
+            break
+        }
+        try writer.writeBytes(buffer[0..got])
+        total += got
+    }
+    try writer.close()
+    print($"{total} bytes copied")
+    return Ok()
+}

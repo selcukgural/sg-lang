@@ -1,0 +1,24 @@
+written: 309 bytes, first 71 73 70 0
+piece 1: 100 bytes, first 71
+piece 2: 100 bytes, first 96
+piece 3: 100 bytes, first 196
+piece 4: 9 bytes, first 40
+read: 309 bytes in 4 pieces
+at the end: 0
+into a range: 4 [9, 71, 73, 70, 0, 9]
+empty buffer: 0
+four bytes: [97, 98, 10, 99]
+then the line [d]
+then the line [ef]
+line: InvalidText(4)
+first
+second
+third
+fourth
+
+made by openAppend
+
+big: 70002 bytes, 60 0 6 62
+big read: 70002, last 62
+openAppend: IsDirectory
+openAppend: NotFound

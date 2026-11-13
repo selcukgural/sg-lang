@@ -1877,9 +1877,13 @@ impl<'a> Interp<'a> {
                 true => Err(std::io::Error::from_raw_os_error(21)),
                 false => Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(std::io::BufReader::with_capacity(STREAM_BUFFER, file)), done: 0 })))),
             })),
-            IoCall::CreateText => done(std::fs::File::create(&path).map(|file| {
-                Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None })))
-            })),
+            IoCall::CreateText | IoCall::OpenAppend => {
+                let opened = match call {
+                    IoCall::CreateText => std::fs::File::create(&path),
+                    _ => std::fs::OpenOptions::new().append(true).create(true).open(&path),
+                };
+                done(opened.map(|file| Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None })))))
+            }
         })
     }
 
@@ -1910,6 +1914,47 @@ impl<'a> Interp<'a> {
                 })
             }
             (StreamCall::Lines, Value::Reader(reader)) => Ok(Value::Lines(Rc::new(RefCell::new(Lines { reader, done: false })))),
+            (StreamCall::ReadBytes, Value::Reader(reader)) => {
+                let cells = cells_of(&owned(self.expr(&args[0], frame)?));
+                let mut bytes = vec![0u8; cells.len()];
+                let mut got = 0;
+                // As many as the buffer holds: fewer only at the end.
+                let read = loop {
+                    if got == bytes.len() {
+                        break Ok(());
+                    }
+                    let step = match reader.borrow_mut().file.as_mut() {
+                        Some(file) => file.read(&mut bytes[got..]),
+                        None => {
+                            if self.world.input_is_terminal {
+                                self.flush_out()?;
+                            }
+                            self.world.input.read(&mut bytes[got..])
+                        }
+                    };
+                    match step {
+                        Ok(0) => break Ok(()),
+                        Ok(n) => got += n,
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(error) => break Err(error),
+                    }
+                };
+                reader.borrow_mut().done += got as u64;
+                for (slot, byte) in cells.iter().zip(&bytes[..got]) {
+                    *slot.borrow_mut() = Value::Int(IntTy::Byte, *byte as i128);
+                }
+                Ok(match read {
+                    Ok(()) => ok(Value::Int(IntTy::Nint, got as i128)),
+                    Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+                })
+            }
+            (StreamCall::WriteBytes, Value::Writer(writer)) => {
+                let bytes: Vec<u8> = cells_of(&owned(self.expr(&args[0], frame)?)).iter().map(|item| match &*item.borrow() {
+                    Value::Int(_, byte) => *byte as u8,
+                    _ => unreachable!("the checker makes the items bytes"),
+                }).collect();
+                self.write_stream(&writer, &bytes, false)
+            }
             (StreamCall::Write | StreamCall::WriteLine, Value::Writer(writer)) => {
                 let value = self.expr(&args[0], frame)?;
                 let mut text = self.show(&value, false, args[0].span)?;

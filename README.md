@@ -153,7 +153,7 @@ and `??`; `List`, `HashMap` and `HashSet`; fixed-size arrays (`int[8]`) and slic
 function values; ownership, moves and the borrow check; modules (`use`, `public`, `readonly`); `test`
 blocks.
 
-Programs read and write files whole or piece by piece (a writer left open is a compile error), read
+Programs read and write files whole or piece by piece, as text or as bytes, and append to them (a writer left open is a compile error), read
 their input line by line and see their command line. Designed but not built yet: threads and shared ownership. Generics of your
 own are put off. There is nothing for the network yet, no standard library, no package manager and no
 editor support.

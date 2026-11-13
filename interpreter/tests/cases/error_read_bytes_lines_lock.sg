@@ -1,0 +1,8 @@
+// While `lines()` reads from the reader, it cannot be read beside it.
+Result<void, IoError> main() {
+    byte[4] buffer = byte[4]
+    for item in Stdin.lines() {
+        _ = try Stdin.readBytes(ref buffer)
+    }
+    return Ok()
+}

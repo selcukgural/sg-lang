@@ -164,6 +164,9 @@ pub enum IoCall {
     OpenText,
     /// `File.createText(path)`: a `StreamWriter` into the file, which is made or emptied.
     CreateText,
+    /// `File.openAppend(path)`: a `StreamWriter` that writes after what the file holds; a
+    /// missing file is made.
+    OpenAppend,
 }
 
 impl IoCall {
@@ -177,6 +180,7 @@ impl IoCall {
             IoCall::AppendText => "appendText",
             IoCall::OpenText => "openText",
             IoCall::CreateText => "createText",
+            IoCall::OpenAppend => "openAppend",
         }
     }
 }
@@ -191,10 +195,15 @@ pub enum StreamCall {
     ReadText,
     /// `reader.lines()`: each line as a text of its own.
     Lines,
+    /// `reader.readBytes(ref buffer)`: bytes into the buffer, as many as it holds unless the
+    /// end comes first; gives how many.
+    ReadBytes,
     /// `writer.write(x)`: what `print` takes, without a line end.
     Write,
     /// `writer.writeLine(x)`: as `write`, and a `\n`.
     WriteLine,
+    /// `writer.writeBytes(bytes)`: the bytes as they are.
+    WriteBytes,
     /// `writer.flush()`: what the buffer holds goes out.
     Flush,
     /// `writer.close()`: the buffer goes out and the file is closed; takes the writer.

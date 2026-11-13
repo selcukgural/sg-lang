@@ -1,0 +1,6 @@
+// `readBytes` writes into the buffer, so the buffer is lent as `ref`.
+Result<void, IoError> main() {
+    byte[8] buffer = byte[8]
+    _ = try Stdin.readBytes(read buffer)
+    return Ok()
+}

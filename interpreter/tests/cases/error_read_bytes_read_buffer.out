@@ -1,0 +1,5 @@
+error: expected `ref byte[]`, found `read byte[8]`
+  --> error_read_bytes_read_buffer.sg:4:29
+ 4 |     _ = try Stdin.readBytes(read buffer)
+   |                             ^^^^^^^^^^^
+  hint: `readBytes` writes into the buffer, so it is lent with `ref`

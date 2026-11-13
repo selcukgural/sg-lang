@@ -1,0 +1,20 @@
+// `Stdin.readBytes(ref buffer)` and `Stdout.writeBytes(bytes)`: the input and the output as
+// bytes, beside lines and `print`. The input is `ok_std_bytes.in`.
+
+Result<void, IoError> main() {
+    byte[6] first = byte[6]
+    var got = try Stdin.readBytes(ref first)
+    print($"got {got}: {first}")
+    // `Stdout` writes where `print` writes, in the order they were written.
+    try Stdout.writeBytes(read first)
+    print("printed")
+    // A line starts where the bytes stopped.
+    string line = ""
+    while try Stdin.readLine(ref line) {
+        print($"line [{line}]")
+    }
+    var tail = try Stdin.readBytes(ref first)
+    print($"at the end: {tail}")
+    try Stderr.writeBytes("to the standard error\n".asBytes())
+    return Ok()
+}

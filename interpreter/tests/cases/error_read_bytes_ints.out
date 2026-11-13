@@ -1,0 +1,4 @@
+error: expected `ref byte[]`, found `ref List<int>`
+  --> error_read_bytes_ints.sg:4:29
+ 4 |     _ = try Stdin.readBytes(ref buffer)
+   |                             ^^^^^^^^^^

@@ -1,0 +1,5 @@
+// A reader has no `writeBytes`.
+Result<void, IoError> main() {
+    try Stdin.writeBytes("x".asBytes())
+    return Ok()
+}

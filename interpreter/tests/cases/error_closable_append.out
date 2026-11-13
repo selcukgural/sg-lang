@@ -1,0 +1,9 @@
+error: `log` is not closed at this `return`, so an error writing its buffer would be lost
+  --> error_closable_append.sg:5:5
+ 5 |     return Ok()
+   |     ^^^^^^^^^^^
+  it is opened here:
+  --> error_closable_append.sg:3:9
+ 3 |     var log = try File.openAppend("log.txt")
+   |         ^^^
+  hint: `try log.close()`; to drop the error on purpose, `_ = log.close()`

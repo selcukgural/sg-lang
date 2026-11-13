@@ -872,8 +872,8 @@ s += "x"                                         // error, hint: s.write("x")
 
 ### Files, the input and the command line
 
-A file is read or written whole, or piece by piece through a `StreamReader` and a `StreamWriter`; each call gives a
-`Result` whose error is the built-in `IoError`. The words of the command line come to `main`; the input is read line by
+A file is read or written whole, or piece by piece through a `StreamReader` and a `StreamWriter`, as text or as bytes;
+each call gives a `Result` whose error is the built-in `IoError`. The words of the command line come to `main`; the input is read line by
 line into one text:
 
 ```
@@ -908,6 +908,20 @@ Result<void, IoError> main(List<string> args) {  // the words after the program'
     try writer.write(42)                         // what print takes
     try writer.writeLine($" lines")
     try writer.close()                           // closing is checked: see below
+
+    var log = try File.openAppend("log.txt")     // StreamWriter after what the file holds, made if missing
+    try log.writeLine("started")
+    try log.close()
+
+    var input = try File.openText("data.bin")    // bytes come through the same reader
+    var output = try File.createText("copy.bin")
+    byte[4096] buffer = byte[4096]
+    while true {
+        var got = try input.readBytes(ref buffer) // fills the buffer unless the end comes first
+        if got == 0 { break }                    // 0: the end
+        try output.writeBytes(buffer[0..got])    // the bytes as they are
+    }
+    try output.close()
     return Ok()
 }
 ```

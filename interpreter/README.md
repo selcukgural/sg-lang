@@ -17,7 +17,7 @@ cargo run -- build examples/primes.sg --release # the same as a release build: o
 sh bench/run.sh                                 # compiled SG against C written by hand
 ```
 
-## What runs today (13 November 2026)
+## What runs today (14 November 2026)
 
 | Area | Supported |
 |---|---|
@@ -51,7 +51,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Characters | `char`: one Unicode character. `'+'`, `'é'`, `'\n'`, `'\u{e9}'` is a `char`, and a `byte` where an integer goes (`byte b = '+'`, `text[i] == ':'`). `(int)c` is its code, `(char)n` the character of a code, `n.tryToChar()` gives `null` where `(char)n` would panic. `==`, `<`, `match`, keys, `sort`, `print`. `isAsciiDigit()`, `isAsciiLetter()`, `isAsciiAlphanumeric()`, `isAsciiUpper()`, `isAsciiLower()`, `isAsciiWhitespace()`, `isAscii()`, `toAsciiUpper()`, `toAsciiLower()` on `char` and on `byte`; `isWhitespace()` and `utf8Length()` on `char` |
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
 | Built-ins | `print(x)`, `printError(x)` (the same, to the standard error), `panic("...")`, `assert(condition)`, `exit(code)` (ends the program with that code) |
-| Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`. A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left) and `lines()` (each line as a `Result<string, IoError>`); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `flush()` and `close()`, each with a `Result<void, IoError>`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `InvalidText(long position)` / `Other(int code) }` |
+| Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`, and `File.openAppend(path)` one that writes after what the file holds. A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left), `lines()` (each line as a `Result<string, IoError>`) and `readBytes(ref buffer)` (bytes into the buffer, as many as it holds unless the end comes first, and how many: a `Result<nint, IoError>`); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `writeBytes(bytes)` (a `read byte[]` as it is), `flush()` and `close()`, each with a `Result<void, IoError>`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `InvalidText(long position)` / `Other(int code) }` |
 | Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A normal run leaves the tests out |
 | Comparing by name | `a.compare(b)` on numbers, `char` and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
 | Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic. `tryToInt()` and the others give `null` where a cast would panic, `wrappingToInt()` and the others keep the bits that fit; `min`, `max` |
@@ -219,7 +219,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (165 of 575 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (167 of 582 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -312,6 +312,7 @@ hand with no checks):
 | `fields`: a million lines like ` Ada17 , 120, -45 ,6789` gone over twenty times with `lines`, `split`, `trim`, `long.parse` and `chars` | 1.228 s | 1.259 s | 1.202 s | 1.02 |
 | `lines`: two million lines of a log (125 MB) read from the input with `Stdin.readLine`, each checked to be UTF-8, and counted | 0.096 s | 0.097 s | 0.089 s | 1.08 |
 | `copy`: the same log read from a file with `File.openText` and written to another, each line with its number in front, through `File.createText` | 0.252 s | 0.253 s | 0.270 s | 0.93 |
+| `bytes`: the same log read in pieces of 4 KB with `readBytes` and written with `writeBytes` through a writer from `File.openAppend` | 0.030 s | 0.030 s | 0.032 s | 0.94 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -435,6 +436,12 @@ writer from `File.createText`, 140 MB in all. The C program reads with `getline`
 `fprintf` into a `FILE*` with a buffer of 64 KB. SG takes 0.93 times its time (0.25 s against 0.27 s,
 over three runs of five): it checks every line and still reads faster, as `lines` showed, and the
 writing is a `vsnprintf` into the writer's block where C's is an `fprintf`.
+
+`bytes` copies the same log as bytes: `readBytes` into a buffer of 4 KB on the stack, and `writeBytes` of
+each piece into a writer from `File.openAppend`, after the file is emptied. The C program does the same
+with `fread` and `fwrite` on `FILE*`s with buffers of 64 KB. SG takes 0.94 times its time (0.030 s against
+0.032 s, the best of fifteen runs: the program is short, and one run of five gave a cold start of 0.09 s).
+Both are copies between blocks; neither looks at the bytes.
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
@@ -1826,7 +1833,8 @@ back end together), approved on 13 November 2026:
 206. **`File.openText(path)`** gives a `Result<StreamReader, IoError>`, and **`File.createText(path)`** a
      `Result<StreamWriter, IoError>` into a file that is made, or emptied. A folder opens on Linux and
      macOS and fails at the first read; here `openText` tells `IsDirectory` at once, in both. Writing
-     piece by piece after what a file holds is not here yet (`File.appendText` adds a whole text).
+     piece by piece after what a file holds is not here yet (`File.appendText` adds a whole text); since
+     the fortieth slice it is `File.openAppend` (216).
 207. **A reader** has the methods of `Stdin` (197): `readLine(ref line)` into one text, `readText()` for
      what is left, and **`lines()`**, which gives each line as a text of its own, a
      `Result<string, IoError>`, and ends after the first error (row "File API": no loop meets the same
@@ -1883,6 +1891,50 @@ back end together), approved on 13 November 2026:
      C. The log summary is now the design's (05): it reads its log with `File.openText` and `readLine`,
      writes its report with `File.createText` and `close`, and `try` turns an `IoError` into the
      `LogError` variant that carries it.
+
+Choices made in the fortieth slice (a writer that appends, and bytes read and written piece by piece;
+checker, interpreter and back end together), approved on 14 November 2026:
+
+216. **`File.openAppend(path)`** gives a `Result<StreamWriter, IoError>` that writes after what the file
+     holds; a missing file is made, and a folder is `IsDirectory`. The writer is a `StreamWriter` like any
+     other: `write`, `writeLine`, `flush`, `close`, and the `Closable` check. The file is opened to append
+     (`O_APPEND`), so every block lands at the end even when another program writes to it too. The name:
+     C#'s `File.AppendText(path)` is this stream, but here `File.appendText(path, text)` is the whole write
+     (192 left out C#'s `All`), and one name cannot mean both in a language without overloading. Go opens
+     with `os.OpenFile(path, O_APPEND|O_CREATE|O_WRONLY, ...)`, Rust with
+     `OpenOptions::new().append(true).create(true)`.
+217. **`reader.readBytes(ref buffer)`** puts bytes at the start of the buffer and gives how many, a
+     `Result<nint, IoError>`. It fills the buffer unless the end comes first, so fewer than the buffer
+     holds means the end was met, and the next call gives 0. Rust's `read` and Go's `Read` may give fewer
+     at any time, and a program that needs the buffer full loops (`read_exact`, `io.ReadFull`); here there
+     is one meaning. Cost: on a pipe or a terminal it waits until the buffer is full or the input ends; a
+     read that gives what is ready, for the network, is an open question in 04. An
+     empty buffer gives 0 and reads nothing. The buffer is any `ref byte[]`: `ref buffer` for an array or a
+     list, `ref xs[a..b]` for a part of one; lent with `read` it is an error whose hint is `ref`.
+218. **`writer.writeBytes(bytes)`** writes a `read byte[]` as it is, through the writer's buffer, so it
+     keeps its order with `write` and `writeLine`, and on `Stdout` and `Stderr` with `print` and
+     `printError`. It gives a `Result<void, IoError>`, and the writer's first error is kept as for the
+     others (209). Without it, bytes read piece by piece could only be written whole.
+219. **No type and no opening function of their own**: bytes are read through the `StreamReader` that
+     `File.openText` and `Stdin` give, and written through the `StreamWriter` that `File.createText`,
+     `File.openAppend`, `Stdout` and `Stderr` give. The name `openText` says text, for a file of bytes
+     too; a second function (`File.openBytes`) that gave the same reader would be two ways to do one
+     thing, and a type of bytes beside the reader would be a second set of methods for one file. Rust has
+     one `File` under `BufReader` for both; C# has a `FileStream` beside the `StreamReader`.
+220. **Bytes and lines from one reader** share its block: `readLine` starts where `readBytes` stopped, and
+     the other way round, and the position of an `InvalidText` counts the bytes read as bytes too. While
+     `lines()` reads through the reader, `readBytes` cannot be called beside it (207).
+221. **Compiled code**: `readBytes` takes what the block holds first, and a rest of 64 KB or more is read
+     straight into the buffer, without passing through the block; `writeBytes` of 64 KB or more writes
+     the block and then the bytes straight. `Stdout` and `Stderr` write the bytes through C's `stdout` and
+     `stderr`. The interpreter reads through a buffer of 64 KB too; a program sees the same bytes and the
+     same counts in both.
+222. **The measurement and the tests**: `bytes` (above) copies the log of `lines` in pieces of 4 KB into a
+     writer from `File.openAppend`; it takes 0.94 times the time of `fread` and `fwrite` in C. The tests
+     write bytes and text into one file, read them back in pieces, into an array, a list and a range of
+     one, mix `readBytes` with `readLine`, append to a file that is there and to one that is not, write
+     70 000 bytes at once, and read and write the bytes of `Stdin`, `Stdout` and `Stderr`; five tests of
+     errors.
 
 ## Slower than C, and could be better
 
@@ -1953,8 +2005,7 @@ check off.
 - Arrays of arrays, `read T[]?`, an array as a key, `sort` and
   `reverse` through a `ref T[]`, `list.addAll(slice)`, looking for a run of items in a slice.
 - A panic of `-x` and of a shift names no way out: there is no `tryNegate` or `tryShiftLeft` yet.
-- Writing piece by piece after what a file holds (a writer that appends), reading raw bytes piece by
-  piece, `Closable` and `Disposable` on a type of your own. Folders, removing or renaming a file, asking whether one is there; the
+- `Closable` and `Disposable` on a type of your own. Folders, removing or renaming a file, asking whether one is there; the
   variables of the environment; the command line as bytes (a word that is not UTF-8 stops the program).
   `IoError` does not carry the path (choice 195). `PermissionDenied` and `NoSpace` are mapped but have no
   test: the tests cannot make a file they may not read or fill a disk.
@@ -1987,8 +2038,9 @@ its choice with `exit`. Reading two million lines takes 1.08 times `getline` in 
 that they are text. A file is read and written piece by piece through a `StreamReader` and a
 `StreamWriter`, `Stdin`, `Stdout` and `Stderr` are such streams, and a writer left open in a local
 variable is a compile error; copying the log line by line into another file takes 0.93 times the time
-of `getline` and `fprintf` in C.
+of `getline` and `fprintf` in C. A writer appends with `File.openAppend`, and bytes are read and
+written piece by piece (`readBytes`, `writeBytes`); copying the log as bytes takes 0.94 times the time of
+`fread` and `fwrite` in C.
 
 Candidates for what comes next: `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases
-(`using`), threads, a writer that appends and reading bytes piece by piece, the places that are slower
-than C.
+(`using`), threads, the places that are slower than C.

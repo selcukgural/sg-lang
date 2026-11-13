@@ -1,0 +1,9 @@
+error: `Stdin` cannot be changed or moved while a `for` goes over `Stdin`
+  --> error_read_bytes_lines_lock.sg:5:17
+ 5 |         _ = try Stdin.readBytes(ref buffer)
+   |                 ^^^^^
+  the loop is here:
+  --> error_read_bytes_lines_lock.sg:4:17
+ 4 |     for item in Stdin.lines() {
+   |                 ^^^^^^^^^^^^^
+  hint: keep the changes in a list until the loop ends, and apply them after it
