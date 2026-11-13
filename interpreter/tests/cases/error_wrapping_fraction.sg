@@ -1,0 +1,4 @@
+void main() {
+    double d = 2.5
+    var n = d.wrappingToInt()
+}

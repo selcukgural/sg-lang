@@ -1,0 +1,128 @@
+// `int.parse` and the other `parse` functions: the number a text writes, or a `NumberError`
+// that says where the text stops being a number, or that the type does not hold it.
+
+struct Point : Formattable {
+    int x
+    int y
+}
+
+Result<Point, NumberError> point(read string text) {
+    var comma = text.indexOf(',') ?? return Error(NumberError.Invalid(text.length()))
+    var x = try int.parse(text[..comma])
+    var y = try int.parse(text[comma + 1..])
+    return Ok(Point { x = x, y = y })
+}
+
+enum Problem : Formattable {
+    BadNumber(NumberError cause)
+    Negative
+}
+
+// `try` wraps the `NumberError` in the variant of `Problem` that holds one.
+Result<uint, Problem> count(read string text) {
+    int n = try int.parse(text)
+    if n < 0 {
+        return Error(Problem.Negative)
+    }
+    return Ok((uint)n)
+}
+
+void showInt(read string text) {
+    match int.parse(text) {
+        Ok(n) => print($"int \"{text}\": {n}")
+        Error(e) => print($"int \"{text}\": {e}")
+    }
+}
+
+void showDouble(read string text) {
+    match double.parse(text) {
+        Ok(n) => print($"double \"{text}\": {n}")
+        Error(e) => print($"double \"{text}\": {e}")
+    }
+}
+
+void showFloat(read string text) {
+    match float.parse(text) {
+        Ok(n) => print($"float \"{text}\": {n}")
+        Error(e) => print($"float \"{text}\": {e}")
+    }
+}
+
+void main() {
+    // Digits with a sign in front, and nothing else: no spaces, no `_`, no `0x`.
+    var whole = List<string> { "12", "-12", "+7", "007", "-0", "", "-", "+", "12x", " 1", "1 ", "1_000", "0x10", "2147483647", "2147483648", "-2147483648", "-2147483649" }
+    for text in read whole {
+        showInt(text)
+    }
+    // Every digit is looked at first: a text that is not a number says so even when it is long.
+    showInt("99999999999999999999999999999999999999999999x")
+    showInt("99999999999999999999999999999999999999999999")
+
+    // Each type holds its own range; an unsigned type takes no `-`.
+    print(byte.parse("255") ?? 0)
+    print(byte.parse("256") is Error(_))
+    print(sbyte.parse("-128") ?? 0)
+    print(short.parse("-32768") ?? 0)
+    print(ushort.parse("65535") ?? 0)
+    print(uint.parse("4294967295") ?? 0)
+    print(long.parse("-9223372036854775808") ?? 0)
+    print(ulong.parse("18446744073709551615") ?? 0)
+    print(ulong.parse("18446744073709551616") is Error(_))
+    print(nint.parse("9223372036854775807") ?? 0)
+    print(nuint.parse("0") ?? 1)
+    var minus = uint.parse("-1")
+    if minus is Error(cause) {
+        print(cause)
+    }
+
+    // What a number type prints, it reads back.
+    var least = int.MinValue.toString()
+    print(int.parse(read least) ?? 0)
+    var most = ulong.MaxValue.toString()
+    print(ulong.parse(read most) ?? 0)
+
+    // Fractional numbers: digits, a point, an exponent; `NaN` and `Infinity` as `print` writes them.
+    var fractional = List<string> { "1.5", "-0.25", ".5", "5.", "1e3", "1E-3", "+2.5e+2", "0.1", "-0", "NaN", "Infinity", "-Infinity", "+Infinity", "-NaN", "nan", "inf", "1e", "1e+", ".", "-.", "e5", "1.2.3", "1,5", "0x1p3", " 2", "1e400", "-1e400", "1e-400", "1e99999999999999999999", "1e-99999999999999999999" }
+    for text in read fractional {
+        showDouble(text)
+    }
+    // Rounded to the nearest number of the type; past the largest it is `Infinity`.
+    showDouble("0.30000000000000004")
+    showDouble("123456789012345678901234567890")
+    showDouble("2.2250738585072011e-308")
+    showFloat("0.1")
+    showFloat("16777217")
+    showFloat("3.4028235e38")
+    showFloat("3.5e38")
+    showFloat("1e-50")
+    // A long run of digits.
+    showDouble("3.14159265358979323846264338327950288419716939937510582097494459230781640628620899862803482534211706798214808651328230664709384460955058223172535940812848111745028410270193852110555964462294895493038196")
+
+    // Errors handed on, and kept apart.
+    var texts = List<string> { "3,4", "3", "3,x", "99999999999,1" }
+    for text in read texts {
+        match point(text) {
+            Ok(p) => print(p)
+            Error(cause) => match cause {
+                Invalid(at) => print($"{text}: not a number from byte {at}")
+                OutOfRange => print($"{text}: too large")
+            }
+        }
+    }
+    var e = int.parse("x")
+    if e is Error(cause) {
+        print(cause == NumberError.Invalid(0))
+        print(cause == NumberError.OutOfRange)
+    }
+    var inputs = List<string> { "-4", "4", "4.5" }
+    for input in read inputs {
+        match count(input) {
+            Ok(n) => print(n)
+            Error(problem) => print(problem)
+        }
+    }
+    long ms = long.parse("1500") ?? return
+    print(ms)
+    double ratio = double.parse("2.5e-3") ?? double.NaN
+    print(ratio)
+}

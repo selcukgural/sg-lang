@@ -2,3 +2,4 @@ panic: overflow: 2 - 3 does not fit in uint
   --> panic_unsigned_below_zero.sg:3:5
  3 |     left -= 3
    |     ^^^^^^^^^
+  hint: `trySubtract` gives `null` instead, and `wrappingSubtract` wraps around

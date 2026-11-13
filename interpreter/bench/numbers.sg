@@ -1,0 +1,46 @@
+// Numbers read out of text: a million lines, whole numbers and fractional ones in turn, read
+// ten times over and added up. The text is built once; the lines are found by looking for
+// the line end, and each is read with `long.parse` or `double.parse`.
+ulong next(ulong state) {
+    return state.wrappingMultiply(6364136223846793005).wrappingAdd(1442695040888963407)
+}
+
+void main() {
+    var parts = List<string>()
+    ulong state = 7
+    for i in 0..1000000 {
+        state = next(state)
+        if i % 2 == 0 {
+            long whole = (long)(state >> 33) - 1073741824
+            parts.add(whole.toString())
+        } else {
+            // A fractional number, written from two whole numbers: `12.1345`. Printing a
+            // `double` is slower than in C (see the README), and this measures reading.
+            ulong k = state >> 44
+            parts.add($"{k / 1000}.{k % 1000 + 1000}".toString())
+        }
+    }
+    var text = string.join("\n", read parts)
+    var all = $"{text}\n".toString()
+
+    long total = 0
+    double sum = 0
+    for pass in 0..10 {
+        nint start = 0
+        int line = 0
+        for i in 0..all.length() {
+            if all[i] == '\n' {
+                var piece = all[start..i]
+                if line % 2 == 0 {
+                    total += long.parse(piece) ?? 0
+                } else {
+                    sum += double.parse(piece) ?? 0
+                }
+                start = i + 1
+                line += 1
+            }
+        }
+    }
+    print(total)
+    print((long)sum)
+}

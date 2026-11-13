@@ -1,0 +1,5 @@
+error: type `int` has no method `sqrt`
+  --> error_math_on_integer.sg:3:13
+ 3 |     print(x.sqrt())
+   |             ^^^^
+  hint: it is a method of `double`: `((double)x).sqrt()`

@@ -642,7 +642,8 @@ print(0.1 + 0.2)                                 // 0.30000000000000004
 print(2.0)                                       // 2
 print(1e21)                                      // 1e+21
 print((float)(1.0 / 3))                          // 0.33333334
-print(x.sqrt())                                  // also abs, floor, ceil, round, truncate, isNaN, isInfinite
+print(x.sqrt())                                  // also abs, floor, ceil, round, truncate, isNaN, isInfinite, and
+                                                 // the math of the next section
 ```
 
 On floating-point numbers the operators behave as the hardware does, while `equals` and `compare` give a total order (C#):
@@ -663,6 +664,60 @@ match x { 0.5 => ... }                           // error: a fractional number c
 ```
 print("hello")                                   // stops if the output is closed, exit code 1
 try Console.out.writeLine("hello")               // Result<void, IoError>
+```
+
+### Numbers from text, constants and math
+
+`parse` is called on the type and gives a `Result`. The error says where the text stops being a number, or that the
+type does not hold it:
+
+```
+int ms = int.parse(text) ?? return null          // Result<int, NumberError>
+var size = try ulong.parse(field)                // NumberError is passed on, or put into the caller's error
+match long.parse(text) {
+    Ok(value) => use(value)
+    Error(Invalid(at)) => print($"not a number from byte {at}")
+    Error(OutOfRange) => print("too large")
+}
+int.parse(" 12")                                 // Invalid(0): no spaces, no `_`, no `0x`; trim the text first
+uint.parse("-1")                                 // Invalid(0): an unsigned type takes no `-`
+double.parse("1e400")                            // Infinity, as in Rust, C# and C; OutOfRange is for integers
+double.parse("Infinity")                         // what print writes, parse reads back: NaN, Infinity, -0
+var n = int.parse(line)                          // error if line is a string. Hint: read line
+```
+
+The constants are C#'s names, on the type. A constant is a value of its type, not a number written out:
+
+```
+int.MinValue, int.MaxValue                       // and on every integer type; nint.MaxValue is the machine's
+double.MaxValue, double.MinValue                 // MinValue is the most negative finite number
+double.NaN, double.Infinity, double.Pi, double.E // and the same on float
+uint u = int.MaxValue                            // error: expected uint, found int. Hint: (uint)
+double.Epsilon                                   // error: left out, because C# and C mean two different numbers by it
+```
+
+The conversions that do not panic name the type they go to (see Integer overflow). One that cannot fail is an
+error:
+
+```
+var a = big.tryToInt() ?? return Error(TooLarge) // int?
+var b = big.wrappingToUshort()                   // the bits that fit
+var c = x.tryToLong()                            // a double: toward zero, null for NaN and out of range
+var d = smallByte.tryToInt()                     // error: every byte fits in int. Hint: int x = value
+var e = x.wrappingToInt()                        // error on a double: it has no bits to cut to size
+var f = (int)big                                 // panic: value 5000000000 does not fit in int
+                                                 //   hint: tryToInt() gives null when the value does not fit, ...
+```
+
+Math is a set of methods, like `sqrt`. Two numbers meet as with `+`, and `min` and `max` give `NaN` if either side
+is one (C#):
+
+```
+x.pow(2), x.exp(), x.log(), x.log2(), x.log10()  // log is the natural one
+x.sin(), x.cos(), x.tan(), x.asin(), x.acos(), x.atan(), y.atan2(x)
+a.fusedMultiplyAdd(b, c)                         // a * b + c, rounded once
+a.min(b), a.max(b)                               // on integers too
+count.sqrt()                                     // error on an int. Hint: ((double)count).sqrt()
 ```
 
 ### Text formatting

@@ -1,0 +1,4 @@
+void main() {
+    byte b = 3
+    var n = b.tryToInt()
+}

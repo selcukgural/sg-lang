@@ -1,0 +1,5 @@
+panic: overflow: -2147483648 / -1 does not fit in int
+  --> panic_divide_overflow.sg:4:11
+ 4 |     print(least / -1)
+   |           ^^^^^^^^^^
+  hint: `tryDivide` gives `null` instead

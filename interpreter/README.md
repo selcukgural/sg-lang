@@ -50,7 +50,10 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Built-ins | `print(x)`, `panic("...")`, `assert(condition)` |
 | Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A normal run leaves the tests out |
 | Comparing by name | `a.compare(b)` on integers and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
-| Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic |
+| Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic. `tryToInt()` and the others give `null` where a cast would panic, `wrappingToInt()` and the others keep the bits that fit; `min`, `max` |
+| Fractional methods | `abs`, `sqrt`, `floor`, `ceil`, `round`, `truncate`, `isNaN`, `isInfinite`; `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pow`, `fusedMultiplyAdd`, `min`, `max`; `tryToInt()` and the others |
+| Numbers from text | `int.parse(text)`, and the same on every number type, gives a `Result<int, NumberError>`; the built-in `enum NumberError { Invalid(nint position)` / `OutOfRange }` says where the text stops being a number, or that the type does not hold it |
+| Constants | `int.MinValue`, `int.MaxValue` and the same on every integer type; `double.MinValue`, `double.MaxValue`, `double.NaN`, `double.Infinity`, `double.Pi`, `double.E` and the same on `float` |
 
 Design rules that are already enforced:
 
@@ -68,6 +71,12 @@ Design rules that are already enforced:
   never panics, and nothing is fused. `==` and `<` are the hardware's, `equals`, `compare`, `sort` and `==`
   on a struct a total order. A cast to an integer drops the fraction and follows the overflow rule. A
   number is printed with the fewest digits that read back as it (`0.1`, `2`, `1e+21`).
+- `parse` reads a sign and digits for an integer, and also a point and an exponent for a fractional
+  number; nothing else (no spaces, no `_`, no `0x`). What `print` writes it reads back. A whole number
+  past the type is `OutOfRange`; a fractional one past the type is `Infinity`, as in Rust, C# and C.
+- A panic of a cast or of an overflow names the method that does not panic (`tryToInt`, `tryAdd`). A
+  `tryTo...` or `wrappingTo...` that cannot fail is an error, and so is `wrappingTo...` on a fractional
+  number. A constant is a value of its type: `uint u = int.MaxValue` needs `(uint)`.
 - `$"..."` is not a `string`; `string text = $"..."` is an error whose hint is `.toString()`.
 - `assert` prints the expression text and, for a comparison, the value of both sides.
 - Deep recursion ends in a readable panic (limit: 5000 nested calls), not a crash.
@@ -182,7 +191,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (137 of 459 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (140 of 480 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -229,7 +238,8 @@ a list, an array or a range of either; `x[i]`, `length`, `get`, `indexOf`, `cont
 Since the thirty-second slice the bit operators (`&`, `|`, `^`, `~`, `<<`, `>>` and their assignments),
 written together with the checker and the interpreter. Since the thirty-third slice the other integer
 types, `sbyte`, `short`, `ushort`, `uint`, `ulong` and `nuint`, also written together with the checker and
-the interpreter. Since the thirty-fourth slice `float` and `double`, the same way.
+the interpreter. Since the thirty-fourth slice `float` and `double`, the same way. Since the thirty-fifth
+slice `parse`, the constants, the conversions that do not panic and the math methods, the same way.
 What is still missing is an error that names it (not silence): the few positions listed with the choices
 below (81, 111).
 
@@ -264,6 +274,7 @@ hand with no checks):
 | `bits`: a sieve below sixty-four million with one bit for each number, then thirty million numbers written seven bits at a time into a buffer on the stack and read back | 0.322 s | 0.321 s | 0.407 s | 0.79 |
 | `hash`: XXH64, the 64-bit xxHash, written with `ulong`, over one megabyte, two thousand times | 0.134 s | 0.488 s | 0.133 s | 1.01 |
 | `nbody`: the sun and the four giant planets moved twenty million steps in `double`, a square root for each pair at each step | 0.661 s | 0.662 s | 0.679 s | 0.97 |
+| `numbers`: a million lines of whole and fractional numbers read ten times with `long.parse` and `double.parse` and added up | 0.201 s | 0.202 s | 0.194 s | 1.04 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -345,6 +356,19 @@ the five; the C compiler sees that `i` and `j` stay below five and removes those
 are compiled without fused multiply-add, the rule for SG (choice 142): with it, clang on arm64 fuses
 `dx * dx + dy * dy` and the C program prints other last digits than the interpreter. Both print the same
 two energies, digit for digit.
+`numbers` reads numbers out of text: a million lines, whole numbers and fractional ones in turn, read
+ten times over and added up. The SG program finds each line end and gives the line to `long.parse` or
+`double.parse`; the C program gives the place to `strtoll` or `strtod`, which find the end themselves.
+The text is built once at the start, in both from whole numbers (`12.1345` is two of them and a point).
+Reading alone takes a little less time than in C (0.135 s against 0.143 s for the ten rounds), and
+building the text takes more (0.071 s against 0.056 s): it is made of a million small texts, each from
+`toString`, put together with `string.join`, where the C program writes into one buffer. The first version took 2.7 times
+the time of C, for three reasons. The fractional numbers were built with `toString`, and printing a
+`double` tries up to seventeen lengths ("Slower than C" below); every text made by `toString` was written
+twice, once to find its length (now once, choice 166); and every fractional number went to `strtod`
+through a copy, where most are short enough to be one correctly rounded division (choice 164). The
+overflow-checked build takes the same time: the digits are added up by the runtime on 128 bits, where
+nothing can overflow, and the one checked addition for each line is a test that is never taken.
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
@@ -1376,6 +1400,7 @@ the rest was approved on 13 November 2026:
      and the compiled program printed other last digits than the interpreter. Rust does not fuse;
      C# and Java do not either. Cost: a fused multiply-add is faster and more exact in some loops; a
      method that asks for it (`x.fma(y, z)`, Rust's `mul_add`) is a candidate, not part of this slice.
+     (Since the thirty-fifth slice: `a.fusedMultiplyAdd(b, c)`, 162.)
 143. **`==` and `<` are the hardware's; `equals` and `compare` a total order** (decided in the design:
      `NaN == NaN` is false, `nan.equals(nan)` is true, `NaN` comes before every other value). Added
      here: `-0.0` and `0.0` are equal for `equals` and `compare` too (C#'s `Equals`). `sort`,
@@ -1406,7 +1431,8 @@ the rest was approved on 13 November 2026:
 148. **The methods**: `abs`, `sqrt`, `floor`, `ceil`, `round` (half away from zero, as in C and Rust;
      C#'s `Math.Round` rounds half to even unless told otherwise), `truncate`, `isNaN`, `isInfinite`,
      `equals`, `compare` and `toString`. Not yet: `double.NaN` and the other constants (`0.0 / 0.0`
-     and `1 / zero` give them), `sin`, `pow`, `exp`, `log`, `tryToInt`.
+     and `1 / zero` give them), `sin`, `pow`, `exp`, `log`, `tryToInt`. (Since the thirty-fifth slice:
+     157 to 163.)
 149. **A fractional number cannot be a pattern** in `match`: "two fractional numbers are seldom exactly
      equal; compare in an `if`". Rust is taking float patterns away; C# allows them. `if x` with a
      `double` gets the hint `x != 0` (121).
@@ -1416,7 +1442,7 @@ the rest was approved on 13 November 2026:
      digits, each correctly rounded (Rust's `{:.*e}` and C's `printf("%.*e")` both are), until it
      reads back. So both print the same digits by construction. Cost: up to 17 tries for a number
      that needs 17 digits; a shortest-digits algorithm (Ryu, Grisu) is faster and is a candidate if a
-     measurement finds printing slow.
+     measurement finds printing slow. (The first version of `numbers` found it: "Slower than C".)
 151. **In compiled code** `float` and `double` are C's; `sqrt` and the others come from `<math.h>`, and
      `sg build` links `-lm`. A cast to an integer goes through one helper per integer type, which
      tests the whole part against the two powers of two at the ends of the type (one comparison pair
@@ -1425,6 +1451,88 @@ the rest was approved on 13 November 2026:
      steps, a square root for each pair at each step, kept in a `Body[5]` on the stack, against C
      with no checks. The C is compiled without fused multiply-add too, so that both do the same
      arithmetic and print the same digits.
+
+Choices made in the thirty-fifth slice (the tools for numbers; checker, interpreter and back end together).
+The design had decided that `int.parse` gives a `Result` ("File API") and named `tryToInt` and
+`wrappingToInt` ("Narrowing conversion"); the rest was approved on 13 November 2026:
+
+153. **`T.parse(read string text)` on every number type gives `Result<T, NumberError>`**: `int.parse(text)`,
+     `ulong.parse(field)`, `double.parse(text)`, called on the type as `string.fromUtf8` is. An owned
+     `string` is passed as `read text`, the rule for every borrow. C# throws on a bad text and has
+     `TryParse` with an `out` parameter; Rust's `text.parse::<i32>()` gives a `Result`; Go's
+     `strconv.Atoi` gives a value and an error.
+154. **The error is the built-in `enum NumberError : Copyable, Formattable, Equatable { Invalid(nint
+     position), OutOfRange }`.** `Invalid` says where the text stops being a number, in bytes, and the
+     length of the text when it ends too early (`"-"` is `Invalid(1)`); `OutOfRange` that it is a whole
+     number the integer type does not hold (a fractional one past the type is `Infinity`, 156). An empty text is `Invalid(0)`, not a variant of its own: one case fewer to
+     handle, and the position says it. Like `TextError` it is seen from every module and cannot be
+     defined again, and `try` puts it into the variant of the caller's error type that carries it
+     (`BadNumber(NumberError cause)`). Rust has five kinds and Go two, neither with a position.
+155. **A whole number is a sign and digits, and nothing else**: `12`, `-12`, `+7`, `007`. A space, `_`,
+     `0x` or a point is `Invalid` where it stands: `" 1"` is `Invalid(0)`, `"1_000"` is `Invalid(1)`.
+     Rust is as strict; C# allows spaces around the number. A `-` on an unsigned type is `Invalid(0)`,
+     `-0` too, as in Rust. Every byte is looked at before the size, so a long run of digits with a letter
+     after it is `Invalid`, not `OutOfRange`.
+156. **A fractional number is a sign, digits with at most one point, and an exponent**: `1.5`, `.5`,
+     `5.`, `1e3`, `1E-3`, `+2.5e+2`. That is looser than a number written in the program (138), because
+     data writes `.5` and `1E5`, and Rust and C# read them. What `print` writes, `parse` reads back:
+     `NaN`, `Infinity`, `-Infinity`, `-0`, `1e+21`; not `nan`, `inf`, `-NaN`, hex (`0x1p3`) or a comma.
+     The value is the nearest number of the type. One past the largest (`1e400`, `3.5e38` for a
+     `float`) is `Infinity`, and one too small for the type becomes 0 or a subnormal number, as in Rust,
+     C# and C: the same rounding as the arithmetic, where `double.MaxValue * 2` is `Infinity` too.
+     `OutOfRange` for it was weighed and left out (decided on 13 November).
+157. **Constants on the type**: `MinValue` and `MaxValue` on every integer type (C#'s names;
+     `nint.MaxValue` is the machine's), and on `float` and `double` also `NaN`, `Infinity`, `Pi` and
+     `E`; `double.MinValue` is the most negative finite number, as in C#. `Infinity` is the word `print`
+     writes, and `-double.Infinity` the other one (C# has `PositiveInfinity` and `NegativeInfinity`).
+     `Epsilon` is left out on purpose, and the error says why: in C# it is the smallest number above
+     zero, in C and Rust the gap between 1 and the next number, so each habit would read the other's
+     code wrong. `long.maxValue` gets `long.MaxValue` as a hint, `int.MaxValue()` "is a constant:
+     `int.MaxValue`, without parentheses".
+158. **A constant is a value of its type, not a number written out**: `uint u = int.MaxValue` is the
+     error of an `int` (hint `(uint)`), `long wide = int.MaxValue` widens, `int.MaxValue + 1` panics as
+     `x + 1` does. C# lets a constant that fits go to any type; here `nint.MaxValue` depends on the
+     machine and could not, and one rule for all is simpler.
+159. **`tryToX()` and `wrappingToX()` on every integer type, to every integer type**: `big.tryToInt()` is
+     an `int?`, checked in every build, and `big.wrappingToInt()` keeps the bits that fit, in every
+     build. The type is in the name (`tryToUlong`, `wrappingToByte`), as the design wrote it. One that
+     cannot fail is an error: `b.tryToInt()` with a `byte b` is "every `byte` fits in `int`: there is
+     nothing to convert", hint `int x = value`, and to the same type it is "this is an `int` already".
+     `tryToint` gets `tryToInt` as a hint, `tryToDouble` gets "`(double)x` never fails; it rounds".
+160. **On a fractional number only `tryToX()`**: toward zero as the cast does, `null` for `NaN` and for
+     what lies past the type. There is no `wrappingToX()` on one: "a fractional number has no bits to cut
+     to size". The cast in a release build already gives the nearest value (146).
+161. **The panic of a cast and of an overflow names the way out** (design: "the panic message shows the
+     value and `tryToInt`"): `(int)big` adds "hint: `tryToInt()` gives `null` when the value does not
+     fit, and `wrappingToInt()` cuts it to size"; `a + b` adds "hint: `tryAdd` gives `null` instead, and
+     `wrappingAdd` wraps around", `-` and `*` the same, `/` names `tryDivide`. Compiled code writes the
+     same lines. `-x` and the shifts have no such method yet, so their panics give no hint.
+162. **The math is methods on `float` and `double`**, as `sqrt` already is (148), not `Math.Sin(x)`:
+     `exp`, `log` (the natural one), `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`,
+     `y.atan2(x)`, `x.pow(y)`, and `a.fusedMultiplyAdd(b, c)`, which is `a * b + c` rounded once (C#'s
+     `Math.FusedMultiplyAdd`, Rust's `mul_add`; the candidate of 142). Two numbers meet as with `+`:
+     `f.pow(d)` with a `float f` and a `double d` is a `double`. Outside its domain a function gives
+     what the C library gives: `(-1.0).log()` is `NaN`, `0.0.log()` is `-Infinity`. On an integer the
+     error gives `((double)count).sqrt()` as the hint.
+163. **`min` and `max`**: on integers the two meet as with `+` (`b.max(300)` with a `byte b` is an
+     `int`); on fractional numbers the answer is `NaN` if either side is one, and `-0` is less than `0`,
+     as C#'s `Math.Min` and IEEE 754-2019's `minimum` have it. C's `fmin` and Rust's `f64::min` give the
+     other side for a `NaN` and either zero for two zeros, so the answer would depend on the order of
+     the two and on the machine.
+164. **The interpreter and compiled code give the same digits.** The math functions come from the C
+     library in both (Rust's `f64::sin` calls the same `sin`), so on one machine they agree to the last
+     digit; on another machine `sin` and the others may differ in the last digit, as in every language
+     that uses the C library (the arithmetic, `sqrt` and `fusedMultiplyAdd` are correctly rounded
+     everywhere). `parse` is correctly rounded in both: in the interpreter by Rust's own reader; in
+     compiled code a number whose digits fit in 53 bits (24 for a `float`) with a power of ten up to
+     10^22 (10^10) is one correctly rounded multiplication or division (Clinger's fast path, which Rust
+     takes too), and any other goes to `strtod` or `strtof`. The two were compared on 8000 random texts,
+     with both C compilers.
+165. **The measurement is `numbers`** (above): a million lines, whole numbers and fractional ones in
+     turn, read ten times over with `long.parse` and `double.parse`, against `strtoll` and `strtod`.
+166. **A short text made by `toString` or `$"...".toString()` is written once**: into a buffer on the
+     stack, then copied into its own block. Before, every such text was written twice, once to find its
+     length. Found by the measurement of 165; it changes no output.
 
 ## Slower than C, and could be better
 
@@ -1447,6 +1555,11 @@ check off.
 - **The hash of a `HashMap`** (`counts`, 1.17 times): SipHash-1-3 with a key drawn at start against C's
   one multiplication. Keeping it is a decision (13 November, choice 50); a faster hash for integer keys
   that still resists chosen keys is the open question.
+- **Printing a fractional number** (`numbers`' first version, 2.7 times with the text built by
+  `toString`): the fewest digits are found by writing the number with 1, 2, ... 17 digits and reading each
+  back (choice 150), up to seventeen `snprintf` and `strtod` for one number, where C's `printf("%g")` is
+  one. The interpreter finds them the same way. Candidates: a shortest-digits algorithm (Ryu, as Rust
+  uses), in both, so that they still agree by construction.
 - **Wrapping arithmetic in a loop that is only arithmetic** (`vector`'s first version, 1.28 times): C may
   assume a signed overflow never happens and turn `i * 7 + round` into a counter; wrapping is defined, so
   the C compiler keeps the arithmetic. Rust pays the same. No candidate yet.
@@ -1473,15 +1586,14 @@ check off.
   the loop started.
 - Lists of borrows (`List<read T>`); `reserve`, `clone`; a `Hashable`
   type with its own `equals` or `hash`.
-- `char` and `text.chars()`. On `float` and `double`: the constants (`double.NaN`, `double.MaxValue`), `sin`,
-  `pow`, `exp`, `log` and the rest of a math library, a fused multiply-add on request, `tryToInt`, and
-  reading a number out of text. A number is written in decimal only (`print`,
-  `$"..."`); there is no hex output. No way to read a number out of bytes in one step
-  (`ulong.fromLittleEndian(bytes)`): it is put together from the bytes by hand (see 136).
+- `char` and `text.chars()`. A number is written in decimal only (`print`, `$"..."`) and read in decimal only
+  (`parse`); there is no hex output or input. No way to read a number out of bytes in one step
+  (`ulong.fromLittleEndian(bytes)`): it is put together from the bytes by hand (see 136). `abs` and
+  `clamp` on integers, `sinh` and the other functions of `<math.h>` that are not listed in 162, `trim`
+  for the text before `parse`.
 - Arrays of arrays, `read T[]?`, an array as a key, `sort` and
   `reverse` through a `ref T[]`, `list.addAll(slice)`, looking for a run of items in a slice.
-- `tryToInt` and the other `tryTo...` conversions. Overflow and cast panics print the values but not yet the
-  safe alternative.
+- A panic of `-x` and of a shift names no way out: there is no `tryNegate` or `tryShiftLeft` yet.
 - Freeing a long linked list recurses, the open stack-depth question from the design; here it runs on a 1 GB stack.
 
 Words from the design that are not implemented produce "is not in the interpreter yet" instead of a confusing
@@ -1499,7 +1611,9 @@ listed in 81. The test command runs on compiled code too (`sg test --compiled`).
 The bit operators and numbers in hex and binary are in the checker, the interpreter and compiled code,
 and the sensor example is written as the design wrote it. So are the integer types the design names, the
 unsigned ones included, and a hash written with them takes the time of the same hash in C. So are `float`
-and `double`, and the n-body simulation takes the time of the same program in C.
+and `double`, and the n-body simulation takes the time of the same program in C. So are `parse`, the
+constants of the number types, the conversions that do not panic and the math methods, and reading a
+million numbers out of text takes about the time of `strtoll` and `strtod`.
 
-Candidates for what comes next: `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases
-(`using`), a math library for `double`, threads.
+Candidates for what comes next: `char` and `text.chars()` with `trim` and `split`, `list.addAll(slice)` and
+`sort` through a `ref T[]`, type aliases (`using`), threads, the places that are slower than C.

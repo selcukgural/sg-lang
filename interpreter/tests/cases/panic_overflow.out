@@ -3,3 +3,4 @@ panic: overflow: 2147483647 + 1 does not fit in int
   --> panic_overflow.sg:4:11
  4 |     print(max + 1)
    |           ^^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around

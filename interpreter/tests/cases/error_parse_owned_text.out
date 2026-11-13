@@ -1,0 +1,5 @@
+error: expected `read string`, found `string`
+  --> error_parse_owned_text.sg:3:23
+ 3 |     var n = int.parse(text) ?? 0
+   |                       ^^^^
+  hint: lend it with `read`: `read text`

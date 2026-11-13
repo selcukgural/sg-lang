@@ -3,9 +3,11 @@
 //! The checker has already done the work that makes a program safe; what is left to run time
 //! are the same data-dependent failures the interpreter reports, with the same messages:
 //! overflow, a shift count outside the bits of the type, division by zero, a cast that does
-//! not fit (from a fractional number too), `assert` and `panic`.
+//! not fit (from a fractional number too), `assert` and `panic`. A panic of a cast or of an
+//! overflow names the method that does not panic, as the interpreter's does.
 //!
-//! Only a part of the language is compiled so far: integers, `float` and `double`, `bool`, text, functions, structs,
+//! Only a part of the language is compiled so far: integers, `float` and `double` (with their
+//! constants, `parse`, the conversions that do not panic and the math of `<math.h>`), `bool`, text, functions, structs,
 //! enums with `match` and `is`, `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
 //! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, and `print`. Anything else
 //! is an error that names what is missing, so nothing is compiled wrongly in silence.
@@ -95,6 +97,12 @@ SG_COLD static void sg_err_int(__int128 v) {
     if (v < 0) fprintf(stderr, "%lld", (long long)v);
     else fprintf(stderr, "%llu", (unsigned long long)v);
 }
+/* The way out that does not panic, written under the place as the interpreter writes it. */
+SG_COLD static _Noreturn void sg_die_hint(const char* loc, const char* hint) {
+    fputs(loc, stderr);
+    fprintf(stderr, "  hint: %s\n", hint);
+    exit(1);
+}
 SG_COLD static _Noreturn void sg_overflow(__int128 a, const char* op, __int128 b, const char* ty, const char* loc) {
     fflush(stdout);
     fputs("panic: overflow: ", stderr);
@@ -102,7 +110,12 @@ SG_COLD static _Noreturn void sg_overflow(__int128 a, const char* op, __int128 b
     fprintf(stderr, " %s ", op);
     sg_err_int(b);
     fprintf(stderr, " does not fit in %s\n", ty);
-    sg_die(loc);
+    switch (op[0]) {
+    case '+': sg_die_hint(loc, "`tryAdd` gives `null` instead, and `wrappingAdd` wraps around");
+    case '-': sg_die_hint(loc, "`trySubtract` gives `null` instead, and `wrappingSubtract` wraps around");
+    case '*': sg_die_hint(loc, "`tryMultiply` gives `null` instead, and `wrappingMultiply` wraps around");
+    default: sg_die_hint(loc, "`tryDivide` gives `null` instead");
+    }
 }
 SG_COLD static _Noreturn void sg_neg_overflow(__int128 a, const char* ty, const char* loc) {
     fflush(stdout);
@@ -130,7 +143,10 @@ SG_COLD static _Noreturn void sg_cast_fail(__int128 v, const char* ty, const cha
     fputs("panic: value ", stderr);
     sg_err_int(v);
     fprintf(stderr, " does not fit in %s\n", ty);
-    sg_die(loc);
+    fputs(loc, stderr);
+    fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit, and `wrappingTo%c%s()` cuts it to size\n",
+            ty[0] - 'a' + 'A', ty + 1, ty[0] - 'a' + 'A', ty + 1);
+    exit(1);
 }
 SG_COLD static _Noreturn void sg_panic(const char* text, const char* loc) {
     fflush(stdout);
@@ -206,7 +222,9 @@ SG_COLD static _Noreturn void sg_fcast_fail(double v, bool single, const char* t
     fputs("panic: value ", stderr);
     sg_err_float(v, single);
     fprintf(stderr, " does not fit in %s\n", ty);
-    sg_die(loc);
+    fputs(loc, stderr);
+    fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit\n", ty[0] - 'a' + 'A', ty + 1);
+    exit(1);
 }
 SG_COLD static _Noreturn void sg_assert_fail_fd(const char* text, double l, double r, bool single, const char* loc) {
     fflush(stdout);
@@ -226,6 +244,98 @@ static inline int32_t sg_fcmp(double a, double b) {
     if (a != a) return b != b ? 0 : -1;
     if (b != b) return 1;
     return (a > b) - (a < b);
+}
+/* `min` and `max` on fractional numbers, as C# has them: `NaN` if either side is one, and
+   `-0.0` is less than `0.0`. C's `fmin` gives the other side for a `NaN`, and either zero. */
+static inline double sg_fmin(double a, double b) {
+    if (a != a || b != b) return NAN;
+    if (a == b) return signbit(a) ? a : b;
+    return a < b ? a : b;
+}
+static inline double sg_fmax(double a, double b) {
+    if (a != a || b != b) return NAN;
+    if (a == b) return signbit(a) ? b : a;
+    return a > b ? a : b;
+}
+/* `int.parse` and the other integer types: -1 when the text is a number between `lo` and
+   `hi`, -2 when it is a number past them, otherwise where it stops being a number (its length
+   when it ends too early). The same rules as `parse_number` in the interpreter. */
+static int64_t sg_read_whole(const uint8_t* p, int64_t n, __int128 lo, __int128 hi, __int128* out) {
+    int64_t start = n > 0 && (p[0] == '-' || p[0] == '+');
+    if (start && p[0] == '-' && lo == 0) return 0;
+    int64_t at = start;
+    while (at < n && p[at] >= '0' && p[at] <= '9') at++;
+    if (at == start || at < n) return at;
+    __int128 v = 0;
+    for (int64_t i = start; i < n; i++) {
+        v = v * 10 + (p[i] - '0');
+        if (v > ((__int128)1 << 64)) return -2;
+    }
+    if (p[0] == '-') v = -v;
+    if (v < lo || v > hi) return -2;
+    *out = v;
+    return -1;
+}
+/* `double.parse` and `float.parse`, with the same answers. What `print` writes is read back:
+   `NaN`, `Infinity`, `-Infinity`. A number of few digits and a small exponent, as most are, is
+   its digits times or over a power of ten, both held exactly, so one operation rounds it
+   correctly (Clinger's fast path; Rust takes it too). Any other goes to the C library, which
+   rounds to the nearest number as Rust does, and gives an infinity past the largest; the
+   program sets no locale, so the point is a point. */
+static int64_t sg_read_fraction(const uint8_t* p, int64_t n, bool single, double* out) {
+    static const double tens[] = { 1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
+                                   1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22 };
+    int64_t start = n > 0 && (p[0] == '-' || p[0] == '+');
+    if (!start && n == 3 && memcmp(p, "NaN", 3) == 0) { *out = NAN; return -1; }
+    if (n - start == 8 && memcmp(p + start, "Infinity", 8) == 0) { *out = start && p[0] == '-' ? -INFINITY : INFINITY; return -1; }
+    int64_t at = start, digits = 0, kept = 0, scale = 0;
+    uint64_t m = 0;
+    while (at < n && p[at] >= '0' && p[at] <= '9') {
+        if (kept < 19) { m = m * 10 + (uint64_t)(p[at] - '0'); kept += m != 0; } else scale++;
+        at++; digits++;
+    }
+    if (at < n && p[at] == '.') {
+        at++;
+        while (at < n && p[at] >= '0' && p[at] <= '9') {
+            if (kept < 19) { m = m * 10 + (uint64_t)(p[at] - '0'); kept += m != 0; scale--; }
+            at++; digits++;
+        }
+    }
+    if (digits == 0) return at;
+    int64_t exponent = 0;
+    if (at < n && (p[at] == 'e' || p[at] == 'E')) {
+        at++;
+        bool below = at < n && p[at] == '-';
+        if (at < n && (p[at] == '-' || p[at] == '+')) at++;
+        int64_t from = at;
+        while (at < n && p[at] >= '0' && p[at] <= '9') { if (exponent < 100000) exponent = exponent * 10 + (p[at] - '0'); at++; }
+        if (at == from) return at;
+        if (below) exponent = -exponent;
+    }
+    if (at < n) return at;
+    int64_t e = scale + exponent;
+    bool negative = p[0] == '-';
+    if (kept < 19 && (single ? m <= (1u << 24) && e >= -10 && e <= 10 : m <= ((uint64_t)1 << 53) && e >= -22 && e <= 22)) {
+        if (single) {
+            float v = (float)m;
+            v = e < 0 ? v / (float)tens[-e] : v * (float)tens[e];
+            *out = negative ? -(double)v : (double)v;
+        } else {
+            double v = (double)m;
+            v = e < 0 ? v / tens[-e] : v * tens[e];
+            *out = negative ? -v : v;
+        }
+        return -1;
+    }
+    char small[64];
+    char* text = n < 64 ? small : malloc((size_t)n + 1);
+    if (!text) abort();
+    memcpy(text, p, (size_t)n);
+    text[n] = 0;
+    double v = single ? (double)strtof(text, NULL) : strtod(text, NULL);
+    if (text != small) free(text);
+    *out = v;
+    return -1;
 }
 /* The whole numbers a type holds, as the powers of two at its ends: `lo <= t < hi`. */
 #define SG_LO(T) ((T)-1 < 0 ? -__builtin_ldexp(1.0, (int)sizeof(T) * 8 - 1) : 0.0)
@@ -357,16 +467,20 @@ static int64_t sg_utf8_bad(const uint8_t* bytes, int64_t len) {
     }
     return -1;
 }
+/* A short text is written once, into a buffer on the stack, and copied; only a longer one
+   is written a second time, into the room it was found to need. */
 static sg_string sg_format(const char* format, ...) {
+    char small[128];
     va_list count, write;
     va_start(count, format);
     va_copy(write, count);
-    int n = vsnprintf(NULL, 0, format, count);
+    int n = vsnprintf(small, sizeof small, format, count);
     va_end(count);
     if (n <= 0) { va_end(write); return SG_LIT("", 0); }
     uint8_t* bytes = malloc((size_t)n + 1);
     if (!bytes) abort();
-    vsnprintf((char*)bytes, (size_t)n + 1, format, write);
+    if (n < (int)sizeof small) memcpy(bytes, small, (size_t)n);
+    else vsnprintf((char*)bytes, (size_t)n + 1, format, write);
     va_end(write);
     return (sg_string){ bytes, n, n };
 }
@@ -983,6 +1097,30 @@ fn float_literal(text: &str, ty: FloatTy) -> String {
     format!("({text}{point}{suffix})")
 }
 
+/// `int.MaxValue`, `double.NaN`, `float.Pi` in C. A fractional constant is written with the
+/// fewest digits that give it back.
+fn constant(ty: &Ty, name: &str) -> String {
+    match ty {
+        Ty::Int(ty) => int_literal(if name == "MinValue" { ty.min() } else { ty.max() }, *ty),
+        Ty::Float(ty) => {
+            let ctype = float_ctype(*ty);
+            let (single, double) = match name {
+                "NaN" => return format!("(({ctype})NAN)"),
+                "Infinity" => return format!("(({ctype})INFINITY)"),
+                "MinValue" => (f32::MIN, f64::MIN),
+                "MaxValue" => (f32::MAX, f64::MAX),
+                "Pi" => (std::f32::consts::PI, std::f64::consts::PI),
+                _ => (std::f32::consts::E, std::f64::consts::E),
+            };
+            match ty {
+                FloatTy::Float => format!("({single:e}f)"),
+                FloatTy::Double => format!("({double:e})"),
+            }
+        }
+        _ => unreachable!("the checker gives constants to number types only"),
+    }
+}
+
 /// The C function that writes a fractional number into a text.
 fn float_put(ty: FloatTy) -> &'static str {
     match ty {
@@ -996,6 +1134,7 @@ fn float_fn(name: &str, ty: FloatTy) -> String {
     let base = match name {
         "abs" => "fabs",
         "truncate" => "trunc",
+        "fusedMultiplyAdd" => "fma",
         other => other,
     };
     if ty == FloatTy::Float { format!("{base}f") } else { base.to_string() }
@@ -1136,7 +1275,7 @@ fn may_leave(expr: &Expr) -> bool {
     let any = |list: &mut dyn Iterator<Item = &Expr>| list.filter(|inner| may_leave(inner)).count() > 0;
     match &expr.kind {
         ExprKind::Try { .. } | ExprKind::Return(_) | ExprKind::Match { .. } => true,
-        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) => false,
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::Constant { .. } => false,
         ExprKind::Array { args, items, .. } => any(&mut args.iter().chain(items.iter().flatten())),
         ExprKind::AsSlice(inner) => may_leave(inner),
         ExprKind::Field { recv: inner, .. }
@@ -1761,8 +1900,9 @@ impl<'a> Emitter<'a> {
         if known(&own) {
             return Some(own);
         }
-        // The built-in `TextError` is seen from every module with nothing written.
-        if name == "TextError" {
+        // The built-in `TextError` and `NumberError` are seen from every module with nothing
+        // written.
+        if name == "TextError" || name == "NumberError" {
             return Some(name.to_string());
         }
         let public = |full: &str| self.structs.get(full).map(|decl| decl.public).or(self.enums.get(full).map(|decl| decl.public)) == Some(true);
@@ -3514,7 +3654,7 @@ impl<'a> Emitter<'a> {
         let of = |inner: &Expr| self.effect(inner);
         let all = |list: &mut dyn Iterator<Item = &Expr>| list.map(|inner| self.effect(inner)).max().unwrap_or(Effect::Reads);
         match &expr.kind {
-            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) => Effect::Reads,
+            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::Constant { .. } => Effect::Reads,
             ExprKind::Field { recv: inner, .. }
             | ExprKind::New(inner)
             | ExprKind::Load(inner)
@@ -4182,6 +4322,7 @@ impl<'a> Emitter<'a> {
             ExprKind::Field { .. } => self.lvalue(expr),
             // The name of a function, as a value: its address.
             ExprKind::FuncRef(name) => Ok(format!("f_{}", cname(name))),
+            ExprKind::Constant { ty, name } => Ok(constant(ty, name)),
             // A number read out of a pointer that has no name: the pointer is freed after the statement.
             ExprKind::Load(inner) if matches!(inner.ty, Ty::Ptr(_)) => Ok(format!("(*{})", self.look(inner)?)),
             // A `T?` copied out of a `read T?`.
@@ -4924,6 +5065,40 @@ impl<'a> Emitter<'a> {
                     }
                     self.call("sg_from_utf8".to_string(), None, args, head, &expr.ty)
                 }
+                // `int.parse(text)`: one function for each type, made where it is first used.
+                Callee::Parse => {
+                    let Ty::Result(ty, _) = &expr.ty else { return Err(not_yet(expr.span, "`parse`")) };
+                    let (fname, read) = match &**ty {
+                        Ty::Int(ty) => (
+                            format!("sg_parse_{}", int_name(*ty)),
+                            format!(
+                                "__int128 v = 0; int64_t at = sg_read_whole(text.ptr, text.len, (__int128){}, (__int128){}, &v);",
+                                int_literal(ty.min(), if ty.signed() { IntTy::Long } else { IntTy::Ulong }),
+                                int_literal(ty.max(), if ty.signed() { IntTy::Long } else { IntTy::Ulong }),
+                            ),
+                        ),
+                        Ty::Float(ty) => (
+                            format!("sg_parse_{}", float_ctype(*ty)),
+                            format!("double v = 0; int64_t at = sg_read_fraction(text.ptr, text.len, {}, &v);", *ty == FloatTy::Float),
+                        ),
+                        _ => return Err(not_yet(expr.span, "`parse`")),
+                    };
+                    let given = Ty::Read(Box::new(Ty::Str));
+                    let (text_c, gives) = (self.ctype(&given, expr.span)?, self.ctype(&expr.ty, expr.span)?);
+                    let value_c = self.ctype(ty, expr.span)?;
+                    let error_c = self.ctype(&Ty::Enum("NumberError".to_string()), expr.span)?;
+                    if self.made.insert(fname.clone()) {
+                        let _ = writeln!(
+                            self.glue,
+                            "static {gives} {fname}({text_c} text) {{ {read} \
+                             if (at == -1) return ({gives}){{ .tag = 0, .u.v0 = {{ ({value_c})v }} }}; \
+                             if (at == -2) return ({gives}){{ .tag = 1, .u.v1 = {{ ({error_c}){{ .tag = 1 }} }} }}; \
+                             return ({gives}){{ .tag = 1, .u.v1 = {{ ({error_c}){{ .tag = 0, .u.v0 = {{ at }} }} }} }}; }}"
+                        );
+                        self.sigs.insert(fname.clone(), vec![given]);
+                    }
+                    self.call(fname, None, args, head, &expr.ty)
+                }
                 Callee::Plain if is_text(&recv.ty) || is_text_behind_pointer(&recv.ty) => match name.as_str() {
                     // The bytes of the text, looked at where they are.
                     "asBytes" => {
@@ -4989,6 +5164,66 @@ impl<'a> Emitter<'a> {
                         "isNaN" => format!("(isnan({value}) != 0)"),
                         "isInfinite" => format!("(isinf({value}) != 0)"),
                         _ => format!("{}({value})", float_fn(name, ty)),
+                    })
+                }
+                Callee::Plain if matches!(recv.ty, Ty::Float(_)) && matches!(name.as_str(), "exp" | "log" | "log2" | "log10" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan") => {
+                    let Ty::Float(ty) = recv.ty else { unreachable!("tested above") };
+                    let value = self.first(recv, head)?;
+                    Ok(format!("{}({value})", float_fn(name, ty)))
+                }
+                Callee::Plain if matches!(recv.ty, Ty::Float(_)) && matches!(name.as_str(), "pow" | "atan2" | "min" | "max") => {
+                    let Ty::Float(ty) = recv.ty else { unreachable!("tested above") };
+                    let (values, names) = self.two(recv, &args[0], head)?;
+                    let made = match name.as_str() {
+                        "min" | "max" => format!("(({})sg_f{name}({}, {}))", float_ctype(ty), values[0], values[1]),
+                        _ => format!("{}({}, {})", float_fn(name, ty), values[0], values[1]),
+                    };
+                    Ok(sequence(&names, made))
+                }
+                Callee::Plain if matches!(recv.ty, Ty::Float(_)) && name == "fusedMultiplyAdd" => {
+                    let Ty::Float(ty) = recv.ty else { unreachable!("tested above") };
+                    let mut parts = Vec::new();
+                    for side in [&**recv, &args[0], &args[1]] {
+                        let before = self.mark();
+                        let value = self.first(side, head)?;
+                        parts.push(self.part(side, &side.ty, value, before));
+                    }
+                    let (values, names) = self.in_order(parts)?;
+                    Ok(sequence(&names, format!("{}({}, {}, {})", float_fn(name, ty), values[0], values[1], values[2])))
+                }
+                Callee::Plain if matches!(recv.ty, Ty::Int(_)) && matches!(name.as_str(), "min" | "max") => {
+                    let Ty::Int(ty) = recv.ty else { unreachable!("tested above") };
+                    let (int, temp) = (int_ctype(ty), self.temp());
+                    let (values, names) = self.two(recv, &args[0], head)?;
+                    let op = if name == "min" { "<" } else { ">" };
+                    Ok(sequence(&names, format!("({{ {int} {temp}a = {}, {temp}b = {}; {temp}a {op} {temp}b ? {temp}a : {temp}b; }})", values[0], values[1])))
+                }
+                // `big.tryToInt()`: the value if it fits, `null` if not; `wrappingToInt()` keeps
+                // the bits that fit. A fractional number goes toward zero first, as in a cast.
+                Callee::Plain if name.starts_with("tryTo") || name.starts_with("wrappingTo") => {
+                    let to = match &expr.ty {
+                        Ty::Int(to) => *to,
+                        Ty::Nullable(inner) => match **inner {
+                            Ty::Int(to) => to,
+                            _ => return Err(not_yet(expr.span, &format!("the method `{name}`"))),
+                        },
+                        _ => return Err(not_yet(expr.span, &format!("the method `{name}`"))),
+                    };
+                    let (int, temp) = (int_ctype(to), self.temp());
+                    let value = self.first(recv, head)?;
+                    if name.starts_with("wrappingTo") {
+                        return Ok(format!("(({int})({value}))"));
+                    }
+                    let option = self.ctype(&expr.ty, expr.span)?;
+                    Ok(match recv.ty {
+                        Ty::Float(_) => format!(
+                            "({{ double {temp}t = __builtin_trunc({value}); {option} {temp} = {{ false, 0 }}; \
+                             if ({temp}t >= SG_LO({int}) && {temp}t < SG_HI({int})) {{ {temp}.has = true; {temp}.value = ({int}){temp}t; }} {temp}; }})"
+                        ),
+                        _ => format!(
+                            "({{ __int128 {temp}v = (__int128)({value}); {option} {temp}; {temp}.value = ({int}){temp}v; \
+                             {temp}.has = (__int128){temp}.value == {temp}v; {temp}; }})"
+                        ),
                     })
                 }
                 Callee::Plain if name == "toString" => {

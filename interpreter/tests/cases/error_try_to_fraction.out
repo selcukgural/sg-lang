@@ -1,0 +1,5 @@
+error: `long` has no method `tryToDouble`
+  --> error_try_to_fraction.sg:3:15
+ 3 |     var d = n.tryToDouble()
+   |               ^^^^^^^^^^^
+  hint: `(double)x` never fails; it rounds

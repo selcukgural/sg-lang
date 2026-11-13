@@ -783,6 +783,7 @@ impl<'a> Interp<'a> {
                 Ok(value)
             }
             ExprKind::FuncRef(name) => Ok(Value::Func(name.as_str().into())),
+            ExprKind::Constant { ty, name } => Ok(constant(ty, name)),
             ExprKind::Collection { ty, items, .. } => {
                 let given = items.iter().flatten();
                 if ty.name == "List" {
@@ -900,12 +901,14 @@ impl<'a> Interp<'a> {
             }
             ExprKind::Cast { ty, expr: inner } => match (strip(self.expr(inner, frame)?), ty) {
                 (Value::Int(_, value), Ty::Int(to)) if to.fits(value) => Ok(Value::Int(*to, value)),
-                (Value::Int(_, value), Ty::Int(to)) => {
-                    Err(Diag::panic(expr.span, format!("value {value} does not fit in {}", to.name())).into())
-                }
+                (Value::Int(_, value), Ty::Int(to)) => Err(Diag::panic(expr.span, format!("value {value} does not fit in {}", to.name()))
+                    .hint(format!("`tryTo{0}()` gives `null` when the value does not fit, and `wrappingTo{0}()` cuts it to size", to.title()))
+                    .into()),
                 (Value::Float(_, value), Ty::Int(to)) if float_fits(value, *to) => Ok(Value::Int(*to, value.trunc() as i128)),
                 (Value::Float(from, value), Ty::Int(to)) => {
-                    Err(Diag::panic(expr.span, format!("value {} does not fit in {}", show_float(value, from), to.name())).into())
+                    Err(Diag::panic(expr.span, format!("value {} does not fit in {}", show_float(value, from), to.name()))
+                        .hint(format!("`tryTo{}()` gives `null` when the value does not fit", to.title()))
+                        .into())
                 }
                 (value, to) => Ok(convert(value, to)),
             },
@@ -1116,6 +1119,22 @@ impl<'a> Interp<'a> {
                         Err(error) => {
                             let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
                             let cause = Value::Struct("TextError".into(), Rc::new(vec![position]));
+                            Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
+                        }
+                    })
+                }
+                Callee::Parse => {
+                    let Value::Str(text) = strip(self.expr(&args[0], frame)?) else {
+                        unreachable!("the checker makes the argument text")
+                    };
+                    let Ty::Result(ty, _) = &expr.ty else { unreachable!("`parse` gives a `Result`") };
+                    Ok(match parse_number(text.as_bytes(), ty) {
+                        Ok(value) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(value)])),
+                        Err(error) => {
+                            let cause = match error {
+                                Some(position) => Value::Enum("NumberError".into(), 0, Rc::new(vec![cell(Value::Int(IntTy::Nint, position as i128))])),
+                                None => Value::Enum("NumberError".into(), 1, Rc::new(Vec::new())),
+                            };
                             Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
                         }
                     })
@@ -1549,7 +1568,16 @@ fn arithmetic(op: BinOp, ty: IntTy, a: i128, b: i128, span: Span) -> Result<Valu
     };
     match result {
         Some(result) if ty.fits(result) => Ok(Value::Int(ty, result)),
-        _ => Err(Diag::panic(span, format!("overflow: {a} {} {b} does not fit in {}", op.symbol(), ty.name()))),
+        _ => {
+            let diag = Diag::panic(span, format!("overflow: {a} {} {b} does not fit in {}", op.symbol(), ty.name()));
+            Err(match op {
+                BinOp::Add => diag.hint("`tryAdd` gives `null` instead, and `wrappingAdd` wraps around"),
+                BinOp::Sub => diag.hint("`trySubtract` gives `null` instead, and `wrappingSubtract` wraps around"),
+                BinOp::Mul => diag.hint("`tryMultiply` gives `null` instead, and `wrappingMultiply` wraps around"),
+                BinOp::Div => diag.hint("`tryDivide` gives `null` instead"),
+                _ => diag,
+            })
+        }
     }
 }
 
@@ -1614,8 +1642,141 @@ fn collection_method(recv: Value, name: &str, mut args: Vec<Value>) -> Value {
     }
 }
 
+/// The integer type of `tryToInt`, `wrappingToUlong`.
+fn converted_to(name: &str) -> IntTy {
+    let rest = name.strip_prefix("tryTo").or_else(|| name.strip_prefix("wrappingTo")).expect("a conversion");
+    IntTy::from_name(&rest.to_lowercase()).expect("the checker knows the type")
+}
+
+/// `int.MaxValue`, `double.NaN`, `float.Pi`: a `float` as the `double` that holds it.
+fn constant(ty: &Ty, name: &str) -> Value {
+    match ty {
+        Ty::Int(ty) => Value::Int(*ty, if name == "MinValue" { ty.min() } else { ty.max() }),
+        Ty::Float(FloatTy::Double) => Value::Float(
+            FloatTy::Double,
+            match name {
+                "MinValue" => f64::MIN,
+                "MaxValue" => f64::MAX,
+                "NaN" => f64::NAN,
+                "Infinity" => f64::INFINITY,
+                "Pi" => std::f64::consts::PI,
+                _ => std::f64::consts::E,
+            },
+        ),
+        Ty::Float(FloatTy::Float) => Value::Float(
+            FloatTy::Float,
+            f64::from(match name {
+                "MinValue" => f32::MIN,
+                "MaxValue" => f32::MAX,
+                "NaN" => f32::NAN,
+                "Infinity" => f32::INFINITY,
+                "Pi" => std::f32::consts::PI,
+                _ => std::f32::consts::E,
+            }),
+        ),
+        _ => unreachable!("the checker gives constants to number types only"),
+    }
+}
+
+/// The number a text writes, in the type: `Err(Some(position))` where the text stops being
+/// a number (its length when it ends too early), `Err(None)` when an integer type does not
+/// hold it. A fractional number past the type is `Infinity`.
+/// The same rules as `sg_parse_int` and `sg_parse_float` in compiled code.
+fn parse_number(text: &[u8], ty: &Ty) -> Result<Value, Option<usize>> {
+    let signed = matches!(text.first(), Some(b'-' | b'+'));
+    let start = usize::from(signed);
+    let digits_from = |at: usize| text[at..].iter().take_while(|byte| byte.is_ascii_digit()).count();
+    match ty {
+        Ty::Int(ty) => {
+            if text.first() == Some(&b'-') && !ty.signed() {
+                return Err(Some(0));
+            }
+            let digits = digits_from(start);
+            if digits == 0 || start + digits < text.len() {
+                return Err(Some(start + digits));
+            }
+            // Every digit is looked at first: a text that is not a number says so even
+            // when it is long.
+            let mut value: i128 = 0;
+            for byte in &text[start..] {
+                value = value * 10 + i128::from(byte - b'0');
+                if value > 1 << 64 {
+                    return Err(None);
+                }
+            }
+            let value = if text[0] == b'-' { -value } else { value };
+            if ty.fits(value) { Ok(Value::Int(*ty, value)) } else { Err(None) }
+        }
+        Ty::Float(ty) => {
+            // What `print` writes, it reads back: `NaN`, `Infinity`, `-Infinity`.
+            let rest = &text[start..];
+            if rest == b"NaN" && !signed {
+                return Ok(Value::Float(*ty, f64::NAN));
+            }
+            if rest == b"Infinity" {
+                return Ok(Value::Float(*ty, if text[0] == b'-' { f64::NEG_INFINITY } else { f64::INFINITY }));
+            }
+            let mut at = start + digits_from(start);
+            let mut digits = at - start;
+            if text.get(at) == Some(&b'.') {
+                let after = digits_from(at + 1);
+                (at, digits) = (at + 1 + after, digits + after);
+            }
+            if digits == 0 {
+                return Err(Some(at));
+            }
+            if matches!(text.get(at), Some(b'e' | b'E')) {
+                at += 1;
+                if matches!(text.get(at), Some(b'-' | b'+')) {
+                    at += 1;
+                }
+                let exponent = digits_from(at);
+                at += exponent;
+                if exponent == 0 {
+                    return Err(Some(at));
+                }
+            }
+            if at < text.len() {
+                return Err(Some(at));
+            }
+            let written = std::str::from_utf8(text).expect("only ASCII is left");
+            let value = match ty {
+                FloatTy::Float => f64::from(written.parse::<f32>().expect("checked above")),
+                FloatTy::Double => written.parse::<f64>().expect("checked above"),
+            };
+            // Past the largest number it is `Infinity`, as in Rust, C# and C.
+            Ok(Value::Float(*ty, value))
+        }
+        _ => unreachable!("the checker gives `parse` to number types only"),
+    }
+}
+
+/// `pow`, `atan2`, `min`, `max`; on a `float` in `f32`. `min` and `max` give `NaN` if either
+/// side is one, and take `-0` as less than `0`, as C# does.
+fn float_method2(ty: FloatTy, a: f64, name: &str, b: f64) -> Value {
+    let pick = |a: f64, b: f64| -> f64 {
+        if a.is_nan() || b.is_nan() {
+            return f64::NAN;
+        }
+        let a_first = match a == b {
+            true => (name == "min") == a.is_sign_negative(),
+            false => (name == "min") == (a < b),
+        };
+        if a_first { a } else { b }
+    };
+    let result = match (ty, name) {
+        (_, "min" | "max") => pick(a, b),
+        (FloatTy::Float, "pow") => f64::from((a as f32).powf(b as f32)),
+        (FloatTy::Float, _) => f64::from((a as f32).atan2(b as f32)),
+        (FloatTy::Double, "pow") => a.powf(b),
+        (FloatTy::Double, _) => a.atan2(b),
+    };
+    Value::Float(ty, result)
+}
+
 /// `abs`, `sqrt`, `floor`, `ceil`, `round` (half away from zero), `truncate`, `isNaN`,
-/// `isInfinite`; on a `float` in `f32`.
+/// `isInfinite`, and the functions of the C library: `exp`, `log`, `sin` and the rest. On a
+/// `float` in `f32`.
 fn float_method(ty: FloatTy, value: f64, name: &str) -> Value {
     match name {
         "isNaN" => return Value::Bool(value.is_nan()),
@@ -1631,6 +1792,16 @@ fn float_method(ty: FloatTy, value: f64, name: &str) -> Value {
                 "floor" => value.floor(),
                 "ceil" => value.ceil(),
                 "round" => value.round(),
+                "exp" => value.exp(),
+                "log" => value.ln(),
+                "log2" => value.log2(),
+                "log10" => value.log10(),
+                "sin" => value.sin(),
+                "cos" => value.cos(),
+                "tan" => value.tan(),
+                "asin" => value.asin(),
+                "acos" => value.acos(),
+                "atan" => value.atan(),
                 _ => value.trunc(),
             }) as f64
         }
@@ -1640,6 +1811,16 @@ fn float_method(ty: FloatTy, value: f64, name: &str) -> Value {
             "floor" => value.floor(),
             "ceil" => value.ceil(),
             "round" => value.round(),
+            "exp" => value.exp(),
+            "log" => value.ln(),
+            "log2" => value.log2(),
+            "log10" => value.log10(),
+            "sin" => value.sin(),
+            "cos" => value.cos(),
+            "tan" => value.tan(),
+            "asin" => value.asin(),
+            "acos" => value.acos(),
+            "atan" => value.atan(),
             _ => value.trunc(),
         },
     };
@@ -1663,6 +1844,31 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
                 _ => Value::Null,
             }
         }
+        (Value::Int(_, value), _, []) if name.starts_with("tryTo") || name.starts_with("wrappingTo") => {
+            let to = converted_to(name);
+            match name.starts_with("tryTo") {
+                true if to.fits(*value) => Value::Int(to, *value),
+                true => Value::Null,
+                false => Value::Int(to, to.wrap(*value)),
+            }
+        }
+        // Toward zero, as a cast; `NaN` and what lies past the type give `null`.
+        (Value::Float(_, value), _, []) if name.starts_with("tryTo") => {
+            let to = converted_to(name);
+            match float_fits(*value, to) {
+                true => Value::Int(to, value.trunc() as i128),
+                false => Value::Null,
+            }
+        }
+        (Value::Int(ty, a), "min" | "max", [Value::Int(_, b)]) => Value::Int(*ty, if name == "min" { *a.min(b) } else { *a.max(b) }),
+        (Value::Float(ty, a), "pow" | "atan2" | "min" | "max", [Value::Float(_, b)]) => float_method2(*ty, *a, name, *b),
+        (Value::Float(ty, a), "fusedMultiplyAdd", [Value::Float(_, b), Value::Float(_, c)]) => Value::Float(
+            *ty,
+            match ty {
+                FloatTy::Float => (*a as f32).mul_add(*b as f32, *c as f32) as f64,
+                FloatTy::Double => a.mul_add(*b, *c),
+            },
+        ),
         (Value::Str(_), "clone", []) => recv,
         (Value::Str(_), "asBytes", []) => Value::Slice(cells_of(&recv)),
         (_, "equals", [other]) => Value::Bool(key_of(&recv) == key_of(other)),

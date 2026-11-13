@@ -1,0 +1,5 @@
+error: `long` has no method `tryToint`
+  --> error_try_to_spelling.sg:3:15
+ 3 |     var m = n.tryToint()
+   |               ^^^^^^^^
+  hint: `tryToInt`

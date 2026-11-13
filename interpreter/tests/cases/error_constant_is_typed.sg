@@ -1,0 +1,4 @@
+// `int.MaxValue` is an `int`, not a number written out: it does not become a `uint`.
+void main() {
+    uint u = int.MaxValue
+}

@@ -1,0 +1,4 @@
+error: expected `double`, found `string`
+  --> error_math_argument.sg:3:17
+ 3 |     print(x.pow("2"))
+   |                 ^^^

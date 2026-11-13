@@ -1,0 +1,5 @@
+error: `long` has no method `tryToChar`
+  the conversions are named after the type: `tryToInt`, `tryToUlong`, `wrappingToByte`
+  --> error_try_to_unknown.sg:3:15
+ 3 |     var m = n.tryToChar()
+   |               ^^^^^^^^^

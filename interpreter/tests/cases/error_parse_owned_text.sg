@@ -1,0 +1,4 @@
+void main() {
+    string text = "12"
+    var n = int.parse(text) ?? 0
+}

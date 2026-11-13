@@ -1,0 +1,5 @@
+error: `int` has no function `tryParse`
+  functions for now: parse
+  --> error_number_function.sg:2:17
+ 2 |     var n = int.tryParse("12")
+   |                 ^^^^^^^^

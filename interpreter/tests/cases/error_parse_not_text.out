@@ -1,0 +1,4 @@
+error: expected `read string`, found `int`
+  --> error_parse_not_text.sg:2:23
+ 2 |     var n = int.parse(12) ?? 0
+   |                       ^^

@@ -1,0 +1,4 @@
+void main() {
+    long n = 3
+    var m = n.tryToChar()
+}

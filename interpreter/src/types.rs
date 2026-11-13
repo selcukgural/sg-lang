@@ -51,6 +51,12 @@ impl IntTy {
         }
     }
 
+    /// The name as it is written inside a method name: `Int` in `tryToInt`.
+    pub fn title(self) -> String {
+        let name = self.name();
+        format!("{}{}", name[..1].to_uppercase(), &name[1..])
+    }
+
     pub fn signed(self) -> bool {
         matches!(self, IntTy::Sbyte | IntTy::Short | IntTy::Int | IntTy::Long | IntTy::Nint)
     }

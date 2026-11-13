@@ -1,0 +1,4 @@
+error: this is an `int` already: there is nothing to convert
+  --> error_try_to_same.sg:3:15
+ 3 |     var m = n.tryToInt()
+   |               ^^^^^^^^

@@ -1,0 +1,5 @@
+error: this `Result` is not used, so an error would be lost silently
+  --> error_parse_result_dropped.sg:2:5
+ 2 |     int.parse("12")
+   |     ^^^^^^^^^^^^^^^
+  hint: pass the error on with `try int.parse("12")`, or drop it on purpose with `_ = int.parse("12")`

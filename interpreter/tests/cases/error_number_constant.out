@@ -1,0 +1,5 @@
+error: `int` has no constant `NaN`
+  constants: MinValue, MaxValue
+  --> error_number_constant.sg:2:15
+ 2 |     print(int.NaN)
+   |               ^^^

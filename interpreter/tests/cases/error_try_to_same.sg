@@ -1,0 +1,4 @@
+void main() {
+    int n = 3
+    var m = n.tryToInt()
+}

@@ -26,7 +26,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "assert", "panic", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -106,7 +106,7 @@ impl Names {
         if self.known(&own) {
             return Ok(Some(own));
         }
-        if written == TEXT_ERROR {
+        if written == TEXT_ERROR || written == NUMBER_ERROR {
             return Ok(Some(written.to_string()));
         }
         let mut found: Vec<String> = Vec::new();
@@ -170,6 +170,56 @@ fn exposes(what: &str, span: Span, ty: &Ty, names: &Names) -> Res<()> {
 }
 
 /// One place a returned borrow may come from.
+/// The constants of a number type: `int.MaxValue`, `double.NaN`.
+fn constant(ty: &Ty, name: &str, span: Span) -> Res<()> {
+    let names: &[&str] = match ty {
+        Ty::Int(_) => &["MinValue", "MaxValue"],
+        _ => &["MinValue", "MaxValue", "NaN", "Infinity", "Pi", "E"],
+    };
+    if names.contains(&name) {
+        return Ok(());
+    }
+    let diag = Diag::error(span, format!("`{ty}` has no constant `{name}`"));
+    if name == "Epsilon" && matches!(ty, Ty::Float(_)) {
+        return Err(diag.note("left out on purpose: in C# `Epsilon` is the smallest number above zero, in C and Rust the gap between 1 and the next number"));
+    }
+    Err(match nearest(name, names.iter().copied()) {
+        Some(close) => diag.hint(format!("`{ty}.{close}`")),
+        None => diag.note(format!("constants: {}", names.join(", "))),
+    })
+}
+
+/// The integer type a `tryTo...` or `wrappingTo...` method converts to: `tryToInt` gives an
+/// `int?`. A conversion that cannot fail is an error, as is cutting a fractional number.
+fn conversion(from: &Ty, name: &str, span: Span) -> Res<IntTy> {
+    let (wrapping, rest) = match name.strip_prefix("tryTo") {
+        Some(rest) => (false, rest),
+        None => (true, name.strip_prefix("wrappingTo").expect("tested by the caller")),
+    };
+    let lower = rest.to_lowercase();
+    let no_method = || Diag::error(span, format!("`{from}` has no method `{name}`"));
+    let Some(to) = IntTy::from_name(&lower) else {
+        if let Some(float) = FloatTy::from_name(&lower) {
+            return Err(no_method().hint(format!("`({})x` never fails; it rounds", float.name())));
+        }
+        return Err(no_method().note("the conversions are named after the type: `tryToInt`, `tryToUlong`, `wrappingToByte`"));
+    };
+    let spelled = format!("{}{}", lower[..1].to_uppercase(), &lower[1..]);
+    if rest != spelled {
+        let right = if wrapping { "wrappingTo" } else { "tryTo" };
+        return Err(no_method().hint(format!("`{right}{spelled}`")));
+    }
+    match from {
+        Ty::Float(_) if wrapping => Err(no_method().note(format!(
+            "a fractional number has no bits to cut to size; `tryTo{spelled}()` gives `null` when it does not fit"
+        ))),
+        Ty::Int(from) if *from == to => Err(Diag::error(span, format!("this is an `{}` already: there is nothing to convert", to.name()))),
+        Ty::Int(from) if from.widens_to(to) => Err(Diag::error(span, format!("every `{}` fits in `{}`: there is nothing to convert", from.name(), to.name()))
+            .hint(format!("it becomes one on its own: `{} x = value`", to.name()))),
+        _ => Ok(to),
+    }
+}
+
 /// What `string.fromUtf8` gives when the bytes are not text.
 const TEXT_ERROR: &str = "TextError";
 
@@ -182,6 +232,24 @@ fn text_error() -> StructDecl {
     let ty = TypeExpr { mode: None, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
     let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere };
     StructDecl { public: true, name: TEXT_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: vec![position], methods: Vec::new() }
+}
+
+/// What `int.parse` and the other `parse` functions give when the text is not a number.
+const NUMBER_ERROR: &str = "NumberError";
+
+/// The built-in `enum NumberError : Copyable, Formattable, Equatable { Invalid(nint position),
+/// OutOfRange }`: the text is not a number from the byte at `position` on (the length of the
+/// text when it ends too early), or it is one that the type does not hold.
+fn number_error() -> EnumDecl {
+    let nowhere = Span::new(0, 0);
+    let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
+    let ty = TypeExpr { mode: None, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+    let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere };
+    let variants = vec![
+        VariantDecl { name: "Invalid".to_string(), span: nowhere, fields: vec![position] },
+        VariantDecl { name: "OutOfRange".to_string(), span: nowhere, fields: Vec::new() },
+    ];
+    EnumDecl { public: true, name: NUMBER_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants }
 }
 
 #[derive(Clone, PartialEq)]
@@ -359,6 +427,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     names.kinds.insert(TEXT_ERROR.to_string(), TypeKind::Struct);
     names.public.insert(TEXT_ERROR.to_string());
     prog.structs.push(text_error());
+    names.kinds.insert(NUMBER_ERROR.to_string(), TypeKind::Enum);
+    names.public.insert(NUMBER_ERROR.to_string());
+    prog.enums.push(number_error());
 
     // The types that carry a borrow name where it comes from.
     let sourced = prog
@@ -2632,9 +2703,9 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        // `Shape.Empty` is a value, not a field.
+        // `Shape.Empty` and `int.MaxValue` are values, not fields.
         if let ExprKind::Field { recv, .. } = &expr.kind {
-            if self.enum_named(recv).is_some() {
+            if self.enum_named(recv).is_some() || self.number_type_named(recv).is_some() {
                 return Ok(None);
             }
         }
@@ -2982,6 +3053,12 @@ impl<'a> Checker<'a> {
 
         // `Shape.Empty` and `Shape.Circle(2)` build a value of the enum.
         match &mut expr.kind {
+            ExprKind::Field { recv, name, name_span, .. } if self.number_type_named(recv).is_some() => {
+                let ty = self.number_type_named(recv).expect("tested above");
+                constant(&ty, name, *name_span)?;
+                expr.kind = ExprKind::Constant { ty: ty.clone(), name: std::mem::take(name) };
+                return Ok(ty);
+            }
             ExprKind::Field { recv, name, name_span, .. } => {
                 let owner = self.enum_named(recv).expect("any other field is a place");
                 let (index, ty) = self.variant(owner, name, *name_span, None, span)?;
@@ -3401,7 +3478,7 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Match { subject, arms, borrowed } => self.match_expr(subject, arms, borrowed, expected, false),
             ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => unreachable!("places are handled above"),
-            ExprKind::Widen(..) | ExprKind::Load(_) | ExprKind::Unbox(_) | ExprKind::AsSlice(_) | ExprKind::Variant { .. } | ExprKind::FuncRef(_) => {
+            ExprKind::Widen(..) | ExprKind::Load(_) | ExprKind::Unbox(_) | ExprKind::AsSlice(_) | ExprKind::Variant { .. } | ExprKind::FuncRef(_) | ExprKind::Constant { .. } => {
                 unreachable!("inserted only after checking")
             }
         }
@@ -3468,6 +3545,16 @@ impl<'a> Checker<'a> {
 
     /// The enum an expression names when it is written in front of a dot: `Shape` in
     /// `Shape.Circle(2)`. A variable of that name wins.
+    /// The number type an expression names when it is written in front of a dot: `int` in
+    /// `int.MaxValue` and in `int.parse(text)`. A variable of that name wins.
+    fn number_type_named(&mut self, expr: &Expr) -> Option<Ty> {
+        let ExprKind::Var(name) = &expr.kind else { return None };
+        if self.find(name).is_some() {
+            return None;
+        }
+        Ty::from_name(name).filter(Ty::is_number)
+    }
+
     fn enum_named(&mut self, expr: &Expr) -> Option<&'a str> {
         let ExprKind::Var(name) = &expr.kind else { return None };
         if name == "this" || self.find(name).is_some() {
@@ -4170,6 +4257,19 @@ impl<'a> Checker<'a> {
         callee: &mut Callee,
         span: Span,
     ) -> Res<Ty> {
+        // `int.parse(text)`: the number the text writes, or where it stops being one.
+        if let Some(ty) = self.number_type_named(recv) {
+            if name != "parse" {
+                let diag = Diag::error(name_span, format!("`{ty}` has no function `{name}`"));
+                return Err(match constant(&ty, name, name_span) {
+                    Ok(()) => diag.hint(format!("`{name}` is a constant: `{ty}.{name}`, without parentheses")),
+                    Err(_) => diag.note("functions for now: parse"),
+                });
+            }
+            self.args(name, args, &[Ty::Read(Box::new(Ty::Str))], span)?;
+            *callee = Callee::Parse;
+            return Ok(Ty::Result(Box::new(ty), Box::new(Ty::Enum(NUMBER_ERROR.to_string()))));
+        }
         // A type name in front of the dot: `Stack.create()`.
         if let ExprKind::Var(owner) = &recv.kind {
             if self.find(owner).is_none() && owner != "this" {
@@ -4371,6 +4471,54 @@ impl<'a> Checker<'a> {
                 self.coerce(recv, recv_ty.clone(), target)?;
                 Ok(target.clone())
             }
+            (Ty::Float(_), "exp" | "log" | "log2" | "log10" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(target.clone())
+            }
+            // `x.pow(y)`, `y.atan2(x)`, `a.min(b)`: the two meet in one type, as with `+`.
+            (Ty::Float(ty), "pow" | "atan2" | "min" | "max") => {
+                arity(1)?;
+                let found = self.operand(&mut args[0], Some(&Ty::Float(*ty)))?;
+                if !found.strip_borrow().is_number() {
+                    return Err(Diag::error(args[0].span, format!("expected `{target}`, found `{found}`")));
+                }
+                Ok(Ty::Float(self.common_float(recv, recv_ty.clone(), &mut args[0], found)?))
+            }
+            // `a.fusedMultiplyAdd(b, c)`: `a * b + c` rounded once.
+            (Ty::Float(ty), "fusedMultiplyAdd") => {
+                arity(2)?;
+                let mut common = *ty;
+                let mut recv_found = recv_ty.clone();
+                for at in 0..2 {
+                    let found = self.operand(&mut args[at], Some(&Ty::Float(common)))?;
+                    if !found.strip_borrow().is_number() {
+                        return Err(Diag::error(args[at].span, format!("expected `{}`, found `{found}`", common.name())));
+                    }
+                    common = self.common_float(recv, recv_found, &mut args[at], found)?;
+                    recv_found = Ty::Float(common);
+                }
+                // The first argument came before the type grew to `double` for the second.
+                if let Ty::Float(first) = args[0].ty.clone() {
+                    if first != common {
+                        self.coerce(&mut args[0], Ty::Float(first), &Ty::Float(common))?;
+                    }
+                }
+                Ok(Ty::Float(common))
+            }
+            // As with `+`: `b.max(300)` with a `byte b` is an `int`.
+            (Ty::Int(_), "min" | "max") => {
+                arity(1)?;
+                let other = self.int_operand(&mut args[0], None, "the argument")?;
+                Ok(Ty::Int(self.common_int(recv, recv_ty.clone(), &mut args[0], Ty::Int(other))?))
+            }
+            // `big.tryToInt()`: `null` if it does not fit; `big.wrappingToInt()`: cut to size.
+            (Ty::Int(_) | Ty::Float(_), _) if name.starts_with("tryTo") || name.starts_with("wrappingTo") => {
+                arity(0)?;
+                let to = conversion(target, name, name_span)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(if name.starts_with("tryTo") { Ty::Nullable(Box::new(Ty::Int(to))) } else { Ty::Int(to) })
+            }
             (Ty::Float(_), "isNaN" | "isInfinite") => {
                 arity(0)?;
                 self.coerce(recv, recv_ty.clone(), target)?;
@@ -4408,6 +4556,15 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let diag = Diag::error(name_span, format!("type `{target}` has no method `{name}`"));
+                const FRACTIONAL: &[&str] = &[
+                    "sqrt", "floor", "ceil", "round", "truncate", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan",
+                    "atan2", "pow", "fusedMultiplyAdd",
+                ];
+                if matches!(target, Ty::Int(_)) && FRACTIONAL.contains(&name) {
+                    let text = &self.src[recv.span.start..recv.span.end];
+                    let given = if matches!(name, "atan2" | "pow" | "fusedMultiplyAdd") { "..." } else { "" };
+                    return Err(diag.hint(format!("it is a method of `double`: `((double){text}).{name}({given})`")));
+                }
                 let Ty::Struct(owner) = target else {
                     return Err(if name.starts_with("try") { diag.note(format!("`{name}` is not in the interpreter yet")) } else { diag });
                 };
@@ -4803,6 +4960,7 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
         | ExprKind::Null
         | ExprKind::Var(_)
         | ExprKind::FuncRef(_)
+        | ExprKind::Constant { .. }
         | ExprKind::Return(None) => {}
     }
 }

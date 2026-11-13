@@ -2,3 +2,4 @@ panic: value 10000000000 does not fit in int
   --> panic_float_cast.sg:3:11
  3 |     print((int)big)
    |           ^^^^^^^^
+  hint: `tryToInt()` gives `null` when the value does not fit

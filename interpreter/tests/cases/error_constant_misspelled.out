@@ -1,0 +1,5 @@
+error: `long` has no constant `maxValue`
+  --> error_constant_misspelled.sg:2:16
+ 2 |     print(long.maxValue)
+   |                ^^^^^^^^
+  hint: `long.MaxValue`

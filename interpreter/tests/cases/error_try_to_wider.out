@@ -1,0 +1,5 @@
+error: every `byte` fits in `int`: there is nothing to convert
+  --> error_try_to_wider.sg:3:15
+ 3 |     var n = b.tryToInt()
+   |               ^^^^^^^^
+  hint: it becomes one on its own: `int x = value`

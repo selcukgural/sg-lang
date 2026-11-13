@@ -1,0 +1,5 @@
+error: `int` has no function `MaxValue`
+  --> error_constant_called.sg:2:15
+ 2 |     print(int.MaxValue())
+   |               ^^^^^^^^
+  hint: `MaxValue` is a constant: `int.MaxValue`, without parentheses

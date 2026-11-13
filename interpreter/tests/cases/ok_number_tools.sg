@@ -1,0 +1,129 @@
+// The constants of the number types, the conversions that cannot panic, and the math
+// functions on `float` and `double`.
+
+double hypotenuse(double a, double b) {
+    return (a * a + b * b).sqrt()
+}
+
+void main() {
+    // Constants: the ends of every integer type.
+    print($"{sbyte.MinValue} {sbyte.MaxValue} {byte.MinValue} {byte.MaxValue}")
+    print($"{short.MinValue} {short.MaxValue} {ushort.MinValue} {ushort.MaxValue}")
+    print($"{int.MinValue} {int.MaxValue} {uint.MinValue} {uint.MaxValue}")
+    print($"{long.MinValue} {long.MaxValue} {ulong.MinValue} {ulong.MaxValue}")
+    print($"{nint.MinValue} {nint.MaxValue} {nuint.MaxValue}")
+    // A constant is a value of its type: it widens as one, and does not take the type of the
+    // other side as a written number does.
+    long wide = int.MaxValue
+    print(wide + 1)
+    print((uint)int.MaxValue + 1)
+
+    // And of the fractional types.
+    print($"{double.MinValue} {double.MaxValue} {float.MinValue} {float.MaxValue}")
+    print($"{double.NaN} {double.Infinity} {-double.Infinity} {float.NaN} {float.Infinity}")
+    print($"{double.Pi} {double.E} {float.Pi} {float.E}")
+    print(double.NaN == double.NaN)
+    print(double.NaN.equals(double.NaN))
+    print(double.MaxValue * 2 == double.Infinity)
+    double radius = 2
+    print(double.Pi * radius * radius)
+
+    // `tryTo...`: the value if it fits, `null` if not, in every build.
+    long big = 5000000000
+    print(big.tryToInt() ?? -1)
+    print(big.tryToUint() ?? 0)
+    print(big.tryToUlong() ?? 0)
+    long small = -5
+    print(small.tryToUint() ?? 99)
+    print(small.tryToSbyte() ?? 0)
+    print(small.tryToNint() ?? 0)
+    ulong huge = ulong.MaxValue
+    print(huge.tryToLong() ?? -1)
+    print(huge.tryToNuint() ?? 0)
+    int count = 200
+    print(count.tryToByte() ?? 0)
+    print(count.tryToSbyte() ?? -1)
+    uint u = 7
+    print(u.tryToInt() ?? -1)
+    // `wrappingTo...`: the bits that fit, in every build.
+    print(big.wrappingToInt())
+    print(small.wrappingToUint())
+    print(small.wrappingToByte())
+    print(huge.wrappingToLong())
+    print(count.wrappingToSbyte())
+    print(int.MinValue.wrappingToUshort())
+    // A fractional number goes toward zero first, as in a cast; `NaN` and what lies past the
+    // type give `null`.
+    print(3.7.tryToInt() ?? 0)
+    print((-3.7).tryToInt() ?? 0)
+    print((-0.5).tryToUint() ?? 9)
+    print((-1.0).tryToUint() ?? 9)
+    print(double.NaN.tryToLong() ?? -1)
+    print(double.Infinity.tryToLong() ?? -1)
+    print(9223372036854775807.0.tryToLong() ?? -1)
+    print(9223372036854774784.0.tryToLong() ?? -1)
+    print(18446744073709549568.0.tryToUlong() ?? 0)
+    float f = 300.5
+    print(f.tryToByte() ?? 0)
+    print(f.tryToShort() ?? 0)
+    // A `null` tested before the value is used.
+    var parts = List<long> { 1, 2, 3000000000 }
+    for part in parts {
+        var fits = part.tryToInt()
+        if fits is not null {
+            print(fits + 1)
+        }
+    }
+
+    // Math: on a `float` in `float`, on a `double` in `double`.
+    print(2.0.pow(10))
+    print(2.0.pow(0.5))
+    print(10.0.pow(-2))
+    print((-8.0).pow(1.0 / 3))
+    print(1.0.exp())
+    print(0.0.exp())
+    print(double.E.log())
+    print(1.0.log())
+    print(0.0.log())
+    print((-1.0).log())
+    print(8.0.log2())
+    print(1000.0.log10())
+    print(0.0.sin())
+    print(0.0.cos())
+    print(0.0.tan())
+    print(1.0.asin() * 2)
+    print(1.0.acos())
+    print(1.0.atan() * 4)
+    print(1.0.atan2(1.0) * 4)
+    print((-1.0).atan2(-1.0))
+    print(2.0.asin())
+    print(hypotenuse(3, 4))
+    float g = 2
+    print(g.pow(0.5))
+    print(g.log())
+    print(g.sin())
+    // Two types meet as with `+`: a `float` with a `double` gives a `double`.
+    double d = 0.5
+    print(g.pow(d))
+    // `a * b + c` rounded once instead of twice.
+    print(0.1 * 10.0 - 1.0)
+    print(0.1.fusedMultiplyAdd(10.0, -1.0))
+    print(g.fusedMultiplyAdd(3, 1))
+    print(g.fusedMultiplyAdd(d, 1))
+
+    // `min` and `max`: on integers the smaller or the larger; on fractional numbers `NaN` if
+    // either side is one, and `-0` is less than `0`.
+    print(3.min(4))
+    print(3.max(4))
+    print(int.MinValue.min(0))
+    byte b = 200
+    print(b.max(300))
+    print(1.5.min(2.5))
+    print(1.5.max(-2.5))
+    print(1.0.min(double.NaN))
+    print(double.NaN.max(1.0))
+    print(0.0.min(-0.0))
+    print((-0.0).max(0.0))
+    print(double.Infinity.min(double.MaxValue))
+    print(g.max(1))
+}

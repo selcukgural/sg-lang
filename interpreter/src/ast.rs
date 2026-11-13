@@ -127,6 +127,8 @@ pub enum Callee {
     Join,
     /// `string.fromUtf8(bytes)`
     FromUtf8,
+    /// `int.parse(text)`, `double.parse(text)`: the type is the one in the `Result` it gives.
+    Parse,
     /// A call through a function value kept in a variable: `test(order)`.
     Value,
     /// A call through a function value kept in a field: `this.test(order)`; the field's position.
@@ -270,6 +272,9 @@ pub enum ExprKind {
     Variant { owner: String, index: usize, args: Vec<Expr> },
     /// Inserted by the checker: a borrow of a `T*` used as a borrow of the `T` it owns.
     Unbox(Box<Expr>),
+
+    /// Built by the checker from `int.MaxValue`, `double.NaN`: a constant of a number type.
+    Constant { ty: Ty, name: String },
 
     /// Built by the checker from the name of a function used as a value: `isPaid`.
     FuncRef(String),

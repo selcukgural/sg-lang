@@ -1,0 +1,5 @@
+error: `double` has no constant `Epsilon`
+  left out on purpose: in C# `Epsilon` is the smallest number above zero, in C and Rust the gap between 1 and the next number
+  --> error_double_epsilon.sg:2:31
+ 2 |     double tolerance = double.Epsilon
+   |                               ^^^^^^^

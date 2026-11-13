@@ -1,0 +1,5 @@
+// The least `int` divided by -1 is one past the largest.
+void main() {
+    int least = int.MinValue
+    print(least / -1)
+}
