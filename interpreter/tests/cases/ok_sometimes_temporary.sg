@@ -1,0 +1,35 @@
+// The right side of `&&`, `||` and `??` runs only sometimes. What it needs for a moment (a
+// text that a call gave, a list) is made and freed there, not before the statement.
+string label(int n) {
+    print($"  (label {n})")
+    return $"n{n}".toString()
+}
+
+List<int> upTo(int n) {
+    var xs = List<int>()
+    for i in 0..n {
+        xs.add(i)
+    }
+    return xs
+}
+
+int? find(int n) {
+    if n > 2 {
+        return null
+    }
+    return n * 10
+}
+
+void main() {
+    for n in 0..5 {
+        // The right side makes a text and frees it, only when the left side lets it run.
+        if n % 2 == 0 && label(n) == "n2" {
+            print("two")
+        }
+        if n < 3 || label(n).length() > 5 {
+            print($"small {n}")
+        }
+        int size = find(n) ?? (int)label(n).length() + (int)upTo(n).length()
+        print(size)
+    }
+}

@@ -1,0 +1,20 @@
+// Writing values: two million points and a list of numbers are printed, each on a line of
+// its own. What is measured is the cost of turning a struct into text.
+struct Point : Formattable {
+    int x
+    int y
+}
+
+void main() {
+    var xs = List<int>()
+    for i in 0..8 {
+        xs.add(i * 3)
+    }
+    for i in 0..2000000 {
+        var p = Point { x = i, y = i % 97 }
+        print(p)
+        if i % 4 == 0 {
+            print(xs)
+        }
+    }
+}

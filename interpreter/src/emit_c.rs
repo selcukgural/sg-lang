@@ -317,6 +317,28 @@ static void sg_putf(sg_string* out, const char* format, ...) {
     }
     va_end(write);
 }
+static void sg_put_int(sg_string* out, long long value) {
+    char digits[24];
+    char* at = digits + sizeof digits;
+    unsigned long long left = value < 0 ? 0ULL - (unsigned long long)value : (unsigned long long)value;
+    do { *--at = (char)('0' + left % 10); left /= 10; } while (left);
+    if (value < 0) *--at = '-';
+    sg_put(out, at, digits + sizeof digits - at);
+}
+/* Where a struct, an enum or a collection is written before it is printed. One block for the
+   whole program: a statement writes above what is there and gives the room back when it is
+   done, so printing allocates only when a line is longer than every line before it. A block
+   that one long line made larger than SG_SCRATCH_KEPT is freed as soon as nothing is written
+   in it, so the program does not hold that memory until it ends. */
+static sg_string sg_scratch = { (uint8_t*)"", 0, 0 };
+#define SG_SCRATCH_KEPT 65536
+static inline void sg_scratch_back(int64_t to) {
+    if (sg_scratch.len > to) sg_scratch.len = to;
+    if (__builtin_expect(sg_scratch.cap > SG_SCRATCH_KEPT, 0) && sg_scratch.len == 0) {
+        free(sg_scratch.ptr);
+        sg_scratch = (sg_string){ (uint8_t*)"", 0, 0 };
+    }
+}
 /* Text inside another value is written in quotes, so that the parts can be told apart. */
 static void sg_put_quoted(sg_string* out, sg_str s) {
     sg_put(out, "\"", 1);
@@ -625,6 +647,21 @@ fn not_yet(span: Span, what: &str) -> Diag {
 }
 
 /// A C string literal for any text.
+/// Whether a value of this type is written by the helper of its type: a struct, an enum
+/// or a collection, also behind a borrow or a pointer.
+fn has_helper(ty: &Ty) -> bool {
+    let mut core = ty.strip_borrow();
+    while let Ty::Ptr(inner) = core {
+        core = inner;
+    }
+    matches!(core, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_))
+}
+
+/// The C statement that adds this text to what `out` is writing.
+fn put_text(text: &str) -> String {
+    format!("sg_put(out, {}, {});", c_string(text), text.len())
+}
+
 fn c_string(text: &str) -> String {
     let mut out = String::from("\"");
     for byte in text.bytes() {
@@ -829,6 +866,14 @@ enum Effect {
     Acts,
     /// It can change a value that an expression beside it reads: it lends with `ref`.
     Changes,
+}
+
+/// One piece of a line that is being written.
+enum Piece {
+    /// A `printf` format and the values for it, each with its comma in front.
+    Text(String, String),
+    /// A value written by the helper of its type: the helper, and a pointer to the value.
+    Show(String, String),
 }
 
 /// One of several values that C would compute in an order of its own choosing: the arguments
@@ -1066,7 +1111,7 @@ impl<'a> Emitter<'a> {
                         "sg_hash_word(0, (uint64_t)key)".to_string(),
                         "*held == key".to_string(),
                         "*held".to_string(),
-                        if **key == Ty::Bool { "sg_puts(out, key ? \"true\" : \"false\");".to_string() } else { "sg_putf(out, \"%lld\", (long long)key);".to_string() },
+                        if **key == Ty::Bool { "sg_puts(out, key ? \"true\" : \"false\");".to_string() } else { "sg_put_int(out, (long long)key);".to_string() },
                     ),
                     Ty::Str => (
                         "sg_str".to_string(),
@@ -1294,15 +1339,15 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(self.glue_protos, "static void {helper}(sg_string* out, {ctype} const* v);");
         let mut body = String::new();
         match ty {
-            Ty::Int(_) => body.push_str("sg_putf(out, \"%lld\", (long long)*v);"),
-            Ty::Bool => body.push_str("sg_puts(out, *v ? \"true\" : \"false\");"),
+            Ty::Int(_) => body.push_str("sg_put_int(out, (long long)*v);"),
+            Ty::Bool => body.push_str("if (*v) sg_put(out, \"true\", 4); else sg_put(out, \"false\", 5);"),
             Ty::Str => body.push_str("sg_put_quoted(out, sg_view(v));"),
             // A `T*` and a `T*?` are one C type and share this helper, so it knows `null`.
             Ty::Ptr(inner) => {
-                let _ = write!(body, "if (*v) {}(out, *v); else sg_puts(out, \"null\");", self.shower(inner, span)?);
+                let _ = write!(body, "if (*v) {}(out, *v); else sg_put(out, \"null\", 4);", self.shower(inner, span)?);
             }
             Ty::Nullable(inner) if is_option(ty) => {
-                let _ = write!(body, "if (v->has) {}(out, &v->value); else sg_puts(out, \"null\");", self.shower(inner, span)?);
+                let _ = write!(body, "if (v->has) {}(out, &v->value); else sg_put(out, \"null\", 4);", self.shower(inner, span)?);
             }
             Ty::Nullable(_) => unreachable!("a `T*?` has the name of the `T*`"),
             Ty::Struct(owner) if self.own_method(owner, "format") => {
@@ -1310,13 +1355,13 @@ impl<'a> Emitter<'a> {
             }
             Ty::Struct(owner) => {
                 let decl: &'a StructDecl = self.structs[owner.as_str()];
-                let _ = write!(body, "sg_puts(out, {});", c_string(&format!("{owner} {{ ")));
+                body.push_str(&put_text(&format!("{owner} {{ ")));
                 for (position, field) in decl.fields.iter().enumerate() {
                     let field_ty = self.written(&field.ty)?;
                     let text = format!("{}{} = ", if position == 0 { "" } else { ", " }, field.name);
-                    let _ = write!(body, " sg_puts(out, {}); {}", c_string(&text), self.show_at(&field_ty, &format!("v->m_{}", field.name), span)?);
+                    let _ = write!(body, " {} {}", put_text(&text), self.show_at(&field_ty, &format!("v->m_{}", field.name), span)?);
                 }
-                body.push_str(" sg_puts(out, \" }\");");
+                body.push_str(" sg_put(out, \" }\", 2);");
             }
             Ty::Enum(_) | Ty::Result(..) => {
                 let variants = self.variants(ty, span)?.expect("an enum or a `Result`");
@@ -1326,31 +1371,31 @@ impl<'a> Emitter<'a> {
                 };
                 body.push_str("switch (v->tag) {");
                 for (index, (word, fields)) in words.iter().zip(&variants).enumerate() {
-                    let _ = write!(body, " case {index}: sg_puts(out, {});", c_string(&format!("{word}{}", if fields.is_empty() { "" } else { "(" })));
+                    let _ = write!(body, " case {index}: {}", put_text(&format!("{word}{}", if fields.is_empty() { "" } else { "(" })));
                     for (position, (field, field_ty, _)) in fields.iter().enumerate() {
                         if position > 0 {
-                            body.push_str(" sg_puts(out, \", \");");
+                            body.push_str(" sg_put(out, \", \", 2);");
                         }
                         let _ = write!(body, " {}", self.show_at(field_ty, &format!("v->u.v{index}.m_{field}"), span)?);
                     }
-                    body.push_str(if fields.is_empty() { " break;" } else { " sg_puts(out, \")\"); break;" });
+                    body.push_str(if fields.is_empty() { " break;" } else { " sg_put(out, \")\", 1); break;" });
                 }
                 body.push_str(" default: break; }");
             }
             Ty::List(item) => {
                 let _ = write!(
                     body,
-                    "sg_puts(out, \"[\"); for (int64_t i = 0; i < v->len; i++) {{ if (i) sg_puts(out, \", \"); {}(out, &v->ptr[i]); }} sg_puts(out, \"]\");",
+                    "sg_put(out, \"[\", 1); for (int64_t i = 0; i < v->len; i++) {{ if (i) sg_put(out, \", \", 2); {}(out, &v->ptr[i]); }} sg_put(out, \"]\", 1);",
                     self.shower(item, span)?
                 );
             }
             Ty::Map(key, value) => {
                 let (key, value) = (self.show_at(key, "v->entries[i].m_key", span)?, self.show_at(value, "v->entries[i].m_value", span)?);
-                let _ = write!(body, "sg_puts(out, \"{{\"); for (int64_t i = 0; i < v->len; i++) {{ if (i) sg_puts(out, \", \"); {key} sg_puts(out, \": \"); {value} }} sg_puts(out, \"}}\");");
+                let _ = write!(body, "sg_put(out, \"{{\", 1); for (int64_t i = 0; i < v->len; i++) {{ if (i) sg_put(out, \", \", 2); {key} sg_put(out, \": \", 2); {value} }} sg_put(out, \"}}\", 1);");
             }
             Ty::Set(key) => {
                 let key = self.show_at(key, "v->entries[i].m_key", span)?;
-                let _ = write!(body, "sg_puts(out, \"{{\"); for (int64_t i = 0; i < v->len; i++) {{ if (i) sg_puts(out, \", \"); {key} }} sg_puts(out, \"}}\");");
+                let _ = write!(body, "sg_put(out, \"{{\", 1); for (int64_t i = 0; i < v->len; i++) {{ if (i) sg_put(out, \", \", 2); {key} }} sg_put(out, \"}}\", 1);");
             }
             other => return Err(not_yet(span, &format!("writing a `{other}` as text"))),
         }
@@ -1806,6 +1851,38 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
+    /// Holds back what the statement would free at its end (the values in it that have no
+    /// name), for a block whose names point into them: `for x in read make()`. They are
+    /// freed where `release` writes the line, and on every way out of the block before that.
+    fn hold(&mut self) -> Option<String> {
+        if self.post.is_empty() {
+            return None;
+        }
+        let line = std::mem::take(&mut self.post).join(" ");
+        self.scopes.push(vec![Local { name: String::new(), cname: String::new(), ty: Ty::Void, gone: false, drop: Some(line.clone()) }]);
+        Some(line)
+    }
+
+    fn release(&mut self, held: Option<String>, pad: &str, out: &mut String) {
+        if let Some(line) = held {
+            self.scopes.pop();
+            let _ = writeln!(out, "{pad}{line}");
+        }
+    }
+
+    /// A number or a `bool` that is computed only sometimes (the right side of `&&`, `||`,
+    /// `??`), together with the lines it needed before and after it: they cannot stand
+    /// before the statement, where they would always run.
+    fn enclosed(&mut self, before: (usize, usize), value: String, ty: &Ty, span: Span) -> Res<String> {
+        if before == (self.pre.len(), self.post.len()) {
+            return Ok(value);
+        }
+        let pre: String = self.pre.drain(before.0..).map(|line| format!("{line} ")).collect();
+        let post: String = self.post.drain(before.1..).map(|line| format!("{line} ")).collect();
+        let (ctype, temp) = (self.ctype(ty, span)?, self.temp());
+        Ok(format!("({{ {pre}{ctype} {temp} = {value}; {post}{temp}; }})"))
+    }
+
     /// The drops for every variable in the scopes from `from` on, innermost and newest first.
     fn drops(&self, from: usize) -> Vec<String> {
         let mut lines = Vec::new();
@@ -1979,10 +2056,17 @@ impl<'a> Emitter<'a> {
             StmtKind::If { cond, then, els } => {
                 let (mut cond, names) = self.condition(cond)?;
                 self.flush_pre(&pad, out);
+                let mut kept = None;
                 if !self.post.is_empty() {
                     let temp = self.temp();
                     let _ = writeln!(out, "{pad}bool {temp} = {cond};");
-                    self.flush_post(&pad, out);
+                    // The names of `x is Circle(r)` point into the value: it stays until
+                    // the `if` is done.
+                    if names.is_empty() {
+                        self.flush_post(&pad, out);
+                    } else {
+                        kept = self.hold();
+                    }
                     cond = temp;
                 }
                 let _ = writeln!(out, "{pad}if ({cond}) {{");
@@ -1992,11 +2076,13 @@ impl<'a> Emitter<'a> {
                     self.block(els, depth + 1, out)?;
                 }
                 let _ = writeln!(out, "{pad}}}");
+                self.release(kept, &pad, out);
             }
             StmtKind::While { cond, body } => {
                 self.nothing_gone();
                 let (cond, names) = self.condition(cond)?;
                 self.loops.push(self.scopes.len());
+                let mut kept = None;
                 if self.pre.is_empty() && self.post.is_empty() {
                     let _ = writeln!(out, "{pad}while ({cond}) {{");
                 } else {
@@ -2005,10 +2091,17 @@ impl<'a> Emitter<'a> {
                     let _ = writeln!(out, "{pad}while (1) {{");
                     self.flush_pre(&inner, out);
                     let _ = writeln!(out, "{inner}bool {temp} = {cond};");
-                    self.flush_post(&inner, out);
-                    let _ = writeln!(out, "{inner}if (!{temp}) break;");
+                    if names.is_empty() {
+                        self.flush_post(&inner, out);
+                        let _ = writeln!(out, "{inner}if (!{temp}) break;");
+                    } else {
+                        // The names point into the value: it stays for the round.
+                        let _ = writeln!(out, "{inner}if (!{temp}) {{ {} break; }}", self.post.join(" "));
+                        kept = self.hold();
+                    }
                 }
                 self.block_with(body, depth + 1, out, names)?;
+                self.release(kept, &format!("{pad}    "), out);
                 self.loops.pop();
                 let _ = writeln!(out, "{pad}}}");
             }
@@ -2047,9 +2140,7 @@ impl<'a> Emitter<'a> {
                     Some(mode) => {
                         let address = self.list_address(iter)?;
                         self.flush_pre(&pad, out);
-                        if !self.post.is_empty() {
-                            return Err(not_yet(iter.span, "a `for` over a borrowed table that has no name").hint("give it a name first"));
-                        }
+                        let kept = self.hold();
                         let _ = writeln!(out, "{pad}{{");
                         let _ = writeln!(out, "{inner}const {table_c}* {it} = {address};");
                         let _ = writeln!(out, "{inner}for (int64_t {at} = 0; {at} < {it}->len; {at}++) {{");
@@ -2058,7 +2149,9 @@ impl<'a> Emitter<'a> {
                         self.loops.push(self.scopes.len());
                         self.block_with(body, depth + 2, out, vec![lent])?;
                         self.loops.pop();
-                        let _ = writeln!(out, "{inner}}}\n{pad}}}");
+                        let _ = writeln!(out, "{inner}}}");
+                        self.release(kept, &inner, out);
+                        let _ = writeln!(out, "{pad}}}");
                     }
                     None => {
                         let value = self.value(iter)?;
@@ -2098,9 +2191,7 @@ impl<'a> Emitter<'a> {
                     Some(mode) => {
                         let address = self.list_address(iter)?;
                         self.flush_pre(&pad, out);
-                        if !self.post.is_empty() {
-                            return Err(not_yet(iter.span, "a `for` over a borrowed list that has no name").hint("give the list a name first"));
-                        }
+                        let kept = self.hold();
                         let _ = writeln!(out, "{pad}{{");
                         let _ = writeln!(out, "{inner}const {list_c}* {it} = {address};");
                         let _ = writeln!(out, "{inner}for (int64_t {at} = 0; {at} < {it}->len; {at}++) {{");
@@ -2109,7 +2200,9 @@ impl<'a> Emitter<'a> {
                         self.loops.push(self.scopes.len());
                         self.block_with(body, depth + 2, out, vec![lent])?;
                         self.loops.pop();
-                        let _ = writeln!(out, "{inner}}}\n{pad}}}");
+                        let _ = writeln!(out, "{inner}}}");
+                        self.release(kept, &inner, out);
+                        let _ = writeln!(out, "{pad}}}");
                     }
                     // A list that is handed over gives each item to the round it is for. What
                     // is left of it when the loop ends, or is left early, is freed: the items
@@ -2181,12 +2274,7 @@ impl<'a> Emitter<'a> {
         if !matches!(cond.kind, ExprKind::IsVariant { .. }) {
             return Ok((self.first(cond, true)?, Vec::new()));
         }
-        let (test, names) = self.variant_test(cond)?;
-        // The names point into the value: it has to be there for as long as the block runs.
-        if !names.is_empty() && !self.post.is_empty() {
-            return Err(not_yet(cond.span, "names taken from a value that has no name").hint("give the value a name first"));
-        }
-        Ok((test, names))
+        self.variant_test(cond)
     }
 
     /// `x is Circle(r)`: a test on the tag. The names are borrows of what the variant carries.
@@ -2251,9 +2339,9 @@ impl<'a> Emitter<'a> {
         self.flush_pre(&pad, out);
         let _ = writeln!(out, "{pad}{{");
         let _ = writeln!(out, "{inner}{ctype} {held} = {value};");
-        if *borrowed && !self.post.is_empty() {
-            return Err(not_yet(subject.span, "a `match` that borrows from a value that has no name").hint("give the value a name first"));
-        }
+        // The names of a borrowing `match` point into the subject: what it was made from
+        // stays until the arms are done.
+        let kept = if *borrowed { self.hold() } else { None };
         self.flush_post(&inner, out);
 
         // What the arms test: a number, or the enum behind the borrow or the pointer.
@@ -2393,6 +2481,7 @@ impl<'a> Emitter<'a> {
         } else {
             let _ = writeln!(out, "{inner}}}");
         }
+        self.release(kept, &inner, out);
         let _ = writeln!(out, "{pad}}}");
         Ok(())
     }
@@ -2695,8 +2784,21 @@ impl<'a> Emitter<'a> {
     /// What `printf` is told and what it is given, for `print`, `panic` and `.toString()`: a
     /// number, a `bool`, text, or `$"..."` made of those. The values come with a leading comma.
     fn format(&mut self, arg: &'a Expr) -> Res<(String, String)> {
+        match self.pieces(arg, false)?.pop() {
+            Some(Piece::Text(format, values)) => Ok((format, values)),
+            _ => unreachable!("a line that is not written piece by piece is one format"),
+        }
+    }
+
+    /// The pieces of a line. With `straight`, the line is added to a text that already
+    /// exists (`f.write(...)`), and a struct, an enum or a collection in it is written
+    /// there by the helper of its type, as a piece of its own between the others. Without
+    /// it there is one piece, a `printf` format, and such a value is written into the
+    /// scratch block first.
+    fn pieces(&mut self, arg: &'a Expr, straight: bool) -> Res<Vec<Piece>> {
+        let mut done = Vec::new();
         let mut format = String::new();
-        let mut values = Vec::new();
+        let mut values: Vec<String> = Vec::new();
         match &arg.kind {
             ExprKind::Str(text) => format.push_str(&text.replace('%', "%%")),
             ExprKind::Interp(parts) => {
@@ -2718,15 +2820,42 @@ impl<'a> Emitter<'a> {
                             .hint("give the later value a name first"));
                     }
                 }
+                // The rule of the language: the values of a line are computed first, from
+                // left to right, and written after that. A struct, an enum or a collection
+                // is written by its helper, which can run the type's own `format`; so the
+                // helpers run after every value of the line is there, and a value that does
+                // more than read is computed on a line of its own before them.
+                let shown = exprs.iter().any(|expr| has_helper(&expr.ty));
+                let mut late = Vec::new();
                 for part in parts {
                     match part {
                         InterpPart::Text(text) => format.push_str(&text.replace('%', "%%")),
+                        InterpPart::Expr(expr) if has_helper(&expr.ty) => {
+                            let shower = self.shower(expr.ty.strip_borrow(), expr.span)?;
+                            let mut at = self.pointer(expr)?;
+                            // Finding the value can stop the program (an index): that is
+                            // part of computing it, so it is done in its turn.
+                            if self.effect(expr) != Effect::Reads {
+                                let temp = self.temp();
+                                self.pre.push(format!("const void* {temp} = {at};"));
+                                at = temp;
+                            }
+                            if straight {
+                                if !format.is_empty() {
+                                    done.push(Piece::Text(std::mem::take(&mut format), values.drain(..).map(|value| format!(", {value}")).collect()));
+                                }
+                                done.push(Piece::Show(shower, at));
+                            } else {
+                                late.push(self.shown(&shower, &at, &mut format, &mut values));
+                            }
+                        }
                         InterpPart::Expr(expr) => {
                             let from = values.len();
                             self.formatted(expr, &mut format, &mut values)?;
                             // A number or a `bool`: one value. (A text is already kept before the line.)
                             let text = is_text(&expr.ty) || is_text_behind_pointer(&expr.ty);
-                            if first && !text && values.len() == from + 1 {
+                            let before_helpers = shown && self.effect(expr) != Effect::Reads;
+                            if (first || before_helpers) && !text && values.len() == from + 1 {
                                 let (ctype, temp) = (if values[from].ends_with("\"false\"") { "const char*" } else { "long long" }, self.temp());
                                 self.pre.push(format!("{ctype} {temp} = {};", values[from]));
                                 values[from] = temp;
@@ -2734,10 +2863,29 @@ impl<'a> Emitter<'a> {
                         }
                     }
                 }
+                self.pre.append(&mut late);
+            }
+            _ if straight && has_helper(&arg.ty) => {
+                let shower = self.shower(arg.ty.strip_borrow(), arg.span)?;
+                done.push(Piece::Show(shower, self.pointer(arg)?));
             }
             _ => self.formatted(arg, &mut format, &mut values)?,
         }
-        Ok((format, values.iter().map(|value| format!(", {value}")).collect()))
+        if !format.is_empty() || done.is_empty() {
+            done.push(Piece::Text(format, values.iter().map(|value| format!(", {value}")).collect()));
+        }
+        Ok(done)
+    }
+
+    /// The line that writes a value with the helper of its type above what the scratch block
+    /// holds; the room is given back after the statement. The block can move while it grows,
+    /// so the text is found from its start at the moment it is used.
+    fn shown(&mut self, shower: &str, at: &str, format: &mut String, values: &mut Vec<String>) -> String {
+        let temp = self.temp();
+        format.push_str("%.*s");
+        self.post.push(format!("sg_scratch_back({temp});"));
+        values.push(format!("(int){temp}n, (const char*)sg_scratch.ptr + {temp}"));
+        format!("int64_t {temp} = sg_scratch.len; {shower}(&sg_scratch, {at}); int64_t {temp}n = sg_scratch.len - {temp};")
     }
 
     /// One value inside a formatted line.
@@ -2746,19 +2894,13 @@ impl<'a> Emitter<'a> {
             format.push_str(&text.replace('%', "%%"));
             return Ok(());
         }
-        // A struct, an enum or a list (also behind a pointer) is written into a text of its
-        // own first, by the helper of its type.
-        let mut core = expr.ty.strip_borrow();
-        while let Ty::Ptr(inner) = core {
-            core = inner;
-        }
-        if matches!(core, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_)) {
+        // A struct, an enum or a collection (also behind a pointer) is written by the helper
+        // of its type.
+        if has_helper(&expr.ty) {
             let shower = self.shower(expr.ty.strip_borrow(), expr.span)?;
-            let (at, temp) = (self.pointer(expr)?, self.temp());
-            self.pre.push(format!("sg_string {temp} = SG_LIT(\"\", 0); {shower}(&{temp}, {at});"));
-            self.post.push(format!("sg_drop_string(&{temp});"));
-            format.push_str("%.*s");
-            values.push(format!("(int){temp}.len, (const char*){temp}.ptr"));
+            let at = self.pointer(expr)?;
+            let line = self.shown(&shower, &at, format, values);
+            self.pre.push(line);
             return Ok(());
         }
         // A value on the heap is written like the value: `print(count)` with `int* count`.
@@ -3152,9 +3294,12 @@ impl<'a> Emitter<'a> {
                 let fallback = self.value(right);
                 self.maybe -= 1;
                 let fallback = fallback?;
-                if before != (self.pre.len(), self.post.len()) {
-                    return Err(not_yet(right.span, "a value that needs a temporary on the right of `??`"));
-                }
+                let fallback = match (before == (self.pre.len(), self.post.len()), &right.ty) {
+                    (true, _) => fallback,
+                    (false, Ty::Int(_) | Ty::Bool) => self.enclosed(before, fallback, &right.ty, right.span)?,
+                    // Any other value could point at what was made for it.
+                    (false, _) => return Err(not_yet(right.span, "a value that needs a temporary on the right of `??`").hint("give it a name first")),
+                };
                 let (ctype, temp) = (self.ctype(&left.ty, left.span)?, self.temp());
                 let (holds, held) = self.held_in(&left.ty, &temp).expect("tested above");
                 // A right side that never gives a value (`panic`) still has to have the type in C.
@@ -3239,10 +3384,7 @@ impl<'a> Emitter<'a> {
                 self.maybe += 1;
                 let right_value = self.value(right);
                 self.maybe -= 1;
-                let right_value = right_value?;
-                if before != (self.pre.len(), self.post.len()) {
-                    return Err(not_yet(right.span, &format!("a value that needs a temporary on the right of `{}`", op.symbol())));
-                }
+                let right_value = self.enclosed(before, right_value?, &Ty::Bool, right.span)?;
                 Ok(format!("({left} {} {right_value})", op.symbol()))
             }
             ExprKind::Binary(op, left, right) if is_text(&left.ty) => {
@@ -3391,11 +3533,13 @@ impl<'a> Emitter<'a> {
                 Callee::Plain if name == "panic" => {
                     let before = (self.pre.len(), self.post.len());
                     let (format, values) = self.format(&args[0])?;
-                    if before != (self.pre.len(), self.post.len()) {
-                        return Err(not_yet(expr.span, "a `panic` inside an expression whose message needs a temporary"));
-                    }
                     let loc = self.loc(expr.span);
-                    Ok(format!("sg_panicf({loc}, {}{values})", c_string(&format)))
+                    // What the message needed is made here, where the program stops, and
+                    // not before the statement; nothing is left to free.
+                    let made: String = self.pre.drain(before.0..).map(|line| format!("{line} ")).collect();
+                    self.post.truncate(before.1);
+                    let stop = format!("sg_panicf({loc}, {}{values})", c_string(&format));
+                    Ok(if made.is_empty() { stop } else { format!("({{ {made}{stop}; }})") })
                 }
                 Callee::Plain if matches!(name.as_str(), "print" | "assert") => Err(not_yet(expr.span, &format!("`{name}` used as a value"))),
                 Callee::Plain => self.call(format!("f_{name}"), None, args, head),
@@ -3418,7 +3562,22 @@ impl<'a> Emitter<'a> {
                     let receiver = match (this, &held) {
                         // A value that has no name: it is used up, or kept until the statement ends.
                         _ if !recv.is_place() => match (this, &held) {
-                            (_, Ty::Ptr(_)) => return Err(not_yet(recv.span, "a method called on a `T*` that has no name")),
+                            // `this` by value: the value leaves the heap and the box is freed.
+                            (This::Value, Ty::Ptr(inner)) if !recv.ty.is_borrow() && !matches!(**inner, Ty::Ptr(_)) => {
+                                let (value, ctype, temp) = (self.value(recv)?, self.ctype(inner, recv.span)?, self.temp());
+                                format!("({{ {ctype}* {temp} = {value}; {ctype} {temp}v = *{temp}; free({temp}); {temp}v; }})")
+                            }
+                            (This::Value, Ty::Ptr(_)) => return Err(not_yet(recv.span, "a method that takes `this` called on a pointer that has no name").hint("give it a name first")),
+                            // The box is kept until the statement ends; the method goes along the pointer.
+                            (_, Ty::Ptr(_)) => {
+                                let mut place = self.look(recv)?;
+                                let mut ty = &held;
+                                while let Ty::Ptr(inner) = ty {
+                                    place = format!("(*{place})");
+                                    ty = inner;
+                                }
+                                format!("(&{place})")
+                            }
                             (This::Value, _) => self.value(recv)?,
                             _ if recv.ty.is_borrow() => self.value(recv)?,
                             _ => format!("(&{})", self.look(recv)?),
@@ -3607,8 +3766,18 @@ impl<'a> Emitter<'a> {
                 // `f.write(...)` adds to the text a `format` method is writing.
                 Callee::Plain if *recv.ty.strip_borrow() == Ty::Formatter => {
                     let out = self.value(recv)?;
-                    let (format, values) = self.format(&args[0])?;
-                    Ok(format!("sg_putf({out}, {}{values})", c_string(&format)))
+                    let lines: Vec<String> = self.pieces(&args[0], true)?.into_iter().map(|piece| match piece {
+                        Piece::Text(format, values) if values.is_empty() => {
+                            let text = format.replace("%%", "%");
+                            format!("sg_put({out}, {}, {})", c_string(&text), text.len())
+                        }
+                        Piece::Text(format, values) => format!("sg_putf({out}, {}{values})", c_string(&format)),
+                        Piece::Show(shower, at) => format!("{shower}({out}, {at})"),
+                    }).collect();
+                    match lines.len() {
+                        1 => Ok(lines.concat()),
+                        _ => Ok(format!("({{ {}; }})", lines.join("; "))),
+                    }
                 }
                 Callee::Plain if matches!(name.as_str(), "equals" | "compare") && matches!(recv.ty.strip_borrow(), Ty::Int(_) | Ty::Bool) => {
                     let (values, names) = self.two(recv, &args[0], head)?;

@@ -1,0 +1,35 @@
+// A line far longer than the block for printed values keeps: the block grows for it and is
+// given back, and the short lines before and after it are written as always.
+struct Point : Formattable {
+    int x
+    int y
+}
+
+struct Loud : Formattable {
+    int n
+
+    void format(read this, ref Formatter f) {
+        // Printing while a line is being written: the long line goes into the same block.
+        var xs = List<int>()
+        for i in 0..20000 {
+            xs.add(i)
+        }
+        print(xs.length())
+        var all = $"{xs}".toString()
+        print(all.length())
+        f.write($"Loud({this.n})")
+    }
+}
+
+void main() {
+    var xs = List<int>()
+    for i in 0..30000 {
+        xs.add(i % 10)
+    }
+    print(Point { x = 1, y = 2 })
+    var line = $"{xs}".toString()
+    print(line.length())
+    print(Point { x = 3, y = 4 })
+    print(Loud { n = 5 })
+    print(Point { x = 6, y = 7 })
+}

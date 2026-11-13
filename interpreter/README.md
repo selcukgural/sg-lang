@@ -137,7 +137,7 @@ Design rules that are already enforced:
 Since the sixteenth slice (12 November 2026) a program can be compiled: `sg build file.sg` writes it as C and
 hands that to the C compiler. The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, and then runs the
-same C once more under the address and undefined-behaviour sanitizers (83 of 307 programs for now).
+same C once more under the address and undefined-behaviour sanitizers (90 of 314 programs for now).
 
 What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -170,8 +170,13 @@ Since the twenty-fourth slice `HashMap<K, V>` and `HashSet<T>`: building them wi
 `add`, `map[key]` as a value and as a place, `get`, `getOrAdd`, `contains`, `remove`, `length`, `clear`,
 `for` in its three forms (a map gives entries with `key` and `value`), `print` and `==`, with numbers,
 `bool`, text and `Hashable` structs and enums as keys. The calculator and the log summary are compiled.
-What is still missing is an error that names it (not silence): `.toString()` on a struct, and the few
-positions listed with the choices below.
+Since the twenty-fifth slice a struct, an enum or a collection is printed without an allocation, and most of
+the places where the back end asked for a name are gone: a `for` over `read make()`, a `match` that borrows
+from what a call gave, `if make() is Say(text)` and the same in a `while`, a method called on a `T*` that
+has no name, a right side of `&&`, `||` or `??` that needs a text or a list for a moment, and a `panic`
+message with a struct in it on the right of `??`.
+What is still missing is an error that names it (not silence): the few positions listed with the choices
+below (a `match` inside a larger expression, `try` after a value that owns memory and has no name).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
 value (a `string`, a `T*`, a struct, an enum or a `T?` that holds one) is freed where its variable ends, on every way
@@ -198,6 +203,7 @@ hand with no checks):
 | `parse`: numbers read out of text, an error found three calls deep and passed up with `try` | 0.290 s | 0.320 s | 0.293 s | 0.99 |
 | `vector`: a list of a million numbers filled with `add`, changed through `xs[i]`, added up with `for`, turned around and freed, six hundred times | 0.331 s | 0.682 s | 0.324 s | 1.02 |
 | `counts`: a million numbers counted in a `HashMap` of fifty thousand keys, read back and a third removed, twenty times | 0.382 s | 0.376 s | 0.319 s | 1.20 |
+| `show`: two million structs and half a million lists of numbers printed, one on each line | 0.214 s | 0.191 s | 0.374 s | 0.57 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -231,9 +237,16 @@ times. All of it is the hash. The C program hashes a key with one multiplication
 SG uses SipHash-1-3 with a key drawn when the program starts, as Rust does, so that someone who chooses
 the keys (a request, a file) cannot make them all land in one place and turn every lookup into a walk
 through the whole table. With the C program's hash put into the generated code the two take the same time
-(0.316 s against 0.319 s): the table itself costs nothing. Whether the safe hash stays the default is an
-open choice (50).
-The numbers move by a few percent from run to run, and nine small programs are not a benchmark suite.
+(0.316 s against 0.319 s): the table itself costs nothing. The safe hash stays the default (choice 50).
+`show` prints values: a struct with two numbers and a list of eight. Before the twenty-fifth slice it took
+1.22 times the time of C (0.44 s against 0.36 s): every printed value was written into a text that was
+allocated and freed. It now goes into one block that the program keeps (and gives back when one line
+made it larger than 64 KB), and a number inside a value is
+turned into digits by a few lines of the runtime instead of `printf`. The C it is compared with is what a C
+programmer writes first, a `printf` with a format, and `printf` reads that format again on every call; that
+is the whole difference, not something C cannot do. The honest reading is "printing a struct costs no more
+than a `printf`", not "twice as fast as C".
+The numbers move by a few percent from run to run, and ten small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
 
@@ -333,7 +346,8 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
     went from 1.13 to 1.03 times the time of C; the C compiler did not remove those empty drops by itself. `tests/cases/ok_moved_drops.sg` goes through the
     doubtful cases.
 25. **The names of `is` and of a borrowing `match` need a value that stays**: on a value that has no name and
-    owns something (`if make() is Say(text)`) the back end stops and asks for a name. A limit for now.
+    owns something (`if make() is Say(text)`) the back end stopped and asked for a name. Since the
+    twenty-fifth slice it keeps the value until the block is done (choice 57).
 
 26. **The parts of an expression are computed from left to right in compiled code too** (asked for on 12
     November 2026). C leaves open in which order it computes the arguments of a call, the two sides of an
@@ -750,8 +764,8 @@ without an allocation was asked for, for later):
     variant, a list between brackets, text inside in quotes; the same text as the interpreter's. The helper
     writes into a text that grows, and that text is then printed: one allocation for a value that is
     written. Numbers and text are printed directly, as before, with none. Rust's `Display` writes straight
-    into the output and allocates nothing; that would need a `Formatter` that can be a file, which is not
-    done here.
+    into the output and allocates nothing. Since the twenty-fifth slice printing a value allocates nothing
+    here either (choice 54).
 40. **A `Formatter` is the text being written**, and `f.write(...)` adds to it.
 41. **`==` is a helper of the type too**: the two values are compared where they are, through pointers,
     field by field, by variant, or item by item; a struct that wrote `equals` is compared by it. `<`, `<=`,
@@ -810,6 +824,46 @@ Choices made in the twenty-fourth slice (`HashMap` and `HashSet`), approved on 1
 53. **A table holds at most about two thousand million entries** (the slots are 32 bits wide, half the
     memory of 64); beyond that the program stops.
 
+Choices made in the twenty-fifth slice (printing without an allocation, values that have no name), approved on
+13 November (54 with the 64 KB limit, 55 with the rule for the values of a line):
+
+54. **A printed value is written into one block that the program keeps**, not straight into the output. A
+    statement writes above what the block holds and gives the room back when it is done, so a `format`
+    that prints while it is writing does not disturb the line around it. Nothing is allocated unless a
+    line is longer than every line before it. The block is as large as the longest line so far, up to
+    64 KB: a block that a longer line made larger is freed as soon as nothing is written in it, so one
+    very long line (a list of a million items) does not hold its memory until the program ends. Rust's
+    `Display` writes straight into the output and keeps no block. That was not done for two reasons: the
+    line would come out in pieces (a `format` that prints, or a panic half way, would show where the
+    interpreter shows nothing), and every piece would be a call into the C library's output, which locks
+    the file each time. Measured on `show` on 13 November, with the generated C changed by hand: 0.465 s
+    straight into the output against 0.170 s through the block (C's `printf`: 0.358 s). Cost at run time:
+    one copy of the line, and one test after it for the size of the block (it does not show in the
+    measurement). To remember: the block is one for the program; with threads it has to be one for each
+    thread. Approved on 13 November, with the 64 KB limit added that day.
+55. **`f.write(...)` writes a struct straight into the text it is adding to**, as a piece between the
+    others, with no text of its own, always. What makes that possible is a rule of the language, decided
+    on 13 November: **the values of a line (`$"..."`) are computed first, from left to right, and written
+    after that.** In `$"{a} {say(3)}"` the call `say(3)` runs before `a`'s own `format` does; before the
+    rule each value was written as soon as it was computed, and compiled code had to write a struct into
+    a text of its own (an allocation) whenever a call stood behind it on the line. The interpreter was
+    changed to the same order. Rust's `write!(f, "{} {}", a, b())` does the same: the arguments first,
+    then the writing. Cost at run time: none, and one allocation less. What it costs in rules: the order
+    in which `format` methods run is "after the values", not "in its place"; it can be seen only when a
+    `format` prints or stops the program (`ok_line_values_first.sg`).
+56. **A number inside a printed value is turned into digits by the runtime**, not by `printf`, and the fixed
+    pieces (`Point { x = `) are added with their length known. This is where the time in `show` went.
+57. **A value that has no name and is lent to a block lives until the block is done**: `for x in read
+    make()`, `match read make() { ... }`, `if make() is Say(text) { ... } else { ... }`, and in a `while`
+    for one round. It is freed on every way out of the block (`return`, `break`, `continue`). Rust keeps
+    such a value until the end of the whole statement too. No cost: it is the free that was there, later.
+58. **What the right side of `&&`, `||` or `??` needs for a moment is made and freed there**, when that
+    side runs: `ready && name(n) == "x"`. For `??` this holds when the right side gives a number or a
+    `bool`; any other value could point at what was made for it, and the back end still asks for a name.
+    The message of a `panic` on the right of `??` is put together only when the program stops there.
+59. **A method called on a `T*` that has no name** (`make(3).total()`): the box is kept until the statement
+    ends; a method that takes `this` gets the value and the box is freed.
+
 ## Not here yet
 
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
@@ -845,6 +899,7 @@ error.
 
 The back end, one piece of the language at a time, each compared with the interpreter, run under the
 sanitizers and measured against C. Every example that runs in the interpreter and has no `test` block is
-now compiled. Next: printing a struct without an allocation, `.toString()` on a struct, and the places where
-the back end still asks for a name; then modules (`use`). After it the question is the
+now compiled, and printing a value allocates nothing. Next: modules (`use`), in the checker and the
+interpreter first and then in the back end. What the back end still does not take: a `match` inside a larger
+expression, and `try` or `?? return` after a value that owns memory and has no name. After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

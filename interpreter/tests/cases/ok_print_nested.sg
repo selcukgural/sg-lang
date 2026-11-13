@@ -1,0 +1,71 @@
+// Writing values that hold other values: a `format` that writes a field with its own
+// `format`, one that prints while it writes, and lines with several such values. Compiled
+// code writes them into one block that is used again, so the lines must not mix.
+struct P : Formattable {
+    int x
+    string name
+}
+
+struct Q : Formattable {
+    P inner
+    int n
+
+    void format(read this, ref Formatter f) {
+        f.write($"Q<{this.inner}|{this.n}>")
+    }
+}
+
+int loud(int n) {
+    print($"  (loud {n})")
+    return n
+}
+
+struct R : Formattable {
+    Q q
+
+    void format(read this, ref Formatter f) {
+        print($"  (writing an R, its q is {this.q})")
+        f.write(this.q)
+        f.write("!")
+        f.write($"{this.q} 100% {this.q.n}")
+        // A value behind the struct that does more than read: it is computed before the
+        // struct is written, as every value of a line is.
+        f.write($" [{this.q.inner} {loud(this.q.n)}]")
+        var text = $"{this.q.inner}".toString()
+        f.write($" ({text.length()})")
+    }
+}
+
+enum Tree : Formattable {
+    Leaf(int value)
+    Node(Tree* left, Tree* right)
+}
+
+void main() {
+    var p = P { x = 1, name = "a\"b" }
+    string s = $"p is {p} and {p.x}".toString()
+    print(s)
+    var q = Q { inner = P { x = 2, name = "z" }, n = 7 }
+    print($"{q} / {p} / {q}")
+    string t = $"{q}".toString()
+    print(t.length())
+    var r = R { q = Q { inner = P { x = -3, name = "a name that is longer than the first room of the block" }, n = -9 } }
+    print(r)
+    print($"{r} and {r}")
+    print($"{r}".toString().length())
+
+    var tree = Tree.Node(new Tree.Node(new Tree.Leaf(1), new Tree.Leaf(-20)), new Tree.Leaf(300))
+    print(tree)
+    var list = List<Q>()
+    list.add(Q { inner = P { x = 0, name = "" }, n = 0 })
+    list.add(Q { inner = P { x = 2147483647, name = "last" }, n = -2147483648 })
+    print(list)
+    var ages = HashMap<string, P>()
+    ages.add("one".clone(), P { x = 1, name = "uno" })
+    print($"{ages} {list.length()} {true}")
+    long small = -9223372036854775807 - 1
+    var numbers = List<long>()
+    numbers.add(small)
+    numbers.add(0)
+    print(numbers)
+}

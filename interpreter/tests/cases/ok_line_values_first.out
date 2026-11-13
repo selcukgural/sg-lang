@@ -1,0 +1,29 @@
+  (say 3)
+  (format 1)
+L1 3
+  (say 4)
+  (format 1)
+4 L1
+  (say 5)
+  (say 6)
+  (format 1)
+  (format 2)
+L1 5 L2 6
+  (make 7)
+  (say 8)
+  (make 9)
+  (format 7)
+  (format 9)
+L7 8 L9
+  (say 11)
+  (format 1)
+L1:11
+  (say 10)
+  (say 20)
+  (format 12)
+  (format 13)
+<L12 10 L13 20>
+  (say 15)
+  (format 14)
+  (format 14)
+L14 15 [L14]

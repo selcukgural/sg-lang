@@ -1,0 +1,44 @@
+// The values of a line are computed first, from left to right, and written after that: a
+// `format` method runs when every value of the line is there, wherever its value stands.
+struct Loud : Formattable {
+    int n
+
+    void format(read this, ref Formatter f) {
+        print($"  (format {this.n})")
+        f.write($"L{this.n}")
+    }
+}
+
+struct Pair : Formattable {
+    Loud left
+    Loud right
+
+    void format(read this, ref Formatter f) {
+        f.write($"<{this.left} {say(10)} {this.right} {say(20)}>")
+    }
+}
+
+int say(int n) {
+    print($"  (say {n})")
+    return n
+}
+
+Loud make(int n) {
+    print($"  (make {n})")
+    return Loud { n = n }
+}
+
+void main() {
+    var a = Loud { n = 1 }
+    var b = Loud { n = 2 }
+    print($"{a} {say(3)}")
+    print($"{say(4)} {a}")
+    print($"{a} {say(5)} {b} {say(6)}")
+    print($"{make(7)} {say(8)} {make(9)}")
+    string kept = $"{a}:{say(11)}".toString()
+    print(kept)
+    print(Pair { left = Loud { n = 12 }, right = Loud { n = 13 } })
+    var list = List<Loud>()
+    list.add(Loud { n = 14 })
+    print($"{list[0]} {say(15)} {list}")
+}

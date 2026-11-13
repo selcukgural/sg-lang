@@ -1,0 +1,24 @@
+// The message of a `panic` on the right of `??` holds a struct: it is written only when the
+// program stops there.
+struct P : Formattable {
+    int x
+    string name
+}
+
+int? find(int n) {
+    if n > 2 {
+        return null
+    }
+    return n * 10
+}
+
+int need(read P p, int n) {
+    int? found = find(n)
+    return found ?? panic($"nothing for {n} in {p}")
+}
+
+void main() {
+    var p = P { x = 4, name = "four".clone() }
+    print(need(read p, 1))
+    print(need(read p, 3))
+}

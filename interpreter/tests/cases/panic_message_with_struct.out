@@ -1,0 +1,5 @@
+10
+panic: nothing for 3 in P { x = 4, name = "four" }
+  --> panic_message_with_struct.sg:17:21
+ 17 |     return found ?? panic($"nothing for {n} in {p}")
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,30 @@
+// A method called on a `T*` that a call gave and that has no name: the box lives until the
+// statement ends, or, for a method that takes `this`, gives its value and is freed.
+struct Counter {
+    int count
+    string name
+
+    int total(read this) {
+        return this.count + (int)this.name.length()
+    }
+
+    void bump(ref this) {
+        this.count += 1
+    }
+
+    string unwrap(this) {
+        return this.name
+    }
+}
+
+Counter* make(int n) {
+    return new Counter { count = n, name = $"counter {n}".toString() }
+}
+
+void main() {
+    print(make(3).total())
+    make(4).bump()
+    print(make(5).unwrap())
+    var kept = make(6).unwrap()
+    print(kept.length() + make(7).total())
+}

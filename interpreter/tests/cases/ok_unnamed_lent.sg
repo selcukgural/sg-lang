@@ -1,0 +1,101 @@
+// Values that have no name, lent to a block: a `for` over `read make()`, a `match` and an
+// `is` on what a call gave. The value stays until the block is done, on every way out of it.
+enum Shape : Formattable {
+    Circle(int r)
+    Box(int w, string label)
+    Empty
+}
+
+struct Bag {
+    List<string> names
+    int left
+}
+
+List<string> make(int n) {
+    var xs = List<string>()
+    for i in 0..n {
+        xs.add($"item {i}".toString())
+    }
+    return xs
+}
+
+HashMap<string, int> table(int n) {
+    var m = HashMap<string, int>()
+    for i in 0..n {
+        m.add($"k{i}".toString(), i * i)
+    }
+    return m
+}
+
+Shape shape(int n) {
+    if n <= 0 {
+        return Shape.Empty
+    }
+    if n % 2 == 0 {
+        return Shape.Circle(n)
+    }
+    return Shape.Box(n, $"box {n}".toString())
+}
+
+int width(int n) {
+    match read shape(n) {
+        Circle(r) => { return r * 2 }
+        Box(w, label) => { return w + (int)label.length() }
+        Empty => { return 0 }
+    }
+}
+
+int firstLong(int n) {
+    for name in read make(n) {
+        if name.length() > 6 {
+            return (int)name.length()
+        }
+    }
+    return -1
+}
+
+void main() {
+    for name in read make(3) {
+        print(name)
+    }
+    for name in read make(5) {
+        if name == "item 1" {
+            continue
+        }
+        if name == "item 3" {
+            break
+        }
+        print($"got {name}")
+    }
+    long sum = 0
+    for entry in read table(4) {
+        sum += entry.value
+        print($"{entry.key} = {entry.value}")
+    }
+    print(sum)
+    print(firstLong(3))
+    print(firstLong(12))
+    for n in 0..4 {
+        print(width(n))
+        if shape(n) is Box(w, label) {
+            print($"a box of {w} called {label}")
+        } else {
+            print("no box")
+        }
+        match read shape(n) {
+            Circle(r) => print($"circle {r}")
+            Box(w, label) when w > 2 => print($"big box {label}")
+            Box(w, label) => print($"small box {label}")
+            Empty => print("nothing")
+        }
+    }
+    var n = 5
+    while shape(n) is Box(w, label) {
+        print($"while: {label}")
+        n -= 2
+        if n == 1 {
+            continue
+        }
+    }
+    print(n)
+}

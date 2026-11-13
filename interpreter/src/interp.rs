@@ -630,13 +630,22 @@ impl<'a> Interp<'a> {
             ExprKind::Str(text) => Ok(Value::Str(text.as_str().into())),
             ExprKind::Null => Ok(Value::Null),
             ExprKind::Interp(parts) => {
+                // The values are computed first, from left to right; they are written after
+                // that, so a `format` method runs when every value of the line is there.
+                let mut values = Vec::new();
+                for part in parts {
+                    if let InterpPart::Expr(inner) = part {
+                        values.push(self.expr(inner, frame)?);
+                    }
+                }
+                let mut values = values.iter();
                 let mut text = String::new();
                 for part in parts {
                     match part {
                         InterpPart::Text(piece) => text.push_str(piece),
                         InterpPart::Expr(inner) => {
-                            let value = self.expr(inner, frame)?;
-                            text.push_str(&self.show(&value, false, inner.span)?);
+                            let value = values.next().expect("one value for each part");
+                            text.push_str(&self.show(value, false, inner.span)?);
                         }
                     }
                 }
