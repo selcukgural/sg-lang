@@ -101,11 +101,7 @@ pub fn emit_c(src: &str, path: &str, checked: bool) -> Result<String, Diag> {
 pub fn emit_c_sources(sources: &Sources, checked: bool) -> Result<String, Diag> {
     on_large_stack(|| {
         let prog = check_all(sources, false)?;
-        if let Some(file) = sources.files.iter().find(|file| !file.module.is_empty()) {
-            return Err(Diag::error(diag::Span::new(file.start, file.start), "a program with modules is not compiled yet")
-                .note("the interpreter runs it: `sg <file.sg>`"));
-        }
-        emit_c::emit(&prog, &sources.text, &sources.files[0].path, checked)
+        emit_c::emit(&prog, sources, checked)
     })
 }
 

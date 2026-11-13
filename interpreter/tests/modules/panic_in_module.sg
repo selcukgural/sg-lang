@@ -1,0 +1,6 @@
+// A panic in a module is reported in the file of that module, also by a compiled program.
+void main() {
+    var prices = List<int> { 1500, 4000 }
+    print(stock.priceAt(read prices, 1))
+    print(stock.priceAt(read prices, 2))
+}

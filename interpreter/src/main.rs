@@ -48,7 +48,7 @@ fn build(path: &str, out: Option<String>, release: bool) -> ExitCode {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    const USAGE: &str = "usage: sg <file.sg | folder>                    runs the program\n       sg test <file.sg | folder>               runs its tests; with a folder, those of every module in it\n       sg build <file.sg> [--release] [-o out]  compiles it through C\n       sg emit-c <file.sg> [--release]          prints the C";
+    const USAGE: &str = "usage: sg <file.sg | folder>                             runs the program\n       sg test <file.sg | folder>                        runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [-o out]  compiles it through C\n       sg emit-c <file.sg | folder> [--release]          prints the C";
     let (path, tests) = match args.as_slice() {
         [path] => (path, false),
         [command, path] if command == "test" => (path, true),

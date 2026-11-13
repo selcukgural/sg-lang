@@ -140,6 +140,15 @@ fn compiled() {
         }
     }
     files.sort();
+    // Programs with modules: the programs of one file next to the modules, and the folders
+    // that are programs.
+    let modules = root.join("tests/modules");
+    let mut programs: Vec<PathBuf> = std::fs::read_dir(&modules).unwrap().map(|entry| entry.unwrap().path()).collect();
+    programs.push(root.join("examples/shop"));
+    programs.sort();
+    programs.retain(|path| path.extension().is_some_and(|ext| ext == "sg") || path.join("main.sg").exists());
+    let total = files.len() + programs.len();
+    files.extend(programs);
 
     // `SG_NO_SANITIZERS=1` skips the second, slower build of every program.
     let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
@@ -147,7 +156,6 @@ fn compiled() {
     let mut compiled = 0;
     let mut failures = Vec::new();
     for path in &files {
-        let src = std::fs::read_to_string(path).unwrap();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         // Deep recursion is caught by the interpreter's own count of calls; compiled code has
         // no such count yet (the stack depth question of the design is open).
@@ -157,8 +165,20 @@ fn compiled() {
         // A program the checker rejects, or one that uses what is not compiled yet.
         // In `tests/release` the build is a release build: overflow wraps.
         let release = path.parent().is_some_and(|dir| dir.ends_with("release"));
-        let Ok(code) = sg::emit_c(&src, &name, !release) else { continue };
+        // A program with modules is read from its folder; the folder it is in is left out of
+        // the paths in its panic messages, as in the `modules` test.
+        let with_modules = path.is_dir() || path.starts_with(&modules);
+        let (code, golden, within) = match with_modules {
+            true => {
+                let sources = sg::load(path, false).unwrap();
+                let golden = if path.is_dir() { path.join("main.out") } else { path.with_extension("out") };
+                (sg::emit_c_sources(&sources, true), golden, format!("{}/", path.parent().unwrap().display()))
+            }
+            false => (sg::emit_c(&std::fs::read_to_string(path).unwrap(), &name, !release), path.with_extension("out"), String::new()),
+        };
+        let Ok(code) = code else { continue };
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let stem = if with_modules { format!("modules-{stem}") } else { stem };
         let (c_file, binary) = (work.join(format!("{stem}.c")), work.join(&stem));
         std::fs::write(&c_file, code).unwrap();
         let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-o"]).arg(&binary).arg(&c_file).output().unwrap();
@@ -167,11 +187,15 @@ fn compiled() {
             continue;
         }
         let run = std::process::Command::new(&binary).output().unwrap();
-        let actual = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+        let shown = |run: &std::process::Output| {
+            let text = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+            if within.is_empty() { text } else { text.replace(&within, "") }
+        };
+        let actual = shown(&run);
         if release && std::env::var_os("UPDATE_GOLDEN").is_some() {
-            std::fs::write(path.with_extension("out"), &actual).unwrap();
+            std::fs::write(&golden, &actual).unwrap();
         }
-        let expected = std::fs::read_to_string(path.with_extension("out")).unwrap_or_default();
+        let expected = std::fs::read_to_string(&golden).unwrap_or_default();
         if actual != expected {
             failures.push(format!("--- {name}\nexpected:\n{expected}\nactual:\n{actual}"));
         }
@@ -189,7 +213,7 @@ fn compiled() {
                 .unwrap();
             if cc.status.success() {
                 let run = std::process::Command::new(&checked_binary).output().unwrap();
-                let actual = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+                let actual = shown(&run);
                 if actual != expected {
                     failures.push(format!("--- {name}, under the sanitizers\nexpected:\n{expected}\nactual:\n{actual}"));
                 }
@@ -199,5 +223,5 @@ fn compiled() {
     }
     assert!(failures.is_empty(), "{} compiled program(s) differ:\n{}", failures.len(), failures.join("\n"));
     assert!(compiled >= 10, "only {compiled} programs were compiled: the back end skips too much");
-    eprintln!("{compiled} of {} programs compiled through C and gave the same output; {sanitized} also ran clean under the sanitizers", files.len());
+    eprintln!("{compiled} of {} programs compiled through C and gave the same output; {sanitized} also ran clean under the sanitizers", total);
 }

@@ -1,0 +1,168 @@
+// A `read T?`: a borrow that may be missing. A function gives one back (`null`, or a borrow of
+// something it was lent) and takes one (`null`, a borrowed `T`, or a borrowed `T?`).
+struct Product : Formattable {
+    string code
+    long price
+}
+
+struct Shelf {
+    List<Product> products
+    string label
+    int? row
+
+    read Product? find(read this, read string code) from this {
+        for i in 0..this.products.length() {
+            if this.products[i].code == code {
+                return read this.products[i]
+            }
+        }
+        return null
+    }
+
+    // Text is lent as a pointer and a length.
+    read string? labelIf(read this, bool wanted) from this {
+        if wanted {
+            return read this.label
+        }
+        return null
+    }
+
+    // A borrow of a `T?` that is kept goes back as it is.
+    read int? rowOf(read this) from this {
+        return read this.row
+    }
+
+    // What another function gave is handed on.
+    read Product? first(read this) from this {
+        return this.find("K-1")
+    }
+}
+
+struct Numbers {
+    List<int> items
+
+    read int? at(read this, nint i) from this {
+        if i < this.items.length() {
+            return read this.items[i]
+        }
+        return null
+    }
+}
+
+read string? longest(read string a, read string b, bool any) from a, b {
+    if !any {
+        return null
+    }
+    if a.length() >= b.length() {
+        return a
+    }
+    return b
+}
+
+long priceOr(read Product? product, long otherwise) {
+    if product is null {
+        return otherwise
+    }
+    return product.price
+}
+
+int lengthOr(read string? text) {
+    if text is not null {
+        return (int)text.length()
+    }
+    return -1
+}
+
+int orZero(read int? n) {
+    return n ?? 0
+}
+
+int calls(ref int count) {
+    count += 1
+    return count
+}
+
+read Product? counted(read Shelf shelf, read string code, ref int count) from shelf {
+    count += 1
+    return shelf.find(code)
+}
+
+Result<long, string> priceOf(read Shelf shelf, read string code) {
+    var product = shelf.find(code) ?? return Error($"no {code}".toString())
+    return Ok(product.price)
+}
+
+void main() {
+    var shelf = Shelf { products = List<Product> { Product { code = "K-1", price = 1500 }, Product { code = "D-1", price = 4000 } }, label = "front", row = null }
+
+    // What comes back is looked at, tested and opened.
+    var pen = shelf.find("K-1")
+    if pen is not null {
+        print(pen.code)
+        print(pen.price)
+    }
+    print(shelf.find("X-9") is null)
+    var book = shelf.find("D-1") ?? panic("D-1 is there")
+    print(book)
+    print(shelf.first() is not null)
+    print(priceOf(read shelf, "D-1") ?? -1)
+    print(priceOf(read shelf, "X-9") ?? -1)
+
+    // It goes on to a function that takes one.
+    print(priceOr(shelf.find("K-1"), -1))
+    print(priceOr(shelf.find("X-9"), -1))
+    print(priceOr(null, -2))
+    print(priceOr(read shelf.products[1], -3))
+
+    // Text.
+    print(lengthOr(shelf.labelIf(true)))
+    print(lengthOr(shelf.labelIf(false)))
+    print(lengthOr(null))
+    print(lengthOr(read shelf.label))
+    var name = "a longer name"
+    print(longest(read name, "short", true) ?? "none")
+    print(longest(read name, "short", false) ?? "none")
+
+    // A `T?` that is kept.
+    print(orZero(shelf.rowOf()))
+    shelf.row = 7
+    print(orZero(shelf.rowOf()))
+    var seven = 7
+    print(orZero(read seven))
+    print(orZero(null))
+
+    // A call is made where it is written, once, and only if the line gets there.
+    var count = 0
+    var both = calls(ref count) == 1 && counted(read shelf, "K-1", ref count) is not null && calls(ref count) == 3
+    print(both)
+    var neither = calls(ref count) == 0 && counted(read shelf, "K-1", ref count) is not null
+    print(neither)
+    print(count)
+
+    // In a loop every round has its own answer.
+    long sum = 0
+    var codes = List<string> { "K-1", "X-9", "D-1" }
+    for code in codes {
+        sum += priceOr(shelf.find(read code), 1)
+    }
+    print(sum)
+
+    // Through a function value.
+    Func<read Product?, long, long> price = priceOr
+    print(price(shelf.find("D-1"), 0))
+
+    // In the condition of a loop and of an `else if`.
+    var numbers = Numbers { items = List<int> { 3, 5, 8 } }
+    nint i = 0
+    var total = 0
+    while numbers.at(i) is not null {
+        total += numbers.at(i) ?? 0
+        i += 1
+    }
+    print(total)
+    if numbers.at(9) is not null {
+        print("nine")
+    } else if numbers.at(2) is not null {
+        print("two")
+    }
+}

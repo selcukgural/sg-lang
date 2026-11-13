@@ -46,7 +46,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use crate::ast::*;
-use crate::diag::{snippet, Diag, Span};
+use crate::diag::{Diag, Span};
+use crate::source::Sources;
 use crate::types::{IntTy, Ty};
 
 type Res<T> = Result<T, Diag>;
@@ -145,6 +146,8 @@ typedef struct { const uint8_t* ptr; int64_t len; } sg_str;
 typedef struct { uint8_t* ptr; int64_t len; int64_t cap; } sg_string;
 #define SG_LIT(text, n) ((sg_string){ (uint8_t*)(text), (n), 0 })
 #define SG_STR(text, n) ((sg_str){ (const uint8_t*)(text), (n) })
+/* A `read string?` with nothing in it: a window of length -1. */
+#define SG_NO_STR ((sg_str){ NULL, -1 })
 static inline sg_str sg_view(const sg_string* s) { return (sg_str){ s->ptr, s->len }; }
 static inline void sg_drop_string(sg_string* s) { if (s->cap > 0) free(s->ptr); }
 static inline sg_string sg_move_string(sg_string* s) { sg_string v = *s; s->cap = 0; return v; }
@@ -518,15 +521,15 @@ static inline bool sg_remove_@N(sg_@N* m, @P key) {
 }@S}
 "#;
 
-/// Writes the program as C. `path` names the source file in the panic messages. `checked`: a
+/// Writes the program as C. A panic message names the file its line is in. `checked`: a
 /// debug build, where `+`, `-`, `*` and unary `-` panic on overflow; without it, a release
 /// build, where they wrap.
-pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String> {
+pub fn emit(prog: &Program, sources: &Sources, checked: bool) -> Res<String> {
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let mut emitter = Emitter {
-        src,
-        path,
+        sources,
+        files: &prog.files,
         structs,
         enums,
         checked,
@@ -550,10 +553,10 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
     // Every struct and enum is named first, so that a type can point at itself or at a later
     // one. Then the types themselves, each after the types it holds by value.
     for decl in &prog.structs {
-        let _ = writeln!(emitter.types, "typedef struct S_{0} S_{0};", decl.name);
+        let _ = writeln!(emitter.types, "typedef struct S_{0} S_{0};", cname(&decl.name));
     }
     for decl in &prog.enums {
-        let _ = writeln!(emitter.types, "typedef struct E_{0} E_{0};", decl.name);
+        let _ = writeln!(emitter.types, "typedef struct E_{0} E_{0};", cname(&decl.name));
     }
     let mut done: Vec<&str> = Vec::new();
     for decl in &prog.structs {
@@ -566,12 +569,12 @@ pub fn emit(prog: &Program, src: &str, path: &str, checked: bool) -> Res<String>
     // What each function takes: an argument is shaped for the parameter it goes to.
     for func in &prog.funcs {
         let params = func.params.iter().map(|param| emitter.written(&param.ty)).collect::<Res<Vec<Ty>>>()?;
-        emitter.sigs.insert(format!("f_{}", func.name), params);
+        emitter.sigs.insert(format!("f_{}", cname(&func.name)), params);
     }
     for decl in &prog.structs {
         for method in &decl.methods {
             let params = method.params.iter().map(|param| emitter.written(&param.ty)).collect::<Res<Vec<Ty>>>()?;
-            emitter.sigs.insert(format!("f_{}_{}", decl.name, method.name), params);
+            emitter.sigs.insert(format!("f_{}_{}", cname(&decl.name), method.name), params);
         }
     }
 
@@ -733,8 +736,8 @@ fn mangle(ty: &Ty) -> Option<String> {
         Ty::Int(ty) => ty.name().to_string(),
         Ty::Bool => "bool".to_string(),
         Ty::Str => "string".to_string(),
-        Ty::Struct(name) => format!("S_{name}"),
-        Ty::Enum(name) => format!("E_{name}"),
+        Ty::Struct(name) => format!("S_{}", cname(name)),
+        Ty::Enum(name) => format!("E_{}", cname(name)),
         Ty::Ptr(inner) => format!("P_{}", mangle(inner)?),
         Ty::Nullable(inner) => match &**inner {
             // A pointer that may be `null` is the same pointer.
@@ -773,9 +776,34 @@ fn mangle(ty: &Ty) -> Option<String> {
     })
 }
 
+/// A full name inside a C name. A name of the root is written as it is. A name of a module has
+/// each folder in front, with its length: `shop.parts.Part` is `4shop_5parts_Part`. No name
+/// of the root starts with a digit, so the two never meet, and the lengths keep two modules
+/// apart whatever their names are.
+fn cname(full: &str) -> String {
+    let mut parts: Vec<&str> = full.split('.').collect();
+    let name = parts.pop().unwrap_or(full);
+    let mut out = String::new();
+    for part in parts {
+        let _ = write!(out, "{}{part}_", part.len());
+    }
+    out + name
+}
+
 /// A `T?` that is kept as a value and a flag: every `T?` but a pointer.
 fn is_option(ty: &Ty) -> bool {
     matches!(ty, Ty::Nullable(inner) if !matches!(**inner, Ty::Ptr(_)))
+}
+
+/// A `read T?` whose `T?` would be a value and a flag: the `T?` behind it. In C it is not a
+/// pointer to that pair but a pointer to the `T`, null when there is nothing (for text, a
+/// window of length -1): what a function gives back points straight at what it was lent.
+/// A `ref T?` stays a pointer to the pair, because `null` can be written through it.
+fn lent_option(ty: &Ty) -> Option<&Ty> {
+    match ty {
+        Ty::Read(inner) if is_option(inner) => Some(inner),
+        _ => None,
+    }
 }
 
 /// The structs and enums a field of this type needs to be defined first.
@@ -920,8 +948,9 @@ struct Local {
 }
 
 struct Emitter<'a> {
-    src: &'a str,
-    path: &'a str,
+    sources: &'a Sources,
+    /// The files of the program: a type name is looked up from the file it is written in.
+    files: &'a [FileScope],
     structs: HashMap<&'a str, &'a StructDecl>,
     enums: HashMap<&'a str, &'a EnumDecl>,
     /// A debug build: overflow panics. Otherwise it wraps.
@@ -968,7 +997,7 @@ struct Emitter<'a> {
 impl<'a> Emitter<'a> {
     /// The name of the C constant that holds where `span` is in the source.
     fn loc(&mut self, span: Span) -> String {
-        self.locs.push(snippet(span, self.src, self.path));
+        self.locs.push(self.sources.snippet(span));
         format!("sg_loc_{}", self.locs.len() - 1)
     }
 
@@ -978,7 +1007,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn text(&self, span: Span) -> &'a str {
-        &self.src[span.start..span.end]
+        &self.sources.text[span.start..span.end]
     }
 
     // ---- types ----
@@ -992,8 +1021,8 @@ impl<'a> Emitter<'a> {
             Ty::Void => "void".to_string(),
             // A `Formatter` is the text being written.
             Ty::Str | Ty::Formatter => "sg_string".to_string(),
-            Ty::Struct(name) => format!("S_{name}"),
-            Ty::Enum(name) => format!("E_{name}"),
+            Ty::Struct(name) => format!("S_{}", cname(name)),
+            Ty::Enum(name) => format!("E_{}", cname(name)),
             Ty::Result(..) | Ty::List(_) | Ty::Func(..) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) => {
                 // An entry is known where its map is.
                 if let Ty::Entry(key, value) = ty {
@@ -1004,6 +1033,10 @@ impl<'a> Emitter<'a> {
                 format!("sg_{name}")
             }
             _ if is_text_view(ty) => "sg_str".to_string(),
+            Ty::Read(inner) if is_option(inner) => {
+                let Ty::Nullable(held) = &**inner else { unreachable!("an option is a `T?`") };
+                if **held == Ty::Str { "sg_str".to_string() } else { format!("{}*", self.ctype(held, span)?) }
+            }
             Ty::Read(inner) | Ty::Ref(inner) => format!("{}*", self.ctype(inner, span)?),
             Ty::Ptr(inner) | Ty::Nullable(inner) => {
                 let Some(name) = mangle(ty) else { return Err(not_yet(span, &format!("the type `{ty}`"))) };
@@ -1016,6 +1049,41 @@ impl<'a> Emitter<'a> {
             }
             other => return Err(not_yet(span, &format!("the type `{other}`"))),
         })
+    }
+
+    /// A `read T?` with nothing in it.
+    fn lent_none(&self, option: &Ty) -> &'static str {
+        if matches!(option, Ty::Nullable(inner) if **inner == Ty::Str) { "SG_NO_STR" } else { "NULL" }
+    }
+
+    /// The C test that the `read T?` in `value` (a name) has something.
+    fn lent_holds(&self, option: &Ty, value: &str) -> String {
+        if matches!(option, Ty::Nullable(inner) if **inner == Ty::Str) { format!("({value}.len >= 0)") } else { format!("({value} != NULL)") }
+    }
+
+    /// A `read T?` made from a `T?` that is kept somewhere; `address`: a pointer to that `T?`.
+    /// The test for the flag is made here, once, where it is lent.
+    fn lend(&mut self, address: &str, option: &Ty, span: Span) -> Res<String> {
+        let (ctype, temp) = (self.ctype(option, span)?, self.temp());
+        let held = if self.lent_none(option) == "NULL" { format!("&{temp}->value") } else { format!("sg_view(&{temp}->value)") };
+        Ok(format!("({{ {ctype}* {temp} = {address}; {temp}->has ? {held} : {}; }})", self.lent_none(option)))
+    }
+
+    /// The `T?` that a `read T?` stands for, as a value: a flag and a copy of the bytes that
+    /// nobody drops. It is what a `T?` that can be copied gives (`int? n = limit`), and the
+    /// way for the few places that read a `read T?` as a kept `T?`.
+    fn unlent(&mut self, value: &str, option: &Ty, span: Span) -> Res<String> {
+        let (ctype, lent, temp) = (self.ctype(option, span)?, self.ctype(&Ty::Read(Box::new(option.clone())), span)?, self.temp());
+        let copy = if self.lent_none(option) == "NULL" { format!("*{temp}") } else { format!("{{ (uint8_t*){temp}.ptr, {temp}.len, 0 }}") };
+        Ok(format!("({{ {lent} {temp} = {value}; {} ? (({ctype}){{ true, {copy} }}) : (({ctype}){{ false }}); }})", self.lent_holds(option, &temp)))
+    }
+
+    /// The same as a place, kept beside the statement.
+    fn boxed(&mut self, value: &str, option: &Ty, span: Span) -> Res<String> {
+        let (ctype, temp) = (self.ctype(option, span)?, self.temp());
+        let made = self.unlent(value, option, span)?;
+        self.pre.push(format!("{ctype} {temp};"));
+        Ok(format!("(*({temp} = {made}, &{temp}))"))
     }
 
     /// Writes, once, what a `T*` or a `T?` needs: its C type and the helpers that drop it,
@@ -1239,6 +1307,20 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
+    /// The full name of the type written as `name` in the file at `at`: with its module in
+    /// front it is the full name already; otherwise a type of the file's own module, then one
+    /// of a module the file names with `use`. The checker has seen that there is exactly one.
+    fn full(&self, name: &str, at: Span) -> Option<String> {
+        let known = |full: &str| self.structs.contains_key(full) || self.enums.contains_key(full);
+        let file = self.files.iter().find(|file| at.start <= file.end)?;
+        let own = if file.module.is_empty() || name.contains('.') { name.to_string() } else { format!("{}.{name}", file.module) };
+        if known(&own) {
+            return Some(own);
+        }
+        let public = |full: &str| self.structs.get(full).map(|decl| decl.public).or(self.enums.get(full).map(|decl| decl.public)) == Some(true);
+        file.uses.iter().map(|(used, _)| format!("{used}.{name}")).find(|full| public(full))
+    }
+
     /// A type as it is written in a signature or a field.
     fn written(&self, ty: &TypeExpr) -> Res<Ty> {
         let unknown = || not_yet(ty.span, &format!("the type `{}`", self.text(ty.span)));
@@ -1252,8 +1334,11 @@ impl<'a> Emitter<'a> {
                 Ty::Func(params, Box::new(self.written(ret)?))
             }
             (Some(base @ (Ty::Int(_) | Ty::Bool | Ty::Void | Ty::Str | Ty::Formatter)), []) => base,
-            (None, []) if self.structs.contains_key(ty.name.as_str()) => Ty::Struct(ty.name.clone()),
-            (None, []) if self.enums.contains_key(ty.name.as_str()) => Ty::Enum(ty.name.clone()),
+            (None, []) => match self.full(&ty.name, ty.span) {
+                Some(full) if self.structs.contains_key(full.as_str()) => Ty::Struct(full),
+                Some(full) => Ty::Enum(full),
+                None => return Err(unknown()),
+            },
             _ => return Err(unknown()),
         };
         for suffix in &ty.suffixes {
@@ -1351,11 +1436,11 @@ impl<'a> Emitter<'a> {
             }
             Ty::Nullable(_) => unreachable!("a `T*?` has the name of the `T*`"),
             Ty::Struct(owner) if self.own_method(owner, "format") => {
-                let _ = write!(body, "f_{owner}_format(({ctype}*)v, out);");
+                let _ = write!(body, "f_{}_format(({ctype}*)v, out);", cname(owner));
             }
             Ty::Struct(owner) => {
                 let decl: &'a StructDecl = self.structs[owner.as_str()];
-                body.push_str(&put_text(&format!("{owner} {{ ")));
+                body.push_str(&put_text(&format!("{} {{ ", short_name(owner))));
                 for (position, field) in decl.fields.iter().enumerate() {
                     let field_ty = self.written(&field.ty)?;
                     let text = format!("{}{} = ", if position == 0 { "" } else { ", " }, field.name);
@@ -1408,6 +1493,11 @@ impl<'a> Emitter<'a> {
     fn show_at(&mut self, ty: &Ty, place: &str, span: Span) -> Res<String> {
         match ty {
             _ if is_text_view(ty) => Ok(format!("sg_put_quoted(out, {place});")),
+            Ty::Read(inner) if is_option(inner) => {
+                let Ty::Nullable(held) = &**inner else { unreachable!("an option is a `T?`") };
+                let shown = self.show_at(&Ty::Read(held.clone()), place, span)?;
+                Ok(format!("if ({}) {{ {shown} }} else sg_put(out, \"null\", 4);", self.lent_holds(inner, place)))
+            }
             Ty::Read(inner) | Ty::Ref(inner) => Ok(format!("{}(out, {place});", self.shower(inner, span)?)),
             _ => Ok(format!("{}(out, &{place});", self.shower(ty, span)?)),
         }
@@ -1417,6 +1507,12 @@ impl<'a> Emitter<'a> {
     fn same_at(&mut self, ty: &Ty, a: &str, b: &str, span: Span) -> Res<String> {
         match ty {
             _ if is_text_view(ty) => Ok(format!("sg_eq({a}, {b})")),
+            Ty::Read(inner) if is_option(inner) => {
+                let Ty::Nullable(held) = &**inner else { unreachable!("an option is a `T?`") };
+                let same = self.same_at(&Ty::Read(held.clone()), a, b, span)?;
+                let (has_a, has_b) = (self.lent_holds(inner, a), self.lent_holds(inner, b));
+                Ok(format!("({has_a} == {has_b} && (!{has_a} || {same}))"))
+            }
             Ty::Read(inner) | Ty::Ref(inner) => Ok(format!("{}({a}, {b})", self.equaler(inner, span)?)),
             _ => Ok(format!("{}(&{a}, &{b})", self.equaler(ty, span)?)),
         }
@@ -1450,7 +1546,7 @@ impl<'a> Emitter<'a> {
             }
             Ty::Nullable(_) => unreachable!("a `T*?` has the name of the `T*`"),
             Ty::Struct(owner) if self.own_method(owner, "equals") => {
-                let _ = write!(body, "return f_{owner}_equals(({ctype}*)a, ({ctype}*)b);");
+                let _ = write!(body, "return f_{}_equals(({ctype}*)a, ({ctype}*)b);", cname(owner));
             }
             Ty::Struct(owner) => {
                 let decl: &'a StructDecl = self.structs[owner.as_str()];
@@ -1516,7 +1612,7 @@ impl<'a> Emitter<'a> {
         match (op, ty) {
             (BinOp::Eq, _) => Ok(format!("{}({l}, {r})", self.equaler(ty, span)?)),
             (BinOp::Ne, _) => Ok(format!("(!{}({l}, {r}))", self.equaler(ty, span)?)),
-            (_, Ty::Struct(owner)) if self.own_method(owner, "compare") => Ok(format!("(f_{owner}_compare({l}, {r}) {} 0)", op.symbol())),
+            (_, Ty::Struct(owner)) if self.own_method(owner, "compare") => Ok(format!("(f_{}_compare({l}, {r}) {} 0)", cname(owner), op.symbol())),
             _ => Err(not_yet(span, &format!("`{}` on `{ty}`", op.symbol()))),
         }
     }
@@ -1619,6 +1715,16 @@ impl<'a> Emitter<'a> {
         let drop_key = if self.droppable(key) { self.drop_of(key, "gone") } else { String::new() };
         let _ = match what {
             // A look at the value: the map still owns it.
+            // A look at the value where it is: a pointer to it, or none.
+            "get" if is_option(&option) => {
+                let lent_c = self.ctype(&Ty::Read(Box::new(option.clone())), span)?;
+                let at = if **value == Ty::Str { "sg_view(&m->entries[entry].m_value)" } else { "&m->entries[entry].m_value" };
+                writeln!(
+                    self.glue,
+                    "static inline {lent_c} {helper}(const sg_{name}* m, {given} key) {{ int64_t entry = sg_find_{name}(m, key); if (entry < 0) return {}; return {at}; }}",
+                    self.lent_none(&option)
+                )
+            }
             "get" => writeln!(
                 self.glue,
                 "static inline {option_c} {helper}(const sg_{name}* m, {given} key) {{ int64_t entry = sg_find_{name}(m, key); if (entry < 0) return {none}; return {some}; }}"
@@ -1657,7 +1763,16 @@ impl<'a> Emitter<'a> {
                     false => ("{}".to_string(), "NULL".to_string()),
                 };
                 let _ = match what {
-                    // What is given is a look at the item: the list still owns it.
+                    // What is given is a look at the item where it is: a pointer to it, or none.
+                    "get" if is_option(&option) => {
+                        let lent_c = self.ctype(&Ty::Read(Box::new(option.clone())), span)?;
+                        let at = if **item == Ty::Str { "sg_view(&v->ptr[at])" } else { "&v->ptr[at]" };
+                        writeln!(
+                            self.glue,
+                            "static inline {lent_c} {helper}(const {list_c}* v, int64_t at) {{ if ((uint64_t)at >= (uint64_t)v->len) return {}; return {at}; }}",
+                            self.lent_none(&option)
+                        )
+                    }
                     "get" => writeln!(
                         self.glue,
                         "static inline {option_c} {helper}(const {list_c}* v, int64_t at) {{ if ((uint64_t)at >= (uint64_t)v->len) return {none}; return {}; }}",
@@ -1690,7 +1805,7 @@ impl<'a> Emitter<'a> {
                 let compare = match &**item {
                     Ty::Int(_) => format!("{held} x = *(const {held}*)a, y = *(const {held}*)b; return (x > y) - (x < y);"),
                     Ty::Str => "return sg_cmp(sg_view((const sg_string*)a), sg_view((const sg_string*)b));".to_string(),
-                    Ty::Struct(owner) if self.own_method(owner, "compare") => format!("return f_{owner}_compare(({held}*)a, ({held}*)b);"),
+                    Ty::Struct(owner) if self.own_method(owner, "compare") => format!("return f_{}_compare(({held}*)a, ({held}*)b);", cname(owner)),
                     _ => return Err(not_yet(span, &format!("putting the items of a `{list}` in order"))),
                 };
                 let _ = writeln!(self.glue, "static int {helper}_compare(const void* a, const void* b) {{ {compare} }}");
@@ -1724,7 +1839,7 @@ impl<'a> Emitter<'a> {
             return Ok(());
         }
         done.push(&decl.name);
-        let name = &decl.name;
+        let name = &cname(&decl.name);
         let (mut fields, mut drops, mut forgets) = (String::new(), String::new(), String::new());
         // A field that borrows is a pointer (or, for text, a pointer and a length) to what
         // someone else owns: it is never freed here. The checker has seen that it does not
@@ -1772,7 +1887,7 @@ impl<'a> Emitter<'a> {
         if decl.variants.len() >= MOVED_TAG {
             return Err(not_yet(decl.name_span, "an enum with this many variants"));
         }
-        let name = &decl.name;
+        let name = &cname(&decl.name);
         let (mut members, mut cases) = (String::new(), String::new());
         for (index, variant) in decl.variants.iter().enumerate() {
             let (mut fields, mut drops) = (String::new(), String::new());
@@ -1812,8 +1927,8 @@ impl<'a> Emitter<'a> {
     fn func(&mut self, func: &'a Func, owner: Option<&str>, protos: &mut String, bodies: &mut String) -> Res<()> {
         let ret = self.written(&func.ret)?;
         let name = match owner {
-            Some(owner) => format!("f_{owner}_{}", func.name),
-            None => format!("f_{}", func.name),
+            Some(owner) => format!("f_{}_{}", cname(owner), func.name),
+            None => format!("f_{}", cname(&func.name)),
         };
         let mut params = Vec::new();
         let mut scope = Vec::new();
@@ -2313,6 +2428,11 @@ impl<'a> Emitter<'a> {
         let (ty, init) = match &ty {
             Ty::Read(held) | Ty::Ref(held) if held.is_borrow() => ((**held).clone(), at.to_string()),
             _ if is_text_view(&ty) => (ty, format!("sg_view(&{at})")),
+            // A `T?` that is looked at: tested here, once.
+            _ if lent_option(&ty).is_some() => {
+                let init = self.lend(&format!("(&{at})"), lent_option(&ty).expect("just tested"), span)?;
+                (ty, init)
+            }
             _ => (ty, format!("(&{at})")),
         };
         let ctype = self.ctype(&ty, span)?;
@@ -2568,6 +2688,10 @@ impl<'a> Emitter<'a> {
     /// The test that the `T?` or `Result` kept in `temp` holds a value, and that value. A
     /// borrowed `T?` (what `get` gives) holds a borrow of the value.
     fn held_in(&self, ty: &Ty, temp: &str) -> Option<(String, String)> {
+        // A `read T?` holds a borrow of the value: the pointer itself.
+        if let Some(option) = lent_option(ty) {
+            return Some((self.lent_holds(option, temp), temp.to_string()));
+        }
         Some(match ty {
             // Success that carries nothing gives nothing: the expression is a `void` one.
             Ty::Result(ok, _) if **ok == Ty::Void => (format!("{temp}.tag == 0"), String::new()),
@@ -2575,7 +2699,6 @@ impl<'a> Emitter<'a> {
             Ty::Nullable(_) if is_option(ty) => (format!("{temp}.has"), format!("{temp}.value")),
             Ty::Nullable(_) => (temp.to_string(), temp.to_string()),
             Ty::Read(inner) | Ty::Ref(inner) => match &**inner {
-                Ty::Nullable(value) if is_option(inner) && **value == Ty::Str && matches!(ty, Ty::Read(_)) => (format!("{temp}->has"), format!("sg_view(&{temp}->value)")),
                 Ty::Nullable(_) if is_option(inner) => (format!("{temp}->has"), format!("(&{temp}->value)")),
                 Ty::Nullable(_) => (format!("(*{temp})"), temp.to_string()),
                 _ => return None,
@@ -2618,9 +2741,20 @@ impl<'a> Emitter<'a> {
                 Ty::Nullable(_) | Ty::Never => Ok(value),
                 _ => self.lift(value, found, inner, span),
             },
+            // Where a `read T?` is expected: `null` is no pointer, a borrowed `T` is the pointer
+            // it already is, and a `ref T?` is tested for its flag.
+            Ty::Read(to) if is_option(to) => match found {
+                Ty::Null => Ok(self.lent_none(to).to_string()),
+                Ty::Never => Ok(value),
+                _ if lent_option(found).is_some() => Ok(value),
+                Ty::Ref(inner) if inner == to => self.lend(&value, to, span),
+                Ty::Ref(inner) if **inner == Ty::Str => Ok(format!("sg_view({value})")),
+                _ if found.is_borrow() && !matches!(found.strip_borrow(), Ty::Nullable(_)) => Ok(value),
+                _ => Err(not_yet(span, &format!("a `{found}` lent as `{want}`"))),
+            },
             _ if *found == Ty::Null => Err(not_yet(span, "`null` here")),
             // A pointer to a value is not a pointer to a value and a flag.
-            Ty::Read(to) | Ty::Ref(to) if is_option(to) && found.is_borrow() && !matches!(found.strip_borrow(), Ty::Nullable(_)) => {
+            Ty::Ref(to) if is_option(to) && found.is_borrow() && !matches!(found.strip_borrow(), Ty::Nullable(_)) => {
                 Err(not_yet(span, &format!("a `{found}` lent as `{want}`")))
             }
             _ => Ok(value),
@@ -3034,6 +3168,15 @@ impl<'a> Emitter<'a> {
         match &expr.kind {
             ExprKind::Var(name) => {
                 let cname = self.local(name).cname.clone();
+                // A `read T?` variable is a pointer to the `T`. Known to hold a value, it
+                // stands for that value; read as a `T?`, the pair is made for the statement.
+                if let Some(option) = lent_option(&self.local(name).ty).cloned() {
+                    return match self.narrowed(name, &expr.ty) {
+                        true if self.lent_none(&option) == "NULL" => Ok(format!("(*{cname})")),
+                        true => Ok(cname),
+                        false => self.boxed(&cname, &option, expr.span),
+                    };
+                }
                 let place = if expr.ty.is_borrow() && !is_text_view(&self.local(name).ty) { format!("(*{cname})") } else { cname };
                 Ok(if self.narrowed(name, &expr.ty) { format!("{place}.value") } else { place })
             }
@@ -3049,6 +3192,9 @@ impl<'a> Emitter<'a> {
                 }
                 // A field that borrows stands for what it points at, as a borrowed variable does.
                 let field = format!("{place}.m_{name}");
+                if let Some(option) = lent_option(&expr.ty) {
+                    return self.boxed(&field, option, expr.span);
+                }
                 Ok(if expr.ty.is_borrow() && !is_text_view(&expr.ty) { format!("(*{field})") } else { field })
             }
             // An item of a list: the index is checked, and the item is used where it is.
@@ -3224,6 +3370,8 @@ impl<'a> Emitter<'a> {
             ExprKind::Var(name) if self.narrowed(name, &expr.ty) => {
                 let place = self.lvalue(expr)?;
                 Ok(match &expr.ty {
+                    // A `read string?` that holds a text is the window itself.
+                    ty if is_text_view(ty) && lent_option(&self.local(name).ty).is_some() => place,
                     ty if is_text_view(ty) => format!("sg_view(&{place})"),
                     ty if ty.is_borrow() => format!("(&{place})"),
                     _ => place,
@@ -3231,12 +3379,26 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Var(name) => Ok(self.local(name).cname.clone()),
             // The value of a field that borrows is the pointer it holds.
+            ExprKind::Field { recv, name, .. } if lent_option(&expr.ty).is_some() => {
+                let mut place = self.look(recv)?;
+                let mut ty = recv.ty.strip_borrow();
+                while let Ty::Ptr(inner) = ty {
+                    place = format!("(*{place})");
+                    ty = inner;
+                }
+                Ok(format!("{place}.m_{name}"))
+            }
             ExprKind::Field { .. } if expr.ty.is_borrow() && !is_text_view(&expr.ty) => Ok(format!("(&{})", self.lvalue(expr)?)),
             ExprKind::Field { .. } => self.lvalue(expr),
             // The name of a function, as a value: its address.
-            ExprKind::FuncRef(name) => Ok(format!("f_{name}")),
+            ExprKind::FuncRef(name) => Ok(format!("f_{}", cname(name))),
             // A number read out of a pointer that has no name: the pointer is freed after the statement.
             ExprKind::Load(inner) if matches!(inner.ty, Ty::Ptr(_)) => Ok(format!("(*{})", self.look(inner)?)),
+            // A `T?` copied out of a `read T?`.
+            ExprKind::Load(inner) if lent_option(&inner.ty).is_some() => {
+                let value = self.first(inner, head)?;
+                self.unlent(&value, lent_option(&inner.ty).expect("just tested"), expr.span)
+            }
             ExprKind::Load(inner) => Ok(format!("(*{})", self.first(inner, head)?)),
             // A borrow of a `T*` used as a borrow of the `T`: one step along the pointer.
             ExprKind::Unbox(inner) => Ok(format!("(*{})", self.value(inner)?)),
@@ -3247,6 +3409,19 @@ impl<'a> Emitter<'a> {
                 Ok(format!("sg_new_{}({value})", mangle(&expr.ty).expect("it has a C type")))
             }
             ExprKind::IsNull { expr: inner, negated } => {
+                // A `read T?` is asked whether it points at something; a copy of it is not made.
+                let inner = match &inner.kind {
+                    ExprKind::Load(lent) if lent_option(&lent.ty).is_some() => lent,
+                    _ => inner,
+                };
+                if let Some(option) = lent_option(&inner.ty) {
+                    let value = self.value(inner)?;
+                    let holds = match option {
+                        Ty::Nullable(held) if **held == Ty::Str => format!("({value}.len >= 0)"),
+                        _ => format!("({value} != NULL)"),
+                    };
+                    return Ok(if *negated { holds } else { format!("(!{holds})") });
+                }
                 let ty = inner.ty.strip_borrow();
                 if !matches!(ty, Ty::Nullable(_)) {
                     return Err(not_yet(expr.span, &format!("`is null` on `{ty}`")));
@@ -3329,7 +3504,7 @@ impl<'a> Emitter<'a> {
                         // the caller's error type that carries it.
                         let cause = format!("{temp}.u.v1.m_cause");
                         let cause = match convert {
-                            Some((owner, index)) => format!("((E_{owner}){{ .tag = {index}, .u.v{index} = {{ {cause} }} }})"),
+                            Some((owner, index)) => format!("((E_{}){{ .tag = {index}, .u.v{index} = {{ {cause} }} }})", cname(owner)),
                             None => cause,
                         };
                         format!("(({}){{ .tag = 1, .u.v1 = {{ {cause} }} }})", self.ctype(&ret, expr.span)?)
@@ -3342,6 +3517,24 @@ impl<'a> Emitter<'a> {
                 self.open(&inner.ty, &temp, value, exit, inner.span)
             }
             ExprKind::Widen(ty, inner) => Ok(format!("(({}){})", int_ctype(*ty), self.first(inner, head)?)),
+            // `read limit` with `int? limit`: the flag is tested here, and what is lent is a
+            // pointer to the number or no pointer.
+            ExprKind::Borrow { expr: inner, .. } if lent_option(&expr.ty).is_some() => {
+                let option = lent_option(&expr.ty).expect("just tested");
+                if lent_option(&inner.ty).is_some() {
+                    return self.value(inner);
+                }
+                let address = match inner.is_place() {
+                    true => {
+                        if let ExprKind::Var(name) = &inner.kind {
+                            self.local_mut(name).gone = false;
+                        }
+                        format!("(&{})", self.lvalue(inner)?)
+                    }
+                    false => format!("(&{})", self.look(inner)?),
+                };
+                self.lend(&address, option, expr.span)
+            }
             ExprKind::Borrow { expr: inner, .. } if is_text_view(&expr.ty) => self.view(inner),
             ExprKind::Borrow { expr: inner, .. } if inner.is_place() => self.address(inner),
             // A value that has no name, lent: it is kept until the statement ends.
@@ -3526,7 +3719,7 @@ impl<'a> Emitter<'a> {
                 }
                 let (values, names) = self.in_order(parts)?;
                 let inits: Vec<String> = fields.iter().zip(values).map(|(field, value)| format!(".m_{} = {value}", field.name)).collect();
-                Ok(sequence(&names, format!("((S_{name}){{ {} }})", inits.join(", "))))
+                Ok(sequence(&names, format!("((S_{}){{ {} }})", cname(name), inits.join(", "))))
             }
             ExprKind::Call { name, args, callee, .. } => match callee {
                 // `x ?? panic("...")`: the program stops, so there is no value to shape.
@@ -3542,8 +3735,8 @@ impl<'a> Emitter<'a> {
                     Ok(if made.is_empty() { stop } else { format!("({{ {made}{stop}; }})") })
                 }
                 Callee::Plain if matches!(name.as_str(), "print" | "assert") => Err(not_yet(expr.span, &format!("`{name}` used as a value"))),
-                Callee::Plain => self.call(format!("f_{name}"), None, args, head),
-                Callee::Static { owner, name } => self.call(format!("f_{owner}_{name}"), None, args, head),
+                Callee::Plain => self.call(format!("f_{}", cname(name)), None, args, head),
+                Callee::Static { owner, name } => self.call(format!("f_{}_{name}", cname(owner)), None, args, head),
                 // A call through a function value kept in a variable.
                 Callee::Value => {
                     let local = self.local(name);
@@ -3555,7 +3748,7 @@ impl<'a> Emitter<'a> {
                 _ => Err(not_yet(expr.span, "this call")),
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
-                Callee::Static { owner, name } => self.call(format!("f_{owner}_{name}"), None, args, head),
+                Callee::Static { owner, name } => self.call(format!("f_{}_{name}", cname(owner)), None, args, head),
                 Callee::Method { owner, this } => {
                     let held = recv.ty.strip_borrow().clone();
                     let before = self.mark();
@@ -3610,7 +3803,7 @@ impl<'a> Emitter<'a> {
                         This::Ref => Ty::Ref(Box::new(Ty::Struct(owner.clone()))),
                     };
                     let receiver = self.part(recv, &this_ty, receiver, before);
-                    self.call(format!("f_{owner}_{name}"), Some(receiver), args, false)
+                    self.call(format!("f_{}_{name}", cname(owner)), Some(receiver), args, false)
                 }
                 // A call through a function value kept in a field.
                 Callee::FieldValue(_) => {
@@ -3687,6 +3880,9 @@ impl<'a> Emitter<'a> {
                             let Ty::Map(_, value) = &table else { unreachable!("it is a map") };
                             let helper = self.table_helper(&table, "get", expr.span)?;
                             let called = format!("{helper}({address}, {})", self.key(&table, &args[0])?);
+                            if is_option(&Ty::Nullable(value.clone())) {
+                                return Ok(called);
+                            }
                             let (ctype, temp) = (self.ctype(&Ty::Nullable(value.clone()), expr.span)?, self.temp());
                             self.pre.push(format!("{ctype} {temp} = {called};"));
                             Ok(format!("(&{temp})"))
@@ -3730,6 +3926,9 @@ impl<'a> Emitter<'a> {
                         // owns the item, so this copy of it is never dropped.
                         "get" => {
                             let Ty::List(item) = &list else { unreachable!("it is a list") };
+                            if is_option(&Ty::Nullable(item.clone())) {
+                                return Ok(called);
+                            }
                             let (ctype, temp) = (self.ctype(&Ty::Nullable(item.clone()), expr.span)?, self.temp());
                             self.pre.push(format!("{ctype} {temp} = {called};"));
                             Ok(format!("(&{temp})"))

@@ -1,0 +1,5 @@
+4000
+panic: index 2 is out of range: the length is 2
+  --> stock/functions.sg:27:12
+ 27 |     return prices[index]
+    |            ^^^^^^^^^^^^^

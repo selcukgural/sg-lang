@@ -20,7 +20,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Area | Supported |
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point |
-| Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). Interpreter only; the back end does not take a program with modules yet |
+| Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
 | Types | `byte`, `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, `read T` and `ref T` in signatures |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
@@ -148,9 +148,10 @@ Design rules that are already enforced:
 ## The C back end
 
 Since the sixteenth slice (12 November 2026) a program can be compiled: `sg build file.sg` writes it as C and
-hands that to the C compiler. The interpreter stays as the reference: `cargo test` compiles every program the
+hands that to the C compiler (`sg build folder` for a program that is a folder; the modules it names are
+compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, and then runs the
-same C once more under the address and undefined-behaviour sanitizers (90 of 314 programs for now).
+same C once more under the address and undefined-behaviour sanitizers (97 of 339 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -217,6 +218,7 @@ hand with no checks):
 | `vector`: a list of a million numbers filled with `add`, changed through `xs[i]`, added up with `for`, turned around and freed, six hundred times | 0.331 s | 0.682 s | 0.324 s | 1.02 |
 | `counts`: a million numbers counted in a `HashMap` of fifty thousand keys, read back and a third removed, twenty times | 0.382 s | 0.376 s | 0.319 s | 1.20 |
 | `show`: two million structs and half a million lists of numbers printed, one on each line | 0.214 s | 0.191 s | 0.374 s | 0.57 |
+| `lookup`: three hundred million lookups in a list of records of 128 bytes, through a function that gives back a `read Record?` | 0.498 s | 0.488 s | 0.491 s | 1.01 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -313,7 +315,7 @@ Choices made in the eighteenth slice (the heap and missing values), approved on 
     them (MSVC) cannot build the output for now.
 16. **A `read int` lent where a `read int?` is expected is not compiled yet** (a pointer to a number is not a
     pointer to a number and a flag; it needs a temporary). The same with a `T*?` works, since both are one
-    pointer.
+    pointer. It is compiled since the twenty-seventh slice, with nothing made for it (choice 76).
 17. **`print(p)` with `int* p` writes the number**, as the interpreter does.
 
 Two things in the checker were found while writing these tests and are fixed since:
@@ -766,7 +768,8 @@ Choices made in the twenty-first slice (`List<T>`), approved on 12 November 2026
     changing during the loop.
 36. **`xs.get(i)` gives a look at the item, or `null`.** In compiled code the look is a flag and a copy of
     the item's bytes kept beside the statement; it owns nothing and is never freed. For that reason `get`
-    cannot stand on the right side of `&&`, `||` and `??` yet (the back end asks for a name).
+    cannot stand on the right side of `&&`, `||` and `??` yet (the back end asks for a name). Since the
+    twenty-seventh slice the look is a pointer to the item where it is, and `get` stands anywhere (76).
 37. **`indexOf`, `contains` and `sort` are compiled for integers, `bool` and text.** For structs and enums
     they waited for `==` and `compare` in the back end (there since the twenty-second slice, see 41). `sort`
     was the C library's `qsort` here; it is a stable sort since 42.
@@ -929,7 +932,40 @@ visibility) are in the decision table and are built as written there; these are 
     and says nothing.
 71. **A folder is a module only if its name can be written as a name** (letters, digits, `_`; no `-`, no
     dot in front).
-72. **A program with modules is not compiled yet**: `sg build` says so. The interpreter runs it.
+72. **A program with modules was not compiled yet**; it is since the twenty-seventh slice.
+
+Choices made in the twenty-seventh slice (modules in the back end, a `read T?` that a function gives back),
+approved on 13 November 2026:
+
+73. **A name of a module is written into the C name with each folder and its length in front**:
+    `shop.parts.Part` is `S_4shop_5parts_Part`, `stock.total` is `f_5stock_total`. A name of the root is
+    written as before (`S_Part`). No name of the root starts with a digit, so a root name and a module name
+    never meet, and the lengths keep two modules apart whatever they are called. Nothing of this is seen
+    from the language; the whole program is still one C file.
+74. **A compiled panic names the file of the module it happened in**, as the interpreter does
+    (`--> stock/functions.sg:27:12`).
+75. **`sg build` takes what `sg` takes**: a file (the root module alone) or a folder (every file in it is
+    the root module); the program is named after the file or the folder unless `-o` says otherwise. Only
+    the modules the program names are read and compiled. The `test` blocks are not compiled, as before:
+    `sg test` runs them in the interpreter.
+76. **A `read T?` is a pointer to the `T`, null when there is nothing** (decided on 13 November 2026; the
+    first form of this slice gave back a flag and a copy of the value's bytes, and was replaced). A function
+    that gives one back (`read Product? get(read string code) from this`, `return null`, `return read
+    this.products[i]`) gives back a pointer straight into what it was lent: nothing is copied, and it is
+    what would be written in C by hand. `xs.get(i)` and `map.get(key)` do the same now (36 said a copy),
+    so they can stand on the right of `&&`, `||` and `??`. `null` or a borrowed `T` given to a `read T?`
+    parameter is that pointer or no pointer, which was not compiled before (16). A `read string?` is the
+    pointer and the length of a `read string`, with the length -1 for nothing. Where a `T?` that is kept
+    is lent (`read account.limit`, a round of `for n in read maybes`), its flag is tested once, there.
+    `ref T?` stays a pointer to the flag and the value, because `null` can be written through it. A `T?`
+    that can be copied out of a `read T?` (`var copy = n`) is made there. Memory safety is the borrow
+    check's as before: the pointer cannot outlive what it points into. Measured with `lookup` (below):
+    the time of the C written by hand. Against the first form an optimised build shows no difference
+    here, since the C compiler removed the copy once the small function was inlined; a debug build of
+    the same loop went from 4.75 s to 3.66 s.
+77. **The stock and invoice example is compiled** (`sg build examples/shop`) and gives the same output as
+    in the interpreter, also under the sanitizers; `cargo test` compiles the programs of `tests/modules`
+    with the others.
 
 ## Not here yet
 
@@ -947,7 +983,7 @@ visibility) are in the decision table and are built as written there; these are 
 - Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
   in the design); threads, `shared` / `weak` / `checked` / `locked`.
-- Modules in the back end. Type aliases (`using`). Running the tests of one module only.
+- Type aliases (`using`). Running the tests of one module only.
 - A collection changed inside its own `for` through another `ref` to it is not caught (it is part of the
   borrow check); the direct forms are. Here a list is gone over by position and a map or a set as it was when
   the loop started.
@@ -967,7 +1003,7 @@ error.
 
 The back end, one piece of the language at a time, each compared with the interpreter, run under the
 sanitizers and measured against C. Every example that runs in the interpreter and has no `test` block is
-now compiled, and printing a value allocates nothing. Modules (`use`, `public`, `readonly`) are in the
-checker and the interpreter; next they go into the back end. What the back end still does not take: a `match` inside a larger
+now compiled, and printing a value allocates nothing. Modules (`use`, `public`, `readonly`) are compiled
+too, and with them the stock and invoice example. What the back end still does not take: a `match` inside a larger
 expression, and `try` or `?? return` after a value that owns memory and has no name. After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

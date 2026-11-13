@@ -1,0 +1,47 @@
+// Looking things up: a list of records of 128 bytes, and a function that gives back a look
+// at one of them or `null`. Three hundred million lookups, some of them for what is not
+// there. What comes back is a pointer into the list: no record is copied.
+struct Record {
+    long id
+    long a
+    long b
+    long c
+    long d
+    long e
+    long f
+    long g
+    long h
+    long i
+    long j
+    long k
+    long l
+    long m
+    long n
+    long weight
+}
+
+read Record? find(read List<Record> records, nint id) from records {
+    return records.get(id)
+}
+
+void main() {
+    var records = List<Record>()
+    for id in 0..1000 {
+        long x = id
+        records.add(Record { id = x, a = x, b = x, c = x, d = x, e = x, f = x, g = x, h = x, i = x, j = x, k = x, l = x, m = x, n = x, weight = x * 3 + 1 })
+    }
+    long sum = 0
+    long missing = 0
+    nint key = 0
+    for round in 0..300000000 {
+        key = (key * 5 + 7) % 1024
+        var record = find(read records, key)
+        if record is not null {
+            sum += record.weight + record.id
+        } else {
+            missing += 1
+        }
+    }
+    print(sum)
+    print(missing)
+}

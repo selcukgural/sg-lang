@@ -1,0 +1,92 @@
+// A `read T?` made from what is kept: a `T?` field, an item of a list or a map, a `ref T?`,
+// a round of a `for`, and a struct that carries one.
+struct Account {
+    string owner
+    int? limit
+    string? note
+}
+
+struct Look<from source> : Formattable {
+    read string? note
+    read int? limit
+}
+
+int orZero(read int? n) {
+    return n ?? 0
+}
+
+int size(read string? text) {
+    if text is null {
+        return -1
+    }
+    return (int)text.length()
+}
+
+int twice(read int? n) {
+    var copy = n
+    if copy is not null {
+        return copy * 2
+    }
+    return -1
+}
+
+int through(ref int? slot) {
+    var seen = orZero(read slot)
+    slot = null
+    return seen
+}
+
+int pass(read int? n) {
+    return orZero(n) + orZero(read n)
+}
+
+void main() {
+    var account = Account { owner = "ada", limit = 5, note = null }
+    print(orZero(read account.limit))
+    print(size(read account.note))
+    account.note = "hello"
+    print(size(read account.note))
+    print(twice(read account.limit))
+    print(pass(read account.limit))
+    print(through(ref account.limit))
+    print(account.limit is null)
+    print(twice(read account.limit))
+
+    var maybe = List<int?> { 1, null, 3 }
+    var sum = 0
+    for n in read maybe {
+        sum += orZero(n)
+        if n is not null {
+            sum += n
+        }
+    }
+    print(sum)
+
+    var names = List<string> { "ada", "grace" }
+    print(size(names.get(1)))
+    print(size(names.get(5)))
+    var first = names.get(0) ?? panic("there is one")
+    print(first)
+    var numbers = List<int> { 4, 5 }
+    print(orZero(numbers.get(1)))
+    print(orZero(numbers.get(2)))
+    var ages = HashMap<string, int> { {"ada", 36} }
+    print(orZero(ages.get("ada")))
+    print(orZero(ages.get("bob")))
+    var words = HashMap<int, string> { {1, "one"} }
+    print(size(words.get(1)))
+    print(size(words.get(2)))
+
+    var seven = 7
+    var look = Look { note = read account.note, limit = read seven }
+    print(look)
+    var empty = Look { note = null, limit = null }
+    print(empty)
+    print(orZero(look.limit))
+    print(size(empty.note))
+
+    // A look that may be missing stands on the right of `??` and `&&` too.
+    print(numbers.get(7) ?? numbers.get(1) ?? 0)
+    print(numbers.get(0) is not null && numbers.get(1) is not null)
+    print(names.get(3) ?? names.get(0) ?? "none")
+}

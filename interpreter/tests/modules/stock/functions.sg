@@ -21,3 +21,8 @@ public int reveal() {
 public nint partCount(read List<shop.parts.Part> parts) {
     return parts.length()
 }
+
+// Panics for an index outside the list: the message names this file.
+public int priceAt(read List<int> prices, nint index) {
+    return prices[index]
+}
