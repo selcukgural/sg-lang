@@ -1,0 +1,56 @@
+// Bits. A sieve that keeps one bit for each number below sixty-four million in a list of
+// `long`s, and then thirty million numbers written into a buffer on the stack seven bits at
+// a time and read back (the way protobuf and DWARF write a number).
+nint encode(long value, ref byte[] target) {
+    var rest = value
+    nint at = 0
+    while rest >= 0x80 {
+        target[at] = (byte)(rest & 0x7f | 0x80)
+        rest >>= 7
+        at += 1
+    }
+    target[at] = (byte)rest
+    return at + 1
+}
+
+long decode(read byte[] source) {
+    long value = 0
+    var shift = 0
+    for b in source {
+        value |= (long)(b & 0x7f) << shift
+        shift += 7
+    }
+    return value
+}
+
+void main() {
+    // A bit that is 1 says "not a prime".
+    var limit = 64000000
+    var words = List<long>()
+    for i in 0..limit / 64 {
+        words.add(0)
+    }
+    var primes = 0
+    for n in 2..limit {
+        if words[n >> 6] & 1 << (n & 63) != 0 {
+            continue
+        }
+        primes += 1
+        nint multiple = (nint)n * n
+        while multiple < limit {
+            words[multiple >> 6] |= 1 << (multiple & 63)
+            multiple += n
+        }
+    }
+    print(primes)
+
+    var buffer = byte[10]
+    long sum = 0
+    long value = 1
+    for round in 0..30000000 {
+        var length = encode(value, ref buffer)
+        sum += (decode(buffer[..length]) & 0xffff) + (long)length
+        value = value * 3 + round & 0x7fff_ffff_ffff
+    }
+    print(sum)
+}

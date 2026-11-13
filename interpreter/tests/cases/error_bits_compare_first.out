@@ -1,0 +1,4 @@
+error: operator `&` is not defined for `int` and `bool`
+  --> error_bits_compare_first.sg:3:11
+ 3 |     print(flags & (2 == 2))
+   |           ^^^^^^^^^^^^^^^^

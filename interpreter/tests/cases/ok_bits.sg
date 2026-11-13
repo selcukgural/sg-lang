@@ -1,0 +1,119 @@
+// The bit operators and the ways to write a number.
+
+struct Flags {
+    int bits
+
+    bool has(read this, int flag) {
+        return this.bits & flag != 0
+    }
+
+    void set(ref this, int flag) {
+        this.bits |= flag
+    }
+
+    void clear(ref this, int flag) {
+        this.bits &= ~flag
+    }
+}
+
+// The number of bits that are 1.
+int ones(long value) {
+    var count = 0
+    for i in 0..64 {
+        count += (int)(value >> i & 1)
+    }
+    return count
+}
+
+long mix(long seed) {
+    var x = seed
+    x ^= x << 13
+    x ^= x >> 7
+    x ^= x << 17
+    return x
+}
+
+void main() {
+    // Numbers: hex, binary, and `_` between digits.
+    print(0xff)
+    print(0xDEAD_beef)
+    print(0b1010)
+    print(1_000_000)
+    byte top = 0x80
+    print(top)
+    match top {
+        0x7f => print("below")
+        0b1000_0000 => print("the top bit")
+        _ => print("other")
+    }
+
+    // `&`, `|`, `^`, `~`
+    print(12 & 10)
+    print(12 | 10)
+    print(12 ^ 10)
+    print(~0)
+    print(~12)
+    print(-8 & 0xff)
+    byte low = 0x0f
+    print(~low)
+    print(low ^ 0xff)
+
+    // Shifts. The result has the type of the left side.
+    print(1 << 10)
+    print(-16 >> 2)
+    print(1 << 31)
+    long wide = 1 << 40
+    print(wide)
+    byte b = 0xb7
+    print(b >> 4)
+    print(b << 4)
+    print(b & 15)
+    long count = 3
+    print(1 << count)
+    print((long)b << 32 | 5)
+
+    // Tighter than a comparison, looser than `+`.
+    print(6 & 3 == 2)
+    print(1 << 2 + 1)
+    print(1 | 2 ^ 3 & 4)
+    print(8 >> 1 > 3)
+    print(5 > 4 >> 1)
+
+    // Compound assignment.
+    var x = 1
+    x <<= 4
+    print(x)
+    x >>= 2
+    print(x)
+    x |= 3
+    print(x)
+    x &= 6
+    print(x)
+    x ^= 0xf
+    print(x)
+
+    var flags = Flags { bits = 0 }
+    flags.set(0b100)
+    flags.set(0b001)
+    print(flags.has(0b100))
+    flags.clear(0b100)
+    print(flags.has(0b100))
+    print(flags.bits)
+
+    print(ones(0xff))
+    print(ones(-1))
+    print(mix(88172645463325252))
+
+    // In a type, `>>` closes two lists at once.
+    var rows = List<List<int>>()
+    rows.add(List<int> { 1 << 1, 256 >> 2 })
+    print(rows)
+    for i in 0..1 << 2 {
+        print(i)
+    }
+
+    // A line that ends with an operator goes on.
+    var both = 0xf0 |
+        0x0f
+    print(both)
+}

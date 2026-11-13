@@ -1,0 +1,4 @@
+error: `g` is not a hex digit
+  --> error_number_hex_digit.sg:2:11
+ 2 |     print(0xfg)
+   |           ^^^^

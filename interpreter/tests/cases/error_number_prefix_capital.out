@@ -1,0 +1,5 @@
+error: `0X` is written with a small letter
+  --> error_number_prefix_capital.sg:2:11
+ 2 |     print(0XFF)
+   |           ^^^^
+  hint: `0xFF`

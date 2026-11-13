@@ -1,0 +1,9 @@
+void main() {
+    byte b = 0x81
+    var by = 7
+    b >>= by
+    print(b)
+    by += 1
+    b <<= by
+    print(b)
+}

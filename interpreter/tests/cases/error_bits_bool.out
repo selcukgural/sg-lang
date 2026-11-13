@@ -1,0 +1,5 @@
+error: operator `&` is not defined for `bool` and `bool`
+  --> error_bits_bool.sg:4:11
+ 4 |     print(a & b)
+   |           ^^^^^
+  hint: for two `bool`s write `&&`

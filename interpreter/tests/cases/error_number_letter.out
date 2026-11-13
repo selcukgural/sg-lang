@@ -1,0 +1,4 @@
+error: a number cannot be followed by a letter
+  --> error_number_letter.sg:2:11
+ 2 |     print(12ab)
+   |           ^^^^

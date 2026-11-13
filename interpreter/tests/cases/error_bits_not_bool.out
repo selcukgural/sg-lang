@@ -1,0 +1,5 @@
+error: operator `~` is not defined for `bool`: it turns over the bits of an integer
+  --> error_bits_not_bool.sg:3:11
+ 3 |     print(~done)
+   |           ^^^^^
+  hint: a `bool` is turned over with `!`

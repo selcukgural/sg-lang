@@ -1,0 +1,5 @@
+error: a shift by -1 is out of range: `int` has 32 bits
+  --> error_shift_negative.sg:3:16
+ 3 |     print(x >> -1)
+   |                ^^
+  hint: the count goes from 0 to 31

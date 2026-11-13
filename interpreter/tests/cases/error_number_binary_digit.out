@@ -1,0 +1,4 @@
+error: `2` is not a binary digit
+  --> error_number_binary_digit.sg:2:11
+ 2 |     print(0b102)
+   |           ^^^^^

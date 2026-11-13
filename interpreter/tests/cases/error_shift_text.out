@@ -1,0 +1,5 @@
+error: operator `<<` is not defined for `string` and `int`
+  it shifts the bits of an integer by a count that is an integer
+  --> error_shift_text.sg:2:11
+ 2 |     print("a" << 2)
+   |           ^^^^^^^^

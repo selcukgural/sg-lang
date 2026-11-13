@@ -2,7 +2,8 @@
 //!
 //! The checker has already done the work that makes a program safe; what is left to run time
 //! are the same data-dependent failures the interpreter reports, with the same messages:
-//! overflow, division by zero, a cast that does not fit, `assert` and `panic`.
+//! overflow, a shift count outside the bits of the type, division by zero, a cast that does
+//! not fit, `assert` and `panic`.
 //!
 //! Only a part of the language is compiled so far: integers, `bool`, text, functions, structs,
 //! enums with `match` and `is`, `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
@@ -89,6 +90,11 @@ SG_COLD static _Noreturn void sg_neg_overflow(long long a, const char* ty, const
     fprintf(stderr, "panic: overflow: -(%lld) does not fit in %s\n", a, ty);
     sg_die(loc);
 }
+SG_COLD static _Noreturn void sg_shift_fail(long long n, const char* ty, int bits, const char* loc) {
+    fflush(stdout);
+    fprintf(stderr, "panic: shift by %lld is out of range: %s has %d bits\n", n, ty, bits);
+    sg_die(loc);
+}
 SG_COLD static _Noreturn void sg_div_zero(long long a, const char* op, const char* loc) {
     fflush(stdout);
     fprintf(stderr, "panic: division by zero: %lld %s 0\n", a, op);
@@ -138,7 +144,11 @@ static inline T sg_neg_##N(T a, const char* loc) { T r; if (__builtin_expect(__b
 static inline T sg_cast_##N(int64_t v, const char* loc) { T r = (T)v; if (__builtin_expect((int64_t)r != v, 0)) sg_cast_fail(v, NAME, loc); return r; } \
 static inline T sg_wadd_##N(T a, T b) { return (T)((uint64_t)a + (uint64_t)b); } \
 static inline T sg_wsub_##N(T a, T b) { return (T)((uint64_t)a - (uint64_t)b); } \
-static inline T sg_wmul_##N(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); }
+static inline T sg_wmul_##N(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
+static inline T sg_shl_##N(T a, int64_t n, const char* loc) { if (__builtin_expect((uint64_t)n >= sizeof(T) * 8, 0)) sg_shift_fail(n, NAME, (int)sizeof(T) * 8, loc); return (T)((uint64_t)a << n); } \
+static inline T sg_shr_##N(T a, int64_t n, const char* loc) { if (__builtin_expect((uint64_t)n >= sizeof(T) * 8, 0)) sg_shift_fail(n, NAME, (int)sizeof(T) * 8, loc); return (T)(a >> n); } \
+static inline T sg_wshl_##N(T a, int64_t n) { return (T)((uint64_t)a << (n & (int64_t)(sizeof(T) * 8 - 1))); } \
+static inline T sg_wshr_##N(T a, int64_t n) { return (T)(a >> (n & (int64_t)(sizeof(T) * 8 - 1))); }
 
 SG_INT(uint8_t, byte, "byte")
 SG_INT(int32_t, int, "int")
@@ -3309,12 +3319,12 @@ impl<'a> Emitter<'a> {
             | ExprKind::Widen(_, inner)
             | ExprKind::IsNull { expr: inner, .. }
             | ExprKind::IsVariant { expr: inner, .. }
-            | ExprKind::Unary(UnOp::Not, inner) => of(inner),
+            | ExprKind::Unary(UnOp::Not | UnOp::BitNot, inner) => of(inner),
             ExprKind::Unary(UnOp::Neg, inner) | ExprKind::Cast { expr: inner, .. } => of(inner).max(if self.checked { Effect::Stops } else { Effect::Reads }),
             ExprKind::Binary(op, left, right) => {
                 let own = match op {
                     BinOp::Div | BinOp::Rem => Effect::Stops,
-                    BinOp::Add | BinOp::Sub | BinOp::Mul if self.checked => Effect::Stops,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Shl | BinOp::Shr if self.checked => Effect::Stops,
                     _ => Effect::Reads,
                 };
                 own.max(of(left)).max(of(right))
@@ -3866,9 +3876,16 @@ impl<'a> Emitter<'a> {
 
     /// An operation on two integers of the same type. In a debug build `+`, `-` and `*` panic
     /// on overflow; in a release build they wrap, written with unsigned arithmetic so that it
-    /// is defined in C too. Division checks for zero in every build.
+    /// is defined in C too. Division checks for zero in every build. A shift count follows
+    /// the overflow rule: checked in a debug build, cut to the bits of the type in a release
+    /// build (what the shift of the machine does by itself). `&`, `|` and `^` cannot fail.
     fn arithmetic(&mut self, op: BinOp, ty: IntTy, left: &str, right: &str, span: Span) -> String {
+        if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
+            return format!("(({})({left} {} {right}))", int_ctype(ty), op.symbol());
+        }
         let (name, wrapping) = match op {
+            BinOp::Shl => ("shl", Some("wshl")),
+            BinOp::Shr => ("shr", Some("wshr")),
             BinOp::Add => ("add", Some("wadd")),
             BinOp::Sub => ("sub", Some("wsub")),
             BinOp::Mul => ("mul", Some("wmul")),
@@ -4165,6 +4182,11 @@ impl<'a> Emitter<'a> {
             ExprKind::Match { .. } => Err(not_yet(expr.span, "a `match` inside a larger expression")
                 .hint("give the value a name first: `var x = match ...`")),
             ExprKind::Unary(UnOp::Not, operand) => Ok(format!("(!{})", self.first(operand, head)?)),
+            // In C a `byte` becomes an `int` before `~`: the result is cut back to its type.
+            ExprKind::Unary(UnOp::BitNot, operand) => {
+                let Ty::Int(ty) = &expr.ty else { return Err(not_yet(expr.span, "this operator")) };
+                Ok(format!("(({})~({}))", int_ctype(*ty), self.first(operand, head)?))
+            }
             ExprKind::Unary(UnOp::Neg, operand) => {
                 let Ty::Int(ty) = &expr.ty else { return Err(not_yet(expr.span, "this operator")) };
                 let operand = self.first(operand, head)?;

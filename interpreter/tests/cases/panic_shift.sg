@@ -1,0 +1,8 @@
+int shifted(int value, int by) {
+    return value << by
+}
+
+void main() {
+    print(shifted(1, 31))
+    print(shifted(1, 32))
+}

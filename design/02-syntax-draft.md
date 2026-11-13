@@ -544,6 +544,44 @@ long e = a                                       // widening conversion is impli
 var f = (int)3.7                                 // 3; NaN or out of range panics
 ```
 
+### Numbers and bit operators
+
+A number can be written in hex and in binary, with `_` between digits. It is a number like any other and takes the
+type it is used as:
+
+```
+var id = byte[4] { 0xde, 0xad, 0xbe, 0xef }
+var flags = 0b1010                               // int
+var million = 1_000_000
+long wide = 0xdead_beef
+int mask = 0xffff_ffff                           // error: `0xffff_ffff` is 4294967295, which does not fit in int
+var x = 0XFF                                     // error: `0X` is written with a small letter. Hint: `0xFF`
+```
+
+The bit operators work on integers. `&`, `^` and `|` bind tighter than a comparison (not as in C and C#); among
+themselves the order is C's, with the shifts just below `+` and `-`:
+
+```
+if flags & mask == 0 { }                         // (flags & mask) == 0
+var bit = 1 << n + 1                             // 1 << (n + 1)
+flags |= 0b100                                   // also &=, ^=, <<=, >>=
+flags &= ~0b100
+if flags & 2 { }                                 // error: expected bool, found int. Hint: flags & 2 != 0
+var both = ready & done                          // error on two bools. Hint: &&
+```
+
+A shift has the type of its left side, and the count is any integer. A count below zero, or not below the bits of the
+type, follows the overflow rule; the bits that `<<` pushes out are gone in every build:
+
+```
+byte high = b >> 4                               // a byte: `>>` brings in zeros on a byte
+var half = -16 >> 2                              // -4: `>>` carries the sign on int, long and nint
+long wide = 1 << 40                              // the expected type reaches the left side: a long is shifted
+var big = 1 << 40                                // error: a shift by 40 is out of range: `int` has 32 bits
+var y = x << n                                   // n out of range: debug and tests panic; release cuts n to the bits of the type
+var z = x << (n & 31)                            // the same in every build
+```
+
 On floating-point numbers the operators behave as the hardware does, while `equals` and `compare` give a total order (C#):
 
 ```

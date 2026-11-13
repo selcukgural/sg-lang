@@ -353,6 +353,8 @@ pub enum InterpPart {
 pub enum UnOp {
     Neg,
     Not,
+    /// `~x`: every bit turned over.
+    BitNot,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -370,6 +372,11 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 impl BinOp {
@@ -388,7 +395,17 @@ impl BinOp {
             BinOp::Ge => ">=",
             BinOp::And => "&&",
             BinOp::Or => "||",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::Shl => "<<",
+            BinOp::Shr => ">>",
         }
+    }
+
+    /// `<<` and `>>`: the right side is a count, not a value of the same kind as the left.
+    pub fn is_shift(self) -> bool {
+        matches!(self, BinOp::Shl | BinOp::Shr)
     }
 
     pub fn is_comparison(self) -> bool {

@@ -1,0 +1,7 @@
+void main() {
+    var by = 3
+    by -= 4
+    long value = 1024
+    print("before")
+    print(value >> by)
+}

@@ -1,0 +1,5 @@
+error: `_` in a number stands between two digits
+  --> error_number_underscore.sg:2:11
+ 2 |     print(1__000)
+   |           ^^^^^^
+  hint: `1_000_000`

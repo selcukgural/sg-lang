@@ -1,0 +1,5 @@
+-2147483648
+panic: shift by 32 is out of range: int has 32 bits
+  --> panic_shift.sg:2:12
+ 2 |     return value << by
+   |            ^^^^^^^^^^^

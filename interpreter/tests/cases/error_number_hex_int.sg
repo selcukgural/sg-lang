@@ -1,0 +1,4 @@
+void main() {
+    int mask = 0xffff_ffff
+    print(mask)
+}

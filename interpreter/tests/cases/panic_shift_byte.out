@@ -1,0 +1,5 @@
+1
+panic: shift by 8 is out of range: byte has 8 bits
+  --> panic_shift_byte.sg:7:5
+ 7 |     b <<= by
+   |     ^^^^^^^^

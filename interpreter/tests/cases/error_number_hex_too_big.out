@@ -1,0 +1,4 @@
+error: number does not fit in any integer type
+  --> error_number_hex_too_big.sg:2:11
+ 2 |     print(0x1_0000_0000_0000_0000)
+   |           ^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: operator `^` is not defined for `bool` and `bool`
+  --> error_bits_bool_xor.sg:3:11
+ 3 |     print(a ^ false)
+   |           ^^^^^^^^^
+  hint: for two `bool`s write `!=`

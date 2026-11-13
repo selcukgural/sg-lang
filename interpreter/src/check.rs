@@ -928,6 +928,17 @@ fn known_int(expr: &Expr) -> Option<i64> {
     }
 }
 
+/// A shift count that is known before the program runs and can never be right is not left
+/// to run time.
+fn shift_count(ty: IntTy, count: &Expr) -> Res<()> {
+    let bits = ty.bits() as i64;
+    match known_int(count).filter(|by| *by < 0 || *by >= bits) {
+        Some(by) => Err(Diag::error(count.span, format!("a shift by {by} is out of range: `{}` has {bits} bits", ty.name()))
+            .hint(format!("the count goes from 0 to {}", bits - 1))),
+        None => Ok(()),
+    }
+}
+
 /// Whether a borrow of `from` (a list or an array) can stand where a slice `to` is expected.
 fn as_slice(from: &Ty, to: &Ty) -> bool {
     match (from, to) {
@@ -2098,7 +2109,16 @@ impl<'a> Checker<'a> {
                         format!("`{}=` needs an integer on the left, found `{target_ty}`", op.expect("checked").symbol()),
                     ));
                 }
-                self.typed(value, &target_ty)?;
+                match (*op, &target_ty) {
+                    // `x <<= n`: the count is any integer, as in `x << n`.
+                    (Some(op), Ty::Int(ty)) if op.is_shift() => {
+                        self.int_operand(value, None, "a shift count")?;
+                        shift_count(*ty, value)?;
+                    }
+                    _ => {
+                        self.typed(value, &target_ty)?;
+                    }
+                }
                 // A value that borrows, put into a field, an item or a variable of a type that
                 // carries a borrow.
                 if !rebinds && self.holds(&target_ty) {
@@ -2423,6 +2443,11 @@ impl<'a> Checker<'a> {
             }
             (Ty::Int(_), Ty::Int(to)) => {
                 mismatch(Some(format!("convert with `({})`; it panics if the value does not fit", to.name())))
+            }
+            // The habit from C: `if flags & 2 {`.
+            (Ty::Int(_), Ty::Bool) => {
+                let text = if matches!(expr.kind, ExprKind::Coalesce { .. }) { format!("({text})") } else { text.to_string() };
+                mismatch(Some(format!("a number is not a condition; compare it: `{text} != 0`")))
             }
             (Ty::Null, _) if matches!(expected.strip_borrow(), Ty::Nullable(_)) => Ok(()),
             (Ty::Null, _) => Err(Diag::error(expr.span, format!("`{expected}` cannot be `null`"))
@@ -2835,7 +2860,10 @@ impl<'a> Checker<'a> {
                 *ty = match wanted {
                     Some(wanted) if wanted.fits(*value as i128) => wanted,
                     Some(wanted) => {
-                        return Err(Diag::error(span, format!("{value} does not fit in {}", wanted.name())));
+                        // A number written in hex or in binary is shown as written, with its value.
+                        let written = &self.src[span.start..span.end];
+                        let shown = if written.starts_with("0x") || written.starts_with("0b") { format!("`{written}` is {value}, which") } else { value.to_string() };
+                        return Err(Diag::error(span, format!("{shown} does not fit in {}", wanted.name())));
                     }
                     None if IntTy::Int.fits(*value as i128) => IntTy::Int,
                     None => IntTy::Long,
@@ -2960,6 +2988,23 @@ impl<'a> Checker<'a> {
             ExprKind::Unary(UnOp::Not, operand) => {
                 self.typed(operand, &Ty::Bool)?;
                 Ok(Ty::Bool)
+            }
+            ExprKind::Unary(UnOp::BitNot, operand) => {
+                let like = expected.and_then(|ty| match ty {
+                    Ty::Int(ty) => Some(*ty),
+                    _ => None,
+                });
+                let found = self.operand(operand, like.map(Ty::Int).as_ref())?;
+                match found.strip_borrow() {
+                    Ty::Int(ty) => {
+                        let ty = Ty::Int(*ty);
+                        self.coerce(operand, found, &ty)?;
+                        Ok(ty)
+                    }
+                    Ty::Bool => Err(Diag::error(span, "operator `~` is not defined for `bool`: it turns over the bits of an integer")
+                        .hint("a `bool` is turned over with `!`")),
+                    other => Err(Diag::error(span, format!("operator `~` is not defined for `{other}`"))),
+                }
             }
             ExprKind::Binary(BinOp::And | BinOp::Or, left, right) => {
                 self.typed(left, &Ty::Bool)?;
@@ -3674,6 +3719,9 @@ impl<'a> Checker<'a> {
     }
 
     fn binary(&mut self, op: BinOp, left: &mut Expr, right: &mut Expr, expected: Option<&Ty>, span: Span) -> Res<Ty> {
+        if op.is_shift() {
+            return self.shift(op, left, right, expected, span);
+        }
         let wanted = if op.is_comparison() { None } else { expected.filter(|ty| matches!(ty, Ty::Int(_))) };
         let left_ty = self.operand(left, wanted)?;
         let like = match left_ty.strip_borrow() {
@@ -3724,6 +3772,15 @@ impl<'a> Checker<'a> {
             }
             (Ty::Str, Ty::Str) if op.is_comparison() => Ok(Ty::Bool),
             (Ty::Bool, Ty::Bool) if matches!(op, BinOp::Eq | BinOp::Ne) => Ok(Ty::Bool),
+            // The bit operators are for integers; two `bool`s have their own.
+            (Ty::Bool, Ty::Bool) if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) => {
+                let own = match op {
+                    BinOp::BitAnd => "&&",
+                    BinOp::BitOr => "||",
+                    _ => "!=",
+                };
+                Err(undefined().hint(format!("for two `bool`s write `{own}`")))
+            }
             (Ty::Str | Ty::Fmt, Ty::Str | Ty::Fmt) if op == BinOp::Add => {
                 Err(undefined().hint("strings are joined with `$\"{a}{b}\"`"))
             }
@@ -3733,6 +3790,23 @@ impl<'a> Checker<'a> {
             }
             _ => Err(undefined()),
         }
+    }
+
+    /// `a << n`, `a >> n`: the result has the type of `a`, and the count is any integer. The
+    /// expected type reaches `a` alone: `long x = 1 << 40` shifts a `long`.
+    fn shift(&mut self, op: BinOp, left: &mut Expr, right: &mut Expr, expected: Option<&Ty>, span: Span) -> Res<Ty> {
+        let wanted = expected.filter(|ty| matches!(ty, Ty::Int(_)));
+        let left_ty = self.operand(left, wanted)?;
+        let right_ty = self.operand(right, None)?;
+        let (Ty::Int(ty), Ty::Int(count)) = (left_ty.strip_borrow(), right_ty.strip_borrow()) else {
+            return Err(Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()))
+                .note("it shifts the bits of an integer by a count that is an integer"));
+        };
+        let (ty, count) = (*ty, *count);
+        self.coerce(left, left_ty, &Ty::Int(ty))?;
+        self.coerce(right, right_ty, &Ty::Int(count))?;
+        shift_count(ty, right)?;
+        Ok(Ty::Int(ty))
     }
 
     /// What `print`, `$"..."` and `f.write` accept: numbers, `bool`, text, a struct or an enum

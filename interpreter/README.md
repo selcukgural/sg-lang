@@ -40,9 +40,10 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters |
-| Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`. A variable keeps its type |
+| Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
-| Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x` |
+| Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x`. On integers `& \| ^ ~ << >>`; they bind tighter than a comparison, so `flags & mask == 0` tests the masked value |
+| Numbers | `42`, `0xde`, `0b1010`, and `_` between digits: `1_000_000`, `0xdead_beef` |
 | Text | `"..."` with `\n \t \r \0 \\ \" \'`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()`, `text.indexOf(':')`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string` |
 | Characters | `'+'`, `'\n'`: a `byte` |
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
@@ -55,6 +56,9 @@ Design rules that are already enforced:
 
 - Integer overflow panics in the interpreter, in tests and in a debug build; a release build wraps (Rust's
   way). `wrappingAdd` wraps in every build, `tryAdd` is checked in every build.
+- A shift count follows the same rule: below zero, or not below the bits of the type, it is a compile
+  error where it is known, a panic in the interpreter, in tests and in a debug build, and cut to the bits
+  of the type in a release build. The bits that `<<` pushes out are gone in every build.
 - `int` widens to `long` or `nint` on its own. Narrowing is written `(int)x` and panics if the value does not fit.
 - `$"..."` is not a `string`; `string text = $"..."` is an error whose hint is `.toString()`.
 - `assert` prints the expression text and, for a comparison, the value of both sides.
@@ -170,7 +174,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (117 of 390 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (122 of 416 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -214,6 +218,8 @@ Since the thirty-first slice arrays and slices: `T[N]` in a variable, a field, a
 a return type, built in its three forms, copied or moved as its items ask; `read T[]` and `ref T[]` from
 a list, an array or a range of either; `x[i]`, `length`, `get`, `indexOf`, `contains`, `==`, `print` and
 `for` on both; `text.asBytes()` and `string.fromUtf8`. The sensor window example is compiled.
+Since the thirty-second slice the bit operators (`&`, `|`, `^`, `~`, `<<`, `>>` and their assignments),
+written together with the checker and the interpreter.
 What is still missing is an error that names it (not silence): the few positions listed with the choices
 below (81, 111).
 
@@ -245,6 +251,7 @@ hand with no checks):
 | `show`: two million structs and half a million lists of numbers printed, one on each line | 0.214 s | 0.191 s | 0.374 s | 0.57 |
 | `lookup`: three hundred million lookups in a list of records of 128 bytes, through a function that gives back a `read Record?` | 0.498 s | 0.488 s | 0.491 s | 1.01 |
 | `buffer`: 32 bytes on the stack written as hex into a buffer of 64 through a `ref byte[]`, added up through a `read byte[]` and a range of it, fifteen million times | 0.280 s | 0.733 s | 0.283 s | 0.99 |
+| `bits`: a sieve below sixty-four million with one bit for each number, then thirty million numbers written seven bits at a time into a buffer on the stack and read back | 0.322 s | 0.321 s | 0.407 s | 0.79 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -297,6 +304,18 @@ into `main`, sees both lengths and removes every one of those checks, so the bui
 That is this program, not a promise: where a length is not known, the check stays, one comparison that
 is never taken. The overflow-checked build takes 2.6 times as long: the checks on `i * 2`, on the sum
 and on the cast to `byte` keep the C compiler from handling several bytes at a time.
+`bits` is the first program with the bit operators, in two halves. The sieve keeps one bit for each
+number in a list of `long`s and sets and tests it with `|=`, `&`, `<<` and `>>`: that half takes the
+time of C (0.25 s for both). A shift by `n & 63` is one instruction in both programs, and the cut of
+the count that a release build writes is the one the instruction does anyway. The other half writes a
+number seven bits at a time into ten bytes on the stack and reads it back, and there SG takes 0.06 s
+against 0.15 s. That is not the bit operators. SG tests every `target[at]` against the ten bytes, so
+the C compiler knows the loop cannot go round more than ten times; it writes the loop out, keeps the
+bytes in registers and never reads them back from memory. The C program states no such bound. With
+one line added to it (`if (at >= 10) abort();`) it takes 0.07 s. The honest reading is "the bit
+operators cost what they cost in C", and that a check can tell the C compiler something a C program
+left out; not "faster than C". The overflow-checked build takes the same time as the release build:
+the shifts by a constant and by `n & 63` need no test, and the others are one comparison.
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
@@ -1116,7 +1135,8 @@ end comes after), approved on 13 November 2026:
 102. **The sensor window example differs from the design in two lines**: the hex digit is found with
      `/ 16` and `% 16`, and the id is written in decimal, because the bit operators (`>>`, `&`) and
      hex numbers are not in the interpreter; and the average divides by `(long)this.count`, since a
-     `long` and an `nint` do not mix on their own (the design text is corrected).
+     `long` and an `nint` do not mix on their own (the design text is corrected). (Since the
+     thirty-second slice the example uses `>> 4`, `& 15` and `0xde`, as the design wrote it.)
 103. **The back end refuses arrays and slices** with the usual "not in the C back end yet". That is
      the next slice: an array as a C array inside a struct, a slice as a pointer and a length. (Done
      in the thirty-first slice: 104 to 112.)
@@ -1157,6 +1177,67 @@ Choices made in the thirty-first slice (arrays and slices in compiled code), app
 112. **The measurement is `buffer`** (above): buffers on the stack and slices onto them, against C
      that passes a pointer and a count.
 
+Choices made in the thirty-second slice (the bit operators, numbers in hex and binary; checker, interpreter and
+back end together), approved on 13 November 2026:
+
+113. **The bit operators are `&`, `|`, `^`, `~`, `<<` and `>>`, with `&=`, `|=`, `^=`, `<<=` and `>>=`,
+     on integers only.** C#'s spelling (for "every bit turned over" Rust writes `!` and Go `^`). Two
+     `bool`s have `&&`, `||` and `!=`: `a & b` on them is an error whose hint names the one that
+     fits, and `~done` points at `!`. C# and Rust also read `&` on two `bool`s as "and, without the
+     short circuit"; that second way to write the same thing is left out. `>>` is read as two `>`
+     with nothing between them, so `List<List<int>>` needs no space (C# does the same). A line that
+     ends with one of them goes on, and a line cannot start with one, as for the other operators.
+114. **`&`, `^` and `|` bind tighter than a comparison.** From loosest to tightest: `||`, `&&`,
+     `== !=`, `< <= > >=`, `|`, `^`, `&`, `<< >>`, `+ -`, `* / %`. So `flags & mask == 0` tests the
+     masked value. In C and C# the same line means `flags & (mask == 0)`, a leftover from before C
+     had `&&` that its authors called a mistake; Rust, Go, Swift and Zig read it as it is read here.
+     With C#'s order the line would be a compile error here (an `int` and a `bool`), so the choice is
+     between an error on a line that can mean only one thing and the line working. Among themselves
+     the operators keep the order of C, C# and Rust: a shift is looser than `+`, so `1 << n + 1` is
+     `1 << (n + 1)`. Go has fewer levels (`<<` and `&` with `*`, `|` and `^` with `+`), which
+     changes what that line means for a reader from C or C#. A bound of a range takes everything
+     tighter than a comparison: `for i in 0..1 << n`. Cost: none when the program runs.
+115. **`a & b`, `a | b` and `a ^ b` follow the rule of arithmetic**: the narrower side widens to the
+     other, a constant takes the type of the other side, and the result has that type. `byte & byte`
+     is a `byte`, and `~x` has the type of `x` (in C and C# both are an `int`).
+116. **A shift has the type of its left side, and the count is any integer.** `b >> 4` on a `byte`
+     is a `byte` (Rust's rule; an `int` in C and C#). The type that is expected reaches the left side
+     alone: `long wide = 1 << 40` shifts a `long`. In C `1 << 40` is an `int` shifted too far, which
+     is undefined; here `var big = 1 << 40` is a compile error (117).
+117. **The count follows the overflow rule.** A count below zero, or not below the bits of the type
+     (8, 32, 64), is a compile error where the count is known, a panic in the interpreter, in tests
+     and in a debug build ("shift by 32 is out of range: int has 32 bits"), and is cut to the bits of
+     the type in a release build. That is Rust's rule, and the cut is what the shift of the machine
+     does by itself, so a release build pays nothing for it. In C such a count is undefined. C# always
+     cuts and never tells. Go gives 0 for a count that is too large, with a test in every build, and
+     panics below zero. `x << (n & 31)` written out means the same in every build, and the test falls
+     away there too. There are no `wrapping...` and `try...` methods for shifts: the mask says it.
+118. **The bits that `<<` pushes out are gone in every build**, without a panic: that is what a shift
+     is for. `1 << 31` is the smallest `int`. Rust, C# and Go do the same.
+119. **`>>` carries the sign on `int`, `long` and `nint` and brings in zeros on `byte`**: the type
+     decides, as in C#, Rust and Go. There is no `>>>`. The shift that brings zeros into 32 or 64
+     bits comes with `uint` and `ulong`, which the design has and the interpreter does not yet.
+120. **A number can be written in hex and in binary, with `_` between digits**: `0xde`, `0b1010`,
+     `1_000_000`, `0xdead_beef`. The prefix is a small letter (`0XFF` is an error that shows the fix),
+     the hex digits may be either; there is no octal. Such a number is a number like any other: it
+     takes the type it is used as, `var x = 0xff` is an `int`, and it works as a pattern of `match`.
+     One that does not fit is an error that shows it as written, with its value: `int mask =
+     0xffff_ffff` gives "`0xffff_ffff` is 4294967295, which does not fit in int". In C# that number
+     quietly becomes a `uint`; Rust refuses it as here. The design wrote `0xde` only; `0b` and `_`
+     are added here (a dozen lines in the lexer, nothing at run time).
+121. **A number where a condition is expected gets a hint**, for the habit from C: `if flags & 2 {`
+     is "expected `bool`, found `int`" with "a number is not a condition; compare it: `flags & 2 !=
+     0`". The same hint now stands under `if n {` (the older test `error_condition_not_bool`).
+122. **In compiled code** `&`, `|`, `^` and `~` are the operators of C, cut back to the type (C turns
+     a `byte` into an `int` first). `<<` is done on the unsigned number, so that a bit moved into the
+     sign is defined in C. `>>` on a negative number relies on the C compiler carrying the sign: the
+     C standard leaves that to the compiler, and clang and gcc, which the output already needs, both
+     do. A debug build tests the count with one comparison that is never taken in a correct program.
+123. **The measurement is `bits`** (above): a sieve with one bit for each number, and numbers
+     written seven bits at a time and read back, against C with no checks.
+124. **The sensor window example is written as the design wrote it**: `source[i] >> 4`,
+     `source[i] & 15`, `0xde` (see 102). Its output did not change.
+
 ## Not here yet
 
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
@@ -1179,10 +1260,12 @@ Choices made in the thirty-first slice (arrays and slices in compiled code), app
   the loop started.
 - Lists of borrows (`List<read T>`); `reserve`, `clone`; a `Hashable`
   type with its own `equals` or `hash`.
-- `char` and `text.chars()`, `double` and the other number types.
+- `char` and `text.chars()`, `double` and the other number types. Without the unsigned ones (`uint`,
+  `ulong`) there is no shift that brings zeros into the top of 32 or 64 bits: `>>` on an `int` or a
+  `long` carries the sign, so a rotation or a hash written for unsigned numbers needs a mask by hand.
+  A number is written in decimal only (`print`, `$"..."`); there is no hex output.
 - Arrays of arrays, `read T[]?`, an array as a key, `sort` and
-  `reverse` through a `ref T[]`, `list.addAll(slice)`, looking for a run of items in a slice. The bit
-  operators (`& | ^ << >>`) and hex numbers (`0xde`).
+  `reverse` through a `ref T[]`, `list.addAll(slice)`, looking for a run of items in a slice.
 - `tryToInt` and the other `tryTo...` conversions. Overflow and cast panics print the values but not yet the
   safe alternative.
 - Freeing a long linked list recurses, the open stack-depth question from the design; here it runs on a 1 GB stack.
@@ -1199,6 +1282,8 @@ too, and with them the stock and invoice example. A `match` gives its value insi
 `try` and `?? return` stand after a value that owns memory and has no name; the few positions still refused are
 listed in 81. The test command runs on compiled code too (`sg test --compiled`). Arrays (`T[N]`) and slices
 (`read T[]`, `ref T[]`) are compiled, and a buffer on the stack takes the time of the same buffer in C.
+The bit operators and numbers in hex and binary are in the checker, the interpreter and compiled code,
+and the sensor example is written as the design wrote it.
 
-Candidates for what comes next: the bit operators and hex numbers (the sensor example as the design wrote
-it), `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases (`using`), `double`, threads.
+Candidates for what comes next: the unsigned number types (`uint`, `ulong`; hashes and rotations need
+them), `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases (`using`), `double`, threads.

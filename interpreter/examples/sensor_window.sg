@@ -36,8 +36,8 @@ struct Window {
 void toHex(read byte[] source, ref byte[] target) {
     var digits = "0123456789abcdef".asBytes()
     for i in 0..source.length() {
-        target[i * 2] = digits[source[i] / 16]
-        target[i * 2 + 1] = digits[source[i] % 16]
+        target[i * 2] = digits[source[i] >> 4]
+        target[i * 2 + 1] = digits[source[i] & 15]
     }
 }
 
@@ -58,12 +58,12 @@ void main() {
     print(window.average() ?? -1)
     print(window.values)
 
-    var id = byte[4] { 222, 173, 190, 239 }
+    var id = byte[4] { 0xde, 0xad, 0xbe, 0xef }
     var text = byte[8]
     toHex(read id, ref text)
     print(string.fromUtf8(read text) ?? panic("hex is ASCII"))
 
-    var mask = byte[4](255)
+    var mask = byte[4](0xff)
     toHex(read mask, ref text)
     print(string.fromUtf8(read text) ?? panic("hex is ASCII"))
 

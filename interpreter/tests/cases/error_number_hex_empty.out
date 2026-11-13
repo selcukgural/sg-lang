@@ -1,0 +1,5 @@
+error: `0x` needs digits after it
+  --> error_number_hex_empty.sg:2:11
+ 2 |     print(0x)
+   |           ^^
+  hint: a hex number: `0xff`

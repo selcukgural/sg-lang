@@ -1,0 +1,4 @@
+void main() {
+    var done = false
+    print(~done)
+}

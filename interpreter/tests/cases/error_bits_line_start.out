@@ -1,0 +1,5 @@
+error: a line cannot start with `&`
+  --> error_bits_line_start.sg:4:9
+ 4 |         & 3
+   |         ^
+  hint: the statement ended on the previous line; to continue it, put `&` at the end of that line

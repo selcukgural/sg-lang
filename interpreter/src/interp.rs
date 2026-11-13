@@ -743,6 +743,10 @@ impl<'a> Interp<'a> {
                 _ => unreachable!("the checker makes the operand an integer"),
             },
             ExprKind::Unary(UnOp::Not, operand) => Ok(Value::Bool(!self.condition(operand, frame)?)),
+            ExprKind::Unary(UnOp::BitNot, operand) => match strip(self.expr(operand, frame)?) {
+                Value::Int(ty, value) => Ok(Value::Int(ty, ty.wrap(!(value as i128)))),
+                _ => unreachable!("the checker makes the operand an integer"),
+            },
             ExprKind::Binary(op @ (BinOp::And | BinOp::Or), left, right) => {
                 let left_value = self.condition(left, frame)?;
                 // Short circuit: when the left side decides the result, the right side does not run.
@@ -1386,10 +1390,22 @@ fn binary(op: BinOp, left: Value, right: Value, span: Span) -> Result<Value, Dia
     }))
 }
 
-/// Overflow panics in every build; `wrappingAdd` is written to wrap on purpose.
+/// Overflow panics in every build; `wrappingAdd` is written to wrap on purpose. A shift
+/// count outside the bits of the type panics the same way; the bits that `<<` pushes out
+/// are gone without a word, since that is what a shift is for.
 fn arithmetic(op: BinOp, ty: IntTy, a: i64, b: i64, span: Span) -> Result<Value, Diag> {
     let (wide_a, wide_b) = (a as i128, b as i128);
+    if op.is_shift() && !(0..ty.bits() as i64).contains(&b) {
+        return Err(Diag::panic(span, format!("shift by {b} is out of range: {} has {} bits", ty.name(), ty.bits())));
+    }
     let result = match op {
+        // A number is kept with its sign carried up, so the bits above the type agree on
+        // both sides and `>>` brings the sign down with it.
+        BinOp::BitAnd => wide_a & wide_b,
+        BinOp::BitOr => wide_a | wide_b,
+        BinOp::BitXor => wide_a ^ wide_b,
+        BinOp::Shl => return Ok(Value::Int(ty, ty.wrap(wide_a << b))),
+        BinOp::Shr => wide_a >> b,
         BinOp::Add => wide_a + wide_b,
         BinOp::Sub => wide_a - wide_b,
         BinOp::Mul => wide_a * wide_b,

@@ -1,0 +1,5 @@
+error: a shift by 8 is out of range: `byte` has 8 bits
+  --> error_shift_assign_too_far.sg:3:11
+ 3 |     b <<= 8
+   |           ^
+  hint: the count goes from 0 to 7

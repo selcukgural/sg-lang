@@ -461,7 +461,7 @@ impl<'a> Parser<'a> {
     /// A condition or range bound: a struct literal must be parenthesized here.
     fn head_expr(&mut self, range_bound: bool) -> Res<Expr> {
         let outer = std::mem::replace(&mut self.struct_literals, false);
-        let result = if range_bound { self.binary(ADDITIVE) } else { self.expr() };
+        let result = if range_bound { self.binary(BITWISE) } else { self.expr() };
         self.struct_literals = outer;
         result
     }
@@ -594,7 +594,7 @@ impl<'a> Parser<'a> {
                     .hint("put `else` on the same line as `}`: `} else {`"));
             }
             Tok::AndAnd | Tok::OrOr | Tok::Plus | Tok::Star | Tok::Slash | Tok::Percent | Tok::Eq | Tok::Ne
-            | Tok::Lt | Tok::Le | Tok::Gt | Tok::Ge | Tok::QuestionQuestion => {
+            | Tok::Lt | Tok::Le | Tok::Gt | Tok::Ge | Tok::QuestionQuestion | Tok::Amp | Tok::Pipe | Tok::Caret | Tok::Shl => {
                 let text = self.peek().describe();
                 return Err(Diag::error(start, format!("a line cannot start with {text}"))
                     .hint(format!("the statement ended on the previous line; to continue it, put {text} at the end of that line")));
@@ -831,13 +831,19 @@ impl<'a> Parser<'a> {
         Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::Coalesce { left: Box::new(left), right: Box::new(right), on_result: false }, span })
     }
 
-    /// Same precedence as C#: `||`, `&&`, equality, comparison and `is`, additive, multiplicative.
+    /// From loosest to tightest: `||`, `&&`, equality, comparison and `is`, `|`, `^`, `&`,
+    /// shifts, additive, multiplicative. The same as C# except that `&`, `^` and `|` bind
+    /// tighter than a comparison, so `flags & mask == 0` tests the masked value.
     fn binary(&mut self, level: usize) -> Res<Expr> {
         const LEVELS: &[&[(Tok, BinOp)]] = &[
             &[(Tok::OrOr, BinOp::Or)],
             &[(Tok::AndAnd, BinOp::And)],
             &[(Tok::Eq, BinOp::Eq), (Tok::Ne, BinOp::Ne)],
             &[(Tok::Lt, BinOp::Lt), (Tok::Le, BinOp::Le), (Tok::Gt, BinOp::Gt), (Tok::Ge, BinOp::Ge)],
+            &[(Tok::Pipe, BinOp::BitOr)],
+            &[(Tok::Caret, BinOp::BitXor)],
+            &[(Tok::Amp, BinOp::BitAnd)],
+            &[(Tok::Shl, BinOp::Shl)],
             &[(Tok::Plus, BinOp::Add), (Tok::Minus, BinOp::Sub)],
             &[(Tok::Star, BinOp::Mul), (Tok::Slash, BinOp::Div), (Tok::Percent, BinOp::Rem)],
         ];
@@ -850,7 +856,12 @@ impl<'a> Parser<'a> {
                 left = self.is_test(left)?;
                 continue;
             }
-            let Some(&(_, op)) = LEVELS[level].iter().find(|(tok, _)| tok == self.peek()) else {
+            let op = if level == SHIFT && self.at_shift_right() {
+                self.bump();
+                BinOp::Shr
+            } else if let Some(&(_, op)) = LEVELS[level].iter().find(|(tok, _)| tok == self.peek()) {
+                op
+            } else {
                 return Ok(left);
             };
             self.bump();
@@ -858,6 +869,11 @@ impl<'a> Parser<'a> {
             let span = left.span.to(right.span);
             left = Expr { ty: Ty::Void, moved: false, kind: ExprKind::Binary(op, Box::new(left), Box::new(right)), span };
         }
+    }
+
+    /// `>>` is two `>` with nothing between them (see `Tok::Shl`).
+    fn at_shift_right(&self) -> bool {
+        *self.peek() == Tok::Gt && *self.peek_at(1) == Tok::Gt && self.toks[self.i].span.end == self.toks[self.i + 1].span.start
     }
 
     /// `x is null`, `x is not null`, `x is Circle(r)`, `x is not Circle`
@@ -906,6 +922,11 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let operand = self.unary()?;
                 Ok(wrap(|e| ExprKind::Unary(UnOp::Not, e), operand))
+            }
+            Tok::Tilde => {
+                self.bump();
+                let operand = self.unary()?;
+                Ok(wrap(|e| ExprKind::Unary(UnOp::BitNot, e), operand))
             }
             Tok::New => {
                 self.bump();
@@ -1235,7 +1256,9 @@ enum Tail {
 }
 
 const COMPARISON: usize = 3;
-const ADDITIVE: usize = 4;
+/// The loosest level that is not a comparison: where a range bound starts.
+const BITWISE: usize = 4;
+const SHIFT: usize = 7;
 
 /// `a.b.c` written with names only, as one text.
 pub fn dotted(expr: &Expr) -> Option<String> {
@@ -1262,6 +1285,11 @@ fn assign_op(tok: &Tok) -> Option<Option<BinOp>> {
         Tok::StarEq => Some(Some(BinOp::Mul)),
         Tok::SlashEq => Some(Some(BinOp::Div)),
         Tok::PercentEq => Some(Some(BinOp::Rem)),
+        Tok::AmpEq => Some(Some(BinOp::BitAnd)),
+        Tok::PipeEq => Some(Some(BinOp::BitOr)),
+        Tok::CaretEq => Some(Some(BinOp::BitXor)),
+        Tok::ShlEq => Some(Some(BinOp::Shl)),
+        Tok::ShrEq => Some(Some(BinOp::Shr)),
         _ => None,
     }
 }

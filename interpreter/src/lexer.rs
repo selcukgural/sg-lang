@@ -72,6 +72,18 @@ pub enum Tok {
     Bang,
     Question,
     QuestionQuestion,
+    Amp,
+    Pipe,
+    Caret,
+    Tilde,
+    /// `<<`. There is no token for `>>`: inside a type, `List<List<int>>` ends with two `>`,
+    /// so the parser reads two `>` with nothing between them as the shift.
+    Shl,
+    AmpEq,
+    PipeEq,
+    CaretEq,
+    ShlEq,
+    ShrEq,
 
     Newline,
     Eof,
@@ -120,6 +132,16 @@ impl Tok {
                 | Tok::OrOr
                 | Tok::Bang
                 | Tok::QuestionQuestion
+                | Tok::Amp
+                | Tok::Pipe
+                | Tok::Caret
+                | Tok::Tilde
+                | Tok::Shl
+                | Tok::AmpEq
+                | Tok::PipeEq
+                | Tok::CaretEq
+                | Tok::ShlEq
+                | Tok::ShrEq
                 | Tok::LParen
                 | Tok::LBracket
                 | Tok::LBrace
@@ -196,6 +218,16 @@ impl Tok {
             Tok::Bang => "!",
             Tok::Question => "?",
             Tok::QuestionQuestion => "??",
+            Tok::Amp => "&",
+            Tok::Pipe => "|",
+            Tok::Caret => "^",
+            Tok::Tilde => "~",
+            Tok::Shl => "<<",
+            Tok::AmpEq => "&=",
+            Tok::PipeEq => "|=",
+            Tok::CaretEq => "^=",
+            Tok::ShlEq => "<<=",
+            Tok::ShrEq => ">>=",
             _ => "",
         }
     }
@@ -304,30 +336,54 @@ impl<'a> Lexer<'a> {
         false
     }
 
+    /// `42`, `0xde`, `0b1010`, and `_` between digits: `1_000_000`, `0xdead_beef`.
     fn number(&mut self) -> Result<(), Diag> {
         let start = self.pos;
-        while self.at(0).is_some_and(|c| c.is_ascii_digit()) {
+        let (radix, name) = match (self.at(0), self.at(1)) {
+            (Some(b'0'), Some(b'x')) => (16, "hex "),
+            (Some(b'0'), Some(b'b')) => (2, "binary "),
+            _ => (10, ""),
+        };
+        if radix != 10 {
+            self.pos += 2;
+        }
+        let digits = self.pos;
+        while self.at(0).is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_') {
             self.pos += 1;
         }
-        if self.at(0).is_some_and(|c| c.is_ascii_alphabetic() || c == b'_') {
-            while self.at(0).is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_') {
-                self.pos += 1;
+        let span = Span::new(start, self.pos);
+        let text = &self.src[digits..self.pos];
+        if text.is_empty() {
+            let prefix = &self.src[start..digits];
+            return Err(Diag::error(span, format!("`{prefix}` needs digits after it")).hint(match radix {
+                16 => "a hex number: `0xff`",
+                _ => "a binary number: `0b1010`",
+            }));
+        }
+        if let Some(bad) = text.bytes().find(|c| *c != b'_' && !(*c as char).is_digit(radix)) {
+            let bad = bad as char;
+            if radix == 10 && (text.starts_with("0X") || text.starts_with("0B")) {
+                let lower = text[..2].to_ascii_lowercase();
+                return Err(Diag::error(span, format!("`{}` is written with a small letter", &text[..2])).hint(format!("`{lower}{}`", &text[2..])));
             }
-            return Err(Diag::error(Span::new(start, self.pos), "a number cannot be followed by a letter"));
+            return Err(match radix {
+                10 => Diag::error(span, "a number cannot be followed by a letter"),
+                _ => Diag::error(span, format!("`{bad}` is not a {name}digit")),
+            });
         }
-        if self.at(0) == Some(b'.') && self.at(1).is_some_and(|c| c.is_ascii_digit()) {
-            return Err(Diag::error(
-                Span::new(start, self.pos),
-                "fractional numbers are not in the interpreter yet",
-            ));
+        if text.starts_with('_') || text.ends_with('_') || text.contains("__") {
+            return Err(Diag::error(span, "`_` in a number stands between two digits").hint("`1_000_000`"));
         }
-        let text = &self.src[start..self.pos];
-        match text.parse::<u64>() {
+        if radix == 10 && self.at(0) == Some(b'.') && self.at(1).is_some_and(|c| c.is_ascii_digit()) {
+            return Err(Diag::error(span, "fractional numbers are not in the interpreter yet"));
+        }
+        let plain: String = text.chars().filter(|c| *c != '_').collect();
+        match u64::from_str_radix(&plain, radix) {
             Ok(value) => {
                 self.push(Tok::Int(value), start);
                 Ok(())
             }
-            Err(_) => Err(Diag::error(Span::new(start, self.pos), "number does not fit in any integer type")),
+            Err(_) => Err(Diag::error(span, "number does not fit in any integer type")),
         }
     }
 
@@ -532,6 +588,12 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         let next = self.at(1);
         let (tok, len) = match (self.bytes[start], next) {
+            (b'<', Some(b'<')) if self.at(2) == Some(b'=') => (Tok::ShlEq, 3),
+            (b'>', Some(b'>')) if self.at(2) == Some(b'=') => (Tok::ShrEq, 3),
+            (b'<', Some(b'<')) => (Tok::Shl, 2),
+            (b'&', Some(b'=')) => (Tok::AmpEq, 2),
+            (b'|', Some(b'=')) => (Tok::PipeEq, 2),
+            (b'^', Some(b'=')) => (Tok::CaretEq, 2),
             (b'=', Some(b'=')) => (Tok::Eq, 2),
             (b'=', Some(b'>')) => (Tok::FatArrow, 2),
             (b'!', Some(b'=')) => (Tok::Ne, 2),
@@ -549,6 +611,10 @@ impl<'a> Lexer<'a> {
             (b'?', _) => (Tok::Question, 1),
             (b'=', _) => (Tok::Assign, 1),
             (b'!', _) => (Tok::Bang, 1),
+            (b'&', _) => (Tok::Amp, 1),
+            (b'|', _) => (Tok::Pipe, 1),
+            (b'^', _) => (Tok::Caret, 1),
+            (b'~', _) => (Tok::Tilde, 1),
             (b'<', _) => (Tok::Lt, 1),
             (b'>', _) => (Tok::Gt, 1),
             (b'+', _) => (Tok::Plus, 1),

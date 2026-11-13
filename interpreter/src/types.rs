@@ -39,6 +39,15 @@ impl IntTy {
         }
     }
 
+    /// How many bits a value takes: what a shift count has to stay under.
+    pub fn bits(self) -> u32 {
+        match self {
+            IntTy::Byte => 8,
+            IntTy::Int => 32,
+            IntTy::Long | IntTy::Nint => 64,
+        }
+    }
+
     pub fn wrap(self, value: i128) -> i64 {
         match self {
             IntTy::Byte => value as u8 as i64,

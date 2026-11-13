@@ -1,0 +1,4 @@
+void main() {
+    var flags = 6
+    print(flags & (2 == 2))
+}

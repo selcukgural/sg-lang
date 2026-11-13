@@ -1,0 +1,4 @@
+error: a shift count must be an integer, found `bool`
+  --> error_shift_count_bool.sg:3:11
+ 3 |     x >>= true
+   |           ^^^^

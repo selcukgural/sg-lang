@@ -1,0 +1,4 @@
+error: `|=` needs an integer on the left, found `string`
+  --> error_bits_assign_text.sg:3:5
+ 3 |     name |= 1
+   |     ^^^^^^^^^

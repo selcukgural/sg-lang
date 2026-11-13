@@ -1,0 +1,4 @@
+void main() {
+    var big = 1 << 40
+    print(big)
+}

@@ -1,0 +1,23 @@
+// A release build: a shift count outside the bits of the type is cut to them, as the
+// machine does by itself. The same program panics on its first shift in a debug build and
+// in the interpreter.
+int shifted(int value, int by) {
+    return value << by
+}
+
+void main() {
+    print(shifted(1, 33))
+    var by = 3
+    by -= 4
+    long big = 1024
+    print(big >> by)
+    byte small = 0x81
+    var eight = 8
+    small <<= eight
+    print(small)
+    small >>= eight + 7
+    print(small)
+
+    // What is written out means the same in every build.
+    print(shifted(1, 33 & 31))
+}
