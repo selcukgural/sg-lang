@@ -1,0 +1,18 @@
+// A release build: a fractional number that does not fit in the integer type it is cut to
+// gives the nearest value the type holds, and `NaN` gives 0, as in Rust. A debug build and
+// the interpreter panic on the first one.
+void main() {
+    double big = 1e10
+    print((int)big)
+    print((int)-big)
+    double minus = -3.5
+    print((byte)minus)
+    double huge = 1e30
+    print((ulong)huge)
+    double zero = 0
+    print((long)(zero / zero))
+    print((long)(1 / zero))
+    float edge = 2147483648
+    print((int)edge)
+    print((int)-edge)
+}

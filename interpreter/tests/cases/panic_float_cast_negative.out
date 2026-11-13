@@ -1,0 +1,5 @@
+0
+panic: value -1.5 does not fit in uint
+  --> panic_float_cast_negative.sg:5:11
+ 5 |     print((uint)less)
+   |           ^^^^^^^^^^

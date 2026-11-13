@@ -1,0 +1,7 @@
+void main() {
+    double third = 1.0 / 3
+    assert(third * 3 == 1.0)
+    float tenth = 0.1
+    assert(tenth + 0.2 < 1)
+    assert(0.1 + 0.2 == 0.3)
+}

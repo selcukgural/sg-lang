@@ -9,6 +9,8 @@ use crate::diag::{Diag, Span};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tok {
     Int(u64),
+    /// A fractional number as written, without the `_`: `1.5`, `2e-3`.
+    Float(String),
     Str(String),
     Char(char),
     Interp(Vec<Part>),
@@ -151,6 +153,7 @@ impl Tok {
     pub fn describe(&self) -> String {
         match self {
             Tok::Int(v) => format!("`{v}`"),
+            Tok::Float(text) => format!("`{text}`"),
             Tok::Str(_) | Tok::Interp(_) => "a string".to_string(),
             Tok::Char(_) => "a character".to_string(),
             Tok::Ident(name) => format!("`{name}`"),
@@ -336,7 +339,9 @@ impl<'a> Lexer<'a> {
         false
     }
 
-    /// `42`, `0xde`, `0b1010`, and `_` between digits: `1_000_000`, `0xdead_beef`.
+    /// `42`, `0xde`, `0b1010`, and `_` between digits: `1_000_000`, `0xdead_beef`. A
+    /// fractional number has digits on both sides of the point, an exponent, or both:
+    /// `1.5`, `1e9`, `6.674_30e-11`.
     fn number(&mut self) -> Result<(), Diag> {
         let start = self.pos;
         let (radix, name) = match (self.at(0), self.at(1)) {
@@ -344,9 +349,10 @@ impl<'a> Lexer<'a> {
             (Some(b'0'), Some(b'b')) => (2, "binary "),
             _ => (10, ""),
         };
-        if radix != 10 {
-            self.pos += 2;
+        if radix == 10 {
+            return self.decimal();
         }
+        self.pos += 2;
         let digits = self.pos;
         while self.at(0).is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_') {
             self.pos += 1;
@@ -361,24 +367,89 @@ impl<'a> Lexer<'a> {
             }));
         }
         if let Some(bad) = text.bytes().find(|c| *c != b'_' && !(*c as char).is_digit(radix)) {
-            let bad = bad as char;
-            if radix == 10 && (text.starts_with("0X") || text.starts_with("0B")) {
-                let lower = text[..2].to_ascii_lowercase();
-                return Err(Diag::error(span, format!("`{}` is written with a small letter", &text[..2])).hint(format!("`{lower}{}`", &text[2..])));
-            }
-            return Err(match radix {
-                10 => Diag::error(span, "a number cannot be followed by a letter"),
-                _ => Diag::error(span, format!("`{bad}` is not a {name}digit")),
-            });
+            return Err(Diag::error(span, format!("`{}` is not a {name}digit", bad as char)));
         }
         if text.starts_with('_') || text.ends_with('_') || text.contains("__") {
             return Err(Diag::error(span, "`_` in a number stands between two digits").hint("`1_000_000`"));
         }
-        if radix == 10 && self.at(0) == Some(b'.') && self.at(1).is_some_and(|c| c.is_ascii_digit()) {
-            return Err(Diag::error(span, "fractional numbers are not in the interpreter yet"));
+        if self.at(0) == Some(b'.') && self.at(1).is_some_and(|c| c.is_ascii_digit()) {
+            return Err(Diag::error(span, format!("a {name}number has no fractional part")));
         }
         let plain: String = text.chars().filter(|c| *c != '_').collect();
         match u64::from_str_radix(&plain, radix) {
+            Ok(value) => {
+                self.push(Tok::Int(value), start);
+                Ok(())
+            }
+            Err(_) => Err(Diag::error(span, "number does not fit in any integer type")),
+        }
+    }
+
+    /// Digits and `_`; the caller checks where the `_` stand.
+    fn digits(&mut self) {
+        while self.at(0).is_some_and(|c| c.is_ascii_digit() || c == b'_') {
+            self.pos += 1;
+        }
+    }
+
+    fn decimal(&mut self) -> Result<(), Diag> {
+        let start = self.pos;
+        self.digits();
+        let mut fractional = false;
+        if self.at(0) == Some(b'.') && self.at(1).is_some_and(|c| c.is_ascii_digit()) {
+            self.pos += 1;
+            self.digits();
+            fractional = true;
+        }
+        let exponent = |c: Option<u8>| c.is_some_and(|c| c.is_ascii_digit());
+        if matches!(self.at(0), Some(b'e' | b'E'))
+            && (exponent(self.at(1)) || (matches!(self.at(1), Some(b'+' | b'-')) && exponent(self.at(2))))
+        {
+            if self.at(0) == Some(b'E') {
+                let at = Span::new(self.pos, self.pos + 1);
+                return Err(Diag::error(at, "the exponent is written with a small `e`").hint(format!(
+                    "`{}e{}`",
+                    &self.src[start..self.pos],
+                    &self.src[self.pos + 1..self.pos + 1 + self.src[self.pos + 1..].bytes().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'_')).count()]
+                )));
+            }
+            self.pos += 1;
+            if matches!(self.at(0), Some(b'+' | b'-')) {
+                self.pos += 1;
+            }
+            self.digits();
+            fractional = true;
+        }
+        let end = self.pos;
+        while self.at(0).is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_') {
+            self.pos += 1;
+        }
+        let span = Span::new(start, self.pos);
+        let text = &self.src[start..end];
+        if end != self.pos {
+            if !fractional && (text == "0" && matches!(self.bytes.get(end), Some(b'X' | b'B'))) {
+                let written = &self.src[start..self.pos];
+                let lower = written[..2].to_ascii_lowercase();
+                return Err(Diag::error(span, format!("`{}` is written with a small letter", &written[..2])).hint(format!("`{lower}{}`", &written[2..])));
+            }
+            let suffix = &self.src[end..self.pos];
+            if fractional && matches!(suffix, "f" | "d" | "F" | "D" | "m" | "M") {
+                return Err(Diag::error(span, format!("a number has no `{suffix}` at its end; it takes the type it is used as"))
+                    .hint(format!("`float x = {text}`")));
+            }
+            return Err(Diag::error(span, "a number cannot be followed by a letter"));
+        }
+        // Each run of digits: `_` only between two digits.
+        let runs = text.split(['.', 'e', '+', '-']);
+        if runs.into_iter().any(|run| run.starts_with('_') || run.ends_with('_') || run.contains("__")) {
+            return Err(Diag::error(span, "`_` in a number stands between two digits").hint("`1_000_000`"));
+        }
+        let plain: String = text.chars().filter(|c| *c != '_').collect();
+        if fractional {
+            self.push(Tok::Float(plain), start);
+            return Ok(());
+        }
+        match plain.parse::<u64>() {
             Ok(value) => {
                 self.push(Tok::Int(value), start);
                 Ok(())

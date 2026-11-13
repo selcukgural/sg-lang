@@ -3,7 +3,7 @@
 use crate::ast::*;
 use crate::diag::{Diag, Span};
 use crate::lexer::{lex, Part, Tok, Token};
-use crate::types::{IntTy, Ty};
+use crate::types::{FloatTy, IntTy, Ty};
 
 /// Words that are in the design but not in the interpreter yet. They get an explicit
 /// message instead of "unknown name".
@@ -728,8 +728,13 @@ impl<'a> Parser<'a> {
                 self.bump();
                 PatternKind::Char(value)
             }
-            Tok::Int(_) | Tok::Minus => {
+            Tok::Int(_) | Tok::Float(_) | Tok::Minus => {
                 let negative = self.eat(&Tok::Minus);
+                if let Tok::Float(_) = self.peek() {
+                    let span = start.to(self.span());
+                    return Err(Diag::error(span, "a fractional number cannot be a pattern")
+                        .note("two fractional numbers are seldom exactly equal; compare in an `if`: `if x < 0.5 { ... }`"));
+                }
                 let Tok::Int(value) = *self.peek() else { return Err(self.unexpected("a number")) };
                 let span = start.to(self.bump().span);
                 let value = if negative { -(value as i128) } else { value as i128 };
@@ -965,12 +970,12 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn cast_type(&self) -> Option<IntTy> {
+    fn cast_type(&self) -> Option<Ty> {
         let Tok::Ident(name) = self.peek_at(1) else { return None };
         if *self.peek_at(2) != Tok::RParen {
             return None;
         }
-        IntTy::from_name(name)
+        Ty::from_name(name).filter(Ty::is_number)
     }
 
     fn postfix(&mut self) -> Res<Expr> {
@@ -1068,6 +1073,10 @@ impl<'a> Parser<'a> {
             Tok::Int(value) => {
                 self.bump();
                 return int_literal(value as i128, start);
+            }
+            Tok::Float(text) => {
+                self.bump();
+                ExprKind::Float(text, FloatTy::Double)
             }
             Tok::True => {
                 self.bump();

@@ -146,12 +146,12 @@ language as it is today.
 
 ## Where it stands
 
-Working today, in the interpreter and in compiled code: integers, `bool` and text; structs,
-enums and `match`; `T*`, `T?` and `Result` with `try` and `??`; `List`, `HashMap` and `HashSet`;
-fixed-size arrays (`int[8]`) and slices (`read byte[]`); function values; ownership, moves and
-the borrow check; modules (`use`, `public`, `readonly`); `test` blocks.
+Working today, in the interpreter and in compiled code: integers, `float` and `double`, `bool` and
+text; structs, enums and `match`; `T*`, `T?` and `Result` with `try` and `??`; `List`, `HashMap`
+and `HashSet`; fixed-size arrays (`int[8]`) and slices (`read byte[]`); function values; ownership,
+moves and the borrow check; modules (`use`, `public`, `readonly`); `test` blocks.
 
-Designed but not built yet: threads and shared ownership, floating point. Generics of your own are put off. There is nothing for files or the network
+Designed but not built yet: threads and shared ownership. Generics of your own are put off. There is nothing for files or the network
 yet, no standard library, no package manager and no editor support.
 
 When the language is complete, the plan is to write a well-known, widely used program in it,

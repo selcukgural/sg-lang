@@ -1,0 +1,5 @@
+error: a number has no `f` at its end; it takes the type it is used as
+  --> error_float_suffix.sg:2:13
+ 2 |     var x = 1.5f
+   |             ^^^^
+  hint: `float x = 1.5`

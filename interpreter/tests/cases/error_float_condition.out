@@ -1,0 +1,5 @@
+error: expected `bool`, found `double`
+  --> error_float_condition.sg:3:8
+ 3 |     if x {
+   |        ^
+  hint: a number is not a condition; compare it: `x != 0`

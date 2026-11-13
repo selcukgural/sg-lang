@@ -1,0 +1,4 @@
+void main() {
+    int count = 3
+    float f = count
+}

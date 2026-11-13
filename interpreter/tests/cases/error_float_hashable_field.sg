@@ -1,0 +1,6 @@
+struct Price : Equatable, Hashable {
+    double amount
+}
+
+void main() {
+}

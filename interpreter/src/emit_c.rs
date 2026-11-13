@@ -3,14 +3,15 @@
 //! The checker has already done the work that makes a program safe; what is left to run time
 //! are the same data-dependent failures the interpreter reports, with the same messages:
 //! overflow, a shift count outside the bits of the type, division by zero, a cast that does
-//! not fit, `assert` and `panic`.
+//! not fit (from a fractional number too), `assert` and `panic`.
 //!
-//! Only a part of the language is compiled so far: integers, `bool`, text, functions, structs,
+//! Only a part of the language is compiled so far: integers, `float` and `double`, `bool`, text, functions, structs,
 //! enums with `match` and `is`, `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
 //! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, and `print`. Anything else
 //! is an error that names what is missing, so nothing is compiled wrongly in silence.
 //!
-//! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`); a
+//! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`), and
+//! `float` and `double` are C's, computed with no fused multiply-add (see `RUNTIME`); a
 //! struct is a C struct passed by value; `read T` / `ref T` are pointers; a `string` is its
 //! bytes, a length and a capacity, and a `read string` is a pointer and a length. A `T*` is a
 //! pointer to one `malloc`ed `T`. A `T*?` is the same pointer, where `NULL` is `null`: it
@@ -55,12 +56,13 @@ use std::fmt::Write as _;
 use crate::ast::*;
 use crate::diag::{Diag, Span};
 use crate::source::Sources;
-use crate::types::{IntTy, Ty};
+use crate::types::{FloatTy, IntTy, Ty};
 
 type Res<T> = Result<T, Diag>;
 
 /// What every compiled program starts with: the checks, written once.
-const RUNTIME: &str = r#"#include <stdarg.h>
+const RUNTIME: &str = r#"#include <math.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -71,6 +73,13 @@ const RUNTIME: &str = r#"#include <stdarg.h>
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wparentheses-equality"
 #pragma clang diagnostic ignored "-Wgnu-statement-expression"
+#endif
+
+/* A fractional operation is rounded on its own, as the interpreter does it: `a * b + c` is
+   never one fused instruction. gcc does not read this line; `sg build` passes
+   `-ffp-contract=off` for it. */
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
 #endif
 
 /* A panic is never the usual path: its code is kept out of the way of the code that runs. */
@@ -148,6 +157,81 @@ SG_COLD static _Noreturn void sg_assert_fail_b(const char* text, bool l, bool r,
     sg_die(loc);
 }
 
+/* A fractional number as text: the fewest digits that read back as the same number (as a
+   `float` when `single`), laid out as JavaScript does it: `0.1`, `100`, `1.5e+21`, `1e-7`.
+   Writes at most 32 bytes into `out` and gives how many. */
+static int sg_shortest(char* out, double v, bool single) {
+    if (v != v) { memcpy(out, "NaN", 3); return 3; }
+    if (isinf(v)) { if (v > 0) { memcpy(out, "Infinity", 8); return 8; } memcpy(out, "-Infinity", 9); return 9; }
+    if (v == 0) { if (signbit(v)) { memcpy(out, "-0", 2); return 2; } out[0] = '0'; return 1; }
+    char written[40];
+    int most = single ? 9 : 17;
+    for (int p = 1; p <= most; p++) {
+        snprintf(written, sizeof written, "%.*e", p - 1, v);
+        if (single ? strtof(written, NULL) == (float)v : strtod(written, NULL) == v) break;
+    }
+    bool negative = written[0] == '-';
+    const char* at = written + negative;
+    char digits[24];
+    int count = 0, n = 0;
+    while (*at != 'e') { if (*at != '.') digits[count++] = *at; at++; }
+    int point = atoi(at + 1) + 1;
+    while (count > 1 && digits[count - 1] == '0') count--;
+    if (negative) out[n++] = '-';
+    if (count <= point && point <= 21) {
+        memcpy(out + n, digits, (size_t)count); n += count;
+        for (int i = count; i < point; i++) out[n++] = '0';
+    } else if (0 < point && point <= 21) {
+        memcpy(out + n, digits, (size_t)point); n += point;
+        out[n++] = '.';
+        memcpy(out + n, digits + point, (size_t)(count - point)); n += count - point;
+    } else if (-6 < point && point <= 0) {
+        out[n++] = '0'; out[n++] = '.';
+        for (int i = 0; i < -point; i++) out[n++] = '0';
+        memcpy(out + n, digits, (size_t)count); n += count;
+    } else {
+        out[n++] = digits[0];
+        if (count > 1) { out[n++] = '.'; memcpy(out + n, digits + 1, (size_t)(count - 1)); n += count - 1; }
+        n += snprintf(out + n, 8, "e%c%d", point - 1 < 0 ? '-' : '+', abs(point - 1));
+    }
+    return n;
+}
+SG_COLD static void sg_err_float(double v, bool single) {
+    char text[40];
+    int n = sg_shortest(text, v, single);
+    fwrite(text, 1, (size_t)n, stderr);
+}
+SG_COLD static _Noreturn void sg_fcast_fail(double v, bool single, const char* ty, const char* loc) {
+    fflush(stdout);
+    fputs("panic: value ", stderr);
+    sg_err_float(v, single);
+    fprintf(stderr, " does not fit in %s\n", ty);
+    sg_die(loc);
+}
+SG_COLD static _Noreturn void sg_assert_fail_fd(const char* text, double l, double r, bool single, const char* loc) {
+    fflush(stdout);
+    fprintf(stderr, "panic: assert failed: %s\n  left: ", text);
+    sg_err_float(l, single);
+    fputs("\n  right: ", stderr);
+    sg_err_float(r, single);
+    fputs("\n", stderr);
+    sg_die(loc);
+}
+SG_COLD static _Noreturn void sg_assert_fail_d(const char* text, double l, double r, const char* loc) { sg_assert_fail_fd(text, l, r, false, loc); }
+SG_COLD static _Noreturn void sg_assert_fail_f(const char* text, double l, double r, const char* loc) { sg_assert_fail_fd(text, l, r, true, loc); }
+/* `equals` and `compare` on fractional numbers: a total order where `NaN` equals itself and
+   comes first, and `-0.0` equals `0.0`. A `float` comes in as the `double` that holds it. */
+static inline bool sg_feq(double a, double b) { return a == b || (a != a && b != b); }
+static inline int32_t sg_fcmp(double a, double b) {
+    if (a != a) return b != b ? 0 : -1;
+    if (b != b) return 1;
+    return (a > b) - (a < b);
+}
+/* The whole numbers a type holds, as the powers of two at its ends: `lo <= t < hi`. */
+#define SG_LO(T) ((T)-1 < 0 ? -__builtin_ldexp(1.0, (int)sizeof(T) * 8 - 1) : 0.0)
+#define SG_HI(T) ((T)-1 < 0 ? __builtin_ldexp(1.0, (int)sizeof(T) * 8 - 1) : __builtin_ldexp(1.0, (int)sizeof(T) * 8))
+#define SG_MAX(T) ((T)-1 < 0 ? (T)((((uint64_t)1) << (sizeof(T) * 8 - 1)) - 1) : (T)-1)
+
 /* One set of checked operations for each integer type. Overflow is caught by the compiler's
    own overflow builtins: one branch that is never taken in a correct program. */
 #define SG_INT(T, N, NAME) \
@@ -164,6 +248,8 @@ static inline T sg_rem_##N(T a, T b, const char* loc) { \
     return a % b; } \
 static inline T sg_neg_##N(T a, const char* loc) { T r; if (__builtin_expect(__builtin_sub_overflow((T)0, a, &r), 0)) sg_neg_overflow(a, NAME, loc); return r; } \
 static inline T sg_cast_##N(__int128 v, const char* loc) { T r = (T)v; if (__builtin_expect((__int128)r != v, 0)) sg_cast_fail(v, NAME, loc); return r; } \
+static inline T sg_fcast_##N(double v, bool single, const char* loc) { double t = __builtin_trunc(v); if (__builtin_expect(!(t >= SG_LO(T) && t < SG_HI(T)), 0)) sg_fcast_fail(v, single, NAME, loc); return (T)t; } \
+static inline T sg_sat_##N(double v) { double t = __builtin_trunc(v); if (t >= SG_LO(T) && t < SG_HI(T)) return (T)t; if (v != v) return 0; return v < 0 ? (T)SG_LO(T) : SG_MAX(T); } \
 static inline T sg_wadd_##N(T a, T b) { return (T)((uint64_t)a + (uint64_t)b); } \
 static inline T sg_wsub_##N(T a, T b) { return (T)((uint64_t)a - (uint64_t)b); } \
 static inline T sg_wmul_##N(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
@@ -405,6 +491,14 @@ static void sg_put_int(sg_string* out, long long value) {
 }
 static void sg_put_uint(sg_string* out, unsigned long long value) {
     sg_put_digits(out, value, false);
+}
+static void sg_put_double(sg_string* out, double value) {
+    char text[40];
+    sg_put(out, text, sg_shortest(text, value, false));
+}
+static void sg_put_float(sg_string* out, float value) {
+    char text[40];
+    sg_put(out, text, sg_shortest(text, value, true));
 }
 /* Where a struct, an enum or a collection is written before it is printed. One block for the
    whole program: a statement writes above what is there and gives the room back when it is
@@ -874,6 +968,39 @@ fn int_literal(value: i128, ty: IntTy) -> String {
     }
 }
 
+fn float_ctype(ty: FloatTy) -> &'static str {
+    match ty {
+        FloatTy::Float => "float",
+        FloatTy::Double => "double",
+    }
+}
+
+/// A fractional number in C, in its type: `1.5`, `1e9`, `2.0f`. A whole number made
+/// fractional by the checker gets its point.
+fn float_literal(text: &str, ty: FloatTy) -> String {
+    let point = if text.contains(['.', 'e']) { "" } else { ".0" };
+    let suffix = if ty == FloatTy::Float { "f" } else { "" };
+    format!("({text}{point}{suffix})")
+}
+
+/// The C function that writes a fractional number into a text.
+fn float_put(ty: FloatTy) -> &'static str {
+    match ty {
+        FloatTy::Float => "sg_put_float",
+        FloatTy::Double => "sg_put_double",
+    }
+}
+
+/// The C name of a math function on the type: `sqrt`, `sqrtf`.
+fn float_fn(name: &str, ty: FloatTy) -> String {
+    let base = match name {
+        "abs" => "fabs",
+        "truncate" => "trunc",
+        other => other,
+    };
+    if ty == FloatTy::Float { format!("{base}f") } else { base.to_string() }
+}
+
 /// How `printf` and the writing helpers take a number of this type: as it is, signed or not.
 fn int_shown(ty: IntTy) -> (&'static str, &'static str, &'static str) {
     if ty.signed() {
@@ -934,6 +1061,7 @@ fn is_text_behind_pointer(ty: &Ty) -> bool {
 fn mangle(ty: &Ty) -> Option<String> {
     Some(match ty {
         Ty::Int(ty) => ty.name().to_string(),
+        Ty::Float(ty) => ty.name().to_string(),
         Ty::Bool => "bool".to_string(),
         Ty::Str => "string".to_string(),
         Ty::Struct(name) => format!("S_{}", cname(name)),
@@ -1008,7 +1136,7 @@ fn may_leave(expr: &Expr) -> bool {
     let any = |list: &mut dyn Iterator<Item = &Expr>| list.filter(|inner| may_leave(inner)).count() > 0;
     match &expr.kind {
         ExprKind::Try { .. } | ExprKind::Return(_) | ExprKind::Match { .. } => true,
-        ExprKind::Int(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) => false,
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) => false,
         ExprKind::Array { args, items, .. } => any(&mut args.iter().chain(items.iter().flatten())),
         ExprKind::AsSlice(inner) => may_leave(inner),
         ExprKind::Field { recv: inner, .. }
@@ -1276,6 +1404,7 @@ impl<'a> Emitter<'a> {
         let ty = flat(ty);
         Ok(match ty {
             Ty::Int(ty) => int_ctype(*ty).to_string(),
+            Ty::Float(ty) => float_ctype(*ty).to_string(),
             Ty::Bool => "bool".to_string(),
             Ty::Void => "void".to_string(),
             // A `Formatter` is the text being written.
@@ -1652,7 +1781,7 @@ impl<'a> Emitter<'a> {
                 let params = params.iter().map(|param| self.written(param)).collect::<Res<Vec<Ty>>>()?;
                 Ty::Func(params, Box::new(self.written(ret)?))
             }
-            (Some(base @ (Ty::Int(_) | Ty::Bool | Ty::Void | Ty::Str | Ty::Formatter)), []) => base,
+            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Void | Ty::Str | Ty::Formatter)), []) => base,
             (None, []) => match self.full(&ty.name, ty.span) {
                 Some(full) if self.structs.contains_key(full.as_str()) => Ty::Struct(full),
                 Some(full) => Ty::Enum(full),
@@ -1748,6 +1877,9 @@ impl<'a> Emitter<'a> {
             Ty::Int(ty) => {
                 let (_, cast, put) = int_shown(*ty);
                 let _ = write!(body, "{put}(out, ({cast})*v);");
+            }
+            Ty::Float(ty) => {
+                let _ = write!(body, "{}(out, *v);", float_put(*ty));
             }
             Ty::Bool => body.push_str("if (*v) sg_put(out, \"true\", 4); else sg_put(out, \"false\", 5);"),
             Ty::Str => body.push_str("sg_put_quoted(out, sg_view(v));"),
@@ -1876,6 +2008,7 @@ impl<'a> Emitter<'a> {
         let mut body = String::new();
         match ty {
             Ty::Int(_) | Ty::Bool => body.push_str("return *a == *b;"),
+            Ty::Float(_) => body.push_str("return sg_feq(*a, *b);"),
             Ty::Str => body.push_str("return sg_eq(sg_view(a), sg_view(b));"),
             Ty::Ptr(inner) => {
                 let _ = write!(body, "return (*a == NULL) == (*b == NULL) && (*a == NULL || {}(*a, *b));", self.equaler(inner, span)?);
@@ -2021,6 +2154,7 @@ impl<'a> Emitter<'a> {
             "index" => {
                 let (given, equal) = match &**item {
                     Ty::Int(_) | Ty::Bool => (held.clone(), "v.ptr[i] == item".to_string()),
+                    Ty::Float(_) => (held.clone(), "sg_feq(v.ptr[i], item)".to_string()),
                     Ty::Str => ("sg_str".to_string(), "sg_eq(sg_view(&v.ptr[i]), item)".to_string()),
                     _ => (format!("{held} const*"), format!("{}(&v.ptr[i], item)", self.equaler(item, span)?)),
                 };
@@ -2220,6 +2354,7 @@ impl<'a> Emitter<'a> {
             "index" => {
                 let (given, equal) = match &**item {
                     Ty::Int(_) | Ty::Bool => (held.clone(), "v->ptr[i] == item".to_string()),
+                    Ty::Float(_) => (held.clone(), "sg_feq(v->ptr[i], item)".to_string()),
                     Ty::Str => ("sg_str".to_string(), "sg_eq(sg_view(&v->ptr[i]), item)".to_string()),
                     // Any other item is compared through a pointer, by the helper of its type.
                     _ => (format!("{held} const*"), format!("{}(&v->ptr[i], item)", self.equaler(item, span)?)),
@@ -2234,6 +2369,7 @@ impl<'a> Emitter<'a> {
             "sort" => {
                 let compare = match &**item {
                     Ty::Int(_) => format!("{held} x = *(const {held}*)a, y = *(const {held}*)b; return (x > y) - (x < y);"),
+                    Ty::Float(_) => format!("return sg_fcmp(*(const {held}*)a, *(const {held}*)b);"),
                     Ty::Str => "return sg_cmp(sg_view((const sg_string*)a), sg_view((const sg_string*)b));".to_string(),
                     Ty::Struct(owner) if self.own_method(owner, "compare") => format!("return f_{}_compare(({held}*)a, ({held}*)b);", cname(owner)),
                     _ => return Err(not_yet(span, &format!("putting the items of a `{list}` in order"))),
@@ -2648,8 +2784,11 @@ impl<'a> Emitter<'a> {
                         let _ = writeln!(out, "{pad}{place} = {new};");
                     }
                     Some(op) => {
-                        let Ty::Int(ty) = held else { return Err(not_yet(stmt.span, "this assignment")) };
-                        let operation = self.arithmetic(*op, ty, &place, &new, stmt.span);
+                        let operation = match held {
+                            Ty::Int(ty) => self.arithmetic(*op, ty, &place, &new, stmt.span),
+                            Ty::Float(ty) => fractional(*op, ty, &place, &new),
+                            _ => return Err(not_yet(stmt.span, "this assignment")),
+                        };
                         let _ = writeln!(out, "{pad}{place} = {operation};");
                     }
                 }
@@ -3375,7 +3514,7 @@ impl<'a> Emitter<'a> {
         let of = |inner: &Expr| self.effect(inner);
         let all = |list: &mut dyn Iterator<Item = &Expr>| list.map(|inner| self.effect(inner)).max().unwrap_or(Effect::Reads);
         match &expr.kind {
-            ExprKind::Int(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) => Effect::Reads,
+            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) => Effect::Reads,
             ExprKind::Field { recv: inner, .. }
             | ExprKind::New(inner)
             | ExprKind::Load(inner)
@@ -3620,6 +3759,16 @@ impl<'a> Emitter<'a> {
         format!("int64_t {temp} = sg_scratch.len; {shower}(&sg_scratch, {at}); int64_t {temp}n = sg_scratch.len - {temp};")
     }
 
+    /// A fractional number inside a formatted line: written as text on a line of its own,
+    /// so it is computed in its turn, and given to `printf` as that text.
+    fn float_text(&mut self, ty: FloatTy, value: &str, format: &mut String, values: &mut Vec<String>) {
+        let temp = self.temp();
+        self.pre.push(format!("char {temp}[40]; int {temp}n = sg_shortest({temp}, {value}, {});", ty == FloatTy::Float));
+        format.push_str("%.*s");
+        values.push(format!("{temp}n"));
+        values.push(temp);
+    }
+
     /// One value inside a formatted line.
     fn formatted(&mut self, expr: &'a Expr, format: &mut String, values: &mut Vec<String>) -> Res<()> {
         if let ExprKind::Str(text) = &expr.kind {
@@ -3649,6 +3798,7 @@ impl<'a> Emitter<'a> {
                     format.push_str(shown);
                     values.push(format!("({cast})({place})"));
                 }
+                Ty::Float(ty) => self.float_text(*ty, &place, format, values),
                 Ty::Bool => {
                     format.push_str("%s");
                     values.push(format!("({place}) ? \"true\" : \"false\""));
@@ -3678,6 +3828,7 @@ impl<'a> Emitter<'a> {
                 format.push_str(shown);
                 values.push(format!("({cast})({value})"));
             }
+            Ty::Float(ty) => self.float_text(*ty, &value, format, values),
             Ty::Bool => {
                 format.push_str("%s");
                 values.push(format!("({value}) ? \"true\" : \"false\""));
@@ -3722,6 +3873,8 @@ impl<'a> Emitter<'a> {
             }
             let sides = match left.ty.strip_borrow() {
                 Ty::Int(_) => Some(("sg_assert_fail_i", "__int128")),
+                Ty::Float(FloatTy::Double) => Some(("sg_assert_fail_d", "double")),
+                Ty::Float(FloatTy::Float) => Some(("sg_assert_fail_f", "double")),
                 Ty::Bool => Some(("sg_assert_fail_b", "bool")),
                 Ty::Str => Some(("sg_assert_fail_s", "")),
                 _ => None,
@@ -3990,6 +4143,7 @@ impl<'a> Emitter<'a> {
         let head = std::mem::replace(&mut self.head, false);
         match &expr.kind {
             ExprKind::Int(value, ty) => Ok(int_literal(*value, *ty)),
+            ExprKind::Float(text, ty) => Ok(float_literal(text, *ty)),
             ExprKind::Bool(value) => Ok(value.to_string()),
             // A constant is a `string` with no capacity: nothing is allocated and nothing freed.
             ExprKind::Str(text) => Ok(format!("SG_LIT({}, {})", c_string(text), text.len())),
@@ -4107,7 +4261,7 @@ impl<'a> Emitter<'a> {
                 let fallback = fallback?;
                 let fallback = match (before == (self.pre.len(), self.post.len()), &right.ty) {
                     (true, _) => fallback,
-                    (false, Ty::Int(_) | Ty::Bool) => self.enclosed(before, fallback, &right.ty, right.span)?,
+                    (false, Ty::Int(_) | Ty::Float(_) | Ty::Bool) => self.enclosed(before, fallback, &right.ty, right.span)?,
                     // Any other value could point at what was made for it.
                     (false, _) => return Err(not_yet(right.span, "a value that needs a temporary on the right of `??`").hint("give it a name first")),
                 };
@@ -4171,7 +4325,10 @@ impl<'a> Emitter<'a> {
                 exit.push(format!("return {returned};"));
                 self.open(&inner.ty, &temp, value, exit, inner.span)
             }
-            ExprKind::Widen(ty, inner) => Ok(format!("(({}){})", int_ctype(*ty), self.first(inner, head)?)),
+            ExprKind::Widen(ty, inner) => {
+                let ctype = self.ctype(ty, expr.span)?;
+                Ok(format!("(({ctype}){})", self.first(inner, head)?))
+            }
             // `read limit` with `int? limit`: the flag is tested here, and what is lent is a
             // pointer to the number or no pointer.
             ExprKind::Borrow { expr: inner, .. } if lent_option(&expr.ty).is_some() => {
@@ -4255,6 +4412,7 @@ impl<'a> Emitter<'a> {
                 let Ty::Int(ty) = &expr.ty else { return Err(not_yet(expr.span, "this operator")) };
                 Ok(format!("(({})~({}))", int_ctype(*ty), self.first(operand, head)?))
             }
+            ExprKind::Unary(UnOp::Neg, operand) if matches!(expr.ty, Ty::Float(_)) => Ok(format!("(-{})", self.first(operand, head)?)),
             ExprKind::Unary(UnOp::Neg, operand) => {
                 let Ty::Int(ty) = &expr.ty else { return Err(not_yet(expr.span, "this operator")) };
                 let operand = self.first(operand, head)?;
@@ -4315,20 +4473,37 @@ impl<'a> Emitter<'a> {
                 let (values, names) = self.two(left, right, head)?;
                 let (left, right) = (&values[0], &values[1]);
                 match (&operands, op.is_comparison()) {
-                    (Ty::Int(_) | Ty::Bool, true) => Ok(sequence(&names, format!("({left} {} {right})", op.symbol()))),
+                    (Ty::Int(_) | Ty::Float(_) | Ty::Bool, true) => Ok(sequence(&names, format!("({left} {} {right})", op.symbol()))),
                     (Ty::Int(ty), false) => Ok(sequence(&names, self.arithmetic(*op, *ty, left, right, expr.span))),
+                    (Ty::Float(ty), false) => Ok(sequence(&names, fractional(*op, *ty, left, right))),
                     (other, _) => Err(not_yet(expr.span, &format!("`{}` on `{other}`", op.symbol()))),
                 }
             }
             // A narrowing conversion follows the overflow rule: checked in a debug build, cut
             // to size in a release build.
+            // From a fractional number to an integer: the fraction is dropped, and a value
+            // that does not fit (`NaN` too) panics in a debug build; a release build gives the
+            // nearest value the type holds, and 0 for `NaN`, as Rust does.
             ExprKind::Cast { ty, expr: inner } => {
+                let from = inner.ty.strip_borrow().clone();
                 let inner = self.first(inner, head)?;
-                if !self.checked {
-                    return Ok(format!("(({})({inner}))", int_ctype(*ty)));
+                match (ty, from) {
+                    (Ty::Int(to), Ty::Float(from)) => {
+                        if !self.checked {
+                            return Ok(format!("sg_sat_{}((double)({inner}))", int_name(*to)));
+                        }
+                        let loc = self.loc(expr.span);
+                        Ok(format!("sg_fcast_{}((double)({inner}), {}, {loc})", int_name(*to), from == FloatTy::Float))
+                    }
+                    (Ty::Int(to), _) => {
+                        if !self.checked {
+                            return Ok(format!("(({})({inner}))", int_ctype(*to)));
+                        }
+                        let loc = self.loc(expr.span);
+                        Ok(format!("sg_cast_{}((__int128)({inner}), {loc})", int_name(*to)))
+                    }
+                    (to, _) => Ok(format!("(({})({inner}))", self.ctype(to, expr.span)?)),
                 }
-                let loc = self.loc(expr.span);
-                Ok(format!("sg_cast_{}((__int128)({inner}), {loc})", int_name(*ty)))
             }
             ExprKind::Index { kind: IndexKind::List | IndexKind::Map | IndexKind::Array, .. } => self.lvalue(expr),
             // A borrow of a list or of an array, used as a window onto all of it.
@@ -4667,7 +4842,7 @@ impl<'a> Emitter<'a> {
                     let before = self.mark();
                     let address = self.list_address(recv)?;
                     let Ty::List(item) = &list else { unreachable!("it is a list") };
-                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Bool | Ty::Str);
+                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Str);
                     let called = if by_pointer {
                         format!("{helper}({address}, {})", self.pointer(&args[0])?)
                     } else {
@@ -4711,7 +4886,7 @@ impl<'a> Emitter<'a> {
                     };
                     let before = self.mark();
                     let window = self.window(recv)?;
-                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Bool | Ty::Str);
+                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Str);
                     let called = if by_pointer {
                         format!("{helper}({window}, {})", self.pointer(&args[0])?)
                     } else {
@@ -4802,6 +4977,20 @@ impl<'a> Emitter<'a> {
                         _ => format!("({{ {ctype} {temp}a = {}, {temp}b = {}; (int32_t)(({temp}a > {temp}b) - ({temp}a < {temp}b)); }})", values[0], values[1]),
                     }))
                 }
+                Callee::Plain if matches!(name.as_str(), "equals" | "compare") && matches!(recv.ty.strip_borrow(), Ty::Float(_)) => {
+                    let (values, names) = self.two(recv, &args[0], head)?;
+                    let helper = if name == "equals" { "sg_feq" } else { "sg_fcmp" };
+                    Ok(sequence(&names, format!("{helper}({}, {})", values[0], values[1])))
+                }
+                Callee::Plain if matches!(recv.ty, Ty::Float(_)) && matches!(name.as_str(), "abs" | "sqrt" | "floor" | "ceil" | "round" | "truncate" | "isNaN" | "isInfinite") => {
+                    let Ty::Float(ty) = recv.ty else { unreachable!("tested above") };
+                    let value = self.first(recv, head)?;
+                    Ok(match name.as_str() {
+                        "isNaN" => format!("(isnan({value}) != 0)"),
+                        "isInfinite" => format!("(isinf({value}) != 0)"),
+                        _ => format!("{}({value})", float_fn(name, ty)),
+                    })
+                }
                 Callee::Plain if name == "toString" => {
                     let (format, values) = self.format(recv)?;
                     Ok(format!("sg_format({}{values})", c_string(&format)))
@@ -4842,6 +5031,15 @@ impl<'a> Emitter<'a> {
             },
             _ => Err(not_yet(expr.span, "this expression")),
         }
+    }
+}
+
+/// `+`, `-`, `*`, `/` and `%` on fractional numbers, as the hardware does them: nothing to
+/// check, a division by zero gives an infinity or `NaN`. `%` is C's `fmod`.
+fn fractional(op: BinOp, ty: FloatTy, left: &str, right: &str) -> String {
+    match op {
+        BinOp::Rem => format!("{}({left}, {right})", float_fn("fmod", ty)),
+        _ => format!("({left} {} {right})", op.symbol()),
     }
 }
 

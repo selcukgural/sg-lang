@@ -1,0 +1,4 @@
+void main() {
+    double big = 1e10
+    print((int)big)
+}

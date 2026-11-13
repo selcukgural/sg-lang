@@ -1,0 +1,3 @@
+void main() {
+    var seen = HashMap<double, int>()
+}

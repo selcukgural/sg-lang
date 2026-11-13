@@ -1,7 +1,8 @@
 #!/bin/sh
 # Compiles each program three ways and prints the best of five runs of each:
 #   SG as a release build (overflow wraps), SG with overflow checked, and the C written by
-#   hand. All three go through `cc -O2`. Run from the `interpreter` folder:
+#   hand. All three go through `cc -O2`, without fused multiply-add (SG's rule for fractional
+#   numbers). Run from the `interpreter` folder:
 #     sh bench/run.sh
 set -e
 cargo build --release --quiet
@@ -22,12 +23,12 @@ PY
 }
 
 printf "%-10s %12s %12s %10s %14s\n" program "release (s)" "checked (s)" "C (s)" "release / C"
-for name in fib primes collatz words list expr parse vector counts show lookup buffer bits hash; do
+for name in fib primes collatz words list expr parse vector counts show lookup buffer bits hash nbody; do
     ./target/release/sg build "bench/$name.sg" --release -o "$out/$name-release"
     # The checked build, optimised like the others, to see what the check alone costs.
     ./target/release/sg emit-c "bench/$name.sg" > "$out/$name-checked.c"
-    cc -std=c11 -O2 -o "$out/$name-checked" "$out/$name-checked.c"
-    cc -std=c11 -O2 -o "$out/$name-c" "bench/$name.c"
+    cc -std=c11 -O2 -ffp-contract=off -o "$out/$name-checked" "$out/$name-checked.c" -lm
+    cc -std=c11 -O2 -ffp-contract=off -o "$out/$name-c" "bench/$name.c" -lm
     [ "$("$out/$name-release")" = "$("$out/$name-c")" ] || { echo "$name: the two programs print different things"; exit 1; }
     release=$(best "$out/$name-release")
     checked=$(best "$out/$name-checked")

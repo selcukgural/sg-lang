@@ -1,0 +1,5 @@
+error: expected `float`, found `int`
+  --> error_float_from_int.sg:3:15
+ 3 |     float f = count
+   |               ^^^^^
+  hint: a `float` holds whole numbers exactly up to 2^24, and `int` goes past that; convert with `(float)`, which rounds

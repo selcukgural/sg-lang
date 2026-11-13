@@ -1,0 +1,4 @@
+void main() {
+    float big = 16777216
+    assert(big + 1 > big)
+}

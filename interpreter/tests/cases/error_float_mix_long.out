@@ -1,0 +1,5 @@
+error: `long` and `double` do not mix: a `double` does not hold every `long` exactly
+  --> error_float_mix_long.sg:4:19
+ 4 |     print(total + count)
+   |                   ^^^^^
+  hint: convert it: `(double)count`, which rounds past 2^53

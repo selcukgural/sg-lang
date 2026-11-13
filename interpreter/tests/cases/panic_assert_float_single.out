@@ -1,0 +1,6 @@
+panic: assert failed: big + 1 > big
+  left: 16777216
+  right: 16777216
+  --> panic_assert_float_single.sg:3:5
+ 3 |     assert(big + 1 > big)
+   |     ^^^^^^^^^^^^^^^^^^^^^

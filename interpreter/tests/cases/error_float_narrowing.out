@@ -1,0 +1,5 @@
+error: expected `float`, found `double`
+  --> error_float_narrowing.sg:3:15
+ 3 |     float f = d
+   |               ^
+  hint: convert with `(float)`, which rounds

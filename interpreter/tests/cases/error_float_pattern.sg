@@ -1,0 +1,7 @@
+void main() {
+    double x = 0.5
+    match x {
+        0.5 => print("half")
+        _ => print("other")
+    }
+}

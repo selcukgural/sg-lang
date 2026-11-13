@@ -1,0 +1,100 @@
+// The n-body simulation: the sun and the four giant planets, moved in small steps of time.
+// Every step looks at each pair of bodies, with a square root for their distance. Twenty
+// million steps, all in `double`, kept in an array of structs on the stack.
+struct Body : Copyable {
+    double x
+    double y
+    double z
+    double vx
+    double vy
+    double vz
+    double mass
+}
+
+void advance(ref Body[5] bodies, double dt) {
+    for i in 0..bodies.length() {
+        for j in i + 1..bodies.length() {
+            double dx = bodies[i].x - bodies[j].x
+            double dy = bodies[i].y - bodies[j].y
+            double dz = bodies[i].z - bodies[j].z
+            double squared = dx * dx + dy * dy + dz * dz
+            double distance = squared.sqrt()
+            double magnitude = dt / (squared * distance)
+            double mi = bodies[i].mass * magnitude
+            double mj = bodies[j].mass * magnitude
+            bodies[i].vx -= dx * mj
+            bodies[i].vy -= dy * mj
+            bodies[i].vz -= dz * mj
+            bodies[j].vx += dx * mi
+            bodies[j].vy += dy * mi
+            bodies[j].vz += dz * mi
+        }
+    }
+    for i in 0..bodies.length() {
+        bodies[i].x += dt * bodies[i].vx
+        bodies[i].y += dt * bodies[i].vy
+        bodies[i].z += dt * bodies[i].vz
+    }
+}
+
+double energy(read Body[5] bodies) {
+    double e = 0
+    for i in 0..bodies.length() {
+        var b = bodies[i]
+        e += 0.5 * b.mass * (b.vx * b.vx + b.vy * b.vy + b.vz * b.vz)
+        for j in i + 1..bodies.length() {
+            double dx = b.x - bodies[j].x
+            double dy = b.y - bodies[j].y
+            double dz = b.z - bodies[j].z
+            e -= b.mass * bodies[j].mass / (dx * dx + dy * dy + dz * dz).sqrt()
+        }
+    }
+    return e
+}
+
+void main() {
+    double pi = 3.141592653589793
+    double mass = 4 * pi * pi
+    double year = 365.24
+    var bodies = Body[5] {
+        Body { x = 0, y = 0, z = 0, vx = 0, vy = 0, vz = 0, mass = mass },
+        Body {
+            x = 4.84143144246472090e+00, y = -1.16032004402742839e+00, z = -1.03622044471123109e-01,
+            vx = 1.66007664274403694e-03 * year, vy = 7.69901118419740425e-03 * year, vz = -6.90460016972063023e-05 * year,
+            mass = 9.54791938424326609e-04 * mass
+        },
+        Body {
+            x = 8.34336671824457987e+00, y = 4.12479856412430479e+00, z = -4.03523417114321381e-01,
+            vx = -2.76742510726862411e-03 * year, vy = 4.99852801234917238e-03 * year, vz = 2.30417297573763929e-05 * year,
+            mass = 2.85885980666130812e-04 * mass
+        },
+        Body {
+            x = 1.28943695621391310e+01, y = -1.51111514016986312e+01, z = -2.23307578892655734e-01,
+            vx = 2.96460137564761618e-03 * year, vy = 2.37847173959480950e-03 * year, vz = -2.96589568540237556e-05 * year,
+            mass = 4.36624404335156298e-05 * mass
+        },
+        Body {
+            x = 1.53796971148509165e+01, y = -2.59193146099879641e+01, z = 1.79258772950371181e-01,
+            vx = 2.68067772490389322e-03 * year, vy = 1.62824170038242295e-03 * year, vz = -9.51592254519715870e-05 * year,
+            mass = 5.15138902046611451e-05 * mass
+        }
+    }
+    // The sun moves so that the whole system stays where it is.
+    double px = 0
+    double py = 0
+    double pz = 0
+    for i in 0..bodies.length() {
+        px += bodies[i].vx * bodies[i].mass
+        py += bodies[i].vy * bodies[i].mass
+        pz += bodies[i].vz * bodies[i].mass
+    }
+    bodies[0].vx = -px / mass
+    bodies[0].vy = -py / mass
+    bodies[0].vz = -pz / mass
+
+    print(energy(read bodies))
+    for step in 0..20000000 {
+        advance(ref bodies, 0.01)
+    }
+    print(energy(read bodies))
+}

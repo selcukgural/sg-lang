@@ -1,0 +1,4 @@
+error: 1e-50 is too small for float: it would be 0
+  --> error_float_too_small.sg:2:18
+ 2 |     float tiny = 1e-50
+   |                  ^^^^^

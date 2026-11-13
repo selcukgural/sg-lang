@@ -1,0 +1,5 @@
+error: a fractional number cannot be a pattern
+  two fractional numbers are seldom exactly equal; compare in an `if`: `if x < 0.5 { ... }`
+  --> error_float_pattern.sg:4:9
+ 4 |         0.5 => print("half")
+   |         ^^^

@@ -1,0 +1,5 @@
+void main() {
+    long count = 3
+    double total = 1.5
+    print(total + count)
+}

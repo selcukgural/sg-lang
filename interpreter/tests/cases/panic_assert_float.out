@@ -1,0 +1,6 @@
+panic: assert failed: 0.1 + 0.2 == 0.3
+  left: 0.30000000000000004
+  right: 0.3
+  --> panic_assert_float.sg:6:5
+ 6 |     assert(0.1 + 0.2 == 0.3)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^

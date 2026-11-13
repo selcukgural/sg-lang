@@ -13,11 +13,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::{nearest, Diag, Span};
-use crate::types::{IntTy, Ty};
+use crate::types::{FloatTy, IntTy, Ty};
 
 type Res<T> = Result<T, Diag>;
 
-const TYPES_NOT_YET: &[&str] = &["float", "double", "char"];
+const TYPES_NOT_YET: &[&str] = &["char"];
 
 const INTERFACES_NOT_YET: &[&str] = &["Clonable", "Disposable", "Closable", "Iterator"];
 
@@ -927,6 +927,39 @@ fn known_int(expr: &Expr) -> Option<i128> {
     }
 }
 
+/// The fractional type a number is expected to have, behind a borrow or a `?` too.
+fn wanted_float(ty: &Ty) -> Option<FloatTy> {
+    match ty.strip_borrow() {
+        Ty::Float(ty) => Some(*ty),
+        Ty::Nullable(inner) => wanted_float(inner),
+        _ => None,
+    }
+}
+
+/// A fractional number written in the program must not turn into infinity or into zero
+/// in its type: `1e400` is an error, as in C# and Rust.
+fn fractional_literal(text: &str, ty: FloatTy, span: Span) -> Res<()> {
+    let (infinite, zero) = match ty {
+        FloatTy::Float => text.parse::<f32>().map(|v| (v.is_infinite(), v == 0.0)),
+        FloatTy::Double => text.parse::<f64>().map(|v| (v.is_infinite(), v == 0.0)),
+    }
+    .expect("the lexer read it");
+    let mantissa = text.split('e').next().unwrap_or(text);
+    if infinite {
+        return Err(Diag::error(span, format!("{text} does not fit in {}", ty.name())));
+    }
+    if zero && mantissa.bytes().any(|c| matches!(c, b'1'..=b'9')) {
+        return Err(Diag::error(span, format!("{text} is too small for {}: it would be 0", ty.name())));
+    }
+    Ok(())
+}
+
+/// Whether a fractional number, cut to its whole part, fits in the integer type.
+pub fn float_fits(value: f64, ty: IntTy) -> bool {
+    let value = value.trunc();
+    !value.is_nan() && value >= ty.min() as f64 && value <= ty.max() as f64 && (value as i128) <= ty.max()
+}
+
 /// The signed type that holds every value of an unsigned one: what `-` needs first.
 fn signed_holding(ty: IntTy) -> &'static str {
     match ty {
@@ -955,6 +988,10 @@ fn as_slice(from: &Ty, to: &Ty) -> bool {
 }
 
 fn not_a_key(span: Span, ty: &Ty, what: &str) -> Diag {
+    if let Ty::Float(_) = ty {
+        return Diag::error(span, format!("`{ty}` cannot be {what}: it is not `Hashable`"))
+            .note("a fractional number is not `Hashable`: `0.0` and `-0.0` are equal and have different bits, and a sum seldom gives the exact key back");
+    }
     let diag = Diag::error(span, format!("`{ty}` cannot be {what}: it is not `Equatable` and `Hashable`"));
     match ty {
         Ty::Struct(name) | Ty::Enum(name) => diag.hint(format!("add them to the definition: `{name} : Equatable, Hashable`")),
@@ -982,9 +1019,13 @@ fn all_copyable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d
 /// Whether a value of this type is `Equatable` (or `Hashable`): numbers, `bool`, text, the
 /// types in `declared`, and a `T*` or `T?` of those. With `collections`, a collection counts
 /// if what it holds does: that is so for `Equatable`, not for `Hashable`.
+///
+/// A fractional number is `Equatable` and not `Hashable`, like a collection: two values that
+/// `equals` calls the same, `0.0` and `-0.0`, have different bits.
 fn has(ty: &Ty, declared: &HashSet<String>, collections: bool) -> bool {
     match ty {
         Ty::Int(_) | Ty::Bool | Ty::Str => true,
+        Ty::Float(_) => collections,
         Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => has(inner, declared, collections),
         Ty::List(item) | Ty::Set(item) | Ty::Array(item, _) | Ty::Slice(item) => collections && has(item, declared, collections),
@@ -1013,6 +1054,7 @@ fn all_have<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d (St
         let diag = Diag::error(field.ty.span, format!("`{name}` cannot be `{word}` field by field: `{}` is a `{ty}`, which is not `{word}`", field.name));
         return Err(match (ty, lacking(ty, declared)) {
             (Ty::List(_) | Ty::Set(_) | Ty::Map(..), _) if word == "Hashable" => diag.note("a collection can be compared with `==`, but it is not a key"),
+            (Ty::Float(_), _) => diag.note("a fractional number is not `Hashable`"),
             (_, Some(inner)) => diag.hint(format!("make `{inner}` `{word}` too")),
             _ => diag,
         });
@@ -1046,7 +1088,7 @@ fn all_formattable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, 
 /// Whether a value of this type can be written as text, on its own or inside another value.
 fn can_format(ty: &Ty, formattable: &HashSet<String>) -> bool {
     match ty {
-        Ty::Int(_) | Ty::Bool | Ty::Str | Ty::Void => true,
+        Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Str | Ty::Void => true,
         Ty::Struct(_) | Ty::Enum(_) => unformattable(ty, formattable).is_none(),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => can_format(inner, formattable),
         Ty::Result(ok, error) | Ty::Map(ok, error) => can_format(ok, formattable) && can_format(error, formattable),
@@ -2110,10 +2152,18 @@ impl<'a> Checker<'a> {
                 if !rebinds {
                     self.not_locked(target, Access::Write)?;
                 }
-                if op.is_some() && !matches!(target_ty, Ty::Int(_)) {
+                if let (Some(op), Ty::Float(_)) = (*op, &target_ty) {
+                    if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem) {
+                        return Err(Diag::error(stmt_span, format!("`{}=` needs an integer on the left, found `{target_ty}`", op.symbol()))
+                            .note("the bit operators work on integers"));
+                    }
+                } else if op.is_some() && !matches!(target_ty, Ty::Int(_)) {
                     return Err(Diag::error(
                         stmt_span,
-                        format!("`{}=` needs an integer on the left, found `{target_ty}`", op.expect("checked").symbol()),
+                        match op.expect("checked") {
+                            op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem) => format!("`{}=` needs a number on the left, found `{target_ty}`", op.symbol()),
+                            op => format!("`{}=` needs an integer on the left, found `{target_ty}`", op.symbol()),
+                        },
                     ));
                 }
                 match (*op, &target_ty) {
@@ -2442,15 +2492,36 @@ impl<'a> Checker<'a> {
         };
         match (&found, expected) {
             (Ty::Int(from), Ty::Int(to)) if from.widens_to(*to) => {
-                wrap(expr, |inner| ExprKind::Widen(*to, inner));
+                wrap(expr, |inner| ExprKind::Widen(Ty::Int(*to), inner));
                 expr.ty = Ty::Int(*to);
                 Ok(())
             }
             (Ty::Int(_), Ty::Int(to)) => {
                 mismatch(Some(format!("convert with `({})`; it panics if the value does not fit", to.name())))
             }
+            (Ty::Int(from), Ty::Float(to)) if to.holds(*from) => {
+                wrap(expr, |inner| ExprKind::Widen(expected.clone(), inner));
+                expr.ty = expected.clone();
+                Ok(())
+            }
+            (Ty::Float(FloatTy::Float), Ty::Float(FloatTy::Double)) => {
+                wrap(expr, |inner| ExprKind::Widen(expected.clone(), inner));
+                expr.ty = expected.clone();
+                Ok(())
+            }
+            (Ty::Int(from), Ty::Float(to)) => mismatch(Some(format!(
+                "a `{}` holds whole numbers exactly up to 2^{}, and `{}` goes past that; convert with `({})`, which rounds",
+                to.name(),
+                to.digits(),
+                from.name(),
+                to.name()
+            ))),
+            (Ty::Float(_), Ty::Float(to)) => mismatch(Some(format!("convert with `({})`, which rounds", to.name()))),
+            (Ty::Float(_), Ty::Int(to)) => {
+                mismatch(Some(format!("convert with `({})`; it drops the fraction, and panics if the value does not fit", to.name())))
+            }
             // The habit from C: `if flags & 2 {`.
-            (Ty::Int(_), Ty::Bool) => {
+            (Ty::Int(_) | Ty::Float(_), Ty::Bool) => {
                 let text = if matches!(expr.kind, ExprKind::Coalesce { .. }) { format!("({text})") } else { text.to_string() };
                 mismatch(Some(format!("a number is not a condition; compare it: `{text} != 0`")))
             }
@@ -2837,6 +2908,48 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// The fractional type two numbers meet in, at least one of them fractional: `double`
+    /// if either is one. An integer comes along if the type holds every value of it, and a
+    /// number written in the program becomes a fractional one (`2 * x`).
+    fn common_float(&mut self, left: &mut Expr, left_found: Ty, right: &mut Expr, right_found: Ty) -> Res<FloatTy> {
+        let float_of = |ty: &Ty| match ty.strip_borrow() {
+            Ty::Float(ty) => Some(*ty),
+            _ => None,
+        };
+        let common = match (float_of(&left_found), float_of(&right_found)) {
+            (Some(FloatTy::Float), Some(FloatTy::Float)) => FloatTy::Float,
+            (Some(_), Some(_)) => FloatTy::Double,
+            (Some(ty), None) | (None, Some(ty)) => ty,
+            (None, None) => unreachable!("called with a fractional number on one side"),
+        };
+        let to = Ty::Float(common);
+        let mut found = [left_found, right_found];
+        for (side, at) in [(&mut *left, 0), (&mut *right, 1)] {
+            if let ExprKind::Int(value, _) = side.kind {
+                if !common.exact(value) {
+                    return Err(Diag::error(side.span, format!("{value} is not held exactly by a `{}`", common.name()))
+                        .note(format!("a `{}` holds every whole number up to 2^{}", common.name(), common.digits())));
+                }
+                side.kind = ExprKind::Float(value.to_string(), common);
+                side.ty = to.clone();
+                found[at] = to.clone();
+            }
+        }
+        let [left_found, right_found] = found;
+        for (side, found) in [(&mut *left, left_found), (&mut *right, right_found)] {
+            if let Ty::Int(int) = found.strip_borrow() {
+                if !common.holds(*int) {
+                    let text = &self.src[side.span.start..side.span.end];
+                    let text = if matches!(side.kind, ExprKind::Binary(..)) { format!("({text})") } else { text.to_string() };
+                    return Err(Diag::error(side.span, format!("`{0}` and `{to}` do not mix: a `{to}` does not hold every `{0}` exactly", int.name()))
+                        .hint(format!("convert it: `({to}){text}`, which rounds past 2^{}", common.digits())));
+                }
+            }
+            self.coerce(side, found, &to)?;
+        }
+        Ok(common)
+    }
+
     /// Checks an expression whose value is used. A variable of a non-copyable type is moved.
     fn expr(&mut self, expr: &mut Expr, expected: Option<&Ty>) -> Res<Ty> {
         let ty = self.expr_untyped(expr, expected)?;
@@ -2892,7 +3005,21 @@ impl<'a> Checker<'a> {
             _ => {}
         }
 
+        // A whole number written where a fractional one goes is one: `double half = 1 / 2.0`.
+        if let (ExprKind::Int(value, _), Some(FloatTy::Float | FloatTy::Double)) = (&expr.kind, expected.and_then(wanted_float)) {
+            let (value, to) = (*value, expected.and_then(wanted_float).expect("tested above"));
+            if !to.exact(value) {
+                return Err(Diag::error(span, format!("{value} is not held exactly by a `{}`", to.name()))
+                    .note(format!("a `{}` holds every whole number up to 2^{}", to.name(), to.digits())));
+            }
+            expr.kind = ExprKind::Float(value.to_string(), to);
+        }
         match &mut expr.kind {
+            ExprKind::Float(text, ty) => {
+                *ty = expected.and_then(wanted_float).unwrap_or(FloatTy::Double);
+                fractional_literal(text, *ty, span)?;
+                Ok(Ty::Float(*ty))
+            }
             ExprKind::Int(value, ty) => {
                 let wanted = expected.and_then(|ty| match ty.strip_borrow() {
                     Ty::Int(ty) => Some(*ty),
@@ -3021,12 +3148,14 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Fmt)
             }
             ExprKind::Unary(UnOp::Neg, operand) => {
-                let like = expected.and_then(|ty| match ty {
-                    Ty::Int(ty) => Some(*ty),
-                    _ => None,
-                });
-                let found = self.operand(operand, like.map(Ty::Int).as_ref())?;
+                let like = expected.filter(|ty| ty.is_number());
+                let found = self.operand(operand, like)?;
                 match found.strip_borrow() {
+                    Ty::Float(ty) => {
+                        let ty = Ty::Float(*ty);
+                        self.coerce(operand, found, &ty)?;
+                        Ok(ty)
+                    }
                     Ty::Int(ty) if !ty.signed() => {
                         let text = &self.src[operand.span.start..operand.span.end];
                         let (name, to) = (ty.name(), signed_holding(*ty));
@@ -3059,6 +3188,7 @@ impl<'a> Checker<'a> {
                     }
                     Ty::Bool => Err(Diag::error(span, "operator `~` is not defined for `bool`: it turns over the bits of an integer")
                         .hint("a `bool` is turned over with `!`")),
+                    Ty::Float(_) => Err(Diag::error(span, format!("operator `~` is not defined for `{found}`: it turns over the bits of an integer"))),
                     other => Err(Diag::error(span, format!("operator `~` is not defined for `{other}`"))),
                 }
             }
@@ -3070,24 +3200,29 @@ impl<'a> Checker<'a> {
             ExprKind::Binary(op, left, right) => self.binary(*op, left, right, expected, span),
             ExprKind::Cast { ty, expr: operand } => {
                 let found = self.operand(operand, None)?;
-                match found.strip_borrow() {
-                    Ty::Int(from) => {
-                        let from = Ty::Int(*from);
-                        self.coerce(operand, found, &from)?;
-                        // A value that is known here and does not fit is not left to run time.
-                        if let ExprKind::Int(value, _) = operand.kind {
-                            if !ty.fits(value) {
-                                let diag = Diag::error(span, format!("{value} does not fit in {}", ty.name()));
-                                return Err(match value < 0 && !ty.signed() {
-                                    true => diag.note(format!("a `{}` is never negative", ty.name())),
-                                    false => diag,
-                                });
-                            }
-                        }
-                        Ok(Ty::Int(*ty))
-                    }
-                    other => Err(Diag::error(span, format!("a `{other}` value cannot be converted to `{}`", ty.name()))),
+                let from = found.strip_borrow().clone();
+                if !from.is_number() {
+                    return Err(Diag::error(span, format!("a `{from}` value cannot be converted to `{ty}`")));
                 }
+                self.coerce(operand, found, &from)?;
+                // A value that is known here and does not fit is not left to run time.
+                if let (ExprKind::Int(value, _), Ty::Int(to)) = (&operand.kind, &*ty) {
+                    let (value, to) = (*value, *to);
+                    if !to.fits(value) {
+                        let diag = Diag::error(span, format!("{value} does not fit in {}", to.name()));
+                        return Err(match value < 0 && !to.signed() {
+                            true => diag.note(format!("a `{}` is never negative", to.name())),
+                            false => diag,
+                        });
+                    }
+                }
+                if let (ExprKind::Float(text, _), Ty::Int(to)) = (&operand.kind, &*ty) {
+                    let value: f64 = text.parse().expect("the lexer read it");
+                    if !float_fits(value, *to) {
+                        return Err(Diag::error(span, format!("{text} does not fit in {}", to.name())));
+                    }
+                }
+                Ok(ty.clone())
             }
             ExprKind::Call { name, name_span, args, callee } => self.call(name, *name_span, args, callee, span),
             ExprKind::Method { recv, name, name_span, args, callee } => {
@@ -3782,9 +3917,9 @@ impl<'a> Checker<'a> {
         if op.is_shift() {
             return self.shift(op, left, right, expected, span);
         }
-        let wanted = if op.is_comparison() { None } else { expected.filter(|ty| matches!(ty, Ty::Int(_))) };
+        let wanted = if op.is_comparison() { None } else { expected.filter(|ty| ty.is_number()) };
         let like = |ty: &Ty| match ty.strip_borrow() {
-            Ty::Int(_) => Some(ty.strip_borrow().clone()),
+            Ty::Int(_) | Ty::Float(_) => Some(ty.strip_borrow().clone()),
             _ => None,
         };
         // A number on the left past every `long` takes its type from the right:
@@ -3842,6 +3977,13 @@ impl<'a> Checker<'a> {
                 let common = Ty::Int(self.common_int(left, left_ty.clone(), right, right_ty.clone())?);
                 Ok(if op.is_comparison() { Ty::Bool } else { common })
             }
+            (Ty::Int(_) | Ty::Float(_), Ty::Int(_) | Ty::Float(_)) => {
+                if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
+                    return Err(undefined().note("the bit operators work on integers"));
+                }
+                let common = Ty::Float(self.common_float(left, left_ty.clone(), right, right_ty.clone())?);
+                Ok(if op.is_comparison() { Ty::Bool } else { common })
+            }
             (Ty::Str, Ty::Str) if op.is_comparison() => Ok(Ty::Bool),
             (Ty::Bool, Ty::Bool) if matches!(op, BinOp::Eq | BinOp::Ne) => Ok(Ty::Bool),
             // The bit operators are for integers; two `bool`s have their own.
@@ -3889,7 +4031,7 @@ impl<'a> Checker<'a> {
             inner = behind.strip_borrow();
         }
         match inner {
-            Ty::Int(_) | Ty::Bool | Ty::Str | Ty::Fmt => Ok(()),
+            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Str | Ty::Fmt => Ok(()),
             Ty::Struct(name) | Ty::Enum(name) if self.formattable.contains(name) => Ok(()),
             Ty::Struct(name) | Ty::Enum(name) => Err(Diag::error(span, format!("`{name}` cannot be written as text: it is not `Formattable`"))
                 .hint(format!("add it to the definition: `{name} : Formattable`"))),
@@ -4168,7 +4310,7 @@ impl<'a> Checker<'a> {
         // A number behind a pointer is read out first: `count.wrappingAdd(1)` with `int* count`.
         let target = target.clone();
         let mut recv_ty = recv_ty;
-        if matches!(target, Ty::Int(_)) {
+        if target.is_number() {
             while let Ty::Ptr(inner) | Ty::Read(inner) | Ty::Ref(inner) = recv_ty {
                 wrap(recv, ExprKind::Load);
                 recv.ty = (*inner).clone();
@@ -4193,7 +4335,7 @@ impl<'a> Checker<'a> {
                 arity(0)?;
                 Ok(Ty::Str)
             }
-            (Ty::Int(_) | Ty::Bool | Ty::Fmt, "toString") => {
+            (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Fmt, "toString") => {
                 arity(0)?;
                 Ok(Ty::Str)
             }
@@ -4212,6 +4354,27 @@ impl<'a> Checker<'a> {
                 let other = self.int_operand(&mut args[0], Some(*ty), "the argument")?;
                 self.common_int(recv, recv_ty.clone(), &mut args[0], Ty::Int(other))?;
                 Ok(if name == "compare" { Ty::Int(IntTy::Int) } else { Ty::Bool })
+            }
+            // A total order: `NaN` equals itself and comes before every other value, and
+            // `-0.0` equals `0.0`. The operators stay as the hardware has them.
+            (Ty::Float(ty), "compare" | "equals") => {
+                arity(1)?;
+                let found = self.operand(&mut args[0], Some(&Ty::Float(*ty)))?;
+                if !found.strip_borrow().is_number() {
+                    return Err(Diag::error(args[0].span, format!("expected `{target}`, found `{found}`")));
+                }
+                self.common_float(recv, recv_ty.clone(), &mut args[0], found)?;
+                Ok(if name == "compare" { Ty::Int(IntTy::Int) } else { Ty::Bool })
+            }
+            (Ty::Float(_), "abs" | "sqrt" | "floor" | "ceil" | "round" | "truncate") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(target.clone())
+            }
+            (Ty::Float(_), "isNaN" | "isInfinite") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Bool)
             }
             (Ty::Str | Ty::Bool, "compare" | "equals") if name == "equals" || *target == Ty::Str => {
                 arity(1)?;
@@ -4300,7 +4463,7 @@ impl<'a> Checker<'a> {
         };
         let can_equal = item.is_some_and(|item| has(item, self.equatable, true));
         let can_order = item.is_some_and(|item| match item {
-            Ty::Int(_) | Ty::Str => true,
+            Ty::Int(_) | Ty::Float(_) | Ty::Str => true,
             Ty::Struct(name) => self.comparable.contains(name),
             _ => false,
         });
@@ -4633,6 +4796,7 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
         | ExprKind::Widen(_, inner)
         | ExprKind::Load(inner) => taken_in(inner, names),
         ExprKind::Int(..)
+        | ExprKind::Float(..)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Char(_)

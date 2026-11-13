@@ -1,0 +1,5 @@
+error: operator `<<` is not defined for `double` and `int`
+  it shifts the bits of an integer by a count that is an integer
+  --> error_float_shift.sg:3:11
+ 3 |     print(x << 1)
+   |           ^^^^^^

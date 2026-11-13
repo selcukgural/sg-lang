@@ -1,0 +1,5 @@
+error: `Price` cannot be `Hashable` field by field: `amount` is a `double`, which is not `Hashable`
+  a fractional number is not `Hashable`
+  --> error_float_hashable_field.sg:2:5
+ 2 |     double amount
+   |     ^^^^^^

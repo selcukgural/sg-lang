@@ -1,0 +1,5 @@
+error: the exponent is written with a small `e`
+  --> error_float_exponent_capital.sg:2:14
+ 2 |     var x = 1E5
+   |              ^
+  hint: `1e5`

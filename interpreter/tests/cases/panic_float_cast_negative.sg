@@ -1,0 +1,6 @@
+void main() {
+    double minus = -0.5
+    print((uint)minus)
+    double less = -1.5
+    print((uint)less)
+}

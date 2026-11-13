@@ -1,0 +1,5 @@
+error: operator `&` is not defined for `double` and `double`
+  the bit operators work on integers
+  --> error_float_bits.sg:3:11
+ 3 |     print(x & 1)
+   |           ^^^^^

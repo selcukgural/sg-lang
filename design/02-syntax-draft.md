@@ -600,6 +600,51 @@ var f = 0xffff_ffff_ffff_ffff                    // error: does not fit in long.
 ulong g = 0xffff_ffff_ffff_ffff                  // a number is unsigned only where the type says so
 ```
 
+### Fractional numbers
+
+`float` and `double` are IEEE 754 numbers of 32 and 64 bits. A fractional number has digits on both sides of
+the point or an exponent, and like an integer it takes the type it is used as, with `double` where nothing
+says otherwise. A whole number written where a fractional one goes is one:
+
+```
+var ratio = 0.75                                 // double
+float speed = 1.5                                // no suffix: the type says float
+var g = 6.674_30e-11                             // the exponent is written with a small e
+double half = 1 / 2.0                            // 0.5; 1 / 2 alone is the int 0
+var x = 1.5f                                     // error: a number has no `f` at its end. Hint: float x = 1.5
+var big = 1e400                                  // error: 1e400 does not fit in double
+```
+
+A number becomes a fractional one on its own only when the type holds every value of it exactly, the
+rule of the integers. `double` holds every `int` and `uint`, not every `long`; a `float` holds every
+integer up to 16 bits. A fractional number never becomes an integer on its own:
+
+```
+int count = 7
+long big = 1 << 40
+double total = 3.5
+var a = total / count                            // a double: every int fits in a double exactly
+var b = total + big                              // error: `long` and `double` do not mix. Hint: (double)big
+var c = total / (double)values.length()          // a length is a nint, which may be 64 bits
+float f = total                                  // error: expected float, found double. Hint: (float)
+int n = total                                    // error. Hint: (int), which drops the fraction
+var d = (int)-3.7                                // -3; out of range or NaN follows the overflow rule
+```
+
+The arithmetic is the hardware's and never panics: a division by zero gives `Infinity` or `NaN`, and `%`
+keeps the sign of the left side. A `float` is computed as a `float`. Each operation is rounded on its own:
+`a * b + c` is never fused into one instruction, so compiled code and the interpreter give the same digits.
+The bit operators are for integers only. A number is printed with the fewest digits that read back as the
+same number:
+
+```
+print(0.1 + 0.2)                                 // 0.30000000000000004
+print(2.0)                                       // 2
+print(1e21)                                      // 1e+21
+print((float)(1.0 / 3))                          // 0.33333334
+print(x.sqrt())                                  // also abs, floor, ceil, round, truncate, isNaN, isInfinite
+```
+
 On floating-point numbers the operators behave as the hardware does, while `equals` and `compare` give a total order (C#):
 
 ```
@@ -608,6 +653,8 @@ nan == nan                                       // false
 nan.equals(nan)                                  // true
 values.sort()                                    // works, NaN comes first
 var m = HashMap<double, int>()                   // error: double is not Hashable
+p == q                                           // two structs: their double fields are compared with equals
+match x { 0.5 => ... }                           // error: a fractional number cannot be a pattern
 ```
 
 `print` does not return an error; if it cannot write, the program stops. Whoever wants to handle the error uses

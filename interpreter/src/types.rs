@@ -142,9 +142,58 @@ impl IntTy {
     }
 }
 
+/// The two fractional types: IEEE 754 binary32 and binary64.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum FloatTy {
+    Float,
+    Double,
+}
+
+impl FloatTy {
+    pub fn from_name(name: &str) -> Option<FloatTy> {
+        match name {
+            "float" => Some(FloatTy::Float),
+            "double" => Some(FloatTy::Double),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FloatTy::Float => "float",
+            FloatTy::Double => "double",
+        }
+    }
+
+    /// The bits of the significand, the hidden one counted: every integer up to 2 to this
+    /// power is held exactly.
+    pub fn digits(self) -> u32 {
+        match self {
+            FloatTy::Float => 24,
+            FloatTy::Double => 53,
+        }
+    }
+
+    /// Whether every value of the integer type is held exactly, on every machine: `int`
+    /// becomes a `double` on its own, `long` and `nint` do not.
+    pub fn holds(self, int: IntTy) -> bool {
+        int.bits() - u32::from(int.signed()) <= self.digits()
+    }
+
+    /// Whether the integer is held exactly: what a number written in the program needs to
+    /// stand where a fractional number goes.
+    pub fn exact(self, value: i128) -> bool {
+        match self {
+            FloatTy::Float => value as f32 as i128 == value,
+            FloatTy::Double => value as f64 as i128 == value,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum Ty {
     Int(IntTy),
+    Float(FloatTy),
     Bool,
     Str,
     /// Result of `$"..."`; not a `string`, becomes one with `.toString()`.
@@ -185,13 +234,18 @@ pub enum Ty {
 }
 
 impl Ty {
+    /// An integer or a fractional number: what `+`, `<` and a cast work on.
+    pub fn is_number(&self) -> bool {
+        matches!(self, Ty::Int(_) | Ty::Float(_))
+    }
+
     pub fn from_name(name: &str) -> Option<Ty> {
         match name {
             "bool" => Some(Ty::Bool),
             "string" => Some(Ty::Str),
             "void" => Some(Ty::Void),
             "Formatter" => Some(Ty::Formatter),
-            _ => IntTy::from_name(name).map(Ty::Int),
+            _ => IntTy::from_name(name).map(Ty::Int).or_else(|| FloatTy::from_name(name).map(Ty::Float)),
         }
     }
 
@@ -200,7 +254,7 @@ impl Ty {
     /// copyable until there is a borrow checker.
     pub fn is_copyable(&self, declared: &HashSet<String>) -> bool {
         match self {
-            Ty::Int(_) | Ty::Bool | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) | Ty::Func(..) => true,
+            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) | Ty::Func(..) => true,
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
@@ -225,6 +279,7 @@ impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Ty::Int(ty) => f.write_str(ty.name()),
+            Ty::Float(ty) => f.write_str(ty.name()),
             Ty::Bool => f.write_str("bool"),
             Ty::Str => f.write_str("string"),
             Ty::Fmt => f.write_str("formatted text"),

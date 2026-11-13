@@ -16,7 +16,8 @@ use std::rc::Rc;
 
 use crate::ast::*;
 use crate::diag::{Diag, Span};
-use crate::types::{IntTy, Ty};
+use crate::check::float_fits;
+use crate::types::{FloatTy, IntTy, Ty};
 
 /// Limit on nested calls. Past it the program gets a readable panic instead of a crash.
 pub const MAX_DEPTH: usize = 5000;
@@ -26,6 +27,9 @@ type Cell = Rc<RefCell<Value>>;
 #[derive(Clone, Debug)]
 pub enum Value {
     Int(IntTy, i128),
+    /// A `float` is kept as the `double` that holds it exactly, and every operation on it
+    /// is done in `f32`.
+    Float(FloatTy, f64),
     Bool(bool),
     Str(Rc<str>),
     Fmt(Rc<str>),
@@ -131,14 +135,89 @@ pub enum Key {
     Null,
     Bool(bool),
     Int(i128),
+    /// A fractional number in its total order (see `float_key`). Never the key of a map:
+    /// it is what `equals` and `compare` look at.
+    Float(i64),
     Str(Rc<str>),
     Parts(Vec<Key>),
+}
+
+/// The total order of `equals` and `compare`: every `NaN` is one value, below every other;
+/// `-0.0` is `0.0`; the rest are in the order of the numbers. The bits of a positive number
+/// already sort as the number does; those of a negative one sort the other way round.
+fn float_key(value: f64) -> i64 {
+    if value.is_nan() {
+        return i64::MIN;
+    }
+    let bits = (value + 0.0).to_bits() as i64;
+    if bits < 0 {
+        bits ^ i64::MAX
+    } else {
+        bits
+    }
+}
+
+/// How a fractional number is written: the fewest digits that read back as the same
+/// number, laid out as JavaScript does it (`0.1`, `100`, `1.5e+21`, `1e-7`). `float` reads
+/// back as a `float`.
+pub fn show_float(value: f64, ty: FloatTy) -> String {
+    if value.is_nan() {
+        return "NaN".to_string();
+    }
+    if value.is_infinite() {
+        return if value > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+    }
+    if value == 0.0 {
+        return if value.is_sign_negative() { "-0" } else { "0" }.to_string();
+    }
+    let most = match ty {
+        FloatTy::Float => 9,
+        FloatTy::Double => 17,
+    };
+    let written = (1..=most)
+        .map(|digits| format!("{:.*e}", digits - 1, value))
+        .find(|text| match ty {
+            FloatTy::Float => text.parse::<f32>().ok() == Some(value as f32),
+            FloatTy::Double => text.parse::<f64>().ok() == Some(value),
+        })
+        .expect("17 digits always read back");
+    let (mantissa, exponent) = written.split_once('e').expect("written with an exponent");
+    let negative = mantissa.starts_with('-');
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let digits = digits.trim_end_matches('0');
+    let point = exponent.parse::<i32>().expect("a number") + 1;
+    let count = digits.len() as i32;
+    let body = if count <= point && point <= 21 {
+        format!("{digits}{}", "0".repeat((point - count) as usize))
+    } else if 0 < point && point <= 21 {
+        format!("{}.{}", &digits[..point as usize], &digits[point as usize..])
+    } else if -6 < point && point <= 0 {
+        format!("0.{}{digits}", "0".repeat((-point) as usize))
+    } else {
+        let rest = if count > 1 { format!(".{}", &digits[1..]) } else { String::new() };
+        let sign = if point - 1 < 0 { '-' } else { '+' };
+        format!("{}{rest}e{sign}{}", &digits[..1], (point - 1).abs())
+    };
+    if negative {
+        format!("-{body}")
+    } else {
+        body
+    }
+}
+
+/// A fractional number written in the program, read in its type.
+fn float_literal(text: &str, ty: FloatTy) -> f64 {
+    match ty {
+        FloatTy::Float => text.parse::<f32>().expect("the lexer read it") as f64,
+        FloatTy::Double => text.parse::<f64>().expect("the lexer read it"),
+    }
 }
 
 fn key_of(value: &Value) -> Key {
     match value {
         Value::Bool(value) => Key::Bool(*value),
         Value::Int(_, value) => Key::Int(*value),
+        Value::Float(_, value) => Key::Float(float_key(*value)),
         Value::Str(text) => Key::Str(text.clone()),
         Value::Null => Key::Null,
         Value::Struct(_, fields) => Key::Parts(fields.iter().map(|field| key_of(&field.borrow())).collect()),
@@ -218,6 +297,7 @@ fn as_list(value: Value) -> Value {
 fn zero(ty: &Ty) -> Value {
     match ty {
         Ty::Int(ty) => Value::Int(*ty, 0),
+        Ty::Float(ty) => Value::Float(*ty, 0.0),
         Ty::Bool => Value::Bool(false),
         Ty::Nullable(_) => Value::Null,
         _ => unreachable!("the checker only lets a type with a zero value be filled this way"),
@@ -241,6 +321,7 @@ impl Value {
     fn format(&self) -> String {
         match self {
             Value::Int(_, value) => value.to_string(),
+            Value::Float(ty, value) => show_float(*value, *ty),
             Value::Bool(value) => value.to_string(),
             Value::Str(text) | Value::Fmt(text) => text.to_string(),
             _ => unreachable!("the checker only lets printable values through"),
@@ -252,7 +333,7 @@ impl Value {
         match self {
             Value::Str(text) | Value::Fmt(text) => format!("{text:?}"),
             Value::Null => "null".to_string(),
-            Value::Int(..) | Value::Bool(_) => self.format(),
+            Value::Int(..) | Value::Float(..) | Value::Bool(_) => self.format(),
             _ => "(value)".to_string(),
         }
     }
@@ -671,6 +752,7 @@ impl<'a> Interp<'a> {
     fn expr(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
         match &expr.kind {
             ExprKind::Int(value, ty) => Ok(Value::Int(*ty, *value)),
+            ExprKind::Float(text, ty) => Ok(Value::Float(*ty, float_literal(text, *ty))),
             ExprKind::Bool(value) => Ok(Value::Bool(*value)),
             ExprKind::Str(text) => Ok(Value::Str(text.as_str().into())),
             ExprKind::Null => Ok(Value::Null),
@@ -727,10 +809,7 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Value::Map(Rc::new(RefCell::new(entries))))
             }
-            ExprKind::Widen(ty, inner) => match strip(self.expr(inner, frame)?) {
-                Value::Int(_, value) => Ok(Value::Int(*ty, value)),
-                _ => unreachable!("the checker only widens integers"),
-            },
+            ExprKind::Widen(ty, inner) => Ok(convert(strip(self.expr(inner, frame)?), ty)),
             ExprKind::Load(inner) => Ok(fresh(&owned(self.expr(inner, frame)?))),
             ExprKind::Unary(UnOp::Neg, operand) => match strip(self.expr(operand, frame)?) {
                 Value::Int(ty, value) => {
@@ -739,7 +818,8 @@ impl<'a> Interp<'a> {
                     }
                     Ok(Value::Int(ty, -value))
                 }
-                _ => unreachable!("the checker makes the operand an integer"),
+                Value::Float(ty, value) => Ok(Value::Float(ty, -value)),
+                _ => unreachable!("the checker makes the operand a number"),
             },
             ExprKind::Unary(UnOp::Not, operand) => Ok(Value::Bool(!self.condition(operand, frame)?)),
             ExprKind::Unary(UnOp::BitNot, operand) => match strip(self.expr(operand, frame)?) {
@@ -818,12 +898,16 @@ impl<'a> Interp<'a> {
                 // A window in the design; a copy here, which cannot be told apart.
                 Ok(Value::Str(text[start..end].into()))
             }
-            ExprKind::Cast { ty, expr: inner } => match strip(self.expr(inner, frame)?) {
-                Value::Int(_, value) if ty.fits(value) => Ok(Value::Int(*ty, value)),
-                Value::Int(_, value) => {
-                    Err(Diag::panic(expr.span, format!("value {value} does not fit in {}", ty.name())).into())
+            ExprKind::Cast { ty, expr: inner } => match (strip(self.expr(inner, frame)?), ty) {
+                (Value::Int(_, value), Ty::Int(to)) if to.fits(value) => Ok(Value::Int(*to, value)),
+                (Value::Int(_, value), Ty::Int(to)) => {
+                    Err(Diag::panic(expr.span, format!("value {value} does not fit in {}", to.name())).into())
                 }
-                _ => unreachable!("the checker only casts integers"),
+                (Value::Float(_, value), Ty::Int(to)) if float_fits(value, *to) => Ok(Value::Int(*to, value.trunc() as i128)),
+                (Value::Float(from, value), Ty::Int(to)) => {
+                    Err(Diag::panic(expr.span, format!("value {} does not fit in {}", show_float(value, from), to.name())).into())
+                }
+                (value, to) => Ok(convert(value, to)),
             },
             ExprKind::StructLit { name, fields, .. } => {
                 let mut cells: Vec<Option<Cell>> = vec![None; fields.len()];
@@ -1374,6 +1458,12 @@ fn binary(op: BinOp, left: Value, right: Value, span: Span) -> Result<Value, Dia
     let ordering: Ordering = match (&left, &right) {
         (Value::Int(ty, a), Value::Int(_, b)) if !op.is_comparison() => return arithmetic(op, *ty, *a, *b, span),
         (Value::Int(_, a), Value::Int(_, b)) => a.cmp(b),
+        (Value::Float(ty, a), Value::Float(_, b)) if !op.is_comparison() => return Ok(Value::Float(*ty, fractional(op, *ty, *a, *b))),
+        // As the hardware compares: nothing is equal to `NaN`, nor before or after it.
+        (Value::Float(_, a), Value::Float(_, b)) => match a.partial_cmp(b) {
+            Some(ordering) => ordering,
+            None => return Ok(Value::Bool(op == BinOp::Ne)),
+        },
         (Value::Str(a), Value::Str(b)) => a.cmp(b),
         (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
         _ => unreachable!("the checker rules out other operand types"),
@@ -1387,6 +1477,47 @@ fn binary(op: BinOp, left: Value, right: Value, span: Span) -> Result<Value, Dia
         BinOp::Ge => ordering != Ordering::Less,
         _ => unreachable!("only comparisons reach here"),
     }))
+}
+
+/// `+`, `-`, `*`, `/` and `%` as the hardware does them, a `float` in `f32`: no panic, a
+/// division by zero gives an infinity or `NaN`. `%` keeps the sign of the left side, as C's
+/// `fmod` does.
+fn fractional(op: BinOp, ty: FloatTy, a: f64, b: f64) -> f64 {
+    match ty {
+        FloatTy::Float => {
+            let (a, b) = (a as f32, b as f32);
+            (match op {
+                BinOp::Add => a + b,
+                BinOp::Sub => a - b,
+                BinOp::Mul => a * b,
+                BinOp::Div => a / b,
+                BinOp::Rem => a % b,
+                _ => unreachable!("only arithmetic reaches here"),
+            }) as f64
+        }
+        FloatTy::Double => match op {
+            BinOp::Add => a + b,
+            BinOp::Sub => a - b,
+            BinOp::Mul => a * b,
+            BinOp::Div => a / b,
+            BinOp::Rem => a % b,
+            _ => unreachable!("only arithmetic reaches here"),
+        },
+    }
+}
+
+/// A number made into another numeric type where nothing can fail: an integer into a
+/// wider one, a number into a fractional type (rounded to the nearest), a `double` into
+/// a `float`.
+fn convert(value: Value, to: &Ty) -> Value {
+    match (value, to) {
+        (Value::Int(_, value), Ty::Int(to)) => Value::Int(*to, value),
+        (Value::Int(_, value), Ty::Float(FloatTy::Float)) => Value::Float(FloatTy::Float, value as f32 as f64),
+        (Value::Int(_, value), Ty::Float(FloatTy::Double)) => Value::Float(FloatTy::Double, value as f64),
+        (Value::Float(_, value), Ty::Float(FloatTy::Float)) => Value::Float(FloatTy::Float, value as f32 as f64),
+        (Value::Float(_, value), Ty::Float(FloatTy::Double)) => Value::Float(FloatTy::Double, value),
+        _ => unreachable!("the checker only converts numbers"),
+    }
 }
 
 /// Overflow panics in every build; `wrappingAdd` is written to wrap on purpose. A shift
@@ -1483,6 +1614,38 @@ fn collection_method(recv: Value, name: &str, mut args: Vec<Value>) -> Value {
     }
 }
 
+/// `abs`, `sqrt`, `floor`, `ceil`, `round` (half away from zero), `truncate`, `isNaN`,
+/// `isInfinite`; on a `float` in `f32`.
+fn float_method(ty: FloatTy, value: f64, name: &str) -> Value {
+    match name {
+        "isNaN" => return Value::Bool(value.is_nan()),
+        "isInfinite" => return Value::Bool(value.is_infinite()),
+        _ => {}
+    }
+    let result = match ty {
+        FloatTy::Float => {
+            let value = value as f32;
+            (match name {
+                "abs" => value.abs(),
+                "sqrt" => value.sqrt(),
+                "floor" => value.floor(),
+                "ceil" => value.ceil(),
+                "round" => value.round(),
+                _ => value.trunc(),
+            }) as f64
+        }
+        FloatTy::Double => match name {
+            "abs" => value.abs(),
+            "sqrt" => value.sqrt(),
+            "floor" => value.floor(),
+            "ceil" => value.ceil(),
+            "round" => value.round(),
+            _ => value.trunc(),
+        },
+    };
+    Value::Float(ty, result)
+}
+
 fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
     match (&recv, name, args.as_slice()) {
         // `null` where the plain operator would panic.
@@ -1514,6 +1677,7 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
             Value::Int(*ty, ty.wrap(result))
         }
         (_, "toString", []) => Value::Str(recv.format().into()),
+        (Value::Float(ty, value), _, []) => float_method(*ty, *value, name),
         (Value::Str(text), "length", []) => Value::Int(IntTy::Nint, text.len() as i128),
         (Value::Str(text), "indexOf", [Value::Int(_, byte)]) => match text.bytes().position(|found| found as i128 == *byte) {
             Some(at) => Value::Int(IntTy::Nint, at as i128),

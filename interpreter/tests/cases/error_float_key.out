@@ -1,0 +1,5 @@
+error: `double` cannot be the key of a `HashMap`: it is not `Hashable`
+  a fractional number is not `Hashable`: `0.0` and `-0.0` are equal and have different bits, and a sum seldom gives the exact key back
+  --> error_float_key.sg:2:24
+ 2 |     var seen = HashMap<double, int>()
+   |                        ^^^^^^

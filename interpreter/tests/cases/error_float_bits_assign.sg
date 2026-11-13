@@ -1,0 +1,4 @@
+void main() {
+    double x = 3
+    x |= 1
+}

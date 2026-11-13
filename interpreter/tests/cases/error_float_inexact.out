@@ -1,0 +1,5 @@
+error: 16777217 is not held exactly by a `float`
+  a `float` holds every whole number up to 2^24
+  --> error_float_inexact.sg:2:15
+ 2 |     float f = 16777217
+   |               ^^^^^^^^

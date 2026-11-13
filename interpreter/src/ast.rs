@@ -2,7 +2,7 @@
 //! indexes, implicit conversions) so the interpreter does not repeat its work.
 
 use crate::diag::Span;
-use crate::types::{IntTy, Ty};
+use crate::types::{FloatTy, IntTy, Ty};
 
 pub struct Program {
     pub structs: Vec<StructDecl>,
@@ -213,6 +213,9 @@ pub struct Expr {
 pub enum ExprKind {
     /// The type is decided by the checker from where the literal is used.
     Int(i128, IntTy),
+    /// A fractional number as written, without the `_`; the type is decided like an `Int`'s.
+    /// A whole number written where a fractional one goes becomes one of these.
+    Float(String, FloatTy),
     Bool(bool),
     Str(String),
     /// `'+'`. The checker turns it into an `Int` of the type `byte`.
@@ -238,8 +241,8 @@ pub enum ExprKind {
     /// `text[a..b]`, `text[..b]`, `text[a..]`, `text[..]`, and the same on a list, an array or
     /// a slice.
     Slice { recv: Box<Expr>, from: Option<Box<Expr>>, to: Option<Box<Expr>> },
-    /// `(int)x`
-    Cast { ty: IntTy, expr: Box<Expr> },
+    /// `(int)x`, `(double)n`: `ty` is an integer or a fractional type.
+    Cast { ty: Ty, expr: Box<Expr> },
     /// `Node { value = 1, next = null }`
     StructLit { name: String, name_span: Span, fields: Vec<FieldInit> },
     /// `new e`: puts the value on the heap, gives `T*`.
@@ -273,8 +276,10 @@ pub enum ExprKind {
 
     /// Inserted by the checker: a borrow of a list or an array used as a slice.
     AsSlice(Box<Expr>),
-    /// Inserted by the checker: `int` value used where a wider integer is expected.
-    Widen(IntTy, Box<Expr>),
+    /// Inserted by the checker: an `int` used where a wider integer is expected, or a number
+    /// where a fractional type that holds every value of it is expected. `Ty` is the type
+    /// it becomes.
+    Widen(Ty, Box<Expr>),
     /// Inserted by the checker: a borrow of a copyable value used as the value itself.
     Load(Box<Expr>),
 }

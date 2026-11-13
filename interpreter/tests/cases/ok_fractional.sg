@@ -1,0 +1,110 @@
+// `float` and `double`: written, mixed with integers, converted, compared, printed.
+
+struct Point : Formattable, Equatable, Copyable {
+    double x
+    double y
+}
+
+double length(Point p) {
+    return (p.x * p.x + p.y * p.y).sqrt()
+}
+
+double average(read List<double> values) {
+    double sum = 0
+    for v in values {
+        sum += v
+    }
+    return sum / (double)values.length()
+}
+
+void main() {
+    // How a number is written: the fewest digits that read back as the same number.
+    print(0.1)
+    print(0.1 + 0.2)
+    print(1.0)
+    print(-2.5)
+    print(100.0)
+    print(1e21)
+    print(1.5e21)
+    print(123456789012345680000.0)
+    print(1e-7)
+    print(0.000001)
+    print(6.674_30e-11)
+    print(1.0 / 3)
+    float third = 1.0 / 3
+    print(third)
+    print($"{third} {(double)third}")
+
+    // A whole number where a fractional one goes.
+    double half = 1 / 2.0
+    double two = 2
+    print($"{half} {two} {2 * half} {half * 2}")
+
+    // An `int` becomes a `double` on its own; a `long` needs a cast.
+    int count = 7
+    long big = 9_007_199_254_740_993
+    double total = 3.5
+    print(total + count)
+    print(total / count)
+    print((double)big)
+    print(count / 2)
+
+    // Converting to an integer drops the fraction.
+    print((int)3.7)
+    print((int)-3.7)
+    print((long)1e18)
+    print((byte)255.9)
+    print((float)0.1)
+
+    // `%` keeps the sign of the left side.
+    print(7.5 % 2)
+    print(-7.5 % 2)
+
+    // The hardware's answers: infinity, NaN, -0.
+    double zero = 0
+    double inf = 1 / zero
+    double nan = zero / zero
+    print($"{inf} {-inf} {nan} {-zero}")
+    print(nan == nan)
+    print(nan != nan)
+    print(nan < 1)
+    print(nan >= 1)
+    print(-zero == zero)
+
+    // `equals` and `compare`: a total order, NaN first and equal to itself.
+    print(nan.equals(nan))
+    print(nan.compare(1.0))
+    print((1.0).compare(nan))
+    print((-zero).equals(zero))
+    print((2.5).compare(1))
+    var values = List<double> { 3.5, nan, -1, inf, 0.25, -inf }
+    values.sort()
+    print(values)
+    print(values.contains(nan))
+    print(values.indexOf(0.25) ?? -1)
+
+    // The methods.
+    print($"{(2.0).sqrt()} {(-1.5).abs()} {(2.5).floor()} {(2.5).ceil()} {(2.5).round()} {(-2.5).round()} {(-2.7).truncate()}")
+    print($"{nan.isNaN()} {inf.isInfinite()} {(1.5).isNaN()}")
+    print((2.0).sqrt().toString())
+
+    // Structs and lists of fractional numbers.
+    var p = Point { x = 3, y = 4 }
+    print(p)
+    print(length(p))
+    print(p == Point { x = 3.0, y = 4.0 })
+    print(Point { x = nan, y = 0 } == Point { x = nan, y = 0 })
+    var list = List<double> { 1, 2, 3, 4 }
+    print(average(read list))
+    print(list == List<double> { 1.0, 2.0, 3.0, 4.0 })
+
+    // A `float` is computed as a `float`.
+    float a = 16777216
+    float b = a + 1
+    print(b)
+    float tenth = 0.1
+    print(tenth * 3)
+    print((double)(tenth * 3))
+    double? maybe = null
+    print(maybe ?? 1.5)
+}

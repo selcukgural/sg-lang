@@ -238,7 +238,7 @@ fn compiled() {
         let stem = if with_modules { format!("modules-{stem}") } else { stem };
         let (c_file, binary) = (work.join(format!("{stem}.c")), work.join(&stem));
         std::fs::write(&c_file, code).unwrap();
-        let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-o"]).arg(&binary).arg(&c_file).output().unwrap();
+        let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-ffp-contract=off", "-o"]).arg(&binary).arg(&c_file).arg("-lm").output().unwrap();
         if !cc.status.success() {
             failures.push(format!("--- {name}: the C compiler rejected it\n{}", String::from_utf8_lossy(&cc.stderr)));
             continue;
@@ -263,9 +263,10 @@ fn compiled() {
         if sanitizers {
             let checked_binary = work.join(format!("{stem}-san"));
             let cc = std::process::Command::new("cc")
-                .args(["-std=c11", "-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-o"])
+                .args(["-std=c11", "-O1", "-g", "-ffp-contract=off", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-o"])
                 .arg(&checked_binary)
                 .arg(&c_file)
+                .arg("-lm")
                 .output()
                 .unwrap();
             if cc.status.success() {
@@ -377,7 +378,7 @@ fn compiled_tests() {
         }
         let mut rejected = false;
         for (binary, flags) in &builds {
-            let cc = std::process::Command::new("cc").arg("-std=c11").args(*flags).arg("-o").arg(binary).arg(&c_file).output().unwrap();
+            let cc = std::process::Command::new("cc").args(["-std=c11", "-ffp-contract=off"]).args(*flags).arg("-o").arg(binary).arg(&c_file).arg("-lm").output().unwrap();
             if !cc.status.success() {
                 failures.push(format!("--- {name}: the C compiler rejected it ({})\n{}", flags.join(" "), String::from_utf8_lossy(&cc.stderr)));
                 rejected = true;

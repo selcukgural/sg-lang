@@ -1,0 +1,3 @@
+void main() {
+    float tiny = 1e-50
+}

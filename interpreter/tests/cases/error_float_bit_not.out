@@ -1,0 +1,4 @@
+error: operator `~` is not defined for `double`: it turns over the bits of an integer
+  --> error_float_bit_not.sg:3:11
+ 3 |     print(~x)
+   |           ^^
