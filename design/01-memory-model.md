@@ -2,17 +2,7 @@
 
 **Dropped.** On 5 November 2026 Rust's ownership rules were chosen instead of the generation model. This file is kept for the record; the current state is in [decisions and open questions](04-decisions-and-open-questions.md).
 
-*Source: the conversation of 4 November 2026. The questions and answers are given as they were in the conversation; for correction notes see [decisions and open questions](04-decisions-and-open-questions.md).*
-
-This file is the answer to the three decisions from the previous question ([use-after-free](../topics/07-use-after-free.md)): pointer size, stack references and error behaviour.
-
-## Question
-
-> C compatibility is not important, it should be performance focused
-> which one is right from a safety point of view?
-> panic
-
-## Answer
+The first model answered the three questions that a runtime check for [use-after-free](../topics/07-use-after-free.md) leaves open: pointer size, stack references and error behaviour. The starting points were that compatibility with C does not matter, performance does, and an error is a panic. Its known gaps are listed in [decisions and open questions](04-decisions-and-open-questions.md) ("Gaps in the first memory model").
 
 **1. Pointer size: 8 bytes, generation in the upper bits.** Since C compatibility is not needed, there is no need for Vale's 16-byte fat pointer. x86-64 and ARM64 use 48-bit addresses in practice; the upper 16 bits are free. Put the generation counter there: the pointer is still 8 bytes, it fits in a register, data structures do not grow, and cache behaviour is the same as in C. A dereference takes two operations: mask the upper bits, compare the generation with the one in the object header. On ARM, TBI (Top Byte Ignore) gives the mask for free. A 16-bit counter overflows after 65,536 frees; with Vale's solution a slot whose counter overflows is never used again (retired), the memory loss is negligible, and the ABA risk is zero.
 
@@ -31,7 +21,7 @@ This check is not a borrow checker, it is a simple escape analysis: the compiler
 
 The price: there is no "pointer to a local variable inside a struct" pattern. It is common in C, but it can always be moved to the heap; the performance loss is measurable, the safety gain is certain.
 
-**3. Panic.** Accepted. Two complementary decisions are needed: a panic stops the whole process (not the thread, because the other threads could reach corrupted state), and the checks **stay on in release too**. Zig's ReleaseFast turns safety off; this language must have no option to turn it off, otherwise the reason for the whole design is lost. That is why the checks are cheap in the first place.
+**3. Panic.** Two complementary decisions are needed: a panic stops the whole process (not the thread, because the other threads could reach corrupted state), and the checks **stay on in release too**. Zig's ReleaseFast turns safety off; this language must have no option to turn it off, otherwise the reason for the whole design is lost. That is why the checks are cheap in the first place.
 
 **The resulting model, on one page:**
 

@@ -1,12 +1,6 @@
 # Zig: where it stands, how long the move from C takes
 
-*Source: the conversation of 4 November 2026. The questions and answers are given as they were in the conversation; for correction notes see [decisions and open questions](../design/04-decisions-and-open-questions.md).*
-
-## Question
-
-> So where does Zig stand on this?
-
-## Answer
+## Where Zig stands
 
 Zig deliberately chooses the opposite of Rust: instead of guaranteeing memory safety through the type system, it keeps C's manual model and tries to make bugs more visible and easier to catch. Its claim is to be "a better C", not "a safe C".
 
@@ -16,7 +10,7 @@ Zig deliberately chooses the opposite of Rust: instead of guaranteeing memory sa
 
 - **`defer` and `errdefer`.** An explicit mechanism that takes the place of RAII. You write the release right below the allocation. Destructors do not run in secret; this follows from Zig's "no hidden control flow" principle.
 
-- **Runtime checks in Debug and ReleaseSafe modes.** Array bounds, integer overflow, null unwrap and part of use-after-free (`GeneralPurposeAllocator` reports leaks and double frees) are caught at run time. In ReleaseFast these checks are removed. So safety is not a compile-time proof, it is a bug caught during testing.
+- **Runtime checks in Debug and ReleaseSafe modes.** Array bounds, integer overflow, null unwrap and part of use-after-free (`DebugAllocator`, called `GeneralPurposeAllocator` before 0.14, reports leaks and double frees) are caught at run time. In ReleaseFast these checks are removed. So safety is not a compile-time proof, it is a bug caught during testing.
 
 - **Optional types and error unions.** The null pointer problem is solved in the language with `?*T`. Error handling with `try`/`catch` is mandatory. These parts are real progress over C.
 
@@ -36,17 +30,15 @@ Zig deliberately chooses the opposite of Rust: instead of guaranteeing memory sa
 | Language complexity | Low | Low | High |
 | Maturity | Full | Pre-1.0, breaking changes continue | Stable |
 
-**The answer to "where does it stand":** On the safety spectrum it is between C and Rust, but close to C, not to Rust. Zig's audience is people who say "I like writing C but I want the tools of 2026"; Rust's audience is those who say "I want memory bugs to be impossible". So the two are less rivals than answers to different questions. Projects such as Bun and TigerBeetle chose Zig for performance and control; Android, the Windows kernel and Linux accepted Rust to bring down the number of security vulnerabilities.
+**In one sentence:** on the safety spectrum it is between C and Rust, but close to C, not to Rust. Zig's audience is people who say "I like writing C but I want the tools of 2026"; Rust's audience is those who say "I want memory bugs to be impossible". So the two are less rivals than answers to different questions. Projects such as Bun and TigerBeetle chose Zig for performance and control; Android, the Windows kernel and Linux accepted Rust to bring down the number of security vulnerabilities.
 
 A practical note: Zig is not 1.0 yet, and the standard library breaks with every release. "Sustainable institutional support", one of Rust's five pieces, is for Zig still limited to the donations of the Zig Software Foundation. This is a risk of the ecosystem, not of the language.
 
-## Question
+## Coming from C
 
-> so how much of Zig does someone who knows C have to learn, how big is the part that needs learning? With how much effort can one move from C to Zig?
+How much of Zig does someone who knows C have to learn, and how much effort does the move take?
 
-## Answer
-
-Short answer: for someone who knows C, Zig is one of the easiest systems languages to learn. The memory model is the same, pointers are the same, structs are the same. The effort is about a quarter of moving to Rust. But it has to be split in two, into "knowledge" and "habit".
+For someone who knows C, Zig is one of the easiest systems languages to learn. The memory model is the same, pointers are the same, structs are the same. The effort is about a quarter of moving to Rust. But it has to be split in two, into "knowledge" and "habit".
 
 **The part that comes almost for free (1-2 days):**
 
@@ -73,7 +65,7 @@ Short answer: for someone who knows C, Zig is one of the easiest systems languag
 **The hard things:**
 
 - The documentation of the standard library is weak. You learn by reading the source code. The good news: the source code is readable Zig.
-- Breakage between versions. The blog posts are for 0.11, you are using 0.14, it does not compile. This is what wastes the most time while learning.
+- Breakage between versions. The blog posts are for 0.11, the compiler at hand is 0.14, and the code does not compile. This is what wastes the most time while learning.
 - The error messages do not guide you as well as Rust's.
 - `@cImport` cannot translate some C macros, and they have to be written by hand.
 
@@ -90,4 +82,4 @@ Short answer: for someone who knows C, Zig is one of the easiest systems languag
 
 For comparison with Rust: using ownership intuitively in Rust takes someone who knows C 3 to 6 months, because you have to unlearn some of the patterns you know to be right. In Zig the only thing you have to unlearn is thinking that `malloc` is global.
 
-As learning resources, start with ziglings (ziglings.org) and zig.guide; both keep up with the current version.
+Good places to start are ziglings (ziglings.org) and zig.guide; both keep up with the current version.

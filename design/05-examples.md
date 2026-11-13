@@ -1314,7 +1314,7 @@ Approved on 11 November, in the [decision table](04-decisions-and-open-questions
 |---|---|---|
 | The slice type is `read T[]` (readable) and `ref T[]` (writable). A bare `T[]` is not a type, the owner is `List<T>` | `&[T]`, `&mut [T]`, the owner is `Vec<T>` | `ReadOnlySpan<T>`, `Span<T>`; `T[]` is an owning array on the heap |
 
-| The ends of a range may be left out: `data[..end]`, `line[colon + 1..]`, `data[..]` (the user's suggestion) | The same | The same |
+| The ends of a range may be left out: `data[..end]`, `line[colon + 1..]`, `data[..]` | The same | The same |
 | From text to bytes `text.asBytes()`, from bytes to text `string.fromUtf8(bytes)`: it checks, does not copy, and returns `Result<read string, TextError>` | `as_bytes()`, `str::from_utf8` | No zero-copy way |
 
 Two simplifications on the same day, for the small-language goal: the copying `string.fromBytes` was removed (whoever
@@ -1420,7 +1420,7 @@ performance is not met; the feature adds no new keyword.
 | Decision | Rust | C# | Cost |
 |---|---|---|---|
 | The type is `T[N]`, `N` an integer constant. It is a value, no heap. `length()` is known at compile time. `xs[i]` is bounds-checked, a known out-of-bounds index is a compile error | `[T; N]`, the same behaviour | No natural counterpart: `stackalloc` only for locals, `fixed` inside a struct only in `unsafe` | `T[]` (a slice, needs `read`/`ref`) and `T[N]` (a value) look alike |
-| Construction: `int[3] { 1, 2, 3 }` writes the elements one by one, `byte[16](255)` puts the same value in every element (`T` must be `Copyable`), `byte[16]` on its own fills with zeros (the user's suggestion). There is no uninitialised memory | `[1, 2, 3]`, `[255; 16]`; no short form for zero | `new int[] { 1, 2, 3 }`, `new byte[16]` is always zero | The cost of zeroing a large buffer. A zero value is defined only for numbers, `bool` (`false`) and `T?` (`null`) |
+| Construction: `int[3] { 1, 2, 3 }` writes the elements one by one, `byte[16](255)` puts the same value in every element (`T` must be `Copyable`), `byte[16]` on its own fills with zeros. There is no uninitialised memory | `[1, 2, 3]`, `[255; 16]`; no short form for zero | `new int[] { 1, 2, 3 }`, `new byte[16]` is always zero | The cost of zeroing a large buffer. A zero value is defined only for numbers, `bool` (`false`) and `T?` (`null`) |
 | If `T` is `Copyable`, `T[N]` is `Copyable` too: assignment and parameter passing copy all the elements. Otherwise it is moved | The same | An array is a reference, it is not copied | If `byte[4096]` is passed by value, 4 KB is copied silently; the right thing is to pass a slice |
 | Conversion to a slice: `read xs` and `ref xs` give a slice where a slice is expected. For `List<T>` and `T[N]`, the same rule as `string` → `read string`. `xs[..]` stays valid as range notation | `&buf` becomes a slice where a slice is expected, the same | Converts to `Span` without writing `read` | One conversion rule, an extension of the one for `string` |
 

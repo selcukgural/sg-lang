@@ -1,14 +1,6 @@
 # Attempts at a small, macro-free C with safer pointers
 
-*Source: the conversation of 4 November 2026. The questions and answers are given as they were in the conversation; for correction notes see [decisions and open questions](../design/04-decisions-and-open-questions.md).*
-
-## Question
-
-> so let us think of it this way. Couldn't something be designed that is C stripped of macros, as small as possible, and that makes the use of pointers as safe as possible?
-
-## Answer
-
-It can be designed, and it has been, at least six times. Your definition is word for word Zig's manifesto. So the real question is not "can it be done" but "how safe do you want pointers to be, and what is the price".
+Could there be a C stripped of macros, as small as possible, that makes the use of pointers as safe as possible? It can be designed, and it has been, at least six times. The description is close to Zig's manifesto. So the real question is not "can it be done" but "how safe should pointers be, and what is the price".
 
 **Attempts at the same idea:**
 
@@ -19,7 +11,7 @@ It can be designed, and it has been, at least six times. Your definition is word
 - **Hare** (2022): Drew DeVault's language. Even smaller than Zig, QBE backend, the standard library is deliberately narrow. It claims to be "a C that will last a hundred years".
 - **C3** (2019): a language that keeps C's syntax as much as possible and adds macros, slices and modules. The option that "touches C the least".
 
-All six threw out macros, all added slices, all put null into the type. This part can now be considered solved. None of them managed to solve use-after-free at compile time. That is exactly where the line is.
+All six added slices and put null into the type, and the four that are new languages replaced the C preprocessor (C3 with macros of its own; Checked C, being an extension of C, keeps the preprocessor). This part can now be considered solved. None of them managed to solve use-after-free at compile time. That is exactly where the line is.
 
 **What "safer pointers" means, layer by layer:**
 
@@ -41,6 +33,6 @@ The last two rows are the knot of the whole matter. To know whether a pointer is
 4. **Limit it structurally.** Arena allocator: no freeing one by one, the whole arena dies together. Use-after-free is still possible but the window gets narrower. Zig's standard library and game engines do this by convention.
 5. **Leave it to the hardware.** ARM MTE, CHERI. A tag on the pointer, a mismatch is a hardware fault. Independent of the language, but not widespread.
 
-**Where is the unexplored territory?** Zig does way 4 by convention and does not write it into the language. Rust does way 1 completely, but the price is heavy. Between the two there is a point that has hardly been tried: **tying the arena to the language's type system.** That is, carrying the information "this pointer belongs to that arena and is valid as long as the arena lives" with a single lifetime parameter, not for every reference as in Rust, but only at arena boundaries. Cyclone's regions were close to this, and it died before Rust. Tofte and Talpin's region inference inferred regions automatically, but for ML. "Region inference + Zig's ergonomics" in a C-like language has practically not been tried. This is a concrete candidate for the "single idea" I mentioned in the previous message.
+**Where is the unexplored territory?** Zig does way 4 by convention and does not write it into the language. Rust does way 1 completely, but the price is heavy. Between the two there is a point that has hardly been tried: **tying the arena to the language's type system.** That is, carrying the information "this pointer belongs to that arena and is valid as long as the arena lives" with a single lifetime parameter, not for every reference as in Rust, but only at arena boundaries. Cyclone's regions were close to this, and it died before Rust. Tofte and Talpin's region inference inferred regions automatically, but for ML. "Region inference + Zig's ergonomics" in a C-like language has practically not been tried. It is a concrete candidate for the single idea a new language could be built around.
 
-**The honest answer:** Solving the null, bounds, cast and macro problems is easy; Zig has done it and you can use it. Without solving use-after-free you cannot say "safe"; the biggest share in Microsoft's and Google's memory bug statistics is there. No free way of solving it is known: it is either compile-time notation (Rust), or runtime cost (Vale, Swift), or giving up the concept of a reference (Hylo). The language you design has to pick one of these three or find a fourth way. If you find a fourth way, this stops being a side project.
+**The honest answer:** solving the null, bounds, cast and macro problems is easy; Zig has done it. Without solving use-after-free a language cannot be called safe; the biggest share in Microsoft's and Google's memory bug statistics is there. No free way of solving it is known: it is either compile-time notation (Rust), or runtime cost (Vale, Swift), or giving up the concept of a reference (Hylo). A new language has to pick one of these three or find a fourth way.

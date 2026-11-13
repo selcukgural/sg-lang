@@ -1,14 +1,6 @@
 # C and manual memory management
 
-*Source: the conversation of 4 November 2026. The questions and answers are given as they were in the conversation; for correction notes see [decisions and open questions](../design/04-decisions-and-open-questions.md).*
-
-## Question
-
-> What is the real purpose of leaving memory management to the developer in C?
-
-## Answer
-
-The real purpose comes from the context C was designed in: it appeared in 1972 as "portable assembly" for writing Unix. The intent was to have no invisible runtime layer on top of the hardware.
+Why does C leave memory management to the programmer? The reason lies in the context C was designed in: it appeared in 1972 as "portable assembly" for writing Unix. The intent was to have no invisible runtime layer on top of the hardware.
 
 The concrete reasons behind this:
 

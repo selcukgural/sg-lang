@@ -1,53 +1,215 @@
-# New language design
+# SG
 
-A record of the conversation we had on 4 November 2026 about C, Rust, Zig, Go and C#, and of the language design
-that came out of it. The first code was written on 12 November: [interpreter](interpreter/README.md). The language is named SG (the author's initials) and its source files end in `.sg`. The repository (git) exists as of the same day.
+SG is a small systems language: about as small and as fast as C, memory safe like Rust, and
+written in a notation that reads like C#.
 
-**Idea:** a systems language as fast as C, without macros, that gives Rust's compile-time guarantees in a notation
-that reads like C#.
+It is still being designed. There is a checker, an interpreter and a back end that compiles
+through C, all of them a few days old. Nothing is released and everything can change. This
+repository is the design, the code and the background reading behind both, kept in the open.
 
-**Core principle:** if something can go wrong, the default behaviour is to warn or to stop; the risky path is chosen
-on purpose. An error that can be caught at compile time is not left to run time, and an error whose fix is known comes with its fix.
+## A taste
 
-**Where we left off:** On 5 November the generation model and the arena were dropped and Rust's ownership rules were chosen.
-On 6 November shared ownership, the `?` rule, generics, interface, `enum`, `match` and the error model were decided. The first
-example programs were written, and the questions they raised were settled. On 11 November `char`, narrowing conversion, the `print` error,
-`NaN` and the named function were closed; the 8th example (graph), the 9th example (module, `use`, `public`) and the 10th example (HTTP request, byte slice) were written; the visibility rule and the slice type were decided. On the same day the goal became clear: performance and simplicity like C, a small language. The decision table was reviewed with this in mind, and five features were removed or made smaller (automatic `Ok`, `ThreadFunc`, two small rules; `Closable` was reduced to a single rule that looks only at local variables). With the 11th example (sensor window) the fixed-size array `T[N]` was decided; a list or an array is passed with `read xs` where a slice is expected. On 12 November the 12th example (stock tests) was written; the `test` block and `assert` were decided. Noted on the same day: we are not tied to a single language, and the best side of each language is taken in the form that suits us. On the same day the first slice of a tree-walking interpreter was written in Rust (functions, integers, `if`/`while`/`for`, `print`, `$"..."`, overflow panic), followed by its second slice (struct, `T*`, `T?`, `read`/`ref`, static types and move checking; the linked list example runs). The rules for line endings, the place of `{`/`else`, and statements were approved and are in the decision table. The three rules of the second slice (struct literal in a condition, assigning to a `ref`/`read` variable, looking does not move) were approved too. The third slice was written on the same day as well: methods and `this`, `T(args)`, `take`/`replace`, per-field move checking; the stack example runs, and its six small choices were approved on 12 November 2026. The fourth slice followed: `enum`, `match` and `is` with a variant; an expression tree runs, and its six small choices were approved the same day. The fifth slice added the built-in `Result<T, E>`, `try`, `??` on a `Result` and the unused `Result` error; the calculator runs from the tokens on, and its seven small choices were approved the same day. The sixth slice (`byte`, characters, `text[i]`, ranges of text; the calculator reads real text) was approved as well. The seventh slice (`: Copyable`, `: Formattable`) and the eighth (the built-in `List<T>` and `HashMap<K, V>`, `for` over a collection; the log summary runs) followed, and then the ninth: `HashSet<T>`, searching and sorting a list, and the compile error for a collection changed inside its own `for`. Their choices were approved on 12 November 2026. The tenth slice added `Equatable`, `Hashable` and `Comparable` as built-in names (`==`, `<`, `sort`, keys of your own types; a collection is compared with `==` when its items are); its choices were approved the same day. The eleventh slice added `test` blocks and the test command; the stock tests run. On the same day the goal was restated (safe and fast software, a language as small as C; performance and simplicity are not given up) and the design was made smaller: lambdas and capture were removed, a function value is the address of a named function, and generics of your own, `where` and your own `interface` were deferred. Function values and the first part of the borrow check (borrows that do not go together, until the last use) followed in the twelfth and thirteenth slices, and the second part (`from`, a borrow does not outlive its owner) in the fourteenth. The fifteenth added the third: types that carry a borrow (`struct Token<from source>`); the calculator no longer copies its input. The sixteenth slice is the first piece of a back end: `sg build` compiles a program through C, and the first measurements against hand-written C are in the performance note. On them the overflow rule became Rust's (checked in debug, wrapping in release). The seventeenth slice added text and the first owned values to the back end; compiled programs are also run under the sanitizers. The details are in [interpreter/README.md](interpreter/README.md). The code, comments, error messages and interpreter docs are in English; since 12 November 2026 the design documents are in English too (all files translated). When you come back, read
-[decisions and open questions](design/04-decisions-and-open-questions.md) first.
+```
+struct Product {
+    string code
+    long price
+}
 
-## Design
+enum StockError : Formattable {
+    Unknown(string code)
+}
+
+// A look at a product, or nothing. `from products`: what comes back points into the list.
+read Product? find(read List<Product> products, read string code) from products {
+    for product in read products {
+        if product.code == code {
+            return product
+        }
+    }
+    return null
+}
+
+Result<long, StockError> priceOf(read List<Product> products, read string code) {
+    var product = find(products, code) ?? return Error(StockError.Unknown(code.clone()))
+    return Ok(product.price)
+}
+
+Result<void, StockError> main() {
+    var products = List<Product> {
+        Product { code = "pen", price = 1500 },
+        Product { code = "notebook", price = 4000 },
+    }
+    var total = try priceOf(read products, "pen") + try priceOf(read products, "notebook")
+    print($"total: {total} cents")
+    try priceOf(read products, "ink")
+    return Ok()
+}
+```
+
+```
+total: 5500 cents
+error: Unknown("ink")
+```
+
+A few things to notice:
+
+- **A value has one owner**, and it is freed when the owner ends. There is no garbage collector
+  and no `free` to forget.
+- **`read` lends a value to look at, `ref` lends it to change.** The word is written where the
+  value is lent, so the call site shows what a function can do to your data.
+- **`T?` is a value that may be missing, `Result<T, E>` one that may have failed.** Neither can be
+  used before it is opened, with `??`, `try`, `is null` or `match`. There are no exceptions and
+  no null pointer to follow by accident.
+- **`find` gives back a pointer into the list**, and the compiler knows it. In the compiled
+  program it is the plain pointer you would write in C.
+
+## The idea
+
+Most of what makes Rust safe is a handful of rules about who owns a value and who may look at
+it. SG keeps those rules and tries to leave out nearly everything else. The aim is a language
+you can hold in your head the way you can hold C, where the compiler still catches the use
+after free, the dangling pointer and the forgotten error.
+
+Three principles decide most questions:
+
+1. **The safe way is the default; the risky way is chosen on purpose.** If something can go
+   wrong, the language stops you or makes you say so.
+2. **What can be caught when compiling is not left to run time**, and an error whose fix is
+   known comes with the fix.
+3. **Small and fast come first.** A feature has to pay for itself twice: in what it costs when
+   the program runs, and in what it costs to learn. Lambdas, your own generics and your own
+   interfaces were taken out or put off for that reason.
+
+## What the compiler tells you
+
+Using a value after it was given away:
+
+```
+error: `names` was moved and can no longer be used
+  --> moved.sg:4:11
+ 4 |     print(names.length())
+   |           ^^^^^
+  it was moved here:
+  --> moved.sg:3:16
+ 3 |     var kept = names
+   |                ^^^^^
+```
+
+Returning a pointer to something that is about to disappear:
+
+```
+error: this returns a borrow of `best`, and `best` is gone when the function returns
+  --> dangle.sg:8:12
+ 8 |     return read best
+   |            ^^^^^^^^^
+  hint: return the value itself instead of a borrow of it
+```
+
+## Is it fast?
+
+That is the claim, so it is measured. Each benchmark is written twice, in SG and in C by hand,
+and both go through the same C compiler with `-O2`. Some of the results (time of SG divided by
+time of C; 1.00 is the same speed):
+
+| Program | SG / C |
+|---|---|
+| Recursive `fib(40)` | 0.98 |
+| A linked list of a million nodes, built, walked and freed | 1.01 |
+| A list of a million numbers, filled, changed, added up | 1.02 |
+| Three hundred million lookups that give back a borrow or nothing | 1.01 |
+| Counting in a hash table | 1.20 |
+| Printing two million structs | 0.57 |
+
+The hash table is slower because it uses a keyed hash by default, which protects against
+crafted keys; with a plain hash it is 0.99. These are small programs on one machine, not
+proof. All the numbers, and how they were taken, are in the
+[interpreter README](interpreter/README.md#the-c-back-end).
+
+## Try it
+
+You need Rust (to build `sg`) and a C compiler (`cc`, clang or gcc) for compiled programs.
+
+```
+git clone https://github.com/selcukgural/sg-lang
+cd sg-lang/interpreter
+
+cargo run -- examples/stack.sg                     # run a program in the interpreter
+cargo run -- examples/shop/main.sg                 # a program with modules
+cargo run -- test examples/shop                    # run its tests
+cargo run -- build examples/primes.sg --release    # compile it through C
+cargo test                                         # everything, also under the sanitizers
+```
+
+The programs in [interpreter/examples](interpreter/examples) are the best place to see the
+language as it is today.
+
+## Where it stands
+
+Working today, in the interpreter and in compiled code: integers, `bool` and text; structs,
+enums and `match`; `T*`, `T?` and `Result` with `try` and `??`; `List`, `HashMap` and `HashSet`;
+function values; ownership, moves and the borrow check; modules (`use`, `public`, `readonly`);
+`test` blocks.
+
+Designed but not built yet: threads and shared ownership, slices and fixed-size arrays,
+floating point. Generics of your own are put off. There is nothing for files or the network
+yet, no standard library, no package manager and no editor support.
+
+When the language is complete, the plan is to write a well-known, widely used program in it,
+one that has not been rewritten in Rust yet, and see how the claim holds on real software.
+
+## What is in this repository
+
+| Folder | What it holds |
+|---|---|
+| [design](design) | The language itself, on paper |
+| [interpreter](interpreter/README.md) | The code, in Rust: checker, interpreter, C back end, tests and benchmarks |
+| [topics](topics) | Background: essays on C, Rust, Zig and Go, and on the problem SG sets out to solve |
+| [sources](sources/reading-list.md) | Reading list: books, Hylo, Vale, Rust writings, tools |
+
+If you read one design document, read
+[decisions and open questions](design/04-decisions-and-open-questions.md): every decision with
+its reason and its cost, what is still open, and what comes next. The others:
 
 | File | Contents |
 |---|---|
-| [Decisions and open questions](design/04-decisions-and-open-questions.md) | Decisions made, what is still open, next steps, gaps noticed later |
-| [Memory model](design/01-memory-model.md) | Dropped: generation-checked pointer, second-class stack reference, panic |
-| [Syntax draft](design/02-syntax-draft.md) | Current ownership notation, the dropped generation variant and the first Zig draft |
-| [Roadmap](design/03-roadmap.md) | Where to start designing a language, the steps and the traps |
-| [Example programs](design/05-examples.md) | Calculator, stack, threads, `List`, log summary, folder tree, order rules, graph, stock and invoice (module), HTTP request, sensor window (fixed-size array), stock tests, and the questions the examples raised |
+| [Example programs](design/05-examples.md) | Twelve programs written before there was a compiler, and the questions they raised |
+| [Syntax draft](design/02-syntax-draft.md) | The ownership notation, and the earlier drafts that were dropped |
+| [Memory model](design/01-memory-model.md) | The first model (generation-checked pointers), kept for the record; it was dropped |
+| [Roadmap](design/03-roadmap.md) | Where to start when designing a language, the steps and the traps |
 
-## Code
-
-| Folder | Contents |
-|---|---|
-| [interpreter](interpreter/README.md) | Tree-walking interpreter in Rust: what it runs, how it is built, what comes next |
-
-## Topics
-
-In the order of the conversation. Each file contains the question and the answer as they were in the conversation.
+The background essays, best read in order:
 
 | File | Contents |
 |---|---|
 | [C and manual memory](topics/01-c-and-manual-memory.md) | Why memory management was left to the developer |
 | [History of Rust ownership](topics/02-rust-ownership-history.md) | The roots of the idea, why it took 40 years, why C++ could not do it |
-| [Zig](topics/03-zig.md) | Where it stands on safety, how long the move from C takes; C/Zig/Rust table |
+| [Zig](topics/03-zig.md) | Where it stands on safety, how long the move from C takes |
 | [Rust syntax and C#](topics/04-rust-syntax-and-csharp.md) | Where the noise comes from, the "second C++?" question |
-| [Go](topics/05-go.md) | Its philosophy, its weak sides; C/Zig/Rust/Go table |
-| [Safe C attempts](topics/06-safe-c-attempts.md) | Attempts from Cyclone to C3, the layers of pointer safety |
+| [Go](topics/05-go.md) | Its philosophy, its weak sides |
+| [Safe C attempts](topics/06-safe-c-attempts.md) | From Cyclone to C3, the layers of pointer safety |
 | [Use-after-free](topics/07-use-after-free.md) | The explicit error idea, why a simple table is not enough |
 
-## Sources
+## How it got here
 
-- [Reading list](sources/reading-list.md): books, Hylo, Vale, Rust writings and links to tools.
+SG started on 4 November 2026 from a handful of questions about C, Rust, Zig, Go and C#: why C left
+memory to the programmer, why ownership took forty years to arrive, and whether its
+guarantees could be had in a smaller language. The name is the author's initials; source files
+end in `.sg`.
+
+The first design used generation-checked pointers and arenas. It was dropped a day later for
+Rust's ownership rules, which cost nothing when the program runs. Over the next week twelve
+example programs were written on paper, and each question they raised was settled and written
+down. On 11 November the goal was put in one line, performance and simplicity like C, and the
+design was made smaller to fit it.
+
+The first code followed on 12 November: an interpreter in Rust, built one slice of the
+language at a time, then the borrow check, then a back end that compiles through C, with every
+compiled program compared against the interpreter and run under the sanitizers. No single
+language is the model. The ownership rules are Rust's, the notation is close to C#'s, modules
+work as in Go, tests are written as in Zig.
+
+The full record, slice by slice, is under "Next steps" in
+[decisions and open questions](design/04-decisions-and-open-questions.md).
 
 ## License
 

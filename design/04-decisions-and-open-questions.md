@@ -418,7 +418,7 @@ Removed on 12 November. The measure, in the author's words: performance and simp
 
 ## Notation mapping
 
-The C# direction was chosen on 5 November. The conversation texts (`topics/`, the memory model and the notes below) are still
+The C# direction was chosen on 5 November. The background essays (`topics/`), the memory model and the notes below are still
 in the old notation:
 
 | Old | New |
@@ -433,12 +433,11 @@ in the old notation:
 | `Node { value: v }` | `Node { value = v }` |
 | `i32` | `int` |
 
-## Notes added during the transfer
+## Notes on the first drafts
 
-This section was not in the 4 November conversation; it was noticed on 5 November while transferring to files. The conversation texts
-were not changed, and the corrections are kept here.
+Noticed on 5 November 2026, on a second reading of the first day's texts.
 
-### Gaps in the design
+### Gaps in the first memory model
 
 The memory model gaps in this section lost their subject when the generation model was dropped, and they are kept for the record.
 
@@ -462,17 +461,6 @@ The memory model gaps in this section lost their subject when the generation mod
 - **2-10 percent is not this design's figure.** That measurement is for Vale's layout. Here, on every dereference,
   the slot is additionally computed from the page header and the generation is read from the header. The claim "cache behaviour is the same as
   C" also holds only for pointer size. The cost must be counted as unknown until it is measured.
-
-### Mistakes in the conversation
-
-- [Safe C attempts](../topics/06-safe-c-attempts.md): the statement "all six threw out macros" is
-  wrong. The same text says that C3 added macros; and Checked C, being an extension of C,
-  carries its preprocessor.
-- [Go](../topics/05-go.md): `defer` was listed as an example of breaking Zig's principle, yet Zig
-  has `defer` too. `panic`/`recover` and GC pauses should remain as the examples.
-- [Roadmap](03-roadmap.md): "Rust belts" is not Niko Matsakis's but the RustBelt project of
-  Ralf Jung and his team: https://plv.mpi-sws.org/rustbelt/
-- [Zig](../topics/03-zig.md): `GeneralPurposeAllocator` was renamed `DebugAllocator` with 0.14.
 
 ### Reading list links
 

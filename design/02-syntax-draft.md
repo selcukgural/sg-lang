@@ -819,7 +819,7 @@ void main() {
 
 Kept for comparison, not the current notation.
 
-*Source: conversation of 4 November 2026. The notation is not a decision yet; a rough first attempt close to Zig.*
+*Written on 4 November 2026. The notation is not a decision yet; a rough first attempt close to Zig.*
 
 The next step is example programs. Let the model's first test be a linked list, because that is where you see where a second-class stack reference will hurt. In a notation close to Zig it would look roughly like this:
 

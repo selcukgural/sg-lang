@@ -1,12 +1,6 @@
 # Why Rust's ownership model came so late
 
-*Source: the conversation of 4 November 2026. The questions and answers are given as they were in the conversation; for correction notes see [decisions and open questions](../design/04-decisions-and-open-questions.md).*
-
-## Question
-
-> So was Rust's ownership model only just invented? I mean, why did it take so long for a language as fast as C and free of C's well-known bugs to appear. There is C++, yes, but you can write legacy C in it too, or the memory management is like in C
-
-## Answer
+A language as fast as C and free of C's well-known bugs took a long time to appear. C++ did not close the gap: legacy C can still be written in it, and memory can still be managed the way C does. So was Rust's ownership model only just invented?
 
 No, the ideas are not new. What is new is that these ideas came together and became a practical language.
 

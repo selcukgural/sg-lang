@@ -1,17 +1,9 @@
 # Reading list
 
-*Source: the conversation of 4 November 2026. The questions and answers are given as they were in the conversation; for correction notes see [decisions and open questions](../design/04-decisions-and-open-questions.md).*
-
-## Question
-
-> can you give the links for the reading list
-
-## Answer
-
 **Getting started**
 
 - *Crafting Interpreters*, Bob Nystrom. All of it is free: https://craftinginterpreters.com
-- *Types and Programming Languages*, Benjamin Pierce. MIT Press page: https://mitpress.mit.edu/9780262162098 (there is no free legal edition, you have to buy the book; alongside it there is the author's course site https://www.cis.upenn.edu/~bcpierce/tapl)
+- *Types and Programming Languages*, Benjamin Pierce. MIT Press page: https://mitpress.mit.edu/9780262162098 (there is no free legal edition; alongside it there is the author's course site https://www.cis.upenn.edu/~bcpierce/tapl)
 
 **Memory safety ideas outside Rust**
 
@@ -35,13 +27,13 @@ A note on Vale: a secondary source says development stopped in 2026. The ideas a
 - The Polonius book and its list of related reading: https://rust-lang.github.io/polonius/see_also.html
 - Rust MIR design (as an example of an IR): https://rustc-dev-guide.rust-lang.org/mir/index.html
 
-**Tools (if you write it in Rust)**
+**Tools for writing a language in Rust**
 
 - logos lexer: https://github.com/maciejhirsz/logos
 - chumsky parser: https://github.com/zesterer/chumsky
 - inkwell LLVM bindings: https://github.com/TheDan64/inkwell
 - Cranelift: https://cranelift.dev
 
-The reading order I suggest: the first half of Crafting Interpreters, then Graydon's post, then Hylo's home page. Pierce and Polonius when you start writing the type checker, that is, around the third month.
+A reading order: the first half of Crafting Interpreters, then Graydon's post, then Hylo's home page; Pierce and Polonius when the type checker is being written.
 
 Sources: [Graydon Hoare mirror](https://anilkeshwani.github.io/garden/Clippings/graydon2--The-Rust-I-Wanted-Had-No-Future), [Hylo docs](https://docs.hylo-lang.org/language-tour/bindings), [Hylo site repo](https://github.com/hylo-lang/hylo-lang.github.io/blob/main/index.md), [Vale on GitHub](https://github.com/Verdagon/Vale), [Vale regions](https://hn.jakechampion.name/reader/https://verdagon.dev/blog/zero-cost-memory-safety-regions-overview), [Polonius see also](https://rust-lang.github.io/polonius/see_also.html), [Polonius part 1](https://b.hatena.ne.jp/entry/s/smallcultfollowing.com/babysteps/blog/2023/09/22/polonius-part-1), [TAPL MIT Press](https://mitpressbookstore.mit.edu/book/9780262162098), [TAPL Wikipedia](https://en.wikipedia.org/wiki/Types_and_Programming_Languages)
