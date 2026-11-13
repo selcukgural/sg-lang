@@ -1,0 +1,36 @@
+[name = Ada , 36,  3.5]
+[name = Ada , 36,  3.5  ]
+[  name = Ada , 36,  3.5]
+<name = Ada>
+<36>
+<3.5>
+a
+
+rest <b>
+rest <>
+to
+be
+or
+not
+to
+be
+line [one]
+line [two]
+line []
+line [four]
+a 97 1
+é 233 2
+😀 128512 4
+4
+4
+7
+8
+true
+true
+true
+false
+true
+x
+y
+-
+6

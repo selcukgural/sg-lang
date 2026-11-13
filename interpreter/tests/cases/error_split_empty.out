@@ -1,0 +1,5 @@
+error: the separator of `split` is empty, so there is nothing to split at
+  --> error_split_empty.sg:2:29
+ 2 |     for part in "abc".split("") {
+   |                             ^^
+  hint: the characters, one after the other: `text.chars()`

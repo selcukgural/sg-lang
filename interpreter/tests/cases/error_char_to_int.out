@@ -1,0 +1,5 @@
+error: expected `int`, found `char`
+  --> error_char_to_int.sg:3:13
+ 3 |     int x = c
+   |             ^
+  hint: the code of the character: `(int)c`

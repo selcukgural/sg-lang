@@ -22,12 +22,12 @@ sh bench/run.sh                                 # compiled SG against C written 
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
-| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
+| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
 | Methods | Written in the struct body with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`. Called as `stack.push(1)`, also through pointers and borrows. A function without `this` is called on the type: `Stack.create()`. `Stack(args)` is short for `Stack.create(args)` |
 | Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)` |
-| `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a name or `_` for each value, `_`, `var other`; a condition with `when`. On an integer the patterns are numbers and characters: `match c { '+' => ... _ => ... }`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
+| `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a name or `_` for each value, `_`, `var other`; a condition with `when`. On an integer the patterns are numbers and characters, on a `char` characters: `match c { '+' => ... _ => ... }`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
 | Interfaces | Five built-in ones, written after the name: `struct Point : Copyable`, `enum AppError : Formattable`. A `Copyable` value is copied where another would be moved. A `Formattable` value is accepted by `print`, `$"..."` and `f.write`; a struct can write its own `void format(read this, ref Formatter f)`, otherwise the text is made from the fields. `Equatable` gives `==` and `!=` (field by field, or the struct's own `bool equals(read this, read T other)`), `Hashable` lets the type be a key of a `HashMap` or an item of a `HashSet`, `Comparable` gives `<` `<=` `>` `>=` and `sort` through the struct's `int compare(read this, read T other)` |
 | `List<T>` | Built in. `List<int>()`, `List<int> { 1, 2 }`; `xs.add(v)`, `xs.length()`, `xs[i]` to read and to write (`xs[i] = v`, `xs[i] += 1`, `xs[i].name = ...`, `ref xs[i]`), `xs.get(i)` gives `null` where `xs[i]` would panic, `xs.removeLast()`, `xs.reverse()`, `xs.clear()`. `xs.indexOf(v)` and `xs.contains(v)` on `Equatable` items, `xs.sort()` on `Comparable` ones (numbers and text are both). `string.join(", ", read names)` |
 | `HashMap<K, V>` | Built in; a key is an integer, a `bool`, a `string` or a type written `: Equatable, Hashable`. `HashMap<string, int>()`, `HashMap<string, int> { {"x", 10} }`; `map.add(key, value)`, `map[key]` to read and to write what is under a key that is there, `map.get(key)` gives `null` for a missing key, `map.getOrAdd(key, initial)` gives a `ref V`, `map.contains(key)`, `map.remove(key)`, `map.length()`, `map.clear()` |
@@ -37,19 +37,20 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Slices | `read T[]` looks at items that something else owns, `ref T[]` can also write them. `read xs` and `ref xs` give one where a slice is expected, for a `List<T>` and a `T[N]`; a range gives one too: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` for a range that is written through. `s[i]`, `s.length()`, `s.get(i)`, `s.indexOf(v)`, `s.contains(v)`, `==`, `print`, `for`. `text.asBytes()` looks at a text as a `read byte[]`; `string.fromUtf8(bytes)` looks at bytes as text and gives a `Result<read string, TextError>` |
 | `for` over a collection | `for x in xs` hands the collection over and `x` owns each item; `for x in read xs` and `for x in ref xs` lend, and so does a collection that is already borrowed. Over a `HashMap` the variable has a `key` and a `value`; a `HashSet` is gone over by hand-over or `read`. An array is gone over like a list; a slice lends its items |
 | `is` | `if s is Circle(r) { ... }`, `while next() is not End { ... }` |
-| Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
+| Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`; on a `read T?` it gives a `read T`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
 | Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x`. On integers `& \| ^ ~ << >>`; they bind tighter than a comparison, so `flags & mask == 0` tests the masked value |
 | Numbers | `42`, `0xde`, `0b1010`, and `_` between digits: `1_000_000`, `0xdead_beef` |
-| Text | `"..."` with `\n \t \r \0 \\ \" \'`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()`, `text.indexOf(':')`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string` |
-| Characters | `'+'`, `'\n'`: a `byte` |
+| Text | `"..."` with `\n \t \r \0 \\ \" \'` and `\u{1F600}`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string`. `trim()`, `trimStart()`, `trimEnd()` give a `read string`; `indexOf(x)` and `lastIndexOf(x)` a `nint?` in bytes; `contains(x)`, `startsWith(x)`, `endsWith(x)`, where `x` is a `char` or a `read string` (or a `byte` for the two positions); `equalsIgnoreAsciiCase(other)` |
+| Going over text | `for c in text.chars()` gives each `char`; `text.split(',')` (a `char` or a `read string`), `text.splitWhitespace()` and `text.lines()` give each part as a `read string`, nothing copied. Kept in a `var`, the iterator gives the next part with `parts.next()`, `null` at the end |
+| Characters | `char`: one Unicode character. `'+'`, `'é'`, `'\n'`, `'\u{e9}'` is a `char`, and a `byte` where an integer goes (`byte b = '+'`, `text[i] == ':'`). `(int)c` is its code, `(char)n` the character of a code, `n.tryToChar()` gives `null` where `(char)n` would panic. `==`, `<`, `match`, keys, `sort`, `print`. `isAsciiDigit()`, `isAsciiLetter()`, `isAsciiAlphanumeric()`, `isAsciiUpper()`, `isAsciiLower()`, `isAsciiWhitespace()`, `isAscii()`, `toAsciiUpper()`, `toAsciiLower()` on `char` and on `byte`; `isWhitespace()` and `utf8Length()` on `char` |
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
 | Built-ins | `print(x)`, `panic("...")`, `assert(condition)` |
 | Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A normal run leaves the tests out |
-| Comparing by name | `a.compare(b)` on integers and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
+| Comparing by name | `a.compare(b)` on numbers, `char` and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
 | Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic. `tryToInt()` and the others give `null` where a cast would panic, `wrappingToInt()` and the others keep the bits that fit; `min`, `max` |
 | Fractional methods | `abs`, `sqrt`, `floor`, `ceil`, `round`, `truncate`, `isNaN`, `isInfinite`; `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pow`, `fusedMultiplyAdd`, `min`, `max`; `tryToInt()` and the others |
 | Numbers from text | `int.parse(text)`, and the same on every number type, gives a `Result<int, NumberError>`; the built-in `enum NumberError { Invalid(nint position)` / `OutOfRange }` says where the text stops being a number, or that the type does not hold it |
@@ -115,6 +116,13 @@ Design rules that are already enforced:
   the text panics with the index and the length, and a range that cuts a character in half panics and names
   the character.
 - A character that takes more than one byte (`'é'`) is an error where a `byte` goes; the hint is `char`.
+- A `char` is not a number: `c + 1`, `c == 65` and `int x = c` are errors whose hint is `(int)c`; `char c =
+  n` is one whose hint is `(char)n` or `n.tryToChar()`. `(char)n` panics in every build when no character
+  has the code, and is a compile error when the code is known (`(char)0xD800`).
+- While a `for` goes over a text (`for part in line.split(',')`), the text cannot be changed or moved; a
+  part kept from `parts.next()` or `line.trim()` keeps the text from changing while it is used. An iterator
+  over a text that has no name is an error whose hint is to name it. `split("")` is an error, and a
+  separator that is empty at run time panics.
 - A conversion whose value is known and does not fit is an error, not a panic: `(byte)300`.
 - A `match` on a number needs `_` or `var name` for the values it does not list.
 - `: Copyable` holds only if every field can be copied; the error names the field that cannot (`string`, `T*`,
@@ -191,7 +199,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (140 of 480 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (151 of 518 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -240,6 +248,8 @@ written together with the checker and the interpreter. Since the thirty-third sl
 types, `sbyte`, `short`, `ushort`, `uint`, `ulong` and `nuint`, also written together with the checker and
 the interpreter. Since the thirty-fourth slice `float` and `double`, the same way. Since the thirty-fifth
 slice `parse`, the constants, the conversions that do not panic and the math methods, the same way.
+Since the thirty-sixth slice `char`, `chars`, `split`, `splitWhitespace`, `lines`, `trim` and the
+searches in a text, the same way.
 What is still missing is an error that names it (not silence): the few positions listed with the choices
 below (81, 111).
 
@@ -275,6 +285,7 @@ hand with no checks):
 | `hash`: XXH64, the 64-bit xxHash, written with `ulong`, over one megabyte, two thousand times | 0.134 s | 0.488 s | 0.133 s | 1.01 |
 | `nbody`: the sun and the four giant planets moved twenty million steps in `double`, a square root for each pair at each step | 0.661 s | 0.662 s | 0.679 s | 0.97 |
 | `numbers`: a million lines of whole and fractional numbers read ten times with `long.parse` and `double.parse` and added up | 0.201 s | 0.202 s | 0.194 s | 1.04 |
+| `fields`: a million lines like ` Ada17 , 120, -45 ,6789` gone over twenty times with `lines`, `split`, `trim`, `long.parse` and `chars` | 1.319 s | 1.329 s | 1.224 s | 1.08 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -369,6 +380,17 @@ twice, once to find its length (now once, choice 166); and every fractional numb
 through a copy, where most are short enough to be one correctly rounded division (choice 164). The
 overflow-checked build takes the same time: the digits are added up by the runtime on 128 bits, where
 nothing can overflow, and the one checked addition for each line is a test that is never taken.
+
+`fields` splits text: a million lines of a name and three numbers, with spaces around the fields, `\r\n`
+at the ends and an `é` in every seventh name, gone over twenty times. Each line comes from `lines()`, its
+fields from `split(',')`, each field is trimmed and read with `long.parse`, and the characters of the
+name are counted with `chars()`. The C program is what one writes by hand: `memchr` for the line and the
+comma, a loop that skips ASCII spaces, `strtoll` straight on the field (it skips the spaces itself), and
+the bytes that do not continue a character counted. Going over the text takes about the time of C (1.15 s
+against 1.08 s for the twenty rounds; SG's `trim` reads characters and knows Unicode's spaces, the C loop
+only ASCII), and building it takes more (0.17 s against 0.14 s), for the reason given for `numbers`. A
+search for a separator of one byte without the `memcmp` after `memchr` was tried and made the program
+slower (1.54 s, in every run); why was not looked into, and the change was left out.
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
@@ -603,6 +625,8 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
    widens to `int`, `long` and `nint` on its own; the way back is written `(byte)x`.
 2. **A character is a `byte` and nothing more.** `int x = '+'` is 43 through the ordinary widening, and
    `print('+')` writes `43`, as C# does for a `byte`. Writing it as a character waits for `char`.
+   (Since the thirty-sixth slice a character is a `char` where no integer is expected: `print('+')` writes
+   `+`; where an integer goes it is still a `byte`, 167.)
 3. **`-b` on a `byte` is an error**, since the result could only be 0 (Rust). The hint is `-(int)b`.
 4. **An index and the ends of a range take any integer that widens to `nint`**: a `byte`, an `int`, a `nint`.
    A `long` is converted with `(nint)`.
@@ -646,7 +670,8 @@ over the current token with `replace`; `-x` is `0.trySubtract(x)`; and the input
 instead of a file. The variables are a `HashMap<string, int>`.
 
 `examples/log_summary.sg` is the log summary from the design without the files: a `List` of lines, a
-`HashMap` filled with `getOrAdd`, and a `for` over both.
+`HashMap` filled with `getOrAdd`, and a `for` over both. Since the thirty-sixth slice a line is parsed as
+the design parses it, with `split`, `try parts.next()` and `int.parse`, into an `Entry<from line>` (179).
 
 ## Rules from the eighth slice
 
@@ -1534,6 +1559,86 @@ The design had decided that `int.parse` gives a `Result` ("File API") and named 
      stack, then copied into its own block. Before, every such text was written twice, once to find its
      length. Found by the measurement of 165; it changes no output.
 
+Choices made in the thirty-sixth slice (text: `char`, going over a text, trimming it and looking in it;
+checker, interpreter and back end together). The design had decided `char` (32 bits, the type a character
+constant takes where it is used, `text.chars()`) and wrote `text.split(' ')`, `text.lines()`, `trim()` and
+`parts.next()` in its examples; the rest was approved on 13 November 2026:
+
+167. **A character constant with nothing around it to decide is a `char`**: `var c = 'é'`, and `print('+')`
+     writes `+`. Where an integer goes it is still a `byte` (`byte b = '+'`, `text[i] == ':'`, `int x = '+'`
+     is 43), and one that takes more than one byte is an error there, hint `char`. This changes the design's
+     "`var v = '+'` gives a `byte`" (the `char` row of the decisions) and rule 2 of the sixth slice: with
+     `char` there, a `byte` by default made `print('+')` write 43 and `var separator = ','` a number. C# and
+     Rust give a `char`; only C gives a number.
+168. **A `char` is not a number.** `c + 1` is an error (note: `(int)c` is the code, `(char)n` the
+     character), so is `c == 65` (hint `(int)c` or `(char)`), and a `char` does not widen: `int x = c` is
+     an error whose hint is `(int)c`. A cast goes both ways, and only between `char` and the integer types.
+     Rust's way; C# adds a `char` like a number, which is how `'a' + 1` became 98.
+169. **`(char)n` panics in every build** when no character has the code (below 0, past 0x10FFFF, or
+     0xD800 to 0xDFFF), with the hint `n.tryToChar()`, which gives `null`. It is not the overflow rule: a
+     bad code written into a text would break the promise that a `string` is valid UTF-8, so the check stays
+     in a release build, as the bounds check does. A code known in the program is a compile error.
+     `(byte)c` and the other types narrower than the code follow the integer rule (a panic in a debug build,
+     wrapping in a release one), hint `(int)c`; `(int)c` cannot fail.
+170. **`char` is `Copyable`, `Equatable`, `Hashable`, `Comparable` and `Formattable`**: `==` and `<` by
+     code, a key of a map, `sort`, and `match c { 'a' => ... }` (the arms are characters; a number there is
+     an error whose hint is the character). `print(c)` writes the character; inside a collection or a
+     struct, and in an `assert` message, it is in single quotes with the escapes of a constant: `['a',
+     '\n']`, as text is in double quotes there.
+171. **`\u{...}` writes a character by its code**, in a text and in a character constant: `'\u{e9}'`,
+     `"\u{1F600}"`, one to six hex digits (Rust's and Swift's form). It is how `print` already wrote a
+     control character inside a collection, so what is printed reads back. C#'s `\uXXXX` cannot write a
+     character past 0xFFFF in one escape.
+172. **ASCII methods on `char` and on `byte`**: `isAscii`, `isAsciiDigit`, `isAsciiLetter`,
+     `isAsciiAlphanumeric`, `isAsciiUpper`, `isAsciiLower`, `isAsciiWhitespace` (space, `\t`, `\n`, form
+     feed, `\r`), `toAsciiUpper`, `toAsciiLower`: Rust's set, and a parser that goes byte by byte
+     (`text[i].isAsciiDigit()`) needs no `char`. The tests that need Unicode tables are not here: C#'s
+     `char.IsDigit` says yes to the digits of many scripts (`'٣'` among them, which `parse` does not
+     read), and `ToUpper` depends on the culture; `isDigit`,
+     `toUpper` and the like get the ASCII method as a hint. On `char` only: `isWhitespace` (Unicode's
+     White_Space, 25 characters: what `trim` takes off) and `utf8Length` (1 to 4).
+173. **Going over a text: `text.chars()`, `text.split(sep)`, `text.splitWhitespace()`, `text.lines()`.**
+     `chars` gives each `char`; the others give each part as a `read string`, a look at the text where it
+     is. `split` keeps the empty parts (`"a,,b"` gives three, `""` gives one), as Rust and C# do;
+     `splitWhitespace` skips them (Rust's `split_whitespace`); `lines` ends a line at `\n` and leaves out a
+     `\r` right before it, and a last `\n` does not start an empty line (Rust's `lines`). The separator is a
+     `char` or a `read string`. A `byte` is an error whose hint is `(char)b`, because a byte past ASCII would
+     cut characters in half; an empty separator is an error in the program and a panic at run time.
+174. **What they give is an iterator: `for` goes over it, `it.next()` gives the next part or `null`**
+     (`char?`, `read string?`), as the design's examples call `parts.next()`. It is not copied (`var b = a`
+     moves it), `for` uses it up, and a `for` over `read it` is an error. Its type has a name in messages
+     (`Split`, `Chars`, `SplitWhitespace`, `Lines`) but cannot be written yet, so it lives in a `var` or a
+     `for`, not in a field or a parameter: it carries a borrow of the text, and a built-in type that does
+     comes with generics (the `for` pattern of the design, `Iterator<T>`).
+175. **A part borrows the text, not the iterator**: after `var name = parts.next()` the `parts` goes on,
+     and `name` keeps the text from changing for as long as it is used (the rule of a `from source`
+     method). While a `for` goes over a text, the text cannot be changed or moved; `split` keeps its
+     separator too. An iterator over a text with no name (`make().split(' ')`) is an error whose hint is to
+     name the text, because it would be gone before the loop starts.
+176. **`trim`, `trimStart` and `trimEnd` give a `read string`**, nothing copied, and take off Unicode's
+     White_Space at the ends, as Rust and C# do: `"\u{3000}x\t".trim()` is `x`. `.clone()` owns it.
+177. **Looking in a text**: `indexOf` and `lastIndexOf` (a `nint?`, in bytes, because `text[a..b]` takes
+     bytes), `contains`, `startsWith`, `endsWith`, each with a `char` or a `read string`; `indexOf` and
+     `lastIndexOf` also with a `byte`, as `text.indexOf(':')` worked before. An empty text is found at 0,
+     and by `lastIndexOf` at the length, as in Rust.
+178. **`equalsIgnoreAsciiCase`, not the design's `equalsIgnoreCase`**: only the ASCII letters are folded,
+     which is what the name of a protocol field (`Content-Length`) needs, with one answer everywhere;
+     `"É".equalsIgnoreAsciiCase("é")` is false. Ignoring the case of any text needs Unicode tables.
+     `equalsIgnoreCase` gets the hint. The design's HTTP example changes in that one word.
+179. **`try` on a `read T?` gives a `read T`**, as `??` already did: `var level = try parts.next()`, `var
+     name = try names.get(1)`, in a function that returns a `T?` or a `read T?`. It was an error ("takes the
+     value out"); nothing is taken out, the borrow is passed on. With it the log summary example parses its
+     lines as the design wrote them: `struct Entry<from line>`, `split`, `try parts.next()`, `int.parse`.
+180. **Compiled code**: a `char` is a `uint32_t`; an iterator a small struct (the text, where it is, the
+     separator; a separator of one character is kept inside it, so that the iterator can be moved), and its
+     `next` a function the C compiler inlines; a part is a pointer and a length into the text. `trim`,
+     `chars` and `splitWhitespace` read the characters out of the UTF-8; the searches are `memchr` and
+     `memcmp`. Compared with the interpreter on 400 random texts (every kind of white space, `\r\n`,
+     characters of two to four bytes, separators of one and two bytes), with both C compilers.
+181. **The measurement is `fields`** (above): a million lines like ` Ada17 , 120, -45 ,6789`, gone over
+     twenty times with `lines`, `split`, `trim`, `long.parse` and `chars`, against C written by hand with
+     `memchr` and `strtoll`.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -1560,6 +1665,10 @@ check off.
   back (choice 150), up to seventeen `snprintf` and `strtod` for one number, where C's `printf("%g")` is
   one. The interpreter finds them the same way. Candidates: a shortest-digits algorithm (Ryu, as Rust
   uses), in both, so that they still agree by construction.
+- **Building a text out of many small ones** (`numbers` and `fields`, 1.2 to 1.3 times for that part of
+  the program): each `$"...".toString()` takes a block of its own and `string.join` copies them all once
+  more, where the C program writes into one buffer. Candidate: a way to build a text piece by piece (a
+  `StringBuilder`), which is not here yet.
 - **Wrapping arithmetic in a loop that is only arithmetic** (`vector`'s first version, 1.28 times): C may
   assume a signed overflow never happens and turn `i * 7 + round` into a counter; wrapping is defined, so
   the C compiler keeps the arithmetic. Rust pays the same. No candidate yet.
@@ -1586,11 +1695,15 @@ check off.
   the loop started.
 - Lists of borrows (`List<read T>`); `reserve`, `clone`; a `Hashable`
   type with its own `equals` or `hash`.
-- `char` and `text.chars()`. A number is written in decimal only (`print`, `$"..."`) and read in decimal only
+- What text needs Unicode tables for: changing the case of a text (`toUpper`), letters and digits beyond
+  ASCII (`isLetter`), comparing without case beyond ASCII. Building a text piece by piece (a
+  `StringBuilder`), `replace`, `repeat`, `padLeft`; the positions of the characters (`charIndices`);
+  splitting at most n times; `match` on text. Writing the type of an iterator, and a `for` over a type of
+  your own that has `next` (with generics).
+- A number is written in decimal only (`print`, `$"..."`) and read in decimal only
   (`parse`); there is no hex output or input. No way to read a number out of bytes in one step
   (`ulong.fromLittleEndian(bytes)`): it is put together from the bytes by hand (see 136). `abs` and
-  `clamp` on integers, `sinh` and the other functions of `<math.h>` that are not listed in 162, `trim`
-  for the text before `parse`.
+  `clamp` on integers, `sinh` and the other functions of `<math.h>` that are not listed in 162.
 - Arrays of arrays, `read T[]?`, an array as a key, `sort` and
   `reverse` through a `ref T[]`, `list.addAll(slice)`, looking for a run of items in a slice.
 - A panic of `-x` and of a shift names no way out: there is no `tryNegate` or `tryShiftLeft` yet.
@@ -1613,7 +1726,9 @@ and the sensor example is written as the design wrote it. So are the integer typ
 unsigned ones included, and a hash written with them takes the time of the same hash in C. So are `float`
 and `double`, and the n-body simulation takes the time of the same program in C. So are `parse`, the
 constants of the number types, the conversions that do not panic and the math methods, and reading a
-million numbers out of text takes about the time of `strtoll` and `strtod`.
+million numbers out of text takes about the time of `strtoll` and `strtod`. So are `char`, going over a
+text (`chars`, `split`, `splitWhitespace`, `lines`), `trim` and the searches, and the log summary is
+written as the design wrote it.
 
-Candidates for what comes next: `char` and `text.chars()` with `trim` and `split`, `list.addAll(slice)` and
-`sort` through a `ref T[]`, type aliases (`using`), threads, the places that are slower than C.
+Candidates for what comes next: `list.addAll(slice)` and `sort` through a `ref T[]`, building a text piece
+by piece, type aliases (`using`), threads, the places that are slower than C.

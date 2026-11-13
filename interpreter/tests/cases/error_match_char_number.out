@@ -1,0 +1,5 @@
+error: this `match` looks at a `char`, and a number is not one
+  --> error_match_char_number.sg:4:9
+ 4 |         97 => 1
+   |         ^^
+  hint: a character is written in quotes: `'a'`

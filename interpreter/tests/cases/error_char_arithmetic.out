@@ -1,0 +1,5 @@
+error: operator `+` is not defined for `char` and `int`
+  a `char` is not a number: `(int)c` is its code, and `(char)n` the character of a code
+  --> error_char_arithmetic.sg:3:11
+ 3 |     print(c + 1)
+   |           ^^^^^

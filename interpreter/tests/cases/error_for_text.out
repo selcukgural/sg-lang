@@ -1,0 +1,5 @@
+error: `for` does not go over a `string`
+  --> error_for_text.sg:3:14
+ 3 |     for c in text {
+   |              ^^^^
+  hint: the characters: `for c in text.chars()`; the bytes: `for b in text.asBytes()`

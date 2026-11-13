@@ -1,0 +1,5 @@
+void main() {
+    char c = (char)0x10FFFF
+    byte b = (byte)c
+    print(b)
+}

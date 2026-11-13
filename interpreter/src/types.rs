@@ -196,11 +196,43 @@ impl FloatTy {
     }
 }
 
+/// What goes over a text, one part after the other: `text.chars()`, `text.split(',')`,
+/// `text.splitWhitespace()`, `text.lines()`. It looks at the text where it is.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum TextIter {
+    Chars,
+    Split,
+    SplitWhitespace,
+    Lines,
+}
+
+impl TextIter {
+    /// The name it has in messages. It cannot be written in a program yet.
+    pub fn name(self) -> &'static str {
+        match self {
+            TextIter::Chars => "Chars",
+            TextIter::Split => "Split",
+            TextIter::SplitWhitespace => "SplitWhitespace",
+            TextIter::Lines => "Lines",
+        }
+    }
+
+    /// What each round gives: a character, or a look at a part of the text.
+    pub fn item(self) -> Ty {
+        match self {
+            TextIter::Chars => Ty::Char,
+            _ => Ty::Read(Box::new(Ty::Str)),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum Ty {
     Int(IntTy),
     Float(FloatTy),
     Bool,
+    /// `char`: one Unicode character, 32 bits. Not a number: it is converted with a cast.
+    Char,
     Str,
     /// Result of `$"..."`; not a `string`, becomes one with `.toString()`.
     Fmt,
@@ -233,6 +265,8 @@ pub enum Ty {
     Array(Box<Ty>, usize),
     /// `T[]`: the items a slice looks at. Only ever behind `read` or `ref`.
     Slice(Box<Ty>),
+    /// What `text.chars()`, `text.split(...)` and the others give: it borrows the text.
+    TextIter(TextIter),
     /// `read T`: read-only borrow.
     Read(Box<Ty>),
     /// `ref T`: writable borrow.
@@ -248,6 +282,7 @@ impl Ty {
     pub fn from_name(name: &str) -> Option<Ty> {
         match name {
             "bool" => Some(Ty::Bool),
+            "char" => Some(Ty::Char),
             "string" => Some(Ty::Str),
             "void" => Some(Ty::Void),
             "Formatter" => Some(Ty::Formatter),
@@ -260,11 +295,11 @@ impl Ty {
     /// copyable until there is a borrow checker.
     pub fn is_copyable(&self, declared: &HashSet<String>) -> bool {
         match self {
-            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) | Ty::Func(..) => true,
+            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) | Ty::Func(..) => true,
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-            Ty::Str | Ty::Ptr(_) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) => false,
+            Ty::Str | Ty::Ptr(_) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) => false,
         }
     }
 
@@ -287,6 +322,7 @@ impl fmt::Display for Ty {
             Ty::Int(ty) => f.write_str(ty.name()),
             Ty::Float(ty) => f.write_str(ty.name()),
             Ty::Bool => f.write_str("bool"),
+            Ty::Char => f.write_str("char"),
             Ty::Str => f.write_str("string"),
             Ty::Fmt => f.write_str("formatted text"),
             Ty::Void => f.write_str("void"),
@@ -310,6 +346,7 @@ impl fmt::Display for Ty {
             Ty::Entry(key, value) => write!(f, "entry of HashMap<{key}, {value}>"),
             Ty::Array(item, length) => write!(f, "{item}[{length}]"),
             Ty::Slice(item) => write!(f, "{item}[]"),
+            Ty::TextIter(kind) => f.write_str(kind.name()),
             Ty::Read(inner) => write!(f, "read {inner}"),
             Ty::Ref(inner) => write!(f, "ref {inner}"),
         }

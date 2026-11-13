@@ -1,0 +1,9 @@
+// A code that is no character stops the program in a release build too: a text holds
+// characters only. Narrowing the code of a character follows the integer rule and wraps.
+void main() {
+    int code = 0x110000
+    char top = (char)(code - 1)
+    print((int)top)
+    print((byte)top)
+    print((char)code)
+}

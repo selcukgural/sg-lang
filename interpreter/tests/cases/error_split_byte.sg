@@ -1,0 +1,6 @@
+void main() {
+    byte comma = 44
+    for part in "a,b".split(comma) {
+        print(part)
+    }
+}

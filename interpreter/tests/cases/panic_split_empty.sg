@@ -1,0 +1,6 @@
+void main() {
+    var sep = "".clone()
+    for p in "abc".split(read sep) {
+        print(p)
+    }
+}

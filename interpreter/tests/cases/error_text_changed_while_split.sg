@@ -1,0 +1,6 @@
+void main() {
+    var line = "a,b"
+    var parts = line.split(",")
+    line = "y"
+    print(parts.next() ?? "")
+}

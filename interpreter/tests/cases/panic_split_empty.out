@@ -1,0 +1,5 @@
+panic: the separator of `split` is empty
+  --> panic_split_empty.sg:3:14
+ 3 |     for p in "abc".split(read sep) {
+   |              ^^^^^^^^^^^^^^^^^^^^^
+  hint: the characters, one after the other: `text.chars()`

@@ -1,0 +1,28 @@
+['a', 'b', 'q', 'ü']
+1
+false
+a!
+first
+b!
+other
+q!
+other
+ü!
+umlaut
+again l
+Key { letter = 'x', count = 2 }
+true
+{Key { letter = 'x', count = 2 }: 5}
+M
+3
+-
+9
+-
+é
+[Symbol('+'), Word("hi"), Symbol('\t')]
+['a', 'b', 'c']
+b
+-1
+true
+true
+true

@@ -1,8 +1,8 @@
 // The log summary from the design, with the lines in the program instead of a file:
 // a `List` of lines, a `HashMap` from the level to what was counted for it.
 
-struct Entry {
-    string level
+struct Entry<from line> {
+    read string level                    // part of the line, not a copy
     int ms
 }
 
@@ -15,32 +15,13 @@ enum LogError : Formattable {
     BadLine(int number, string text)
 }
 
-// "info 120" gives 120; null if the text is not a number.
-int? parseNumber(read string text) {
-    if text.length() == 0 {
-        return null
-    }
-    int value = 0
-    for i in 0..text.length() {
-        var c = text[i]
-        if c < '0' || c > '9' {
-            return null
-        }
-        value = try value.tryMultiply(10)
-        value = try value.tryAdd(c - '0')
-    }
-    return value
-}
-
-// A line is a level, one space, and the milliseconds.
-Entry? parseLine(read string line) {
-    for i in 0..line.length() {
-        if line[i] == ' ' {
-            int ms = try parseNumber(line[i + 1..])
-            return Entry { level = line[..i].clone(), ms = ms }
-        }
-    }
-    return null
+// A line is a level, one space, and the milliseconds: "info 120".
+Entry? parseLine(read string line) from line {
+    var parts = line.split(' ')
+    var level = try parts.next()         // null if the line has ended
+    var text = try parts.next()
+    int ms = int.parse(text) ?? return null
+    return Entry { level = level, ms = ms }
 }
 
 Result<HashMap<string, Stats>, LogError> summarize(read List<string> lines) {
@@ -49,7 +30,7 @@ Result<HashMap<string, Stats>, LogError> summarize(read List<string> lines) {
     for line in lines {
         number += 1
         var entry = parseLine(line) ?? return Error(LogError.BadLine(number, line.clone()))
-        var item = stats.getOrAdd(read entry.level, Stats { count = 0, totalMs = 0 })
+        var item = stats.getOrAdd(entry.level, Stats { count = 0, totalMs = 0 })
         item.count += 1
         item.totalMs += entry.ms
     }

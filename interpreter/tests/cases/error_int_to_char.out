@@ -1,0 +1,5 @@
+error: expected `char`, found `int`
+  --> error_int_to_char.sg:3:14
+ 3 |     char c = n
+   |              ^
+  hint: `(char)n` panics if no character has this code; `n.tryToChar()` gives `null` instead

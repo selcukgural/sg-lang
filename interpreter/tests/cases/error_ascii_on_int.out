@@ -1,0 +1,5 @@
+error: type `int` has no method `isAsciiDigit`
+  the ASCII methods are on `byte` and `char`
+  --> error_ascii_on_int.sg:3:13
+ 3 |     print(n.isAsciiDigit())
+   |             ^^^^^^^^^^^^

@@ -17,7 +17,7 @@ use std::rc::Rc;
 use crate::ast::*;
 use crate::diag::{Diag, Span};
 use crate::check::float_fits;
-use crate::types::{FloatTy, IntTy, Ty};
+use crate::types::{FloatTy, IntTy, TextIter, Ty};
 
 /// Limit on nested calls. Past it the program gets a readable panic instead of a crash.
 pub const MAX_DEPTH: usize = 5000;
@@ -31,6 +31,7 @@ pub enum Value {
     /// is done in `f32`.
     Float(FloatTy, f64),
     Bool(bool),
+    Char(char),
     Str(Rc<str>),
     Fmt(Rc<str>),
     Void,
@@ -59,6 +60,97 @@ pub enum Value {
     Ptr(Cell),
     /// `read T` / `ref T`
     Borrow(Cell),
+    /// What goes over a text: `text.chars()`, `text.split(',')`. A copy goes on with the
+    /// same place in the text, but the checker lets it be used from one name only.
+    Iter(Rc<RefCell<Cursor>>),
+}
+
+/// Where an iterator over a text is.
+#[derive(Debug)]
+pub struct Cursor {
+    kind: TextIter,
+    text: Rc<str>,
+    /// The byte the next part starts at.
+    at: usize,
+    /// What `split` splits at.
+    separator: Rc<str>,
+    /// `split` has given its last part.
+    done: bool,
+}
+
+impl Cursor {
+    /// The next part, as compiled code finds it too.
+    fn next(&mut self) -> Option<Value> {
+        let text = self.text.clone();
+        let rest = &text[self.at.min(text.len())..];
+        match self.kind {
+            TextIter::Chars => {
+                let found = rest.chars().next()?;
+                self.at += found.len_utf8();
+                Some(Value::Char(found))
+            }
+            TextIter::Split => {
+                if self.done {
+                    return None;
+                }
+                let part = match rest.find(&*self.separator) {
+                    Some(end) => {
+                        self.at += end + self.separator.len();
+                        &rest[..end]
+                    }
+                    None => {
+                        self.done = true;
+                        rest
+                    }
+                };
+                Some(Value::Str(part.into()))
+            }
+            TextIter::SplitWhitespace => {
+                let start = rest.find(|found: char| !found.is_whitespace())?;
+                let word = &rest[start..];
+                let end = word.find(char::is_whitespace).unwrap_or(word.len());
+                self.at += start + end;
+                Some(Value::Str(word[..end].into()))
+            }
+            // A line ends at `\n`, and a `\r` right before it is not part of the line.
+            TextIter::Lines => {
+                if rest.is_empty() {
+                    return None;
+                }
+                let line = match rest.find('\n') {
+                    Some(end) => {
+                        self.at += end + 1;
+                        rest[..end].strip_suffix('\r').unwrap_or(&rest[..end])
+                    }
+                    None => {
+                        self.at = text.len();
+                        rest
+                    }
+                };
+                Some(Value::Str(line.into()))
+            }
+        }
+    }
+}
+
+/// What a text is searched for, as text: a character, a text, or one byte.
+fn needle(value: &Value) -> Vec<u8> {
+    match value {
+        Value::Char(found) => found.to_string().into_bytes(),
+        Value::Str(text) => text.as_bytes().to_vec(),
+        Value::Int(_, byte) => vec![*byte as u8],
+        _ => unreachable!("the checker lets only a character, a text or a byte be looked for"),
+    }
+}
+
+/// Where `part` first (or last) lies in `text`, in bytes.
+fn find_bytes(text: &[u8], part: &[u8], last: bool) -> Option<usize> {
+    if part.len() > text.len() {
+        return None;
+    }
+    let mut starts = 0..=text.len() - part.len();
+    let at = |start: &usize| &text[*start..*start + part.len()] == part;
+    if last { starts.rev().find(at) } else { starts.find(at) }
 }
 
 type Entries = Table<(Value, Cell)>;
@@ -217,6 +309,7 @@ fn key_of(value: &Value) -> Key {
     match value {
         Value::Bool(value) => Key::Bool(*value),
         Value::Int(_, value) => Key::Int(*value),
+        Value::Char(value) => Key::Int(*value as i128),
         Value::Float(_, value) => Key::Float(float_key(*value)),
         Value::Str(text) => Key::Str(text.clone()),
         Value::Null => Key::Null,
@@ -323,6 +416,7 @@ impl Value {
             Value::Int(_, value) => value.to_string(),
             Value::Float(ty, value) => show_float(*value, *ty),
             Value::Bool(value) => value.to_string(),
+            Value::Char(value) => value.to_string(),
             Value::Str(text) | Value::Fmt(text) => text.to_string(),
             _ => unreachable!("the checker only lets printable values through"),
         }
@@ -332,6 +426,7 @@ impl Value {
     fn debug(&self) -> String {
         match self {
             Value::Str(text) | Value::Fmt(text) => format!("{text:?}"),
+            Value::Char(value) => quoted_char(*value),
             Value::Null => "null".to_string(),
             Value::Int(..) | Value::Float(..) | Value::Bool(_) => self.format(),
             _ => "(value)".to_string(),
@@ -653,6 +748,7 @@ impl<'a> Interp<'a> {
                 loop {
                     let item = match (&collection, &snapshot) {
                         (_, Some(items)) => items.get(next).cloned(),
+                        (Value::Iter(cursor), _) => cursor.borrow_mut().next().map(cell),
                         (Value::List(items), _) => items.borrow().get(next).cloned(),
                         (Value::Array(items) | Value::Slice(items), _) => items.get(next).cloned(),
                         _ => unreachable!("the checker only lets `for` go over a collection"),
@@ -840,7 +936,7 @@ impl<'a> Interp<'a> {
                 let right = strip(self.expr(right, frame)?);
                 self.binary(*op, left, right, expr.span)
             }
-            ExprKind::Char(_) => unreachable!("the checker turns a character into a `byte`"),
+            ExprKind::Char(value) => Ok(Value::Char(*value)),
             ExprKind::Array { args, items, .. } => {
                 let Ty::Array(item, length) = &expr.ty else { unreachable!("the checker gives an array its type") };
                 let mut cells = Vec::new();
@@ -910,6 +1006,18 @@ impl<'a> Interp<'a> {
                         .hint(format!("`tryTo{}()` gives `null` when the value does not fit", to.title()))
                         .into())
                 }
+                // A code that is no character panics in every build: a text holds characters only.
+                (Value::Int(_, value), Ty::Char) => match crate::check::char_of(value) {
+                    Some(found) => Ok(Value::Char(found)),
+                    None => Err(Diag::panic(expr.span, format!("{value} is not the code of a character"))
+                        .hint("`tryToChar()` gives `null` when no character has the code")
+                        .into()),
+                },
+                (Value::Char(value), Ty::Char) => Ok(Value::Char(value)),
+                (Value::Char(value), Ty::Int(to)) if to.fits(value as i128) => Ok(Value::Int(*to, value as i128)),
+                (Value::Char(value), Ty::Int(to)) => Err(Diag::panic(expr.span, format!("value {} does not fit in {}", value as u32, to.name()))
+                    .hint("`(int)c` holds the code of every character")
+                    .into()),
                 (value, to) => Ok(convert(value, to)),
             },
             ExprKind::StructLit { name, fields, .. } => {
@@ -993,6 +1101,7 @@ impl<'a> Interp<'a> {
                 // A number is compared with the arms; an enum is taken apart.
                 let number = match strip(value.clone()) {
                     Value::Int(_, number) => Some(number),
+                    Value::Char(value) => Some(value as i128),
                     _ => None,
                 };
                 let (index, fields) = match number {
@@ -1167,6 +1276,14 @@ impl<'a> Interp<'a> {
                     if matches!(recv, Value::List(_) | Value::Map(_) | Value::Set(_)) {
                         return self.collection_method(recv, name, values, expr.span);
                     }
+                    // A separator that is empty would split nowhere and everywhere.
+                    if let (Value::Str(_), "split", [Value::Str(separator)]) = (&recv, name.as_str(), values.as_slice()) {
+                        if separator.is_empty() {
+                            return Err(Diag::panic(expr.span, "the separator of `split` is empty")
+                                .hint("the characters, one after the other: `text.chars()`")
+                                .into());
+                        }
+                    }
                     Ok(method(recv, name, values))
                 }
             },
@@ -1263,6 +1380,7 @@ impl<'a> Interp<'a> {
             }
             Value::Array(_) | Value::Slice(_) => self.show(&as_list(value.clone()), inside, span),
             Value::Str(text) if inside => Ok(format!("{text:?}")),
+            Value::Char(value) if inside => Ok(quoted_char(*value)),
             Value::Null => Ok("null".to_string()),
             Value::Void => Ok(String::new()),
             Value::Struct(name, fields) => {
@@ -1485,6 +1603,7 @@ fn binary(op: BinOp, left: Value, right: Value, span: Span) -> Result<Value, Dia
         },
         (Value::Str(a), Value::Str(b)) => a.cmp(b),
         (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+        (Value::Char(a), Value::Char(b)) => a.cmp(b),
         _ => unreachable!("the checker rules out other operand types"),
     };
     Ok(Value::Bool(match op {
@@ -1827,6 +1946,40 @@ fn float_method(ty: FloatTy, value: f64, name: &str) -> Value {
     Value::Float(ty, result)
 }
 
+/// A character inside another value, or in an `assert` message: in single quotes, with the
+/// escapes a character constant has. Compiled code writes it the same way.
+fn quoted_char(value: char) -> String {
+    match value {
+        '\'' => "'\\''".to_string(),
+        '\\' => "'\\\\'".to_string(),
+        '\n' => "'\\n'".to_string(),
+        '\t' => "'\\t'".to_string(),
+        '\r' => "'\\r'".to_string(),
+        '\0' => "'\\0'".to_string(),
+        _ if (value as u32) < 32 || value as u32 == 127 => format!("'\\u{{{:x}}}'", value as u32),
+        _ => format!("'{value}'"),
+    }
+}
+
+/// An ASCII method of a `char` or a `byte` on the code: a test gives `Ok`, a change of case
+/// gives `Err` with the new code.
+fn ascii_method(code: u32, name: &str) -> Result<bool, u32> {
+    let Ok(byte) = u8::try_from(code) else {
+        return if name.starts_with("is") { Ok(false) } else { Err(code) };
+    };
+    match name {
+        "isAscii" => Ok(byte.is_ascii()),
+        "isAsciiDigit" => Ok(byte.is_ascii_digit()),
+        "isAsciiLetter" => Ok(byte.is_ascii_alphabetic()),
+        "isAsciiAlphanumeric" => Ok(byte.is_ascii_alphanumeric()),
+        "isAsciiUpper" => Ok(byte.is_ascii_uppercase()),
+        "isAsciiLower" => Ok(byte.is_ascii_lowercase()),
+        "isAsciiWhitespace" => Ok(byte.is_ascii_whitespace()),
+        "toAsciiUpper" => Err(byte.to_ascii_uppercase() as u32),
+        _ => Err(byte.to_ascii_lowercase() as u32),
+    }
+}
+
 fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
     match (&recv, name, args.as_slice()) {
         // `null` where the plain operator would panic.
@@ -1844,6 +1997,7 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
                 _ => Value::Null,
             }
         }
+        (Value::Int(_, value), "tryToChar", []) => crate::check::char_of(*value).map_or(Value::Null, Value::Char),
         (Value::Int(_, value), _, []) if name.starts_with("tryTo") || name.starts_with("wrappingTo") => {
             let to = converted_to(name);
             match name.starts_with("tryTo") {
@@ -1869,6 +2023,16 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
                 FloatTy::Double => a.mul_add(*b, *c),
             },
         ),
+        (Value::Char(value), _, []) if name.starts_with("isAscii") || name.starts_with("toAscii") => match ascii_method(*value as u32, name) {
+            Ok(test) => Value::Bool(test),
+            Err(changed) => Value::Char(char::from_u32(changed).expect("an ASCII change keeps a character")),
+        },
+        (Value::Int(ty, value), _, []) if name.starts_with("isAscii") || name.starts_with("toAscii") => match ascii_method(*value as u32, name) {
+            Ok(test) => Value::Bool(test),
+            Err(changed) => Value::Int(*ty, changed as i128),
+        },
+        (Value::Char(value), "isWhitespace", []) => Value::Bool(value.is_whitespace()),
+        (Value::Char(value), "utf8Length", []) => Value::Int(IntTy::Nint, value.len_utf8() as i128),
         (Value::Str(_), "clone", []) => recv,
         (Value::Str(_), "asBytes", []) => Value::Slice(cells_of(&recv)),
         (_, "equals", [other]) => Value::Bool(key_of(&recv) == key_of(other)),
@@ -1885,10 +2049,29 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
         (_, "toString", []) => Value::Str(recv.format().into()),
         (Value::Float(ty, value), _, []) => float_method(*ty, *value, name),
         (Value::Str(text), "length", []) => Value::Int(IntTy::Nint, text.len() as i128),
-        (Value::Str(text), "indexOf", [Value::Int(_, byte)]) => match text.bytes().position(|found| found as i128 == *byte) {
+        (Value::Str(text), "indexOf" | "lastIndexOf", [part]) => match find_bytes(text.as_bytes(), &needle(part), name == "lastIndexOf") {
             Some(at) => Value::Int(IntTy::Nint, at as i128),
             None => Value::Null,
         },
+        (Value::Str(text), "contains", [part]) => Value::Bool(find_bytes(text.as_bytes(), &needle(part), false).is_some()),
+        (Value::Str(text), "startsWith", [part]) => Value::Bool(text.as_bytes().starts_with(&needle(part))),
+        (Value::Str(text), "endsWith", [part]) => Value::Bool(text.as_bytes().ends_with(&needle(part))),
+        (Value::Str(text), "trim", []) => Value::Str(text.trim().into()),
+        (Value::Str(text), "trimStart", []) => Value::Str(text.trim_start().into()),
+        (Value::Str(text), "trimEnd", []) => Value::Str(text.trim_end().into()),
+        (Value::Str(text), "equalsIgnoreAsciiCase", [Value::Str(other)]) => Value::Bool(text.eq_ignore_ascii_case(other)),
+        (Value::Str(text), "chars" | "split" | "splitWhitespace" | "lines", _) => {
+            let kind = match name {
+                "chars" => TextIter::Chars,
+                "split" => TextIter::Split,
+                "splitWhitespace" => TextIter::SplitWhitespace,
+                _ => TextIter::Lines,
+            };
+            let separator = args.first().map_or(Vec::new(), needle);
+            let separator = String::from_utf8(separator).expect("a separator is a character or a text");
+            Value::Iter(Rc::new(RefCell::new(Cursor { kind, text: text.clone(), at: 0, separator: separator.into(), done: false })))
+        }
+        (Value::Iter(cursor), "next", []) => cursor.borrow_mut().next().unwrap_or(Value::Null),
         _ => unreachable!("the checker only lets known methods through"),
     }
 }

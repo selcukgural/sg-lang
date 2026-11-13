@@ -1,0 +1,9 @@
+error: `line` cannot be changed or moved while a `for` goes over `line`
+  --> error_text_changed_in_for.sg:4:9
+ 4 |         line = "x"
+   |         ^^^^
+  the loop is here:
+  --> error_text_changed_in_for.sg:3:14
+ 3 |     for p in line.split(",") {
+   |              ^^^^^^^^^^^^^^^
+  hint: keep the changes in a list until the loop ends, and apply them after it

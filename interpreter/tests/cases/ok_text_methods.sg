@@ -1,0 +1,45 @@
+void main() {
+    var line = "  name = Ada , 36,  3.5  "
+    print($"[{line.trim()}]")
+    print($"[{line.trimStart()}]")
+    print($"[{line.trimEnd()}]")
+    for part in line.split(',') {
+        print($"<{part.trim()}>")
+    }
+    var parts = "a,,b,".split(',')
+    var first = parts.next()
+    var second = parts.next()
+    print(first ?? "none")
+    print(second ?? "none")
+    for rest in parts {
+        print($"rest <{rest}>")
+    }
+    for word in " to be  or\tnot\n to be ".splitWhitespace() {
+        print(word)
+    }
+    for l in "one\r\ntwo\n\nfour\n".lines() {
+        print($"line [{l}]")
+    }
+    for c in "aé😀".chars() {
+        print($"{c} {(int)c} {c.utf8Length()}")
+    }
+    var text = "hello, wörld"
+    print(text.indexOf('o') ?? -1)
+    print(text.lastIndexOf('o') ?? -1)
+    print(text.indexOf("wö") ?? -1)
+    print(text.indexOf('ö') ?? -1)
+    print(text.contains("llo"))
+    print(text.startsWith("he"))
+    print(text.endsWith('d'))
+    print(text.endsWith("x"))
+    print("Content-Length".equalsIgnoreAsciiCase("content-length"))
+    var it = "xy".chars()
+    print(it.next() ?? '-')
+    print(it.next() ?? '-')
+    print(it.next() ?? '-')
+    int sum = 0
+    for field in "1;2;3".split(";") {
+        sum += int.parse(field) ?? 0
+    }
+    print(sum)
+}

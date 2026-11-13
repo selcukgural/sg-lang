@@ -1,6 +1,5 @@
 error: `for` does not go over a `string`
-  going over the characters (`text.chars()`) is not in the interpreter yet
   --> error_for_string.sg:3:14
  3 |     for c in read text {
    |              ^^^^^^^^^
-  hint: the bytes: `for i in 0..text.length()` and `text[i]`
+  hint: the characters: `for c in text.chars()`; the bytes: `for b in text.asBytes()`

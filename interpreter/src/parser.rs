@@ -954,7 +954,7 @@ impl<'a> Parser<'a> {
                 let operand = self.unary()?;
                 Ok(wrap(|e| ExprKind::Borrow { mutable: true, expr: e }, operand))
             }
-            // `(int)x`: a number type name alone in parentheses is a cast.
+            // `(int)x`, `(char)code`: a number type or `char` alone in parentheses is a cast.
             Tok::LParen => match self.cast_type() {
                 Some(ty) => {
                     self.bump();
@@ -975,7 +975,7 @@ impl<'a> Parser<'a> {
         if *self.peek_at(2) != Tok::RParen {
             return None;
         }
-        Ty::from_name(name).filter(Ty::is_number)
+        Ty::from_name(name).filter(|ty| ty.is_number() || *ty == Ty::Char)
     }
 
     fn postfix(&mut self) -> Res<Expr> {

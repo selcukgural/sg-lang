@@ -1206,7 +1206,7 @@ public struct Request<from data> {
     // The returned value is part of the data, not of the request: it stays valid even if the request is dropped
     public read string? header(read this, read string name) from data {
         for h in read this.headers {
-            if h.name.equalsIgnoreCase(name) {
+            if h.name.equalsIgnoreAsciiCase(name) {
                 return h.value
             }
         }
@@ -1236,7 +1236,7 @@ public Result<Request, HttpError> parse(read byte[] data) from data {
         var colon = line.indexOf(':') ?? return Error(HttpError.BadHeader(number))
         var name = line[..colon].trim()
         var value = line[colon + 1..].trim()
-        if name.equalsIgnoreCase("content-length") {
+        if name.equalsIgnoreAsciiCase("content-length") {
             length = nint.parse(value) ?? return Error(HttpError.BadLength)
         }
         headers.add(Header { name = name, value = value })

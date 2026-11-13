@@ -1,5 +1,5 @@
 error: there is no type named `Product`
-  built-in types for now: byte, int, long, nint, bool, string
+  built-in types for now: the integer types, float, double, bool, char, string
   --> error_missing_use_type.sg:2:10
  2 |     List<Product> products = List<Product>()
    |          ^^^^^^^

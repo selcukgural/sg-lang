@@ -768,15 +768,74 @@ var part = text[0..1]                            // panics if it lands in the mi
 ```
 
 The single character type `char` is 32 bits and holds any Unicode character (`Rune` in C#). `'+'` adapts to the
-expected type, like a numeric literal:
+expected type, like a numeric literal: a `byte` where an integer goes, a `char` everywhere else:
 
 ```
 byte b = '+'                                     // byte
 char c = '+'                                     // character
 char e = 'é'
 byte x = 'é'                                     // error: does not fit in one byte. Hint: char x = 'é'
-var v = '+'                                      // byte
+var v = '+'                                      // char (a byte until 13 November)
+print('+')                                       // +
+if text[i] == ':' { }                            // byte: text[i] is a byte
+char s = '\u{1F600}'                             // a character by its code, in hex; also inside "..."
 for ch in text.chars() { }                       // ch: char
+```
+
+A `char` is not a number. A cast goes to its code and back, and a code that is no character panics in every build,
+because a text holds characters only:
+
+```
+int code = (int)c                                // never fails
+char d = (char)(code + 1)                        // panics if no character has the code
+char? f = code.tryToChar()                       // null instead
+c + 1                                            // error: a char is not a number. Hint: (int)c
+int y = c                                        // error, hint: (int)c
+```
+
+The tests that need no tables are ASCII and say so; they are on `byte` too, for a parser that goes byte by byte:
+
+```
+c.isAsciiDigit(), c.isAsciiLetter(), c.isAsciiAlphanumeric(), c.isAsciiWhitespace()
+c.toAsciiUpper(), text[i].isAsciiDigit()
+c.isWhitespace()                                 // Unicode's White_Space: what trim takes off
+c.utf8Length()                                   // 1 to 4: the bytes it takes in a text
+c.isDigit()                                      // error: no such method. Hint: isAsciiDigit()
+```
+
+### Going over text
+
+A text is split and trimmed without copying: each part is a `read string`, a look at the text where it is.
+
+```
+for c in text.chars() { }                        // each char
+for field in line.split(',') { }                 // keeps the empty parts: "a,,b" gives three
+for field in line.split(", ") { }                // the separator is a char or a read string
+for word in line.splitWhitespace() { }           // skips the empty parts
+for line in text.lines() { }                     // ends at \n; a \r before it is left out
+var name = line[..colon].trim()                  // read string; trimStart and trimEnd too
+line.indexOf(':'), line.lastIndexOf("--")        // nint?, in bytes
+line.contains("GET"), line.startsWith('#'), line.endsWith(".sg")
+name.equalsIgnoreAsciiCase("content-length")     // only the ASCII letters are folded
+```
+
+Kept in a variable, what `split` gives hands out one part at a time. A part borrows the text, not the iterator, and
+`try` passes a missing part on as `null`:
+
+```
+Entry? parseLine(read string line) from line {
+    var parts = line.split(' ')
+    var level = try parts.next()                 // read string; null if the line has ended
+    var text = try parts.next()
+    int ms = int.parse(text) ?? return null
+    return Entry { level = level, ms = ms }
+}
+
+for part in line.split(',') {
+    line = "x"                                   // error: line cannot be changed while a for goes over it
+}
+for word in readLine().split(' ') { }            // error: the text has no name and is gone before the loop
+line.split("")                                   // error: the separator is empty
 ```
 
 ### Closing files

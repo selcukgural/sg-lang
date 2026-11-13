@@ -1,0 +1,8 @@
+void main() {
+    char c = 'a'
+    var r = match c {
+        97 => 1
+        _ => 0
+    }
+    print(r)
+}

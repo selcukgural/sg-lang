@@ -1,0 +1,5 @@
+error: `for` takes an iterator as it is, not a borrow of it
+  --> error_for_borrowed_iterator.sg:3:14
+ 3 |     for w in read text.split(" ") {
+   |              ^^^^^^^^^^^^^^^^^^^^
+  hint: `for x in it`; the loop uses it up

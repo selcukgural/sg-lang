@@ -1,0 +1,5 @@
+error: a character by its code is written `\u{...}` with one to six hex digits
+  --> error_escape_code.sg:2:12
+ 2 |     print("\u{zz}")
+   |            ^^^
+  hint: `\u{e9}` is `é`

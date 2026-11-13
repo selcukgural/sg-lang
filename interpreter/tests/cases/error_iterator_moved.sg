@@ -1,0 +1,7 @@
+void main() {
+    var text = "ab"
+    var a = text.chars()
+    var b = a
+    print(a.next() ?? '-')
+    print(b.next() ?? '-')
+}

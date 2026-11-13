@@ -1,0 +1,6 @@
+void main() {
+    var line = " a "
+    var p = line.trim()
+    line = "z"
+    print(p)
+}

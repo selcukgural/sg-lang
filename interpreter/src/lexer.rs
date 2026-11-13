@@ -502,7 +502,10 @@ impl<'a> Lexer<'a> {
                     self.pos += 1;
                     break;
                 }
-                Some(b'\\') => text.push(self.escape()?),
+                Some(b'\\') => {
+                    let value = self.escape()?;
+                    text.extend_from_slice(value.encode_utf8(&mut [0; 4]).as_bytes());
+                }
                 Some(c) => {
                     text.push(c);
                     self.pos += 1;
@@ -516,20 +519,42 @@ impl<'a> Lexer<'a> {
         Diag::error(Span::new(start, self.pos), "unterminated string").hint("close it with `\"` before the line ends")
     }
 
-    fn escape(&mut self) -> Result<u8, Diag> {
+    fn escape(&mut self) -> Result<char, Diag> {
         let start = self.pos;
         self.pos += 1;
         let value = match self.at(0) {
-            Some(b'n') => b'\n',
-            Some(b't') => b'\t',
-            Some(b'r') => b'\r',
-            Some(b'0') => 0,
-            Some(b'\\') => b'\\',
-            Some(b'"') => b'"',
-            Some(b'\'') => b'\'',
+            Some(b'n') => '\n',
+            Some(b't') => '\t',
+            Some(b'r') => '\r',
+            Some(b'0') => '\0',
+            Some(b'\\') => '\\',
+            Some(b'"') => '"',
+            Some(b'\'') => '\'',
+            // `\u{1F600}`: a character by its code, in hex, as `print` writes one it cannot show.
+            Some(b'u') if self.at(1) == Some(b'{') => {
+                let digits_start = self.pos + 2;
+                let mut end = digits_start;
+                let bytes = self.src.as_bytes();
+                while bytes.get(end).is_some_and(u8::is_ascii_hexdigit) {
+                    end += 1;
+                }
+                let digits = &self.src[digits_start..end];
+                let closed = bytes.get(end) == Some(&b'}');
+                let span = Span::new(start, if closed { end + 1 } else { end });
+                if !closed || digits.is_empty() || digits.len() > 6 {
+                    return Err(Diag::error(span, "a character by its code is written `\\u{...}` with one to six hex digits").hint("`\\u{e9}` is `é`"));
+                }
+                let code = u32::from_str_radix(digits, 16).expect("checked to be hex");
+                let Some(value) = char::from_u32(code) else {
+                    return Err(Diag::error(span, format!("0x{digits} is not the code of a character"))
+                        .note("a character is from 0 to 0x10FFFF, and not from 0xD800 to 0xDFFF"));
+                };
+                self.pos = end;
+                value
+            }
             _ => {
                 return Err(Diag::error(Span::new(start, self.pos + 1), "unknown escape sequence")
-                    .hint("valid ones: \\n \\t \\r \\0 \\\\ \\\" \\'"))
+                    .hint("valid ones: \\n \\t \\r \\0 \\\\ \\\" \\' \\u{...}"))
             }
         };
         self.pos += 1;
@@ -550,7 +575,7 @@ impl<'a> Lexer<'a> {
                 return Err(Diag::error(Span::new(start, self.pos), "there is no character between the quotes")
                     .hint("a space is written `' '`"));
             }
-            Some(b'\\') => self.escape()? as char,
+            Some(b'\\') => self.escape()?,
             Some(_) => {
                 let ch = self.src[self.pos..self.end].chars().next().expect("a character starts here");
                 self.pos += ch.len_utf8();
@@ -587,7 +612,10 @@ impl<'a> Lexer<'a> {
                     self.pos += 1;
                     break;
                 }
-                Some(b'\\') => text.push(self.escape()?),
+                Some(b'\\') => {
+                    let value = self.escape()?;
+                    text.extend_from_slice(value.encode_utf8(&mut [0; 4]).as_bytes());
+                }
                 Some(b'{') if self.at(1) == Some(b'{') => {
                     text.push(b'{');
                     self.pos += 2;

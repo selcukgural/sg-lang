@@ -1,0 +1,69 @@
+struct Key : Copyable, Formattable, Equatable, Hashable {
+    char letter
+    int count
+}
+
+enum Token : Formattable {
+    Symbol(char c)
+    Word(string text)
+}
+
+char upper(char c) {
+    return c.toAsciiUpper()
+}
+
+char? firstDigit(read string text) {
+    for c in text.chars() {
+        if c.isAsciiDigit() {
+            return c
+        }
+    }
+    return null
+}
+
+void main() {
+    var xs = List<char> { 'q', 'b', 'ü', 'a' }
+    xs.sort()
+    print(xs)
+    print(xs.indexOf('b') ?? -1)
+    print(xs.contains('z'))
+    for c in read xs {
+        print($"{c}!")
+        var kind = match c {
+            'a' => "first"
+            'ü' => "umlaut"
+            _ => "other"
+        }
+        print(kind)
+    }
+    var seen = HashSet<char>()
+    for c in "hello".chars() {
+        if !seen.add(c) {
+            print($"again {c}")
+        }
+    }
+    var k = Key { letter = 'x', count = 2 }
+    print(k)
+    print(k == Key { letter = 'x', count = 2 })
+    var counts = HashMap<Key, int>()
+    counts.add(k, 5)
+    print(counts)
+    print(upper('m'))
+    print(firstDigit("ab3c") ?? '-')
+    print(firstDigit("abc") ?? '-')
+    char? maybe = firstDigit("x9")
+    print(maybe ?? '-')
+    char? none = null
+    print(none ?? '-')
+    var boxed = new 'é'
+    print(boxed)
+    var tokens = List<Token> { Token.Symbol('+'), Token.Word("hi".clone()), Token.Symbol('\t') }
+    print(tokens)
+    char[3] three = char[3] { 'a', 'b', 'c' }
+    print(three)
+    print((char)((int)'a' + 1))
+    print('a'.compare('b'))
+    print('b'.equals('b'))
+    print(' '.isAsciiWhitespace())
+    print('\u{3000}'.isWhitespace())
+}

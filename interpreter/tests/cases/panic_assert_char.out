@@ -1,0 +1,6 @@
+panic: assert failed: c == 'e'
+  left: 'é'
+  right: 'e'
+  --> panic_assert_char.sg:3:5
+ 3 |     assert(c == 'e')
+   |     ^^^^^^^^^^^^^^^^

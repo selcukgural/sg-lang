@@ -1,0 +1,7 @@
+void main() {
+    var line = "a,b"
+    for p in line.split(",") {
+        line = "x"
+        print(p)
+    }
+}

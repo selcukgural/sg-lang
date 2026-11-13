@@ -147,7 +147,8 @@ language as it is today.
 ## Where it stands
 
 Working today, in the interpreter and in compiled code: integers, `float` and `double` with their
-constants, math and reading out of text, `bool` and text; structs, enums and `match`; `T*`, `T?` and `Result` with `try` and `??`; `List`, `HashMap`
+constants, math and reading out of text, `bool`, `char` and text (split, trimmed and searched without
+copying); structs, enums and `match`; `T*`, `T?` and `Result` with `try` and `??`; `List`, `HashMap`
 and `HashSet`; fixed-size arrays (`int[8]`) and slices (`read byte[]`); function values; ownership,
 moves and the borrow check; modules (`use`, `public`, `readonly`); `test` blocks.
 

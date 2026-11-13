@@ -1,0 +1,45 @@
+// Text split into fields: a million lines like ` Ada17 , 120, -45 ,6789` (ended by `\r\n`,
+// some names with an `é`), gone over twenty times. Each line comes from `lines()`, its fields
+// from `split(',')`, each is trimmed and read with `long.parse`; the characters of the names
+// are counted with `chars()`.
+ulong next(ulong state) {
+    return state.wrappingMultiply(6364136223846793005).wrappingAdd(1442695040888963407)
+}
+
+void main() {
+    var parts = List<string>()
+    ulong state = 11
+    for i in 0..1000000 {
+        state = next(state)
+        long a = (long)(state >> 54)
+        long b = (long)((state >> 40) & 0x3fff) - 8192
+        long c = (long)((state >> 20) & 0xfffff)
+        var name = "Ada"
+        if i % 7 == 0 {
+            name = "Renée"
+        }
+        parts.add($" {name}{i % 1000} , {a}, {b} ,{c}".toString())
+    }
+    var text = string.join("\r\n", read parts)
+    var all = $"{text}\r\n".toString()
+
+    long total = 0
+    long letters = 0
+    long lines = 0
+    for pass in 0..20 {
+        for line in all.lines() {
+            var fields = line.split(',')
+            var name = fields.next() ?? ""
+            for ch in name.trim().chars() {
+                letters += 1
+            }
+            for field in fields {
+                total += long.parse(field.trim()) ?? 0
+            }
+            lines += 1
+        }
+    }
+    print(total)
+    print(letters)
+    print(lines)
+}

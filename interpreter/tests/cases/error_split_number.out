@@ -1,0 +1,4 @@
+error: `split` looks for a `char` or a `read string`, found `int`
+  --> error_split_number.sg:3:28
+ 3 |     var parts = text.split(5)
+   |                            ^

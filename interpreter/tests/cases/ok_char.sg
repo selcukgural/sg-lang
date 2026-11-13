@@ -1,0 +1,35 @@
+void main() {
+    char c = 'é'
+    var d = 'x'
+    byte b = 'y'
+    print(c)
+    print(d)
+    print(b)
+    print($"{c}{d}!")
+    print((int)c)
+    print((char)0x1F600)
+    var xs = List<char> { 'a', '\'', '\n', 'ß' }
+    print(xs)
+    print(c == 'é')
+    print('a' < d)
+    print(d.isAsciiLetter())
+    print(b.isAsciiDigit())
+    print(c.toAsciiUpper())
+    print(d.toAsciiUpper())
+    print(b.toAsciiUpper())
+    print(c.utf8Length())
+    print(' '.isWhitespace())
+    print(65.tryToChar() ?? '?')
+    print(0xD800.tryToChar() ?? '?')
+    var counts = HashMap<char, int>()
+    counts.add('a', 1)
+    print(counts)
+    var r = match c {
+        'é' => "e acute"
+        'x' => "x"
+        _ => "other"
+    }
+    print(r)
+    print(c.toString())
+    print(c.compare('a'))
+}

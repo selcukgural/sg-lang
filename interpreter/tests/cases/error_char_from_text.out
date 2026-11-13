@@ -1,0 +1,5 @@
+error: expected `char`, found `string`
+  --> error_char_from_text.sg:2:14
+ 2 |     char c = "a"
+   |              ^^^
+  hint: a character is written in single quotes: `'a'`

@@ -1,0 +1,5 @@
+error: a `char` value cannot be converted to `double`
+  a `char` becomes an integer, its code, and an integer becomes a `char`
+  --> error_char_to_double.sg:3:11
+ 3 |     print((double)c)
+   |           ^^^^^^^^^

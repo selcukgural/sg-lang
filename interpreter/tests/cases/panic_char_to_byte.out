@@ -1,0 +1,5 @@
+panic: value 1114111 does not fit in byte
+  --> panic_char_to_byte.sg:3:14
+ 3 |     byte b = (byte)c
+   |              ^^^^^^^
+  hint: `(int)c` holds the code of every character

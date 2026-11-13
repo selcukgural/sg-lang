@@ -13,11 +13,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::{nearest, Diag, Span};
-use crate::types::{FloatTy, IntTy, Ty};
+use crate::types::{FloatTy, IntTy, TextIter, Ty};
 
 type Res<T> = Result<T, Diag>;
 
-const TYPES_NOT_YET: &[&str] = &["char"];
+/// The types of what goes over a text: they have names in messages, not yet in a program.
+const TEXT_ITERATORS: &[&str] = &["Chars", "Split", "SplitWhitespace", "Lines"];
 
 const INTERFACES_NOT_YET: &[&str] = &["Clonable", "Disposable", "Closable", "Iterator"];
 
@@ -220,6 +221,54 @@ fn conversion(from: &Ty, name: &str, span: Span) -> Res<IntTy> {
     }
 }
 
+/// The methods of `char` and `byte` that test a character against ASCII.
+const ASCII_TESTS: &[&str] = &["isAscii", "isAsciiDigit", "isAsciiLetter", "isAsciiAlphanumeric", "isAsciiUpper", "isAsciiLower", "isAsciiWhitespace"];
+
+/// The methods of `char` and of `string`, for a name that is not one of them.
+const CHAR_METHODS: &[&str] = &[
+    "isAscii", "isAsciiDigit", "isAsciiLetter", "isAsciiAlphanumeric", "isAsciiUpper", "isAsciiLower", "isAsciiWhitespace",
+    "toAsciiUpper", "toAsciiLower", "isWhitespace", "utf8Length", "toString", "equals", "compare",
+];
+const TEXT_METHODS: &[&str] = &[
+    "length", "clone", "asBytes", "indexOf", "lastIndexOf", "contains", "startsWith", "endsWith", "trim", "trimStart", "trimEnd",
+    "chars", "split", "splitWhitespace", "lines", "equalsIgnoreAsciiCase", "equals", "compare",
+];
+
+/// A method a `char` or a `string` does not have: the one it may have meant.
+fn text_method_hint(diag: Diag, target: &Ty, name: &str) -> Diag {
+    let text = *target == Ty::Str;
+    let lower = name.to_lowercase();
+    match lower.as_str() {
+        "toupper" | "tolower" | "touppercase" | "tolowercase" | "to_uppercase" | "to_lowercase" => {
+            let ascii = if lower.contains("upper") { "toAsciiUpper" } else { "toAsciiLower" };
+            return match text {
+                true => diag.note(format!("changing the case of a text is not here yet; a `char` and a `byte` have `{ascii}`")),
+                false => diag.hint(format!("`{ascii}()` changes the ASCII letters; the other characters need Unicode tables, which are not here yet")),
+            };
+        }
+        "isdigit" | "isletter" | "isalphabetic" | "isnumeric" | "isupper" | "islower" | "isletterordigit" | "isalphanumeric" => {
+            let ascii = match lower.as_str() {
+                "isdigit" | "isnumeric" => "isAsciiDigit",
+                "isletter" | "isalphabetic" => "isAsciiLetter",
+                "isupper" => "isAsciiUpper",
+                "islower" => "isAsciiLower",
+                _ => "isAsciiAlphanumeric",
+            };
+            return diag.hint(format!("`{ascii}()`")).note("the tests that need Unicode tables are not here yet");
+        }
+        "substring" | "substr" | "slice" if text => return diag.hint("a range of the text: `text[a..b]`, `text[a..]`"),
+        "equalsignorecase" if text => return diag.hint("`equalsIgnoreAsciiCase`: it treats the ASCII letters alone as the same in either case"),
+        "charat" | "at" if text => return diag.hint("the characters, one after the other: `for c in text.chars()`; one byte: `text[i]`"),
+        "len" | "count" | "size" if text => return diag.hint("`length()`: the number of bytes"),
+        _ => {}
+    }
+    let names = if text { TEXT_METHODS } else { CHAR_METHODS };
+    match nearest(name, names.iter().copied()) {
+        Some(close) => diag.hint(format!("`{close}`")),
+        None => diag,
+    }
+}
+
 /// What `string.fromUtf8` gives when the bytes are not text.
 const TEXT_ERROR: &str = "TextError";
 
@@ -276,7 +325,7 @@ struct FuncSig {
 /// Whether a value of this type is a borrow or carries one inside.
 fn lends(ty: &Ty, names: &Names) -> bool {
     match ty {
-        Ty::Read(_) | Ty::Ref(_) => true,
+        Ty::Read(_) | Ty::Ref(_) | Ty::TextIter(_) => true,
         Ty::Struct(name) | Ty::Enum(name) => names.carriers.contains_key(name),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) => lends(inner, names),
         Ty::Result(a, b) | Ty::Map(a, b) | Ty::Entry(a, b) => lends(a, names) || lends(b, names),
@@ -935,18 +984,21 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             Some((full, TypeKind::Struct)) => Ty::Struct(full),
             Some((full, TypeKind::Enum)) => Ty::Enum(full),
             None => {
-            let diag = if TYPES_NOT_YET.contains(&ty.name.as_str()) {
-                Diag::error(ty.span, format!("type `{}` is not in the interpreter yet", ty.name))
-            } else {
+            if TEXT_ITERATORS.contains(&ty.name.as_str()) {
+                return Err(Diag::error(ty.span, format!("the type `{}` cannot be written yet", ty.name))
+                    .hint("keep it in a `var`, or go over it with `for`")
+                    .note("it borrows the text it goes over; types that carry a borrow of a built-in type come with generics"));
+            }
+            let diag = {
                 Diag::error(ty.span, format!("there is no type named `{}`", ty.name))
             };
             if let Some(hint) = names.use_hint(&ty.name, ty.span) {
                 return Err(diag.hint(hint));
             }
-            let known = names.kinds.keys().map(String::as_str).chain(["byte", "int", "long", "nint", "bool", "string"]);
+            let known = names.kinds.keys().map(String::as_str).chain(["byte", "int", "long", "nint", "double", "bool", "char", "string"]);
             return Err(match nearest(&ty.name, known) {
                 Some(close) => diag.hint(format!("`{close}`")),
-                None => diag.note("built-in types for now: byte, int, long, nint, bool, string"),
+                None => diag.note("built-in types for now: the integer types, float, double, bool, char, string"),
             });
             }
         },
@@ -1067,7 +1119,7 @@ fn not_a_key(span: Span, ty: &Ty, what: &str) -> Diag {
     match ty {
         Ty::Struct(name) | Ty::Enum(name) => diag.hint(format!("add them to the definition: `{name} : Equatable, Hashable`")),
         Ty::List(_) | Ty::Set(_) | Ty::Map(..) => diag.note("a collection can be compared with `==`, but it is not `Hashable`"),
-        _ => diag.note("integers, `bool`, `string` and the types written with `: Equatable, Hashable` are"),
+        _ => diag.note("integers, `bool`, `char`, `string` and the types written with `: Equatable, Hashable` are"),
     }
 }
 
@@ -1095,7 +1147,7 @@ fn all_copyable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d
 /// `equals` calls the same, `0.0` and `-0.0`, have different bits.
 fn has(ty: &Ty, declared: &HashSet<String>, collections: bool) -> bool {
     match ty {
-        Ty::Int(_) | Ty::Bool | Ty::Str => true,
+        Ty::Int(_) | Ty::Bool | Ty::Char | Ty::Str => true,
         Ty::Float(_) => collections,
         Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => has(inner, declared, collections),
@@ -1159,7 +1211,7 @@ fn all_formattable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, 
 /// Whether a value of this type can be written as text, on its own or inside another value.
 fn can_format(ty: &Ty, formattable: &HashSet<String>) -> bool {
     match ty {
-        Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Str | Ty::Void => true,
+        Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Void => true,
         Ty::Struct(_) | Ty::Enum(_) => unformattable(ty, formattable).is_none(),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => can_format(inner, formattable),
         Ty::Result(ok, error) | Ty::Map(ok, error) => can_format(ok, formattable) && can_format(error, formattable),
@@ -1739,6 +1791,17 @@ impl<'a> Checker<'a> {
                 if matches!(callee, Callee::Take | Callee::Replace) {
                     return self.loans_of(recv, mutable);
                 }
+                // A part that an iterator gives borrows the text, not the iterator: after
+                // `var word = words.next()` the `words` is free to go on.
+                if matches!(recv.ty.strip_borrow(), Ty::TextIter(_)) {
+                    return self.lent_by(recv, true, mutable);
+                }
+                // `split` looks at its separator as long as it looks at the text.
+                if name == "split" && matches!(expr.ty, Ty::TextIter(_)) && args[0].ty.is_borrow() {
+                    let mut loans = self.lent_by(recv, false, mutable);
+                    loans.extend(self.loans_of(&args[0], mutable));
+                    return loans;
+                }
                 let sig = match callee {
                     Callee::Method { owner, .. } | Callee::Static { owner, .. } => self.structs[owner.as_str()].methods.get(name.as_str()),
                     _ => None,
@@ -1974,6 +2037,11 @@ impl<'a> Checker<'a> {
     }
 
     /// Which variable a name means right now: scope and position in the scope.
+    /// Where the variable with this id is: its scope and its position in the scope.
+    fn var_at(&self, id: usize) -> Option<(usize, usize)> {
+        self.scopes.iter().enumerate().find_map(|(depth, scope)| scope.vars.iter().position(|var| var.id == id).map(|position| (depth, position)))
+    }
+
     fn var_id(&self, name: &str) -> Option<(usize, usize)> {
         self.scopes.iter().enumerate().rev().find_map(|(depth, scope)| {
             scope.vars.iter().rposition(|var| var.name == name).map(|position| (depth, position))
@@ -2383,10 +2451,19 @@ impl<'a> Checker<'a> {
                     }
                     Ty::Set(item) => (**item).clone(),
                     Ty::Str => {
+                        let place = match &iter.kind {
+                            ExprKind::Borrow { expr, .. } => expr.span,
+                            _ => iter.span,
+                        };
+                        let text = &self.src[place.start..place.end];
                         return Err(Diag::error(iter.span, "`for` does not go over a `string`")
-                            .hint("the bytes: `for i in 0..text.length()` and `text[i]`")
-                            .note("going over the characters (`text.chars()`) is not in the interpreter yet"));
+                            .hint(format!("the characters: `for c in {text}.chars()`; the bytes: `for b in {text}.asBytes()`")));
                     }
+                    Ty::TextIter(_) if mode.is_some() => {
+                        return Err(Diag::error(iter.span, "`for` takes an iterator as it is, not a borrow of it")
+                            .hint("`for x in it`; the loop uses it up"));
+                    }
+                    Ty::TextIter(kind) => kind.item(),
                     Ty::Nullable(_) => {
                         return Err(Diag::error(iter.span, format!("this is `{found}` and may be `null`; `for` needs a value"))
                             .hint("test it first with `is not null`, or give a fallback with `??`"));
@@ -2408,12 +2485,30 @@ impl<'a> Checker<'a> {
                     let positions = matches!(found.strip_borrow(), Ty::List(_) | Ty::Ptr(_) | Ty::Array(..) | Ty::Slice(_));
                     self.locks.extend(lock.map(|lock| Lock { positions, ..lock }));
                 }
+                // What goes over a text keeps the text from changing while the loop runs, and
+                // the parts it gives borrow the text.
+                let mut text_locks = 0;
+                if matches!(found, Ty::TextIter(_)) {
+                    let loans = self.loans_of(iter, false);
+                    self.kept_unnamed(&loans, iter, "the loop")?;
+                    for loan in &loans {
+                        let Some(at) = self.var_at(loan.root) else { continue };
+                        let text = format!("{}{}{}", self.scopes[at.0].vars[at.1].name, if loan.path.is_empty() { "" } else { "." }, loan.path);
+                        self.locks.push(Lock { var: at, path: loan.path.clone(), text, positions: false, span: iter.span });
+                        text_locks += 1;
+                    }
+                    self.borrows.binds = loans;
+                } else {
+                    self.borrows.binds.clear();
+                }
                 let node = self.node();
                 self.borrows.loops.push(node);
-                self.borrows.binds.clear();
                 let result = self.loop_body(body, None, vec![(var.clone(), item, *var_span)]);
                 self.borrows.loops.pop();
                 if locked {
+                    self.locks.pop();
+                }
+                for _ in 0..text_locks {
                     self.locks.pop();
                 }
                 result?;
@@ -2590,6 +2685,25 @@ impl<'a> Checker<'a> {
             (Ty::Float(_), Ty::Float(to)) => mismatch(Some(format!("convert with `({})`, which rounds", to.name()))),
             (Ty::Float(_), Ty::Int(to)) => {
                 mismatch(Some(format!("convert with `({})`; it drops the fraction, and panics if the value does not fit", to.name())))
+            }
+            // A `char` is not a number, and a number is not a `char`.
+            (Ty::Char, Ty::Int(to)) => mismatch(Some(format!("the code of the character: `({}){text}`", to.name()))),
+            (Ty::Int(_), Ty::Char) => {
+                mismatch(Some(format!("`(char){text}` panics if no character has this code; `{text}.tryToChar()` gives `null` instead")))
+            }
+            (Ty::Char, Ty::Str) => mismatch(Some(format!("a text of one character: `{text}.toString()`"))),
+            (Ty::Str, Ty::Char) if matches!(&expr.kind, ExprKind::Str(value) if value.chars().count() == 1) => {
+                let ExprKind::Str(value) = &expr.kind else { unreachable!("tested above") };
+                let written: String = value.chars().map(|found| match found {
+                    '\n' => "\\n".to_string(),
+                    '\t' => "\\t".to_string(),
+                    '\r' => "\\r".to_string(),
+                    '\0' => "\\0".to_string(),
+                    '\'' => "\\'".to_string(),
+                    '\\' => "\\\\".to_string(),
+                    other => other.to_string(),
+                }).collect();
+                mismatch(Some(format!("a character is written in single quotes: `'{written}'`")))
             }
             // The habit from C: `if flags & 2 {`.
             (Ty::Int(_) | Ty::Float(_), Ty::Bool) => {
@@ -3131,8 +3245,17 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Bool(_) => Ok(Ty::Bool),
             ExprKind::Str(_) => Ok(Ty::Str),
-            // A character is a `byte`; from there it widens like any other integer.
+            // A character is a `char`, and a `byte` where an integer goes: from there it
+            // widens like any other integer.
             ExprKind::Char(value) => {
+                let wants_int = expected.is_some_and(|ty| match ty.strip_borrow() {
+                    Ty::Int(_) => true,
+                    Ty::Nullable(inner) => matches!(**inner, Ty::Int(_)),
+                    _ => false,
+                });
+                if !wants_int {
+                    return Ok(Ty::Char);
+                }
                 let value = byte_of(*value, span)?;
                 expr.kind = ExprKind::Int(value, IntTy::Byte);
                 Ok(Ty::Int(IntTy::Byte))
@@ -3278,10 +3401,28 @@ impl<'a> Checker<'a> {
             ExprKind::Cast { ty, expr: operand } => {
                 let found = self.operand(operand, None)?;
                 let from = found.strip_borrow().clone();
-                if !from.is_number() {
-                    return Err(Diag::error(span, format!("a `{from}` value cannot be converted to `{ty}`")));
+                // A `char` is converted to and from integers only: its code.
+                let fits = match (&from, &*ty) {
+                    (Ty::Char, Ty::Int(_) | Ty::Char) | (Ty::Int(_), Ty::Char) => true,
+                    (Ty::Char, _) | (_, Ty::Char) => false,
+                    _ => from.is_number(),
+                };
+                if !fits {
+                    let diag = Diag::error(span, format!("a `{from}` value cannot be converted to `{ty}`"));
+                    return Err(match (&from, &*ty) {
+                        (Ty::Char, Ty::Float(_)) | (Ty::Float(_), Ty::Char) => diag.note("a `char` becomes an integer, its code, and an integer becomes a `char`"),
+                        (Ty::Str, Ty::Char) => diag.hint("the characters of a text: `for c in text.chars()`"),
+                        (Ty::Char, Ty::Str) => diag.hint("`c.toString()`"),
+                        _ => diag,
+                    });
                 }
                 self.coerce(operand, found, &from)?;
+                if let (ExprKind::Int(value, _), Ty::Char) = (&operand.kind, &*ty) {
+                    if char_of(*value).is_none() {
+                        return Err(Diag::error(span, format!("{value} is not the code of a character"))
+                            .note("a character is from 0 to 0x10FFFF, and not from 0xD800 to 0xDFFF"));
+                    }
+                }
                 // A value that is known here and does not fit is not left to run time.
                 if let (ExprKind::Int(value, _), Ty::Int(to)) = (&operand.kind, &*ty) {
                     let (value, to) = (*value, *to);
@@ -3638,6 +3779,15 @@ impl<'a> Checker<'a> {
     /// gives the value or returns `null`.
     fn try_expr(&mut self, inner: &mut Expr, kind: &mut TryKind, span: Span) -> Res<Ty> {
         let mut found = self.expr(inner, None)?;
+        // A `read T?` that holds a value gives a `read T`, as `??` does: nothing is taken out.
+        if let Ty::Read(behind) = &found {
+            if let (Ty::Nullable(value), false, false) = (&**behind, behind.is_copyable(self.copyable), self.in_test) {
+                if matches!(self.ret.strip_borrow(), Ty::Nullable(_)) {
+                    *kind = TryKind::Null;
+                    return Ok(Ty::Read(value.clone()));
+                }
+            }
+        }
         if let Ty::Read(behind) | Ty::Ref(behind) = &found {
             if matches!(**behind, Ty::Result(..) | Ty::Nullable(_)) {
                 if !behind.is_copyable(self.copyable) {
@@ -3872,11 +4022,13 @@ impl<'a> Checker<'a> {
         let subject_ty = self.expr(subject, None)?;
         // On an integer the arms are numbers; on anything else, the variants of an enum.
         let number = match subject_ty.strip_borrow() {
-            Ty::Int(ty) => Some(*ty),
+            Ty::Int(ty) => Some(Some(*ty)),
+            // On a `char` the arms are characters.
+            Ty::Char => Some(None),
             _ => None,
         };
         let (of, mode) = match number {
-            Some(ty) => (Variants { owner: ty.name().to_string(), list: Vec::new() }, None),
+            Some(ty) => (Variants { owner: ty.map_or("char", IntTy::name).to_string(), list: Vec::new() }, None),
             None => self.enum_behind(&subject_ty, subject.span, "`match`")?,
         };
         *borrowed = mode.is_some();
@@ -3900,7 +4052,8 @@ impl<'a> Checker<'a> {
             self.scopes.push(Scope::default());
             self.borrows.branches.push((node, arm_index));
             let binds = match number {
-                Some(ty) => self.int_pattern(&mut arm.pattern, ty, &subject_ty)?,
+                Some(Some(ty)) => self.int_pattern(&mut arm.pattern, ty, &subject_ty)?,
+                Some(None) => char_pattern(&mut arm.pattern, &subject_ty)?,
                 None => self.pattern_binds(&mut arm.pattern, &of, mode, &subject_ty)?,
             };
             let position = match &arm.pattern.kind {
@@ -4006,7 +4159,7 @@ impl<'a> Checker<'a> {
         }
         let wanted = if op.is_comparison() { None } else { expected.filter(|ty| ty.is_number()) };
         let like = |ty: &Ty| match ty.strip_borrow() {
-            Ty::Int(_) | Ty::Float(_) => Some(ty.strip_borrow().clone()),
+            Ty::Int(_) | Ty::Float(_) | Ty::Char => Some(ty.strip_borrow().clone()),
             _ => None,
         };
         // A number on the left past every `long` takes its type from the right:
@@ -4018,6 +4171,11 @@ impl<'a> Checker<'a> {
                 let right_ty = self.operand(right, wanted)?;
                 let fitting = like(&right_ty).filter(|ty| matches!(ty, Ty::Int(ty) if ty.fits(value)));
                 (self.operand(left, fitting.as_ref().or(wanted))?, right_ty)
+            }
+            // `'a' == c`: the character takes its type from the right, as a number would.
+            ExprKind::Char(_) if !matches!(right.kind, ExprKind::Char(_)) => {
+                let right_ty = self.operand(right, wanted)?;
+                (self.operand(left, like(&right_ty).as_ref().or(wanted))?, right_ty)
             }
             _ => {
                 let left_ty = self.operand(left, wanted)?;
@@ -4072,6 +4230,18 @@ impl<'a> Checker<'a> {
                 Ok(if op.is_comparison() { Ty::Bool } else { common })
             }
             (Ty::Str, Ty::Str) if op.is_comparison() => Ok(Ty::Bool),
+            (Ty::Char, Ty::Char) if op.is_comparison() => {
+                self.coerce(left, left_ty.clone(), &Ty::Char)?;
+                self.coerce(right, right_ty.clone(), &Ty::Char)?;
+                Ok(Ty::Bool)
+            }
+            (Ty::Char, Ty::Int(_)) | (Ty::Int(_), Ty::Char) if op.is_comparison() => {
+                let int = if matches!(left_ty.strip_borrow(), Ty::Int(_)) { &left_ty } else { &right_ty };
+                Err(undefined().hint(format!("a `char` is not a number; compare its code, `(int)c`, or make the `{int}` a `char` with `(char)`")))
+            }
+            (Ty::Char, _) | (_, Ty::Char) if !op.is_comparison() => {
+                Err(undefined().note("a `char` is not a number: `(int)c` is its code, and `(char)n` the character of a code"))
+            }
             (Ty::Bool, Ty::Bool) if matches!(op, BinOp::Eq | BinOp::Ne) => Ok(Ty::Bool),
             // The bit operators are for integers; two `bool`s have their own.
             (Ty::Bool, Ty::Bool) if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) => {
@@ -4118,7 +4288,7 @@ impl<'a> Checker<'a> {
             inner = behind.strip_borrow();
         }
         match inner {
-            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Str | Ty::Fmt => Ok(()),
+            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Fmt => Ok(()),
             Ty::Struct(name) | Ty::Enum(name) if self.formattable.contains(name) => Ok(()),
             Ty::Struct(name) | Ty::Enum(name) => Err(Diag::error(span, format!("`{name}` cannot be written as text: it is not `Formattable`"))
                 .hint(format!("add it to the definition: `{name} : Formattable`"))),
@@ -4410,7 +4580,7 @@ impl<'a> Checker<'a> {
         // A number behind a pointer is read out first: `count.wrappingAdd(1)` with `int* count`.
         let target = target.clone();
         let mut recv_ty = recv_ty;
-        if target.is_number() {
+        if target.is_number() || target == Ty::Char {
             while let Ty::Ptr(inner) | Ty::Read(inner) | Ty::Ref(inner) = recv_ty {
                 wrap(recv, ExprKind::Load);
                 recv.ty = (*inner).clone();
@@ -4435,7 +4605,43 @@ impl<'a> Checker<'a> {
                 arity(0)?;
                 Ok(Ty::Str)
             }
-            (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Fmt, "toString") => {
+            // The ASCII tests and changes of a character, on a `char` and on a `byte`: what
+            // a parser that goes byte by byte needs.
+            (Ty::Char | Ty::Int(IntTy::Byte), _) if ASCII_TESTS.contains(&name) => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Bool)
+            }
+            (Ty::Char | Ty::Int(IntTy::Byte), "toAsciiUpper" | "toAsciiLower") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(target.clone())
+            }
+            // White space as Unicode has it: what `trim` takes off.
+            (Ty::Char, "isWhitespace") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Bool)
+            }
+            // How many bytes the character takes in a text.
+            (Ty::Char, "utf8Length") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Int(IntTy::Nint))
+            }
+            (Ty::Char, "compare" | "equals") => {
+                arity(1)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                self.typed(&mut args[0], &Ty::Char)?;
+                Ok(if name == "compare" { Ty::Int(IntTy::Int) } else { Ty::Bool })
+            }
+            // `code.tryToChar()`: `null` if no character has this code.
+            (Ty::Int(_), "tryToChar") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Nullable(Box::new(Ty::Char)))
+            }
+            (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Fmt, "toString") => {
                 arity(0)?;
                 Ok(Ty::Str)
             }
@@ -4532,12 +4738,63 @@ impl<'a> Checker<'a> {
                 }
                 Ok(if name == "compare" { Ty::Int(IntTy::Int) } else { Ty::Bool })
             }
-            // The position of the first such byte, `null` if there is none.
-            (Ty::Str, "indexOf") => {
+            // The position of the first (or the last) place where the character or the text
+            // is found, in bytes; `null` if there is none. A `byte` is looked for as it is.
+            (Ty::Str, "indexOf" | "lastIndexOf") => {
                 arity(1)?;
-                self.typed(&mut args[0], &Ty::Int(IntTy::Byte))?;
+                self.needle(&mut args[0], true, name)?;
                 Ok(Ty::Nullable(Box::new(Ty::Int(IntTy::Nint))))
             }
+            (Ty::Str, "contains" | "startsWith" | "endsWith") => {
+                arity(1)?;
+                self.needle(&mut args[0], false, name)?;
+                Ok(Ty::Bool)
+            }
+            // The text without the white space at its ends: a look at the same text.
+            (Ty::Str, "trim" | "trimStart" | "trimEnd") => {
+                arity(0)?;
+                Ok(Ty::Read(Box::new(Ty::Str)))
+            }
+            (Ty::Str, "equalsIgnoreAsciiCase") => {
+                arity(1)?;
+                self.typed(&mut args[0], &Ty::Read(Box::new(Ty::Str)))?;
+                Ok(Ty::Bool)
+            }
+            (Ty::Str, "chars" | "splitWhitespace" | "lines") => {
+                arity(0)?;
+                Ok(Ty::TextIter(match name {
+                    "chars" => TextIter::Chars,
+                    "splitWhitespace" => TextIter::SplitWhitespace,
+                    _ => TextIter::Lines,
+                }))
+            }
+            (Ty::Str, "split") => {
+                arity(1)?;
+                if let ExprKind::Str(text) = &args[0].kind {
+                    if text.is_empty() {
+                        return Err(Diag::error(args[0].span, "the separator of `split` is empty, so there is nothing to split at")
+                            .hint("the characters, one after the other: `text.chars()`"));
+                    }
+                }
+                self.needle(&mut args[0], false, name)?;
+                Ok(Ty::TextIter(TextIter::Split))
+            }
+            // The next part, or `null` when the text is used up.
+            (Ty::TextIter(kind), "next") => {
+                arity(0)?;
+                if !writable {
+                    return Err(Diag::error(recv.span, "`next` moves the iterator on, and this one is reached through a `read` borrow"));
+                }
+                if is_place {
+                    self.not_locked(recv, Access::Write)?;
+                }
+                Ok(match kind.item() {
+                    Ty::Char => Ty::Nullable(Box::new(Ty::Char)),
+                    _ => Ty::Read(Box::new(Ty::Nullable(Box::new(Ty::Str)))),
+                })
+            }
+            (Ty::TextIter(_), _) => Err(Diag::error(name_span, format!("`{target}` has no method `{name}`"))
+                .note("it has `next()`, and `for` goes over it")),
             (Ty::Formatter, "write") => {
                 arity(1)?;
                 if !writable {
@@ -4565,6 +4822,15 @@ impl<'a> Checker<'a> {
                     let given = if matches!(name, "atan2" | "pow" | "fusedMultiplyAdd") { "..." } else { "" };
                     return Err(diag.hint(format!("it is a method of `double`: `((double){text}).{name}({given})`")));
                 }
+                if matches!(target, Ty::Int(_)) && (ASCII_TESTS.contains(&name) || matches!(name, "toAsciiUpper" | "toAsciiLower")) {
+                    return Err(diag.note("the ASCII methods are on `byte` and `char`"));
+                }
+                if matches!(target, Ty::Int(_)) && matches!(name, "isWhitespace" | "utf8Length") {
+                    return Err(diag.note(format!("`{name}` is a method of `char`")));
+                }
+                if matches!(target, Ty::Char | Ty::Str) {
+                    return Err(text_method_hint(diag, target, name));
+                }
                 let Ty::Struct(owner) = target else {
                     return Err(if name.starts_with("try") { diag.note(format!("`{name}` is not in the interpreter yet")) } else { diag });
                 };
@@ -4577,6 +4843,21 @@ impl<'a> Checker<'a> {
                     None => diag,
                 })
             }
+        }
+    }
+
+    /// What a text is searched for: a `char` or a `read string`, and a `byte` too where only
+    /// a position comes back.
+    fn needle(&mut self, arg: &mut Expr, bytes: bool, method: &str) -> Res<()> {
+        let text = Ty::Read(Box::new(Ty::Str));
+        let found = self.operand(arg, Some(&text))?;
+        match found.strip_borrow() {
+            Ty::Char => self.coerce(arg, found, &Ty::Char),
+            Ty::Int(IntTy::Byte) if bytes => self.coerce(arg, found.clone(), &Ty::Int(IntTy::Byte)),
+            Ty::Str => self.coerce(arg, found, &text),
+            Ty::Int(IntTy::Byte) => Err(Diag::error(arg.span, format!("`{method}` looks for a `char` or a `read string`, found `byte`"))
+                .hint("the character of an ASCII byte: `(char)b`")),
+            _ => Err(Diag::error(arg.span, format!("`{method}` looks for a `char` or a `read string`, found `{found}`"))),
         }
     }
 
@@ -4620,7 +4901,7 @@ impl<'a> Checker<'a> {
         };
         let can_equal = item.is_some_and(|item| has(item, self.equatable, true));
         let can_order = item.is_some_and(|item| match item {
-            Ty::Int(_) | Ty::Float(_) | Ty::Str => true,
+            Ty::Int(_) | Ty::Float(_) | Ty::Char | Ty::Str => true,
             Ty::Struct(name) => self.comparable.contains(name),
             _ => false,
         });
@@ -4631,7 +4912,7 @@ impl<'a> Checker<'a> {
                 .hint(format!("add it to the definition: `{inner} : {needs}`"))),
             Ty::List(_) | Ty::Set(_) | Ty::Map(..) if needs == "Comparable" => Err(Diag::error(name_span, format!("`{name}` puts the items in order, and a collection has no order of its own"))),
             other => Err(Diag::error(name_span, format!("`{name}` compares the items, and `{other}` is not `{needs}`"))
-                .note(format!("`{needs}`: integers{}, `string` and the types written with `: {needs}`", if needs == "Equatable" { ", `bool`" } else { "" }))),
+                .note(format!("`{needs}`: numbers{}, `char`, `string` and the types written with `: {needs}`", if needs == "Equatable" { ", `bool`" } else { "" }))),
         };
         let changes = || {
             if writable {
@@ -4965,14 +5246,45 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
     }
 }
 
+/// The character with this code, if there is one.
+pub fn char_of(value: i128) -> Option<char> {
+    u32::try_from(value).ok().and_then(char::from_u32)
+}
+
 /// The value of a character written where a `byte` goes: it must take one byte in UTF-8.
 fn byte_of(value: char, span: Span) -> Res<i128> {
     if value.is_ascii() {
         return Ok(value as i128);
     }
     Err(Diag::error(span, format!("`{value}` does not fit in one byte: it takes {} bytes in UTF-8", value.len_utf8()))
-        .hint(format!("the type for any character is `char`: `char c = '{value}'`"))
-        .note("`char` is not in the interpreter yet"))
+        .hint(format!("the type for any character is `char`: `char c = '{value}'`")))
+}
+
+/// An arm of a `match` on a `char`: a character, `_` or `var name`. The character is kept as
+/// its code.
+fn char_pattern(pattern: &mut Pattern, subject: &Ty) -> Res<Binds> {
+    let span = pattern.span;
+    let value = match &pattern.kind {
+        PatternKind::Wildcard => return Ok(Vec::new()),
+        PatternKind::Bind(name) => return Ok(vec![(name.clone(), subject.clone(), span)]),
+        PatternKind::Char(value) => *value as i128,
+        PatternKind::Int(value) => {
+            let diag = Diag::error(span, "this `match` looks at a `char`, and a number is not one");
+            return Err(match char_of(*value) {
+                Some(found) if !found.is_control() => diag.hint(format!("a character is written in quotes: `'{found}'`")),
+                _ => diag,
+            });
+        }
+        PatternKind::Variant { name, args, .. } => {
+            let diag = Diag::error(span, format!("this `match` looks at a `char`, and `{name}` is not a character"));
+            return Err(match args {
+                None => diag.hint(format!("to take any value under this name, write `var {name}`")),
+                Some(_) => diag,
+            });
+        }
+    };
+    pattern.kind = PatternKind::Int(value);
+    Ok(Vec::new())
 }
 
 /// Replaces `expr` with a node built around it.

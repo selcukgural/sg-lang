@@ -1,0 +1,6 @@
+void main() {
+    int code = 0xD800
+    print(code.tryToChar() ?? (char)63)
+    char c = (char)code
+    print(c)
+}

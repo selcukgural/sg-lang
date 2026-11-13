@@ -1,0 +1,7 @@
+void main() {
+    var line = "a,b,c"
+    var sep = ",".clone()
+    var parts = line.split(read sep)
+    sep = ";".clone()
+    print(parts.next() ?? "")
+}

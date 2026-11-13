@@ -1,0 +1,24 @@
+// `try` on a `read T?` gives a `read T`, as `??` does: the value stays where it is.
+read string? second(read List<string> names) from names {
+    var name = try names.get(1)
+    print($"found {name}")
+    return name
+}
+
+read string? lastWord(read string text) from text {
+    var words = text.splitWhitespace()
+    var last = try words.next()
+    for word in words {
+        last = word
+    }
+    return last
+}
+
+void main() {
+    var names = List<string> { "ada".clone(), "grace".clone() }
+    print(second(read names) ?? "none")
+    var one = List<string> { "ada".clone() }
+    print(second(read one) ?? "none")
+    print(lastWord("  to be or not ") ?? "none")
+    print(lastWord("   ") ?? "none")
+}

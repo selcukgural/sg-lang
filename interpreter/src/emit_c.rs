@@ -3,11 +3,13 @@
 //! The checker has already done the work that makes a program safe; what is left to run time
 //! are the same data-dependent failures the interpreter reports, with the same messages:
 //! overflow, a shift count outside the bits of the type, division by zero, a cast that does
-//! not fit (from a fractional number too), `assert` and `panic`. A panic of a cast or of an
-//! overflow names the method that does not panic, as the interpreter's does.
+//! not fit (from a fractional number too), a code that is no character, `assert` and `panic`.
+//! A panic of a cast or of an overflow names the method that does not panic, as the
+//! interpreter's does.
 //!
 //! Only a part of the language is compiled so far: integers, `float` and `double` (with their
-//! constants, `parse`, the conversions that do not panic and the math of `<math.h>`), `bool`, text, functions, structs,
+//! constants, `parse`, the conversions that do not panic and the math of `<math.h>`), `bool`, `char`,
+//! text (with `trim`, the searches and the iterators `chars`, `split`, `splitWhitespace` and `lines`), functions, structs,
 //! enums with `match` and `is`, `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
 //! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, and `print`. Anything else
 //! is an error that names what is missing, so nothing is compiled wrongly in silence.
@@ -15,7 +17,9 @@
 //! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`), and
 //! `float` and `double` are C's, computed with no fused multiply-add (see `RUNTIME`); a
 //! struct is a C struct passed by value; `read T` / `ref T` are pointers; a `string` is its
-//! bytes, a length and a capacity, and a `read string` is a pointer and a length. A `T*` is a
+//! bytes, a length and a capacity, and a `read string` is a pointer and a length. A `char` is a
+//! `uint32_t`, and what goes over a text is a small struct (`sg_iter`) whose parts are `read string`s
+//! into the text. A `T*` is a
 //! pointer to one `malloc`ed `T`. A `T*?` is the same pointer, where `NULL` is `null`: it
 //! costs nothing. Any other `T?` is the value and a flag beside it. An enum is a tag and,
 //! beside it, room for the largest variant (a C union); a `match` is a chain of tests on the tag.
@@ -58,7 +62,7 @@ use std::fmt::Write as _;
 use crate::ast::*;
 use crate::diag::{Diag, Span};
 use crate::source::Sources;
-use crate::types::{FloatTy, IntTy, Ty};
+use crate::types::{FloatTy, IntTy, TextIter, Ty};
 
 type Res<T> = Result<T, Diag>;
 
@@ -643,6 +647,187 @@ static void sg_put_quoted(sg_string* out, sg_str s) {
     }
     sg_put(out, "\"", 1);
 }
+/* A character as the bytes UTF-8 gives it: one to four, written into `out`. */
+static inline int sg_utf8(char* out, uint32_t c) {
+    if (c < 0x80) { out[0] = (char)c; return 1; }
+    if (c < 0x800) { out[0] = (char)(0xC0 | (c >> 6)); out[1] = (char)(0x80 | (c & 0x3F)); return 2; }
+    if (c < 0x10000) { out[0] = (char)(0xE0 | (c >> 12)); out[1] = (char)(0x80 | ((c >> 6) & 0x3F)); out[2] = (char)(0x80 | (c & 0x3F)); return 3; }
+    out[0] = (char)(0xF0 | (c >> 18)); out[1] = (char)(0x80 | ((c >> 12) & 0x3F)); out[2] = (char)(0x80 | ((c >> 6) & 0x3F)); out[3] = (char)(0x80 | (c & 0x3F));
+    return 4;
+}
+/* A character inside another value: in single quotes, with the escapes of a character constant. */
+static int sg_quote_char(char* out, uint32_t c) {
+    out[0] = '\'';
+    int n = 1;
+    switch (c) {
+    case '\'': case '\\': out[n++] = '\\'; out[n++] = (char)c; break;
+    case '\n': out[n++] = '\\'; out[n++] = 'n'; break;
+    case '\t': out[n++] = '\\'; out[n++] = 't'; break;
+    case '\r': out[n++] = '\\'; out[n++] = 'r'; break;
+    case 0: out[n++] = '\\'; out[n++] = '0'; break;
+    default:
+        if (c < 32 || c == 127) n += snprintf(out + n, 12, "\\u{%x}", (unsigned)c);
+        else n += sg_utf8(out + n, c);
+    }
+    out[n++] = '\'';
+    return n;
+}
+static void sg_put_quoted_char(sg_string* out, uint32_t c) { char b[16]; sg_put(out, b, sg_quote_char(b, c)); }
+SG_COLD static _Noreturn void sg_assert_fail_c(const char* text, uint32_t l, uint32_t r, const char* loc) {
+    char a[16], b[16];
+    int an = sg_quote_char(a, l), bn = sg_quote_char(b, r);
+    fflush(stdout);
+    fprintf(stderr, "panic: assert failed: %s\n  left: %.*s\n  right: %.*s\n", text, an, a, bn, b);
+    sg_die(loc);
+}
+SG_COLD static _Noreturn void sg_char_fail(__int128 v, const char* loc) {
+    fflush(stdout);
+    fputs("panic: ", stderr);
+    sg_err_int(v);
+    fputs(" is not the code of a character\n", stderr);
+    sg_die_hint(loc, "`tryToChar()` gives `null` when no character has the code");
+}
+SG_COLD static _Noreturn void sg_code_fail(uint32_t c, const char* ty, const char* loc) {
+    fflush(stdout);
+    fprintf(stderr, "panic: value %u does not fit in %s\n", (unsigned)c, ty);
+    sg_die_hint(loc, "`(int)c` holds the code of every character");
+}
+/* A text holds characters only, so a code that is not one stops the program in every build. */
+static inline bool sg_is_char(__int128 v) { return v >= 0 && v <= 0x10FFFF && !(v >= 0xD800 && v <= 0xDFFF); }
+static inline uint32_t sg_to_char(__int128 v, const char* loc) { if (__builtin_expect(!sg_is_char(v), 0)) sg_char_fail(v, loc); return (uint32_t)v; }
+/* White space as Unicode has it (the White_Space property): what `trim` takes off. */
+static inline bool sg_is_space(uint32_t c) {
+    if (c <= 0x20) return c == 0x20 || (c >= 0x09 && c <= 0x0D);
+    if (c < 0x85) return false;
+    return c == 0x85 || c == 0xA0 || c == 0x1680 || (c >= 0x2000 && c <= 0x200A) || c == 0x2028 || c == 0x2029 || c == 0x202F || c == 0x205F || c == 0x3000;
+}
+static inline bool sg_ascii_space(uint32_t c) { return c == ' ' || c == '\t' || c == '\n' || c == 0x0C || c == '\r'; }
+/* The character that starts at `p`, and how many bytes it takes. The text is valid UTF-8. */
+static inline uint32_t sg_decode(const uint8_t* p, int* n) {
+    uint32_t c = p[0];
+    if (c < 0x80) { *n = 1; return c; }
+    if (c < 0xE0) { *n = 2; return ((c & 0x1F) << 6) | (p[1] & 0x3F); }
+    if (c < 0xF0) { *n = 3; return ((c & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F); }
+    *n = 4;
+    return ((c & 0x07) << 18) | ((p[1] & 0x3F) << 12) | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+}
+static inline sg_str sg_char_str(uint8_t* buffer, uint32_t c) { return (sg_str){ buffer, sg_utf8((char*)buffer, c) }; }
+/* Where `n` first lies in `h`, in bytes, or -1. */
+static int64_t sg_find(sg_str h, sg_str n) {
+    if (n.len == 0) return 0;
+    if (n.len > h.len) return -1;
+    const uint8_t* p = h.ptr;
+    const uint8_t* end = h.ptr + (h.len - n.len + 1);
+    while (p < end) {
+        p = memchr(p, n.ptr[0], (size_t)(end - p));
+        if (!p) return -1;
+        if (memcmp(p, n.ptr, (size_t)n.len) == 0) return p - h.ptr;
+        p++;
+    }
+    return -1;
+}
+static int64_t sg_find_last(sg_str h, sg_str n) {
+    for (int64_t at = h.len - n.len; at >= 0; at--)
+        if (n.len == 0 || memcmp(h.ptr + at, n.ptr, (size_t)n.len) == 0) return at;
+    return -1;
+}
+static inline bool sg_starts(sg_str h, sg_str n) { return n.len <= h.len && (n.len == 0 || memcmp(h.ptr, n.ptr, (size_t)n.len) == 0); }
+static inline bool sg_ends(sg_str h, sg_str n) { return n.len <= h.len && (n.len == 0 || memcmp(h.ptr + (h.len - n.len), n.ptr, (size_t)n.len) == 0); }
+static bool sg_eq_ascii_case(sg_str a, sg_str b) {
+    if (a.len != b.len) return false;
+    for (int64_t i = 0; i < a.len; i++) {
+        uint8_t x = a.ptr[i], y = b.ptr[i];
+        if (x != y && ((x | 32) != (y | 32) || (uint8_t)((x | 32) - 'a') >= 26)) return false;
+    }
+    return true;
+}
+static sg_str sg_trim_start(sg_str s) {
+    int64_t at = 0;
+    while (at < s.len) {
+        int n;
+        if (!sg_is_space(sg_decode(s.ptr + at, &n))) break;
+        at += n;
+    }
+    return (sg_str){ s.ptr + at, s.len - at };
+}
+static sg_str sg_trim_end(sg_str s) {
+    int64_t end = s.len;
+    while (end > 0) {
+        int64_t start = end - 1;
+        while (start > 0 && (s.ptr[start] & 0xC0) == 0x80) start--;
+        int n;
+        if (!sg_is_space(sg_decode(s.ptr + start, &n))) break;
+        end = start;
+    }
+    return (sg_str){ s.ptr, end };
+}
+static inline sg_str sg_trim(sg_str s) { return sg_trim_end(sg_trim_start(s)); }
+/* What goes over a text: where it is, and for `split` the separator. A separator that is one
+   character is kept inside (`mark`, with `sep.ptr` NULL), so that the iterator can be moved. */
+typedef struct { sg_str s; int64_t at; sg_str sep; uint8_t mark[4]; bool done; } sg_iter;
+static inline sg_iter sg_iter_of(sg_str s) { return (sg_iter){ s, 0, { NULL, 0 }, { 0 }, false }; }
+SG_COLD static _Noreturn void sg_split_empty(const char* loc) {
+    fflush(stdout);
+    fputs("panic: the separator of `split` is empty\n", stderr);
+    sg_die_hint(loc, "the characters, one after the other: `text.chars()`");
+}
+static inline sg_iter sg_split_str(sg_str s, sg_str sep, const char* loc) {
+    if (__builtin_expect(sep.len == 0, 0)) sg_split_empty(loc);
+    return (sg_iter){ s, 0, sep, { 0 }, false };
+}
+static inline sg_iter sg_split_char(sg_str s, uint32_t c) {
+    sg_iter it = sg_iter_of(s);
+    it.sep.len = sg_utf8((char*)it.mark, c);
+    return it;
+}
+static inline bool sg_chars_next(sg_iter* it, uint32_t* out) {
+    if (it->at >= it->s.len) return false;
+    int n;
+    *out = sg_decode(it->s.ptr + it->at, &n);
+    it->at += n;
+    return true;
+}
+static bool sg_split_next(sg_iter* it, sg_str* out) {
+    if (it->done) return false;
+    sg_str rest = { it->s.ptr + it->at, it->s.len - it->at };
+    sg_str sep = it->sep.ptr ? it->sep : (sg_str){ it->mark, it->sep.len };
+    int64_t end = sg_find(rest, sep);
+    if (end < 0) { it->done = true; *out = rest; return true; }
+    *out = (sg_str){ rest.ptr, end };
+    it->at += end + sep.len;
+    return true;
+}
+static bool sg_words_next(sg_iter* it, sg_str* out) {
+    const uint8_t* p = it->s.ptr;
+    int64_t at = it->at, len = it->s.len;
+    int n;
+    while (at < len && sg_is_space(sg_decode(p + at, &n))) at += n;
+    int64_t start = at;
+    while (at < len && !sg_is_space(sg_decode(p + at, &n))) at += n;
+    it->at = at;
+    if (start == at) return false;
+    *out = (sg_str){ p + start, at - start };
+    return true;
+}
+/* A line ends at `\n`; a `\r` right before it is not part of the line. */
+static bool sg_lines_next(sg_iter* it, sg_str* out) {
+    if (it->at >= it->s.len) return false;
+    sg_str rest = { it->s.ptr + it->at, it->s.len - it->at };
+    const uint8_t* nl = memchr(rest.ptr, '\n', (size_t)rest.len);
+    if (!nl) { *out = rest; it->at = it->s.len; return true; }
+    int64_t end = nl - rest.ptr;
+    it->at += end + 1;
+    if (end > 0 && rest.ptr[end - 1] == '\r') end--;
+    *out = (sg_str){ rest.ptr, end };
+    return true;
+}
+static inline bool sg_ascii_digit(uint32_t c) { return c - '0' < 10u; }
+static inline bool sg_ascii_upper_is(uint32_t c) { return c - 'A' < 26u; }
+static inline bool sg_ascii_lower_is(uint32_t c) { return c - 'a' < 26u; }
+static inline bool sg_ascii_letter(uint32_t c) { return (c | 32u) - 'a' < 26u; }
+static inline bool sg_ascii_alnum(uint32_t c) { return sg_ascii_digit(c) || sg_ascii_letter(c); }
+static inline uint32_t sg_ascii_upper(uint32_t c) { return c >= 'a' && c <= 'z' ? c - 32 : c; }
+static inline uint32_t sg_ascii_lower(uint32_t c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 SG_COLD static _Noreturn void sg_assert_fail_t(const char* text, sg_str l, sg_str r, const char* loc) {
     fflush(stdout);
     fprintf(stderr, "panic: assert failed: %s\n  left: %.*s\n  right: %.*s\n", text, (int)l.len, (const char*)l.ptr, (int)r.len, (const char*)r.ptr);
@@ -1020,6 +1205,21 @@ fn not_yet(span: Span, what: &str) -> Diag {
 /// A C string literal for any text.
 /// Whether a value of this type is written by the helper of its type: a struct, an enum
 /// or a collection, also behind a borrow or a pointer.
+/// The runtime function that moves an iterator over a text on.
+fn next_of(kind: TextIter) -> &'static str {
+    match kind {
+        TextIter::Chars => "sg_chars_next",
+        TextIter::Split => "sg_split_next",
+        TextIter::SplitWhitespace => "sg_words_next",
+        TextIter::Lines => "sg_lines_next",
+    }
+}
+
+/// The methods of `char` (and the ASCII ones of `byte`) that the back end writes inline.
+fn is_char_method(name: &str) -> bool {
+    name.starts_with("isAscii") || matches!(name, "toAsciiUpper" | "toAsciiLower" | "isWhitespace" | "utf8Length" | "tryToChar")
+}
+
 fn has_helper(ty: &Ty) -> bool {
     let mut core = ty.strip_borrow();
     while let Ty::Ptr(inner) = core {
@@ -1202,6 +1402,7 @@ fn mangle(ty: &Ty) -> Option<String> {
         Ty::Int(ty) => ty.name().to_string(),
         Ty::Float(ty) => ty.name().to_string(),
         Ty::Bool => "bool".to_string(),
+        Ty::Char => "char".to_string(),
         Ty::Str => "string".to_string(),
         Ty::Struct(name) => format!("S_{}", cname(name)),
         Ty::Enum(name) => format!("E_{}", cname(name)),
@@ -1545,6 +1746,8 @@ impl<'a> Emitter<'a> {
             Ty::Int(ty) => int_ctype(*ty).to_string(),
             Ty::Float(ty) => float_ctype(*ty).to_string(),
             Ty::Bool => "bool".to_string(),
+            Ty::Char => "uint32_t".to_string(),
+            Ty::TextIter(_) => "sg_iter".to_string(),
             Ty::Void => "void".to_string(),
             // A `Formatter` is the text being written.
             Ty::Str | Ty::Formatter => "sg_string".to_string(),
@@ -1703,7 +1906,7 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(self.late_types, "struct sg_E_{name} {{ {key_c} m_key;{held} }};");
                 // How a key is given, hashed, compared and written.
                 let (given, hash, equal, of, show) = match &**key {
-                    Ty::Int(_) | Ty::Bool => (
+                    Ty::Int(_) | Ty::Bool | Ty::Char => (
                         key_c.clone(),
                         "sg_hash_word(0, (uint64_t)key)".to_string(),
                         "*held == key".to_string(),
@@ -1713,6 +1916,7 @@ impl<'a> Emitter<'a> {
                                 let (_, cast, put) = int_shown(*ty);
                                 format!("{put}(out, ({cast})key);")
                             }
+                            Ty::Char => "sg_put_quoted_char(out, key);".to_string(),
                             _ => "sg_puts(out, key ? \"true\" : \"false\");".to_string(),
                         },
                     ),
@@ -1921,7 +2125,7 @@ impl<'a> Emitter<'a> {
                 let params = params.iter().map(|param| self.written(param)).collect::<Res<Vec<Ty>>>()?;
                 Ty::Func(params, Box::new(self.written(ret)?))
             }
-            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Void | Ty::Str | Ty::Formatter)), []) => base,
+            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter)), []) => base,
             (None, []) => match self.full(&ty.name, ty.span) {
                 Some(full) if self.structs.contains_key(full.as_str()) => Ty::Struct(full),
                 Some(full) => Ty::Enum(full),
@@ -2022,6 +2226,7 @@ impl<'a> Emitter<'a> {
                 let _ = write!(body, "{}(out, *v);", float_put(*ty));
             }
             Ty::Bool => body.push_str("if (*v) sg_put(out, \"true\", 4); else sg_put(out, \"false\", 5);"),
+            Ty::Char => body.push_str("sg_put_quoted_char(out, *v);"),
             Ty::Str => body.push_str("sg_put_quoted(out, sg_view(v));"),
             // A `T*` and a `T*?` are one C type and share this helper, so it knows `null`.
             Ty::Ptr(inner) => {
@@ -2147,7 +2352,7 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(self.glue_protos, "static bool {helper}({ctype} const* a, {ctype} const* b);");
         let mut body = String::new();
         match ty {
-            Ty::Int(_) | Ty::Bool => body.push_str("return *a == *b;"),
+            Ty::Int(_) | Ty::Bool | Ty::Char => body.push_str("return *a == *b;"),
             Ty::Float(_) => body.push_str("return sg_feq(*a, *b);"),
             Ty::Str => body.push_str("return sg_eq(sg_view(a), sg_view(b));"),
             Ty::Ptr(inner) => {
@@ -2293,7 +2498,7 @@ impl<'a> Emitter<'a> {
             // The position of the first item that is equal, or -1.
             "index" => {
                 let (given, equal) = match &**item {
-                    Ty::Int(_) | Ty::Bool => (held.clone(), "v.ptr[i] == item".to_string()),
+                    Ty::Int(_) | Ty::Bool | Ty::Char => (held.clone(), "v.ptr[i] == item".to_string()),
                     Ty::Float(_) => (held.clone(), "sg_feq(v.ptr[i], item)".to_string()),
                     Ty::Str => ("sg_str".to_string(), "sg_eq(sg_view(&v.ptr[i]), item)".to_string()),
                     _ => (format!("{held} const*"), format!("{}(&v.ptr[i], item)", self.equaler(item, span)?)),
@@ -2333,7 +2538,7 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(self.glue_protos, "static uint64_t {helper}({ctype} const* v, uint64_t h);");
         let mut body = String::new();
         match ty {
-            Ty::Int(_) | Ty::Bool => body.push_str("return sg_hash_word(h, (uint64_t)*v);"),
+            Ty::Int(_) | Ty::Bool | Ty::Char => body.push_str("return sg_hash_word(h, (uint64_t)*v);"),
             Ty::Str => body.push_str("return sg_hash_bytes(h, v->ptr, v->len);"),
             Ty::Nullable(inner) if is_option(ty) => {
                 let _ = write!(body, "return v->has ? {}(&v->value, sg_hash_word(h, 1)) : sg_hash_word(h, 0);", self.hasher(inner, span)?);
@@ -2369,7 +2574,7 @@ impl<'a> Emitter<'a> {
     fn key(&mut self, table: &Ty, arg: &'a Expr) -> Res<String> {
         let (Ty::Map(key, _) | Ty::Set(key)) = table else { unreachable!("only called for a table") };
         match &**key {
-            Ty::Int(_) | Ty::Bool => self.value(arg),
+            Ty::Int(_) | Ty::Bool | Ty::Char => self.value(arg),
             Ty::Str => self.view(arg),
             _ => self.pointer(arg),
         }
@@ -2386,14 +2591,14 @@ impl<'a> Emitter<'a> {
             return Ok(helper);
         }
         let given = match &**key {
-            Ty::Int(_) | Ty::Bool => key_c.clone(),
+            Ty::Int(_) | Ty::Bool | Ty::Char => key_c.clone(),
             Ty::Str => "sg_str".to_string(),
             _ => format!("{key_c} const*"),
         };
         if what == "getOrAdd" {
             // The key is only lent; if it has to be kept, the table keeps a copy.
             let copy = match &**key {
-                Ty::Int(_) | Ty::Bool => "key",
+                Ty::Int(_) | Ty::Bool | Ty::Char => "key",
                 Ty::Str => "sg_clone(key)",
                 other if !self.droppable(other) => "*key",
                 other => return Err(not_yet(span, &format!("`getOrAdd` with a key of the type `{other}`"))),
@@ -2493,7 +2698,7 @@ impl<'a> Emitter<'a> {
             // The position of the first item that is equal, or -1.
             "index" => {
                 let (given, equal) = match &**item {
-                    Ty::Int(_) | Ty::Bool => (held.clone(), "v->ptr[i] == item".to_string()),
+                    Ty::Int(_) | Ty::Bool | Ty::Char => (held.clone(), "v->ptr[i] == item".to_string()),
                     Ty::Float(_) => (held.clone(), "sg_feq(v->ptr[i], item)".to_string()),
                     Ty::Str => ("sg_str".to_string(), "sg_eq(sg_view(&v->ptr[i]), item)".to_string()),
                     // Any other item is compared through a pointer, by the helper of its type.
@@ -2508,7 +2713,7 @@ impl<'a> Emitter<'a> {
             }
             "sort" => {
                 let compare = match &**item {
-                    Ty::Int(_) => format!("{held} x = *(const {held}*)a, y = *(const {held}*)b; return (x > y) - (x < y);"),
+                    Ty::Int(_) | Ty::Char => format!("{held} x = *(const {held}*)a, y = *(const {held}*)b; return (x > y) - (x < y);"),
                     Ty::Float(_) => format!("return sg_fcmp(*(const {held}*)a, *(const {held}*)b);"),
                     Ty::Str => "return sg_cmp(sg_view((const sg_string*)a), sg_view((const sg_string*)b));".to_string(),
                     Ty::Struct(owner) if self.own_method(owner, "compare") => format!("return f_{}_compare(({held}*)a, ({held}*)b);", cname(owner)),
@@ -2648,6 +2853,10 @@ impl<'a> Emitter<'a> {
                     Ty::Str => ("%.*s", format!("(int){cause}.len, (const char*){cause}.ptr")),
                     Ty::Int(ty) => (int_shown(*ty).0, format!("({}){cause}", int_shown(*ty).1)),
                     Ty::Bool => ("%s", format!("{cause} ? \"true\" : \"false\"")),
+                    Ty::Char => {
+                        shown = format!("char text[4]; int text_n = sg_utf8(text, {cause});\n        ");
+                        ("%.*s", "text_n, text".to_string())
+                    }
                     // A struct or an enum is written by the helper of its type.
                     other => {
                         shown = format!("sg_string text = SG_LIT(\"\", 0); {}(&text, &{cause});\n        ", self.shower(other, main.ret.span)?);
@@ -3110,6 +3319,28 @@ impl<'a> Emitter<'a> {
                     }
                 }
             }
+            // What goes over a text gives one part after the other, until it has none.
+            StmtKind::ForEach { var, iter, body, .. } if matches!(iter.ty, Ty::TextIter(_)) => {
+                let Ty::TextIter(kind) = iter.ty else { unreachable!("tested above") };
+                let item = kind.item();
+                let (held, it, at) = (self.ctype(&item, iter.span)?, self.temp(), self.temp());
+                let inner = format!("{pad}    ");
+                self.nothing_gone();
+                let value = self.value(iter)?;
+                self.flush_pre(&pad, out);
+                let _ = writeln!(out, "{pad}{{");
+                let _ = writeln!(out, "{inner}sg_iter {it} = {value}; {held} {at};");
+                self.flush_post(&inner, out);
+                let _ = writeln!(out, "{inner}while ({}(&{it}, &{at})) {{", next_of(kind));
+                self.temps += 1;
+                let cname = format!("v_{var}_{}", self.temps);
+                let line = format!("{held} {cname} = {at};");
+                let local = Local { name: var.clone(), cname, ty: item, gone: false, drop: None };
+                self.loops.push(self.scopes.len());
+                self.block_with(body, depth + 2, out, vec![(local, line)])?;
+                self.loops.pop();
+                let _ = writeln!(out, "{inner}}}\n{pad}}}");
+            }
             StmtKind::ForEach { var, iter, body, by, .. } => {
                 let list = match (by, list_behind(&iter.ty)) {
                     (Some(_), Some((list, _))) => list.clone(),
@@ -3294,6 +3525,8 @@ impl<'a> Emitter<'a> {
         }
         let number = match core {
             Ty::Int(ty) => Some((if subject.ty.is_borrow() { format!("(*{held})") } else { held.clone() }, *ty)),
+            // A character is tested by its code.
+            Ty::Char => Some((if subject.ty.is_borrow() { format!("(*{held})") } else { held.clone() }, IntTy::Uint)),
             _ => None,
         };
         let variants = self.variants(core, subject.span)?;
@@ -3663,6 +3896,8 @@ impl<'a> Emitter<'a> {
             | ExprKind::IsNull { expr: inner, .. }
             | ExprKind::IsVariant { expr: inner, .. }
             | ExprKind::Unary(UnOp::Not | UnOp::BitNot, inner) => of(inner),
+            // A code that is not a character stops the program in every build.
+            ExprKind::Cast { ty: Ty::Char, expr: inner } if *inner.ty.strip_borrow() != Ty::Char => of(inner).max(Effect::Stops),
             ExprKind::Unary(UnOp::Neg, inner) | ExprKind::Cast { expr: inner, .. } => of(inner).max(if self.checked { Effect::Stops } else { Effect::Reads }),
             ExprKind::Binary(op, left, right) => {
                 let own = match op {
@@ -3694,6 +3929,9 @@ impl<'a> Emitter<'a> {
                     Callee::Plain if table_behind(&recv.ty).is_some() && matches!(name.as_str(), "length" | "get" | "contains") => Effect::Reads,
                     Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::Map(..) | Ty::Set(_) | Ty::Formatter) => Effect::Changes,
                     Callee::Plain if name == "clone" || name == "toString" => Effect::Acts,
+                    // `next` moves the iterator on; `split` stops at a separator that is empty.
+                    Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::TextIter(_)) => Effect::Changes,
+                    Callee::Plain if name == "split" => Effect::Stops,
                     Callee::Plain => Effect::Reads,
                     _ => Effect::Acts,
                 };
@@ -3909,6 +4147,35 @@ impl<'a> Emitter<'a> {
         values.push(temp);
     }
 
+    /// What a text is searched for, as a look at text: the lines that make it ready and the
+    /// value. A character becomes its UTF-8 bytes in a buffer named after `temp`, a byte a
+    /// text of one byte.
+    fn needle(&mut self, arg: &'a Expr, temp: &str) -> Res<(String, String)> {
+        match arg.ty.strip_borrow() {
+            Ty::Char => {
+                let value = self.value(arg)?;
+                Ok((format!("uint8_t {temp}b[4]; sg_str {temp}n = sg_char_str({temp}b, {value});"), format!("{temp}n")))
+            }
+            Ty::Int(_) => {
+                let value = self.value(arg)?;
+                Ok((format!("uint8_t {temp}b[1] = {{ {value} }}; sg_str {temp}n = {{ {temp}b, 1 }};"), format!("{temp}n")))
+            }
+            _ => {
+                let value = self.view(arg)?;
+                Ok((format!("sg_str {temp}n = {value};"), format!("{temp}n")))
+            }
+        }
+    }
+
+    /// A character inside a formatted line: its UTF-8 bytes, on a line of their own.
+    fn char_text(&mut self, value: &str, format: &mut String, values: &mut Vec<String>) {
+        let temp = self.temp();
+        self.pre.push(format!("char {temp}[4]; int {temp}n = sg_utf8({temp}, {value});"));
+        format.push_str("%.*s");
+        values.push(format!("{temp}n"));
+        values.push(temp);
+    }
+
     /// One value inside a formatted line.
     fn formatted(&mut self, expr: &'a Expr, format: &mut String, values: &mut Vec<String>) -> Res<()> {
         if let ExprKind::Str(text) = &expr.kind {
@@ -3943,6 +4210,7 @@ impl<'a> Emitter<'a> {
                     format.push_str("%s");
                     values.push(format!("({place}) ? \"true\" : \"false\""));
                 }
+                Ty::Char => self.char_text(&place, format, values),
                 Ty::Str => {
                     format.push_str("%.*s");
                     values.push(format!("(int){place}.len, (const char*){place}.ptr"));
@@ -3973,6 +4241,7 @@ impl<'a> Emitter<'a> {
                 format.push_str("%s");
                 values.push(format!("({value}) ? \"true\" : \"false\""));
             }
+            Ty::Char => self.char_text(&value, format, values),
             other => return Err(not_yet(expr.span, &format!("writing a `{other}` as text"))),
         }
         Ok(())
@@ -4016,6 +4285,7 @@ impl<'a> Emitter<'a> {
                 Ty::Float(FloatTy::Double) => Some(("sg_assert_fail_d", "double")),
                 Ty::Float(FloatTy::Float) => Some(("sg_assert_fail_f", "double")),
                 Ty::Bool => Some(("sg_assert_fail_b", "bool")),
+                Ty::Char => Some(("sg_assert_fail_c", "uint32_t")),
                 Ty::Str => Some(("sg_assert_fail_s", "")),
                 _ => None,
             };
@@ -4283,6 +4553,7 @@ impl<'a> Emitter<'a> {
         let head = std::mem::replace(&mut self.head, false);
         match &expr.kind {
             ExprKind::Int(value, ty) => Ok(int_literal(*value, *ty)),
+            ExprKind::Char(value) => Ok(format!("((uint32_t){}u)", *value as u32)),
             ExprKind::Float(text, ty) => Ok(float_literal(text, *ty)),
             ExprKind::Bool(value) => Ok(value.to_string()),
             // A constant is a `string` with no capacity: nothing is allocated and nothing freed.
@@ -4614,7 +4885,7 @@ impl<'a> Emitter<'a> {
                 let (values, names) = self.two(left, right, head)?;
                 let (left, right) = (&values[0], &values[1]);
                 match (&operands, op.is_comparison()) {
-                    (Ty::Int(_) | Ty::Float(_) | Ty::Bool, true) => Ok(sequence(&names, format!("({left} {} {right})", op.symbol()))),
+                    (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char, true) => Ok(sequence(&names, format!("({left} {} {right})", op.symbol()))),
                     (Ty::Int(ty), false) => Ok(sequence(&names, self.arithmetic(*op, *ty, left, right, expr.span))),
                     (Ty::Float(ty), false) => Ok(sequence(&names, fractional(*op, *ty, left, right))),
                     (other, _) => Err(not_yet(expr.span, &format!("`{}` on `{other}`", op.symbol()))),
@@ -4635,6 +4906,22 @@ impl<'a> Emitter<'a> {
                         }
                         let loc = self.loc(expr.span);
                         Ok(format!("sg_fcast_{}((double)({inner}), {}, {loc})", int_name(*to), from == FloatTy::Float))
+                    }
+                    (Ty::Char, Ty::Char) => Ok(inner),
+                    (Ty::Char, _) => {
+                        let loc = self.loc(expr.span);
+                        Ok(format!("sg_to_char((__int128)({inner}), {loc})"))
+                    }
+                    // The code of a character fits every type of 32 bits or more.
+                    (Ty::Int(to), Ty::Char) if !self.checked || to.bits() >= 32 => Ok(format!("(({})({inner}))", int_ctype(*to))),
+                    (Ty::Int(to), Ty::Char) => {
+                        let (loc, temp) = (self.loc(expr.span), self.temp());
+                        Ok(format!(
+                            "({{ uint32_t {temp} = {inner}; if (__builtin_expect({temp} > {}u, 0)) sg_code_fail({temp}, \"{}\", {loc}); ({}){temp}; }})",
+                            to.max(),
+                            to.name(),
+                            int_ctype(*to)
+                        ))
                     }
                     (Ty::Int(to), _) => {
                         if !self.checked {
@@ -4983,7 +5270,7 @@ impl<'a> Emitter<'a> {
                     let before = self.mark();
                     let address = self.list_address(recv)?;
                     let Ty::List(item) = &list else { unreachable!("it is a list") };
-                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Str);
+                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str);
                     let called = if by_pointer {
                         format!("{helper}({address}, {})", self.pointer(&args[0])?)
                     } else {
@@ -5027,7 +5314,7 @@ impl<'a> Emitter<'a> {
                     };
                     let before = self.mark();
                     let window = self.window(recv)?;
-                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Str);
+                    let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str);
                     let called = if by_pointer {
                         format!("{helper}({window}, {})", self.pointer(&args[0])?)
                     } else {
@@ -5099,6 +5386,22 @@ impl<'a> Emitter<'a> {
                     }
                     self.call(fname, None, args, head, &expr.ty)
                 }
+                // The next part of the text, or `null`.
+                Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::TextIter(_)) => {
+                    let Ty::TextIter(kind) = recv.ty.strip_borrow() else { unreachable!("tested above") };
+                    let (step, temp) = (next_of(*kind), self.temp());
+                    let (start, at) = match recv.is_place() {
+                        true => (String::new(), format!("&{}", self.lvalue(recv)?)),
+                        false => (format!("sg_iter {temp}i = {}; ", self.value(recv)?), format!("&{temp}i")),
+                    };
+                    Ok(match kind {
+                        TextIter::Chars => {
+                            let option = self.ctype(&expr.ty, expr.span)?;
+                            format!("({{ {start}{option} {temp}; {temp}.has = {step}({at}, &{temp}.value); {temp}; }})")
+                        }
+                        _ => format!("({{ {start}sg_str {temp}; if (!{step}({at}, &{temp})) {temp} = SG_NO_STR; {temp}; }})"),
+                    })
+                }
                 Callee::Plain if is_text(&recv.ty) || is_text_behind_pointer(&recv.ty) => match name.as_str() {
                     // The bytes of the text, looked at where they are.
                     "asBytes" => {
@@ -5108,15 +5411,39 @@ impl<'a> Emitter<'a> {
                         }
                         Ok(format!("sg_bytes({})", self.view(recv)?))
                     }
-                    // The position of the first such byte, or `null`.
-                    "indexOf" => {
-                        let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
-                        let (text, byte) = (self.view(recv)?, self.value(&args[0])?);
-                        Ok(format!(
-                            "({{ sg_str {temp} = {text}; const uint8_t* {temp}p = {temp}.len ? memchr({temp}.ptr, {byte}, (size_t){temp}.len) : NULL; \
-                             (({ctype}){{ {temp}p != NULL, {temp}p ? {temp}p - {temp}.ptr : 0 }}); }})"
-                        ))
+                    // Where the character, the text or the byte first (or last) lies, or `null`.
+                    "indexOf" | "lastIndexOf" | "contains" | "startsWith" | "endsWith" | "split" => {
+                        let temp = self.temp();
+                        let text = self.view(recv)?;
+                        // A separator that is one character is kept inside the iterator.
+                        if name == "split" && *args[0].ty.strip_borrow() == Ty::Char {
+                            let separator = self.value(&args[0])?;
+                            return Ok(format!("({{ sg_str {temp}h = {text}; sg_split_char({temp}h, {separator}); }})"));
+                        }
+                        let (setup, needle) = self.needle(&args[0], &temp)?;
+                        let start = format!("sg_str {temp}h = {text}; {setup}");
+                        Ok(match name.as_str() {
+                            "indexOf" | "lastIndexOf" => {
+                                let ctype = self.ctype(&expr.ty, expr.span)?;
+                                let find = if name == "indexOf" { "sg_find" } else { "sg_find_last" };
+                                format!("({{ {start} int64_t {temp}at = {find}({temp}h, {needle}); (({ctype}){{ {temp}at >= 0, {temp}at >= 0 ? {temp}at : 0 }}); }})")
+                            }
+                            "contains" => format!("({{ {start} sg_find({temp}h, {needle}) >= 0; }})"),
+                            "startsWith" => format!("({{ {start} sg_starts({temp}h, {needle}); }})"),
+                            "endsWith" => format!("({{ {start} sg_ends({temp}h, {needle}); }})"),
+                            _ => {
+                                let loc = self.loc(expr.span);
+                                format!("({{ {start} sg_split_str({temp}h, {needle}, {loc}); }})")
+                            }
+                        })
                     }
+                    "trim" | "trimStart" | "trimEnd" => Ok(format!("sg_{}({})", if name == "trim" { "trim" } else if name == "trimStart" { "trim_start" } else { "trim_end" }, self.view(recv)?)),
+                    "equalsIgnoreAsciiCase" => {
+                        let temp = self.temp();
+                        let (text, other) = (self.view(recv)?, self.view(&args[0])?);
+                        Ok(format!("({{ sg_str {temp}a = {text}; sg_str {temp}b = {other}; sg_eq_ascii_case({temp}a, {temp}b); }})"))
+                    }
+                    "chars" | "splitWhitespace" | "lines" => Ok(format!("sg_iter_of({})", self.view(recv)?)),
                     "length" => Ok(format!("{}.len", self.view(recv)?)),
                     "equals" => Ok(format!("sg_eq({}, {})", self.view(recv)?, self.view(&args[0])?)),
                     // Less than zero, zero or more than zero, as -1, 0 and 1.
@@ -5197,6 +5524,39 @@ impl<'a> Emitter<'a> {
                     let (values, names) = self.two(recv, &args[0], head)?;
                     let op = if name == "min" { "<" } else { ">" };
                     Ok(sequence(&names, format!("({{ {int} {temp}a = {}, {temp}b = {}; {temp}a {op} {temp}b ? {temp}a : {temp}b; }})", values[0], values[1])))
+                }
+                // The ASCII tests and changes of a `char` or a `byte`, and what a `char` knows of itself.
+                Callee::Plain if matches!(recv.ty, Ty::Char | Ty::Int(_)) && is_char_method(name) => {
+                    let ctype = self.ctype(&recv.ty, recv.span)?;
+                    let value = self.first(recv, head)?;
+                    Ok(match name.as_str() {
+                        "isAscii" => format!("((uint32_t)({value}) < 0x80u)"),
+                        "isAsciiDigit" => format!("sg_ascii_digit({value})"),
+                        "isAsciiLetter" => format!("sg_ascii_letter({value})"),
+                        "isAsciiAlphanumeric" => format!("sg_ascii_alnum({value})"),
+                        "isAsciiUpper" => format!("sg_ascii_upper_is({value})"),
+                        "isAsciiLower" => format!("sg_ascii_lower_is({value})"),
+                        "isAsciiWhitespace" => format!("sg_ascii_space({value})"),
+                        "toAsciiUpper" => format!("(({ctype})sg_ascii_upper({value}))"),
+                        "toAsciiLower" => format!("(({ctype})sg_ascii_lower({value}))"),
+                        "isWhitespace" => format!("sg_is_space({value})"),
+                        "utf8Length" => {
+                            let temp = self.temp();
+                            format!("({{ uint32_t {temp} = {value}; (int64_t)({temp} < 0x80u ? 1 : {temp} < 0x800u ? 2 : {temp} < 0x10000u ? 3 : 4); }})")
+                        }
+                        _ => {
+                            let (option, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+                            format!("({{ __int128 {temp}v = (__int128)({value}); {option} {temp}; {temp}.has = sg_is_char({temp}v); {temp}.value = (uint32_t){temp}v; {temp}; }})")
+                        }
+                    })
+                }
+                Callee::Plain if matches!(name.as_str(), "equals" | "compare") && matches!(recv.ty.strip_borrow(), Ty::Char) => {
+                    let (values, names) = self.two(recv, &args[0], head)?;
+                    let temp = self.temp();
+                    Ok(sequence(&names, match name.as_str() {
+                        "equals" => format!("({} == {})", values[0], values[1]),
+                        _ => format!("({{ uint32_t {temp}a = {}, {temp}b = {}; (int32_t)(({temp}a > {temp}b) - ({temp}a < {temp}b)); }})", values[0], values[1]),
+                    }))
                 }
                 // `big.tryToInt()`: the value if it fits, `null` if not; `wrappingToInt()` keeps
                 // the bits that fit. A fractional number goes toward zero first, as in a cast.

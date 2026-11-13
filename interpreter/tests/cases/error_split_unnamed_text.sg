@@ -1,0 +1,9 @@
+string make() {
+    return "a b".clone()
+}
+
+void main() {
+    for word in make().split(' ') {
+        print(word)
+    }
+}

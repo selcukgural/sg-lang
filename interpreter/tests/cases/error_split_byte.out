@@ -1,0 +1,5 @@
+error: `split` looks for a `char` or a `read string`, found `byte`
+  --> error_split_byte.sg:3:29
+ 3 |     for part in "a,b".split(comma) {
+   |                             ^^^^^
+  hint: the character of an ASCII byte: `(char)b`

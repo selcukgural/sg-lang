@@ -1,0 +1,6 @@
+?
+panic: 55296 is not the code of a character
+  --> panic_char_code.sg:4:14
+ 4 |     char c = (char)code
+   |              ^^^^^^^^^^
+  hint: `tryToChar()` gives `null` when no character has the code

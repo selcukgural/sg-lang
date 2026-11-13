@@ -1,0 +1,6 @@
+error: the type `Split` cannot be written yet
+  it borrows the text it goes over; types that carry a borrow of a built-in type come with generics
+  --> error_iterator_type.sg:1:11
+ 1 | void show(Split parts) {
+   |           ^^^^^
+  hint: keep it in a `var`, or go over it with `for`

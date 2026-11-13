@@ -1,0 +1,5 @@
+error: 55296 is not the code of a character
+  a character is from 0 to 0x10FFFF, and not from 0xD800 to 0xDFFF
+  --> error_char_surrogate.sg:2:11
+ 2 |     print((char)0xD800)
+   |           ^^^^^^^^^^^^

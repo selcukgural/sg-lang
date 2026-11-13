@@ -1,0 +1,4 @@
+void main() {
+    char c = 'é'
+    assert(c == 'e')
+}

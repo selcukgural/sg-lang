@@ -1,0 +1,9 @@
+error: `line` cannot be changed here: `p` borrows from it and is used again later
+  --> error_trim_outlives_text.sg:4:5
+ 4 |     line = "z"
+   |     ^^^^
+  `p` borrowed it here:
+  --> error_trim_outlives_text.sg:3:13
+ 3 |     var p = line.trim()
+   |             ^^^^
+  hint: finish with `p` before this line: a borrow ends at its last use

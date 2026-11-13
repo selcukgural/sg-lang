@@ -1,0 +1,7 @@
+1114111
+255
+panic: 1114112 is not the code of a character
+  --> char_code_checked.sg:8:11
+ 8 |     print((char)code)
+   |           ^^^^^^^^^^
+  hint: `tryToChar()` gives `null` when no character has the code

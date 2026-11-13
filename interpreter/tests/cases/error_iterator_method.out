@@ -1,0 +1,5 @@
+error: `Chars` has no method `length`
+  it has `next()`, and `for` goes over it
+  --> error_iterator_method.sg:3:14
+ 3 |     print(it.length())
+   |              ^^^^^^

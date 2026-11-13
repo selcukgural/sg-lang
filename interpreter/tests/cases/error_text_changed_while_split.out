@@ -1,0 +1,9 @@
+error: `line` cannot be changed here: `parts` borrows from it and is used again later
+  --> error_text_changed_while_split.sg:4:5
+ 4 |     line = "y"
+   |     ^^^^
+  `parts` borrowed it here:
+  --> error_text_changed_while_split.sg:3:17
+ 3 |     var parts = line.split(",")
+   |                 ^^^^
+  hint: finish with `parts` before this line: a borrow ends at its last use

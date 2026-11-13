@@ -1,0 +1,4 @@
+void main() {
+    var it = "abc".chars()
+    print(it.length())
+}

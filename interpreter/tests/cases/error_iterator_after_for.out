@@ -1,0 +1,8 @@
+error: `a` was moved and can no longer be used
+  --> error_iterator_after_for.sg:7:11
+ 7 |     print(a.next() ?? '-')
+   |           ^
+  it was moved here:
+  --> error_iterator_after_for.sg:4:14
+ 4 |     for c in a {
+   |              ^

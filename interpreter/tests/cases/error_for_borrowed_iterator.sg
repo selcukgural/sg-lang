@@ -1,0 +1,6 @@
+void main() {
+    var text = "a b"
+    for w in read text.split(" ") {
+        print(w)
+    }
+}

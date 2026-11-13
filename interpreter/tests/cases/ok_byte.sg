@@ -4,11 +4,11 @@ bool isDigit(byte c) {
 
 void main() {
     byte plus = '+'
-    var star = '*'                       // a character is a byte
+    byte star = '*'                      // a character where a byte goes is a byte
     print(plus)
     print(star)
-    print('\n')
-    print('\'')
+    print((byte)'\n')
+    print((byte)'\'')
     print(isDigit('7'))
     print(isDigit(plus))
 

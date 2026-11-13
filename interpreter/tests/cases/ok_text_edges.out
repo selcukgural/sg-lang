@@ -1,0 +1,665 @@
+[;bc] [;bc] [;bc]
+s<;bc>
+S<;bc>
+E<;bc>
+l<;bc>
+w<;>
+w<bc>
+6 6 3 -1 false false false
+[] [] []
+s< >
+S< >
+E< >
+l< >
+3 3 -1 -1 false false false
+[b	bcééc] [b	bcééc
+] [b	bcééc]
+s<b	bcééc
+>
+S<b	bcééc
+>
+E<b	bc>
+E<>
+E<c
+>
+l<b	bcééc>
+w<b>
+w<bcééc>
+11 11 0 -1 false false true
+[] [] []
+s<>
+S<>
+E<>
+l<>
+1 1 -1 -1 false false false
+[bx,
+xb] [bx,
+xb] [bx,
+xb]
+s<bx>
+s<
+xb>
+S<bx,
+xb>
+E<bx,
+xb>
+l<bx,>
+l<xb>
+w<bx,>
+w<xb>
+6 6 0 -1 false false false
+[xb
+b; é] [xb
+b; é] [xb
+b; é]
+s<xb
+b; é>
+S<xb
+b; é>
+E<xb
+b; >
+E<>
+l<xb>
+l<b; é>
+w<x>
+w<b>
+w<b>
+w<;>
+w<é>
+12 12 3 -1 false false false
+[,] [,] [,]
+s<>
+s<>
+S<,>
+E<,>
+l<,>
+w<,>
+2 2 -1 -1 false false false
+[,xx	 ,] [,xx	 ,] [  ,xx	 ,]
+s<  >
+s<xx	 >
+s<>
+S<  ,xx	 ,>
+E<  ,xx	 ,>
+l<  ,xx	 ,>
+w<,xx>
+w<,>
+12 12 -1 -1 false false false
+[cxb	abé] [cxb	abé　] [cxb	abé]
+s<cxb	abé　>
+S<cxb	>
+S<é　>
+E<cxb	ab>
+E<　>
+l<cxb	abé　>
+w<cxb>
+w<ab>
+w<é>
+12 12 2 4 false false false
+[x😀] [x😀  
+ 
+] [x😀]
+s<x😀  
+ 
+>
+S<x😀  
+ 
+>
+E<x😀  
+ 
+>
+l<x😀  >
+l< >
+w<x😀>
+13 13 -1 -1 true false true
+[x] [x] [x]
+s<x>
+S<x>
+E<x>
+l<x>
+w<x>
+1 1 -1 -1 false false false
+[ab　😀] [ab　😀] [ab　😀]
+s<ab　😀>
+S<>
+S<　😀>
+E<ab　😀>
+l<ab　😀>
+w<ab>
+w<😀>
+10 10 2 1 true false false
+[c,é] [c,é] [c,é]
+s<c>
+s<é>
+S<c,é>
+E<c,>
+E<>
+l<c,é>
+w<c,>
+w<é>
+5 5 -1 -1 false false false
+[;] [;] [　;]
+s<　;>
+S<　;>
+E<　;>
+l<　;>
+w<;>
+4 4 -1 -1 false false false
+[abébcx　　 abx😀cc] [abébcx　　 abx😀cc] [abébcx　　 abx😀cc]
+s<abébcx　　 abx😀cc>
+S<>
+S<ébcx　　 >
+S<x😀cc>
+E<ab>
+E<bcx　　 abx😀cc>
+l<abébcx　　 abx😀cc>
+w<abébc>
+w<x>
+w<abx😀cc>
+26 26 1 17 true false false
+[abcb] [abcb ] [abcb]
+s<abcb >
+S<>
+S<cb >
+E<abcb >
+l<abcb >
+w<abcb>
+6 6 1 0 false false false
+[x😀  a😀  ,] [x😀  a😀  ,] [x😀  a😀  ,]
+s<x😀  a😀  >
+s<>
+S<x😀  a😀  ,>
+E<x😀  a😀  ,>
+l<x😀  a😀  ,>
+w<x😀>
+w<a😀>
+w<,>
+22 22 -1 -1 true false false
+[b	 ;] [b	 ;
+] [b	 ;]
+s<b	 ;
+>
+S<b	 ;
+>
+E<b	 ;
+>
+l<b	 ;>
+l<>
+w<b>
+w<;>
+10 10 0 -1 false false false
+[abc 😀;éé] [abc 😀;éé ] [abc 😀;éé]
+s<abc 😀;éé >
+S<>
+S<c 😀;éé >
+E<abc 😀;>
+E<>
+E< >
+l<abc 😀;éé >
+w<abc>
+w<😀>
+w<;é>
+w<é>
+24 24 1 0 true false false
+[;c] [;c ] [;c]
+s<;c >
+S<;c >
+E<;c >
+l<;c >
+w<;c>
+3 3 -1 -1 false false false
+[] [] []
+s<
+
+>
+S<
+
+>
+E<
+
+>
+l<>
+l<>
+2 2 -1 -1 false false true
+[] [] []
+s<>
+S<>
+E<>
+0 0 -1 -1 false false false
+[x  a;é] [x  a;é] [x  a;é]
+s<x  a;é>
+S<x  a;é>
+E<x  a;>
+E<>
+l<x  a;é>
+w<x>
+w<a;é>
+9 9 -1 -1 false false false
+[x　;b😀] [x　;b😀] [ x　;b😀]
+s< x　;b😀>
+S< x　;b😀>
+E< x　;b😀>
+l< x　;b😀>
+w<x>
+w<;>
+w<b😀>
+15 15 9 -1 true false false
+[,ab] [,ab] [,ab]
+s<>
+s<ab>
+S<,>
+S<>
+E<,ab>
+l<,ab>
+w<,ab>
+11 11 8 7 false false false
+[] [] []
+s<>
+S<>
+E<>
+0 0 -1 -1 false false false
+[c	😀] [c	😀] [c	😀]
+s<c	😀>
+S<c	😀>
+E<c	😀>
+l<c	😀>
+w<c>
+w<😀>
+6 6 -1 -1 true false false
+[,] [,　] [,]
+s<>
+s<　>
+S<,　>
+E<,　>
+l<,　>
+w<,>
+4 4 -1 -1 false false false
+[b,ax;, a] [b,ax;, a] [b,ax;, a]
+s<b>
+s<ax;>
+s< a>
+S<b,ax;, a>
+E<b,ax;, a>
+l<b,ax;, a>
+w<b,ax;>
+w<,>
+w<a>
+11 11 0 -1 false false false
+[] [] []
+s<	>
+S<	>
+E<	>
+l<	>
+1 1 -1 -1 false false false
+[;  ab,,ab] [;  ab,,ab] [;  ab,,ab]
+s<;  ab>
+s<>
+s<ab>
+S<;  >
+S<,,>
+S<>
+E<;  ab,,ab>
+l<;  ab,,ab>
+w<;>
+w<ab,,ab>
+16 16 11 14 false false false
+[abab c;,] [abab c;,　] [abab c;,]
+s<abab c;>
+s<　>
+S<>
+S<>
+S< c;,　>
+E<abab c;,　>
+l<abab c;,　>
+w<abab>
+w<c;,>
+12 12 1 2 false false false
+[ab a	 ;a] [ab a	 ;a] [ab a	 ;a]
+s<ab a	 ;a>
+S<>
+S< a	 ;a>
+E<ab a	 ;a>
+l<ab a	 ;a>
+w<ab>
+w<a>
+w<;>
+w<a>
+14 14 2 1 false false false
+[c] [c   
+] [ c]
+s< c   
+>
+S< c   
+>
+E< c   
+>
+l< c   >
+l<>
+w<c>
+17 17 -1 -1 false false false
+[] [] []
+s<
+	
+
+>
+S<
+	
+
+>
+E<
+	
+
+>
+l<>
+l<	>
+l<>
+6 6 -1 -1 false false true
+[ab] [ab ] [ab]
+s<ab >
+S<>
+S< >
+E<ab >
+l<ab >
+w<ab>
+6 6 2 1 false false false
+[aaab	 😀  c] [aaab	 😀  c] [aaab	 😀  c]
+s<aaab	 😀  c>
+S<aa>
+S<	 😀  c>
+E<aaab	 😀  c>
+l<aaab	 😀  c>
+w<aa>
+w<ab>
+w<😀>
+w<c>
+21 21 4 3 true false false
+[,
+ab] [,
+ab] [,
+ab]
+s<>
+s<
+ab>
+S<,
+>
+S<>
+E<,
+ab>
+l<,>
+l<ab>
+w<,>
+w<ab>
+4 4 3 2 false false false
+[ab] [ab] [　	ab]
+s<　	ab>
+S<　	>
+S<>
+E<　	ab>
+l<　	ab>
+w<ab>
+6 6 5 4 false false false
+[aab c,	ab] [aab c,	ab ] [aab c,	ab]
+s<aab c>
+s<	ab >
+S<a>
+S< c,	>
+S< >
+E<aab c,	ab >
+l<aab c,	ab >
+w<aab>
+w<c,>
+w<ab>
+14 14 2 11 false false false
+[c😀c] [c😀c] [　c😀c]
+s<　c😀c>
+S<　c😀c>
+E<　c😀c>
+l<　c😀c>
+w<c>
+w<😀>
+w<c>
+13 13 -1 -1 true false false
+[;a;x😀;ab ;] [;a;x😀;ab ;] [  ;a;x😀;ab ;]
+s<  ;a;x😀;ab ;>
+S<  ;a;x😀;>
+S< ;>
+E<  ;a;x😀;ab ;>
+l<  ;a;x😀;ab ;>
+w<;a;x😀;ab>
+w<;>
+17 17 12 11 true true false
+[;aa,;é] [;aa,;é] [;aa,;é]
+s<;aa>
+s<;é>
+S<;aa,;é>
+E<;aa,;>
+E<>
+l<;aa,;é>
+w<;aa,>
+w<;é>
+9 9 -1 -1 false false false
+[a	 
+x　é] [a	 
+x　é] [		a	 
+x　é]
+s<		a	 
+x　é>
+S<		a	 
+x　é>
+E<		a	 
+x　>
+E<>
+l<		a	 >
+l<x　é>
+w<a>
+w<x>
+w<é>
+17 17 -1 -1 false false false
+[;b 😀xé;;] [;b 😀xé;;] [;b 😀xé;;]
+s<;b 😀xé;;>
+S<;b 😀xé;;>
+E<;b 😀x>
+E<;;>
+l<;b 😀xé;;>
+w<;b>
+w<😀x>
+w<é>
+w<;>
+w<;>
+19 19 1 -1 true false false
+[] [] []
+s<>
+S<>
+E<>
+0 0 -1 -1 false false false
+[😀 a; ;ab,b] [😀 a; ;ab,b　] [😀 a; ;ab,b]
+s<😀 a; ;ab>
+s<b　>
+S<😀 a; ;>
+S<,b　>
+E<😀 a; ;ab,b　>
+l<😀 a; ;ab,b　>
+w<😀>
+w<a;>
+w<;ab,>
+w<b>
+19 19 10 9 true false false
+[ab,b
+	b] [ab,b
+	b] [ab,b
+	b]
+s<ab>
+s<b
+	b>
+S<>
+S<,b
+	b>
+E<ab,b
+	b>
+l<ab,b>
+l<	b>
+w<ab,>
+w<b>
+w<b>
+9 9 1 0 false false false
+[,😀ac😀] [,😀ac😀　	] [,😀ac😀]
+s<>
+s<😀ac😀　	>
+S<,😀ac😀　	>
+E<,😀ac😀　	>
+l<,😀ac😀　	>
+w<,>
+w<😀>
+w<ac😀>
+20 20 -1 -1 true false false
+[ab] [ab
+] [ab]
+s<ab
+>
+S<>
+S<
+>
+E<ab
+>
+l<ab>
+l<>
+w<ab>
+8 8 3 2 false false false
+[😀;é,😀　c
+éc] [😀;é,😀　c
+éc	] [	😀;é,😀　c
+éc]
+s<	😀;é>
+s<😀　c
+éc	>
+S<	😀;é,😀　c
+éc	>
+E<	😀;>
+E<,😀　c
+>
+E<c	>
+l<	😀;é,😀　c>
+l<éc	>
+w<😀;é,>
+w<😀>
+w<c>
+w<éc>
+25 25 -1 -1 true false false
+[,; ;;😀
+,] [,; ;;😀
+,] [ ,; ;;😀
+,]
+s< >
+s<; ;;😀
+>
+s<>
+S< ,; ;;😀
+,>
+E< ,; ;;😀
+,>
+l< ,; ;;😀>
+l<,>
+w<,;>
+w<;>
+w<;😀>
+w<,>
+16 16 -1 -1 true false false
+[ab 
+ é] [ab 
+ é] [ab 
+ é]
+s<ab 
+ é>
+S<>
+S< 
+ é>
+E<ab 
+ >
+E<>
+l<ab >
+l< é>
+w<ab>
+w<é>
+8 8 1 0 false false false
+[é	 　c] [é	 　c] [　é	 　c]
+s<　é	 　c>
+S<　é	 　c>
+E<　>
+E<	 　c>
+l<　é	 　c>
+w<é>
+w<c>
+13 13 -1 -1 false false false
+[a　😀😀a] [a　😀😀a　 ] [ a　😀😀a]
+s< a　😀😀a　 >
+S< a　😀😀a　 >
+E< a　😀😀a　 >
+l< a　😀😀a　 >
+w<a>
+w<😀😀a>
+25 25 -1 -1 true false false
+[c,
+,cb] [c,
+,cb] [c,
+,cb]
+s<c>
+s<
+>
+s<cb>
+S<c,
+,cb>
+E<c,
+,cb>
+l<c,>
+l<,cb>
+w<c,>
+w<,c>
+w<b>
+8 8 7 -1 false false false
+[;é;xab　c] [;é;xab　c] [ ;é;xab　c]
+s< ;é;xab　c>
+S< ;é;x>
+S<　c>
+E< ;>
+E<;xab　c>
+l< ;é;xab　c>
+w<;é>
+w<;>
+w<xab>
+w<c>
+19 19 13 12 false true false
+[] [] []
+s<>
+S<>
+E<>
+0 0 -1 -1 false false false
+[écacc
+c,] [écacc
+c,] [ écacc
+c,]
+s< écacc
+c>
+s<>
+S< écacc
+c,>
+E< >
+E<cacc
+c,>
+l< écacc>
+l<c,>
+w<éc>
+w<ac>
+w<c>
+w<c>
+w<,>
+13 13 -1 -1 false true false
+[a　é;b] [a　é;b] [a　é;b]
+s<a　é;b>
+S<a　é;b>
+E<a　>
+E<;b>
+l<a　é;b>
+w<a>
+w<é>
+w<;b>
+10 10 9 -1 false false false

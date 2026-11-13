@@ -1,0 +1,8 @@
+string make() {
+    return "a b".clone()
+}
+
+void main() {
+    var it = make().chars()
+    print(it.next() ?? '-')
+}
