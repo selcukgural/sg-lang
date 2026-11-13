@@ -1,0 +1,2 @@
+# The input files of the tests are kept byte for byte: some lines end in \r\n on purpose.
+*.in -text
