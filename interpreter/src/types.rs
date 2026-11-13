@@ -5,79 +5,140 @@ use std::fmt;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum IntTy {
+    Sbyte,
     Byte,
+    Short,
+    Ushort,
     Int,
+    Uint,
     Long,
+    Ulong,
     Nint,
+    Nuint,
 }
 
 impl IntTy {
+    /// Every integer type, narrowest first: where a common type is looked for.
+    pub const ALL: [IntTy; 10] = [
+        IntTy::Sbyte,
+        IntTy::Byte,
+        IntTy::Short,
+        IntTy::Ushort,
+        IntTy::Int,
+        IntTy::Uint,
+        IntTy::Long,
+        IntTy::Ulong,
+        IntTy::Nint,
+        IntTy::Nuint,
+    ];
+
     pub fn from_name(name: &str) -> Option<IntTy> {
-        match name {
-            "byte" => Some(IntTy::Byte),
-            "int" => Some(IntTy::Int),
-            "long" => Some(IntTy::Long),
-            "nint" => Some(IntTy::Nint),
-            _ => None,
-        }
+        IntTy::ALL.into_iter().find(|ty| ty.name() == name)
     }
 
     pub fn name(self) -> &'static str {
         match self {
+            IntTy::Sbyte => "sbyte",
             IntTy::Byte => "byte",
+            IntTy::Short => "short",
+            IntTy::Ushort => "ushort",
             IntTy::Int => "int",
+            IntTy::Uint => "uint",
             IntTy::Long => "long",
+            IntTy::Ulong => "ulong",
             IntTy::Nint => "nint",
+            IntTy::Nuint => "nuint",
+        }
+    }
+
+    pub fn signed(self) -> bool {
+        matches!(self, IntTy::Sbyte | IntTy::Short | IntTy::Int | IntTy::Long | IntTy::Nint)
+    }
+
+    /// How many bits a value takes: what a shift count has to stay under. `nint` and `nuint`
+    /// take 64 bits on every machine the language runs on so far.
+    pub fn bits(self) -> u32 {
+        match self {
+            IntTy::Sbyte | IntTy::Byte => 8,
+            IntTy::Short | IntTy::Ushort => 16,
+            IntTy::Int | IntTy::Uint => 32,
+            IntTy::Long | IntTy::Ulong | IntTy::Nint | IntTy::Nuint => 64,
+        }
+    }
+
+    /// The fewest bits the type can have on any machine: a pointer is at least 32 bits, so
+    /// `nint` is promised no more than `int` is.
+    fn least_bits(self) -> u32 {
+        match self {
+            IntTy::Nint | IntTy::Nuint => 32,
+            other => other.bits(),
+        }
+    }
+
+    pub fn min(self) -> i128 {
+        if self.signed() {
+            -(1i128 << (self.bits() - 1))
+        } else {
+            0
+        }
+    }
+
+    pub fn max(self) -> i128 {
+        if self.signed() {
+            (1i128 << (self.bits() - 1)) - 1
+        } else {
+            (1i128 << self.bits()) - 1
         }
     }
 
     pub fn fits(self, value: i128) -> bool {
+        (self.min()..=self.max()).contains(&value)
+    }
+
+    /// The value the bits that stay give, read in this type: what wrapping arithmetic and a
+    /// release build leave.
+    pub fn wrap(self, value: i128) -> i128 {
         match self {
-            IntTy::Byte => u8::try_from(value).is_ok(),
-            IntTy::Int => i32::try_from(value).is_ok(),
-            IntTy::Long | IntTy::Nint => i64::try_from(value).is_ok(),
+            IntTy::Sbyte => value as i8 as i128,
+            IntTy::Byte => value as u8 as i128,
+            IntTy::Short => value as i16 as i128,
+            IntTy::Ushort => value as u16 as i128,
+            IntTy::Int => value as i32 as i128,
+            IntTy::Uint => value as u32 as i128,
+            IntTy::Long | IntTy::Nint => value as i64 as i128,
+            IntTy::Ulong | IntTy::Nuint => value as u64 as i128,
         }
     }
 
-    /// How many bits a value takes: what a shift count has to stay under.
-    pub fn bits(self) -> u32 {
-        match self {
-            IntTy::Byte => 8,
-            IntTy::Int => 32,
-            IntTy::Long | IntTy::Nint => 64,
-        }
-    }
-
-    pub fn wrap(self, value: i128) -> i64 {
-        match self {
-            IntTy::Byte => value as u8 as i64,
-            IntTy::Int => value as i32 as i64,
-            IntTy::Long | IntTy::Nint => value as i64,
-        }
-    }
-
-    /// `byte` is narrower than `int`, which is narrower than `long` and `nint`.
-    fn rank(self) -> u8 {
-        match self {
-            IntTy::Byte => 0,
-            IntTy::Int => 1,
-            IntTy::Long | IntTy::Nint => 2,
-        }
-    }
-
-    /// Whether a value of this type becomes `to` on its own, without a cast.
+    /// Whether a value of this type becomes `to` on its own, without a cast: only when `to`
+    /// holds every value of this type, on every machine. A signed type never becomes an
+    /// unsigned one; an unsigned one becomes a signed one that has a bit more.
     pub fn widens_to(self, to: IntTy) -> bool {
-        self.rank() < to.rank()
+        if self == to {
+            return false;
+        }
+        match (self.signed(), to.signed()) {
+            (true, false) => false,
+            (false, true) => self.bits() < to.least_bits(),
+            _ => self.bits() <= to.least_bits(),
+        }
     }
 
-    /// Common type of two integer types: the narrower one widens to the other.
-    pub fn unify(self, other: IntTy) -> IntTy {
+    /// Common type of two integer types: the one the other widens to. `None` when neither
+    /// holds every value of the other, as with `int` and `uint`.
+    pub fn unify(self, other: IntTy) -> Option<IntTy> {
         match (self, other) {
-            (a, b) if a == b => a,
-            (a, b) if a.widens_to(b) => b,
-            (a, b) if b.widens_to(a) => a,
-            _ => IntTy::Long,
+            (a, b) if a == b => Some(a),
+            (a, b) if a.widens_to(b) => Some(b),
+            (a, b) if b.widens_to(a) => Some(a),
+            _ => None,
         }
+    }
+
+    /// The narrowest type that holds every value of both, if there is one: `long` for `int`
+    /// and `uint`. Only the types of a fixed size are offered.
+    pub fn holding_both(self, other: IntTy) -> Option<IntTy> {
+        IntTy::ALL[..8].iter().copied().find(|to| (self == *to || self.widens_to(*to)) && (other == *to || other.widens_to(*to)))
     }
 }
 

@@ -1,0 +1,17 @@
+// A release build: unsigned arithmetic and casts that run out of room wrap around. The same
+// program panics on its first line of arithmetic in a debug build and in the interpreter.
+void main() {
+    uint left = 2
+    left -= 3
+    print(left)
+    ulong big = 18_446_744_073_709_551_615
+    print(big * 2)
+    int minus = -1
+    print((ulong)minus)
+    ushort port = 65535
+    port += 2
+    print(port)
+    sbyte small = 127
+    small += 1
+    print(small)
+}

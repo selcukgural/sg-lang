@@ -1,0 +1,5 @@
+void main() {
+    uint left = 2
+    left -= 3
+    print(left)
+}

@@ -1,0 +1,4 @@
+panic: overflow: 18446744073709551615 * 2 does not fit in ulong
+  --> panic_ulong_overflow.sg:3:11
+ 3 |     print(big * 2)
+   |           ^^^^^^^

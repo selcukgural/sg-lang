@@ -1,0 +1,5 @@
+error: `long` and `ulong` do not mix: neither holds every value of the other
+  --> error_mix_long_ulong.sg:4:11
+ 4 |     print(offset < position)
+   |           ^^^^^^^^^^^^^^^^^
+  hint: convert one side to the type of the other: `(long)position`; it panics if the value does not fit

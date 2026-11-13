@@ -574,12 +574,30 @@ A shift has the type of its left side, and the count is any integer. A count bel
 type, follows the overflow rule; the bits that `<<` pushes out are gone in every build:
 
 ```
-byte high = b >> 4                               // a byte: `>>` brings in zeros on a byte
-var half = -16 >> 2                              // -4: `>>` carries the sign on int, long and nint
+byte high = b >> 4                               // a byte: `>>` brings in zeros on a byte and every unsigned type
+var half = -16 >> 2                              // -4: `>>` carries the sign on the signed types
 long wide = 1 << 40                              // the expected type reaches the left side: a long is shifted
 var big = 1 << 40                                // error: a shift by 40 is out of range: `int` has 32 bits
 var y = x << n                                   // n out of range: debug and tests panic; release cuts n to the bits of the type
 var z = x << (n & 31)                            // the same in every build
+```
+
+### Mixing integer types
+
+The integer types are `sbyte`, `byte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`, `nint` and `nuint`. A type
+widens to another on its own only when the other holds every one of its values on every machine (`nint` and `nuint`
+count as at least 32 bits). A signed type never becomes an unsigned one on its own:
+
+```
+int change = -2
+uint total = 10
+long a = total                                   // every uint fits in a long
+var b = total + change                           // error: `uint` and `int` do not mix. Hint: (long)change
+uint c = change                                  // error: expected uint, found int. Hint: (uint)
+var d = total + 1                                // a uint: the number takes the type of the other side
+var e = -total                                   // error: a `uint` is never negative. Hint: -(long)total
+var f = 0xffff_ffff_ffff_ffff                    // error: does not fit in long. Hint: ulong f = ...
+ulong g = 0xffff_ffff_ffff_ffff                  // a number is unsigned only where the type says so
 ```
 
 On floating-point numbers the operators behave as the hardware does, while `equals` and `compare` give a total order (C#):

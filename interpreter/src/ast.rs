@@ -212,7 +212,7 @@ pub struct Expr {
 
 pub enum ExprKind {
     /// The type is decided by the checker from where the literal is used.
-    Int(i64, IntTy),
+    Int(i128, IntTy),
     Bool(bool),
     Str(String),
     /// `'+'`. The checker turns it into an `Int` of the type `byte`.
@@ -328,7 +328,7 @@ pub enum PatternKind {
     /// `var other`: matches everything and takes the value.
     Bind(String),
     /// `42`, `-1`: a number, for a `match` on an integer.
-    Int(i64),
+    Int(i128),
     /// `'+'`. The checker turns it into an `Int`.
     Char(char),
     /// `Circle(r)`, `Rect(w, _)`, `Empty`. A name is `None` for `_`. `args` is `None` when

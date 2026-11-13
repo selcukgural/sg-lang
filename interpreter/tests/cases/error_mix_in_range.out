@@ -1,0 +1,5 @@
+error: `int` and `uint` do not mix: neither holds every value of the other
+  --> error_mix_in_range.sg:4:14
+ 4 |     for i in from..to {
+   |              ^^^^^^^^
+  hint: `long` holds both: `(long)to`

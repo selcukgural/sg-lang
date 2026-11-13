@@ -1,0 +1,5 @@
+// A number past every `long` is not taken as unsigned on its own.
+void main() {
+    var mask = 0xffff_ffff_ffff_ffff
+    print(mask)
+}

@@ -1,0 +1,6 @@
+// A signed value never becomes unsigned on its own, even when it is wider.
+void main() {
+    sbyte small = 3
+    uint count = small
+    print(count)
+}

@@ -1,0 +1,5 @@
+error: expected `nint`, found `uint`
+  --> error_index_uint.sg:5:17
+ 5 |     print(items[at])
+   |                 ^^
+  hint: convert with `(nint)`; it panics if the value does not fit

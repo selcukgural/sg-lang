@@ -10,7 +10,7 @@
 //! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, and `print`. Anything else
 //! is an error that names what is missing, so nothing is compiled wrongly in silence.
 //!
-//! How values are represented: `byte`, `int`, `long` and `nint` are fixed-size C integers; a
+//! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`); a
 //! struct is a C struct passed by value; `read T` / `ref T` are pointers; a `string` is its
 //! bytes, a length and a capacity, and a `read string` is a pointer and a length. A `T*` is a
 //! pointer to one `malloc`ed `T`. A `T*?` is the same pointer, where `NULL` is `null`: it
@@ -80,29 +80,47 @@ SG_COLD static _Noreturn void sg_die(const char* loc) {
     fputs(loc, stderr);
     exit(1);
 }
-SG_COLD static _Noreturn void sg_overflow(long long a, const char* op, long long b, const char* ty, const char* loc) {
+/* A failing operation hands its numbers over as `__int128`, which holds a value of every
+   integer type, signed or not; they are written in full. */
+SG_COLD static void sg_err_int(__int128 v) {
+    if (v < 0) fprintf(stderr, "%lld", (long long)v);
+    else fprintf(stderr, "%llu", (unsigned long long)v);
+}
+SG_COLD static _Noreturn void sg_overflow(__int128 a, const char* op, __int128 b, const char* ty, const char* loc) {
     fflush(stdout);
-    fprintf(stderr, "panic: overflow: %lld %s %lld does not fit in %s\n", a, op, b, ty);
+    fputs("panic: overflow: ", stderr);
+    sg_err_int(a);
+    fprintf(stderr, " %s ", op);
+    sg_err_int(b);
+    fprintf(stderr, " does not fit in %s\n", ty);
     sg_die(loc);
 }
-SG_COLD static _Noreturn void sg_neg_overflow(long long a, const char* ty, const char* loc) {
+SG_COLD static _Noreturn void sg_neg_overflow(__int128 a, const char* ty, const char* loc) {
     fflush(stdout);
-    fprintf(stderr, "panic: overflow: -(%lld) does not fit in %s\n", a, ty);
+    fputs("panic: overflow: -(", stderr);
+    sg_err_int(a);
+    fprintf(stderr, ") does not fit in %s\n", ty);
     sg_die(loc);
 }
-SG_COLD static _Noreturn void sg_shift_fail(long long n, const char* ty, int bits, const char* loc) {
+SG_COLD static _Noreturn void sg_shift_fail(__int128 n, const char* ty, int bits, const char* loc) {
     fflush(stdout);
-    fprintf(stderr, "panic: shift by %lld is out of range: %s has %d bits\n", n, ty, bits);
+    fputs("panic: shift by ", stderr);
+    sg_err_int(n);
+    fprintf(stderr, " is out of range: %s has %d bits\n", ty, bits);
     sg_die(loc);
 }
-SG_COLD static _Noreturn void sg_div_zero(long long a, const char* op, const char* loc) {
+SG_COLD static _Noreturn void sg_div_zero(__int128 a, const char* op, const char* loc) {
     fflush(stdout);
-    fprintf(stderr, "panic: division by zero: %lld %s 0\n", a, op);
+    fputs("panic: division by zero: ", stderr);
+    sg_err_int(a);
+    fprintf(stderr, " %s 0\n", op);
     sg_die(loc);
 }
-SG_COLD static _Noreturn void sg_cast_fail(long long v, const char* ty, const char* loc) {
+SG_COLD static _Noreturn void sg_cast_fail(__int128 v, const char* ty, const char* loc) {
     fflush(stdout);
-    fprintf(stderr, "panic: value %lld does not fit in %s\n", v, ty);
+    fputs("panic: value ", stderr);
+    sg_err_int(v);
+    fprintf(stderr, " does not fit in %s\n", ty);
     sg_die(loc);
 }
 SG_COLD static _Noreturn void sg_panic(const char* text, const char* loc) {
@@ -115,9 +133,13 @@ SG_COLD static _Noreturn void sg_assert_fail(const char* text, const char* loc) 
     fprintf(stderr, "panic: assert failed: %s\n", text);
     sg_die(loc);
 }
-SG_COLD static _Noreturn void sg_assert_fail_i(const char* text, long long l, long long r, const char* loc) {
+SG_COLD static _Noreturn void sg_assert_fail_i(const char* text, __int128 l, __int128 r, const char* loc) {
     fflush(stdout);
-    fprintf(stderr, "panic: assert failed: %s\n  left: %lld\n  right: %lld\n", text, l, r);
+    fprintf(stderr, "panic: assert failed: %s\n  left: ", text);
+    sg_err_int(l);
+    fputs("\n  right: ", stderr);
+    sg_err_int(r);
+    fputs("\n", stderr);
     sg_die(loc);
 }
 SG_COLD static _Noreturn void sg_assert_fail_b(const char* text, bool l, bool r, const char* loc) {
@@ -141,19 +163,25 @@ static inline T sg_rem_##N(T a, T b, const char* loc) { \
     if ((T)-1 < 0 && b == (T)-1) return 0; \
     return a % b; } \
 static inline T sg_neg_##N(T a, const char* loc) { T r; if (__builtin_expect(__builtin_sub_overflow((T)0, a, &r), 0)) sg_neg_overflow(a, NAME, loc); return r; } \
-static inline T sg_cast_##N(int64_t v, const char* loc) { T r = (T)v; if (__builtin_expect((int64_t)r != v, 0)) sg_cast_fail(v, NAME, loc); return r; } \
+static inline T sg_cast_##N(__int128 v, const char* loc) { T r = (T)v; if (__builtin_expect((__int128)r != v, 0)) sg_cast_fail(v, NAME, loc); return r; } \
 static inline T sg_wadd_##N(T a, T b) { return (T)((uint64_t)a + (uint64_t)b); } \
 static inline T sg_wsub_##N(T a, T b) { return (T)((uint64_t)a - (uint64_t)b); } \
 static inline T sg_wmul_##N(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
-static inline T sg_shl_##N(T a, int64_t n, const char* loc) { if (__builtin_expect((uint64_t)n >= sizeof(T) * 8, 0)) sg_shift_fail(n, NAME, (int)sizeof(T) * 8, loc); return (T)((uint64_t)a << n); } \
-static inline T sg_shr_##N(T a, int64_t n, const char* loc) { if (__builtin_expect((uint64_t)n >= sizeof(T) * 8, 0)) sg_shift_fail(n, NAME, (int)sizeof(T) * 8, loc); return (T)(a >> n); } \
-static inline T sg_wshl_##N(T a, int64_t n) { return (T)((uint64_t)a << (n & (int64_t)(sizeof(T) * 8 - 1))); } \
-static inline T sg_wshr_##N(T a, int64_t n) { return (T)(a >> (n & (int64_t)(sizeof(T) * 8 - 1))); }
+static inline T sg_shl_##N(T a, __int128 n, const char* loc) { if (__builtin_expect(n < 0 || n >= (__int128)sizeof(T) * 8, 0)) sg_shift_fail(n, NAME, (int)sizeof(T) * 8, loc); return (T)((uint64_t)a << n); } \
+static inline T sg_shr_##N(T a, __int128 n, const char* loc) { if (__builtin_expect(n < 0 || n >= (__int128)sizeof(T) * 8, 0)) sg_shift_fail(n, NAME, (int)sizeof(T) * 8, loc); return (T)(a >> n); } \
+static inline T sg_wshl_##N(T a, uint64_t n) { return (T)((uint64_t)a << (n & (sizeof(T) * 8 - 1))); } \
+static inline T sg_wshr_##N(T a, uint64_t n) { return (T)(a >> (n & (sizeof(T) * 8 - 1))); }
 
+SG_INT(int8_t, sbyte, "sbyte")
 SG_INT(uint8_t, byte, "byte")
+SG_INT(int16_t, short, "short")
+SG_INT(uint16_t, ushort, "ushort")
 SG_INT(int32_t, int, "int")
+SG_INT(uint32_t, uint, "uint")
 SG_INT(int64_t, long, "long")
+SG_INT(uint64_t, ulong, "ulong")
 SG_INT(int64_t, nint, "nint")
+SG_INT(uint64_t, nuint, "nuint")
 
 /* Text. A `read string` is a window: where the bytes are and how many. A `string` owns its
    bytes; capacity 0 means they are a constant inside the program, or were moved away, and
@@ -365,13 +393,18 @@ static void sg_putf(sg_string* out, const char* format, ...) {
     }
     va_end(write);
 }
-static void sg_put_int(sg_string* out, long long value) {
+static void sg_put_digits(sg_string* out, unsigned long long left, bool negative) {
     char digits[24];
     char* at = digits + sizeof digits;
-    unsigned long long left = value < 0 ? 0ULL - (unsigned long long)value : (unsigned long long)value;
     do { *--at = (char)('0' + left % 10); left /= 10; } while (left);
-    if (value < 0) *--at = '-';
+    if (negative) *--at = '-';
     sg_put(out, at, digits + sizeof digits - at);
+}
+static void sg_put_int(sg_string* out, long long value) {
+    sg_put_digits(out, value < 0 ? 0ULL - (unsigned long long)value : (unsigned long long)value, value < 0);
+}
+static void sg_put_uint(sg_string* out, unsigned long long value) {
+    sg_put_digits(out, value, false);
 }
 /* Where a struct, an enum or a collection is written before it is printed. One block for the
    whole program: a statement writes above what is there and gives the room back when it is
@@ -819,9 +852,34 @@ fn int_name(ty: IntTy) -> &'static str {
 
 fn int_ctype(ty: IntTy) -> &'static str {
     match ty {
+        IntTy::Sbyte => "int8_t",
         IntTy::Byte => "uint8_t",
+        IntTy::Short => "int16_t",
+        IntTy::Ushort => "uint16_t",
         IntTy::Int => "int32_t",
+        IntTy::Uint => "uint32_t",
         IntTy::Long | IntTy::Nint => "int64_t",
+        IntTy::Ulong | IntTy::Nuint => "uint64_t",
+    }
+}
+
+/// A number in C, in its type. The least `long` cannot be written as a C constant, since
+/// `9223372036854775808` alone is too large; a number past every `long` is unsigned.
+fn int_literal(value: i128, ty: IntTy) -> String {
+    let ctype = int_ctype(ty);
+    match value {
+        v if v == i64::MIN as i128 => format!("(({ctype})(-9223372036854775807LL - 1))"),
+        v if v > i64::MAX as i128 => format!("(({ctype}){v}ULL)"),
+        v => format!("(({ctype}){v}LL)"),
+    }
+}
+
+/// How `printf` and the writing helpers take a number of this type: as it is, signed or not.
+fn int_shown(ty: IntTy) -> (&'static str, &'static str, &'static str) {
+    if ty.signed() {
+        ("%lld", "long long", "sg_put_int")
+    } else {
+        ("%llu", "unsigned long long", "sg_put_uint")
     }
 }
 
@@ -1382,7 +1440,13 @@ impl<'a> Emitter<'a> {
                         "sg_hash_word(0, (uint64_t)key)".to_string(),
                         "*held == key".to_string(),
                         "*held".to_string(),
-                        if **key == Ty::Bool { "sg_puts(out, key ? \"true\" : \"false\");".to_string() } else { "sg_put_int(out, (long long)key);".to_string() },
+                        match &**key {
+                            Ty::Int(ty) => {
+                                let (_, cast, put) = int_shown(*ty);
+                                format!("{put}(out, ({cast})key);")
+                            }
+                            _ => "sg_puts(out, key ? \"true\" : \"false\");".to_string(),
+                        },
                     ),
                     Ty::Str => (
                         "sg_str".to_string(),
@@ -1681,7 +1745,10 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(self.glue_protos, "static void {helper}(sg_string* out, {ctype} const* v);");
         let mut body = String::new();
         match ty {
-            Ty::Int(_) => body.push_str("sg_put_int(out, (long long)*v);"),
+            Ty::Int(ty) => {
+                let (_, cast, put) = int_shown(*ty);
+                let _ = write!(body, "{put}(out, ({cast})*v);");
+            }
             Ty::Bool => body.push_str("if (*v) sg_put(out, \"true\", 4); else sg_put(out, \"false\", 5);"),
             Ty::Str => body.push_str("sg_put_quoted(out, sg_view(v));"),
             // A `T*` and a `T*?` are one C type and share this helper, so it knows `null`.
@@ -2303,7 +2370,7 @@ impl<'a> Emitter<'a> {
                 let mut shown = String::new();
                 let (format, values) = match &**error {
                     Ty::Str => ("%.*s", format!("(int){cause}.len, (const char*){cause}.ptr")),
-                    Ty::Int(_) => ("%lld", format!("(long long){cause}")),
+                    Ty::Int(ty) => (int_shown(*ty).0, format!("({}){cause}", int_shown(*ty).1)),
                     Ty::Bool => ("%s", format!("{cause} ? \"true\" : \"false\"")),
                     // A struct or an enum is written by the helper of its type.
                     other => {
@@ -2974,10 +3041,7 @@ impl<'a> Emitter<'a> {
             let last = position + 1 == arms.len();
             let test = match (&arm.pattern.kind, &number) {
                 (PatternKind::Variant { index, .. }, _) => Some(format!("{at}->tag == {index}")),
-                (PatternKind::Int(wanted), Some((number, ty))) => Some(match *wanted {
-                    i64::MIN => format!("{number} == (({})(-9223372036854775807LL - 1))", int_ctype(*ty)),
-                    wanted => format!("{number} == (({}){wanted}LL)", int_ctype(*ty)),
-                }),
+                (PatternKind::Int(wanted), Some((number, ty))) => Some(format!("{number} == {}", int_literal(*wanted, *ty))),
                 _ => None,
             };
             // Every value has an arm (the checker saw to it), so the last one needs no test.
@@ -3519,7 +3583,12 @@ impl<'a> Emitter<'a> {
                             let text = is_text(&expr.ty) || is_text_behind_pointer(&expr.ty);
                             let before_helpers = shown && self.effect(expr) != Effect::Reads;
                             if (first || before_helpers) && !text && values.len() == from + 1 {
-                                let (ctype, temp) = (if values[from].ends_with("\"false\"") { "const char*" } else { "long long" }, self.temp());
+                                let ctype = match &values[from] {
+                                    value if value.ends_with("\"false\"") => "const char*",
+                                    value if value.starts_with("(unsigned long long)") => "unsigned long long",
+                                    _ => "long long",
+                                };
+                                let temp = self.temp();
                                 self.pre.push(format!("{ctype} {temp} = {};", values[from]));
                                 values[from] = temp;
                             }
@@ -3575,9 +3644,10 @@ impl<'a> Emitter<'a> {
                 ty = inner;
             }
             match ty {
-                Ty::Int(_) => {
-                    format.push_str("%lld");
-                    values.push(format!("(long long)({place})"));
+                Ty::Int(ty) => {
+                    let (shown, cast, _) = int_shown(*ty);
+                    format.push_str(shown);
+                    values.push(format!("({cast})({place})"));
                 }
                 Ty::Bool => {
                     format.push_str("%s");
@@ -3603,9 +3673,10 @@ impl<'a> Emitter<'a> {
         // What is printed may be a borrow of a number: `print(n)` with `read int n`.
         let value = if expr.ty.is_borrow() { format!("(*{value})") } else { value };
         match expr.ty.strip_borrow() {
-            Ty::Int(_) => {
-                format.push_str("%lld");
-                values.push(format!("(long long)({value})"));
+            Ty::Int(ty) => {
+                let (shown, cast, _) = int_shown(*ty);
+                format.push_str(shown);
+                values.push(format!("({cast})({value})"));
             }
             Ty::Bool => {
                 format.push_str("%s");
@@ -3650,7 +3721,7 @@ impl<'a> Emitter<'a> {
                 return Ok(());
             }
             let sides = match left.ty.strip_borrow() {
-                Ty::Int(_) => Some(("sg_assert_fail_i", "long long")),
+                Ty::Int(_) => Some(("sg_assert_fail_i", "__int128")),
                 Ty::Bool => Some(("sg_assert_fail_b", "bool")),
                 Ty::Str => Some(("sg_assert_fail_s", "")),
                 _ => None,
@@ -3918,10 +3989,7 @@ impl<'a> Emitter<'a> {
     fn value(&mut self, expr: &'a Expr) -> Res<String> {
         let head = std::mem::replace(&mut self.head, false);
         match &expr.kind {
-            ExprKind::Int(value, ty) => Ok(match *value {
-                i64::MIN => format!("(({})(-9223372036854775807LL - 1))", int_ctype(*ty)),
-                value => format!("(({}){value}LL)", int_ctype(*ty)),
-            }),
+            ExprKind::Int(value, ty) => Ok(int_literal(*value, *ty)),
             ExprKind::Bool(value) => Ok(value.to_string()),
             // A constant is a `string` with no capacity: nothing is allocated and nothing freed.
             ExprKind::Str(text) => Ok(format!("SG_LIT({}, {})", c_string(text), text.len())),
@@ -4260,7 +4328,7 @@ impl<'a> Emitter<'a> {
                     return Ok(format!("(({})({inner}))", int_ctype(*ty)));
                 }
                 let loc = self.loc(expr.span);
-                Ok(format!("sg_cast_{}((int64_t)({inner}), {loc})", int_name(*ty)))
+                Ok(format!("sg_cast_{}((__int128)({inner}), {loc})", int_name(*ty)))
             }
             ExprKind::Index { kind: IndexKind::List | IndexKind::Map | IndexKind::Array, .. } => self.lvalue(expr),
             // A borrow of a list or of an array, used as a window onto all of it.

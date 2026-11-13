@@ -17,8 +17,7 @@ use crate::types::{IntTy, Ty};
 
 type Res<T> = Result<T, Diag>;
 
-const TYPES_NOT_YET: &[&str] =
-    &["sbyte", "short", "ushort", "uint", "ulong", "nuint", "float", "double", "char"];
+const TYPES_NOT_YET: &[&str] = &["float", "double", "char"];
 
 const INTERFACES_NOT_YET: &[&str] = &["Clonable", "Disposable", "Closable", "Iterator"];
 
@@ -920,7 +919,7 @@ fn bare_slice(span: Span, slice: &Ty) -> Diag {
 }
 
 /// The number an index is known to be before the program runs.
-fn known_int(expr: &Expr) -> Option<i64> {
+fn known_int(expr: &Expr) -> Option<i128> {
     match &expr.kind {
         ExprKind::Int(value, _) => Some(*value),
         ExprKind::Widen(_, inner) => known_int(inner),
@@ -928,10 +927,18 @@ fn known_int(expr: &Expr) -> Option<i64> {
     }
 }
 
+/// The signed type that holds every value of an unsigned one: what `-` needs first.
+fn signed_holding(ty: IntTy) -> &'static str {
+    match ty {
+        IntTy::Byte | IntTy::Ushort => "int",
+        _ => "long",
+    }
+}
+
 /// A shift count that is known before the program runs and can never be right is not left
 /// to run time.
 fn shift_count(ty: IntTy, count: &Expr) -> Res<()> {
-    let bits = ty.bits() as i64;
+    let bits = ty.bits() as i128;
     match known_int(count).filter(|by| *by < 0 || *by >= bits) {
         Some(by) => Err(Diag::error(count.span, format!("a shift by {by} is out of range: `{}` has {bits} bits", ty.name()))
             .hint(format!("the count goes from 0 to {}", bits - 1))),
@@ -2202,9 +2209,7 @@ impl<'a> Checker<'a> {
                 self.forget_narrowing_of_assigned(body, None);
                 let from_ty = self.int_operand(from, None, "the start of the range")?;
                 let to_ty = self.int_operand(to, Some(from_ty), "the end of the range")?;
-                let ty = Ty::Int(from_ty.unify(to_ty));
-                self.coerce(from, Ty::Int(from_ty), &ty)?;
-                self.coerce(to, Ty::Int(to_ty), &ty)?;
+                let ty = Ty::Int(self.common_int(from, Ty::Int(from_ty), to, Ty::Int(to_ty))?);
                 let node = self.node();
                 self.borrows.loops.push(node);
                 self.scopes.push(Scope::default());
@@ -2680,7 +2685,7 @@ impl<'a> Checker<'a> {
                     Ty::Array(item, length) => {
                         self.index(index, "an index")?;
                         // Both are known here, so it is not left to run time.
-                        if let Some(at) = known_int(index).filter(|at| *at < 0 || *at >= *length as i64) {
+                        if let Some(at) = known_int(index).filter(|at| *at < 0 || *at >= *length as i128) {
                             return Err(Diag::error(span, format!("index {at} is out of range: the length is {length}"))
                                 .note(format!("the items of a `{inner}` are at 0 to {}", length - 1)));
                         }
@@ -2792,6 +2797,46 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The type two integers meet in: the one the other widens to. A number written in the
+    /// program takes the type of the other side if it fits there (`1 + count` with a `uint
+    /// count`). Two types that do not hold each other's values, like `int` and `uint`, meet
+    /// only through a cast that the program writes.
+    ///
+    /// Both sides are brought to that type; `left_found` and `right_found` are what was found
+    /// for them, a borrow of the integer or the integer itself.
+    fn common_int(&mut self, left: &mut Expr, left_found: Ty, right: &mut Expr, right_found: Ty) -> Res<IntTy> {
+        let (Ty::Int(a), Ty::Int(b)) = (left_found.strip_borrow().clone(), right_found.strip_borrow().clone()) else {
+            unreachable!("only called for two integers");
+        };
+        let mut found = [left_found, right_found];
+        let common = match a.unify(b) {
+            Some(common) => Some(common),
+            None => [(&mut *left, b, 0), (&mut *right, a, 1)].into_iter().find_map(|(side, to, at)| match &mut side.kind {
+                ExprKind::Int(value, ty) if to.fits(*value) => {
+                    *ty = to;
+                    side.ty = Ty::Int(to);
+                    found[at] = Ty::Int(to);
+                    Some(to)
+                }
+                _ => None,
+            }),
+        };
+        if let Some(common) = common {
+            let [left_found, right_found] = found;
+            self.coerce(left, left_found, &Ty::Int(common))?;
+            self.coerce(right, right_found, &Ty::Int(common))?;
+            return Ok(common);
+        }
+        let span = left.span.to(right.span);
+        let diag = Diag::error(span, format!("`{}` and `{}` do not mix: neither holds every value of the other", a.name(), b.name()));
+        let text = &self.src[right.span.start..right.span.end];
+        let text = if matches!(right.kind, ExprKind::Binary(..)) { format!("({text})") } else { text.to_string() };
+        Err(match a.holding_both(b) {
+            Some(both) => diag.hint(format!("`{0}` holds both: `({0}){text}`", both.name())),
+            None => diag.hint(format!("convert one side to the type of the other: `({}){text}`; it panics if the value does not fit", a.name())),
+        })
+    }
+
     /// Checks an expression whose value is used. A variable of a non-copyable type is moved.
     fn expr(&mut self, expr: &mut Expr, expected: Option<&Ty>) -> Res<Ty> {
         let ty = self.expr_untyped(expr, expected)?;
@@ -2858,15 +2903,25 @@ impl<'a> Checker<'a> {
                     _ => None,
                 });
                 *ty = match wanted {
-                    Some(wanted) if wanted.fits(*value as i128) => wanted,
+                    Some(wanted) if wanted.fits(*value) => wanted,
                     Some(wanted) => {
                         // A number written in hex or in binary is shown as written, with its value.
                         let written = &self.src[span.start..span.end];
                         let shown = if written.starts_with("0x") || written.starts_with("0b") { format!("`{written}` is {value}, which") } else { value.to_string() };
-                        return Err(Diag::error(span, format!("{shown} does not fit in {}", wanted.name())));
+                        let diag = Diag::error(span, format!("{shown} does not fit in {}", wanted.name()));
+                        return Err(match *value < 0 && !wanted.signed() {
+                            true => diag.note(format!("a `{}` is never negative", wanted.name())),
+                            false => diag,
+                        });
                     }
-                    None if IntTy::Int.fits(*value as i128) => IntTy::Int,
-                    None => IntTy::Long,
+                    None if IntTy::Int.fits(*value) => IntTy::Int,
+                    None if IntTy::Long.fits(*value) => IntTy::Long,
+                    // Only a number past every `long`: it is never taken as unsigned on its own.
+                    None => {
+                        let written = &self.src[span.start..span.end];
+                        return Err(Diag::error(span, format!("{written} does not fit in long"))
+                            .hint(format!("write the type where it goes: `ulong x = {written}`")));
+                    }
                 };
                 Ok(Ty::Int(*ty))
             }
@@ -2972,10 +3027,11 @@ impl<'a> Checker<'a> {
                 });
                 let found = self.operand(operand, like.map(Ty::Int).as_ref())?;
                 match found.strip_borrow() {
-                    Ty::Int(IntTy::Byte) => {
+                    Ty::Int(ty) if !ty.signed() => {
                         let text = &self.src[operand.span.start..operand.span.end];
-                        Err(Diag::error(span, "operator `-` is not defined for `byte`: a `byte` is never negative")
-                            .hint(format!("convert first: `-(int){text}`")))
+                        let (name, to) = (ty.name(), signed_holding(*ty));
+                        Err(Diag::error(span, format!("operator `-` is not defined for `{name}`: a `{name}` is never negative"))
+                            .hint(format!("convert first: `-({to}){text}`")))
                     }
                     Ty::Int(ty) => {
                         let ty = Ty::Int(*ty);
@@ -3020,8 +3076,12 @@ impl<'a> Checker<'a> {
                         self.coerce(operand, found, &from)?;
                         // A value that is known here and does not fit is not left to run time.
                         if let ExprKind::Int(value, _) = operand.kind {
-                            if !ty.fits(value as i128) {
-                                return Err(Diag::error(span, format!("{value} does not fit in {}", ty.name())));
+                            if !ty.fits(value) {
+                                let diag = Diag::error(span, format!("{value} does not fit in {}", ty.name()));
+                                return Err(match value < 0 && !ty.signed() {
+                                    true => diag.note(format!("a `{}` is never negative", ty.name())),
+                                    false => diag,
+                                });
                             }
                         }
                         Ok(Ty::Int(*ty))
@@ -3545,7 +3605,7 @@ impl<'a> Checker<'a> {
                 });
             }
         };
-        if !ty.fits(value as i128) {
+        if !ty.fits(value) {
             return Err(Diag::error(span, format!("{value} does not fit in {}, so this arm can never run", ty.name())));
         }
         pattern.kind = PatternKind::Int(value);
@@ -3608,7 +3668,7 @@ impl<'a> Checker<'a> {
         let node = self.node();
 
         // What the arms without a condition have settled: variant positions, or numbers.
-        let mut handled: Vec<i64> = Vec::new();
+        let mut handled: Vec<i128> = Vec::new();
         let mut handled_all = false;
         let mut result: Option<Ty> = expected.cloned();
         let before = self.moves();
@@ -3622,7 +3682,7 @@ impl<'a> Checker<'a> {
                 None => self.pattern_binds(&mut arm.pattern, &of, mode, &subject_ty)?,
             };
             let position = match &arm.pattern.kind {
-                PatternKind::Variant { index, .. } => Some(*index as i64),
+                PatternKind::Variant { index, .. } => Some(*index as i128),
                 PatternKind::Int(value) => Some(*value),
                 _ => None,
             };
@@ -3693,14 +3753,14 @@ impl<'a> Checker<'a> {
         }
         if !handled_all {
             let missing: Vec<String> = (0..variants.len())
-                .filter(|position| !handled.contains(&(*position as i64)))
+                .filter(|position| !handled.contains(&(*position as i128)))
                 .map(|position| format!("`{}`", variants[position].0))
                 .collect();
             if !missing.is_empty() {
                 let diag = Diag::error(subject.span, format!("this `match` does not handle {}", missing.join(", ")))
                     .hint("add an arm for each, or `_ => ...` for everything else");
                 let guarded = arms.iter().any(|arm| {
-                    arm.guard.is_some() && matches!(&arm.pattern.kind, PatternKind::Variant { index, .. } if !handled.contains(&(*index as i64)))
+                    arm.guard.is_some() && matches!(&arm.pattern.kind, PatternKind::Variant { index, .. } if !handled.contains(&(*index as i128)))
                 });
                 return Err(match guarded {
                     true => diag.note("an arm with `when` does not settle its variant: the condition may be false"),
@@ -3723,12 +3783,26 @@ impl<'a> Checker<'a> {
             return self.shift(op, left, right, expected, span);
         }
         let wanted = if op.is_comparison() { None } else { expected.filter(|ty| matches!(ty, Ty::Int(_))) };
-        let left_ty = self.operand(left, wanted)?;
-        let like = match left_ty.strip_borrow() {
-            Ty::Int(_) => Some(left_ty.strip_borrow().clone()),
+        let like = |ty: &Ty| match ty.strip_borrow() {
+            Ty::Int(_) => Some(ty.strip_borrow().clone()),
             _ => None,
         };
-        let right_ty = self.operand(right, like.as_ref().or(wanted))?;
+        // A number on the left past every `long` takes its type from the right:
+        // `0xffff_ffff_ffff_ffff == top` with a `ulong top`. Only the types are looked at in
+        // this order; the left side still runs first.
+        let (left_ty, right_ty) = match &left.kind {
+            ExprKind::Int(value, _) if !IntTy::Long.fits(*value) && !matches!(right.kind, ExprKind::Int(..)) => {
+                let value = *value;
+                let right_ty = self.operand(right, wanted)?;
+                let fitting = like(&right_ty).filter(|ty| matches!(ty, Ty::Int(ty) if ty.fits(value)));
+                (self.operand(left, fitting.as_ref().or(wanted))?, right_ty)
+            }
+            _ => {
+                let left_ty = self.operand(left, wanted)?;
+                let right_ty = self.operand(right, like(&left_ty).as_ref().or(wanted))?;
+                (left_ty, right_ty)
+            }
+        };
 
         let undefined = || Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()));
         // `a == b` is `a.equals(b)` and `a < b` is `a.compare(b) < 0`, for the types that have them.
@@ -3764,10 +3838,8 @@ impl<'a> Checker<'a> {
             });
         }
         match (left_ty.strip_borrow(), right_ty.strip_borrow()) {
-            (Ty::Int(a), Ty::Int(b)) => {
-                let common = Ty::Int(a.unify(*b));
-                self.coerce(left, left_ty.clone(), &common)?;
-                self.coerce(right, right_ty.clone(), &common)?;
+            (Ty::Int(_), Ty::Int(_)) => {
+                let common = Ty::Int(self.common_int(left, left_ty.clone(), right, right_ty.clone())?);
                 Ok(if op.is_comparison() { Ty::Bool } else { common })
             }
             (Ty::Str, Ty::Str) if op.is_comparison() => Ok(Ty::Bool),
@@ -4108,17 +4180,13 @@ impl<'a> Checker<'a> {
             (Ty::Int(ty), "wrappingAdd" | "wrappingSubtract" | "wrappingMultiply") => {
                 arity(1)?;
                 let other = self.int_operand(&mut args[0], Some(*ty), "the argument")?;
-                let common = Ty::Int(ty.unify(other));
-                self.coerce(recv, recv_ty.clone(), &common)?;
-                self.coerce(&mut args[0], Ty::Int(other), &common)?;
+                let common = Ty::Int(self.common_int(recv, recv_ty.clone(), &mut args[0], Ty::Int(other))?);
                 Ok(common)
             }
             (Ty::Int(ty), "tryAdd" | "trySubtract" | "tryMultiply" | "tryDivide") => {
                 arity(1)?;
                 let other = self.int_operand(&mut args[0], Some(*ty), "the argument")?;
-                let common = Ty::Int(ty.unify(other));
-                self.coerce(recv, recv_ty.clone(), &common)?;
-                self.coerce(&mut args[0], Ty::Int(other), &common)?;
+                let common = Ty::Int(self.common_int(recv, recv_ty.clone(), &mut args[0], Ty::Int(other))?);
                 Ok(Ty::Nullable(Box::new(common)))
             }
             (Ty::Str, "clone") => {
@@ -4142,9 +4210,7 @@ impl<'a> Checker<'a> {
             (Ty::Int(ty), "compare" | "equals") => {
                 arity(1)?;
                 let other = self.int_operand(&mut args[0], Some(*ty), "the argument")?;
-                let common = Ty::Int(ty.unify(other));
-                self.coerce(recv, recv_ty.clone(), &common)?;
-                self.coerce(&mut args[0], Ty::Int(other), &common)?;
+                self.common_int(recv, recv_ty.clone(), &mut args[0], Ty::Int(other))?;
                 Ok(if name == "compare" { Ty::Int(IntTy::Int) } else { Ty::Bool })
             }
             (Ty::Str | Ty::Bool, "compare" | "equals") if name == "equals" || *target == Ty::Str => {
@@ -4578,9 +4644,9 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
 }
 
 /// The value of a character written where a `byte` goes: it must take one byte in UTF-8.
-fn byte_of(value: char, span: Span) -> Res<i64> {
+fn byte_of(value: char, span: Span) -> Res<i128> {
     if value.is_ascii() {
-        return Ok(value as i64);
+        return Ok(value as i128);
     }
     Err(Diag::error(span, format!("`{value}` does not fit in one byte: it takes {} bytes in UTF-8", value.len_utf8()))
         .hint(format!("the type for any character is `char`: `char c = '{value}'`"))

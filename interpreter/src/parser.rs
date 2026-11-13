@@ -733,10 +733,10 @@ impl<'a> Parser<'a> {
                 let Tok::Int(value) = *self.peek() else { return Err(self.unexpected("a number")) };
                 let span = start.to(self.bump().span);
                 let value = if negative { -(value as i128) } else { value as i128 };
-                match i64::try_from(value) {
-                    Ok(value) => PatternKind::Int(value),
-                    Err(_) => return Err(Diag::error(span, format!("{value} does not fit in any integer type"))),
+                if !(IntTy::Long.min()..=IntTy::Ulong.max()).contains(&value) {
+                    return Err(Diag::error(span, format!("{value} does not fit in any integer type")));
                 }
+                PatternKind::Int(value)
             }
             Tok::Str(_) | Tok::Interp(_) => {
                 return Err(self.unexpected("a pattern").note("patterns for text are not in the interpreter yet; compare with `==`"))
@@ -1269,11 +1269,12 @@ pub fn dotted(expr: &Expr) -> Option<String> {
     }
 }
 
+/// A number fits some type if it lies between the least `long` and the largest `ulong`.
 fn int_literal(value: i128, span: Span) -> Res<Expr> {
-    match i64::try_from(value) {
-        Ok(value) => Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::Int(value, IntTy::Int), span }),
-        Err(_) => Err(Diag::error(span, format!("{value} does not fit in any integer type"))),
+    if !(IntTy::Long.min()..=IntTy::Ulong.max()).contains(&value) {
+        return Err(Diag::error(span, format!("{value} does not fit in any integer type")));
     }
+    Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::Int(value, IntTy::Int), span })
 }
 
 /// `Some` for an assignment operator; for compound assignment (`+=`) with the inner operator.

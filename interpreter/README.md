@@ -22,7 +22,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
-| Types | `byte`, `int` (32 bit), `long`, `nint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
+| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `bool`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
 | Methods | Written in the struct body with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`. Called as `stack.push(1)`, also through pointers and borrows. A function without `this` is called on the type: `Stack.create()`. `Stack(args)` is short for `Stack.create(args)` |
@@ -59,7 +59,10 @@ Design rules that are already enforced:
 - A shift count follows the same rule: below zero, or not below the bits of the type, it is a compile
   error where it is known, a panic in the interpreter, in tests and in a debug build, and cut to the bits
   of the type in a release build. The bits that `<<` pushes out are gone in every build.
-- `int` widens to `long` or `nint` on its own. Narrowing is written `(int)x` and panics if the value does not fit.
+- An integer type widens to another on its own only when the other holds every one of its values on every
+  machine: `int` to `long`, `byte` to `ushort`, `uint` to `long` and `ulong`, never a signed type to an
+  unsigned one. `int + uint` is a compile error whose hint names a type that holds both (`long`).
+  Narrowing is written `(int)x` and panics if the value does not fit.
 - `$"..."` is not a `string`; `string text = $"..."` is an error whose hint is `.toString()`.
 - `assert` prints the expression text and, for a comparison, the value of both sides.
 - Deep recursion ends in a readable panic (limit: 5000 nested calls), not a crash.
@@ -174,9 +177,9 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (122 of 416 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (130 of 433 programs for now; the others are programs the checker rejects, on purpose).
 
-What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
+What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
 recursion; `if`, `while`, `for i in a..b`, `break`, `continue`; structs, by value, with methods; `read` and
 `ref`; the checked operators, casts, the wrapping methods and the `try...` methods; `print`, `assert` and
@@ -219,7 +222,9 @@ a return type, built in its three forms, copied or moved as its items ask; `read
 a list, an array or a range of either; `x[i]`, `length`, `get`, `indexOf`, `contains`, `==`, `print` and
 `for` on both; `text.asBytes()` and `string.fromUtf8`. The sensor window example is compiled.
 Since the thirty-second slice the bit operators (`&`, `|`, `^`, `~`, `<<`, `>>` and their assignments),
-written together with the checker and the interpreter.
+written together with the checker and the interpreter. Since the thirty-third slice the other integer
+types, `sbyte`, `short`, `ushort`, `uint`, `ulong` and `nuint`, also written together with the checker and
+the interpreter.
 What is still missing is an error that names it (not silence): the few positions listed with the choices
 below (81, 111).
 
@@ -252,6 +257,7 @@ hand with no checks):
 | `lookup`: three hundred million lookups in a list of records of 128 bytes, through a function that gives back a `read Record?` | 0.498 s | 0.488 s | 0.491 s | 1.01 |
 | `buffer`: 32 bytes on the stack written as hex into a buffer of 64 through a `ref byte[]`, added up through a `read byte[]` and a range of it, fifteen million times | 0.280 s | 0.733 s | 0.283 s | 0.99 |
 | `bits`: a sieve below sixty-four million with one bit for each number, then thirty million numbers written seven bits at a time into a buffer on the stack and read back | 0.322 s | 0.321 s | 0.407 s | 0.79 |
+| `hash`: XXH64, the 64-bit xxHash, written with `ulong`, over one megabyte, two thousand times | 0.134 s | 0.488 s | 0.133 s | 1.01 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -316,6 +322,15 @@ one line added to it (`if (at >= 10) abort();`) it takes 0.07 s. The honest read
 operators cost what they cost in C", and that a check can tell the C compiler something a C program
 left out; not "faster than C". The overflow-checked build takes the same time as the release build:
 the shifts by a constant and by `n & 63` need no test, and the others are one comparison.
+`hash` is the first program with the unsigned types: XXH64 on `ulong`, with rotations, `>>` that brings
+in zeros, and multiplications that wrap on purpose (`wrappingMultiply`). The C it is compared with reads
+eight bytes at a time with `memcpy`, as xxHash does. SG puts the number together from the bytes, after
+cutting the eight out of the data (`data[at..at + 8]`): one check, and the C compiler joins the eight
+reads into one. Written without the cut, with each of `data[at]` to `data[at + 7]` checked by itself, the
+same program took 3.5 times the time of C (choice 136). The overflow-checked build takes 3.6 times: the
+additions `at + 8`, `at + 16` and `at + 24` that give the place of each read are checked, and those tests
+again stand between the reads. With them written as wrapping additions it takes the time of C; the tests of
+the casts `(ulong)b[0]` cost nothing (the C compiler sees that a `byte` always fits).
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
@@ -1216,7 +1231,7 @@ back end together), approved on 13 November 2026:
      is for. `1 << 31` is the smallest `int`. Rust, C# and Go do the same.
 119. **`>>` carries the sign on `int`, `long` and `nint` and brings in zeros on `byte`**: the type
      decides, as in C#, Rust and Go. There is no `>>>`. The shift that brings zeros into 32 or 64
-     bits comes with `uint` and `ulong`, which the design has and the interpreter does not yet.
+     bits comes with `uint` and `ulong` (since the thirty-third slice, 130).
 120. **A number can be written in hex and in binary, with `_` between digits**: `0xde`, `0b1010`,
      `1_000_000`, `0xdead_beef`. The prefix is a small letter (`0XFF` is an error that shows the fix),
      the hex digits may be either; there is no octal. Such a number is a number like any other: it
@@ -1237,6 +1252,100 @@ back end together), approved on 13 November 2026:
      written seven bits at a time and read back, against C with no checks.
 124. **The sensor window example is written as the design wrote it**: `source[i] >> 4`,
      `source[i] & 15`, `0xde` (see 102). Its output did not change.
+
+Choices made in the thirty-third slice (the other integer types; checker, interpreter and back end together).
+125 and 126 were decided on 13 November 2026 before the slice was written; the others were approved the same day:
+
+125. **All six types come together**: `sbyte`, `short`, `ushort`, `uint`, `ulong` and `nuint`, the names
+     the design took from C# ("Number types"). `nint` and `nuint` are 64 bits on every machine SG runs on
+     so far.
+126. **A type widens to another on its own only when the other holds every one of its values, on every
+     machine.** A signed type never becomes an unsigned one; an unsigned one becomes a signed one with
+     more bits (`byte` to `short`, `uint` to `long`). `nint` and `nuint` count as "at least 32 bits":
+     `int` becomes `nint` and `uint` becomes `nuint`, but `uint` does not become `nint`, and `long` does
+     not become `nint`; `nint` becomes `long` and `nuint` becomes `ulong`. Two types where neither holds
+     the other, like `int` and `uint` or `long` and `ulong`, do not mix: "`int` and `uint` do not mix:
+     neither holds every value of the other", with a hint that names a type holding both
+     (`(long)change`) or, where there is none, the cast to the other side's type. Rust and Go have no
+     implicit widening at all; C# turns `int + uint` into a `long` and `long + ulong` into an error;
+     C turns the `int` into an `unsigned` without a word, so `-1 < 1u` is false. One change to code
+     that ran before: `long + nint` used to be an error and is now a `long`.
+127. **A number written in the program takes the type of the other side**, on either side:
+     `1 + count` and `count - 1` with a `uint count` are `uint`s, `10 > count` compares two
+     `uint`s. A number past every `long`, which only a `ulong` holds, is typed from the right side
+     when it stands on the left: `0xffff_ffff_ffff_ffff == top`. Cost: none at run time.
+128. **`-x` on an unsigned type is an error**, as it already was on `byte`: "a `uint` is never
+     negative", with the hint `-(long)count`. Rust refuses it the same way; C# turns `-uint` into a
+     `long` and `-ulong` into an error; in C it wraps around.
+129. **A cast follows the overflow rule, and a constant that cannot fit is a compile error**: `(uint)-1`
+     is "-1 does not fit in uint" with the note "a `uint` is never negative", and so is `ushort port =
+     -1`. A value that is known only when the program runs panics in the interpreter, in tests and in
+     a debug build ("value -1 does not fit in ulong") and wraps in a release build, as for the types
+     before (Rust's `as` always wraps; C# wraps unless the code is `checked`).
+130. **`>>` brings in zeros on every unsigned type** (`uint`, `ulong` and the others), and carries the
+     sign on the signed ones (119). So a rotation is `value << by | value >> (32 - by)` on a `uint`,
+     with no mask.
+131. **A number is never unsigned on its own.** With no type where it goes, a number is an `int`, and a
+     `long` if it does not fit in an `int`, as before; a number past every `long` is an error:
+     "0xffff_ffff_ffff_ffff does not fit in long", hint "`ulong x = 0xffff_ffff_ffff_ffff`". C# makes
+     it a `ulong` (and `0xffff_ffff` a `uint`) without a word; Rust refuses it as here. Written where a
+     `ulong` goes, it is one.
+132. **An index stays a `nint`.** `uint`, `nuint` and `ulong` are not `nint`s on their own (126: a
+     `uint` does not fit in a 32-bit `nint`), so `items[at]` with a `uint at` is an error whose hint
+     is `(nint)`. Rust indexes with `usize` only; C# with `int` and also `uint`, `long`, `ulong`; Go
+     with any integer. Unsigned indexes would also make `i - 1` below zero a panic of its own.
+133. **The rest works on the new types as on the old**: `print`, `$"..."`, `assert` (which writes a
+     `ulong` in full), `match` patterns (`18446744073709551615 => ...`), `for i in a..b`, keys of a
+     `HashMap`, items of a `HashSet`, fields of `Equatable`, `Hashable` and `Formattable` structs,
+     `sort`, `compare`, and the `wrapping...` and `try...` methods.
+134. **The interpreter keeps every integer as its value, in 128 bits**, whatever its type: a `ulong`
+     needs 64 bits without a sign, and the same value compares, divides and prints right without a
+     second path for unsigned numbers. Two `ulong`s can multiply past 128 bits, so that one
+     multiplication is checked on the way.
+135. **In compiled code** the types are `int8_t` to `uint64_t` (`nint` and `nuint` are `int64_t` and
+     `uint64_t`), each with its line of checked operations. A failing operation hands its numbers to
+     the panic as `__int128`, so that "overflow: 18446744073709551615 * 2 does not fit in ulong" is
+     written as the interpreter writes it, and a cast tests its value the same way. `__int128` is an
+     extension of clang and gcc, like the overflow builtins the output already needs; it is used only
+     on the way into a panic and in the test of a cast.
+136. **The measurement is `hash`** (above): XXH64, the 64-bit xxHash, over one megabyte, two thousand
+     times, against C that reads eight bytes at a time with `memcpy`. What was found on the way:
+     written byte by byte as `(ulong)data[at] | (ulong)data[at + 1] << 8 | ...`, each of the eight
+     indexes is checked, the C compiler cannot join the eight reads into one, and the program took
+     3.5 times the time of C (0.46 s against 0.13 s). C written the same way takes the time of
+     `memcpy`, because there nothing stands between the reads. Cutting the eight bytes out first,
+     `var b = data[at..at + 8]`, checks the range once, and after it the compiler knows every
+     `b[0]` to `b[7]` is inside: the reads become one and the time is that of C. The same test
+     written by hand into the C output in front of the eight reads did not do it. The benchmark reads that way; a built-in that reads a number
+     out of bytes (`ulong.fromLittleEndian(...)`, Rust's `u64::from_le_bytes`, Go's
+     `binary.LittleEndian.Uint64`) is a candidate, not part of this slice.
+137. **A release build wraps on the new types too** (`tests/release/unsigned_wraps`): `2 - 3` on a
+     `uint` is 4294967295, `127 + 1` on an `sbyte` is -128, `(ulong)-1` is the largest `ulong`.
+
+## Slower than C, and could be better
+
+Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
+here to be talked over when their time comes; none of them breaks a program, and none is fixed by turning a
+check off.
+
+- **Bytes read one index at a time** (`hash`, choice 136): `data[at] | data[at + 1] << 8 | ...` checks
+  each index, the C compiler cannot join the reads, and the program takes 3.5 times the time of C. Cutting
+  the window first (`data[at..at + 8]`) already takes the time of C. Candidates: a built-in that reads a
+  number out of bytes (`ulong.fromLittleEndian(...)`), or a hint from the checker where it sees the pattern.
+- **Overflow checks on the arithmetic of an index in a checked build** (`hash`, 3.6 times): `at + 8` is
+  tested for overflow before it is used as a place, and those tests stand between reads that could be
+  joined; with them written as wrapping additions the checked build takes the time of C. A release build
+  has none. The checked builds of `vector` (2 times) and `buffer` (2.6 times) may have the same cause;
+  that is not looked at yet. Candidates: leave out the
+  overflow test of an addition whose result goes straight into an index or a range that is checked
+  anyway (an overflow there could only give a place the bounds check refuses), or let the checker prove
+  the range of a loop counter.
+- **The hash of a `HashMap`** (`counts`, 1.17 times): SipHash-1-3 with a key drawn at start against C's
+  one multiplication. Keeping it is a decision (13 November, choice 50); a faster hash for integer keys
+  that still resists chosen keys is the open question.
+- **Wrapping arithmetic in a loop that is only arithmetic** (`vector`'s first version, 1.28 times): C may
+  assume a signed overflow never happens and turn `i * 7 + round` into a counter; wrapping is defined, so
+  the C compiler keeps the arithmetic. Rust pays the same. No candidate yet.
 
 ## Not here yet
 
@@ -1260,10 +1369,9 @@ back end together), approved on 13 November 2026:
   the loop started.
 - Lists of borrows (`List<read T>`); `reserve`, `clone`; a `Hashable`
   type with its own `equals` or `hash`.
-- `char` and `text.chars()`, `double` and the other number types. Without the unsigned ones (`uint`,
-  `ulong`) there is no shift that brings zeros into the top of 32 or 64 bits: `>>` on an `int` or a
-  `long` carries the sign, so a rotation or a hash written for unsigned numbers needs a mask by hand.
-  A number is written in decimal only (`print`, `$"..."`); there is no hex output.
+- `char` and `text.chars()`, `float` and `double`. A number is written in decimal only (`print`,
+  `$"..."`); there is no hex output. No way to read a number out of bytes in one step
+  (`ulong.fromLittleEndian(bytes)`): it is put together from the bytes by hand (see 136).
 - Arrays of arrays, `read T[]?`, an array as a key, `sort` and
   `reverse` through a `ref T[]`, `list.addAll(slice)`, looking for a run of items in a slice.
 - `tryToInt` and the other `tryTo...` conversions. Overflow and cast panics print the values but not yet the
@@ -1283,7 +1391,8 @@ too, and with them the stock and invoice example. A `match` gives its value insi
 listed in 81. The test command runs on compiled code too (`sg test --compiled`). Arrays (`T[N]`) and slices
 (`read T[]`, `ref T[]`) are compiled, and a buffer on the stack takes the time of the same buffer in C.
 The bit operators and numbers in hex and binary are in the checker, the interpreter and compiled code,
-and the sensor example is written as the design wrote it.
+and the sensor example is written as the design wrote it. So are the integer types the design names, the
+unsigned ones included, and a hash written with them takes the time of the same hash in C.
 
-Candidates for what comes next: the unsigned number types (`uint`, `ulong`; hashes and rotations need
-them), `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases (`using`), `double`, threads.
+Candidates for what comes next: `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases
+(`using`), `double`, threads.

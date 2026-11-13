@@ -1,0 +1,4 @@
+panic: value 9223372036854775808 does not fit in long
+  --> panic_cast_ulong_long.sg:3:11
+ 3 |     print((long)top)
+   |           ^^^^^^^^^

@@ -1,0 +1,4 @@
+panic: value -1 does not fit in ulong
+  --> panic_cast_negative_unsigned.sg:3:11
+ 3 |     print((ulong)minus)
+   |           ^^^^^^^^^^^^

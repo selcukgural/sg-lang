@@ -25,7 +25,7 @@ type Cell = Rc<RefCell<Value>>;
 
 #[derive(Clone, Debug)]
 pub enum Value {
-    Int(IntTy, i64),
+    Int(IntTy, i128),
     Bool(bool),
     Str(Rc<str>),
     Fmt(Rc<str>),
@@ -130,7 +130,7 @@ impl<V> Table<V> {
 pub enum Key {
     Null,
     Bool(bool),
-    Int(i64),
+    Int(i128),
     Str(Rc<str>),
     Parts(Vec<Key>),
 }
@@ -144,7 +144,7 @@ fn key_of(value: &Value) -> Key {
         Value::Struct(_, fields) => Key::Parts(fields.iter().map(|field| key_of(&field.borrow())).collect()),
         Value::Enum(_, index, fields) => {
             let parts = fields.iter().map(|field| key_of(&field.borrow()));
-            Key::Parts(std::iter::once(Key::Int(*index as i64)).chain(parts).collect())
+            Key::Parts(std::iter::once(Key::Int(*index as i128)).chain(parts).collect())
         }
         Value::Ptr(inner) | Value::Borrow(inner) => key_of(&inner.borrow()),
         _ => unreachable!("the checker only lets `Hashable` values be keys"),
@@ -201,7 +201,7 @@ fn cells_of(value: &Value) -> Rc<Vec<Cell>> {
     match value {
         Value::List(items) => Rc::new(items.borrow().clone()),
         Value::Array(items) | Value::Slice(items) => items.clone(),
-        Value::Str(text) => Rc::new(text.bytes().map(|byte| cell(Value::Int(IntTy::Byte, byte as i64))).collect()),
+        Value::Str(text) => Rc::new(text.bytes().map(|byte| cell(Value::Int(IntTy::Byte, byte as i128))).collect()),
         _ => unreachable!("the checker only lets a slice look at items"),
     }
 }
@@ -633,12 +633,12 @@ impl<'a> Interp<'a> {
                 let holder = self.place(recv, frame)?;
                 let holder = owned(holder.borrow().clone());
                 let at = strip(self.expr(index, frame)?);
-                let out_of_range = |at: i64, length: usize| {
+                let out_of_range = |at: i128, length: usize| {
                     Unwind::from(Diag::panic(expr.span, format!("index {at} is out of range: the length is {length}")))
                 };
                 match (holder, &at) {
                     (Value::Str(text), Value::Int(_, at)) => match usize::try_from(*at).ok().and_then(|at| text.as_bytes().get(at)) {
-                        Some(byte) => Ok(cell(Value::Int(IntTy::Byte, *byte as i64))),
+                        Some(byte) => Ok(cell(Value::Int(IntTy::Byte, *byte as i128))),
                         None => Err(out_of_range(*at, text.len())),
                     },
                     (Value::List(items), Value::Int(_, at)) => {
@@ -734,17 +734,16 @@ impl<'a> Interp<'a> {
             ExprKind::Load(inner) => Ok(fresh(&owned(self.expr(inner, frame)?))),
             ExprKind::Unary(UnOp::Neg, operand) => match strip(self.expr(operand, frame)?) {
                 Value::Int(ty, value) => {
-                    let result = -(value as i128);
-                    if !ty.fits(result) {
+                    if !ty.fits(-value) {
                         return Err(Diag::panic(expr.span, format!("overflow: -({value}) does not fit in {}", ty.name())).into());
                     }
-                    Ok(Value::Int(ty, result as i64))
+                    Ok(Value::Int(ty, -value))
                 }
                 _ => unreachable!("the checker makes the operand an integer"),
             },
             ExprKind::Unary(UnOp::Not, operand) => Ok(Value::Bool(!self.condition(operand, frame)?)),
             ExprKind::Unary(UnOp::BitNot, operand) => match strip(self.expr(operand, frame)?) {
-                Value::Int(ty, value) => Ok(Value::Int(ty, ty.wrap(!(value as i128)))),
+                Value::Int(ty, value) => Ok(Value::Int(ty, ty.wrap(!value))),
                 _ => unreachable!("the checker makes the operand an integer"),
             },
             ExprKind::Binary(op @ (BinOp::And | BinOp::Or), left, right) => {
@@ -786,8 +785,8 @@ impl<'a> Interp<'a> {
                     false => owned(self.expr(recv, frame)?),
                 };
                 let length = match &holder {
-                    Value::Str(text) => text.len() as i64,
-                    other => cells_of(other).len() as i64,
+                    Value::Str(text) => text.len() as i128,
+                    other => cells_of(other).len() as i128,
                 };
                 let from = match from {
                     Some(from) => self.int(from, frame)?,
@@ -820,7 +819,7 @@ impl<'a> Interp<'a> {
                 Ok(Value::Str(text[start..end].into()))
             }
             ExprKind::Cast { ty, expr: inner } => match strip(self.expr(inner, frame)?) {
-                Value::Int(_, value) if ty.fits(value as i128) => Ok(Value::Int(*ty, value)),
+                Value::Int(_, value) if ty.fits(value) => Ok(Value::Int(*ty, value)),
                 Value::Int(_, value) => {
                     Err(Diag::panic(expr.span, format!("value {value} does not fit in {}", ty.name())).into())
                 }
@@ -1031,7 +1030,7 @@ impl<'a> Interp<'a> {
                     Ok(match String::from_utf8(bytes) {
                         Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
                         Err(error) => {
-                            let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i64));
+                            let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
                             let cause = Value::Struct("TextError".into(), Rc::new(vec![position]));
                             Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
                         }
@@ -1071,7 +1070,7 @@ impl<'a> Interp<'a> {
         }
     }
 
-    fn int(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<i64> {
+    fn int(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<i128> {
         match strip(self.expr(expr, frame)?) {
             Value::Int(_, value) => Ok(value),
             _ => unreachable!("the checker makes an index an integer"),
@@ -1324,7 +1323,7 @@ impl<'a> Interp<'a> {
                 }
                 Ok(match (name, found) {
                     ("contains", _) => Value::Bool(found.is_some()),
-                    (_, Some(at)) => Value::Int(IntTy::Nint, at as i64),
+                    (_, Some(at)) => Value::Int(IntTy::Nint, at as i128),
                     (_, None) => Value::Null,
                 })
             }
@@ -1393,40 +1392,41 @@ fn binary(op: BinOp, left: Value, right: Value, span: Span) -> Result<Value, Dia
 /// Overflow panics in every build; `wrappingAdd` is written to wrap on purpose. A shift
 /// count outside the bits of the type panics the same way; the bits that `<<` pushes out
 /// are gone without a word, since that is what a shift is for.
-fn arithmetic(op: BinOp, ty: IntTy, a: i64, b: i64, span: Span) -> Result<Value, Diag> {
-    let (wide_a, wide_b) = (a as i128, b as i128);
-    if op.is_shift() && !(0..ty.bits() as i64).contains(&b) {
+fn arithmetic(op: BinOp, ty: IntTy, a: i128, b: i128, span: Span) -> Result<Value, Diag> {
+    if op.is_shift() && !(0..ty.bits() as i128).contains(&b) {
         return Err(Diag::panic(span, format!("shift by {b} is out of range: {} has {} bits", ty.name(), ty.bits())));
     }
+    // A number is kept as its value, so the bits above the type agree on both sides: an
+    // unsigned value has zeros there, and `>>` brings down zeros; a signed one carries its
+    // sign up, and `>>` brings the sign down.
     let result = match op {
-        // A number is kept with its sign carried up, so the bits above the type agree on
-        // both sides and `>>` brings the sign down with it.
-        BinOp::BitAnd => wide_a & wide_b,
-        BinOp::BitOr => wide_a | wide_b,
-        BinOp::BitXor => wide_a ^ wide_b,
-        BinOp::Shl => return Ok(Value::Int(ty, ty.wrap(wide_a << b))),
-        BinOp::Shr => wide_a >> b,
-        BinOp::Add => wide_a + wide_b,
-        BinOp::Sub => wide_a - wide_b,
-        BinOp::Mul => wide_a * wide_b,
+        BinOp::BitAnd => Some(a & b),
+        BinOp::BitOr => Some(a | b),
+        BinOp::BitXor => Some(a ^ b),
+        BinOp::Shl => return Ok(Value::Int(ty, ty.wrap(a << b))),
+        BinOp::Shr => Some(a >> b),
+        BinOp::Add => Some(a + b),
+        BinOp::Sub => Some(a - b),
+        // Two `ulong`s can multiply past what `i128` holds; that does not fit the type either.
+        BinOp::Mul => a.checked_mul(b),
         BinOp::Div | BinOp::Rem if b == 0 => {
             return Err(Diag::panic(span, format!("division by zero: {a} {} 0", op.symbol())));
         }
-        BinOp::Div => wide_a / wide_b,
-        BinOp::Rem => wide_a % wide_b,
+        BinOp::Div => Some(a / b),
+        BinOp::Rem => Some(a % b),
         _ => unreachable!("only arithmetic reaches here"),
     };
-    if !ty.fits(result) {
-        return Err(Diag::panic(span, format!("overflow: {a} {} {b} does not fit in {}", op.symbol(), ty.name())));
+    match result {
+        Some(result) if ty.fits(result) => Ok(Value::Int(ty, result)),
+        _ => Err(Diag::panic(span, format!("overflow: {a} {} {b} does not fit in {}", op.symbol(), ty.name()))),
     }
-    Ok(Value::Int(ty, result as i64))
 }
 
 /// The methods of the collections that neither compare items nor can fail.
 fn collection_method(recv: Value, name: &str, mut args: Vec<Value>) -> Value {
     let lent = |found: Option<Cell>| found.map_or(Value::Null, Value::Borrow);
     match (&recv, name) {
-        (Value::List(items), "length") => Value::Int(IntTy::Nint, items.borrow().len() as i64),
+        (Value::List(items), "length") => Value::Int(IntTy::Nint, items.borrow().len() as i128),
         (Value::List(items), "clear") => {
             items.borrow_mut().clear();
             Value::Void
@@ -1447,7 +1447,7 @@ fn collection_method(recv: Value, name: &str, mut args: Vec<Value>) -> Value {
             items.borrow_mut().reverse();
             Value::Void
         }
-        (Value::Set(items), "length") => Value::Int(IntTy::Nint, items.borrow().len() as i64),
+        (Value::Set(items), "length") => Value::Int(IntTy::Nint, items.borrow().len() as i128),
         (Value::Set(items), "clear") => {
             items.borrow_mut().clear();
             Value::Void
@@ -1458,7 +1458,7 @@ fn collection_method(recv: Value, name: &str, mut args: Vec<Value>) -> Value {
         }
         (Value::Set(items), "contains") => Value::Bool(items.borrow().contains_key(&key_of(&args[0]))),
         (Value::Set(items), "remove") => Value::Bool(items.borrow_mut().remove(&key_of(&args[0])).is_some()),
-        (Value::Map(entries), "length") => Value::Int(IntTy::Nint, entries.borrow().len() as i64),
+        (Value::Map(entries), "length") => Value::Int(IntTy::Nint, entries.borrow().len() as i128),
         (Value::Map(entries), "clear") => {
             entries.borrow_mut().clear();
             Value::Void
@@ -1487,26 +1487,25 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
     match (&recv, name, args.as_slice()) {
         // `null` where the plain operator would panic.
         (Value::Int(ty, a), "tryAdd" | "trySubtract" | "tryMultiply" | "tryDivide", [Value::Int(_, b)]) => {
-            let (a, b) = (*a as i128, *b as i128);
+            let (a, b) = (*a, *b);
             let result = match name {
-                "tryAdd" => a + b,
-                "trySubtract" => a - b,
-                "tryMultiply" => a * b,
+                "tryAdd" => Some(a + b),
+                "trySubtract" => Some(a - b),
+                "tryMultiply" => a.checked_mul(b),
                 _ if b == 0 => return Value::Null,
-                _ => a / b,
+                _ => Some(a / b),
             };
-            if ty.fits(result) {
-                Value::Int(*ty, result as i64)
-            } else {
-                Value::Null
+            match result {
+                Some(result) if ty.fits(result) => Value::Int(*ty, result),
+                _ => Value::Null,
             }
         }
         (Value::Str(_), "clone", []) => recv,
         (Value::Str(_), "asBytes", []) => Value::Slice(cells_of(&recv)),
         (_, "equals", [other]) => Value::Bool(key_of(&recv) == key_of(other)),
-        (_, "compare", [other]) => Value::Int(IntTy::Int, key_of(&recv).cmp(&key_of(other)) as i64),
+        (_, "compare", [other]) => Value::Int(IntTy::Int, key_of(&recv).cmp(&key_of(other)) as i128),
         (Value::Int(ty, a), _, [Value::Int(_, b)]) => {
-            let (a, b) = (*a as i128, *b as i128);
+            let (a, b) = (*a, *b);
             let result = match name {
                 "wrappingAdd" => a.wrapping_add(b),
                 "wrappingSubtract" => a.wrapping_sub(b),
@@ -1515,9 +1514,9 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
             Value::Int(*ty, ty.wrap(result))
         }
         (_, "toString", []) => Value::Str(recv.format().into()),
-        (Value::Str(text), "length", []) => Value::Int(IntTy::Nint, text.len() as i64),
-        (Value::Str(text), "indexOf", [Value::Int(_, byte)]) => match text.bytes().position(|found| found as i64 == *byte) {
-            Some(at) => Value::Int(IntTy::Nint, at as i64),
+        (Value::Str(text), "length", []) => Value::Int(IntTy::Nint, text.len() as i128),
+        (Value::Str(text), "indexOf", [Value::Int(_, byte)]) => match text.bytes().position(|found| found as i128 == *byte) {
+            Some(at) => Value::Int(IntTy::Nint, at as i128),
             None => Value::Null,
         },
         _ => unreachable!("the checker only lets known methods through"),

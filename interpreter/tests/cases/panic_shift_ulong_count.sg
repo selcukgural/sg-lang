@@ -1,0 +1,4 @@
+void main() {
+    ulong count = 18_446_744_073_709_551_615
+    print(1 << count)
+}

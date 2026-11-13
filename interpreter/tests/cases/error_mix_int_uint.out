@@ -1,0 +1,5 @@
+error: `uint` and `int` do not mix: neither holds every value of the other
+  --> error_mix_int_uint.sg:6:11
+ 6 |     print(total + change)
+   |           ^^^^^^^^^^^^^^
+  hint: `long` holds both: `(long)change`

@@ -1,0 +1,4 @@
+void main() {
+    uint count = 3
+    print(-count)
+}

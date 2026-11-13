@@ -1,0 +1,98 @@
+// The integer types besides `byte`, `int`, `long` and `nint`: unsigned ones and the small
+// signed ones.
+
+struct Pixel : Formattable, Equatable, Hashable {
+    ushort x
+    ushort y
+    sbyte depth
+}
+
+// FNV-1a: the hash wraps around on purpose.
+ulong fnv(read string text) {
+    ulong hash = 0xcbf2_9ce4_8422_2325
+    for b in text.asBytes() {
+        hash ^= b
+        hash = hash.wrappingMultiply(0x100_0000_01b3)
+    }
+    return hash
+}
+
+uint rotateLeft(uint value, int by) {
+    return value << by | value >> (32 - by)
+}
+
+void main() {
+    // The ends of each type.
+    sbyte smallest = -128
+    short shortest = -32768
+    ushort widest = 65535
+    uint most = 4_294_967_295
+    ulong top = 18_446_744_073_709_551_615
+    nuint size = 0
+    print($"{smallest} {shortest} {widest} {most} {top} {size}")
+    print(0xffff_ffff_ffff_ffff == top)
+
+    // A number written in the program takes the type of the other side.
+    uint count = 3
+    print(1 + count)
+    print(count * 2 - 1)
+    print(10 > count)
+
+    // Widening: only where every value fits.
+    long wide = most
+    int fromShort = shortest
+    int fromUshort = widest
+    short fromSbyte = smallest
+    ulong fromUint = most
+    nuint fromUshortToNuint = widest
+    print($"{wide} {fromShort} {fromUshort} {fromSbyte} {fromUint} {fromUshortToNuint}")
+    print(wide + most)
+
+    // Casts check the value; a negative number never becomes unsigned.
+    int minus = -1
+    print((uint)(long)most)
+    print((long)top.wrappingAdd(1))
+    print((ulong)wide)
+    print((sbyte)100)
+
+    // `>>` brings down zeros in an unsigned type, the sign in a signed one.
+    print(top >> 60)
+    print((long)minus >> 60)
+    print(~most)
+    print(~(ushort)0)
+    print(rotateLeft(0x8000_0001, 4))
+
+    // Arithmetic that runs out of room, written to wrap or to come back as `null`.
+    uint none = 0
+    print(none.wrappingSubtract(1))
+    print(none.trySubtract(1) ?? 42)
+    print(top.tryAdd(1) ?? 7)
+    print(top.tryMultiply(2) ?? 8)
+    print(top / 3)
+    print(top % 10)
+
+    // A hash.
+    print(fnv("hello"))
+    print(fnv(""))
+
+    // In a match, in a collection, in a struct.
+    match top {
+        18446744073709551615 => print("the largest ulong")
+        _ => print("something else")
+    }
+    var seen = HashMap<ulong, string> { {top, "top"}, {0, "zero"} }
+    print(seen[top])
+    var sizes = List<uint> { 4_000_000_000, 1, 300 }
+    sizes.sort()
+    print(sizes)
+    var p = Pixel { x = 65535, y = 2, depth = -3 }
+    print(p)
+    print(p == Pixel { x = 65535, y = 2, depth = -3 })
+    var points = HashSet<Pixel> { p }
+    print(points.contains(read Pixel { x = 65535, y = 2, depth = -3 }))
+    for i in (ushort)65533..widest {
+        print(i)
+    }
+    assert(top == 18_446_744_073_709_551_615)
+    print(top.compare(0))
+}

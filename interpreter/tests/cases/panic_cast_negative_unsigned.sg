@@ -1,0 +1,4 @@
+void main() {
+    int minus = -1
+    print((ulong)minus)
+}

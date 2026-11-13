@@ -1,0 +1,104 @@
+// A hash. XXH64, the 64-bit xxHash, over one megabyte of bytes, two thousand times with a
+// different seed and a different length each time. The arithmetic wraps on purpose, so it
+// is written with `wrapping...`; the bytes are read eight at a time, each eight cut out of
+// the data first (see `read64`).
+ulong rotl(ulong value, int by) {
+    return value << by | value >> (64 - by)
+}
+
+// The eight bytes are cut out first: one check that they are there, and after it the
+// compiler knows each index is inside, so it reads them as one number.
+ulong read64(read byte[] data, nint at) {
+    var b = data[at..at + 8]
+    return (ulong)b[0] | (ulong)b[1] << 8 | (ulong)b[2] << 16 | (ulong)b[3] << 24 |
+        (ulong)b[4] << 32 | (ulong)b[5] << 40 | (ulong)b[6] << 48 | (ulong)b[7] << 56
+}
+
+ulong read32(read byte[] data, nint at) {
+    var b = data[at..at + 4]
+    return (ulong)b[0] | (ulong)b[1] << 8 | (ulong)b[2] << 16 | (ulong)b[3] << 24
+}
+
+ulong round(ulong acc, ulong input) {
+    var mixed = acc.wrappingAdd(input.wrappingMultiply(14029467366897019727))
+    return rotl(mixed, 31).wrappingMultiply(11400714785092573703)
+}
+
+ulong merge(ulong acc, ulong value) {
+    var mixed = acc ^ round(0, value)
+    return mixed.wrappingMultiply(11400714785092573703).wrappingAdd(9650029242287828579)
+}
+
+ulong xxh64(read byte[] data, ulong seed) {
+    ulong p1 = 11400714785092573703
+    ulong p2 = 14029467366897019727
+    ulong p3 = 1609587929392839161
+    ulong p4 = 9650029242287828579
+    ulong p5 = 2870177450012600261
+    var length = data.length()
+    nint at = 0
+    ulong hash = 0
+    if length >= 32 {
+        var v1 = seed.wrappingAdd(p1).wrappingAdd(p2)
+        var v2 = seed.wrappingAdd(p2)
+        var v3 = seed
+        var v4 = seed.wrappingSubtract(p1)
+        while at + 32 <= length {
+            v1 = round(v1, read64(data, at))
+            v2 = round(v2, read64(data, at + 8))
+            v3 = round(v3, read64(data, at + 16))
+            v4 = round(v4, read64(data, at + 24))
+            at += 32
+        }
+        hash = rotl(v1, 1).wrappingAdd(rotl(v2, 7)).wrappingAdd(rotl(v3, 12)).wrappingAdd(rotl(v4, 18))
+        hash = merge(hash, v1)
+        hash = merge(hash, v2)
+        hash = merge(hash, v3)
+        hash = merge(hash, v4)
+    } else {
+        hash = seed.wrappingAdd(p5)
+    }
+    hash = hash.wrappingAdd((ulong)length)
+    while at + 8 <= length {
+        hash ^= round(0, read64(data, at))
+        hash = rotl(hash, 27).wrappingMultiply(p1).wrappingAdd(p4)
+        at += 8
+    }
+    if at + 4 <= length {
+        hash ^= read32(data, at).wrappingMultiply(p1)
+        hash = rotl(hash, 23).wrappingMultiply(p2).wrappingAdd(p3)
+        at += 4
+    }
+    while at < length {
+        hash ^= ((ulong)data[at]).wrappingMultiply(p5)
+        hash = rotl(hash, 11).wrappingMultiply(p1)
+        at += 1
+    }
+    hash ^= hash >> 33
+    hash = hash.wrappingMultiply(p2)
+    hash ^= hash >> 29
+    hash = hash.wrappingMultiply(p3)
+    hash ^= hash >> 32
+    return hash
+}
+
+void main() {
+    // The bytes come from xorshift, so they are the same on every run.
+    var bytes = List<byte>()
+    ulong state = 0x9e37_79b9_7f4a_7c15
+    for i in 0..1048576 {
+        state ^= state << 13
+        state ^= state >> 7
+        state ^= state << 17
+        bytes.add((byte)(state & 0xff))
+    }
+    print(xxh64(read bytes, 0))
+    print(xxh64("abc".asBytes(), 0))
+
+    ulong total = 0
+    for seed in 0..2000 {
+        nint length = 1048576 - (nint)(seed % 61)
+        total ^= xxh64(bytes[..length], (ulong)seed)
+    }
+    print(total)
+}

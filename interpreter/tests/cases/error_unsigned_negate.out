@@ -1,0 +1,5 @@
+error: operator `-` is not defined for `uint`: a `uint` is never negative
+  --> error_unsigned_negate.sg:3:11
+ 3 |     print(-count)
+   |           ^^^^^^
+  hint: convert first: `-(long)count`

@@ -1,0 +1,6 @@
+// An index is a `nint`; a `uint` does not fit in a `nint` on a machine with 32-bit pointers.
+void main() {
+    var items = List<int> { 1, 2, 3 }
+    uint at = 1
+    print(items[at])
+}

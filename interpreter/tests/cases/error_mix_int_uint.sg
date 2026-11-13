@@ -1,0 +1,7 @@
+// `int` and `uint` have no common type: a negative `int` is no `uint`, and a large `uint`
+// is no `int`.
+void main() {
+    int change = -2
+    uint total = 10
+    print(total + change)
+}

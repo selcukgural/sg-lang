@@ -1,0 +1,6 @@
+panic: assert failed: top == 1
+  left: 18446744073709551615
+  right: 1
+  --> panic_assert_ulong.sg:3:5
+ 3 |     assert(top == 1)
+   |     ^^^^^^^^^^^^^^^^

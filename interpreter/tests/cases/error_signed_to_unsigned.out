@@ -1,0 +1,5 @@
+error: expected `uint`, found `sbyte`
+  --> error_signed_to_unsigned.sg:4:18
+ 4 |     uint count = small
+   |                  ^^^^^
+  hint: convert with `(uint)`; it panics if the value does not fit

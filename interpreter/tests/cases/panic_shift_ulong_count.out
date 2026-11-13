@@ -1,0 +1,4 @@
+panic: shift by 18446744073709551615 is out of range: int has 32 bits
+  --> panic_shift_ulong_count.sg:3:11
+ 3 |     print(1 << count)
+   |           ^^^^^^^^^^
