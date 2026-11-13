@@ -2,7 +2,8 @@
 name = "sg"
 version = "0.1.0"
 edition = "2021"
-description = "Tree-walking interpreter for the language. The crate name and the .lang extension are placeholders until the language is named."
+description = "The SG language: checker, tree-walking interpreter and a back end that compiles through C."
+license = "MIT OR Apache-2.0"
 
 [lib]
 path = "src/lib.rs"
