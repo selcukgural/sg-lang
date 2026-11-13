@@ -5,16 +5,18 @@ use sg::Stop;
 
 /// Writes the program as C. Without `out` the C goes to the output; with it, the C compiler
 /// turns it into a program of that name. `release`: integer overflow wraps and the C compiler
-/// optimises; otherwise a debug build, which checks.
-fn build(path: &str, out: Option<String>, release: bool) -> ExitCode {
-    let sources = match sg::load(std::path::Path::new(path), false) {
+/// optimises; otherwise a debug build, which checks. `tests`: the program that runs the `test`
+/// blocks instead of `main`; with a folder, those of every module in it.
+fn build(path: &str, out: Option<String>, release: bool, tests: bool) -> ExitCode {
+    let sources = match sg::load(std::path::Path::new(path), tests) {
         Ok(sources) => sources,
         Err(error) => {
             eprintln!("error: {error}");
             return ExitCode::from(2);
         }
     };
-    let code = match sg::emit_c_sources(&sources, !release) {
+    let emitted = if tests { sg::emit_c_tests(&sources, !release) } else { sg::emit_c_sources(&sources, !release) };
+    let code = match emitted {
         Ok(code) => code,
         Err(diag) => {
             eprint!("{}", diag.render_in(&sources));
@@ -46,19 +48,43 @@ fn build(path: &str, out: Option<String>, release: bool) -> ExitCode {
     }
 }
 
+/// The test command on compiled code: the tests are built into a program next to the other
+/// temporary files, that program is run, and its exit code is given on.
+fn test_compiled(path: &str) -> ExitCode {
+    let binary = std::env::temp_dir().join(format!("sg-test-{}", std::process::id()));
+    let built = build(path, Some(binary.to_string_lossy().into_owned()), false, true);
+    if built != ExitCode::SUCCESS {
+        return built;
+    }
+    let status = std::process::Command::new(&binary).status();
+    let _ = std::fs::remove_file(&binary);
+    match status {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(_) => ExitCode::FAILURE,
+        Err(error) => {
+            eprintln!("error: cannot run the compiled tests: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    const USAGE: &str = "usage: sg <file.sg | folder>                             runs the program\n       sg test <file.sg | folder>                        runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [-o out]  compiles it through C\n       sg emit-c <file.sg | folder> [--release]          prints the C";
+    const USAGE: &str = "usage: sg <file.sg | folder>                                      runs the program\n       sg test <file.sg | folder> [--compiled]                    runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg emit-c <file.sg | folder> [--release] [--test]          prints the C";
     let (path, tests) = match args.as_slice() {
         [path] => (path, false),
         [command, path] if command == "test" => (path, true),
+        [command, first, second] if command == "test" && (first == "--compiled" || second == "--compiled") => {
+            return test_compiled(if first == "--compiled" { second } else { first });
+        }
         [command, rest @ ..] if command == "build" || command == "emit-c" => {
             // A debug build checks integer overflow; `--release` wraps and optimises.
-            let (mut path, mut out, mut release) = (None, None, false);
+            let (mut path, mut out, mut release, mut tests) = (None, None, false, false);
             let mut rest = rest.iter();
             while let Some(arg) = rest.next() {
                 match arg.as_str() {
                     "--release" => release = true,
+                    "--test" => tests = true,
                     "-o" => out = rest.next().cloned(),
                     _ if path.is_none() => path = Some(arg),
                     _ => path = None,
@@ -70,7 +96,7 @@ fn main() -> ExitCode {
             };
             let stem = std::path::Path::new(path).file_stem().map(|stem| stem.to_string_lossy().into_owned());
             let out = (command == "build").then(|| out.or(stem).unwrap_or_else(|| "a.out".to_string()));
-            return build(path, out, release);
+            return build(path, out, release, tests);
         }
         _ => {
             eprintln!("{USAGE}");

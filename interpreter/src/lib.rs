@@ -101,7 +101,16 @@ pub fn emit_c(src: &str, path: &str, checked: bool) -> Result<String, Diag> {
 pub fn emit_c_sources(sources: &Sources, checked: bool) -> Result<String, Diag> {
     on_large_stack(|| {
         let prog = check_all(sources, false)?;
-        emit_c::emit(&prog, sources, checked)
+        emit_c::emit(&prog, sources, checked, false)
+    })
+}
+
+/// The back end for the test command: the program that runs the `test` blocks, each in a
+/// process of its own, and reports them as the interpreter does.
+pub fn emit_c_tests(sources: &Sources, checked: bool) -> Result<String, Diag> {
+    on_large_stack(|| {
+        let prog = check_all(sources, true)?;
+        emit_c::emit(&prog, sources, checked, true)
     })
 }
 

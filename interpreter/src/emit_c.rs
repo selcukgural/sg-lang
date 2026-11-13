@@ -521,10 +521,87 @@ static inline bool sg_remove_@N(sg_@N* m, @P key) {
 }@S}
 "#;
 
+/// What the `test` blocks of a program call: it stands before them.
+const TEST_SUPPORT: &str = r#"
+static int sg_test_error = 0;
+/* A `try` in a test met an error: it is written, and the test has failed. */
+static void sg_test_failed(sg_str text) {
+    fflush(stdout);
+    fprintf(stderr, "error: %.*s\n", (int)text.len, (const char*)text.ptr);
+    sg_test_error = 1;
+}
+"#;
+
+/// What a program of tests ends with: each `test` block runs in a process of its own, so a
+/// panic ends that test and not the ones after it. What the test writes as it stops (the
+/// panic, or the error a `try` met) is caught and written under its `FAIL` line. With
+/// `--only N` the program runs one test in this process and ends with 0 if it passed, which
+/// is how a test is looked at on its own (for leaks, in a debugger).
+const TEST_RUNNER: &str = r#"
+#include <sys/wait.h>
+#include <unistd.h>
+
+typedef struct { const char* name; void (*run)(void); } sg_test;
+static int sg_run_test(const sg_test* test) {
+    sg_test_error = 0;
+    test->run();
+    fflush(stdout);
+    return sg_test_error;
+}
+static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) {
+    if (argc == 3 && strcmp(argv[1], "--only") == 0) {
+        long only = strtol(argv[2], NULL, 10);
+        if (only < 0 || only >= count) return 3;
+        return sg_run_test(&tests[only]);
+    }
+    int failed = 0;
+    for (int i = 0; i < count; i++) {
+        int ends[2];
+        fflush(stdout);
+        fflush(stderr);
+        if (pipe(ends) != 0) { perror("pipe"); return 2; }
+        pid_t child = fork();
+        if (child < 0) { perror("fork"); return 2; }
+        if (child == 0) {
+            close(ends[0]);
+            dup2(ends[1], 2);
+            close(ends[1]);
+            exit(sg_run_test(&tests[i]));
+        }
+        close(ends[1]);
+        size_t len = 0, cap = 256;
+        char* reason = malloc(cap);
+        if (!reason) abort();
+        for (;;) {
+            if (len == cap) { cap *= 2; reason = realloc(reason, cap); if (!reason) abort(); }
+            ssize_t got = read(ends[0], reason + len, cap - len);
+            if (got <= 0) break;
+            len += (size_t)got;
+        }
+        close(ends[0]);
+        int status = 0;
+        waitpid(child, &status, 0);
+        while (len > 0 && (reason[len - 1] == '\n' || reason[len - 1] == ' ')) len--;
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            printf("ok    %s\n", tests[i].name);
+        } else {
+            failed++;
+            printf("FAIL  %s\n", tests[i].name);
+            if (len > 0) printf("%.*s\n", (int)len, reason);
+            else if (WIFSIGNALED(status)) printf("the test was stopped by signal %d\n", WTERMSIG(status));
+        }
+        free(reason);
+    }
+    if (failed == 0) printf("%d test(s) passed\n", count);
+    else printf("%d of %d test(s) failed\n", failed, count);
+    return failed == 0 ? 0 : 1;
+}
+"#;
+
 /// Writes the program as C. A panic message names the file its line is in. `checked`: a
 /// debug build, where `+`, `-`, `*` and unary `-` panic on overflow; without it, a release
-/// build, where they wrap.
-pub fn emit(prog: &Program, sources: &Sources, checked: bool) -> Res<String> {
+/// build, where they wrap. `tests`: the program that runs the `test` blocks instead of `main`.
+pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Res<String> {
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let mut emitter = Emitter {
@@ -549,6 +626,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool) -> Res<String> {
         head: false,
         exits: 0,
         ways_out: 0,
+        in_test: false,
         late_types: String::new(),
     };
     // Every struct and enum is named first, so that a type can point at itself or at a later
@@ -590,42 +668,42 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool) -> Res<String> {
         }
     }
 
+    // The `test` blocks, each a function, and the list the runner goes through. A test of a
+    // module has its module in front of its name.
+    let mut listed = String::new();
+    if tests {
+        for (number, test) in prog.tests.iter().enumerate() {
+            emitter.test(test, number, &mut protos, &mut bodies)?;
+            let name = match sources.file_at(test.name_span.start).module.as_str() {
+                "" => test.name.clone(),
+                module => format!("{module}: {}", test.name),
+            };
+            let _ = writeln!(listed, "    {{ {}, t_{number} }},", c_string(&name));
+        }
+    }
+
     // Where the program starts. An error that `main` ends with is written out, and the
     // program ends with the exit code 1.
-    let main = prog.funcs.iter().find(|func| func.name == "main").expect("the checker asks for `main`");
-    let start = match emitter.written(&main.ret)? {
-        ret @ Ty::Result(..) => {
-            let Ty::Result(_, error) = &ret else { unreachable!("matched above") };
-            let cause = "result.u.v1.m_cause";
-            let ctype = emitter.ctype(&ret, main.ret.span)?;
-            let mut drop = if emitter.droppable(error) { emitter.drop_of(error, cause) } else { String::new() };
-            let mut shown = String::new();
-            let (format, values) = match &**error {
-                Ty::Str => ("%.*s", format!("(int){cause}.len, (const char*){cause}.ptr")),
-                Ty::Int(_) => ("%lld", format!("(long long){cause}")),
-                Ty::Bool => ("%s", format!("{cause} ? \"true\" : \"false\"")),
-                // A struct or an enum is written by the helper of its type.
-                other => {
-                    shown = format!("sg_string text = SG_LIT(\"\", 0); {}(&text, &{cause});\n        ", emitter.shower(other, main.ret.span)?);
-                    drop = format!("sg_drop_string(&text); {drop}");
-                    ("%.*s", "(int)text.len, (const char*)text.ptr".to_string())
-                }
-            };
-            format!(
-                "int main(void) {{\n    {ctype} result = f_main();\n    if (result.tag != 0) {{\n        fflush(stdout);\n        {shown}\
-                 fprintf(stderr, \"error: {format}\\n\", {values});\n        {drop}\n        return 1;\n    }}\n    return 0;\n}}\n"
-            )
-        }
-        _ => "int main(void) {\n    f_main();\n    return 0;\n}\n".to_string(),
+    let main = prog.funcs.iter().find(|func| func.name == "main");
+    let start = match main {
+        _ if tests => format!(
+            "static const sg_test sg_tests[] = {{\n{listed}    {{ NULL, NULL }}\n}};\nint main(int argc, char** argv) {{\n    return sg_run_tests(sg_tests, {}, argc, argv);\n}}\n",
+            prog.tests.len()
+        ),
+        None => unreachable!("the checker asks for `main`"),
+        Some(main) => emitter.start(main)?,
     };
 
     // A program with a hash table draws the key of its hash before anything else runs.
     let start = match emitter.made.contains("tables") {
-        true => start.replacen("int main(void) {\n", "int main(void) {\n    sg_seed_init();\n", 1),
+        true => start.replacen(") {\n", ") {\n    sg_seed_init();\n", 1),
         false => start,
     };
 
     let mut out = String::from(RUNTIME);
+    if tests {
+        out.push_str(TEST_SUPPORT);
+    }
     out.push('\n');
     out.push_str(&emitter.types);
     out.push_str(&emitter.late_types);
@@ -641,6 +719,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool) -> Res<String> {
     }
     out.push('\n');
     out.push_str(&bodies);
+    if tests {
+        out.push_str(TEST_RUNNER);
+    }
     out.push_str(&start);
     Ok(out)
 }
@@ -1034,6 +1115,8 @@ struct Emitter<'a> {
     /// `?? return`, `break` and `continue`. A `match` inside an expression is asked whether
     /// one of its arms leaves.
     ways_out: usize,
+    /// A `test` block is being written: a `try` that meets an error writes it and ends the test.
+    in_test: bool,
     /// What the entries of the hash tables are made of: written after every struct is whole.
     late_types: String,
 }
@@ -1967,6 +2050,59 @@ impl<'a> Emitter<'a> {
     }
 
     // ---- functions and statements ----
+
+    /// Where a program starts. An error that `main` ends with is written out, and the program
+    /// ends with the exit code 1.
+    fn start(&mut self, main: &Func) -> Res<String> {
+        Ok(match self.written(&main.ret)? {
+            ret @ Ty::Result(..) => {
+                let Ty::Result(_, error) = &ret else { unreachable!("matched above") };
+                let cause = "result.u.v1.m_cause";
+                let ctype = self.ctype(&ret, main.ret.span)?;
+                let mut drop = if self.droppable(error) { self.drop_of(error, cause) } else { String::new() };
+                let mut shown = String::new();
+                let (format, values) = match &**error {
+                    Ty::Str => ("%.*s", format!("(int){cause}.len, (const char*){cause}.ptr")),
+                    Ty::Int(_) => ("%lld", format!("(long long){cause}")),
+                    Ty::Bool => ("%s", format!("{cause} ? \"true\" : \"false\"")),
+                    // A struct or an enum is written by the helper of its type.
+                    other => {
+                        shown = format!("sg_string text = SG_LIT(\"\", 0); {}(&text, &{cause});\n        ", self.shower(other, main.ret.span)?);
+                        drop = format!("sg_drop_string(&text); {drop}");
+                        ("%.*s", "(int)text.len, (const char*)text.ptr".to_string())
+                    }
+                };
+                format!(
+                    "int main(void) {{\n    {ctype} result = f_main();\n    if (result.tag != 0) {{\n        fflush(stdout);\n        {shown}\
+                     fprintf(stderr, \"error: {format}\\n\", {values});\n        {drop}\n        return 1;\n    }}\n    return 0;\n}}\n"
+                )
+            }
+            _ => "int main(void) {\n    f_main();\n    return 0;\n}\n".to_string(),
+        })
+    }
+
+    /// A `test` block: a function that takes nothing and gives nothing. An error that a `try`
+    /// in it meets is written and ends the test (see `ExprKind::Try`).
+    fn test(&mut self, test: &'a TestDecl, number: usize, protos: &mut String, bodies: &mut String) -> Res<()> {
+        let head = format!("static void t_{number}(void)");
+        let _ = writeln!(protos, "{head};");
+        let _ = writeln!(bodies, "{head} {{");
+        self.ret = Ty::Void;
+        self.temps = 0;
+        self.scopes = vec![Vec::new()];
+        self.in_test = true;
+        let written = self.stmts(&test.body, 1, bodies);
+        self.in_test = false;
+        written?;
+        if !ends_by_leaving(&test.body) {
+            for line in self.drops(0) {
+                let _ = writeln!(bodies, "    {line}");
+            }
+        }
+        self.scopes.clear();
+        bodies.push_str("}\n\n");
+        Ok(())
+    }
 
     fn func(&mut self, func: &'a Func, owner: Option<&str>, protos: &mut String, bodies: &mut String) -> Res<()> {
         let ret = self.written(&func.ret)?;
@@ -3233,7 +3369,9 @@ impl<'a> Emitter<'a> {
                     format!("{{ sg_str {l} = {left}; sg_str {r} = {right}; if (!({test})) {fail}({text}, {l}, {r}, {loc}); }}")
                 } else {
                     let ty = self.ctype(left.ty.strip_borrow(), left.span)?;
-                    let (left, right) = (self.value(left)?, self.value(right)?);
+                    // Each side is a line of its own and a number or a `bool`, which owns
+                    // nothing: a `try` can leave from either (`assert(try load() == 42)`).
+                    let (left, right) = (self.first(left, true)?, self.first(right, true)?);
                     format!("{{ {ty} {l} = {left}; {ty} {r} = {right}; if (!({l} {} {r})) {fail}({text}, ({shown}){l}, ({shown}){r}, {loc}); }}", op.symbol())
                 };
                 self.flush_pre(pad, out);
@@ -3242,7 +3380,7 @@ impl<'a> Emitter<'a> {
                 return Ok(());
             }
         }
-        let cond = self.value(cond)?;
+        let cond = self.first(cond, true)?;
         self.flush_pre(pad, out);
         let _ = writeln!(out, "{pad}if (!({cond})) sg_assert_fail({text}, {loc});");
         self.flush_post(pad, out);
@@ -3591,6 +3729,25 @@ impl<'a> Emitter<'a> {
                 let ret = self.ret.clone();
                 let returned = match kind {
                     TryKind::Null => self.lift(String::new(), &Ty::Null, &ret, expr.span)?,
+                    // In a test the error is written and the test ends: there is no caller.
+                    TryKind::Result(_) if self.in_test => {
+                        let Ty::Result(_, error) = &inner.ty else { return Err(not_yet(expr.span, "`try` on this in a test")) };
+                        let cause = format!("{temp}.u.v1.m_cause");
+                        let mut exit = vec![match &**error {
+                            Ty::Str => format!("sg_test_failed(sg_view(&{cause}));"),
+                            other => {
+                                let shower = self.shower(other, expr.span)?;
+                                format!("{{ sg_string sg_text = SG_LIT(\"\", 0); {shower}(&sg_text, &{cause}); sg_test_failed(sg_view(&sg_text)); sg_drop_string(&sg_text); }}")
+                            }
+                        }];
+                        if self.droppable(error) {
+                            exit.push(self.drop_of(error, &cause));
+                        }
+                        exit.extend(self.post.clone());
+                        exit.extend(self.drops(0));
+                        exit.push("return;".to_string());
+                        return self.open(&inner.ty, &temp, value, exit, inner.span);
+                    }
                     TryKind::Result(convert) => {
                         if !matches!(ret, Ty::Result(..)) {
                             return Err(not_yet(expr.span, "`try` on a `Result` here"));

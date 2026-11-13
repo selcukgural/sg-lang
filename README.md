@@ -136,6 +136,7 @@ cd sg-lang/interpreter
 cargo run -- examples/stack.sg                     # run a program in the interpreter
 cargo run -- examples/shop/main.sg                 # a program with modules
 cargo run -- test examples/shop                    # run its tests
+cargo run -- test examples/shop --compiled         # the same tests, compiled through C
 cargo run -- build examples/primes.sg --release    # compile it through C
 cargo test                                         # everything, also under the sanitizers and a leak check
 ```

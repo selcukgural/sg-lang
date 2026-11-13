@@ -8,6 +8,7 @@ cargo run -- examples/stack.sg                  # runs the program
 cargo run -- test examples/tests_stock.sg       # runs its tests
 cargo run -- examples/shop/main.sg              # a program with modules: the folders next to the file
 cargo run -- test examples/shop                 # the tests of every module of the program in that folder
+cargo run -- test examples/shop --compiled      # the same tests, compiled through C
 cargo run -- build examples/primes.sg -o primes # compiles it through C (needs `cc`)
 cargo run -- emit-c examples/primes.sg          # prints the C
 cargo test
@@ -994,7 +995,7 @@ name), approved on 13 November 2026:
 81. **Still refused, with the hint to give the value a name first**: `try`, `?? return` or a leaving
     `match` after an item of a list being built (`List<string> { make(), try f() }`), after a side of an
     operator that owns something (`make() == make(try f())`), as an argument of a method call, inside
-    `$"..."`, on the right of `&&` and `||`, and inside `assert`; a `match` that gives anything but a
+    `$"..."`, on the right of `&&` and `||`, and inside `assert` (but see 88); a `match` that gives anything but a
     number or a `bool` on the right of `??`. Limits of the back end, not rules of the language; the
     interpreter runs them all.
 82. **Every compiled program is looked at for leaks in `cargo test`** (asked for on 13 November 2026). The
@@ -1007,6 +1008,30 @@ name), approved on 13 November 2026:
     compiler rejects under the sanitizers is a failure too, where it was skipped before. With
     `SG_NO_SANITIZERS=1` both are left out and the test says so. Cost: about half a minute more for
     `cargo test`. The path on Linux has not been run yet.
+
+Choices made in the twenty-ninth slice (the test command on compiled code), approved on 13 November 2026:
+
+83. **`sg test <file | folder> --compiled` runs the tests as compiled code.** Without the word the
+    interpreter runs them, as before: it is the reference and needs no C compiler. `sg build <path> --test`
+    writes the program that runs the tests and keeps it, `sg emit-c <path> --test` prints its C. A debug
+    build, so overflow is checked as it is by the interpreter.
+84. **Each `test` block runs in a process of its own**, as the design decided: a panic ends that test and
+    the ones after it still run. The program starts a copy of itself for each test (`fork`) and waits for
+    it. For now that is POSIX only; it does not build on Windows.
+85. **The report is the interpreter's, letter for letter**: `ok    name` or `FAIL  name` with the reason
+    under it (the panic with its source line, or `error: ...`), the module in front of a test of a
+    module, the count at the end, and the exit code 1 if a test failed. What a test prints comes before
+    its line. The reason is what the test wrote as it stopped, caught by the program that started it.
+86. **A `try` that meets an error in a test writes it and ends the test**, freeing what the test owns:
+    the test function returns, it does not stop the process.
+87. **`--only N` runs one test in the same process** and ends with 0 if it passed, 1 if it failed, 3 if
+    there is no test of that number. It is how a single test is looked at: under a debugger, or for leaks.
+88. **`assert(try load() == 42)` is compiled**: each side of a comparison of numbers or `bool`s in an
+    `assert`, and a condition that is not a comparison, may hold a `try`. The other limits of 81 stand.
+89. **`cargo test` runs the compiled tests** (`compiled_tests`): every program of tests is built, its
+    report is compared with the same `.out` file the interpreter's report is compared with, it is run
+    again under the sanitizers, and every test that passes is run once more on its own to see that it
+    left no memory behind. A test that fails stops where it is and frees nothing, so it is not looked at.
 
 ## Not here yet
 
@@ -1047,5 +1072,5 @@ sanitizers and measured against C. Every example that runs in the interpreter an
 now compiled, and printing a value allocates nothing. Modules (`use`, `public`, `readonly`) are compiled
 too, and with them the stock and invoice example. A `match` gives its value inside a larger expression, and
 `try` and `?? return` stand after a value that owns memory and has no name; the few positions still refused are
-listed in 81. After it the question is the
+listed in 81. The test command runs on compiled code too (`sg test --compiled`). After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.
