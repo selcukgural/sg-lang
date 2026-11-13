@@ -1,0 +1,12 @@
+# Dependency updates. The interpreter has no dependencies today; this keeps watch for the day
+# it gets one, and for the GitHub Actions that will be used once there is a CI.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /interpreter
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
