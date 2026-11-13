@@ -150,8 +150,9 @@ Design rules that are already enforced:
 Since the sixteenth slice (12 November 2026) a program can be compiled: `sg build file.sg` writes it as C and
 hands that to the C compiler (`sg build folder` for a program that is a folder; the modules it names are
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
-back end accepts and requires the same output as the interpreter, panic messages included, and then runs the
-same C once more under the address and undefined-behaviour sanitizers (97 of 339 programs for now; the others are programs the checker rejects, on purpose).
+back end accepts and requires the same output as the interpreter, panic messages included, then runs the
+same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
+memory behind (100 of 342 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: `byte`, `int`, `long`, `nint`, `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -189,8 +190,10 @@ the places where the back end asked for a name are gone: a `for` over `read make
 from what a call gave, `if make() is Say(text)` and the same in a `while`, a method called on a `T*` that
 has no name, a right side of `&&`, `||` or `??` that needs a text or a list for a moment, and a `panic`
 message with a struct in it on the right of `??`.
+Since the twenty-eighth slice a `match` gives its value inside a larger expression, and `try` and
+`?? return` stand after an argument or a field that owns memory and has no name.
 What is still missing is an error that names it (not silence): the few positions listed with the choices
-below (a `match` inside a larger expression, `try` after a value that owns memory and has no name).
+below (81).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
 value (a `string`, a `T*`, a struct, an enum or a `T?` that holds one) is freed where its variable ends, on every way
@@ -309,7 +312,8 @@ Choices made in the eighteenth slice (the heap and missing values), approved on 
     something was computed before them in the same statement (`g(a(), try b())` with `a()` a `string`) the
     back end stops with an error and the hint "give the value a name first". The reason: what `a()`
     returned would have to be freed on the way out, and that bookkeeping is not written yet. A limit of
-    the back end for now, not a rule of the language; the interpreter runs both forms.
+    the back end for now, not a rule of the language; the interpreter runs both forms. Written in the
+    twenty-eighth slice for arguments, fields and the values of an enum value (79).
 15. **`??`, `try` and `replace` are written as GNU statement expressions**, so they run where they stand and
     the right side of `??` runs only when it is needed. clang and gcc both have them; a C compiler without
     them (MSVC) cannot build the output for now.
@@ -347,7 +351,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 22. **`match` is compiled as a statement or as the whole right side** (`var x = match ...`, `x = match ...`,
     `x += match ...`, `return match ...`, and as the last line of an arm). Inside a larger expression
     (`f(match ...)`) the back end stops with the hint "give the value a name first". The same limit as 14, and
-    for the same reason; the interpreter runs both forms.
+    for the same reason; the interpreter runs both forms. Lifted in the twenty-eighth slice (78).
 23. **A `when` condition only looks; it cannot move a value** (decided on 12 November 2026, a rule of the
     checker). If the condition moved a value and then did not hold, the arms below would run without it:
     `Say(text) when isLong(text)` with `bool isLong(string text)` is an error that says so and points at
@@ -745,7 +749,8 @@ Choices made in the twentieth slice (`Result` and `try`), approved on 12 Novembe
     `if try ready()`, `while try more()` and `match try next() { ... }` are compiled. Still refused, with the
     hint to give the value a name first: after an argument that owns something (`f(name.clone(), try g())`),
     as an argument of a method call, inside `$"..."`, on the right side of `&&`, `||` and `??`, and inside
-    `assert`. A limit of the back end, not a rule of the language.
+    `assert`. A limit of the back end, not a rule of the language. The first of these is compiled since
+    the twenty-eighth slice (79); what is left is listed in 81.
 30. **`??` on a `Result` frees the error, then computes the right side**; with `?? return` the error is
     freed on the way out.
 31. **An error that `main` ends with is written by the code the program starts with**: output written so
@@ -967,6 +972,42 @@ approved on 13 November 2026:
     in the interpreter, also under the sanitizers; `cargo test` compiles the programs of `tests/modules`
     with the others.
 
+Choices made in the twenty-eighth slice (a `match` inside an expression, leaving after a value that has no
+name), approved on 13 November 2026:
+
+78. **A `match` inside a larger expression is written before the statement**, as the statements it is, and
+    gives its value through a name: `return 2 * match shape { ... }`, `f(a, match ...)`, `if match ... {`,
+    `while match ... {`, a `match` inside an arm of another. The parts of the statement that stand before
+    it are computed before it, so the order is still left to right. On the right of `&&`, `||` and `??`
+    it runs only when that side runs (for a number or a `bool`, as any value that needs lines of its own
+    there). No cost: it is the C that `var x = match ...` gave, without the name being written.
+79. **A value that owns something and has no name is kept under a name when something after it can leave
+    the function**: an argument of a call, a field of a struct being built, a value of an enum value
+    (`Ok(Pair { name = make(), size = try parse(text) })`, `join(make(), make(), half(n) ?? return null)`).
+    The way out frees it. When nothing leaves, it is handed over by its bytes and the name is emptied
+    right after, so the end of the statement frees nothing twice. Cost: none where nothing after the
+    value can leave (the C is what it was); one store for each kept value where something can.
+80. **An arm of such a `match` may leave** (`return`, `try`, `break`, `continue`) wherever a `try` may
+    stand: what the statement keeps so far is freed on that way out. Whether something "can leave" is
+    read off the expression: it holds a `try`, a `?? return` or a `match`. A `match` whose arms all stay
+    is counted too, which costs the store of 79 and nothing else.
+81. **Still refused, with the hint to give the value a name first**: `try`, `?? return` or a leaving
+    `match` after an item of a list being built (`List<string> { make(), try f() }`), after a side of an
+    operator that owns something (`make() == make(try f())`), as an argument of a method call, inside
+    `$"..."`, on the right of `&&` and `||`, and inside `assert`; a `match` that gives anything but a
+    number or a `bool` on the right of `??`. Limits of the back end, not rules of the language; the
+    interpreter runs them all.
+82. **Every compiled program is looked at for leaks in `cargo test`** (asked for on 13 November 2026). The
+    first form of this slice freed nothing twice and read nothing freed, but left a value behind on the
+    early way out: nothing reads such a value and nothing frees it, so neither the output nor the
+    sanitizers showed it. Now each program is run once more after the sanitizers: on macOS under the
+    system's `leaks` tool (the sanitizer does not look for leaks there), elsewhere with the sanitizer's own
+    leak check. The check is tried first on a C program that leaks on purpose, and the test fails if it
+    does not see that leak or cannot be run: a check that checks nothing does not pass. A program the C
+    compiler rejects under the sanitizers is a failure too, where it was skipped before. With
+    `SG_NO_SANITIZERS=1` both are left out and the test says so. Cost: about half a minute more for
+    `cargo test`. The path on Linux has not been run yet.
+
 ## Not here yet
 
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
@@ -1004,6 +1045,7 @@ error.
 The back end, one piece of the language at a time, each compared with the interpreter, run under the
 sanitizers and measured against C. Every example that runs in the interpreter and has no `test` block is
 now compiled, and printing a value allocates nothing. Modules (`use`, `public`, `readonly`) are compiled
-too, and with them the stock and invoice example. What the back end still does not take: a `match` inside a larger
-expression, and `try` or `?? return` after a value that owns memory and has no name. After it the question is the
+too, and with them the stock and invoice example. A `match` gives its value inside a larger expression, and
+`try` and `?? return` stand after a value that owns memory and has no name; the few positions still refused are
+listed in 81. After it the question is the
 back end: the promise "as fast as C" can only be shown by compiled code, not by this interpreter.

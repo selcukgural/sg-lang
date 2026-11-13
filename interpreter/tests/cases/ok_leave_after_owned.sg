@@ -1,0 +1,137 @@
+// What can stand after a value that owns something and has no name: a `match` (also one whose
+// arm leaves the function), `try` and `?? return`. The value is freed on the way out.
+enum Shape {
+    Circle(int radius)
+    Named(string name)
+    Empty
+}
+
+struct Pair : Formattable {
+    string name
+    string other
+    int size
+}
+
+enum Wrapped : Formattable {
+    Both(string a, int n, string b)
+}
+
+string make(int n) {
+    return $"n{n}".toString()
+}
+
+Result<int, string> parse(read string text) {
+    if text.length() == 0 {
+        return Error($"empty".toString())
+    }
+    return Ok((int)text.length())
+}
+
+int? half(int n) {
+    if n % 2 == 0 {
+        return n / 2
+    }
+    return null
+}
+
+string join(string a, string b, int n) {
+    return $"{a}-{b}-{n}".toString()
+}
+
+// A `match` that gives an owned value, after a value that has no name.
+string describe(Shape shape) {
+    return join(make(1), match shape {
+        Circle(r) => make(r)
+        Named(name) => name
+        Empty => "nothing"
+    }, 7)
+}
+
+// An arm that leaves the function, after a value that has no name.
+int sized(read Shape shape) {
+    var text = join(make(2), make(3), match shape {
+        Circle(r) => r
+        Named(name) => return -1
+        Empty => 0
+    })
+    return (int)text.length()
+}
+
+// On a side that runs only sometimes.
+bool big(read Shape shape, bool wanted) {
+    return wanted && match shape {
+        Circle(r) => r > 2
+        _ => false
+    }
+}
+
+int orElse(int? n, read Shape shape) {
+    return n ?? match shape {
+        Circle(r) => r
+        _ => -5
+    }
+}
+
+// `try` after values that own something and have no name.
+Result<Pair, string> pair(read string text) {
+    return Ok(Pair { name = make(4), other = make(5), size = try parse(text) })
+}
+
+Result<Wrapped, string> wrapped(read string text) {
+    return Ok(Wrapped.Both(make(6), try parse(text), make(7)))
+}
+
+Result<string, string> joined(read string a, read string b) {
+    return Ok(join(make(8), make(try parse(a)), try parse(b)))
+}
+
+int? halves(int a, int b) {
+    var text = join(make(9), make(half(a) ?? return null), half(b) ?? return null)
+    return (int)text.length()
+}
+
+void main() {
+    print(describe(Shape.Circle(4)))
+    print(describe(Shape.Named("ada")))
+    print(describe(Shape.Empty))
+    print(sized(read Shape.Circle(12)))
+    print(sized(read Shape.Named("x")))
+    print(big(read Shape.Circle(3), true))
+    print(big(read Shape.Circle(3), false))
+    print(big(read Shape.Empty, true))
+    print(orElse(null, read Shape.Circle(9)))
+    print(orElse(1, read Shape.Circle(9)))
+    print(orElse(null, read Shape.Empty))
+    match pair("abc") {
+        Ok(p) => print(p)
+        Error(e) => print(e)
+    }
+    match pair("") {
+        Ok(p) => print(p)
+        Error(e) => print(e)
+    }
+    match wrapped("abcd") {
+        Ok(w) => print(w)
+        Error(e) => print(e)
+    }
+    match wrapped("") {
+        Ok(w) => print(w)
+        Error(e) => print(e)
+    }
+    print(joined("ab", "abc") ?? "failed")
+    print(joined("", "abc") ?? "failed")
+    print(joined("ab", "") ?? "failed")
+    print(halves(4, 6) ?? -1)
+    print(halves(3, 6) ?? -1)
+    print(halves(4, 5) ?? -1)
+    var total = 0
+    var i = 0
+    while match Shape.Circle(i) {
+        Circle(r) => r < 3
+        _ => false
+    } {
+        total += i
+        i += 1
+    }
+    print(total)
+}

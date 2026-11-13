@@ -137,7 +137,7 @@ cargo run -- examples/stack.sg                     # run a program in the interp
 cargo run -- examples/shop/main.sg                 # a program with modules
 cargo run -- test examples/shop                    # run its tests
 cargo run -- build examples/primes.sg --release    # compile it through C
-cargo test                                         # everything, also under the sanitizers
+cargo test                                         # everything, also under the sanitizers and a leak check
 ```
 
 The programs in [interpreter/examples](interpreter/examples) are the best place to see the

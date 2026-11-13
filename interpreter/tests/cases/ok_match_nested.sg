@@ -1,0 +1,48 @@
+// A `match` in a condition, a `match` inside a `match`, and a `match` between a value that
+// owns something and a `try`.
+string make(int n) {
+    return $"n{n}".toString()
+}
+
+Result<int, string> parse(read string t) {
+    if t.length() == 0 {
+        return Error("e")
+    }
+    return Ok((int)t.length())
+}
+
+enum Shape {
+    Circle(int r)
+    Empty
+}
+
+string three(string a, int n, int m) {
+    return $"{a}{n}{m}".toString()
+}
+
+Result<string, string> f(read string t, read Shape s) {
+    return Ok(three(make(1), match s {
+        Circle(r) => r
+        Empty => 0
+    }, try parse(t)))
+}
+
+void main() {
+    var s = Shape.Circle(2)
+    if match read s {
+        Circle(r) => r > 1
+        Empty => false
+    } {
+        print("big")
+    }
+    var n = 1 + match read s {
+        Circle(r) => 2 * match read s {
+            Circle(q) => q
+            Empty => 0
+        }
+        Empty => 0
+    }
+    print(n)
+    print(f("ab", read Shape.Circle(5)) ?? "failed")
+    print(f("", read Shape.Empty) ?? "failed")
+}

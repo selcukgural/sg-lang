@@ -1,0 +1,79 @@
+// A `match` that gives a value inside a larger expression: as one side of an operator, as an
+// argument, and as the whole value of a `return`.
+enum Shape {
+    Circle(int radius)
+    Square(int side)
+    Empty
+}
+
+struct Pair {
+    string name
+    int size
+}
+
+int area(read Shape shape) {
+    return 2 * match shape {
+        Circle(r) => 3 * r * r
+        Square(s) => s * s
+        Empty => 0
+    }
+}
+
+string label(read Shape shape) {
+    return match shape {
+        Circle(r) => "circle"
+        Square(s) => "square"
+        Empty => "empty"
+    }
+}
+
+Result<int, string> parse(read string text) {
+    if text.length() == 0 {
+        return Error("empty")
+    }
+    return Ok((int)text.length())
+}
+
+string make(int n) {
+    return $"n{n}".toString()
+}
+
+int? half(int n) {
+    if n % 2 == 0 {
+        return n / 2
+    }
+    return null
+}
+
+Result<Pair, string> build(read string text) {
+    return Ok(Pair { name = make(1), size = try parse(text) })
+}
+
+Result<int, string> sum(read string a, read string b) {
+    return Ok((int)make(2).length() + try parse(a) + try parse(b))
+}
+
+int? both(int a, int b) {
+    var name = make(3)
+    var total = (int)name.length() + (half(a) ?? return null) + (half(b) ?? return null)
+    return total
+}
+
+void show(read string text, int n) {
+    print($"{text} {n}")
+}
+
+void main() {
+    print(area(read Shape.Circle(2)))
+    print(label(read Shape.Square(1)))
+    show(read label(read Shape.Empty), match Shape.Square(3) {
+        Square(s) => s
+        _ => 0
+    })
+    print(build("abc") is Ok(_))
+    print(build("") is Ok(_))
+    print(sum("ab", "cde") ?? -1)
+    print(sum("ab", "") ?? -1)
+    print(both(4, 6) ?? -1)
+    print(both(4, 5) ?? -1)
+}

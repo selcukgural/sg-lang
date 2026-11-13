@@ -42,6 +42,37 @@ fn run_program(path: &Path, tests: bool, within: &Path) -> String {
     text.replace(&format!("{}/", within.display()), "")
 }
 
+/// What a compiled program left behind when it ended: `None` if it freed everything it took,
+/// otherwise the report. `plain` is the program as it is built, `sanitized` the same program
+/// built with the address sanitizer.
+///
+/// On macOS the sanitizer does not look for leaks, so the system's `leaks` tool runs the plain
+/// program. Elsewhere the sanitizer does, when the program ends. A tool that cannot be run is
+/// an error, not a pass.
+fn left_behind(plain: &Path, sanitized: &Path) -> Option<String> {
+    if cfg!(target_os = "macos") {
+        let _ = sanitized;
+        let run = match std::process::Command::new("leaks").arg("--atExit").arg("--").arg(plain).output() {
+            Ok(run) => run,
+            Err(error) => return Some(format!("the `leaks` tool could not be run: {error}")),
+        };
+        let report = String::from_utf8_lossy(&run.stdout).into_owned();
+        // "Process 123: 0 leaks for 0 total leaked bytes."
+        match report.lines().find(|line| line.contains(" leaks for ") || line.contains(" leak for ")) {
+            Some(line) if line.contains(": 0 leaks for ") => None,
+            Some(_) => Some(report.lines().filter(|line| line.contains("leak")).take(12).collect::<Vec<_>>().join("\n")),
+            None => Some(format!("`leaks` gave no count:\n{report}{}", String::from_utf8_lossy(&run.stderr))),
+        }
+    } else {
+        let run = match std::process::Command::new(sanitized).env("ASAN_OPTIONS", "detect_leaks=1").output() {
+            Ok(run) => run,
+            Err(error) => return Some(format!("the sanitized program could not be run: {error}")),
+        };
+        let report = String::from_utf8_lossy(&run.stderr);
+        report.contains("LeakSanitizer").then(|| report.lines().skip_while(|line| !line.contains("LeakSanitizer")).take(12).collect::<Vec<_>>().join("\n"))
+    }
+}
+
 /// Programs with modules. `tests/modules` holds a few modules (folders) and, next to them,
 /// programs of one file that use them. A folder with a `main.sg` is a program of its own: it
 /// is run as a folder, and so are its tests.
@@ -119,6 +150,12 @@ fn golden() {
 /// The back end: every program it can compile must print what the interpreter prints, and
 /// panic with the same message (a debug build). The programs in `tests/release` are built as
 /// release builds and compared with their own `.out` files: there overflow wraps. Programs that use what it does not compile yet are skipped.
+///
+/// Every compiled program is then run once more to see that it freed everything it took: a
+/// value left behind on an early way out is read by nothing and freed by nothing, so neither
+/// the output nor the sanitizers show it. Before that the leak check is tried on a C program
+/// that leaks on purpose; if it does not see that leak, the test fails instead of passing
+/// with a check that checks nothing.
 #[test]
 fn compiled() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -155,6 +192,8 @@ fn compiled() {
     let mut sanitized = 0;
     let mut compiled = 0;
     let mut failures = Vec::new();
+    // The programs to look at for leaks: the name, the program, the program under the sanitizers.
+    let mut built: Vec<(String, PathBuf, PathBuf)> = Vec::new();
     for path in &files {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         // Deep recursion is caught by the interpreter's own count of calls; compiled code has
@@ -218,10 +257,52 @@ fn compiled() {
                     failures.push(format!("--- {name}, under the sanitizers\nexpected:\n{expected}\nactual:\n{actual}"));
                 }
                 sanitized += 1;
+                built.push((name.clone(), binary.clone(), checked_binary));
+            } else {
+                failures.push(format!("--- {name}: the C compiler rejected it under the sanitizers\n{}", String::from_utf8_lossy(&cc.stderr)));
             }
         }
     }
+
+    // Leaks. First the check itself: it has to see a leak that is there.
+    let mut leak_free = 0;
+    if sanitizers {
+        let (leaky_c, leaky, leaky_san) = (work.join("leaks-on-purpose.c"), work.join("leaks-on-purpose"), work.join("leaks-on-purpose-san"));
+        std::fs::write(&leaky_c, "#include <stdlib.h>\n#include <string.h>\nint main(void) { char* volatile block = malloc(64); memset(block, 1, 64); block = NULL; return 0; }\n").unwrap();
+        for (out, flags) in [(&leaky, &["-O1"][..]), (&leaky_san, &["-O1", "-g", "-fsanitize=address"][..])] {
+            let cc = std::process::Command::new("cc").arg("-std=c11").args(flags).arg("-o").arg(out).arg(&leaky_c).output().unwrap();
+            assert!(cc.status.success(), "the C compiler rejected the program that leaks on purpose:\n{}", String::from_utf8_lossy(&cc.stderr));
+        }
+        let seen = left_behind(&leaky, &leaky_san);
+        assert!(
+            seen.as_deref().is_some_and(|report| report.contains("leak") || report.contains("Leak")) && !seen.as_deref().unwrap_or_default().contains("could not be run"),
+            "the leak check does not see a leak that is there, so it cannot be trusted: {seen:?}"
+        );
+
+        // Then every program, several at a time.
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let found = std::sync::Mutex::new(Vec::new());
+        let workers = std::thread::available_parallelism().map_or(4, |count| count.get()).min(8);
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some((name, plain, checked)) = built.get(index) else { break };
+                    if let Some(report) = left_behind(plain, checked) {
+                        found.lock().unwrap().push(format!("--- {name}: memory was left behind\n{report}"));
+                    }
+                });
+            }
+        });
+        let mut found = found.into_inner().unwrap();
+        found.sort();
+        leak_free = built.len() - found.len();
+        failures.extend(found);
+    } else {
+        eprintln!("SG_NO_SANITIZERS is set: the compiled programs were NOT run under the sanitizers and NOT looked at for leaks");
+    }
     assert!(failures.is_empty(), "{} compiled program(s) differ:\n{}", failures.len(), failures.join("\n"));
     assert!(compiled >= 10, "only {compiled} programs were compiled: the back end skips too much");
-    eprintln!("{compiled} of {} programs compiled through C and gave the same output; {sanitized} also ran clean under the sanitizers", total);
+    assert!(!sanitizers || leak_free == compiled, "only {leak_free} of {compiled} compiled programs were looked at for leaks");
+    eprintln!("{compiled} of {total} programs compiled through C and gave the same output; {sanitized} also ran clean under the sanitizers; {leak_free} left no memory behind");
 }
