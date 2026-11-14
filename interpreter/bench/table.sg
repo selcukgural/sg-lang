@@ -1,0 +1,20 @@
+// A table written with widths and letters: two million lines like
+// `0001e240        -45  ada     |   123.457  0000001011010110 C0FFEE`, each a `print` of one
+// formatted text with a width on the numbers and on the name, hex (`x8`, `X6`), binary (`b16`)
+// and fixed digits (`F3`).
+ulong next(ulong state) {
+    return state.wrappingMultiply(6364136223846793005).wrappingAdd(1442695040888963407)
+}
+
+void main() {
+    var names = List<string> { "ada", "grace", "linus", "ken", "barbara", "dennis", "edsger" }
+    ulong state = 5
+    for i in 0..2000000 {
+        state = next(state)
+        long a = (long)((state >> 40) & 0xffff) - 32768
+        double x = (double)(state >> 44) / 1000.0
+        uint mask = (uint)(state >> 48)
+        uint code = (uint)((state >> 8) & 0xffffff)
+        print($"{i:x8} {a,10}  {names[i % 7],-8}|{x,10:F3}  {mask:b16} {code:X6}")
+    }
+}

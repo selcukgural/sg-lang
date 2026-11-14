@@ -129,8 +129,9 @@ pub enum Callee {
     FromUtf8,
     /// `string.withCapacity(n)`
     WithCapacity,
-    /// `int.parse(text)`, `double.parse(text)`: the type is the one in the `Result` it gives.
-    Parse,
+    /// `int.parse(text)`, `double.parse(text)`, `int.parseHex(text)`: the type is the one in
+    /// the `Result` it gives; the number is the base the digits are read in (10 or 16).
+    Parse(u32),
     /// `File.readText(path)`, `File.openText(path)` and the other functions of `File`.
     Io(IoCall),
     /// `reader.readLine(ref line)`, `writer.write(x)` and the other methods of a
@@ -425,9 +426,52 @@ pub struct FieldInit {
     pub index: usize,
 }
 
+// A value is far larger than a piece of text, as it was before the spec came; a formatted
+// text has few parts, and a box for each value would cost more than it saves.
+#[allow(clippy::large_enum_variant)]
 pub enum InterpPart {
     Text(String),
-    Expr(Expr),
+    /// A value, and how it is written when the text says more than "as `print` writes it".
+    Expr(Expr, Option<Spec>),
+}
+
+/// What follows the value inside `{ }`: `{n,5}`, `{name,-10}`, `{b:X2}`, `{price,8:F2}`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Spec {
+    /// Characters the value takes at least, filled with spaces: on the left (the value
+    /// stands to the right) when positive, on the right when negative. 0 when none is written.
+    pub width: i32,
+    /// The letter after `:` and the number after it.
+    pub letter: Option<(Letter, Option<u32>)>,
+    /// Where the part after the value is written, for the errors about it.
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Letter {
+    /// `x`: an integer in hex with small letters; the number is the digits it has at least.
+    Hex,
+    /// `X`: the same with capital letters.
+    HexUpper,
+    /// `b`: an integer in binary.
+    Binary,
+    /// `D`: an integer in decimal, with at least this many digits.
+    Decimal,
+    /// `F`: a fractional number with exactly this many digits after the point.
+    Fixed,
+}
+
+impl Letter {
+    /// As it is written after `:`.
+    pub fn name(self) -> char {
+        match self {
+            Letter::Hex => 'x',
+            Letter::HexUpper => 'X',
+            Letter::Binary => 'b',
+            Letter::Decimal => 'D',
+            Letter::Fixed => 'F',
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]

@@ -1,0 +1,5 @@
+error: `F` writes a fractional number with so many digits after the point, and `n` is an `int`
+  --> error_format_fixed_integer.sg:4:15
+ 4 |     print($"{n:F2}")
+   |               ^^^
+  hint: make it a `double` first: `{(double)n:F2}`

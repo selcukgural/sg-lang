@@ -1,0 +1,5 @@
+// A letter after `:` is for a number; text takes only a width.
+void main() {
+    string name = "ada"
+    print($"{name:x}")
+}

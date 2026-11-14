@@ -1,0 +1,5 @@
+// `D` is for an integer; a fractional number takes `F`.
+void main() {
+    double x = 2.5
+    print($"{x:D2}")
+}

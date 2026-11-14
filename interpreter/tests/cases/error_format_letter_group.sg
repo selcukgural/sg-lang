@@ -1,0 +1,5 @@
+// `N` would put separators between groups of digits, which change from one country to another.
+void main() {
+    double price = 1234.5
+    print($"{price:N2}")
+}

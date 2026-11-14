@@ -684,6 +684,8 @@ uint.parse("-1")                                 // Invalid(0): an unsigned type
 double.parse("1e400")                            // Infinity, as in Rust, C# and C; OutOfRange is for integers
 double.parse("Infinity")                         // what print writes, parse reads back: NaN, Infinity, -0
 var n = int.parse(line)                          // error if line is a string. Hint: read line
+byte red = byte.parseHex("ff") ?? 0              // 255; small or capital digits, no `0x`, on every integer type
+int.parseHex("80000000")                         // OutOfRange: the value must fit, it is not taken as bits
 ```
 
 The constants are C#'s names, on the type. A constant is a value of its type, not a number written out:
@@ -731,6 +733,24 @@ print($"{name}: {count}")                        // no allocation
 try writer.writeLine($"{a} + {b} = {a + b}")     // no allocation, the parts are written directly
 string text = $"{name}: {count}".toString()      // the allocation is visible here
 string bad = $"{name}"                           // error, hint: .toString()
+```
+
+After the value, as in C#, a width can follow a `,` and a letter a `:`. The width is the characters the value
+takes at least, filled with spaces in front of it, or after it when the width is negative; it works on every
+value `print` takes and counts characters, not bytes. The letter writes an integer in hex (`x`, `X`), in
+binary (`b`) or in decimal (`D`) with at least so many digits, or a fractional number with so many digits
+after the point (`F`). Both are part of the program and checked at compile time:
+
+```
+print($"#{r:X2}{g:X2}{b:X2}")                    // #FF8000
+print($"{crc:x8} {flags:b8} {n:D3}")             // 00c0ffee 00000101 007
+print($"{name,-10}|{count,5}|{price,8:F2}")      // "ada       |    7|    3.50"
+print($"{(sbyte)-1:x}")                          // ff: a negative number is the bits of its type
+print($"{2.5:F0} {0.125:F2}")                    // 2 0.12: the exact value, a tie to the even digit
+print($"{price:x}")                              // error: `x` writes an integer in hex, and `price` is a `double`
+print($"{count:F2}")                             // error. Hint: {(double)count:F2}
+print($"{price:N2}")                             // error: group separators change from one country to another. Hint: F2
+print($"{name,width}")                           // error: a width is a number written in the text
 ```
 
 ```

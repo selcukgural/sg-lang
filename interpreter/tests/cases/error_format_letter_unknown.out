@@ -1,0 +1,5 @@
+error: `q` is not a format
+  formats: `x` and `X` (hex), `b` (binary), `D` (at least so many digits), `F` (so many digits after the point)
+  --> error_format_letter_unknown.sg:4:16
+ 4 |     print($"{n:q}")
+   |                ^

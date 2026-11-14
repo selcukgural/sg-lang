@@ -1,0 +1,4 @@
+// A width is at most 999 characters.
+void main() {
+    print($"{1,1000}")
+}

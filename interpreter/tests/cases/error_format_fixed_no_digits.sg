@@ -1,0 +1,5 @@
+// `F` alone would leave the number of digits to a default; it is written out.
+void main() {
+    double price = 3.5
+    print($"{price:F}")
+}

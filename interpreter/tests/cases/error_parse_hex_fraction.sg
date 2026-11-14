@@ -1,0 +1,4 @@
+// `parseHex` reads an integer.
+void main() {
+    print(double.parseHex("ff") ?? 0.0)
+}

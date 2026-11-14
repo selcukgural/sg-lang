@@ -1,0 +1,4 @@
+// A function close to a known one is named in the hint.
+void main() {
+    print(int.parsehex("ff") ?? 0)
+}

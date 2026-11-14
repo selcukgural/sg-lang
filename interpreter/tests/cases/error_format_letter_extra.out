@@ -1,0 +1,5 @@
+error: `x2y` is not a format
+  after `x` comes a number of digits, and nothing else: `x2`
+  --> error_format_letter_extra.sg:3:18
+ 3 |     print($"{255:x2y}")
+   |                  ^^^

@@ -1,0 +1,5 @@
+error: no expression inside `{ }`
+  --> error_format_no_value.sg:3:13
+ 3 |     print($"{,5}")
+   |             ^^^^
+  hint: write `{{` for a literal brace

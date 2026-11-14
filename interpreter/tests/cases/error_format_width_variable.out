@@ -1,0 +1,5 @@
+error: expected `}`, found `,`
+  a width after `,` is a number written in the text: `{n,8}`
+  --> error_format_width_variable.sg:5:15
+ 5 |     print($"{n,width}")
+   |               ^

@@ -1,0 +1,5 @@
+error: `X` writes an integer in hex, and `c` is a `char`
+  --> error_format_hex_char.sg:4:15
+ 4 |     print($"{c:X4}")
+   |               ^^^
+  hint: the code of the character: `{(int)c:X4}`

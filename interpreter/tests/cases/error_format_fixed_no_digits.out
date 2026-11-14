@@ -1,0 +1,5 @@
+error: `F` needs the number of digits after the point
+  --> error_format_fixed_no_digits.sg:4:20
+ 4 |     print($"{price:F}")
+   |                    ^
+  hint: `F2`

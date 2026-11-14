@@ -1,0 +1,5 @@
+// `F` is for a fractional number; an integer is made one first.
+void main() {
+    int n = 3
+    print($"{n:F2}")
+}

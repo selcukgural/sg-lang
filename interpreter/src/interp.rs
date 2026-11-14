@@ -1045,7 +1045,7 @@ impl<'a> Interp<'a> {
                 // that, so a `format` method runs when every value of the line is there.
                 let mut values = Vec::new();
                 for part in parts {
-                    if let InterpPart::Expr(inner) = part {
+                    if let InterpPart::Expr(inner, _) = part {
                         values.push(self.expr(inner, frame)?);
                     }
                 }
@@ -1054,9 +1054,21 @@ impl<'a> Interp<'a> {
                 for part in parts {
                     match part {
                         InterpPart::Text(piece) => text.push_str(piece),
-                        InterpPart::Expr(inner) => {
+                        InterpPart::Expr(inner, spec) => {
                             let value = values.next().expect("one value for each part");
-                            text.push_str(&self.show(value, false, inner.span)?);
+                            let shown = match spec.and_then(|spec| spec.letter) {
+                                Some((letter, digits)) => written_as(&owned(value.clone()), letter, digits.unwrap_or(0) as usize),
+                                None => self.show(value, false, inner.span)?,
+                            };
+                            let width = spec.map_or(0, |spec| spec.width);
+                            let fill = (width.unsigned_abs() as usize).saturating_sub(shown.chars().count());
+                            if width > 0 {
+                                text.extend(std::iter::repeat_n(' ', fill));
+                            }
+                            text.push_str(&shown);
+                            if width < 0 {
+                                text.extend(std::iter::repeat_n(' ', fill));
+                            }
                         }
                     }
                 }
@@ -1432,12 +1444,12 @@ impl<'a> Interp<'a> {
                         }
                     })
                 }
-                Callee::Parse => {
+                Callee::Parse(radix) => {
                     let Value::Str(text) = strip(self.expr(&args[0], frame)?) else {
                         unreachable!("the checker makes the argument text")
                     };
                     let Ty::Result(ty, _) = &expr.ty else { unreachable!("`parse` gives a `Result`") };
-                    Ok(match parse_number(text.as_bytes(), ty) {
+                    Ok(match parse_number(text.as_bytes(), ty, *radix) {
                         Ok(value) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(value)])),
                         Err(error) => {
                             let cause = match error {
@@ -2319,11 +2331,38 @@ fn constant(ty: &Ty, name: &str) -> Value {
     }
 }
 
+/// A number written with the letter after `:` in `{x:X2}`: `digits` is the digits it has at
+/// least (`x`, `X`, `b`, `D`) or the digits after the point (`F`). A negative integer is
+/// written in hex and in binary as the bits of its type hold it, as C# and Rust write it;
+/// in decimal with `-` in front of the digits. The same as `sg_written_as` in compiled code.
+fn written_as(value: &Value, letter: Letter, digits: usize) -> String {
+    match (value, letter) {
+        (Value::Float(ty, value), Letter::Fixed) => match value.is_finite() {
+            true => format!("{value:.digits$}"),
+            false => show_float(*value, *ty),
+        },
+        (Value::Int(_, value), Letter::Decimal) => {
+            let sign = if *value < 0 { "-" } else { "" };
+            format!("{sign}{:0digits$}", value.unsigned_abs())
+        }
+        (Value::Int(ty, value), _) => {
+            let bits = (*value as u128) & (u128::MAX >> (128 - ty.bits()));
+            match letter {
+                Letter::Hex => format!("{bits:0digits$x}"),
+                Letter::HexUpper => format!("{bits:0digits$X}"),
+                _ => format!("{bits:0digits$b}"),
+            }
+        }
+        _ => unreachable!("the checker lets a letter through only for a number it fits"),
+    }
+}
+
 /// The number a text writes, in the type: `Err(Some(position))` where the text stops being
 /// a number (its length when it ends too early), `Err(None)` when an integer type does not
 /// hold it. A fractional number past the type is `Infinity`.
-/// The same rules as `sg_parse_int` and `sg_parse_float` in compiled code.
-fn parse_number(text: &[u8], ty: &Ty) -> Result<Value, Option<usize>> {
+/// `radix` is 10, or 16 for `parseHex` (an integer only). The same rules as
+/// `sg_read_whole` and `sg_read_fraction` in compiled code.
+fn parse_number(text: &[u8], ty: &Ty, radix: u32) -> Result<Value, Option<usize>> {
     let signed = matches!(text.first(), Some(b'-' | b'+'));
     let start = usize::from(signed);
     let digits_from = |at: usize| text[at..].iter().take_while(|byte| byte.is_ascii_digit()).count();
@@ -2332,7 +2371,7 @@ fn parse_number(text: &[u8], ty: &Ty) -> Result<Value, Option<usize>> {
             if text.first() == Some(&b'-') && !ty.signed() {
                 return Err(Some(0));
             }
-            let digits = digits_from(start);
+            let digits = text[start..].iter().take_while(|byte| char::from(**byte).is_digit(radix)).count();
             if digits == 0 || start + digits < text.len() {
                 return Err(Some(start + digits));
             }
@@ -2340,7 +2379,7 @@ fn parse_number(text: &[u8], ty: &Ty) -> Result<Value, Option<usize>> {
             // when it is long.
             let mut value: i128 = 0;
             for byte in &text[start..] {
-                value = value * 10 + i128::from(byte - b'0');
+                value = value * i128::from(radix) + i128::from(char::from(*byte).to_digit(radix).expect("checked to be a digit"));
                 if value > 1 << 64 {
                     return Err(None);
                 }

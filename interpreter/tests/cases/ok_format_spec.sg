@@ -1,0 +1,116 @@
+// What may follow a value inside `{ }`, as in C#: a width after `,` (spaces in front, or after
+// it when the width is negative) and a letter after `:` (`x`, `X`, `b`, `D`, `F`) with a number.
+
+struct Item : Formattable {
+    string name
+    int count
+
+    void format(read this, ref Formatter f) {
+        f.write($"{this.name,-6}|{this.count,4}")
+    }
+}
+
+struct Pair : Formattable {               // no body: written field by field
+    int a
+    int b
+}
+
+enum Shape : Formattable {
+    Dot
+    Circle(double radius)
+}
+
+int bigger(int a, int b) {
+    return a.max(b)
+}
+
+void showHex(read string text) {
+    match int.parseHex(text) {
+        Ok(n) => print($"int.parseHex(\"{text}\"): {n}")
+        Error(e) => print($"int.parseHex(\"{text}\"): {e}")
+    }
+}
+
+void main() {
+    // Hex: the bits of the type, so a negative number shows them as they are held.
+    byte r = 255
+    byte g = 128
+    byte b = 0
+    print($"#{r:X2}{g:X2}{b:X2} #{r:x}{g:x}{b:x2}")
+    sbyte small = -1
+    short middle = -2
+    int minus = -1
+    long wide = -16
+    print($"{small:x} {middle:x} {minus:x} {wide:X} {int.MinValue:x}")
+    print($"{ulong.MaxValue:x} {0:x} {0:x0} {0:x4} {3054:x8}")
+    nint at = 4096
+    uint crc = 12648430
+    print($"{at:x} {crc:x8} {crc:X}")
+
+    // Binary.
+    byte flags = 5
+    print($"{flags:b} {flags:b8} {0:b} {small:b} {middle:b4} {1:b20}")
+    print($"{ulong.MaxValue:b}")
+
+    // Decimal with at least so many digits: the sign is in front of them.
+    print($"{7:D3} {-7:D3} {12345:D3} {0:D0} {0:D} {flags:D4} {long.MinValue:D3}")
+
+    // Fixed digits after the point, rounded on the exact value: a tie goes to the even digit.
+    double price = 3.5
+    float one = 1.0
+    float third = one / 3.0
+    print($"{price:F2} {price:F0} {2.5:F0} {0.125:F2} {0.375:F2} {1.005:F2} {third:F3} {third:F10}")
+    print($"{-0.001:F2} {-0.0:F1} {1e21:F1} {double.NaN:F2} {double.Infinity:F2} {-double.Infinity:F0}")
+    print($"{double.MaxValue:F0}")
+    print($"{price:f2} {r:d4} {r:B}")
+
+    // Widths: a number, text (counted in characters), a character, a `bool`.
+    int n = 7
+    string name = "ada"
+    string city = "Zürich"
+    print($"[{n,3}] [{n,-3}] [{name,6}] [{name,-6}] [{city,8}] [{city,-8}] [{'é',3}] [{true,6}] [{false,-6}]")
+    print($"[{name,2}] [{12345,3}] [{"lit",5}] [{"lit",-5}] [{n , 4}] [{-12,5}]")
+    // A width and a letter together.
+    print($"[{r,6:X2}] [{r,-6:x}] [{price,8:F2}] [{flags,-10:b8}] [{-7,6:D3}]")
+    // A fractional number and a value with a helper of its type.
+    var pair = Pair { a = 1, b = 2 }
+    print($"[{1.5,6}] [{pair,22}] [{pair,-22}] [{Shape.Circle(2.0),-14}] [{Shape.Dot,5}]")
+    var list = List<int> { 1, 2, 3 }
+    print($"[{list,12}] [{list,-12}]")
+    // A `format` of its own writes with widths too, straight into the text.
+    var items = List<Item> { Item { name = "nail", count = 120 }, Item { name = "screw", count = 7 } }
+    for item in read items {
+        print($"{item}")
+    }
+    print($"[{items[0],16}] [{items[1],-16}]")
+    var line = string.withCapacity(8)
+    line.write($"{items[0],14}|{n:D2}|{name,-4}|{items[1],-14}.")
+    print(line)
+    _ = Stdout.writeLine($"{n,5:b}|{name,-5}|{price,-6:F1}|")
+    // On a heap value and through a borrow.
+    var boxed = new 255
+    var seen = read n
+    print($"{boxed:x} {seen:D3} {boxed,5}")
+    // The value may hold commas and colons inside brackets, and characters.
+    char colon = ':'
+    print($"{bigger(3, 40),4}|{name.indexOf('d') ?? 9:D2}|{colon == ':'}|{list[1]:x}")
+    print($"{{n,3}} {n}")
+    print($"{crc:x8}".toString())
+
+    // Hex digits read back, small or capital, with no `0x`.
+    var texts = List<string> { "ff", "FF", "7fffffff", "80000000", "-80000000", "-1f", "+a", "0", "", "-", "0x10", "fg", "g", " f" }
+    for text in read texts {
+        showHex(text)
+    }
+    print(byte.parseHex("ff") ?? 0)
+    match byte.parseHex("100") {
+        Ok(v) => print(v)
+        Error(e) => print($"byte.parseHex(\"100\"): {e}")
+    }
+    match uint.parseHex("-1") {
+        Ok(v) => print(v)
+        Error(e) => print($"uint.parseHex(\"-1\"): {e}")
+    }
+    print(ulong.parseHex("ffffffffffffffff") ?? 0)
+    print(long.parseHex("-8000000000000000") ?? 0)
+}

@@ -1,0 +1,5 @@
+error: `D` writes an integer with at least so many digits, and `x` is a `double`
+  --> error_format_decimal_fraction.sg:4:15
+ 4 |     print($"{x:D2}")
+   |               ^^^
+  hint: `F0` writes it with no digits after the point

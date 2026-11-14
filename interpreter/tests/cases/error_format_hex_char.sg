@@ -1,0 +1,5 @@
+// A character is not a number: its code is written in hex.
+void main() {
+    char c = 'é'
+    print($"{c:X4}")
+}

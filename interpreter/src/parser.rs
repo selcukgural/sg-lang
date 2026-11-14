@@ -1239,14 +1239,18 @@ impl<'a> Parser<'a> {
         for part in parts {
             match part {
                 Part::Text(text) => result.push(InterpPart::Text(text)),
-                Part::Code(range) => {
+                Part::Code(range, spec) => {
                     let toks = lex(self.src, range, true)?;
                     let mut inner = Parser { src: self.src, toks, i: 0, struct_literals: true };
                     let expr = inner.expr()?;
                     if *inner.peek() != Tok::Eof {
-                        return Err(inner.unexpected("`}`"));
+                        let diag = inner.unexpected("`}`");
+                        return Err(match *inner.peek() == Tok::Comma {
+                            true => diag.note("a width after `,` is a number written in the text: `{n,8}`"),
+                            false => diag,
+                        });
                     }
-                    result.push(InterpPart::Expr(expr));
+                    result.push(InterpPart::Expr(expr, spec));
                 }
             }
         }

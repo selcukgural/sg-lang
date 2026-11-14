@@ -1,0 +1,4 @@
+// A width alone has no value to write.
+void main() {
+    print($"{,5}")
+}

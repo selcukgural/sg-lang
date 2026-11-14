@@ -9,8 +9,9 @@
 //!
 //! Only a part of the language is compiled so far: integers, `float` and `double` (with their
 //! constants, `parse`, the conversions that do not panic and the math of `<math.h>`), `bool`, `char`,
-//! text (with `trim`, the searches, the iterators `chars`, `split`, `splitWhitespace` and `lines`, and
-//! `write` and `clear`, which add to a text where it is, as `f.write` does), functions, structs,
+//! text (with `trim`, the searches, the iterators `chars`, `split`, `splitWhitespace` and `lines`,
+//! `write` and `clear`, which add to a text where it is, as `f.write` does, and the width and the
+//! letter after a value in `$"..."`), functions, structs,
 //! enums with `match` and `is`, `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
 //! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, `print` and `printError`, files
 //! read and written whole or piece by piece, as text or as bytes (`StreamReader`, `StreamWriter`,
@@ -264,18 +265,22 @@ static inline double sg_fmax(double a, double b) {
     if (a == b) return signbit(a) ? b : a;
     return a > b ? a : b;
 }
-/* `int.parse` and the other integer types: -1 when the text is a number between `lo` and
+/* `int.parse` and the other integer types (`parseHex` with `base` 16): -1 when the text is a number between `lo` and
    `hi`, -2 when it is a number past them, otherwise where it stops being a number (its length
    when it ends too early). The same rules as `parse_number` in the interpreter. */
-static int64_t sg_read_whole(const uint8_t* p, int64_t n, __int128 lo, __int128 hi, __int128* out) {
+static int sg_digit(uint8_t c, int base) {
+    int d = c >= '0' && c <= '9' ? c - '0' : (c | 0x20) >= 'a' && (c | 0x20) <= 'z' ? (c | 0x20) - 'a' + 10 : 99;
+    return d < base ? d : -1;
+}
+static int64_t sg_read_whole(const uint8_t* p, int64_t n, int base, __int128 lo, __int128 hi, __int128* out) {
     int64_t start = n > 0 && (p[0] == '-' || p[0] == '+');
     if (start && p[0] == '-' && lo == 0) return 0;
     int64_t at = start;
-    while (at < n && p[at] >= '0' && p[at] <= '9') at++;
+    while (at < n && sg_digit(p[at], base) >= 0) at++;
     if (at == start || at < n) return at;
     __int128 v = 0;
     for (int64_t i = start; i < n; i++) {
-        v = v * 10 + (p[i] - '0');
+        v = v * base + sg_digit(p[i], base);
         if (v > ((__int128)1 << 64)) return -2;
     }
     if (p[0] == '-') v = -v;
@@ -635,6 +640,75 @@ static void sg_putf(sg_string* out, const char* format, ...) {
         out->len += n;
     }
     va_end(write);
+}
+/* How many spaces a value of `n` bytes needs in front of it or after it to take `width`
+   characters: `{name,10}`. A character is counted once, however many bytes it has. */
+static int sg_pad(int width, const char* p, int n) {
+    int count = 0;
+    for (int i = 0; i < n; i++) count += ((unsigned char)p[i] & 0xC0) != 0x80;
+    return width > count ? width - count : 0;
+}
+/* The width to give `printf` for such a value, which counts bytes: one conversion
+   (`%*.*s`) instead of the spaces and the value apart. */
+static inline int sg_width(int width, const char* p, int n) {
+    return n + sg_pad(width, p, n);
+}
+/* The same for a value just written at the end of a text, from `from` on: the spaces go in
+   front of it (`width` > 0) or after it. */
+static void sg_pad_from(sg_string* out, int64_t from, int width) {
+    int fill = sg_pad(width < 0 ? -width : width, (const char*)out->ptr + from, (int)(out->len - from));
+    if (!fill) return;
+    sg_room(out, fill);
+    uint8_t* at = out->ptr + from;
+    if (width > 0) { memmove(at + fill, at, (size_t)(out->len - from)); memset(at, ' ', (size_t)fill); }
+    else memset(out->ptr + out->len, ' ', (size_t)fill);
+    out->len += fill;
+}
+/* `{x:b8}`: the bits of an integer, with at least `least` digits. `out` has room for 64 or
+   for `least`, whichever is more. Gives how many were written. */
+static int sg_binary(char* out, unsigned long long v, int least) {
+    int n = v ? 64 - __builtin_clzll(v) : 1;
+    if (least > n) n = least;
+    for (int i = 0; i < n; i++) out[n - 1 - i] = i < 64 && (v >> i & 1) ? '1' : '0';
+    return n;
+}
+/* `{x:F2}`: a fractional number with `digits` digits after the point, rounded on its exact
+   value to the nearest (a tie to the even digit), as Rust and `printf` round it; `NaN` and
+   the infinities as `print` writes them. The value is `m` times 2 to the power `-k`
+   exactly; times ten to the `digits` it is a whole number and a fraction, both held in 128
+   bits, so the rounding is exact and no `snprintf` is needed (it reads its format and
+   costs a sixth of a line of the table benchmark). A value too large or too small for
+   that, or more than 18 digits, goes to `snprintf`. */
+static int sg_fixed(char* out, size_t room, double v, int digits, bool single) {
+    if (!isfinite(v)) return sg_shortest(out, v, single);
+    if (digits <= 18 && v != 0) {
+        int e;
+        uint64_t m = (uint64_t)ldexp(frexp(fabs(v), &e), 53);
+        int k = 53 - e;
+        if (k > 0 && k <= 120) {
+            static const uint64_t tens[] = { 1ULL, 10ULL, 100ULL, 1000ULL, 10000ULL, 100000ULL, 1000000ULL,
+                10000000ULL, 100000000ULL, 1000000000ULL, 10000000000ULL, 100000000000ULL, 1000000000000ULL,
+                10000000000000ULL, 100000000000000ULL, 1000000000000000ULL, 10000000000000000ULL,
+                100000000000000000ULL, 1000000000000000000ULL };
+            unsigned __int128 n = (unsigned __int128)m * tens[digits];
+            unsigned __int128 q = n >> k, rest = n - (q << k), half = (unsigned __int128)1 << (k - 1);
+            if (rest > half || (rest == half && (q & 1))) q++;
+            char text[48];
+            char* at = text + sizeof text;
+            int count = 0;
+            while (q > UINT64_MAX) { *--at = (char)('0' + (int)(q % 10)); q /= 10; count++; }
+            uint64_t low = (uint64_t)q;
+            do { *--at = (char)('0' + low % 10); low /= 10; count++; } while (low);
+            while (count <= digits) { *--at = '0'; count++; }
+            int len = 0;
+            if (signbit(v)) out[len++] = '-';
+            memcpy(out + len, at, (size_t)(count - digits));
+            len += count - digits;
+            if (digits) { out[len++] = '.'; memcpy(out + len, at + count - digits, (size_t)digits); len += digits; }
+            return len;
+        }
+    }
+    return snprintf(out, room, "%.*f", digits, v);
 }
 static void sg_put_digits(sg_string* out, unsigned long long left, bool negative) {
     char digits[24];
@@ -1701,6 +1775,25 @@ fn int_shown(ty: IntTy) -> (&'static str, &'static str, &'static str) {
     }
 }
 
+/// The width after `,` (`{n,8}`, `{name,-10}`) put on the value just added to a `printf`
+/// format. `printf` counts bytes: a number (`ascii`, also one written as text first) takes
+/// the width in its conversion (`%8lld`, `%10.*s`); a text, a character or what a helper
+/// wrote is counted in characters by `sg_width`, which gives the width in bytes.
+fn widen(format: &mut String, values: &mut Vec<String>, width: i32, ascii: bool) {
+    if width == 0 {
+        return;
+    }
+    if !ascii && format.ends_with("%.*s") {
+        let (ptr, len) = (values.pop().expect("a text has its bytes"), values.pop().expect("a text has its length"));
+        format.truncate(format.len() - 4);
+        format.push_str(if width > 0 { "%*.*s" } else { "%-*.*s" });
+        values.extend([format!("sg_width({}, {ptr}, {len})", width.abs()), len, ptr]);
+    } else {
+        let at = format.rfind('%').expect("a value was just added") + 1;
+        format.insert_str(at, &width.to_string());
+    }
+}
+
 /// A borrow of a borrow is the inner borrow: looking at a field that itself borrows gives
 /// the pointer the field holds.
 fn flat(mut ty: &Ty) -> &Ty {
@@ -1847,7 +1940,7 @@ fn may_leave(expr: &Expr) -> bool {
         ExprKind::Index { recv, index, .. } => may_leave(recv) || may_leave(index),
         ExprKind::Slice { recv, from, to } => may_leave(recv) || any(&mut from.iter().chain(to).map(|inner| &**inner)),
         ExprKind::Interp(parts) => any(&mut parts.iter().filter_map(|part| match part {
-            InterpPart::Expr(inner) => Some(inner),
+            InterpPart::Expr(inner, _) => Some(inner),
             InterpPart::Text(_) => None,
         })),
         ExprKind::StructLit { fields, .. } => any(&mut fields.iter().map(|field| &field.value)),
@@ -1967,8 +2060,9 @@ enum Effect {
 enum Piece {
     /// A `printf` format and the values for it, each with its comma in front.
     Text(String, String),
-    /// A value written by the helper of its type: the helper, and a pointer to the value.
-    Show(String, String),
+    /// A value written by the helper of its type: the helper, a pointer to the value, and the
+    /// width it takes (`{p,20}`; 0 when none is written).
+    Show(String, String, i32),
 }
 
 /// One of several values that C would compute in an order of its own choosing: the arguments
@@ -4302,7 +4396,7 @@ impl<'a> Emitter<'a> {
             ExprKind::Index { recv, index, .. } => Effect::Stops.max(of(recv)).max(of(index)),
             ExprKind::Slice { recv, from, to } => Effect::Stops.max(of(recv)).max(all(&mut from.iter().chain(to).map(|inner| &**inner))),
             ExprKind::Interp(parts) => all(&mut parts.iter().filter_map(|part| match part {
-                InterpPart::Expr(inner) => Some(inner),
+                InterpPart::Expr(inner, _) => Some(inner),
                 InterpPart::Text(_) => None,
             })),
             ExprKind::StructLit { fields, .. } => all(&mut fields.iter().map(|field| &field.value)),
@@ -4443,7 +4537,7 @@ impl<'a> Emitter<'a> {
                 // order of its own. Where the order can be seen, each is computed on a line
                 // of its own first.
                 let exprs: Vec<&Expr> = parts.iter().filter_map(|part| match part {
-                    InterpPart::Expr(expr) if !matches!(expr.kind, ExprKind::Str(_)) => Some(expr),
+                    InterpPart::Expr(expr, _) if !matches!(expr.kind, ExprKind::Str(_)) => Some(expr),
                     _ => None,
                 }).collect();
                 let effects: Vec<Effect> = exprs.iter().map(|expr| self.effect(expr)).collect();
@@ -4467,7 +4561,8 @@ impl<'a> Emitter<'a> {
                 for part in parts {
                     match part {
                         InterpPart::Text(text) => format.push_str(&text.replace('%', "%%")),
-                        InterpPart::Expr(expr) if has_helper(&expr.ty) => {
+                        InterpPart::Expr(expr, spec) if has_helper(&expr.ty) => {
+                            let width = spec.map_or(0, |spec| spec.width);
                             let shower = self.shower(expr.ty.strip_borrow(), expr.span)?;
                             let mut at = self.pointer(expr)?;
                             // Finding the value can stop the program (an index): that is
@@ -4481,14 +4576,15 @@ impl<'a> Emitter<'a> {
                                 if !format.is_empty() {
                                     done.push(Piece::Text(std::mem::take(&mut format), values.drain(..).map(|value| format!(", {value}")).collect()));
                                 }
-                                done.push(Piece::Show(shower, at));
+                                done.push(Piece::Show(shower, at, width));
                             } else {
                                 late.push(self.shown(&shower, &at, &mut format, &mut values));
+                                widen(&mut format, &mut values, width, false);
                             }
                         }
-                        InterpPart::Expr(expr) => {
+                        InterpPart::Expr(expr, spec) => {
                             let from = values.len();
-                            self.formatted(expr, &mut format, &mut values)?;
+                            self.formatted(expr, *spec, &mut format, &mut values)?;
                             // A number or a `bool`: one value. (A text is already kept before the line.)
                             let text = is_text(&expr.ty) || is_text_behind_pointer(&expr.ty);
                             let before_helpers = shown && self.effect(expr) != Effect::Reads;
@@ -4509,9 +4605,9 @@ impl<'a> Emitter<'a> {
             }
             _ if straight && has_helper(&arg.ty) => {
                 let shower = self.shower(arg.ty.strip_borrow(), arg.span)?;
-                done.push(Piece::Show(shower, self.pointer(arg)?));
+                done.push(Piece::Show(shower, self.pointer(arg)?, 0));
             }
-            _ => self.formatted(arg, &mut format, &mut values)?,
+            _ => self.formatted(arg, None, &mut format, &mut values)?,
         }
         if !format.is_empty() || done.is_empty() {
             done.push(Piece::Text(format, values.iter().map(|value| format!(", {value}")).collect()));
@@ -4526,7 +4622,7 @@ impl<'a> Emitter<'a> {
         let temp = self.temp();
         format.push_str("%.*s");
         self.post.push(format!("sg_scratch_back({temp});"));
-        values.push(format!("(int){temp}n, (const char*)sg_scratch.ptr + {temp}"));
+        values.extend([format!("(int){temp}n"), format!("(const char*)sg_scratch.ptr + {temp}")]);
         format!("int64_t {temp} = sg_scratch.len; {shower}(&sg_scratch, {at}); int64_t {temp}n = sg_scratch.len - {temp};")
     }
 
@@ -4569,8 +4665,79 @@ impl<'a> Emitter<'a> {
         values.push(temp);
     }
 
-    /// One value inside a formatted line.
-    fn formatted(&mut self, expr: &'a Expr, format: &mut String, values: &mut Vec<String>) -> Res<()> {
+    /// One value inside a formatted line, with what is written after it inside `{ }`.
+    fn formatted(&mut self, expr: &'a Expr, spec: Option<Spec>, format: &mut String, values: &mut Vec<String>) -> Res<()> {
+        let width = spec.map_or(0, |spec| spec.width);
+        if let ExprKind::Str(text) = &expr.kind {
+            let fill = " ".repeat((width.unsigned_abs() as usize).saturating_sub(text.chars().count()));
+            let text = text.replace('%', "%%");
+            format.push_str(&if width > 0 { fill + &text } else { text + &fill });
+            return Ok(());
+        }
+        match spec.and_then(|spec| spec.letter) {
+            Some((letter, digits)) => self.lettered(expr, letter, digits.unwrap_or(0), format, values)?,
+            None => self.formatted_as_printed(expr, format, values)?,
+        }
+        let mut ty = expr.ty.strip_borrow();
+        while let Ty::Ptr(inner) = ty {
+            ty = inner.strip_borrow();
+        }
+        let ascii = matches!(ty, Ty::Int(_) | Ty::Float(_) | Ty::Bool);
+        widen(format, values, width, ascii);
+        Ok(())
+    }
+
+    /// A number written with the letter after `:`: `{b:X2}`, `{mask:b8}`, `{n:D3}`, `{x:F2}`.
+    /// Hex and decimal digits are `printf`'s (its precision is the digits there are at
+    /// least); binary and fixed digits are written on a line of their own, as a fractional
+    /// number is, and given as text.
+    fn lettered(&mut self, expr: &'a Expr, letter: Letter, digits: u32, format: &mut String, values: &mut Vec<String>) -> Res<()> {
+        let (value, ty) = match expr.ty.strip_borrow() {
+            Ty::Ptr(_) => {
+                let mut place = self.look(expr)?;
+                let mut ty = expr.ty.strip_borrow();
+                while let Ty::Ptr(inner) = ty {
+                    place = format!("(*{place})");
+                    ty = inner;
+                }
+                (place, ty)
+            }
+            ty => {
+                let value = self.value(expr)?;
+                (if expr.ty.is_borrow() { format!("(*{value})") } else { value }, ty)
+            }
+        };
+        // `printf` writes no digit for 0 with a precision of 0; C# and Rust write `0`.
+        let precision = if digits > 0 { format!(".{digits}") } else { String::new() };
+        match (letter, ty) {
+            (Letter::Hex | Letter::HexUpper, Ty::Int(ty)) => {
+                let _ = write!(format, "%{precision}ll{}", if letter == Letter::Hex { 'x' } else { 'X' });
+                values.push(format!("(unsigned long long)(uint{}_t)({value})", ty.bits()));
+            }
+            (Letter::Decimal, Ty::Int(ty)) => {
+                let (shown, cast, _) = int_shown(*ty);
+                let _ = write!(format, "%{precision}{}", &shown[1..]);
+                values.push(format!("({cast})({value})"));
+            }
+            (Letter::Binary, Ty::Int(ty)) => {
+                let temp = self.temp();
+                self.pre.push(format!("char {temp}[{}]; int {temp}n = sg_binary({temp}, (unsigned long long)(uint{}_t)({value}), {digits});", digits.max(64), ty.bits()));
+                format.push_str("%.*s");
+                values.extend([format!("{temp}n"), temp]);
+            }
+            (Letter::Fixed, Ty::Float(ty)) => {
+                let temp = self.temp();
+                self.pre.push(format!("char {temp}[{}]; int {temp}n = sg_fixed({temp}, sizeof {temp}, {value}, {digits}, {});", 330 + digits, *ty == FloatTy::Float));
+                format.push_str("%.*s");
+                values.extend([format!("{temp}n"), temp]);
+            }
+            _ => unreachable!("the checker lets a letter through only for a number it fits"),
+        }
+        Ok(())
+    }
+
+    /// One value inside a formatted line, as `print` writes it.
+    fn formatted_as_printed(&mut self, expr: &'a Expr, format: &mut String, values: &mut Vec<String>) -> Res<()> {
         if let ExprKind::Str(text) = &expr.kind {
             format.push_str(&text.replace('%', "%%"));
             return Ok(());
@@ -4606,7 +4773,7 @@ impl<'a> Emitter<'a> {
                 Ty::Char => self.char_text(&place, format, values),
                 Ty::Str => {
                     format.push_str("%.*s");
-                    values.push(format!("(int){place}.len, (const char*){place}.ptr"));
+                    values.extend([format!("(int){place}.len"), format!("(const char*){place}.ptr")]);
                 }
                 other => return Err(not_yet(expr.span, &format!("writing a `{other}*` as text"))),
             }
@@ -4617,7 +4784,7 @@ impl<'a> Emitter<'a> {
             let (view, temp) = (self.view(expr)?, self.temp());
             self.pre.push(format!("sg_str {temp} = {view};"));
             format.push_str("%.*s");
-            values.push(format!("(int){temp}.len, (const char*){temp}.ptr"));
+            values.extend([format!("(int){temp}.len"), format!("(const char*){temp}.ptr")]);
             return Ok(());
         }
         let value = self.value(expr)?;
@@ -5098,14 +5265,21 @@ impl<'a> Emitter<'a> {
     /// What `f.write(x)` and `text.write(x)` become: each piece of `x` added at the end of the
     /// text that `out` points to.
     fn write_into(&mut self, out: &str, arg: &'a Expr) -> Res<String> {
-        let lines: Vec<String> = self.pieces(arg, true)?.into_iter().map(|piece| match piece {
-            Piece::Text(format, values) if values.is_empty() => {
-                let text = format.replace("%%", "%");
-                format!("sg_put({out}, {}, {})", c_string(&text), text.len())
-            }
-            Piece::Text(format, values) => format!("sg_putf({out}, {}{values})", c_string(&format)),
-            Piece::Show(shower, at) => format!("{shower}({out}, {at})"),
-        }).collect();
+        let mut lines = Vec::new();
+        for piece in self.pieces(arg, true)? {
+            lines.push(match piece {
+                Piece::Text(format, values) if values.is_empty() => {
+                    let text = format.replace("%%", "%");
+                    format!("sg_put({out}, {}, {})", c_string(&text), text.len())
+                }
+                Piece::Text(format, values) => format!("sg_putf({out}, {}{values})", c_string(&format)),
+                Piece::Show(shower, at, 0) => format!("{shower}({out}, {at})"),
+                Piece::Show(shower, at, width) => {
+                    let from = self.temp();
+                    format!("int64_t {from} = ({out})->len; {shower}({out}, {at}); sg_pad_from({out}, {from}, {width})")
+                }
+            });
+        }
         match lines.len() {
             1 => Ok(lines.concat()),
             _ => Ok(format!("({{ {}; }})", lines.join("; "))),
@@ -6015,13 +6189,13 @@ impl<'a> Emitter<'a> {
                 Callee::Io(call) => self.io(*call, args, head, expr),
                 Callee::Stream(call) => self.stream(*call, recv, args, head, expr),
                 // `int.parse(text)`: one function for each type, made where it is first used.
-                Callee::Parse => {
+                Callee::Parse(radix) => {
                     let Ty::Result(ty, _) = &expr.ty else { return Err(not_yet(expr.span, "`parse`")) };
                     let (fname, read) = match &**ty {
                         Ty::Int(ty) => (
-                            format!("sg_parse_{}", int_name(*ty)),
+                            format!("sg_parse{}_{}", if *radix == 16 { "_hex" } else { "" }, int_name(*ty)),
                             format!(
-                                "__int128 v = 0; int64_t at = sg_read_whole(text.ptr, text.len, (__int128){}, (__int128){}, &v);",
+                                "__int128 v = 0; int64_t at = sg_read_whole(text.ptr, text.len, {radix}, (__int128){}, (__int128){}, &v);",
                                 int_literal(ty.min(), if ty.signed() { IntTy::Long } else { IntTy::Ulong }),
                                 int_literal(ty.max(), if ty.signed() { IntTy::Long } else { IntTy::Ulong }),
                             ),

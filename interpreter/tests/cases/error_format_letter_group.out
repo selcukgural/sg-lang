@@ -1,0 +1,6 @@
+error: `N` is not a format here
+  `N` would put separators between groups of digits, which change from one country to another
+  --> error_format_letter_group.sg:4:20
+ 4 |     print($"{price:N2}")
+   |                    ^^
+  hint: `F2` writes the digits after the point

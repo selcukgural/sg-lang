@@ -1,0 +1,4 @@
+// After the letter comes a number of digits and nothing else.
+void main() {
+    print($"{255:x2y}")
+}

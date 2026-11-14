@@ -1,0 +1,5 @@
+// The letters after `:` are the few C# letters for numbers.
+void main() {
+    int n = 12
+    print($"{n:q}")
+}

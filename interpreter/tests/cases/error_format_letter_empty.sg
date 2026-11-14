@@ -1,0 +1,4 @@
+// Something must follow `:`.
+void main() {
+    print($"{1:}")
+}

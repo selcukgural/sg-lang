@@ -1,0 +1,44 @@
+#FF8000 #ff8000
+ff fffe ffffffff FFFFFFFFFFFFFFF0 80000000
+ffffffffffffffff 0 0 0000 00000bee
+1000 00c0ffee C0FFEE
+101 00000101 0 11111111 1111111111111110 00000000000000000001
+1111111111111111111111111111111111111111111111111111111111111111
+007 -007 12345 0 0 0005 -9223372036854775808
+3.50 4 2 0.12 0.38 1.00 0.333 0.3333333433
+-0.00 -0.0 1000000000000000000000.0 NaN Infinity -Infinity
+179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368
+3.50 0255 11111111
+[  7] [7  ] [   ada] [ada   ] [  Zürich] [Zürich  ] [  é] [  true] [false ]
+[ada] [12345] [  lit] [lit  ] [   7] [  -12]
+[    FF] [ff    ] [    3.50] [00000101  ] [  -007]
+[   1.5] [ Pair { a = 1, b = 2 }] [Pair { a = 1, b = 2 } ] [Circle(2)     ] [  Dot]
+[   [1, 2, 3]] [[1, 2, 3]   ]
+nail  | 120
+screw |   7
+[     nail  | 120] [screw |   7     ]
+   nail  | 120|07|ada |screw |   7   .
+  111|ada  |3.5   |
+ff 007   255
+  40|01|true|2
+{n,3} 7
+00c0ffee
+int.parseHex("ff"): 255
+int.parseHex("FF"): 255
+int.parseHex("7fffffff"): 2147483647
+int.parseHex("80000000"): OutOfRange
+int.parseHex("-80000000"): -2147483648
+int.parseHex("-1f"): -31
+int.parseHex("+a"): 10
+int.parseHex("0"): 0
+int.parseHex(""): Invalid(0)
+int.parseHex("-"): Invalid(1)
+int.parseHex("0x10"): Invalid(1)
+int.parseHex("fg"): Invalid(1)
+int.parseHex("g"): Invalid(0)
+int.parseHex(" f"): Invalid(0)
+255
+byte.parseHex("100"): OutOfRange
+uint.parseHex("-1"): Invalid(0)
+18446744073709551615
+-9223372036854775808

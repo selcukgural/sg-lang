@@ -2169,7 +2169,7 @@ impl<'a> Checker<'a> {
         while let Some(part) = parts.pop() {
             if let ExprKind::Interp(pieces) = &part.kind {
                 parts.extend(pieces.iter().filter_map(|piece| match piece {
-                    InterpPart::Expr(inner) => Some(inner),
+                    InterpPart::Expr(inner, _) => Some(inner),
                     _ => None,
                 }));
                 continue;
@@ -3534,9 +3534,12 @@ impl<'a> Checker<'a> {
             ExprKind::Null => Ok(Ty::Null),
             ExprKind::Interp(parts) => {
                 for part in parts {
-                    if let InterpPart::Expr(inner) = part {
+                    if let InterpPart::Expr(inner, spec) = part {
                         let ty = self.operand(inner, None)?;
                         self.printable(&ty, inner.span)?;
+                        if let Some(Spec { letter: Some((letter, _)), span, .. }) = spec {
+                            self.format_letter(&ty, *letter, *span, inner)?;
+                        }
                     }
                 }
                 Ok(Ty::Fmt)
@@ -4476,6 +4479,36 @@ impl<'a> Checker<'a> {
 
     /// What `print`, `$"..."` and `f.write` accept: numbers, `bool`, text, a struct or an enum
     /// that is `Formattable`, and a collection of such values; also behind a pointer.
+    /// The letter after `:` in `{x:X2}` fits the value: `x`, `X`, `b` and `D` are for an
+    /// integer, `F` for a fractional number (also behind a pointer, as `print` looks).
+    fn format_letter(&self, ty: &Ty, letter: Letter, span: Span, value: &Expr) -> Res<()> {
+        let mut inner = ty.strip_borrow();
+        while let Ty::Ptr(behind) = inner {
+            inner = behind.strip_borrow();
+        }
+        let text = &self.src[value.span.start..value.span.end];
+        let spec = &self.src[span.start..span.end];
+        let what = match letter {
+            Letter::Hex | Letter::HexUpper => "an integer in hex",
+            Letter::Binary => "an integer in binary",
+            Letter::Decimal => "an integer with at least so many digits",
+            Letter::Fixed => "a fractional number with so many digits after the point",
+        };
+        let name = letter.name();
+        let shown = ty.to_string();
+        let article = if shown.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+        let diag = || Diag::error(span, format!("`{name}` writes {what}, and `{text}` is {article} `{shown}`"));
+        match (letter, inner) {
+            (Letter::Fixed, Ty::Float(_)) => Ok(()),
+            (Letter::Fixed, Ty::Int(_)) => Err(diag().hint(format!("make it a `double` first: `{{(double){text}{spec}}}`"))),
+            (Letter::Fixed, _) => Err(diag()),
+            (_, Ty::Int(_)) => Ok(()),
+            (_, Ty::Char) => Err(diag().hint(format!("the code of the character: `{{(int){text}{spec}}}`"))),
+            (Letter::Decimal, Ty::Float(_)) => Err(diag().hint("`F0` writes it with no digits after the point")),
+            (_, _) => Err(diag()),
+        }
+    }
+
     fn printable(&self, ty: &Ty, span: Span) -> Res<()> {
         let mut inner = ty.strip_borrow();
         while let Ty::Ptr(behind) = inner {
@@ -4662,16 +4695,29 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Res<Ty> {
         // `int.parse(text)`: the number the text writes, or where it stops being one.
+        // `int.parseHex(text)`: the same in hex digits.
         if let Some(ty) = self.number_type_named(recv) {
-            if name != "parse" {
-                let diag = Diag::error(name_span, format!("`{ty}` has no function `{name}`"));
-                return Err(match constant(&ty, name, name_span) {
-                    Ok(()) => diag.hint(format!("`{name}` is a constant: `{ty}.{name}`, without parentheses")),
-                    Err(_) => diag.note("functions for now: parse"),
-                });
-            }
+            let radix = match (name, &ty) {
+                ("parse", _) => 10,
+                ("parseHex", Ty::Int(_)) => 16,
+                ("parseHex", _) => {
+                    return Err(Diag::error(name_span, format!("`parseHex` reads an integer, and `{ty}` is a fractional type"))
+                        .hint(format!("`{ty}.parse`")))
+                }
+                _ => {
+                    let diag = Diag::error(name_span, format!("`{ty}` has no function `{name}`"));
+                    let functions = if matches!(ty, Ty::Int(_)) { "parse, parseHex" } else { "parse" };
+                    return Err(match constant(&ty, name, name_span) {
+                        Ok(()) => diag.hint(format!("`{name}` is a constant: `{ty}.{name}`, without parentheses")),
+                        Err(_) => match nearest(name, functions.split(", ")) {
+                            Some(close) => diag.hint(format!("`{close}`")),
+                            None => diag.note(format!("functions for now: {functions}")),
+                        },
+                    });
+                }
+            };
             self.args(name, args, &[Ty::Read(Box::new(Ty::Str))], span)?;
-            *callee = Callee::Parse;
+            *callee = Callee::Parse(radix);
             return Ok(Ty::Result(Box::new(ty), Box::new(Ty::Enum(NUMBER_ERROR.to_string()))));
         }
         // A type name in front of the dot: `Stack.create()`.
@@ -5567,7 +5613,7 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
         ExprKind::StructLit { fields, .. } => fields.iter().for_each(|field| taken_in(&field.value, names)),
         ExprKind::Interp(parts) => {
             for part in parts {
-                if let InterpPart::Expr(inner) = part {
+                if let InterpPart::Expr(inner, _) = part {
                     taken_in(inner, names);
                 }
             }

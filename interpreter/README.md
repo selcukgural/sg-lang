@@ -47,6 +47,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Numbers | `42`, `0xde`, `0b1010`, and `_` between digits: `1_000_000`, `0xdead_beef` |
 | Text | `"..."` with `\n \t \r \0 \\ \" \'` and `\u{1F600}`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string`. `trim()`, `trimStart()`, `trimEnd()` give a `read string`; `indexOf(x)` and `lastIndexOf(x)` a `nint?` in bytes; `contains(x)`, `startsWith(x)`, `endsWith(x)`, where `x` is a `char` or a `read string` (or a `byte` for the two positions); `equalsIgnoreAsciiCase(other)` |
 | Building text | A `string` grows at its end: `line.write(x)` adds whatever `print` takes (`$"{name}: {count}\n"`, a number, a `char`, a text, a `Formattable` value), `line.clear()` empties it and keeps its memory, `string.withCapacity(n)` is an empty text with room for `n` bytes |
+| Writing a number | Inside `$"..."` a width and a letter may follow the value, as in C#: `{n,5}` takes at least five characters with spaces in front, `{name,-10}` with spaces after (counted in characters, for every value `print` takes); `{b:X2}` and `{crc:x8}` write hex with at least so many digits, `{mask:b8}` binary, `{n:D3}` decimal with at least three digits, `{price:F2}` a fractional number with two digits after the point; `{price,8:F2}` both |
 | Going over text | `for c in text.chars()` gives each `char`; `text.split(',')` (a `char` or a `read string`), `text.splitWhitespace()` and `text.lines()` give each part as a `read string`, nothing copied. Kept in a `var`, the iterator gives the next part with `parts.next()`, `null` at the end |
 | Characters | `char`: one Unicode character. `'+'`, `'é'`, `'\n'`, `'\u{e9}'` is a `char`, and a `byte` where an integer goes (`byte b = '+'`, `text[i] == ':'`). `(int)c` is its code, `(char)n` the character of a code, `n.tryToChar()` gives `null` where `(char)n` would panic. `==`, `<`, `match`, keys, `sort`, `print`. `isAsciiDigit()`, `isAsciiLetter()`, `isAsciiAlphanumeric()`, `isAsciiUpper()`, `isAsciiLower()`, `isAsciiWhitespace()`, `isAscii()`, `toAsciiUpper()`, `toAsciiLower()` on `char` and on `byte`; `isWhitespace()` and `utf8Length()` on `char` |
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
@@ -56,7 +57,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Comparing by name | `a.compare(b)` on numbers, `char` and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
 | Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic. `tryToInt()` and the others give `null` where a cast would panic, `wrappingToInt()` and the others keep the bits that fit; `min`, `max` |
 | Fractional methods | `abs`, `sqrt`, `floor`, `ceil`, `round`, `truncate`, `isNaN`, `isInfinite`; `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pow`, `fusedMultiplyAdd`, `min`, `max`; `tryToInt()` and the others |
-| Numbers from text | `int.parse(text)`, and the same on every number type, gives a `Result<int, NumberError>`; the built-in `enum NumberError { Invalid(nint position)` / `OutOfRange }` says where the text stops being a number, or that the type does not hold it |
+| Numbers from text | `int.parse(text)`, and the same on every number type, gives a `Result<int, NumberError>`; the built-in `enum NumberError { Invalid(nint position)` / `OutOfRange }` says where the text stops being a number, or that the type does not hold it. `int.parseHex(text)`, and the same on every integer type, reads hex digits (`ff`, `FF`, no `0x`) |
 | Constants | `int.MinValue`, `int.MaxValue` and the same on every integer type; `double.MinValue`, `double.MaxValue`, `double.NaN`, `double.Infinity`, `double.Pi`, `double.E` and the same on `float` |
 
 Design rules that are already enforced:
@@ -219,7 +220,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (167 of 582 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (168 of 597 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -273,7 +274,8 @@ searches in a text, the same way. Since the thirty-seventh slice building a text
 `string.withCapacity`, the same way. Since the thirty-eighth slice files read and written whole, the input
 read line by line, the command line, `printError` and `exit`, the same way. Since the thirty-ninth slice
 files read and written piece by piece (`StreamReader`, `StreamWriter`, `Stdin`, `Stdout`, `Stderr`), the
-same way.
+same way. Since the forty-first slice the width and the letter after a value in `$"..."` (`{n,5}`,
+`{b:X2}`, `{x:F2}`) and `parseHex`, the same way.
 What is still missing is an error that names it (not silence): the few positions listed with the choices
 below (81, 111).
 
@@ -313,6 +315,7 @@ hand with no checks):
 | `lines`: two million lines of a log (125 MB) read from the input with `Stdin.readLine`, each checked to be UTF-8, and counted | 0.096 s | 0.097 s | 0.089 s | 1.08 |
 | `copy`: the same log read from a file with `File.openText` and written to another, each line with its number in front, through `File.createText` | 0.252 s | 0.253 s | 0.270 s | 0.93 |
 | `bytes`: the same log read in pieces of 4 KB with `readBytes` and written with `writeBytes` through a writer from `File.openAppend` | 0.030 s | 0.030 s | 0.032 s | 0.94 |
+| `table`: two million lines printed with widths, hex, binary and two digits after the point (`{i:x8} {a,10}  {name,-8}\|{x,10:F3}  {mask:b16} {code:X6}`) | 0.471 s | 0.471 s | 0.533 s | 0.89 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -442,6 +445,14 @@ each piece into a writer from `File.openAppend`, after the file is emptied. The 
 with `fread` and `fwrite` on `FILE*`s with buffers of 64 KB. SG takes 0.94 times its time (0.030 s against
 0.032 s, the best of fifteen runs: the program is short, and one run of five gave a cold start of 0.09 s).
 Both are copies between blocks; neither looks at the bytes.
+`table` prints two million lines, each one `print` of a formatted text with a width on two numbers and on a
+name, hex with eight and with six digits, sixteen binary digits and a fractional number with three digits
+after the point. The C program is one `printf` a line (`%08llx %10lld  %-8s|%10.3f  %s %06X`), with the
+binary digits put together by a small function first, since `printf` has no conversion for them. SG takes
+0.89 times its time. Its first version took 1.30 times: the fractional number was written by `snprintf`
+and then copied by `printf` (the format read twice), and the spaces of a width were a conversion of their
+own beside the value. Now the digits after the point are worked out by a function of the program, exactly
+(choice 232), and a width is one conversion; `printf`'s own `%10.3f` is the slower part of the C program.
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
@@ -1936,6 +1947,70 @@ checker, interpreter and back end together), approved on 14 November 2026:
      70 000 bytes at once, and read and write the bytes of `Stdin`, `Stdout` and `Stderr`; five tests of
      errors.
 
+Choices made in the forty-first slice (writing a number: a width and a letter inside `$"..."`, `parseHex`;
+checker, interpreter and back end together), approved on 14 November 2026:
+
+223. **A width and a letter after the value, as in C#**: `{value,width:letter}`, `{n,5}`, `{b:X2}`,
+     `{price,8:F2}`. The design had left "a format specifier inside `$"..."` (`{x:N2}`)" for after the
+     first version (04, "Deliberately deferred"); it is taken up now, because a number could only be
+     written in decimal and the design's own `toHex` example (05) had to write hex by hand. The form is
+     C#'s since `$"..."` is C#'s; Rust writes `{:>8.2}`, C and Go `%8.2f`. It is checked at compile
+     time and costs nothing at run time: the width and the letter are part of the program, not text read
+     while it runs.
+224. **Five letters**: `x` and `X` hex with small or capital letters, `b` binary, `D` decimal, `F` digits
+     after the point. As in C#, only `x` and `X` differ by case (`d`, `f` and `B` are the same letters).
+     Left out: `N` (the separators between groups of digits change from one country to another; the error
+     says so and hints `F2`), `E`, `G`, `C`, `P` and C#'s formats made of characters (`{x:0.00}`); any
+     other letter is an error that lists the five.
+225. **The number after the letter** is the digits there are at least for `x`, `X`, `b` and `D`, filled
+     with zeros (`{7:D3}` is `007`, `{-7:D3}` is `-007`: the sign stands in front of the digits, as in C#),
+     and the digits after the point for `F`, which must have one: `F` alone is an error whose hint is `F2`
+     (C# takes its default from the country settings). `{0:x0}` and `{0:D}` write `0`. The number is at
+     most 999, and nothing may follow it.
+226. **A negative integer in hex and in binary is the bits of its type**: `{small:x}` with `sbyte small =
+     -1` is `ff`, with an `int` it is `ffffffff`; C# and Rust write the same. No `0x` is put in front; the
+     text has it where it is wanted (`0x{n:x}`).
+227. **A letter fits the value or the program does not compile**: `x`, `X`, `b` and `D` take an integer of
+     any type, through a `read` and behind a `T*` as `print` looks; `F` takes a `float` or a `double`. The
+     errors have hints: `{(double)n:F2}` for an integer, `{(int)c:X4}` for a character, `F0` for `D` on a
+     fractional number. A text, a `char`, a `bool`, a struct, an enum and a collection take a width only.
+228. **`F` rounds the exact value to the nearest, a tie to the even digit**: `{2.5:F0}` is `2`,
+     `{0.125:F2}` is `0.12`, `{1.005:F2}` is `1.00` (the `double` is a little below 1.005). Rust, C's
+     `printf` and .NET since 3.0 give the same digits. `NaN` and the infinities are written as `print`
+     writes them; `-0.0` and a small negative number keep their minus (`-0.00`), as in all three.
+229. **A width counts characters**, not bytes: `{"Zürich",8}` has two spaces in front. A positive width
+     puts the spaces in front (the value stands to the right), a negative one after it; a longer value is
+     not cut (C#). It works on every value `print` takes, a struct with its own `format` and a list
+     included. The fill is a space only (zeros come from the digits of `D`, `x` and `b`), there is no
+     centring, and the width is a number written in the text, at most 999: `{n,width}` is an error with a
+     note, as C# also asks for a constant. There is no `padLeft`: `$"{name,10}".toString()` is that text.
+230. **Where `,` and `:` belong**: inside `{ }`, a `:` outside the value's own brackets starts the letter,
+     and a `,` outside them starts the width when a number follows it. No expression has a `:`, and a `,`
+     outside brackets is otherwise part of a type (`HashMap<string, int>`), which stays as it was. A
+     character constant (`{c == ':'}`) and text inside the braces are skipped.
+231. **`T.parseHex(text)`** on every integer type gives a `Result<T, NumberError>`: small and capital
+     digits, no `0x` (`"0x10"` is `Invalid(1)`), the sign rule of `parse` (`"-1f"` is -31 on a signed type,
+     `"-1"` on an unsigned one is `Invalid(0)`), and the value must fit the type: `"80000000"` on an `int` is
+     `OutOfRange`, where C#'s `HexNumber` would give -2147483648 (Rust's `from_str_radix` agrees with SG).
+     Not `parse(text, 16)` (a parameter and a check more for a base that is almost always 16) and not `0x`
+     read by `parse` (it would change what `"0x10"` gives today). On a fractional type it is an error
+     whose hint is `parse`.
+232. **Compiled code**: hex and decimal digits are `printf`'s, with the digits there are at least as its
+     precision (`%.8llx`, `%.3lld`) and a width in the same conversion (`%8lld`). Binary digits are put
+     together by a small function. `F` has a function of its own: the `double` is `m` times a power of two
+     exactly, `m` times ten to the digits is held in 128 bits, and the rounding is exact; past 18 digits,
+     or for a number too large or too small for that, it calls `snprintf`. It was checked against
+     `snprintf` on twenty million random values, ties included, with no difference. A width on text, a
+     character or what a helper writes is one `%*.*s` whose width in bytes is worked out by counting the
+     characters; a struct written straight into a text (`f.write`) is padded where it lands.
+233. **The measurement and the tests**: `table` (above) takes 0.89 times the time of `printf` in C. The
+     tests write every letter on every integer type, negative numbers, zero, the largest and smallest
+     values, ties and `NaN`, widths on numbers, text with an `é` and a `ü`, characters, `bool`, structs
+     with and without their own `format`, enums and lists, in `print`, in `f.write`, in `text.write`, in
+     `Stdout.writeLine` and in `.toString()`, and `parseHex` on fourteen texts; fourteen tests
+     of errors. A program that writes 780 000 fractional numbers with eleven letters gives the same text
+     interpreted and compiled, with both C compilers.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -1994,12 +2069,15 @@ check off.
 - Lists of borrows (`List<read T>`); `reserve`, `clone`; a `Hashable`
   type with its own `equals` or `hash`.
 - What text needs Unicode tables for: changing the case of a text (`toUpper`), letters and digits beyond
-  ASCII (`isLetter`), comparing without case beyond ASCII. `replace`, `repeat`, `padLeft`; the positions
+  ASCII (`isLetter`), comparing without case beyond ASCII. `replace`, `repeat` (a `padLeft` is a width:
+  `$"{name,10}"`, 229); the positions
   of the characters (`charIndices`); splitting at most n times; `match` on text. Writing the type of an
   iterator, and a `for` over a type of your own that has `next` (with generics). `text.capacity()` and
   `text.reserve(n)`; a `ref string` given to a `format` method in place of its `Formatter`.
-- A number is written in decimal only (`print`, `$"..."`) and read in decimal only
-  (`parse`); there is no hex output or input. No way to read a number out of bytes in one step
+- A number is written in decimal, hex and binary (`{n:x}`, `{n:b}`) and read in decimal and hex
+  (`parse`, `parseHex`), not in binary. C#'s other letters (`E`, `G`, `N`, `C`, `P`) and formats made of
+  characters (`{x:0.00}`), a fill other than a space, centring, and a width that comes from a variable
+  (choices 224, 229). No way to read a number out of bytes in one step
   (`ulong.fromLittleEndian(bytes)`): it is put together from the bytes by hand (see 136). `abs` and
   `clamp` on integers, `sinh` and the other functions of `<math.h>` that are not listed in 162.
 - Arrays of arrays, `read T[]?`, an array as a key, `sort` and
@@ -2040,7 +2118,9 @@ that they are text. A file is read and written piece by piece through a `StreamR
 variable is a compile error; copying the log line by line into another file takes 0.93 times the time
 of `getline` and `fprintf` in C. A writer appends with `File.openAppend`, and bytes are read and
 written piece by piece (`readBytes`, `writeBytes`); copying the log as bytes takes 0.94 times the time of
-`fread` and `fwrite` in C.
+`fread` and `fwrite` in C. A value in `$"..."` takes a width and a letter, as in C# (`{n,5}`, `{b:X2}`,
+`{mask:b8}`, `{n:D3}`, `{x:F2}`), and `parseHex` reads hex; printing two million lines with them takes
+0.89 times the time of `printf` in C.
 
 Candidates for what comes next: `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases
 (`using`), threads, the places that are slower than C.

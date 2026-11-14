@@ -1,0 +1,5 @@
+error: `parseHex` reads an integer, and `double` is a fractional type
+  --> error_parse_hex_fraction.sg:3:18
+ 3 |     print(double.parseHex("ff") ?? 0.0)
+   |                  ^^^^^^^^
+  hint: `double.parse`

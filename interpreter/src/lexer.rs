@@ -4,6 +4,7 @@
 //! when the line ends with an operator, a comma, a dot or an opening bracket, and when the
 //! next line starts with a dot, the statement continues on the next line.
 
+use crate::ast::{Letter, Spec};
 use crate::diag::{Diag, Span};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -95,7 +96,8 @@ pub enum Tok {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Part {
     Text(String),
-    Code(Span),
+    /// The code of a value, and what is written after it (`,8`, `:X2`).
+    Code(Span, Option<Spec>),
 }
 
 #[derive(Clone, Debug)]
@@ -633,7 +635,8 @@ impl<'a> Lexer<'a> {
                         let done = std::mem::take(&mut text);
                         parts.push(Part::Text(String::from_utf8(done).expect("source is valid UTF-8")));
                     }
-                    parts.push(Part::Code(self.interpolation_code(start)?));
+                    let (code, spec) = self.interpolation_code(start)?;
+                    parts.push(Part::Code(code, spec));
                 }
                 Some(c) => {
                     text.push(c);
@@ -648,12 +651,16 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
-    /// Called on `{`; moves past the matching `}` and returns the range in between.
-    fn interpolation_code(&mut self, string_start: usize) -> Result<Span, Diag> {
+    /// Called on `{`; moves past the matching `}` and returns the range of the value in
+    /// between, with what is written after it. `:` and `,` belong to the value only inside a
+    /// bracket of its own: no expression has a `:`, and a `,` outside brackets is a width when
+    /// a number follows it (`{n,5}`) and part of a type otherwise (`{HashMap<string, int>()...}`).
+    fn interpolation_code(&mut self, string_start: usize) -> Result<(Span, Option<Spec>), Diag> {
         let open = self.pos;
         self.pos += 1;
         let code_start = self.pos;
-        let mut depth = 0;
+        let (mut depth, mut nest) = (0, 0);
+        let (mut comma, mut colon) = (None, None);
         loop {
             match self.at(0) {
                 None | Some(b'\n') => return Err(self.unterminated(string_start)),
@@ -661,6 +668,15 @@ impl<'a> Lexer<'a> {
                     let inner = self.pos;
                     self.pos += 1;
                     self.string_body(inner)?;
+                }
+                Some(b'\'') => {
+                    self.pos += 1;
+                    while !matches!(self.at(0), None | Some(b'\n' | b'\'')) {
+                        self.pos += if self.at(0) == Some(b'\\') { 2 } else { 1 };
+                    }
+                    if self.at(0) == Some(b'\'') {
+                        self.pos += 1;
+                    }
                 }
                 Some(b'{') => {
                     depth += 1;
@@ -671,16 +687,89 @@ impl<'a> Lexer<'a> {
                     depth -= 1;
                     self.pos += 1;
                 }
+                Some(b'(' | b'[') => {
+                    nest += 1;
+                    self.pos += 1;
+                }
+                Some(b')' | b']') => {
+                    nest -= 1;
+                    self.pos += 1;
+                }
+                Some(b':') if depth == 0 && nest <= 0 && colon.is_none() => {
+                    colon = Some(self.pos);
+                    self.pos += 1;
+                }
+                Some(b',') if depth == 0 && nest <= 0 && colon.is_none() => {
+                    comma = Some(self.pos);
+                    self.pos += 1;
+                }
                 Some(_) => self.pos += 1,
             }
         }
-        let code = Span::new(code_start, self.pos);
+        let close = self.pos;
         self.pos += 1;
+        let mut code_end = colon.unwrap_or(close);
+        let mut width = 0;
+        let mut spec_start = colon;
+        if let Some(at) = comma {
+            let written = self.src[at + 1..code_end].trim();
+            let digits = written.strip_prefix('-').unwrap_or(written);
+            if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                let span = Span::new(at, code_end);
+                if digits.len() > 3 {
+                    return Err(Diag::error(span, "a width is at most 999 characters"));
+                }
+                width = written.parse::<i32>().expect("checked to be a number");
+                (code_end, spec_start) = (at, Some(at));
+            }
+        }
+        let code = Span::new(code_start, code_end);
         if self.src[code.start..code.end].trim().is_empty() {
             return Err(Diag::error(Span::new(open, self.pos), "no expression inside `{ }`")
                 .hint("write `{{` for a literal brace"));
         }
-        Ok(code)
+        let letter = match colon {
+            Some(at) => Some(self.format_letter(Span::new(at + 1, close))?),
+            None => None,
+        };
+        let spec = spec_start.map(|start| Spec { width, letter, span: Span::new(start, close) });
+        Ok((code, spec))
+    }
+
+    /// What follows `:` inside `{ }`: one letter and the number of digits, as in C#.
+    fn format_letter(&self, span: Span) -> Result<(Letter, Option<u32>), Diag> {
+        const KNOWN: &str = "formats: `x` and `X` (hex), `b` (binary), `D` (at least so many digits), `F` (so many digits after the point)";
+        let written = &self.src[span.start..span.end];
+        let Some(first) = written.chars().next() else {
+            return Err(Diag::error(Span::new(span.start - 1, span.end), "nothing after `:`").note(KNOWN));
+        };
+        let digits = &written[first.len_utf8()..];
+        let letter = match first {
+            'x' => Letter::Hex,
+            'X' => Letter::HexUpper,
+            'b' | 'B' => Letter::Binary,
+            'd' | 'D' => Letter::Decimal,
+            'f' | 'F' => Letter::Fixed,
+            'n' | 'N' => {
+                return Err(Diag::error(span, format!("`{first}` is not a format here"))
+                    .note("`N` would put separators between groups of digits, which change from one country to another")
+                    .hint(format!("`F{digits}` writes the digits after the point")))
+            }
+            _ => return Err(Diag::error(span, format!("`{written}` is not a format")).note(KNOWN)),
+        };
+        if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(Diag::error(span, format!("`{written}` is not a format"))
+                .note(format!("after `{first}` comes a number of digits, and nothing else: `{first}2`")));
+        }
+        if digits.len() > 3 {
+            return Err(Diag::error(span, "the number after the letter is at most 999"));
+        }
+        let count = (!digits.is_empty()).then(|| digits.parse::<u32>().expect("checked to be a number"));
+        if letter == Letter::Fixed && count.is_none() {
+            return Err(Diag::error(span, "`F` needs the number of digits after the point")
+                .hint(format!("`{first}2`")));
+        }
+        Ok((letter, count))
     }
 
     fn punct(&mut self) -> Result<(), Diag> {

@@ -1,0 +1,6 @@
+// A width is a number written in the text, as in C#.
+void main() {
+    int n = 3
+    int width = 8
+    print($"{n,width}")
+}

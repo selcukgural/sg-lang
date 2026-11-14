@@ -1,0 +1,4 @@
+error: `x` writes an integer in hex, and `name` is a `string`
+  --> error_format_letter_text.sg:4:18
+ 4 |     print($"{name:x}")
+   |                  ^^
