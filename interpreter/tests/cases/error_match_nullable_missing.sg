@@ -1,0 +1,13 @@
+enum Shape {
+    Circle(double r)
+    Square(double side)
+    Empty
+}
+
+int f(Shape? s) {
+    return match s {
+        null => -1
+        Circle(_) or Empty => 1
+    }
+}
+void main() {}

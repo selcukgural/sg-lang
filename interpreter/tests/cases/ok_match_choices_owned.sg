@@ -1,0 +1,95 @@
+enum Expr : Formattable {
+    Number(int value)
+    Name(string text)
+    Add(Expr* left, Expr* right)
+    Negate(Expr* inner)
+}
+
+enum Tree : Formattable {
+    Leaf(string label)
+    Node(Tree*? left, Tree*? right)
+}
+
+// An owned `T*?`: the box is given back after what it held.
+string first(Tree*? t) {
+    return match t {
+        null => "none"
+        Leaf(label) => label
+        Node(null, null) => "empty node"
+        Node(Leaf(label), _) or Node(null, Leaf(label)) => label
+        Node(left, _) => first(left)
+    }
+}
+
+// A borrowed `T?`: the names borrow.
+nint labelLength(read Tree? t) {
+    return match t {
+        null => 0
+        Leaf(label) => label.length()
+        Node(_, _) => -1
+    }
+}
+
+// A `|` with names inside a variant, and a `when` on it.
+int value(Expr* e) {
+    return match e {
+        Add(Number(a) or Negate(Number(a)), Number(b)) when a > 0 => a + b
+        Add(left, right) => value(left) + value(right)
+        Negate(Number(v)) or Number(v) => v
+        Negate(inner) => -value(inner)
+        Name(_) => 0
+    }
+}
+
+string digits(ulong n) {
+    return match n {
+        0..=9 => "one digit"
+        10..=99 => "two digits"
+        18446744073709551615 => "the largest"
+        _ => "more"
+    }
+}
+
+string word(string? w) {
+    return match w {
+        null => "nothing"
+        "a" or "an" or "the" => "article"
+        var text => text
+    }
+}
+
+string? keep(string? w) {
+    return match w {
+        null => null
+        var text => text
+    }
+}
+
+void main() {
+    print(first(null))
+    print(first(new Tree.Leaf("x")))
+    print(first(new Tree.Node(null, null)))
+    print(first(new Tree.Node(new Tree.Leaf("l"), new Tree.Leaf("r"))))
+    print(first(new Tree.Node(null, new Tree.Leaf("r"))))
+    print(first(new Tree.Node(new Tree.Node(null, new Tree.Leaf("deep")), null)))
+    Tree? none = null
+    Tree? leaf = Tree.Leaf("four")
+    Tree? node = Tree.Node(null, null)
+    print(labelLength(read none))
+    print(labelLength(read leaf))
+    print(labelLength(read node))
+    print(value(new Expr.Add(new Expr.Number(2), new Expr.Number(3))))
+    print(value(new Expr.Add(new Expr.Negate(new Expr.Number(4)), new Expr.Number(3))))
+    print(value(new Expr.Add(new Expr.Number(-2), new Expr.Number(3))))
+    print(value(new Expr.Add(new Expr.Name("x"), new Expr.Negate(new Expr.Number(6)))))
+    print(value(new Expr.Negate(new Expr.Add(new Expr.Number(1), new Expr.Number(1)))))
+    print(digits(7))
+    print(digits(42))
+    print(digits(18446744073709551615))
+    print(digits(1000))
+    print(word(null))
+    print(word("the"))
+    print(word("tree"))
+    print(keep("kept") ?? "lost")
+    print(keep(null) ?? "lost")
+}

@@ -1,0 +1,5 @@
+error: `..=` is written only in a pattern; a range of a text or a slice stops before its end
+  --> error_range_inclusive_slice.sg:3:17
+ 3 |     print(text[0..=2])
+   |                 ^^^
+  hint: `[a..b + 1]`

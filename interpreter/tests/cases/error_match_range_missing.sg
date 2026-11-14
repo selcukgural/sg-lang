@@ -1,0 +1,7 @@
+string f(byte b) {
+    return match b {
+        0..=9 => "digit"
+        10..=127 => "ascii"
+    }
+}
+void main() {}

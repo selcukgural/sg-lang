@@ -1,0 +1,4 @@
+error: this pattern can never match: the arms above and the patterns before it in the `or` take every value it matches
+  --> error_pattern_choice_never.sg:10:35
+ 10 |         Add(_, _) or Mul(_, _) or Number(1) => 1
+    |                                   ^^^^^^^^^

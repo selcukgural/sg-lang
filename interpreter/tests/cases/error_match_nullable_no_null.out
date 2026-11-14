@@ -1,0 +1,5 @@
+error: this `match` does not handle `null`
+  --> error_match_nullable_no_null.sg:7:18
+ 7 |     return match s {
+   |                  ^
+  hint: add an arm for it, or `_ => ...` for everything else

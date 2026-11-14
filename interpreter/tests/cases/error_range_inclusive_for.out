@@ -1,0 +1,5 @@
+error: `..=` is written only in a pattern; a `for` goes up to its end, without it
+  --> error_range_inclusive_for.sg:2:15
+ 2 |     for i in 0..=9 {
+   |               ^^^
+  hint: `for i in a..b + 1`

@@ -1,0 +1,167 @@
+enum Expr : Formattable {
+    Number(int value)
+    Name(string text)
+    Add(Expr* left, Expr* right)
+    Mul(Expr* left, Expr* right)
+    Negate(Expr* inner)
+}
+
+enum Token {
+    Word(string text)
+    Digit(byte value)
+    Flag(bool on)
+    Maybe(Expr? item)
+}
+
+string kind(char c) {
+    return match c {
+        'a'..='z' or 'A'..='Z' or '_' => "letter"
+        '0'..='9' => "digit"
+        ' ' or '\t' or
+            '\n' => "space"
+        _ => "other"
+    }
+}
+
+string size(byte b) {
+    return match b {
+        0 => "zero"
+        1..=9 => "small"
+        10..=127 => "middle"
+        128..=255 => "large"
+    }
+}
+
+string sign(int n) {
+    return match n {
+        -2147483648..=-1 => "negative"
+        0 => "zero"
+        _ => "positive"
+    }
+}
+
+// Borrowed: `|` with names, the names borrow.
+int eval(read Expr e) {
+    return match e {
+        Number(v) => v
+        Name(_) => 0
+        Mul(_, Number(0) or Negate(Number(0))) or Mul(Number(0), _) => 0
+        Add(left, right) => eval(left) + eval(right)
+        Mul(Number(1), other) or Mul(other, Number(1)) => eval(other)
+        Mul(left, right) => eval(left) * eval(right)
+        Negate(inner) => -eval(inner)
+    }
+}
+
+// Owned: each way takes the names from its own place, and drops the rest.
+Expr* left(Expr* e) {
+    return match e {
+        Add(l, _) or Mul(l, _) => l
+        Negate(inner) or var inner => inner
+    }
+}
+
+string flags(bool a, bool b) {
+    var x = match a {
+        true => "on"
+        false => "off"
+    }
+    return match b {
+        false => x
+        true => $"{x}!".toString()
+    }
+}
+
+string describe(Token t) {
+    return match t {
+        Word("if" or "else" or "while") => "keyword"
+        Word(_) => "word"
+        Digit(0..=4) => "low digit"
+        Digit(_) => "high digit"
+        Flag(true) => "flag on"
+        Flag(false) => "flag off"
+        Maybe(null) => "nothing"
+        Maybe(Number(n)) => $"number {n}".toString()
+        Maybe(Name(text)) => $"name {text}".toString()
+        Maybe(_) => "something"
+    }
+}
+
+string maybe(Expr? e) {
+    return match e {
+        null => "none"
+        Number(0) => "zero"
+        var other => $"some {other}".toString()
+    }
+}
+
+nint length(read string? s) {
+    return match s {
+        null => -1
+        "" => 0
+        var text => text.length()
+    }
+}
+
+int count(int? n) {
+    return match n {
+        null => 0
+        1 or 2 or 3 => 1
+        var v => v
+    }
+}
+
+void main() {
+    for c in "aZ_9 \t%".chars() {
+        print(kind(c))
+    }
+    print(size(0))
+    print(size(5))
+    print(size(100))
+    print(size(200))
+    print(sign(-5))
+    print(sign(0))
+    print(sign(7))
+    var e = Expr.Add(new Expr.Number(2), new Expr.Mul(new Expr.Number(3), new Expr.Number(0)))
+    print(eval(read e))
+    var m = Expr.Mul(new Expr.Number(3), new Expr.Negate(new Expr.Number(0)))
+    print(eval(read m))
+    var one = Expr.Mul(new Expr.Number(5), new Expr.Number(1))
+    print(eval(read one))
+    print(left(new Expr.Mul(new Expr.Name("a"), new Expr.Name("b"))))
+    print(left(new Expr.Negate(new Expr.Name("c"))))
+    print(left(new Expr.Name("d")))
+    print(flags(true, false))
+    print(flags(false, true))
+    print(describe(Token.Word("while")))
+    print(describe(Token.Word("x")))
+    print(describe(Token.Digit(3)))
+    print(describe(Token.Digit(7)))
+    print(describe(Token.Flag(true)))
+    print(describe(Token.Flag(false)))
+    print(describe(Token.Maybe(null)))
+    print(describe(Token.Maybe(Expr.Number(4))))
+    print(describe(Token.Maybe(Expr.Name("n"))))
+    print(describe(Token.Maybe(Expr.Negate(new Expr.Number(1)))))
+    print(maybe(null))
+    print(maybe(Expr.Number(0)))
+    print(maybe(Expr.Name("z")))
+    string? nothing = null
+    string? word = "four"
+    string? empty = ""
+    print(length(read nothing))
+    print(length(read word))
+    print(length(read empty))
+    print(count(null))
+    print(count(2))
+    print(count(9))
+    if e is Add(Number(_) or Name(_), _) {
+        print("simple left")
+    }
+    if m is Add(l, _) or Mul(l, _) {
+        print(l)
+    }
+    if e is Number(_) || m is Mul(_, _) {
+        print("a number or a product")
+    }
+}

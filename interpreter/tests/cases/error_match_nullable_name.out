@@ -1,0 +1,5 @@
+error: this is `string?` and may be `null`; `.length()` needs a value
+  --> error_match_nullable_name.sg:4:21
+ 4 |         var text => text.length()
+   |                     ^^^^
+  hint: test it first: `if text is not null { ... }`

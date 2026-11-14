@@ -1,0 +1,13 @@
+enum Expr {
+    Number(int value)
+    Add(Expr* left, Expr* right)
+    Mul(Expr* left, Expr* right)
+}
+
+int f(read Expr e) {
+    return match e {
+        Number(_) => 0
+        Add(_, _) or Mul(_, _) or Number(1) => 1
+    }
+}
+void main() {}

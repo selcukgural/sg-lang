@@ -579,6 +579,10 @@ impl<'a> Parser<'a> {
                 let (var, var_span) = self.ident("a loop variable")?;
                 self.expect(Tok::In, "`in`")?;
                 let from = self.head_expr(true)?;
+                if *self.peek() == Tok::DotDotEq {
+                    return Err(Diag::error(self.span(), "`..=` is written only in a pattern; a `for` goes up to its end, without it")
+                        .hint("`for i in a..b + 1`"));
+                }
                 if self.eat(&Tok::DotDot) {
                     let to = self.head_expr(true)?;
                     let body = self.block()?;
@@ -678,7 +682,7 @@ impl<'a> Parser<'a> {
                 return Err(self.unexpected("`}`"));
             }
             let arm_start = self.span();
-            let pattern = self.pattern()?;
+            let pattern = self.pattern(false)?;
             let guard = if matches!(self.peek(), Tok::Ident(word) if word == "when") {
                 self.bump();
                 Some(self.expr()?)
@@ -734,9 +738,73 @@ impl<'a> Parser<'a> {
         Ok((stmts, value))
     }
 
-    /// `Circle(r)`, `Rect(w, _)`, `Add(Number(a), _)`, `Empty`, `"if"`, `42`, `_`, `var other`
-    fn pattern(&mut self) -> Res<Pattern> {
-        self.pattern_at(false)
+    /// `Circle(r)`, `Rect(w, _)`, `Add(Number(a), _)`, `Empty`, `"if"`, `42`, `_`, `var other`.
+    /// `is_test`: after `is`, where `||` may follow the pattern as the operator.
+    fn pattern(&mut self, is_test: bool) -> Res<Pattern> {
+        self.alternatives(false, is_test)
+    }
+
+    /// `Add(_, _) or Multiply(_, _)`: one pattern, or several joined by `or`.
+    fn alternatives(&mut self, inside: bool, is_test: bool) -> Res<Pattern> {
+        let first = self.ranged(inside)?;
+        let start = first.span.start;
+        let mut list = vec![first];
+        loop {
+            match self.peek() {
+                Tok::Or => {
+                    self.bump();
+                    self.skip_newlines();
+                    list.push(self.ranged(inside)?);
+                }
+                Tok::Pipe => return Err(self.joined_wrong("|")),
+                Tok::OrOr if !is_test => return Err(self.joined_wrong("||")),
+                _ => break,
+            }
+        }
+        if list.len() == 1 {
+            return Ok(list.pop().expect("one pattern"));
+        }
+        Ok(Pattern { kind: PatternKind::Or(list), span: Span::new(start, self.prev_end()) })
+    }
+
+    /// `'+' | '-'` or `'+' || '-'` in a pattern.
+    fn joined_wrong(&self, written: &str) -> Diag {
+        Diag::error(self.span(), format!("patterns are joined with `or`, not `{written}`"))
+            .note("`|` and `||` are operators on values; a pattern is not a value: `'+' or '-'`")
+            .hint("`or`")
+    }
+
+    /// A pattern, or a range of numbers or characters: `'a'..='z'`, `0..=9`.
+    fn ranged(&mut self, inside: bool) -> Res<Pattern> {
+        let low = self.pattern_at(inside)?;
+        let end = |pattern: &Pattern| match pattern.kind {
+            PatternKind::Int(value) => Some(value.to_string()),
+            PatternKind::Char(value) => Some(format!("'{}'", value.escape_default())),
+            _ => None,
+        };
+        match self.peek() {
+            Tok::DotDotEq => {}
+            Tok::DotDot => {
+                let diag = Diag::error(self.span(), "a range in a pattern takes its last value too, and is written with `..=`");
+                let Some(first) = end(&low) else { return Err(diag) };
+                return Err(match self.peek_at(1) {
+                    Tok::Int(last) => diag.hint(format!("`{first}..={last}`")),
+                    Tok::Char(last) => diag.hint(format!("`{first}..='{}'`", last.escape_default())),
+                    _ => diag,
+                });
+            }
+            _ => return Ok(low),
+        }
+        let dots = self.bump().span;
+        if end(&low).is_none() {
+            return Err(Diag::error(low.span.to(dots), "a range in a pattern goes from a number or a character to another"));
+        }
+        let high = self.pattern_at(inside)?;
+        if end(&high).is_none() {
+            return Err(Diag::error(high.span, "a range in a pattern ends with a number or a character"));
+        }
+        let span = low.span.to(high.span);
+        Ok(Pattern { kind: PatternKind::Range(Box::new(low), Box::new(high)), span })
     }
 
     /// A pattern; `inside` is true within the parentheses of a variant, where a name alone
@@ -758,6 +826,11 @@ impl<'a> Parser<'a> {
                 self.bump();
                 PatternKind::Wildcard
             }
+            Tok::Null => {
+                self.bump();
+                PatternKind::Null
+            }
+            Tok::True | Tok::False => PatternKind::Bool(self.bump().tok == Tok::True),
             Tok::Char(value) => {
                 self.bump();
                 PatternKind::Char(value)
@@ -801,7 +874,7 @@ impl<'a> Parser<'a> {
                     if self.eat(&Tok::LParen) {
                         let mut list = Vec::new();
                         while *self.peek() != Tok::RParen {
-                            list.push(self.pattern_at(true)?);
+                            list.push(self.alternatives(true, false)?);
                             if !self.eat(&Tok::Comma) {
                                 break;
                             }
@@ -815,7 +888,7 @@ impl<'a> Parser<'a> {
             _ => {
                 return Err(self
                     .unexpected("a pattern")
-                    .note("a pattern is a variant such as `Circle(r)`, a number, a character, a text, `_`, or `var name`"))
+                    .note("a pattern is a variant such as `Circle(r)`, a number, a character, a text, a range such as `'a'..='z'`, `null`, `true`, `false`, `_`, or `var name`; patterns are joined with `or`"))
             }
         };
         Ok(Pattern { kind, span: Span::new(start.start, self.prev_end()) })
@@ -923,7 +996,7 @@ impl<'a> Parser<'a> {
                 ExprKind::IsNull { expr, negated }
             }
             Tok::Ident(word) if word != "_" => {
-                let pattern = self.pattern()?;
+                let pattern = self.pattern(true)?;
                 ExprKind::IsVariant { expr, negated, pattern, by_ref: false }
             }
             _ => return Err(self.unexpected("`null` or a variant name").note("`is` tests for `null` or for one variant of an enum")),
@@ -1049,9 +1122,13 @@ impl<'a> Parser<'a> {
         let recv = Box::new(recv);
         let kind = self.bracketed(|p| {
             let from = match p.peek() {
-                Tok::DotDot => None,
+                Tok::DotDot | Tok::DotDotEq => None,
                 _ => Some(Box::new(p.expr()?)),
             };
+            if *p.peek() == Tok::DotDotEq {
+                return Err(Diag::error(p.span(), "`..=` is written only in a pattern; a range of a text or a slice stops before its end")
+                    .hint("`[a..b + 1]`"));
+            }
             if !p.eat(&Tok::DotDot) {
                 let index = from.expect("read above when there is no `..`");
                 return Ok(ExprKind::Index { recv, index, kind: IndexKind::Text });

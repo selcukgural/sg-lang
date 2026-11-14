@@ -1,0 +1,5 @@
+error: this `match` does not handle `false`
+  --> error_match_bool_missing.sg:2:18
+ 2 |     return match b {
+   |                  ^
+  hint: add an arm for it, or `_ => ...` for everything else

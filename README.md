@@ -150,7 +150,8 @@ Working today, in the interpreter and in compiled code: integers, `float` and `d
 constants, math and reading out of text, `bool`, `char` and text (split, trimmed and searched without
 copying, built piece by piece in place, numbers written with a width, in hex or binary, or with so many
 digits after the point: `$"{crc:x8} {price,8:F2}"`); structs, enums with methods, and `match` with patterns inside
-patterns and on text (`Add(Number(0), right)`, `"if" => ...`); `T*`, `T?` and `Result` with `try`
+patterns, on text, joined with `or` and in ranges (`Add(Number(0), right)`, `"if" => ...`, `'a'..='z' or '_'`,
+`null`); `T*`, `T?` and `Result` with `try`
 and `??`; `List`, `HashMap` and `HashSet`; fixed-size arrays (`int[8]`) and slices (`read byte[]`), with bytes
 gathered into a list in one copy (`buffer.addAll(piece)`) and ranges sorted where they are (`xs[2..5].sort()`);
 function values; ownership, moves and the borrow check; modules (`use`, `public`, `readonly`); `test`

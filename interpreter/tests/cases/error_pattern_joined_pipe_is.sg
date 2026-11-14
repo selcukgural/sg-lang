@@ -1,0 +1,12 @@
+enum Shape {
+    Circle(double r)
+    Square(double side)
+    Empty
+}
+
+void main() {
+    var s = Shape.Empty
+    if s is Circle(_) | Square(_) {
+        print("round or square")
+    }
+}

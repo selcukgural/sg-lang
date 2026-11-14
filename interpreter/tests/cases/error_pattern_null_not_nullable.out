@@ -1,0 +1,5 @@
+error: a `Shape` is never `null`
+  only a value of a type written with `?` can be `null`
+  --> error_pattern_null_not_nullable.sg:8:9
+ 8 |         null => 0
+   |         ^^^^

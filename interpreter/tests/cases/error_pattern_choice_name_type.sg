@@ -1,0 +1,11 @@
+enum Token {
+    Number(int value)
+    Name(string text)
+}
+
+int f(Token t) {
+    return match t {
+        Number(v) or Name(v) => 1
+    }
+}
+void main() {}

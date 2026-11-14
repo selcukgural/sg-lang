@@ -1,0 +1,7 @@
+string f(char c) {
+    return match c {
+        '0'..='9' => "digit"
+        'a'..='z' => "letter"
+    }
+}
+void main() {}

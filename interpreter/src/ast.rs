@@ -402,11 +402,13 @@ pub struct Arm {
     pub span: Span,
 }
 
+#[derive(Clone)]
 pub struct Pattern {
     pub kind: PatternKind,
     pub span: Span,
 }
 
+#[derive(Clone)]
 pub enum PatternKind {
     /// `_`
     Wildcard,
@@ -424,6 +426,16 @@ pub enum PatternKind {
     /// that it names a variant that carries nothing. `index` is the variant's position, set
     /// by the checker.
     Variant { name: String, args: Option<Vec<Pattern>>, index: usize },
+    /// `Add(_, _) or Multiply(_, _)`: a value that matches one of the patterns. Each one names
+    /// the same values, with the same types.
+    Or(Vec<Pattern>),
+    /// `'a'..='z'`, `0..=9`: a number or a character from the first to the last, both taken.
+    /// Each end is an `Int` or a `Char`; the checker turns both into `Int`.
+    Range(Box<Pattern>, Box<Pattern>),
+    /// `null`, for a value that may be `null`.
+    Null,
+    /// `true`, `false`.
+    Bool(bool),
 }
 
 impl Pattern {
@@ -437,6 +449,33 @@ impl Pattern {
         match &self.kind {
             PatternKind::Variant { args: Some(args), .. } => args.iter().any(|arg| !arg.takes_all()),
             _ => false,
+        }
+    }
+
+    /// Whether the pattern needs the search of `exhaust` to tell what it takes: a pattern
+    /// inside a pattern, an `or`, a range, `null`, `true` or `false`.
+    pub fn needs_search(&self) -> bool {
+        match &self.kind {
+            PatternKind::Variant { args: Some(args), .. } => args.iter().any(|arg| !arg.takes_all()),
+            PatternKind::Or(_) | PatternKind::Range(..) | PatternKind::Null | PatternKind::Bool(_) => true,
+            _ => false,
+        }
+    }
+
+    /// The names the pattern declares, in the order they are written; of an `or`, those of its
+    /// first pattern.
+    pub fn names(&self) -> Vec<&str> {
+        let mut found = Vec::new();
+        self.collect_names(&mut found);
+        found
+    }
+
+    fn collect_names<'p>(&'p self, found: &mut Vec<&'p str>) {
+        match &self.kind {
+            PatternKind::Bind(name) => found.push(name),
+            PatternKind::Variant { args: Some(args), .. } => args.iter().for_each(|arg| arg.collect_names(found)),
+            PatternKind::Or(alternatives) => alternatives[0].collect_names(found),
+            _ => {}
         }
     }
 }

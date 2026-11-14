@@ -1,0 +1,6 @@
+string f(bool b) {
+    return match b {
+        true => "yes"
+    }
+}
+void main() {}

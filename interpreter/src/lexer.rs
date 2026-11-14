@@ -30,6 +30,8 @@ pub enum Tok {
     False,
     Null,
     Is,
+    /// `or`: joins the patterns of an arm.
+    Or,
     New,
     Read,
     Ref,
@@ -51,6 +53,8 @@ pub enum Tok {
     Colon,
     Dot,
     DotDot,
+    /// `..=`: a range that takes its end too, in a pattern.
+    DotDotEq,
 
     Plus,
     Minus,
@@ -114,6 +118,8 @@ impl Tok {
             Tok::Comma
                 | Tok::Dot
                 | Tok::DotDot
+                | Tok::DotDotEq
+                | Tok::Or
                 | Tok::Plus
                 | Tok::Minus
                 | Tok::Star
@@ -180,6 +186,7 @@ impl Tok {
             Tok::False => "false",
             Tok::Null => "null",
             Tok::Is => "is",
+            Tok::Or => "or",
             Tok::New => "new",
             Tok::Read => "read",
             Tok::Ref => "ref",
@@ -201,6 +208,7 @@ impl Tok {
             Tok::Colon => ":",
             Tok::Dot => ".",
             Tok::DotDot => "..",
+            Tok::DotDotEq => "..=",
             Tok::Plus => "+",
             Tok::Minus => "-",
             Tok::Star => "*",
@@ -479,6 +487,7 @@ impl<'a> Lexer<'a> {
             "false" => Tok::False,
             "null" => Tok::Null,
             "is" => Tok::Is,
+            "or" => Tok::Or,
             "new" => Tok::New,
             "read" => Tok::Read,
             "ref" => Tok::Ref,
@@ -794,6 +803,7 @@ impl<'a> Lexer<'a> {
             (b'*', Some(b'=')) => (Tok::StarEq, 2),
             (b'/', Some(b'=')) => (Tok::SlashEq, 2),
             (b'%', Some(b'=')) => (Tok::PercentEq, 2),
+            (b'.', Some(b'.')) if self.at(2) == Some(b'=') => (Tok::DotDotEq, 3),
             (b'.', Some(b'.')) => (Tok::DotDot, 2),
             (b'?', Some(b'?')) => (Tok::QuestionQuestion, 2),
             (b'?', _) => (Tok::Question, 1),

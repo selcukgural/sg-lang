@@ -1,0 +1,5 @@
+error: `x` is named in the first pattern of this `or` and not in this one
+  every pattern of an `or` names the same values; write `_` in each for a value that is not needed
+  --> error_pattern_choice_after_all.sg:3:18
+ 3 |         var x or 0 => 1
+   |                  ^

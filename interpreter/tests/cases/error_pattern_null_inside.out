@@ -1,0 +1,5 @@
+error: this value is a `int`, and a `int` is never `null`
+  only a value of a type written with `?` can be `null`
+  --> error_pattern_null_inside.sg:8:16
+ 8 |         Number(null) => 0
+   |                ^^^^

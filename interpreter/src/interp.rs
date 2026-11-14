@@ -676,8 +676,31 @@ fn enum_parts(mut value: Value) -> (usize, Rc<Vec<Cell>>) {
 /// Whether the value in `held` matches the pattern, and what the names in it take: what the
 /// value holds there, or with `borrowed` a borrow of it. Through a borrow the names borrow.
 fn fits(pattern: &Pattern, held: &Cell, borrowed: bool, binds: &mut Vec<(String, Value)>) -> bool {
+    // A pattern other than a name, `_` or `null` takes only a value that is not `null`.
+    let null = matches!(owned(held.borrow().clone()), Value::Null);
     match &pattern.kind {
         PatternKind::Wildcard => true,
+        PatternKind::Null => null,
+        PatternKind::Or(alternatives) => {
+            let before = binds.len();
+            alternatives.iter().any(|alternative| {
+                binds.truncate(before);
+                fits(alternative, held, borrowed, binds)
+            })
+        }
+        _ if null && !matches!(pattern.kind, PatternKind::Bind(_)) => false,
+        PatternKind::Bool(wanted) => matches!(strip(held.borrow().clone()), Value::Bool(found) if found == *wanted),
+        PatternKind::Range(low, high) => {
+            let (PatternKind::Int(low), PatternKind::Int(high)) = (&low.kind, &high.kind) else {
+                unreachable!("the checker turns the ends of a range into numbers")
+            };
+            let found = match strip(held.borrow().clone()) {
+                Value::Int(_, number) => number,
+                Value::Char(value) => value as i128,
+                _ => unreachable!("the checker lets a range match only a number or a character"),
+            };
+            (*low..=*high).contains(&found)
+        }
         PatternKind::Bind(name) => {
             let bound = if borrowed { Value::Borrow(held.clone()) } else { held.borrow().clone() };
             binds.push((name.clone(), bound));

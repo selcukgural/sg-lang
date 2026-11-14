@@ -1,0 +1,12 @@
+enum Token {
+    Word(string text)
+    Digit(byte value)
+}
+
+int f(Token t) {
+    return match t {
+        Word('a'..='z') => 1
+        _ => 0
+    }
+}
+void main() {}

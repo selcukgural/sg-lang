@@ -1,0 +1,4 @@
+error: this `match` looks at a text, and a range is of numbers or characters
+  --> error_pattern_range_text.sg:3:9
+ 3 |         1..=3 => 1
+   |         ^^^^^

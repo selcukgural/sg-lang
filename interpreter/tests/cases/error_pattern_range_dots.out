@@ -1,0 +1,5 @@
+error: a range in a pattern takes its last value too, and is written with `..=`
+  --> error_pattern_range_dots.sg:3:12
+ 3 |         'a'..'z' => true
+   |            ^^
+  hint: `'a'..='z'`

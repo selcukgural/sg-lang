@@ -429,8 +429,45 @@ A pattern can stand where a name stands: inside the parentheses go a variant wit
 carries nothing, a number, a character, a text, `_` or a name. Inside the parentheses a name alone is the variant when the
 enum there has a variant of that name, otherwise it takes the value; a capitalised name that is not a variant is an error,
 so a mistyped variant never takes everything. A `match` that misses a value is a compile error that names one, and so is
-an arm the arms above already cover. A `match` on text has texts as its patterns and needs `_` or `var name`, as a `match`
-on a number does.
+an arm the arms above already cover. A `match` on text has texts as its patterns and needs `_` or `var name`. A `match`
+on a number or a character needs no `_` when its arms take every value.
+
+Patterns are joined with `or`, as in C#, and each pattern of an `or` names the same values with the same types. Numbers and characters
+come in ranges that take both ends, written `..=` (`'a'..='z'`); `..` stops before its end everywhere else, so it is not
+a pattern. `true` and `false` are patterns, and so is `null` on a value that may be `null`; any other pattern there takes a
+value that is present. Below an arm `null`, a name takes the value without `?`.
+
+```
+int kind(char c) {
+    return match c {
+        'a'..='z' or 'A'..='Z' or '_' => 1
+        '0'..='9' => 2
+        ' ' or '\t' or '\n' => 3
+        _ => 0
+    }
+}
+
+public enum Tree {
+    Leaf(string label)
+    Node(Tree*? left, Tree*? right)
+}
+
+string first(read Tree? t) {
+    return match t {
+        null => "none"
+        Leaf(label) or Node(Leaf(label), _) or Node(null, Leaf(label)) => label.clone()
+        Node(null, null) => "empty"
+        Node(_, _) => "deeper"
+    }
+}
+
+nint size(string? name) {
+    return match name {
+        null => 0
+        var text => text.length()                // a `string`: `null` is taken above
+    }
+}
+```
 
 An enum has methods, written after or between its variants as in a struct; with `match this` it looks at itself.
 

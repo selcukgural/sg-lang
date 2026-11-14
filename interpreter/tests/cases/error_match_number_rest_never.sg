@@ -1,0 +1,8 @@
+string f(byte b) {
+    return match b {
+        0..=127 => "ascii"
+        128..=255 => "high"
+        _ => "other"
+    }
+}
+void main() {}

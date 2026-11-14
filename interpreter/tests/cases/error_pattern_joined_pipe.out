@@ -1,0 +1,6 @@
+error: patterns are joined with `or`, not `|`
+  `|` and `||` are operators on values; a pattern is not a value: `'+' or '-'`
+  --> error_pattern_joined_pipe.sg:3:13
+ 3 |         '+' | '-' => 1
+   |             ^
+  hint: `or`

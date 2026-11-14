@@ -1,0 +1,7 @@
+bool small(char c) {
+    return match c {
+        'a'..'z' => true
+        _ => false
+    }
+}
+void main() {}

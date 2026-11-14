@@ -1,0 +1,6 @@
+error: this `match` does not handle every `char` value
+  no arm takes `'\0'..='/'`
+  --> error_match_char_range_missing.sg:2:18
+ 2 |     return match c {
+   |                  ^
+  hint: add `_ => ...` for everything else

@@ -4174,13 +4174,23 @@ impl<'a> Checker<'a> {
         match &pattern.kind {
             PatternKind::Wildcard => Ok(Vec::new()),
             PatternKind::Bind(name) => Ok(vec![(name.clone(), subject.clone(), span)]),
-            PatternKind::Int(_) | PatternKind::Char(_) | PatternKind::Str(_) => {
+            PatternKind::Int(_) | PatternKind::Char(_) | PatternKind::Str(_) | PatternKind::Range(..) | PatternKind::Bool(_) => {
                 Err(Diag::error(span, format!("`{}` is an enum; a pattern here names one of its variants", of.owner)))
             }
+            PatternKind::Null => Err(Diag::error(span, format!("a `{subject}` is never `null`"))
+                .note("only a value of a type written with `?` can be `null`")),
             PatternKind::Variant { .. } => {
                 let mut binds = Vec::new();
                 self.variant_pattern(pattern, of, mode, &mut binds)?;
                 Ok(binds)
+            }
+            PatternKind::Or(_) => {
+                let PatternKind::Or(alternatives) = &mut pattern.kind else { unreachable!("just matched") };
+                let mut all = Vec::new();
+                for alternative in alternatives.iter_mut() {
+                    all.push(self.pattern_binds(alternative, of, mode, subject)?);
+                }
+                same_names(alternatives, all)
             }
         }
     }
@@ -4230,6 +4240,56 @@ impl<'a> Checker<'a> {
     /// then it is that variant (`Paint(Red)`).
     fn inner_pattern(&mut self, pattern: &mut Pattern, ty: &Ty, mode: Option<Mode>, binds: &mut Binds) -> Res<()> {
         let span = pattern.span;
+        let written = &self.src[span.start..span.end];
+        match &mut pattern.kind {
+            PatternKind::Or(alternatives) => {
+                let mut all = Vec::new();
+                for alternative in alternatives.iter_mut() {
+                    let mut found = Vec::new();
+                    self.inner_pattern(alternative, ty, mode, &mut found)?;
+                    all.push(found);
+                }
+                binds.extend(same_names(alternatives, all)?);
+                return Ok(());
+            }
+            PatternKind::Null => {
+                return match ty.strip_borrow() {
+                    Ty::Nullable(_) => Ok(()),
+                    _ => Err(Diag::error(span, format!("this value is a `{ty}`, and a `{ty}` is never `null`"))
+                        .note("only a value of a type written with `?` can be `null`")),
+                };
+            }
+            PatternKind::Wildcard | PatternKind::Bind(_) => {}
+            // Any other pattern takes a value that is not `null`: it looks at the value.
+            _ if matches!(ty.strip_borrow(), Ty::Nullable(_)) => {
+                let held = match ty {
+                    Ty::Read(_) => Some(Mode::Read),
+                    Ty::Ref(_) => Some(Mode::Ref),
+                    _ => None,
+                };
+                let mode = match (mode, held) {
+                    (Some(Mode::Read), _) | (_, Some(Mode::Read)) => Some(Mode::Read),
+                    (Some(Mode::Ref), _) | (_, Some(Mode::Ref)) => Some(Mode::Ref),
+                    _ => None,
+                };
+                let Ty::Nullable(inner) = ty.strip_borrow() else { unreachable!("just tested") };
+                return self.inner_pattern(pattern, inner, mode, binds);
+            }
+            PatternKind::Bool(_) => {
+                return match ty.strip_borrow() {
+                    Ty::Bool => Ok(()),
+                    _ => Err(Diag::error(span, format!("this value is a `{ty}`, and `{written}` is a `bool`"))),
+                };
+            }
+            PatternKind::Range(..) => {
+                return match ty.strip_borrow() {
+                    Ty::Int(int) => self.int_pattern(pattern, *int, ty).map(drop),
+                    Ty::Char => char_pattern(pattern, ty).map(drop),
+                    _ => Err(Diag::error(span, format!("this value is a `{ty}`, and `{written}` is a range of numbers or characters"))),
+                };
+            }
+            _ => {}
+        }
         let inner_enum = match peel(ty) {
             Ty::Enum(_) | Ty::Result(..) => self.enum_behind(ty, span, "a pattern").ok(),
             _ => None,
@@ -4255,6 +4315,7 @@ impl<'a> Checker<'a> {
         }
         let written = &self.src[span.start..span.end];
         match &mut pattern.kind {
+            PatternKind::Or(_) | PatternKind::Null | PatternKind::Bool(_) | PatternKind::Range(..) => unreachable!("handled above"),
             PatternKind::Wildcard => Ok(()),
             PatternKind::Bind(name) => {
                 let ty = match mode {
@@ -4280,10 +4341,6 @@ impl<'a> Checker<'a> {
                         char_pattern(pattern, ty)?;
                     }
                     (Ty::Str, PatternKind::Str(_)) => {}
-                    (Ty::Nullable(_), _) => {
-                        return Err(Diag::error(span, format!("this value is a `{ty}` and may be `null`; a pattern inside a pattern needs a value"))
-                            .hint("name it, and test it in the arm"));
-                    }
                     (Ty::Char, PatternKind::Int(value)) => {
                         let diag = mismatch();
                         return Err(match char_of(*value) {
@@ -4296,10 +4353,6 @@ impl<'a> Checker<'a> {
                 Ok(())
             }
             PatternKind::Variant { .. } => {
-                if let Ty::Nullable(_) = ty.strip_borrow() {
-                    return Err(Diag::error(span, format!("this value is a `{ty}` and may be `null`; a pattern inside a pattern needs a value"))
-                        .hint("name it, and test it in the arm"));
-                }
                 let Some((of, held)) = inner_enum else {
                     return Err(Diag::error(span, format!("this value is a `{ty}`, and `{written}` names a variant of an enum")));
                 };
@@ -4316,12 +4369,39 @@ impl<'a> Checker<'a> {
 
     /// The pattern as the search for missing values sees it (`exhaust`), for a value of `ty`.
     fn search_pattern(&self, pattern: &Pattern, ty: &Ty) -> exhaust::Pat {
-        use exhaust::{Lit, Pat};
+        use exhaust::Pat;
+        let core = ty.strip_borrow();
+        if let Ty::Nullable(inner) = core {
+            let shape = Rc::new(exhaust::Enum { names: vec!["null".to_string(), String::new()], arities: vec![0, 1] });
+            return match &pattern.kind {
+                PatternKind::Wildcard | PatternKind::Bind(_) => Pat::Any,
+                PatternKind::Null => Pat::Variant { of: shape, index: 0, args: Vec::new() },
+                PatternKind::Or(alternatives) => Pat::Or(alternatives.iter().map(|alternative| self.search_pattern(alternative, ty)).collect()),
+                _ => Pat::Variant { of: shape, index: 1, args: vec![self.search_pattern(pattern, inner)] },
+            };
+        }
+        let number = |low: i128, high: i128| {
+            let of = match peel(core) {
+                Ty::Int(int) => exhaust::Domain { name: int.name().to_string(), ranges: vec![(int.min(), int.max())], chars: false },
+                _ => exhaust::Domain { name: "char".to_string(), ranges: vec![(0, 0xd7ff), (0xe000, 0x10ffff)], chars: true },
+            };
+            Pat::Num { low, high, of: Rc::new(of) }
+        };
         match &pattern.kind {
             PatternKind::Wildcard | PatternKind::Bind(_) => Pat::Any,
-            PatternKind::Int(value) => Pat::Lit(Lit::Num(*value)),
-            PatternKind::Char(value) => Pat::Lit(Lit::Num(*value as i128)),
-            PatternKind::Str(text) => Pat::Lit(Lit::Text(text.clone())),
+            PatternKind::Int(value) => number(*value, *value),
+            PatternKind::Char(value) => number(*value as i128, *value as i128),
+            PatternKind::Range(low, high) => match (&low.kind, &high.kind) {
+                (PatternKind::Int(low), PatternKind::Int(high)) => number(*low, *high),
+                _ => unreachable!("the ends of a range are numbers once checked"),
+            },
+            PatternKind::Str(text) => Pat::Text(text.clone()),
+            PatternKind::Bool(value) => {
+                let shape = Rc::new(exhaust::Enum { names: vec!["false".to_string(), "true".to_string()], arities: vec![0, 0] });
+                Pat::Variant { of: shape, index: *value as usize, args: Vec::new() }
+            }
+            PatternKind::Null => unreachable!("the checker allows `null` only for a `T?`"),
+            PatternKind::Or(alternatives) => Pat::Or(alternatives.iter().map(|alternative| self.search_pattern(alternative, ty)).collect()),
             PatternKind::Variant { index, args, .. } => {
                 let (of, _) = self.enum_behind(ty, pattern.span, "a pattern").expect("the pattern was checked against the type");
                 let shape = Rc::new(exhaust::Enum {
@@ -4342,11 +4422,29 @@ impl<'a> Checker<'a> {
     /// `_`, or `var name`.
     fn int_pattern(&mut self, pattern: &mut Pattern, ty: IntTy, subject: &Ty) -> Res<Binds> {
         let span = pattern.span;
-        let value = match &pattern.kind {
+        let value = match &mut pattern.kind {
             PatternKind::Wildcard => return Ok(Vec::new()),
             PatternKind::Bind(name) => return Ok(vec![(name.clone(), subject.clone(), span)]),
             PatternKind::Int(value) => *value,
             PatternKind::Char(value) => byte_of(*value, span)?,
+            PatternKind::Or(alternatives) => {
+                let mut all = Vec::new();
+                for alternative in alternatives.iter_mut() {
+                    all.push(self.int_pattern(alternative, ty, subject)?);
+                }
+                return same_names(alternatives, all);
+            }
+            PatternKind::Range(low, high) => {
+                let shown = (written_end(low), written_end(high));
+                self.int_pattern(low, ty, subject)?;
+                self.int_pattern(high, ty, subject)?;
+                return range_order(low, high, shown, span).map(|_| Vec::new());
+            }
+            PatternKind::Null => return Err(Diag::error(span, format!("a `{}` is never `null`", ty.name()))
+                .note("only a value of a type written with `?` can be `null`")),
+            PatternKind::Bool(value) => {
+                return Err(Diag::error(span, format!("this `match` looks at a `{}`, and `{value}` is not a number", ty.name())));
+            }
             PatternKind::Str(_) => {
                 return Err(Diag::error(span, format!("this `match` looks at a `{}`, and a text is not a number", ty.name())));
             }
@@ -4401,18 +4499,28 @@ impl<'a> Checker<'a> {
     ) -> Res<Ty> {
         // Like `var y = subject`: an owned value is moved in, a borrow stays a borrow.
         let subject_ty = self.expr(subject, None)?;
-        // On an integer the arms are numbers, on a `char` characters, on a text texts; on
-        // anything else, the variants of an enum.
+        // On an integer the arms are numbers, on a `char` characters, on a text texts; on a
+        // `bool` or a `T?` patterns as inside a pattern; on anything else, the variants of an
+        // enum.
         let number = match subject_ty.strip_borrow() {
             Ty::Int(ty) => Some(Literal::Int(*ty)),
             Ty::Char => Some(Literal::Char),
             Ty::Str => Some(Literal::Text),
+            Ty::Bool | Ty::Nullable(_) => Some(Literal::Other),
             _ => None,
         };
         let (of, mode) = match number {
             Some(Literal::Int(ty)) => (Variants { owner: ty.name().to_string(), list: Vec::new() }, None),
             Some(Literal::Char) => (Variants { owner: "char".to_string(), list: Vec::new() }, None),
             Some(Literal::Text) => (Variants { owner: "string".to_string(), list: Vec::new() }, None),
+            Some(Literal::Other) => {
+                let mode = match &subject_ty {
+                    Ty::Read(_) => Some(Mode::Read),
+                    Ty::Ref(_) => Some(Mode::Ref),
+                    _ => None,
+                };
+                (Variants { owner: subject_ty.strip_borrow().to_string(), list: Vec::new() }, mode)
+            }
             None => self.enum_behind(&subject_ty, subject.span, "`match`")?,
         };
         *borrowed = mode.is_some();
@@ -4433,8 +4541,13 @@ impl<'a> Checker<'a> {
         let mut named: Vec<i128> = Vec::new();
         // With patterns inside patterns, the arms so far as the search for missing values sees
         // them (only those without a condition).
-        let mut nested = false;
+        // On a number, a character, a `bool` or a `T?` the search always runs: it counts the
+        // values the arms take.
+        let mut nested = matches!(number, Some(Literal::Int(_) | Literal::Char | Literal::Other));
         let mut rows: Vec<Vec<exhaust::Pat>> = Vec::new();
+        // On a `T?`, whether an arm without a condition has taken `null`: a name below it
+        // takes a value that is not `null`.
+        let mut null_taken = false;
         let mut result: Option<Ty> = expected.cloned();
         let before = self.moves();
         let mut after: Option<Moves> = None;
@@ -4446,6 +4559,14 @@ impl<'a> Checker<'a> {
                 Some(Literal::Int(ty)) => self.int_pattern(&mut arm.pattern, ty, &subject_ty)?,
                 Some(Literal::Char) => char_pattern(&mut arm.pattern, &subject_ty)?,
                 Some(Literal::Text) => text_pattern(&mut arm.pattern, &subject_ty)?,
+                Some(Literal::Other) => {
+                    let mut binds = Vec::new();
+                    self.inner_pattern(&mut arm.pattern, &subject_ty, None, &mut binds)?;
+                    if let (PatternKind::Bind(_), true) = (&arm.pattern.kind, null_taken) {
+                        binds[0].1 = not_null(&subject_ty);
+                    }
+                    binds
+                }
                 None => self.pattern_binds(&mut arm.pattern, &of, mode, &subject_ty)?,
             };
             let position = match &arm.pattern.kind {
@@ -4469,16 +4590,28 @@ impl<'a> Checker<'a> {
                 return Err(Diag::error(arm.pattern.span, format!("this arm can never run: `{what}` is already handled above")));
             }
             // With patterns inside patterns, an arm can be covered by several arms above.
-            nested |= arm.pattern.is_nested();
+            nested |= arm.pattern.needs_search();
             let row = vec![self.search_pattern(&arm.pattern, &subject_ty)];
             if nested && exhaust::useful(&rows, &row).is_none() {
                 return Err(Diag::error(arm.pattern.span, "this arm can never run: the arms above take every value it matches"));
             }
+            // So can a pattern of an `or`, by the arms above and the patterns before it.
+            if let PatternKind::Or(alternatives) = &arm.pattern.kind {
+                let mut above = rows.clone();
+                for alternative in alternatives {
+                    let row = vec![self.search_pattern(alternative, &subject_ty)];
+                    if exhaust::useful(&above, &row).is_none() {
+                        return Err(Diag::error(alternative.span, "this pattern can never match: the arms above and the patterns before it in the `or` take every value it matches"));
+                    }
+                    above.push(row);
+                }
+            }
             if arm.guard.is_none() {
                 rows.push(row);
-                if let Some(position) = position.filter(|_| number.is_none()) {
-                    named.push(position);
+                if number.is_none() {
+                    named.extend(top_variants(&arm.pattern));
                 }
+                null_taken |= takes_null(&arm.pattern);
             }
             self.borrows.binds = subject_loans.clone();
             self.declare_binds(binds)?;
@@ -4491,7 +4624,7 @@ impl<'a> Checker<'a> {
                 // Only an arm without a condition settles its variant, and only when it takes
                 // every value the variant carries.
                 None => match (position, text) {
-                    (Some(_), _) if arm.pattern.is_nested() => {}
+                    _ if arm.pattern.needs_search() => {}
                     (Some(position), _) => handled.push(position),
                     (None, Some(text)) => handled_texts.push(text),
                     (None, None) => handled_all = true,
@@ -4534,16 +4667,41 @@ impl<'a> Checker<'a> {
             }
         }
 
-        if !handled_all && number.is_some() {
-            return Err(Diag::error(subject.span, format!("this `match` does not handle every `{owner}` value"))
-                .hint("add `_ => ...` for everything else"));
+        // With an `or`, a range, `null`, `true` or `false`, the search tells what is missing.
+        let missing = match (handled_all, nested && number.is_some()) {
+            (false, true) => exhaust::useful(&rows, &[exhaust::Pat::Any]).map(|found| exhaust::show(&found[0])),
+            _ => None,
+        };
+        let guarded = arms.iter().any(|arm| arm.guard.is_some());
+        match (missing, number) {
+            (Some(value), Some(Literal::Other)) => {
+                let diag = Diag::error(subject.span, format!("this `match` does not handle `{value}`"))
+                    .hint("add an arm for it, or `_ => ...` for everything else");
+                return Err(match guarded {
+                    true => diag.note("an arm with `when` does not settle what it matches: the condition may be false"),
+                    false => diag,
+                });
+            }
+            (Some(value), _) if value != "_" => {
+                return Err(Diag::error(subject.span, format!("this `match` does not handle every `{owner}` value"))
+                    .note(format!("no arm takes `{value}`"))
+                    .hint("add `_ => ...` for everything else"));
+            }
+            (None, Some(_)) if nested => {}
+            _ if !handled_all && number.is_some() => {
+                return Err(Diag::error(subject.span, format!("this `match` does not handle every `{owner}` value"))
+                    .hint("add `_ => ...` for everything else"));
+            }
+            _ => {}
         }
         if !handled_all {
             let missing: Vec<String> = (0..variants.len())
                 .filter(|position| !handled.contains(&(*position as i128)) && !named.contains(&(*position as i128)))
                 .map(|position| format!("`{}`", variants[position].0))
                 .collect();
-            if !missing.is_empty() {
+            // An `or` with a name in it can take every variant without naming them.
+            let covered = nested && exhaust::useful(&rows, &[exhaust::Pat::Any]).is_none();
+            if !missing.is_empty() && !covered {
                 let diag = Diag::error(subject.span, format!("this `match` does not handle {}", missing.join(", ")))
                     .hint("add an arm for each, or `_ => ...` for everything else");
                 let guarded = arms.iter().any(|arm| {
@@ -5963,20 +6121,104 @@ fn byte_of(value: char, span: Span) -> Res<i128> {
         .hint(format!("the type for any character is `char`: `char c = '{value}'`")))
 }
 
-/// What the arms of a `match` on a value that is not an enum are written as.
-#[derive(Clone, Copy)]
+/// What the arms of a `match` on a value that is not an enum are written as. `Other` is a
+/// `bool` or a `T?`, whose arms are checked as patterns inside a pattern are.
+#[derive(Clone, Copy, PartialEq)]
 enum Literal {
     Int(IntTy),
     Char,
     Text,
+    Other,
+}
+
+/// The names of an `or`: each of its patterns names the same values, with the same types.
+/// Gives those of the first.
+fn same_names(alternatives: &[Pattern], all: Vec<Binds>) -> Res<Binds> {
+    let first = &all[0];
+    for (alternative, binds) in alternatives.iter().zip(&all).skip(1) {
+        for (name, ty, _) in first {
+            match binds.iter().find(|(other, _, _)| other == name) {
+                None => {
+                    return Err(Diag::error(alternative.span, format!("`{name}` is named in the first pattern of this `or` and not in this one"))
+                        .note("every pattern of an `or` names the same values; write `_` in each for a value that is not needed"));
+                }
+                Some((_, other, span)) if other != ty => {
+                    return Err(Diag::error(*span, format!("`{name}` is a `{ty}` in the first pattern of this `or` and a `{other}` here"))
+                        .note("a name of an `or` has one type, whichever pattern took the value"));
+                }
+                Some(_) => {}
+            }
+        }
+        if let Some((name, _, span)) = binds.iter().find(|(name, _, _)| !first.iter().any(|(other, _, _)| other == name)) {
+            return Err(Diag::error(*span, format!("`{name}` is named here and not in the first pattern of this `or`"))
+                .note("every pattern of an `or` names the same values; write `_` in each for a value that is not needed"));
+        }
+    }
+    Ok(all.into_iter().next().unwrap_or_default())
+}
+
+/// The variants an arm names at its top, through `or`.
+fn top_variants(pattern: &Pattern) -> Vec<i128> {
+    match &pattern.kind {
+        PatternKind::Variant { index, .. } => vec![*index as i128],
+        PatternKind::Or(alternatives) => alternatives.iter().flat_map(top_variants).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether the pattern takes `null` itself, alone or in an `or`.
+fn takes_null(pattern: &Pattern) -> bool {
+    match &pattern.kind {
+        PatternKind::Null => true,
+        PatternKind::Or(alternatives) => alternatives.iter().any(takes_null),
+        _ => false,
+    }
+}
+
+/// A `T?` once it is known not to be `null`: `T`, through the same borrow.
+fn not_null(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Read(inner) => Ty::Read(Box::new(not_null(inner))),
+        Ty::Ref(inner) => Ty::Ref(Box::new(not_null(inner))),
+        Ty::Nullable(inner) => (**inner).clone(),
+        other => other.clone(),
+    }
+}
+
+/// A range takes at least its first value: the first is not greater than the last.
+fn range_order(low: &Pattern, high: &Pattern, shown: (String, String), span: Span) -> Res<()> {
+    let (PatternKind::Int(first), PatternKind::Int(last)) = (&low.kind, &high.kind) else {
+        unreachable!("the ends of a range are numbers once checked")
+    };
+    if first > last {
+        return Err(Diag::error(span, "this range takes nothing: its first value is greater than its last")
+            .hint(format!("the smaller value comes first: `{}..={}`", shown.1, shown.0)));
+    }
+    Ok(())
+}
+
+/// An end of a range as it is written: `9`, `'z'`.
+fn written_end(end: &Pattern) -> String {
+    match end.kind {
+        PatternKind::Char(value) => crate::interp::quoted_char(value),
+        PatternKind::Int(value) => value.to_string(),
+        _ => unreachable!("the parser takes only a number or a character as an end"),
+    }
 }
 
 /// An arm of a `match` on a text: a text as it is written, `_` or `var name`.
 fn text_pattern(pattern: &mut Pattern, subject: &Ty) -> Res<Binds> {
     let span = pattern.span;
-    match &pattern.kind {
+    match &mut pattern.kind {
         PatternKind::Wildcard | PatternKind::Str(_) => Ok(Vec::new()),
         PatternKind::Bind(name) => Ok(vec![(name.clone(), subject.clone(), span)]),
+        PatternKind::Or(alternatives) => {
+            let all = alternatives.iter_mut().map(|alternative| text_pattern(alternative, subject)).collect::<Res<Vec<_>>>()?;
+            same_names(alternatives, all)
+        }
+        PatternKind::Range(..) => Err(Diag::error(span, "this `match` looks at a text, and a range is of numbers or characters")),
+        PatternKind::Null => Err(Diag::error(span, "a `string` is never `null`").note("only a value of a type written with `?` can be `null`")),
+        PatternKind::Bool(value) => Err(Diag::error(span, format!("this `match` looks at a text, and `{value}` is not one"))),
         PatternKind::Char(value) => Err(Diag::error(span, "this `match` looks at a text, and a character is not one")
             .hint(format!("a text is written in double quotes: `{:?}`", value.to_string()))),
         PatternKind::Int(_) => Err(Diag::error(span, "this `match` looks at a text, and a number is not one")),
@@ -5994,10 +6236,26 @@ fn text_pattern(pattern: &mut Pattern, subject: &Ty) -> Res<Binds> {
 /// its code.
 fn char_pattern(pattern: &mut Pattern, subject: &Ty) -> Res<Binds> {
     let span = pattern.span;
-    let value = match &pattern.kind {
+    let value = match &mut pattern.kind {
         PatternKind::Wildcard => return Ok(Vec::new()),
         PatternKind::Bind(name) => return Ok(vec![(name.clone(), subject.clone(), span)]),
         PatternKind::Char(value) => *value as i128,
+        PatternKind::Or(alternatives) => {
+            let all = alternatives.iter_mut().map(|alternative| char_pattern(alternative, subject)).collect::<Res<Vec<_>>>()?;
+            return same_names(alternatives, all);
+        }
+        PatternKind::Range(low, high) => {
+            let shown = (written_end(low), written_end(high));
+            char_pattern(low, subject)?;
+            char_pattern(high, subject)?;
+            return range_order(low, high, shown, span).map(|_| Vec::new());
+        }
+        PatternKind::Null => {
+            return Err(Diag::error(span, "a `char` is never `null`").note("only a value of a type written with `?` can be `null`"));
+        }
+        PatternKind::Bool(value) => {
+            return Err(Diag::error(span, format!("this `match` looks at a `char`, and `{value}` is not a character")));
+        }
         PatternKind::Str(text) => {
             let diag = Diag::error(span, "this `match` looks at a `char`, and a text is not one");
             let mut chars = text.chars();

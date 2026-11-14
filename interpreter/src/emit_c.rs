@@ -12,7 +12,8 @@
 //! text (with `trim`, the searches, the iterators `chars`, `split`, `splitWhitespace` and `lines`,
 //! `write` and `clear`, which add to a text where it is, as `f.write` does, and the width and the
 //! letter after a value in `$"..."`), functions, structs,
-//! enums with methods, `match` and `is` (with patterns inside patterns, and on text), `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
+//! enums with methods, `match` and `is` (with patterns inside patterns, `or`, ranges, `null`, `true` and
+//! `false`, and on text, a `bool` and a `T?`), `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
 //! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, `print` and `printError`, files
 //! read and written whole or piece by piece, as text or as bytes (`StreamReader`, `StreamWriter`,
 //! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`). Anything else is an error that names what is missing, so nothing is compiled
@@ -28,7 +29,9 @@
 //! costs nothing. Any other `T?` is the value and a flag beside it. An enum is a tag and,
 //! beside it, room for the largest variant (a C union); a `match` is a chain of tests on the tag.
 //! An arm with patterns inside tests the tags and the values it names, joined by `&&`; an arm
-//! on text is a test of the length and of the bytes (`sg_eq`).
+//! on text is a test of the length and of the bytes (`sg_eq`). A range is two comparisons and a
+//! `or` is `||`; an `or` with names is opened into one pattern for each way to match, and the way
+//! that matched sets the names (`take_apart_choices`).
 //! A `Result<T, E>` is such an enum with the variants `Ok(T value)` and `Error(E cause)`; `try`
 //! is one test on the tag and, on an error, a `return`. A `List<T>` is a pointer to its items,
 //! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index, and
@@ -4020,15 +4023,69 @@ impl<'a> Emitter<'a> {
         let test = self.pattern_test(pattern, &place, ty, subject.span)?.expect("`is` names a variant");
         let mut names = Vec::new();
         let mode = if *by_ref { Mode::Ref } else { Mode::Read };
-        self.take_apart(pattern, &place, ty, Some(mode), &mut names, &mut Vec::new())?;
+        match has_choice(pattern) && !pattern.names().is_empty() {
+            true => names = self.take_apart_choices(pattern, &place, ty, Some(mode), subject.span)?.0,
+            false => self.take_apart(pattern, &place, ty, Some(mode), &mut names, &mut Vec::new())?,
+        }
         Ok((if *negated { format!("(!{test})") } else { test }, names))
     }
 
     /// The C test that the value at `place`, of type `ty`, matches the pattern; `None` when
     /// every value does. A variant is tested by its tag, then what it carries, left to right.
     fn pattern_test(&mut self, pattern: &Pattern, place: &str, ty: &Ty, span: Span) -> Res<Option<String>> {
+        // On a `T?`, `null` tests that nothing is there, any other pattern that something is
+        // and then what it is.
+        if !matches!(pattern.kind, PatternKind::Wildcard | PatternKind::Bind(_) | PatternKind::Or(_)) {
+            if let Some((holds, inner, inner_ty)) = self.nullable_at(place, ty) {
+                return Ok(Some(match &pattern.kind {
+                    PatternKind::Null => format!("(!{holds})"),
+                    _ => match self.pattern_test(pattern, &inner, &inner_ty, span)? {
+                        Some(test) => format!("({holds} && {test})"),
+                        None => holds,
+                    },
+                }));
+            }
+        }
         Ok(match &pattern.kind {
             PatternKind::Wildcard | PatternKind::Bind(_) => None,
+            PatternKind::Null => unreachable!("the checker allows `null` only for a `T?`"),
+            PatternKind::Or(alternatives) => {
+                let mut tests = Vec::new();
+                for alternative in alternatives {
+                    match self.pattern_test(alternative, place, ty, span)? {
+                        Some(test) => tests.push(test),
+                        None => return Ok(None),
+                    }
+                }
+                Some(format!("({})", tests.join(" || ")))
+            }
+            PatternKind::Bool(wanted) => {
+                let (at, _) = behind(place, ty);
+                Some(if *wanted { at } else { format!("(!{at})") })
+            }
+            PatternKind::Range(low, high) => {
+                let (PatternKind::Int(low), PatternKind::Int(high)) = (&low.kind, &high.kind) else {
+                    unreachable!("the checker turns the ends of a range into numbers")
+                };
+                let (at, core) = behind(place, ty);
+                // A character is tested by its code. An end that is the first or the last
+                // value of the type is not tested: every value passes it.
+                let (int, first, last) = match core {
+                    Ty::Int(int) => (*int, int.min(), int.max()),
+                    _ => (IntTy::Uint, 0, 0x10ffff),
+                };
+                let mut tests = Vec::new();
+                if *low > first {
+                    tests.push(format!("{at} >= {}", int_literal(*low, int)));
+                }
+                if *high < last {
+                    tests.push(format!("{at} <= {}", int_literal(*high, int)));
+                }
+                match tests.is_empty() {
+                    true => None,
+                    false => Some(format!("({})", tests.join(" && "))),
+                }
+            }
             PatternKind::Int(wanted) => {
                 let (at, core) = behind(place, ty);
                 let int = match core {
@@ -4087,10 +4144,25 @@ impl<'a> Emitter<'a> {
                     }
                 }
             }
-            PatternKind::Wildcard | PatternKind::Int(_) | PatternKind::Char(_) | PatternKind::Str(_) => {
+            // `null` holds nothing to drop.
+            PatternKind::Null => {}
+            // An `or` that names nothing takes nothing: what it matched is dropped whole, as for
+            // `_`. One that names values is opened by the arm first (`alternatives`).
+            PatternKind::Wildcard
+            | PatternKind::Int(_)
+            | PatternKind::Char(_)
+            | PatternKind::Str(_)
+            | PatternKind::Bool(_)
+            | PatternKind::Range(..)
+            | PatternKind::Or(_) => {
                 if mode.is_none() && self.droppable(ty) {
                     chosen.push(self.drop_of(ty, place));
                 }
+            }
+            // A variant in a `T?`: what is there, once it is known to be there.
+            PatternKind::Variant { .. } if self.nullable_at(place, ty).is_some() => {
+                let (_, inner, inner_ty) = self.nullable_at(place, ty).expect("just tested");
+                self.take_apart(pattern, &inner, &inner_ty, mode, names, chosen)?;
             }
             PatternKind::Variant { index, args, .. } => {
                 // Through a borrow the names borrow too; `read` anywhere makes them `read`.
@@ -4158,6 +4230,87 @@ impl<'a> Emitter<'a> {
         Ok((Local { name: name.to_string(), cname, ty, gone: false, drop: None }, line))
     }
 
+    /// For a value at `place` of a type that may be `null`: the C test that something is
+    /// there, and where that something is, with its type. `None` for any other type.
+    fn nullable_at(&self, place: &str, ty: &Ty) -> Option<(String, String, Ty)> {
+        let ty = flat(ty);
+        let not_null = |inner: &Ty, borrow: fn(Box<Ty>) -> Ty| match inner {
+            Ty::Nullable(held) => borrow(held.clone()),
+            _ => unreachable!("only called for a `T?`"),
+        };
+        Some(match ty {
+            Ty::Nullable(held) if is_option(ty) => (format!("{place}.has"), format!("{place}.value"), (**held).clone()),
+            // A pointer that may be `null` is the pointer.
+            Ty::Nullable(held) => (format!("({place} != NULL)"), place.to_string(), (**held).clone()),
+            // A `read T?` points at the value, or is null (for text, of length -1).
+            Ty::Read(inner) if is_option(inner) => (self.lent_holds(inner, place), place.to_string(), not_null(inner, Ty::Read)),
+            Ty::Ref(inner) if is_option(inner) => (format!("{place}->has"), format!("(&{place}->value)"), not_null(inner, Ty::Ref)),
+            Ty::Read(inner) if matches!(**inner, Ty::Nullable(_)) => (format!("((*{place}) != NULL)"), place.to_string(), not_null(inner, Ty::Read)),
+            Ty::Ref(inner) if matches!(**inner, Ty::Nullable(_)) => (format!("((*{place}) != NULL)"), place.to_string(), not_null(inner, Ty::Ref)),
+            _ => return None,
+        })
+    }
+
+    /// The names of an arm whose pattern holds an `or` with names: the pattern is opened into
+    /// one pattern for each way to match, the names are declared once, and the way that
+    /// matched sets them. For an owned value, what the way leaves is dropped by the same
+    /// choice. Gives the names, each with its C line, and that line of drops.
+    fn take_apart_choices(&mut self, pattern: &Pattern, place: &str, ty: &Ty, mode: Option<Mode>, span: Span) -> Res<(Names, Vec<String>)> {
+        let ways = alternatives(pattern);
+        let mut sets = Vec::new();
+        let mut drops = Vec::new();
+        let mut names: Names = Vec::new();
+        for (position, way) in ways.iter().enumerate() {
+            let test = match position + 1 == ways.len() {
+                true => None,
+                false => self.pattern_test(way, place, ty, span)?,
+            };
+            let (mut found, mut chosen) = (Vec::new(), Vec::new());
+            self.take_apart(way, place, ty, mode, &mut found, &mut chosen)?;
+            let assigned: Vec<String> = found
+                .iter()
+                .map(|(local, line)| {
+                    let first = match position {
+                        0 => &local.cname,
+                        _ => &names.iter().find(|(named, _)| named.name == local.name).expect("each way names the same values").0.cname,
+                    };
+                    assignment(line, &local.cname, first)
+                })
+                .collect();
+            if position == 0 {
+                names = found.into_iter().map(|(local, line)| {
+                    let declared = declaration(&line, &local.cname);
+                    (local, declared)
+                }).collect();
+            }
+            sets.push((test.clone(), assigned.join(" ")));
+            drops.push((test, chosen.join(" ")));
+            if sets.last().is_some_and(|(test, _)| test.is_none()) {
+                break;
+            }
+        }
+        let chain = |ways: Vec<(Option<String>, String)>| {
+            let mut line = String::new();
+            for (position, (test, body)) in ways.into_iter().enumerate() {
+                let _ = match (test, position) {
+                    (Some(test), 0) => write!(line, "if ({test}) {{ {body} }}"),
+                    (Some(test), _) => write!(line, " else if ({test}) {{ {body} }}"),
+                    (None, 0) => write!(line, "{{ {body} }}"),
+                    (None, _) => write!(line, " else {{ {body} }}"),
+                };
+            }
+            line
+        };
+        if let Some(last) = names.last_mut() {
+            last.1 = format!("{} {}", last.1, chain(sets));
+        }
+        let chosen = match drops.iter().all(|(_, body)| body.is_empty()) {
+            true => Vec::new(),
+            false => vec![chain(drops)],
+        };
+        Ok((names, chosen))
+    }
+
     /// `match`, written as statements: a chain of tests on the tag (or on the number), each
     /// arm a block. An arm with `when` that does not hold goes on to the arms below it.
     ///
@@ -4180,13 +4333,14 @@ impl<'a> Emitter<'a> {
         let kept = if *borrowed { self.hold() } else { None };
         self.flush_post(&inner, out);
 
-        // What the arms test: a number, or the enum behind the borrow or the pointer.
+        // What the arms test: a number, a `bool`, a `T?`, or the enum behind the borrow or
+        // the pointer.
         let mut core = subject.ty.strip_borrow();
         let mut boxes = 0;
         while let Ty::Ptr(behind) = core {
             (core, boxes) = (behind, boxes + 1);
         }
-        let literal = matches!(core, Ty::Int(_) | Ty::Char | Ty::Str);
+        let literal = matches!(core, Ty::Int(_) | Ty::Char | Ty::Str | Ty::Bool | Ty::Nullable(_));
         let variants = self.variants(core, subject.span)?;
         if (!literal && variants.is_none()) || (literal && boxes > 0) || boxes > 1 {
             return Err(not_yet(subject.span, &format!("a `match` on `{}`", subject.ty)));
@@ -4200,6 +4354,9 @@ impl<'a> Emitter<'a> {
 
         let guarded = arms.iter().any(|arm| arm.guard.is_some());
         let end = format!("{held}_end");
+        // On a `T?`, once an arm without a condition has taken `null`, a name below it takes
+        // what is there (the checker gave it the type without `?`).
+        let mut null_taken = false;
         for (position, arm) in arms.iter().enumerate() {
             let last = position + 1 == arms.len();
             let test = self.pattern_test(&arm.pattern, &held, &subject.ty, subject.span)?;
@@ -4220,9 +4377,23 @@ impl<'a> Emitter<'a> {
             // the arm is chosen.
             let mut chosen = Vec::new();
             match &arm.pattern.kind {
+                PatternKind::Bind(name) if null_taken => {
+                    let (_, inner, inner_ty) = self.nullable_at(&held, &subject.ty).expect("`null` is taken only from a `T?`");
+                    let inner_ctype = self.ctype(&inner_ty, subject.span)?;
+                    let cname = self.declare(name, inner_ty);
+                    let _ = writeln!(out, "{body_pad}{inner_ctype} {cname} = {inner};");
+                }
                 PatternKind::Bind(name) => {
                     let cname = self.declare(name, subject.ty.clone());
                     let _ = writeln!(out, "{body_pad}{ctype} {cname} = {held};");
+                }
+                _ if has_choice(&arm.pattern) && !arm.pattern.names().is_empty() => {
+                    let (names, drops) = self.take_apart_choices(&arm.pattern, &held, &subject.ty, mode, subject.span)?;
+                    for (local, line) in names {
+                        let _ = writeln!(out, "{body_pad}{line}");
+                        self.scopes.last_mut().expect("an open scope").push(local);
+                    }
+                    chosen = drops;
                 }
                 _ => {
                     let mut names = Vec::new();
@@ -4234,6 +4405,7 @@ impl<'a> Emitter<'a> {
                 }
             }
 
+            null_taken |= arm.guard.is_none() && takes_null(&arm.pattern);
             if let Some(guard) = &arm.guard {
                 let mut cond = self.value(guard)?;
                 self.flush_pre(&body_pad, out);
@@ -6635,4 +6807,58 @@ fn sequence(names: &str, value: String) -> String {
 /// Whether the block ends with a statement that leaves it: what follows would never run.
 fn ends_by_leaving(block: &Block) -> bool {
     matches!(block.last().map(|stmt| &stmt.kind), Some(StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue))
+}
+
+/// The names of a pattern, each with the C line that declares it.
+type Names = Vec<(Local, String)>;
+
+/// The ways a pattern can match, each without `or`: `Add(Number(a) or Negate(a), _)` gives
+/// `Add(Number(a), _)` and `Add(Negate(a), _)`.
+fn alternatives(pattern: &Pattern) -> Vec<Pattern> {
+    match &pattern.kind {
+        PatternKind::Or(each) => each.iter().flat_map(alternatives).collect(),
+        PatternKind::Variant { name, args: Some(args), index } => {
+            let mut ways: Vec<Vec<Pattern>> = vec![Vec::new()];
+            for arg in args {
+                let inner = alternatives(arg);
+                ways = ways.into_iter().flat_map(|way| inner.iter().map(move |one| way.iter().cloned().chain(std::iter::once(one.clone())).collect())).collect();
+            }
+            ways.into_iter()
+                .map(|args| Pattern { kind: PatternKind::Variant { name: name.clone(), args: Some(args), index: *index }, span: pattern.span })
+                .collect()
+        }
+        _ => vec![pattern.clone()],
+    }
+}
+
+/// Whether an `or` is written anywhere in the pattern.
+fn has_choice(pattern: &Pattern) -> bool {
+    match &pattern.kind {
+        PatternKind::Or(_) => true,
+        PatternKind::Variant { args: Some(args), .. } => args.iter().any(has_choice),
+        _ => false,
+    }
+}
+
+/// Whether the pattern takes `null` itself, alone or in an `or`.
+fn takes_null(pattern: &Pattern) -> bool {
+    match &pattern.kind {
+        PatternKind::Null => true,
+        PatternKind::Or(each) => each.iter().any(takes_null),
+        _ => false,
+    }
+}
+
+/// `T v_x_3 = init;` made into `T v_x_3;`.
+fn declaration(line: &str, cname: &str) -> String {
+    let marker = format!(" {cname} = ");
+    let at = line.find(&marker).expect("a name is declared with its value");
+    format!("{} {cname};", &line[..at])
+}
+
+/// `T v_x_5 = init;` made into `v_x_3 = init;`, setting the name declared first.
+fn assignment(line: &str, cname: &str, first: &str) -> String {
+    let marker = format!(" {cname} = ");
+    let at = line.find(&marker).expect("a name is declared with its value");
+    format!("{first} = {}", &line[at + marker.len()..])
 }

@@ -1,4 +1,5 @@
 error: this `match` does not handle every `byte` value
+  no arm takes `0..=42`
   --> error_match_number_no_default.sg:3:11
  3 |     match c {
    |           ^

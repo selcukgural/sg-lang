@@ -1,0 +1,12 @@
+enum Token {
+    Digit(byte value)
+    Flag(bool on)
+}
+
+int f(Token t) {
+    return match t {
+        Digit(true) => 1
+        _ => 0
+    }
+}
+void main() {}

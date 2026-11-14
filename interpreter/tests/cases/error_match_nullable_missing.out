@@ -1,0 +1,5 @@
+error: this `match` does not handle `Square(_)`
+  --> error_match_nullable_missing.sg:8:18
+ 8 |     return match s {
+   |                  ^
+  hint: add an arm for it, or `_ => ...` for everything else

@@ -1,0 +1,7 @@
+int f(char c) {
+    return match c {
+        '+' | '-' => 1
+        _ => 0
+    }
+}
+void main() {}

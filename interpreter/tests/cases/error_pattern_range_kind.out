@@ -1,0 +1,4 @@
+error: this value is a `string`, and `'a'..='z'` is a range of numbers or characters
+  --> error_pattern_range_kind.sg:8:14
+ 8 |         Word('a'..='z') => 1
+   |              ^^^^^^^^^

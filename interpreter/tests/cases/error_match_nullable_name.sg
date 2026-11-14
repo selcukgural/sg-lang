@@ -1,0 +1,7 @@
+nint f(string? s) {
+    return match s {
+        "" => 0
+        var text => text.length()
+    }
+}
+void main() {}

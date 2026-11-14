@@ -1,0 +1,4 @@
+error: this arm can never run: the arms above take every value it matches
+  --> error_match_range_never.sg:4:9
+ 4 |         5 => "five"
+   |         ^

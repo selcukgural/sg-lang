@@ -1,0 +1,5 @@
+error: this range takes nothing: its first value is greater than its last
+  --> error_pattern_range_empty.sg:3:9
+ 3 |         9..=0 => "digit"
+   |         ^^^^^
+  hint: the smaller value comes first: `0..=9`

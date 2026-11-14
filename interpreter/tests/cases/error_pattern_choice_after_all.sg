@@ -1,0 +1,6 @@
+int f(int n) {
+    return match n {
+        var x or 0 => 1
+    }
+}
+void main() {}

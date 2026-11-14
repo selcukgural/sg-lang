@@ -1,0 +1,6 @@
+error: this `match` does not handle every `byte` value
+  no arm takes `128..=255`
+  --> error_match_range_missing.sg:2:18
+ 2 |     return match b {
+   |                  ^
+  hint: add `_ => ...` for everything else

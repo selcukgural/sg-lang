@@ -1,0 +1,7 @@
+string f(int n) {
+    return match n {
+        9..=0 => "digit"
+        _ => "other"
+    }
+}
+void main() {}

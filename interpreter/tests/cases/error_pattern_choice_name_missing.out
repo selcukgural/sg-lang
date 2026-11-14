@@ -1,0 +1,5 @@
+error: `l` is named in the first pattern of this `or` and not in this one
+  every pattern of an `or` names the same values; write `_` in each for a value that is not needed
+  --> error_pattern_choice_name_missing.sg:9:22
+ 9 |         Add(l, _) or Mul(_, r) => 1
+   |                      ^^^^^^^^^

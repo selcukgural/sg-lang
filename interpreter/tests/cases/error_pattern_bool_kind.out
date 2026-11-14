@@ -1,0 +1,4 @@
+error: this value is a `byte`, and `true` is a `bool`
+  --> error_pattern_bool_kind.sg:8:15
+ 8 |         Digit(true) => 1
+   |               ^^^^

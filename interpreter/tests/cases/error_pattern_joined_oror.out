@@ -1,0 +1,6 @@
+error: patterns are joined with `or`, not `||`
+  `|` and `||` are operators on values; a pattern is not a value: `'+' or '-'`
+  --> error_pattern_joined_oror.sg:9:19
+ 9 |         Circle(_) || Square(_) => 1
+   |                   ^^
+  hint: `or`
