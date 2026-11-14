@@ -207,7 +207,9 @@ public struct Folder {
 The result of `share` is a single `null`: `x is null` answers whether it is linked, `share x` answers whether it is
 alive. On `shared T`, `.clone()` means `share`, and `List<shared T>.clone()` shares the elements.
 
-A counter shared by two threads. Because a panic stops the process, there is no lock poisoning and no `.unwrap()`:
+A counter shared by two tasks. `Task.run` starts a function in parallel and gives a `Task<R>`, as in C#; the function
+and its arguments are given apart, since there are no lambdas. Because a panic stops the process, there is no lock
+poisoning and no `.unwrap()`:
 
 ```
 void work(shared locked int counter) {
@@ -218,16 +220,19 @@ void work(shared locked int counter) {
 
 void main() {
     var counter = new shared locked 0
-    var t1 = spawn work(share counter)
-    var t2 = spawn work(share counter)
-    t1.join()
-    t2.join()
+    var t1 = Task.run(work, share counter)
+    var t2 = Task.run(work, share counter)
+    t1.wait()                        // a task that is not waited for on every path is a compile error
+    t2.wait()
     lock counter as c { print(c) }
 }
 ```
 
-If a `spawn` argument carries a borrow or an unlocked `checked`, it is a compile error. Because the counter
-is always atomic, Rust's `Send` and `Sync` distinction comes down to this single rule.
+If an argument of `Task.run` carries a borrow or an unlocked `checked`, it is a compile error. Because the counter
+is always atomic, Rust's `Send` and `Sync` distinction comes down to this single rule. A `lock` block does not wait:
+another `lock`, a `wait`, or a call of a function that does one inside it is a compile error, and two values are locked
+together with `lock a as x, b as y { }`, so locks and waits cannot deadlock. The rules are in the decisions file
+(rows "Starting a task" to "Tasks in the interpreter"), and async is to come the same way ("Async, the direction").
 
 ### Generics and interfaces
 

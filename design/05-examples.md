@@ -267,8 +267,8 @@ public struct Stack {
 
 ## Threads: counting the lines of two files
 
-`join` gives the worker's return value. Because a panic stops the process, there is no equivalent of Rust's
-`.join().unwrap()`.
+`Task.run` starts a function in parallel and gives a `Task<R>`; `wait` gives the function's return value. Because a
+panic stops the process, there is no equivalent of Rust's `.join().unwrap()`.
 
 ```
 Result<void, IoError> countLines(string path, shared locked int total) {
@@ -285,14 +285,17 @@ Result<void, IoError> countLines(string path, shared locked int total) {
 
 Result<void, IoError> main() {
     var total = new shared locked 0
-    var first = spawn countLines("a.txt", share total)
-    var second = spawn countLines("b.txt", share total)
-    try first.join()
-    try second.join()
+    var first = Task.run(countLines, "a.txt", share total)
+    var second = Task.run(countLines, "b.txt", share total)
+    try first.wait()
+    try second.wait()
     lock total as c { print(c) }
     return Ok()
 }
 ```
+
+When async comes, the same program reads the files with `await` and can be cancelled with a token; it is written out in
+the decisions file ("Async, the direction").
 
 ## `List`: `for`, index and `raw`
 
@@ -666,7 +669,7 @@ for child in read folder.children {
 shared Folder f = ...
 f.bytes = 0                              // error: shared is read-only
 
-spawn collect(share root, ...)           // error: checked cannot cross to a thread
+Task.run(collect, share root, ...)       // error: checked cannot cross to another task
 
 var plain = Folder("x", null)
 plain.path()                             // error: path needs a FolderRef receiver
@@ -677,7 +680,7 @@ plain.path()                             // error: path needs a FolderRef receiv
 | A `checked` borrow outlives the expression | `read folder as f { ... }` |
 | The same variable is being read in a loop and is written to | Loop over a copy: `for child in folder.children.clone()` |
 | Write through `shared` | The field type is `shared checked Folder` |
-| `checked` passed to a thread | `shared locked Folder` |
+| `checked` passed to another task | `shared locked Folder` |
 | Method that needs a `FolderRef` receiver | `new FolderRef(...)` |
 
 A conflict the compiler cannot see panics at run time, because the second access comes through a different variable:
