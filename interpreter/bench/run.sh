@@ -36,7 +36,7 @@ PY
 }
 
 printf "%-10s %12s %12s %10s %14s\n" program "release (s)" "checked (s)" "C (s)" "release / C"
-for name in fib primes collatz words list expr parse vector counts show lookup buffer bits hash nbody numbers fields lines copy bytes table blocks keywords classes; do
+for name in fib primes collatz words list expr parse vector counts show lookup buffer bits hash nbody numbers fields lines copy bytes table blocks keywords classes rewrite; do
     ./target/release/sg build "bench/$name.sg" --release -o "$out/$name-release"
     # The checked build, optimised like the others, to see what the check alone costs.
     ./target/release/sg emit-c "bench/$name.sg" > "$out/$name-checked.c"

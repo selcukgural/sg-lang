@@ -1,0 +1,4 @@
+panic: a text cannot be repeated -3 times
+  --> panic_repeat_negative.sg:3:11
+ 3 |     print("ab".repeat(times))
+   |           ^^^^^^^^^^^^^^^^^^

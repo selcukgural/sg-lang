@@ -1,0 +1,58 @@
+struct Doc {
+    string body
+}
+
+string tabs(read string line) {
+    return line.replaceAll('\t', "    ")
+}
+
+void main() {
+    var line = "a\tb\t\tc"
+    print($"[{tabs(read line)}]")
+    print(line.length())
+
+    // Text, character and empty replacements; overlapping and missing ones.
+    print("one two one two".replaceAll("one", "1"))
+    print("aaaa".replaceAll("aa", "b"))
+    print("aaa".replaceAll("aa", "b"))
+    print("path/to/file".replaceAll('/', '\\'))
+    print("x, y, z".replaceAll(", ", ""))
+    print("nothing here".replaceAll("zz", "y"))
+    print("".replaceAll("a", "b").length())
+    print("ğüş ğüş".replaceAll('ü', "ue"))
+    print("😀a😀".replaceAll("😀", "<>"))
+    print("ab".replaceAll("ab", "ab-ab"))
+
+    // The text stays as it was; the new one can take its place.
+    var doc = Doc { body = "draft: draft" }
+    var fixed = doc.body.replaceAll("draft", "final")
+    print(doc.body)
+    print(fixed)
+    doc.body = doc.body.replaceAll("draft", "done")
+    print(doc.body)
+
+    // Through a borrow, a pointer and a range.
+    var seen = read line
+    print(seen.replaceAll('\t', ' '))
+    string* boxed = new "a-b-c"
+    print(boxed.replaceAll('-', "+"))
+    print(line[0..3].replaceAll('\t', "_"))
+
+    // repeat
+    print("ab".repeat(3))
+    print($"[{"x".repeat(0)}]")
+    print($"[{"".repeat(5)}]")
+    print("-".repeat(20))
+    print("é".repeat(4).length())
+    int n = 7
+    var bar = "=".repeat(n)
+    print(bar)
+    byte b = 2
+    print("ok".repeat(b))
+    print("abc".repeat(1000).length())
+    print($"{"ab".repeat(2)}|{"cd".replaceAll('c', 'e')}")
+    var parts = List<string>()
+    parts.add("<".repeat(2))
+    parts.add("a.b".replaceAll('.', ".."))
+    print(parts)
+}

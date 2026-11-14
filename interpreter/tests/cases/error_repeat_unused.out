@@ -1,0 +1,5 @@
+error: the new text that `repeat` gives is not used
+  --> error_repeat_unused.sg:2:5
+ 2 |     "-".repeat(20)
+   |     ^^^^^^^^^^^^^^
+  hint: keep it in a variable: `var text = "-".repeat(20)`

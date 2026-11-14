@@ -1,0 +1,9 @@
+struct Doc {
+    string body
+}
+
+void main() {
+    var doc = Doc { body = "draft" }
+    doc.body.replaceAll("draft", "final")
+    print(doc.body)
+}

@@ -1,0 +1,4 @@
+error: `replaceAll` puts in a `char` or a `read string`, found `int`
+  --> error_replace_all_number.sg:2:33
+ 2 |     print("a-b".replaceAll('-', 5))
+   |                                 ^

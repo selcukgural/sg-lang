@@ -1,0 +1,4 @@
+void main() {
+    var line = "a b"
+    print(line.replaceAll("", "-"))
+}

@@ -1,0 +1,6 @@
+error: type `string` has no method `replaceFirst`
+  replacing only the first ones is not here yet
+  --> error_replace_first.sg:2:19
+ 2 |     print("a-b-c".replaceFirst('-', "+"))
+   |                   ^^^^^^^^^^^^
+  hint: `replaceAll(old, new)` gives a new text with every `old` replaced

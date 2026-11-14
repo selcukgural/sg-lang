@@ -1,0 +1,5 @@
+start
+panic: there is no memory for a text of 2 bytes repeated 9223372036854775807 times
+  --> panic_repeat_too_big.sg:3:16
+ 3 |     var line = "ab".repeat(nint.MaxValue)
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: the new text of `replaceAll` is not used: it leaves `line` as it was
+  --> error_replace_all_unused.sg:3:5
+ 3 |     line.replaceAll('\t', "    ")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: to change `line`, assign the new text to it: `line = line.replaceAll('\t', "    ")`

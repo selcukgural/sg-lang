@@ -1,0 +1,29 @@
+// Lines rewritten with `replaceAll` and indented with `repeat`. Two hundred thousand lines,
+// each picked from a table, are gone over twenty times: the tabs become four spaces, one word
+// becomes another, and an indent of up to seven steps is made. The C program does the same
+// with `memchr`, `memcmp` and `memcpy` into blocks it allocates.
+void main() {
+    var table = List<string> {
+        "id\tname\tcount\tprice\tcreated at\tupdated at\towner\tstatus",
+        "1042\tnamed range\t17\t3.50\t2026-11-14\t2026-11-14\tada\tactive",
+        "no tabs in this line at all, only a name somewhere in the middle of it",
+        "\t\t\tleading tabs before the name and trailing ones after it\t\t",
+        "short\tline"
+    }
+    var lines = List<string>()
+    long seed = 7
+    for i in 0..200000 {
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        lines.add(table[(nint)(seed % 5)].clone())
+    }
+    long total = 0
+    for round in 0..20 {
+        for line in read lines {
+            var wide = line.replaceAll('\t', "    ")
+            var named = wide.replaceAll("name", "title")
+            var indent = "  ".repeat(round % 8)
+            total += named.length() + indent.length() + round
+        }
+    }
+    print(total)
+}

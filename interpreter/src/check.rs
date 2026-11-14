@@ -225,6 +225,16 @@ fn conversion(from: &Ty, name: &str, span: Span) -> Res<IntTy> {
     }
 }
 
+/// Whether a method on a value of this type is a method of `string`: the text itself, a borrow
+/// of it, or a `string*`.
+fn is_text_value(ty: &Ty) -> bool {
+    match ty.strip_borrow() {
+        Ty::Str => true,
+        Ty::Ptr(inner) => *inner.strip_borrow() == Ty::Str,
+        _ => false,
+    }
+}
+
 /// The methods of `char` and `byte` that test a character against ASCII.
 const ASCII_TESTS: &[&str] = &["isAscii", "isAsciiDigit", "isAsciiLetter", "isAsciiAlphanumeric", "isAsciiUpper", "isAsciiLower", "isAsciiWhitespace"];
 
@@ -235,7 +245,7 @@ const CHAR_METHODS: &[&str] = &[
 ];
 const TEXT_METHODS: &[&str] = &[
     "length", "clone", "asBytes", "write", "clear", "indexOf", "lastIndexOf", "contains", "startsWith", "endsWith", "trim", "trimStart", "trimEnd",
-    "chars", "split", "splitWhitespace", "lines", "equalsIgnoreAsciiCase", "equals", "compare",
+    "chars", "split", "splitWhitespace", "lines", "replaceAll", "repeat", "equalsIgnoreAsciiCase", "equals", "compare",
 ];
 
 /// A method a `char` or a `string` does not have: the one it may have meant.
@@ -266,6 +276,10 @@ fn text_method_hint(diag: Diag, target: &Ty, name: &str) -> Diag {
         "substring" | "substr" | "slice" if text => return diag.hint("a range of the text: `text[a..b]`, `text[a..]`"),
         "equalsignorecase" if text => return diag.hint("`equalsIgnoreAsciiCase`: it treats the ASCII letters alone as the same in either case"),
         "charat" | "at" if text => return diag.hint("the characters, one after the other: `for c in text.chars()`; one byte: `text[i]`"),
+        "replacefirst" | "replacen" | "replace_all" | "replaceall" if text => {
+            return diag.hint("`replaceAll(old, new)` gives a new text with every `old` replaced").note("replacing only the first ones is not here yet")
+        }
+        "repeat" | "times" if !text => return diag.hint("a text of one character repeated: `c.toString().repeat(n)`, or `\"-\".repeat(n)` for a constant"),
         "len" | "count" | "size" if text => return diag.hint("`length()`: the number of bytes"),
         "append" | "appendline" | "push" | "pushstr" | "push_str" | "add" | "concat" | "insert" if text => {
             return diag.hint("`write` adds at the end of the text: `text.write(...)`")
@@ -2878,7 +2892,21 @@ impl<'a> Checker<'a> {
                 self.match_expr(subject, arms, borrowed, None, true)?;
             }
             ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Try { .. } => {
-                if matches!(self.expr(expr, None)?, Ty::Result(..)) {
+                let ty = self.expr(expr, None)?;
+                // `line.replaceAll("a", "b")` alone changes nothing: the new text is thrown away.
+                if let ExprKind::Method { recv, name, callee: Callee::Plain, .. } = &expr.kind {
+                    if matches!(name.as_str(), "replaceAll" | "repeat") && is_text_value(&recv.ty) {
+                        let text = &self.src[recv.span.start..recv.span.end];
+                        let call = &self.src[span.start..span.end];
+                        return Err(match &recv.kind {
+                            ExprKind::Var(_) | ExprKind::Field { .. } => Diag::error(span, format!("the new text of `{name}` is not used: it leaves `{text}` as it was"))
+                                .hint(format!("to change `{text}`, assign the new text to it: `{text} = {call}`")),
+                            _ => Diag::error(span, format!("the new text that `{name}` gives is not used"))
+                                .hint(format!("keep it in a variable: `var text = {call}`")),
+                        });
+                    }
+                }
+                if matches!(ty, Ty::Result(..)) {
                     let text = &self.src[span.start..span.end];
                     return Err(Diag::error(span, "this `Result` is not used, so an error would be lost silently")
                         .hint(format!("pass the error on with `try {text}`, or drop it on purpose with `_ = {text}`")));
@@ -5594,6 +5622,34 @@ impl<'a> Checker<'a> {
                     _ => TextIter::Lines,
                 }))
             }
+            // A new text with every `old` replaced by `new`; the text itself stays as it was.
+            (Ty::Str, "replaceAll") => {
+                arity(2)?;
+                if let ExprKind::Str(text) = &args[0].kind {
+                    if text.is_empty() {
+                        return Err(Diag::error(args[0].span, "the text that `replaceAll` looks for is empty, so there is nothing to replace")
+                            .hint("to put a text between the characters, go over them: `for c in text.chars()`"));
+                    }
+                }
+                self.needle(&mut args[0], false, name)?;
+                let text = Ty::Read(Box::new(Ty::Str));
+                let found = self.operand(&mut args[1], Some(&text))?;
+                match found.strip_borrow() {
+                    Ty::Char => self.coerce(&mut args[1], found, &Ty::Char)?,
+                    Ty::Str => self.coerce(&mut args[1], found, &text)?,
+                    _ => return Err(Diag::error(args[1].span, format!("`replaceAll` puts in a `char` or a `read string`, found `{found}`"))),
+                }
+                Ok(Ty::Str)
+            }
+            // The text `n` times over, as a new text.
+            (Ty::Str, "repeat") => {
+                arity(1)?;
+                if matches!(args[0].kind, ExprKind::Unary(UnOp::Neg, _)) || matches!(args[0].kind, ExprKind::Int(value, _) if value < 0) {
+                    return Err(Diag::error(args[0].span, "a text cannot be repeated a negative number of times"));
+                }
+                self.typed(&mut args[0], &Ty::Int(IntTy::Nint))?;
+                Ok(Ty::Str)
+            }
             (Ty::Str, "split") => {
                 arity(1)?;
                 if let ExprKind::Str(text) = &args[0].kind {
@@ -6078,7 +6134,15 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Res<Ty> {
         if args.len() != 1 {
-            return Err(Diag::error(span, format!("`replace` takes 1 argument(s), {} given", args.len())));
+            let diag = Diag::error(span, format!("`replace` takes 1 argument(s), {} given", args.len()));
+            if args.len() == 2 && is_text_value(recv_ty) {
+                let text = &self.src[recv.span.start..recv.span.end];
+                let (old, new) = (&self.src[args[0].span.start..args[0].span.end], &self.src[args[1].span.start..args[1].span.end]);
+                return Err(diag
+                    .note("`replace(value)` puts a new value in the place and gives back the old one")
+                    .hint(format!("a new text with every `{old}` replaced: `{text}.replaceAll({old}, {new})`")));
+            }
+            return Err(diag);
         }
         if !is_place {
             return Err(Diag::error(recv.span, "`replace` needs a variable or a field to put the new value in"));

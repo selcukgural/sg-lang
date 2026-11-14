@@ -1,0 +1,5 @@
+error: `replaceAll` looks for a `char` or a `read string`, found `byte`
+  --> error_replace_all_byte.sg:3:28
+ 3 |     print("a-b".replaceAll(dash, "+"))
+   |                            ^^^^
+  hint: the character of an ASCII byte: `(char)b`

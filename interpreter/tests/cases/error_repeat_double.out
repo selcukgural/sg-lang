@@ -1,0 +1,5 @@
+error: expected `nint`, found `double`
+  --> error_repeat_double.sg:2:23
+ 2 |     print("ab".repeat(2.5))
+   |                       ^^^
+  hint: convert with `(nint)`; it drops the fraction, and panics if the value does not fit

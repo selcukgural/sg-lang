@@ -1,0 +1,4 @@
+void main() {
+    byte dash = 45
+    print("a-b".replaceAll(dash, "+"))
+}

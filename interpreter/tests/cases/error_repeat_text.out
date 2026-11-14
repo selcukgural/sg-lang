@@ -1,0 +1,4 @@
+error: expected `nint`, found `string`
+  --> error_repeat_text.sg:2:23
+ 2 |     print("ab".repeat("3"))
+   |                       ^^^

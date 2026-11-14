@@ -10,7 +10,7 @@
 //! Only a part of the language is compiled so far: integers, `float` and `double` (with their
 //! constants, `parse`, the conversions that do not panic and the math of `<math.h>`), `bool`, `char`,
 //! text (with `trim`, the searches, the iterators `chars`, `split`, `splitWhitespace` and `lines`,
-//! `write` and `clear`, which add to a text where it is, as `f.write` does, and the width and the
+//! `replaceAll` and `repeat`, `write` and `clear`, which add to a text where it is, as `f.write` does, and the width and the
 //! letter after a value in `$"..."`), functions, structs,
 //! enums with methods, `match` and `is` (with patterns inside patterns, `or`, ranges, `null`, `true` and
 //! `false`, and on text, a `bool` and a `T?`; the names of `is` reach along `&&`), `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
@@ -909,6 +909,50 @@ SG_COLD static _Noreturn void sg_split_empty(const char* loc) {
 static inline sg_iter sg_split_str(sg_str s, sg_str sep, const char* loc) {
     if (__builtin_expect(sep.len == 0, 0)) sg_split_empty(loc);
     return (sg_iter){ s, 0, sep, { 0 }, false };
+}
+/* `text.replaceAll(old, new)`: a new text, put together from the pieces between the places
+   where `old` lies and a copy of `new` in each of them. */
+SG_COLD static _Noreturn void sg_replace_empty(const char* loc) {
+    fflush(stdout);
+    fputs("panic: the text that `replaceAll` looks for is empty\n", stderr);
+    sg_die(loc);
+}
+static sg_string sg_replace_all(sg_str s, sg_str old, sg_str put, const char* loc) {
+    if (__builtin_expect(old.len == 0, 0)) sg_replace_empty(loc);
+    if (s.len == 0) return SG_LIT("", 0);
+    sg_string out = { (uint8_t*)"", 0, 0 };
+    sg_room(&out, s.len);
+    int64_t at = 0, found;
+    while ((found = sg_find((sg_str){ s.ptr + at, s.len - at }, old)) >= 0) {
+        sg_put(&out, s.ptr + at, found);
+        sg_put(&out, put.ptr, put.len);
+        at += found + old.len;
+    }
+    sg_put(&out, s.ptr + at, s.len - at);
+    return out;
+}
+/* `text.repeat(n)`: one block of the whole size; the bytes written so far are copied after
+   themselves, so a text repeated n times takes about log2(n) copies. */
+SG_COLD static _Noreturn void sg_repeat_bad(int64_t len, int64_t n, const char* loc) {
+    fflush(stdout);
+    if (n < 0) fprintf(stderr, "panic: a text cannot be repeated %lld times\n", (long long)n);
+    else fprintf(stderr, "panic: there is no memory for a text of %lld bytes repeated %lld times\n", (long long)len, (long long)n);
+    sg_die(loc);
+}
+static sg_string sg_repeat(sg_str s, int64_t n, const char* loc) {
+    if (__builtin_expect(n < 0, 0)) sg_repeat_bad(s.len, n, loc);
+    if (n == 0 || s.len == 0) return SG_LIT("", 0);
+    if (__builtin_expect(s.len > PTRDIFF_MAX / n, 0)) sg_repeat_bad(s.len, n, loc);
+    int64_t size = s.len * n;
+    uint8_t* bytes = malloc((size_t)size);
+    if (!bytes) sg_repeat_bad(s.len, n, loc);
+    memcpy(bytes, s.ptr, (size_t)s.len);
+    for (int64_t done = s.len; done < size; ) {
+        int64_t part = done < size - done ? done : size - done;
+        memcpy(bytes + done, bytes, (size_t)part);
+        done += part;
+    }
+    return (sg_string){ bytes, size, size };
 }
 static inline sg_iter sg_split_char(sg_str s, uint32_t c) {
     sg_iter it = sg_iter_of(s);
@@ -4829,7 +4873,8 @@ impl<'a> Emitter<'a> {
                     Callee::Plain if table_behind(&recv.ty).is_some() && matches!(name.as_str(), "length" | "get" | "contains") => Effect::Reads,
                     Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::Map(..) | Ty::Set(_) | Ty::Formatter) => Effect::Changes,
                     Callee::Plain if matches!(name.as_str(), "write" | "clear") && (is_text(&recv.ty) || is_text_behind_pointer(&recv.ty)) => Effect::Changes,
-                    Callee::Plain if name == "clone" || name == "toString" => Effect::Acts,
+                    // These allocate, and `replaceAll` and `repeat` can stop the program.
+                    Callee::Plain if matches!(name.as_str(), "clone" | "toString" | "replaceAll" | "repeat") => Effect::Acts,
                     // `next` moves the iterator on; `split` stops at a separator that is empty.
                     Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::TextIter(_)) => Effect::Changes,
                     Callee::Plain if name == "split" => Effect::Stops,
@@ -6713,6 +6758,21 @@ impl<'a> Emitter<'a> {
                                 format!("({{ {start} sg_split_str({temp}h, {needle}, {loc}); }})")
                             }
                         })
+                    }
+                    "replaceAll" => {
+                        let (temp, other) = (self.temp(), self.temp());
+                        let text = self.view(recv)?;
+                        let (find, old) = self.needle(&args[0], &temp)?;
+                        let (put, new) = self.needle(&args[1], &other)?;
+                        let loc = self.loc(expr.span);
+                        Ok(format!("({{ sg_str {temp}h = {text}; {find} {put} sg_replace_all({temp}h, {old}, {new}, {loc}); }})"))
+                    }
+                    "repeat" => {
+                        let temp = self.temp();
+                        let text = self.view(recv)?;
+                        let times = self.value_as(&args[0], &Ty::Int(IntTy::Nint))?;
+                        let loc = self.loc(expr.span);
+                        Ok(format!("({{ sg_str {temp}h = {text}; sg_repeat({temp}h, {times}, {loc}); }})"))
                     }
                     "trim" | "trimStart" | "trimEnd" => Ok(format!("sg_{}({})", if name == "trim" { "trim" } else if name == "trimStart" { "trim_start" } else { "trim_end" }, self.view(recv)?)),
                     "equalsIgnoreAsciiCase" => {

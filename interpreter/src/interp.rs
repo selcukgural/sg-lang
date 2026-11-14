@@ -1585,6 +1585,29 @@ impl<'a> Interp<'a> {
                                 .into());
                         }
                     }
+                    // Nothing to look for, or a number of times that is no number of times.
+                    match (&recv, name.as_str(), values.as_slice()) {
+                        (Value::Str(_), "replaceAll", [Value::Str(old), _]) if old.is_empty() => {
+                            return Err(Diag::panic(expr.span, "the text that `replaceAll` looks for is empty").into());
+                        }
+                        (Value::Str(text), "repeat", [Value::Int(_, times)]) => {
+                            if *times < 0 {
+                                return Err(Diag::panic(expr.span, format!("a text cannot be repeated {times} times")).into());
+                            }
+                            // As in compiled code, a text too big for the memory stops the program
+                            // with a panic instead of aborting it.
+                            let size = (text.len() as i128).checked_mul(*times).filter(|size| *size <= isize::MAX as i128);
+                            let mut repeated = String::new();
+                            if size.is_none_or(|size| repeated.try_reserve_exact(size as usize).is_err()) {
+                                return Err(Diag::panic(expr.span, format!("there is no memory for a text of {} bytes repeated {times} times", text.len())).into());
+                            }
+                            for _ in 0..*times {
+                                repeated.push_str(text);
+                            }
+                            return Ok(Value::Str(repeated.into()));
+                        }
+                        _ => {}
+                    }
                     Ok(method(recv, name, values))
                 }
             },
@@ -2696,6 +2719,10 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
         (Value::Str(text), "trim", []) => Value::Str(text.trim().to_string().into()),
         (Value::Str(text), "trimStart", []) => Value::Str(text.trim_start().to_string().into()),
         (Value::Str(text), "trimEnd", []) => Value::Str(text.trim_end().to_string().into()),
+        (Value::Str(text), "replaceAll", [old, new]) => {
+            let (old, new) = (String::from_utf8(needle(old)), String::from_utf8(needle(new)));
+            Value::Str(text.replace(&old.expect("a character or a text"), &new.expect("a character or a text")).into())
+        }
         (Value::Str(text), "equalsIgnoreAsciiCase", [Value::Str(other)]) => Value::Bool(text.eq_ignore_ascii_case(other)),
         (Value::Str(text), "chars" | "split" | "splitWhitespace" | "lines", _) => {
             let kind = match name {

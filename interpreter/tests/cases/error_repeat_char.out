@@ -1,0 +1,5 @@
+error: type `char` has no method `repeat`
+  --> error_repeat_char.sg:3:16
+ 3 |     print(dash.repeat(10))
+   |                ^^^^^^
+  hint: a text of one character repeated: `c.toString().repeat(n)`, or `"-".repeat(n)` for a constant

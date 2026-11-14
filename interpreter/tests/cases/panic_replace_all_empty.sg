@@ -1,0 +1,4 @@
+void main() {
+    var old = "".clone()
+    print("abc".replaceAll(read old, "-"))
+}

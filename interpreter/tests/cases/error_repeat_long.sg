@@ -1,0 +1,4 @@
+void main() {
+    long times = 3
+    print("ab".repeat(times))
+}

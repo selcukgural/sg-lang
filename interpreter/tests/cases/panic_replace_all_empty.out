@@ -1,0 +1,4 @@
+panic: the text that `replaceAll` looks for is empty
+  --> panic_replace_all_empty.sg:3:11
+ 3 |     print("abc".replaceAll(read old, "-"))
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

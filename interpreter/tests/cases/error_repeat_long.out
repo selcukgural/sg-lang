@@ -1,0 +1,5 @@
+error: expected `nint`, found `long`
+  --> error_repeat_long.sg:3:23
+ 3 |     print("ab".repeat(times))
+   |                       ^^^^^
+  hint: convert with `(nint)`; it panics if the value does not fit

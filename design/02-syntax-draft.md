@@ -931,6 +931,16 @@ line.contains("GET"), line.startsWith('#'), line.endsWith(".sg")
 name.equalsIgnoreAsciiCase("content-length")     // only the ASCII letters are folded
 ```
 
+Replacing and repeating give a new text and leave the old one as it was, so a call whose result is not used is an
+error. The name is not `replace`, because `x.replace(value)` already puts a new value in a place on every type:
+
+```
+var wide = line.replaceAll('\t', "    ")          // every place; old and new are a char or a read string
+line = line.replaceAll("draft", "final")         // the new text takes the old one's place
+print("-".repeat(20))                            // n is a nint; a negative n panics
+line.replaceAll("a", "b")                        // error: the new text of `replaceAll` is not used
+```
+
 Kept in a variable, what `split` gives hands out one part at a time. A part borrows the text, not the iterator, and
 `try` passes a missing part on as `null`:
 

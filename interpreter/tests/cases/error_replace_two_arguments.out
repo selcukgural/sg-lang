@@ -1,0 +1,6 @@
+error: `replace` takes 1 argument(s), 2 given
+  `replace(value)` puts a new value in the place and gives back the old one
+  --> error_replace_two_arguments.sg:3:16
+ 3 |     var wide = line.replace('\t', "    ")
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: a new text with every `'\t'` replaced: `line.replaceAll('\t', "    ")`

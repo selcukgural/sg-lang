@@ -1,0 +1,5 @@
+void main() {
+    print("start")
+    var line = "ab".repeat(nint.MaxValue)
+    print(line.length())
+}

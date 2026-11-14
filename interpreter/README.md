@@ -45,7 +45,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
 | Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x`. On integers `& \| ^ ~ << >>`; they bind tighter than a comparison, so `flags & mask == 0` tests the masked value |
 | Numbers | `42`, `0xde`, `0b1010`, and `_` between digits: `1_000_000`, `0xdead_beef` |
-| Text | `"..."` with `\n \t \r \0 \\ \" \'` and `\u{1F600}`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string`. `trim()`, `trimStart()`, `trimEnd()` give a `read string`; `indexOf(x)` and `lastIndexOf(x)` a `nint?` in bytes; `contains(x)`, `startsWith(x)`, `endsWith(x)`, where `x` is a `char` or a `read string` (or a `byte` for the two positions); `equalsIgnoreAsciiCase(other)` |
+| Text | `"..."` with `\n \t \r \0 \\ \" \'` and `\u{1F600}`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string`. `trim()`, `trimStart()`, `trimEnd()` give a `read string`; `indexOf(x)` and `lastIndexOf(x)` a `nint?` in bytes; `contains(x)`, `startsWith(x)`, `endsWith(x)`, where `x` is a `char` or a `read string` (or a `byte` for the two positions); `equalsIgnoreAsciiCase(other)`. `replaceAll(old, new)` (each a `char` or a `read string`) and `repeat(n)` give a new `string`; a call of them whose result is not used is an error |
 | Building text | A `string` grows at its end: `line.write(x)` adds whatever `print` takes (`$"{name}: {count}\n"`, a number, a `char`, a text, a `Formattable` value), `line.clear()` empties it and keeps its memory, `string.withCapacity(n)` is an empty text with room for `n` bytes |
 | Writing a number | Inside `$"..."` a width and a letter may follow the value, as in C#: `{n,5}` takes at least five characters with spaces in front, `{name,-10}` with spaces after (counted in characters, for every value `print` takes); `{b:X2}` and `{crc:x8}` write hex with at least so many digits, `{mask:b8}` binary, `{n:D3}` decimal with at least three digits, `{price:F2}` a fractional number with two digits after the point; `{price,8:F2}` both |
 | Going over text | `for c in text.chars()` gives each `char`; `text.split(',')` (a `char` or a `read string`), `text.splitWhitespace()` and `text.lines()` give each part as a `read string`, nothing copied. Kept in a `var`, the iterator gives the next part with `parts.next()`, `null` at the end |
@@ -228,7 +228,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (178 of 682 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (182 of 700 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -289,7 +289,8 @@ patterns inside patterns, `match` on text and methods on enums, the same way. Si
 `or`, ranges, `null`, `true` and `false` in patterns, and `match` on a `bool` and on a `T?`, the same way.
 Since the forty-fifth slice the names of `is` and the narrowing of `is not null` along `&&` and `||`, the
 same way. Since the forty-sixth slice an assignment computes its right side before it finds the place, as
-the interpreter always did (choice 270). What is still missing is an error that names it (not silence): the few positions listed with the
+the interpreter always did (choice 270). Since the forty-seventh slice `replaceAll` and `repeat`, written
+together with the checker and the interpreter. What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -332,6 +333,7 @@ hand with no checks):
 | `blocks`: eight million pieces of 1 to 255 bytes (about a gigabyte) gathered with `addAll` into a `List<byte>` that is emptied at 64 MB | 0.035 s | 0.035 s | 0.035 s | 1.00 |
 | `keywords`: a million words sorted forty times into twelve keywords and the rest by a `match` on text | 0.199 s | 0.200 s | 0.194 s | 1.03 |
 | `classes`: ten million bytes sorted twenty times into the classes of a lexer by a `match` of ranges and `or` (`'a'..='z' or 'A'..='Z' or '_'`) | 0.239 s | 0.299 s | 0.274 s | 0.87 |
+| `rewrite`: two hundred thousand lines gone over twenty times, the tabs replaced by four spaces and a word by another with `replaceAll`, and an indent made with `repeat` | 0.588 s | 0.597 s | 0.625 s | 0.94 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -486,6 +488,12 @@ and operators, each class one arm of ranges and single bytes joined by `or`. The
 arms compile to: a range is two comparisons (one, when an end is the first or the last value of the type),
 an `or` is `||`. The 0.87 is the C compiler's doing on two programs that say the same; the checked build pays
 for the overflow test of the sum, not for the patterns.
+`rewrite` rewrites lines as a formatter of source text does: each line gets its tabs replaced by four
+spaces, then one word replaced by another, and an indent of up to seven steps is made, so each line makes
+three new texts that are freed at once. The C program does the same with blocks it allocates and frees,
+and finds each place as SG does, `memchr` for the first byte and `memcmp` for the rest; with `memmem` in
+its place the C program took 0.70 s (0.84), because the `memmem` of macOS is slower on these short
+needles. Most of both programs is `malloc`, `memcpy` and `free`.
 The names of an `is` along `&&` (forty-fifth slice) are not measured on their own either: each is one
 pointer set inside the condition where its test holds, `(s.tag == 0 && (r = &s.u.v0.m_radius, 1)) &&
 *r > 10`, which is the C a person writes with the same names, and a narrowing writes nothing at all.
@@ -2311,6 +2319,43 @@ checker and back end; the interpreter already worked so), approved on 14 Novembe
      hundred items to the list it is written into, as a number and as a text. Three tests of errors. Every
      compiled one left no memory behind; the two programs give the same output under gcc.
 
+Choices made in the forty-seventh slice (`replaceAll` and `repeat`; checker, interpreter and back end),
+approved on 14 November 2026:
+
+275. **The method that replaces the places of a text is `replaceAll(old, new)`**, Go's `ReplaceAll`, not
+     `replace(old, new)` as in C# and Rust: `x.replace(value)` already works on every type and puts a new
+     value in the place (rule 1 of the third slice), so the same name would change the text with one
+     argument and leave it as it was with two. `line.replace(a, b)` is an error with a note on what
+     `replace` does and the hint `line.replaceAll(a, b)`; `replaceFirst` and `replacen` get the same hint.
+     Decided before the slice, on 14 November 2026.
+276. **`old` and `new` are each a `char` or a `read string`**; a `byte` is not, as for `contains`. The places
+     are found from the left and do not overlap (`"aaa".replaceAll("aa", "b")` gives `"ba"`), and what
+     was put in is not searched again. The result is always a new `string`, also when nothing was found,
+     as in Rust and C#.
+277. **An empty `old` is refused**, as the separator of `split` is (173): a constant `""` is a compile error,
+     and a text that is empty at run time is a panic. Rust and Go put `new` between every two characters
+     and at both ends, C# and Zig stop; a loop over `chars()` says the first plainly.
+278. **`repeat(n)` takes a `nint`**, as an index does: an `int` or a `byte` is taken as it is, a `long` needs
+     `(nint)`. A negative constant is a compile error, a negative number at run time a panic, and a text too
+     big for the memory a panic that says so, in both programs (not an abort, as Rust's `repeat` and the
+     allocator would give). A `char` has no `repeat`: its hint is `c.toString().repeat(n)`, or `"-".repeat(n)`
+     for a constant.
+279. **A call of `replaceAll` or `repeat` whose result is not used is a compile error**: `line.replaceAll('\t',
+     " ")` alone changes nothing. When the text is a variable or a field the hint assigns the new text to it
+     (`line = line.replaceAll(...)`). Rust gives a warning (`#[must_use]`), Zig an error for every value
+     that is thrown away; SG has no warnings. The other methods that give a new value (`trim`, `clone`,
+     `toString`) are left as they were for now.
+280. **Compiled code**: `replaceAll` finds each place with the search of `indexOf` (`memchr` for the first
+     byte, then `memcmp`) and copies the pieces into a block that starts with the size of the text and
+     doubles when it is full; `repeat` allocates the whole size once and copies what it has written after
+     itself, so `n` copies take about log2(n) `memcpy`s. The panics have the interpreter's words.
+281. **The measurement and the tests**: `rewrite` (above) takes 0.94 times the time of the same program in
+     C. The tests: replacing with a text, a character and nothing, places that would overlap, no place,
+     an empty text, characters of two to four bytes, through a `read`, a `T*` and a range, and the result
+     assigned back to a field; `repeat` of zero, of an empty text, with an `int` and a `byte`, a thousand
+     times, inside `$"..."` and into a list. Fourteen tests of errors and three of panics. Every compiled one
+     left no memory behind; the two programs give the same output under gcc.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -2372,8 +2417,9 @@ check off.
 - Lists of borrows (`List<read T>`); `reserve`, `clone`; a `Hashable`
   type with its own `equals` or `hash`.
 - What text needs Unicode tables for: changing the case of a text (`toUpper`), letters and digits beyond
-  ASCII (`isLetter`), comparing without case beyond ASCII. `replace`, `repeat` (a `padLeft` is a width:
-  `$"{name,10}"`, 229); the positions
+  ASCII (`isLetter`), comparing without case beyond ASCII. Replacing only the first places
+  (`replacen`), replacing in place without a new text, an error for the unused result of the other methods
+  that give a new value (`trim`, `clone`; choice 279); a `padLeft` is a width: `$"{name,10}"` (229); the positions
   of the characters (`charIndices`); splitting at most n times. Writing the type of an
   iterator, and a `for` over a type of your own that has `next` (with generics). `text.capacity()` and
   `text.reserve(n)`; a `ref string` given to a `format` method in place of its `Formatter`.
@@ -2435,7 +2481,8 @@ the classes of a lexer takes 0.87 times the time of the chain of `if`s in C. The
 along `&&` and `||`, as in C#; in compiled code a name is one pointer set inside the condition. An
 assignment computes its right side first and then finds the place, as Rust does, so the right side can
 read a borrow of the value it replaces (`b = Box { n = r.n + 1 }`) and can grow the list it is written
-into.
+into. `text.replaceAll(old, new)` and `text.repeat(n)` give a new text, and a call of them whose result is
+thrown away is a compile error; rewriting lines with them takes 0.94 times the time of the same program in C.
 
-Candidates for what comes next: `text.replace` and `repeat`, type aliases (`using`), threads, the places
-that are slower than C.
+Candidates for what comes next: type aliases (`using`), threads, the places that are slower than C, the
+narrowing after a `while` and under `!`.

@@ -1,0 +1,4 @@
+error: a text cannot be repeated a negative number of times
+  --> error_repeat_negative.sg:2:23
+ 2 |     print("ab".repeat(-2))
+   |                       ^^

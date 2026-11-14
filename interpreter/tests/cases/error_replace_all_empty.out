@@ -1,0 +1,5 @@
+error: the text that `replaceAll` looks for is empty, so there is nothing to replace
+  --> error_replace_all_empty.sg:3:27
+ 3 |     print(line.replaceAll("", "-"))
+   |                           ^^
+  hint: to put a text between the characters, go over them: `for c in text.chars()`

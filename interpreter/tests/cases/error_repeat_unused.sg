@@ -1,0 +1,3 @@
+void main() {
+    "-".repeat(20)
+}

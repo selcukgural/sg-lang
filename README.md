@@ -148,7 +148,7 @@ language as it is today.
 
 Working today, in the interpreter and in compiled code: integers, `float` and `double` with their
 constants, math and reading out of text, `bool`, `char` and text (split, trimmed and searched without
-copying, built piece by piece in place, numbers written with a width, in hex or binary, or with so many
+copying, replaced and repeated into a new text, built piece by piece in place, numbers written with a width, in hex or binary, or with so many
 digits after the point: `$"{crc:x8} {price,8:F2}"`); structs, enums with methods, and `match` with patterns inside
 patterns, on text, joined with `or` and in ranges (`Add(Number(0), right)`, `"if" => ...`, `'a'..='z' or '_'`,
 `null`), and `is` whose names reach along `&&` (`if int.parse(read text) is Ok(n) && n > 0`); `T*`, `T?`

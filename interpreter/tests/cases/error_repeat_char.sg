@@ -1,0 +1,4 @@
+void main() {
+    char dash = '-'
+    print(dash.repeat(10))
+}
