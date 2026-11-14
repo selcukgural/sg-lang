@@ -1235,6 +1235,14 @@ scores[2..5].sort()                              // a range in front of sort or 
                                                  // those items are put in order where they are
 void sortAll(ref int[] items) { items.sort() }   // sort and reverse through a ref T[] and on an array;
                                                  // through a read T[] it is an error. Hint: ref xs
+
+var width = ushort.fromLittleEndian(data[6..8])  // a number out of exactly as many bytes as its type takes,
+                                                 // the lowest first. Rust: u16::from_le_bytes, Go: binary.LittleEndian
+var size = uint.fromBigEndian(data[at..at + 4])  // the highest first; the count is checked, then one load
+var bad = ulong.fromLittleEndian(data[at..at + 4])
+                                                 // error: ulong.fromLittleEndian reads 8 bytes, and this window has 4.
+                                                 // Hint: data[at..at + 8]. A width that depends on data panics
+buffer.addAll(read length.toBigEndian())         // the bytes of a number: a byte[4] for a uint, where the value is
 ```
 
 ### Fixed-size arrays

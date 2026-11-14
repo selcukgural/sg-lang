@@ -135,6 +135,9 @@ pub enum Callee {
     /// `int.parse(text)`, `double.parse(text)`, `int.parseHex(text)`: the type is the one in
     /// the `Result` it gives; the number is the base the digits are read in (10 or 16).
     Parse(u32),
+    /// `ulong.fromLittleEndian(bytes)`, `ushort.fromBigEndian(bytes)`: the integer that exactly
+    /// as many bytes as the type takes write, the first byte the lowest (or the highest).
+    FromBytes { ty: IntTy, big: bool },
     /// `File.readText(path)`, `File.openText(path)` and the other functions of `File`.
     Io(IoCall),
     /// `reader.readLine(ref line)`, `writer.write(x)` and the other methods of a

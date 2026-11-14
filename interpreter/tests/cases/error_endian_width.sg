@@ -1,0 +1,8 @@
+ulong first(read byte[] data, nint at) {
+    return ulong.fromLittleEndian(data[at..at + 4])
+}
+
+void main() {
+    var data = byte[16]
+    print(first(read data, 0))
+}

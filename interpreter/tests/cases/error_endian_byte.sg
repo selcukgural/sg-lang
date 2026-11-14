@@ -1,0 +1,4 @@
+void main() {
+    var data = byte[4]
+    print(byte.fromLittleEndian(data[..1]))
+}

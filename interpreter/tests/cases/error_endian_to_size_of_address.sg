@@ -1,0 +1,4 @@
+void main() {
+    var bytes = List<byte>()
+    print(bytes.length().toLittleEndian())
+}

@@ -1,0 +1,5 @@
+error: `ulong.fromLittleEndian` reads 8 bytes, and this window has 4
+  --> error_endian_width.sg:2:35
+ 2 |     return ulong.fromLittleEndian(data[at..at + 4])
+   |                                   ^^^^^^^^^^^^^^^^
+  hint: a window of 8 bytes: `data[at..at + 8]`

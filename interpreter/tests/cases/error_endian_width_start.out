@@ -1,0 +1,5 @@
+error: `uint.fromBigEndian` reads 4 bytes, and this window has 2
+  --> error_endian_width_start.sg:3:30
+ 3 |     print(uint.fromBigEndian(data[..2]))
+   |                              ^^^^^^^^^
+  hint: a window of 4 bytes: `data[..4]`

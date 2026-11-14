@@ -1,0 +1,4 @@
+void main() {
+    var bytes = 7.toLittleEndian()
+    print(ulong.fromLittleEndian(read bytes))
+}

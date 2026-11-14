@@ -1,0 +1,5 @@
+error: type `uint` has no method `fromLittleEndian`
+  --> error_endian_from_on_value.sg:4:13
+ 4 |     print(n.fromLittleEndian(read data))
+   |             ^^^^^^^^^^^^^^^^
+  hint: `fromLittleEndian` is a function of the type: `uint.fromLittleEndian(bytes)`

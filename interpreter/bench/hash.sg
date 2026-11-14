@@ -1,22 +1,19 @@
 // A hash. XXH64, the 64-bit xxHash, over one megabyte of bytes, two thousand times with a
 // different seed and a different length each time. The arithmetic wraps on purpose, so it
-// is written with `wrapping...`; the bytes are read eight at a time, each eight cut out of
-// the data first (see `read64`).
+// is written with `wrapping...`; the bytes are read eight at a time with
+// `ulong.fromLittleEndian` (see `read64`).
 ulong rotl(ulong value, int by) {
     return value << by | value >> (64 - by)
 }
 
-// The eight bytes are cut out first: one check that they are there, and after it the
-// compiler knows each index is inside, so it reads them as one number.
+// One check that the eight bytes are there, and one load; the C program reads them with
+// `memcpy`, as xxHash does.
 ulong read64(read byte[] data, nint at) {
-    var b = data[at..at + 8]
-    return (ulong)b[0] | (ulong)b[1] << 8 | (ulong)b[2] << 16 | (ulong)b[3] << 24 |
-        (ulong)b[4] << 32 | (ulong)b[5] << 40 | (ulong)b[6] << 48 | (ulong)b[7] << 56
+    return ulong.fromLittleEndian(data[at..at + 8])
 }
 
 ulong read32(read byte[] data, nint at) {
-    var b = data[at..at + 4]
-    return (ulong)b[0] | (ulong)b[1] << 8 | (ulong)b[2] << 16 | (ulong)b[3] << 24
+    return (ulong)uint.fromLittleEndian(data[at..at + 4])
 }
 
 ulong round(ulong acc, ulong input) {

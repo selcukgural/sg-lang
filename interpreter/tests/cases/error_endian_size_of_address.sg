@@ -1,0 +1,4 @@
+void main() {
+    var data = byte[8]
+    print(nint.fromLittleEndian(read data))
+}

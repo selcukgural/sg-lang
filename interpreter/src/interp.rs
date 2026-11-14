@@ -1501,6 +1501,22 @@ impl<'a> Interp<'a> {
                         }
                     })
                 }
+                // `ulong.fromLittleEndian(bytes)`: exactly as many bytes as the type takes.
+                Callee::FromBytes { ty, big } => {
+                    let cells = cells_of(&owned(self.expr(&args[0], frame)?));
+                    let size = (ty.bits() / 8) as usize;
+                    if cells.len() != size {
+                        let message = format!("`{}.{name}` reads {size} bytes, and it was given {}", ty.name(), cells.len());
+                        return Err(Diag::panic(expr.span, message).into());
+                    }
+                    let mut bits: u128 = 0;
+                    for (at, item) in cells.iter().enumerate() {
+                        let Value::Int(_, byte) = &*item.borrow() else { unreachable!("the checker makes the items bytes") };
+                        let shift = if *big { (size - 1 - at) * 8 } else { at * 8 };
+                        bits |= (*byte as u128) << shift;
+                    }
+                    Ok(Value::Int(*ty, ty.wrap(bits as i128)))
+                }
                 Callee::Parse(radix) => {
                     let Value::Str(text) = strip(self.expr(&args[0], frame)?) else {
                         unreachable!("the checker makes the argument text")
@@ -2673,6 +2689,15 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
                 Some(result) if ty.fits(result) => Value::Int(*ty, result),
                 _ => Value::Null,
             }
+        }
+        // The bytes of the number in an array, the lowest first, or the highest first.
+        (Value::Int(ty, value), "toLittleEndian" | "toBigEndian", []) => {
+            let bits = *value as u128;
+            let mut bytes: Vec<Cell> = (0..ty.bits() / 8).map(|at| cell(Value::Int(IntTy::Byte, ((bits >> (at * 8)) & 0xff) as i128))).collect();
+            if name == "toBigEndian" {
+                bytes.reverse();
+            }
+            Value::Array(Rc::new(bytes))
         }
         (Value::Int(_, value), "tryToChar", []) => crate::check::char_of(*value).map_or(Value::Null, Value::Char),
         (Value::Int(_, value), _, []) if name.starts_with("tryTo") || name.starts_with("wrappingTo") => {

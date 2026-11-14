@@ -1,0 +1,5 @@
+error: the value that `fromLittleEndian` gives is not used
+  --> error_endian_unused.sg:3:5
+ 3 |     uint.fromLittleEndian(read data)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: keep it in a variable: `var value = uint.fromLittleEndian(read data)`

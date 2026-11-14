@@ -1,0 +1,4 @@
+void main() {
+    byte b = 7
+    print(b.toLittleEndian())
+}

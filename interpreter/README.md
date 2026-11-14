@@ -58,6 +58,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic. `tryToInt()` and the others give `null` where a cast would panic, `wrappingToInt()` and the others keep the bits that fit; `min`, `max` |
 | Fractional methods | `abs`, `sqrt`, `floor`, `ceil`, `round`, `truncate`, `isNaN`, `isInfinite`; `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pow`, `fusedMultiplyAdd`, `min`, `max`; `tryToInt()` and the others |
 | Numbers from text | `int.parse(text)`, and the same on every number type, gives a `Result<int, NumberError>`; the built-in `enum NumberError { Invalid(nint position)` / `OutOfRange }` says where the text stops being a number, or that the type does not hold it. `int.parseHex(text)`, and the same on every integer type, reads hex digits (`ff`, `FF`, no `0x`) |
+| Numbers as bytes | `ulong.fromLittleEndian(bytes)` reads the number that exactly as many bytes as the type takes write, the lowest byte first (`ushort.fromLittleEndian(data[at..at + 2])`); `fromBigEndian` reads the highest first. `n.toLittleEndian()` and `n.toBigEndian()` give the bytes of the number as a `byte[N]`. On `short`, `ushort`, `int`, `uint`, `long` and `ulong` |
 | Constants | `int.MinValue`, `int.MaxValue` and the same on every integer type; `double.MinValue`, `double.MaxValue`, `double.NaN`, `double.Infinity`, `double.Pi`, `double.E` and the same on `float` |
 
 Design rules that are already enforced:
@@ -229,6 +230,10 @@ Design rules that are already enforced:
 - A borrow of a value that has no name cannot be kept: `var part = make()[..5]`, `var label =
   make().label()`, `return first(read make())` and the same put into a field are errors whose hint is to
   give the value a name. Inside one line it is fine: `print(make()[..5])`.
+- `ulong.fromLittleEndian(bytes)` takes exactly as many bytes as the type: a window whose width the program
+  shows (`data[at..at + 4]`, `data[..4]`, an array) and that is another is an error whose hint is the window
+  of the right width; one whose width depends on data panics with both numbers. `byte`, `sbyte`, `nint`,
+  `nuint` and the fractional types have neither these functions nor `toLittleEndian`, each with a hint.
 
 ## The C back end
 
@@ -237,7 +242,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (186 of 729 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (189 of 745 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -303,7 +308,8 @@ together with the checker and the interpreter. The forty-eighth slice is in the 
 the forty-ninth (narrowing under `!` and after a `while`). Since the fiftieth slice the names of `is not`,
 and the names seen after an `if` or a `while`, written together with the checker and the interpreter; an
 `is` with names on a value made by a call after the first `&&` or `||` is compiled when that value owns
-no memory (299). What is still missing is an error that names it (not silence): the few positions listed with the
+no memory (299). Since the fifty-first slice `fromLittleEndian`, `fromBigEndian`, `toLittleEndian`
+and `toBigEndian`, written together with the checker and the interpreter. What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -335,7 +341,7 @@ hand with no checks):
 | `lookup`: three hundred million lookups in a list of records of 128 bytes, through a function that gives back a `read Record?` | 0.498 s | 0.488 s | 0.491 s | 1.01 |
 | `buffer`: 32 bytes on the stack written as hex into a buffer of 64 through a `ref byte[]`, added up through a `read byte[]` and a range of it, fifteen million times | 0.280 s | 0.733 s | 0.283 s | 0.99 |
 | `bits`: a sieve below sixty-four million with one bit for each number, then thirty million numbers written seven bits at a time into a buffer on the stack and read back | 0.322 s | 0.321 s | 0.407 s | 0.79 |
-| `hash`: XXH64, the 64-bit xxHash, written with `ulong`, over one megabyte, two thousand times | 0.134 s | 0.488 s | 0.133 s | 1.01 |
+| `hash`: XXH64, the 64-bit xxHash, written with `ulong`, over one megabyte, two thousand times, the bytes read eight at a time with `ulong.fromLittleEndian` | 0.129 s | 0.154 s | 0.125 s | 1.03 |
 | `nbody`: the sun and the four giant planets moved twenty million steps in `double`, a square root for each pair at each step | 0.661 s | 0.662 s | 0.679 s | 0.97 |
 | `numbers`: a million lines of whole and fractional numbers read ten times with `long.parse` and `double.parse` and added up | 0.186 s | 0.191 s | 0.196 s | 0.95 |
 | `fields`: a million lines like ` Ada17 , 120, -45 ,6789` gone over twenty times with `lines`, `split`, `trim`, `long.parse` and `chars` | 1.228 s | 1.259 s | 1.202 s | 1.02 |
@@ -413,13 +419,15 @@ left out; not "faster than C". The overflow-checked build takes the same time as
 the shifts by a constant and by `n & 63` need no test, and the others are one comparison.
 `hash` is the first program with the unsigned types: XXH64 on `ulong`, with rotations, `>>` that brings
 in zeros, and multiplications that wrap on purpose (`wrappingMultiply`). The C it is compared with reads
-eight bytes at a time with `memcpy`, as xxHash does. SG puts the number together from the bytes, after
-cutting the eight out of the data (`data[at..at + 8]`): one check, and the C compiler joins the eight
+eight bytes at a time with `memcpy`, as xxHash does. SG first put the number together from the bytes,
+after cutting the eight out of the data (`data[at..at + 8]`): one check, and the C compiler joined the eight
 reads into one. Written without the cut, with each of `data[at]` to `data[at + 7]` checked by itself, the
-same program took 3.5 times the time of C (choice 136). The overflow-checked build takes 3.6 times: the
+same program took 3.5 times the time of C (choice 136). The overflow-checked build took 3.6 times: the
 additions `at + 8`, `at + 16` and `at + 24` that give the place of each read are checked, and those tests
-again stand between the reads. With them written as wrapping additions it takes the time of C; the tests of
-the casts `(ulong)b[0]` cost nothing (the C compiler sees that a `byte` always fits).
+stood between the eight reads. Since the fifty-first slice it reads with `ulong.fromLittleEndian(data[at..at
++ 8])`: the range is checked once, the count of eight is then known to the C compiler, and the bytes are one
+load. The release build takes the time of C as before, and the checked build now takes 1.23 times, since
+its tests no longer stand between eight reads (choice 307).
 `nbody` is the first program with fractional numbers: five bodies in a `Body[5]` on the stack, ten
 pairs at each step, a `sqrt` for each pair. The two take the same time (0.97 here; 1.00 when timed by
 hand before): a `double` is C's `double`, `sqrt` is one instruction, and nothing on a fractional number
@@ -1509,7 +1517,8 @@ Choices made in the thirty-third slice (the other integer types; checker, interp
      `b[0]` to `b[7]` is inside: the reads become one and the time is that of C. The same test
      written by hand into the C output in front of the eight reads did not do it. The benchmark reads that way; a built-in that reads a number
      out of bytes (`ulong.fromLittleEndian(...)`, Rust's `u64::from_le_bytes`, Go's
-     `binary.LittleEndian.Uint64`) is a candidate, not part of this slice.
+     `binary.LittleEndian.Uint64`) is a candidate, not part of this slice. (The fifty-first slice adds
+     it: 301.)
 137. **A release build wraps on the new types too** (`tests/release/unsigned_wraps`): `2 - 3` on a
      `uint` is 4294967295, `127 + 1` on an `sbyte` is -128, `(ulong)-1` is the largest `ulong`.
 
@@ -2514,6 +2523,60 @@ checker, interpreter and back end), approved on 14 November 2026:
      a move of the tested value while a name is used later). Every compiled one left no memory behind; the
      program gives the same output under gcc.
 
+Choices made in the fifty-first slice (numbers read out of bytes and written into them; checker, interpreter
+and back end), approved on 14 November 2026:
+
+301. **`T.fromLittleEndian(bytes)` and `T.fromBigEndian(bytes)`** on `short`, `ushort`, `int`, `uint`,
+     `long` and `ulong`: a function of the type, as `parse` is, that takes a `read byte[]` and gives the
+     number the bytes write, the lowest byte first or the highest first. A signed type reads the highest
+     bit as the sign (`short.fromLittleEndian` of `ff ff` is -1). Rust has `u64::from_le_bytes`, Go
+     `binary.LittleEndian.Uint64`, C# `BinaryPrimitives.ReadUInt64LittleEndian`; the name here says the
+     order in whole words, as the other names of the language do, and leaves out "bytes", which the
+     argument already is. It is what a file format needs (a GIF keeps its sizes in two bytes, the lowest
+     first), and it closes the first place in "Slower than C".
+302. **Exactly as many bytes as the type takes**: 2, 4 or 8. Rust (an array `[u8; 8]`) and Zig (a
+     `*const [8]u8`) want exactly that many; Go and C# read the first ones and leave the rest. A window of
+     another width is nearly always a wrong position or a wrong type, and this rule finds it; the cost is
+     writing the width (`data[at..at + 8]`), which also shows the reader what is read. A window whose
+     width depends on data panics with both numbers: "`uint.fromLittleEndian` reads 4 bytes, and it was
+     given 2".
+303. **A width the program shows is checked before it runs**: an array (its length is in the type),
+     `xs[..k]` and `xs[a..b]` with constants, a range to the end of an array, and `xs[at..at + k]` where
+     `at` is a variable or a field of one, which gives the same value at both ends (a call does not:
+     `next()..next() + 8` is checked when it runs). Another width is "`ulong.fromLittleEndian` reads 8
+     bytes, and this window has 4", with the hint of the window of the right width (`data[at..at + 8]`).
+304. **`n.toLittleEndian()` and `n.toBigEndian()`** give the bytes of the number as a `byte[N]` (2, 4 or
+     8): the array lies where the value is, and nothing is allocated, as with Rust's `to_le_bytes`.
+     `out.addAll(read bytes)` puts them into a list, and `out.addAll(read n.toLittleEndian())` lends the
+     array for that one line. Rust's `to_le` (without "bytes") gives a number with its bytes turned
+     around; SG has no such method (Not here yet), so the shorter name is free for the bytes.
+305. **What has neither**: `byte` and `sbyte` ("one byte has no order to be read in", with the hint
+     `data[i]` or `byte[1] { b }`); `nint` and `nuint` (an address has the size the machine gives it, a
+     number kept in bytes has a size of its own; the hint is the `long` or `ulong` form and a cast); the
+     fractional types (a note that it is not here yet). `n.fromLittleEndian(...)` on a value gets the hint
+     of the type's function, and the names other languages use (`from_le_bytes`, `fromBytes`, `toBytes`,
+     `getBytes`) the hint of the name here. A call whose value is not used is an error, as for every
+     built-in method that only gives a value (282).
+306. **Compiled code**: one C function for each type and order, made where it is first used: the count is
+     compared with the width, then `memcpy` into a `uint64_t` (or `uint32_t`, `uint16_t`) and
+     `__builtin_bswap64` where the machine keeps its bytes the other way: one load, or one load and one
+     instruction. Where the window was cut with a constant width just before, the C compiler sees that
+     the count is right and removes the test: in `hash` no call of the panic is left, and `read64` is one
+     `ldr`. `toLittleEndian` is one store into the array. The panic writes what the interpreter writes.
+307. **Measured**: `hash` now reads with it. The release build takes 0.129 s against 0.125 s in C (1.03,
+     as with the window it read through before), and the checked build 0.154 s, where it took 0.479 s
+     (3.6 times C, now 1.23): the overflow tests of `at + 8` stood between eight reads that the C compiler
+     could not then join, and now stand in front of one load. Put together from the bytes one index at a
+     time, the program still takes 3.5 times C; the "Slower than C" list says so.
+308. **The tests**: one program (the screen size of a GIF read into a struct, windows cut where a
+     variable says, without an end and out of an array, the bytes of a list a call made, the signed and
+     unsigned reading of `ff` bytes, the extremes of each type written and read back in both orders,
+     through a `ref int` and a field, and bytes gathered into a list and read back), thirteen tests of
+     errors (three windows of the wrong width, `byte`, `nint`, `double`, other languages' names on the
+     type and on a value, the function on a value, two unused values, and `toLittleEndian` on `byte` and on
+     `nint`) and two panics (too few bytes, too many). Every compiled one left no memory behind; the
+     program gives the same output under gcc.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -2522,13 +2585,13 @@ check off.
 
 - **Bytes read one index at a time** (`hash`, choice 136): `data[at] | data[at + 1] << 8 | ...` checks
   each index, the C compiler cannot join the reads, and the program takes 3.5 times the time of C. Cutting
-  the window first (`data[at..at + 8]`) already takes the time of C. Candidates: a built-in that reads a
-  number out of bytes (`ulong.fromLittleEndian(...)`), or a hint from the checker where it sees the pattern.
-- **Overflow checks on the arithmetic of an index in a checked build** (`hash`, 3.6 times): `at + 8` is
-  tested for overflow before it is used as a place, and those tests stand between reads that could be
-  joined; with them written as wrapping additions the checked build takes the time of C. A release build
-  has none. The checked builds of `vector` (2 times) and `buffer` (2.6 times) may have the same cause;
-  that is not looked at yet. Candidates: leave out the
+  the window first (`data[at..at + 8]`) already takes the time of C, and `ulong.fromLittleEndian` (301)
+  does too, in the checked build as well. What is left: a hint from the checker where it sees the pattern.
+- **Overflow checks on the arithmetic of an index in a checked build** (`hash`, 3.6 times while it read
+  the bytes one by one, 1.23 times with `fromLittleEndian`): `at + 8` is tested for overflow before it is
+  used as a place, and those tests stood between reads that could be joined; with them written as
+  wrapping additions the checked build takes the time of C. A release build has none. The checked builds
+  of `vector` (2 times) and `buffer` (2.6 times) may have the same cause; that is not looked at yet. Candidates: leave out the
   overflow test of an addition whose result goes straight into an index or a range that is checked
   anyway (an overflow there could only give a place the bounds check refuses), or let the checker prove
   the range of a loop counter.
@@ -2584,8 +2647,9 @@ check off.
 - A number is written in decimal, hex and binary (`{n:x}`, `{n:b}`) and read in decimal and hex
   (`parse`, `parseHex`), not in binary. C#'s other letters (`E`, `G`, `N`, `C`, `P`) and formats made of
   characters (`{x:0.00}`), a fill other than a space, centring, and a width that comes from a variable
-  (choices 224, 229). No way to read a number out of bytes in one step
-  (`ulong.fromLittleEndian(bytes)`): it is put together from the bytes by hand (see 136). `abs` and
+  (choices 224, 229). A fractional number is not read out of bytes or written into them
+  (`double.fromLittleEndian`, the bits of a `double` as a `ulong`), and the order of the bytes is not
+  turned around inside a number (`n.reverseBytes()`). `abs` and
   `clamp` on integers, `sinh` and the other functions of `<math.h>` that are not listed in 162.
 - Arrays of arrays, `read T[]?`, an array as a key, looking for a run of items in a slice. `addAll` of
   items that are not `Copyable`, moving every item of one list into another, adding a range of a list to
@@ -2646,6 +2710,10 @@ the ones that change their value (`removeLast`) and the functions you write may 
 a test of `null` says (`if !(x is null)`), and after `while x is null { ... }` the variable is not `null`.
 The names of `is not` are seen where it fails, after the `if` too (`if int.parse(read text) is not Ok(n) {
 return }` and then `n`), and so are those of an `is` after an `if` whose `else` leaves.
+`ulong.fromLittleEndian(data[at..at + 8])` reads a number out of exactly as many bytes as its type takes,
+`n.toLittleEndian()` gives its bytes as an array, and the big-endian forms read and write the highest byte
+first; XXH64 written with them takes 1.03 times the time of C, and 1.23 times in a checked build, where it
+took 3.6.
 
 Candidates for what comes next: type aliases (`using`), threads, the places that are slower than C, a
 value that owns memory made after the first `&&` or `||` for an `is` with names in compiled code (268).

@@ -1,0 +1,5 @@
+start
+panic: `uint.fromLittleEndian` reads 4 bytes, and it was given 2
+  --> panic_endian_short.sg:6:11
+ 6 |     print(uint.fromLittleEndian(read data))
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

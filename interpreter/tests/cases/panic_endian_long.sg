@@ -1,0 +1,5 @@
+void main() {
+    var data = byte[12]
+    nint at = 2
+    print(ulong.fromBigEndian(data[at..]))
+}

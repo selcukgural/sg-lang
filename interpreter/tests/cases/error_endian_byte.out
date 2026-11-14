@@ -1,0 +1,5 @@
+error: a `byte` is one byte, and one byte has no order to be read in
+  --> error_endian_byte.sg:3:16
+ 3 |     print(byte.fromLittleEndian(data[..1]))
+   |                ^^^^^^^^^^^^^^^^
+  hint: the byte itself: `data[i]`

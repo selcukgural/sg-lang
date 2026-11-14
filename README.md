@@ -154,7 +154,8 @@ patterns, on text, joined with `or` and in ranges (`Add(Number(0), right)`, `"if
 `null`), and `is` whose names reach along `&&` (`if int.parse(read text) is Ok(n) && n > 0`) and, for `is not`,
 past an `if` that leaves (`if int.parse(read text) is not Ok(n) { return }`); `T*`, `T?`
 (narrowed along `&&` and `||`, under `!` and after `while x is null`) and `Result` with `try` and `??`; `List`, `HashMap` and `HashSet`; fixed-size arrays (`int[8]`) and slices (`read byte[]`), with bytes
-gathered into a list in one copy (`buffer.addAll(piece)`) and ranges sorted where they are (`xs[2..5].sort()`);
+gathered into a list in one copy (`buffer.addAll(piece)`), numbers read out of bytes and written into them in
+either order (`ushort.fromLittleEndian(data[6..8])`, `n.toBigEndian()`), and ranges sorted where they are (`xs[2..5].sort()`);
 function values; ownership, moves and the borrow check; modules (`use`, `public`, `readonly`); `test`
 blocks.
 

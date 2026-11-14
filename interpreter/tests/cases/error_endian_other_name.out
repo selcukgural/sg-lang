@@ -1,0 +1,5 @@
+error: `uint` has no function `from_le_bytes`
+  --> error_endian_other_name.sg:3:16
+ 3 |     print(uint.from_le_bytes(read data))
+   |                ^^^^^^^^^^^^^
+  hint: `uint.fromLittleEndian(bytes)`

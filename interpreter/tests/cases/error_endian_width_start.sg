@@ -1,0 +1,4 @@
+void main() {
+    var data = byte[16]
+    print(uint.fromBigEndian(data[..2]))
+}

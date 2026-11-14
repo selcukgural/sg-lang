@@ -1,0 +1,4 @@
+error: `ulong.fromLittleEndian` reads 8 bytes, and this window has 4
+  --> error_endian_width_array.sg:3:34
+ 3 |     print(ulong.fromLittleEndian(read bytes))
+   |                                  ^^^^^^^^^^

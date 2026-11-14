@@ -241,7 +241,7 @@ fn is_text_value(ty: &Ty) -> bool {
 /// the change is what they are called for.
 fn gives_only(name: &str, callee: &Callee) -> bool {
     match callee {
-        Callee::Join | Callee::WithCapacity => true,
+        Callee::Join | Callee::WithCapacity | Callee::FromBytes { .. } => true,
         Callee::Plain => !matches!(name, "removeLast" | "add" | "remove" | "getOrAdd" | "next"),
         _ => false,
     }
@@ -1079,6 +1079,76 @@ fn known_int(expr: &Expr) -> Option<i128> {
         ExprKind::Widen(_, inner) => known_int(inner),
         _ => None,
     }
+}
+
+/// The expression under the widenings the checker put around it.
+fn unwidened(expr: &Expr) -> &Expr {
+    match &expr.kind {
+        ExprKind::Widen(_, inner) => unwidened(inner),
+        _ => expr,
+    }
+}
+
+/// How many items a window is known to have before the program runs: an array (`read
+/// buffer`), `xs[..8]`, `xs[2..10]`, and `xs[at..at + 8]` where `at` is a variable or a field
+/// of one, which gives the same value at both ends.
+fn known_width(src: &str, expr: &Expr) -> Option<i128> {
+    match &expr.kind {
+        ExprKind::AsSlice(inner) | ExprKind::Borrow { expr: inner, .. } => known_width(src, inner),
+        ExprKind::Slice { recv, from, to } => {
+            let length = match recv.ty.strip_borrow() {
+                Ty::Array(_, length) => Some(*length as i128),
+                _ => None,
+            };
+            let start = match from {
+                None => Some(0),
+                Some(from) => known_int(from),
+            };
+            let end = match to {
+                None => length,
+                Some(to) => known_int(to),
+            };
+            if let (Some(start), Some(end)) = (start, end) {
+                return Some(end - start);
+            }
+            let (Some(from), Some(to)) = (from, to) else { return None };
+            let (from, to) = (unwidened(from), unwidened(to));
+            let ExprKind::Binary(BinOp::Add, left, right) = &to.kind else { return None };
+            let left = unwidened(left);
+            let same = steady(from) && src[left.span.start..left.span.end] == src[from.span.start..from.span.end];
+            if same { known_int(right) } else { None }
+        }
+        _ => match expr.ty.strip_borrow() {
+            Ty::Array(_, length) => Some(*length as i128),
+            _ => None,
+        },
+    }
+}
+
+/// A variable, or a field of one: it gives the same value each time it is read in one
+/// expression.
+fn steady(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Var(_) => true,
+        ExprKind::Field { recv, .. } => steady(recv),
+        _ => false,
+    }
+}
+
+/// The function or the method that reads or writes a number as bytes, for a name that is
+/// not one (`from_le_bytes`, `fromBytes`, `toBytes`).
+fn endian_hint(name: &str, from: bool) -> Option<&'static str> {
+    let lower = name.to_lowercase().replace('_', "");
+    if !(lower.contains("endian") || lower.contains("bytes")) {
+        return None;
+    }
+    let big = lower.contains("big") || lower.contains("bebytes");
+    Some(match (from, big) {
+        (true, false) => "fromLittleEndian",
+        (true, true) => "fromBigEndian",
+        (false, false) => "toLittleEndian",
+        (false, true) => "toBigEndian",
+    })
 }
 
 /// The fractional type a number is expected to have, behind a borrow or a `?` too.
@@ -5358,6 +5428,55 @@ impl<'a> Checker<'a> {
         Ok(sig.ret.clone())
     }
 
+    /// `ulong.fromLittleEndian(bytes)`: the integer that exactly as many bytes as the type
+    /// takes write. Where the program shows how many bytes the window has, another number is
+    /// a compile error; otherwise the count is checked when the program runs.
+    fn number_from_bytes(&mut self, ty: &Ty, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+        let int = match ty {
+            Ty::Int(int @ (IntTy::Short | IntTy::Ushort | IntTy::Int | IntTy::Uint | IntTy::Long | IntTy::Ulong)) => *int,
+            Ty::Int(int @ (IntTy::Byte | IntTy::Sbyte)) => {
+                // The name of the bytes as the program writes it: `data` in `data[..1]`.
+                let bytes = match args.first().map(|arg| &arg.kind) {
+                    Some(ExprKind::Slice { recv, .. } | ExprKind::Borrow { expr: recv, .. }) if steady(recv) => &self.src[recv.span.start..recv.span.end],
+                    _ => "bytes",
+                };
+                let read = if *int == IntTy::Byte { format!("the byte itself: `{bytes}[i]`") } else { format!("`(sbyte){bytes}[i]`") };
+                return Err(Diag::error(name_span, format!("a `{ty}` is one byte, and one byte has no order to be read in")).hint(read));
+            }
+            Ty::Int(int) => {
+                let fixed = if int.signed() { "long" } else { "ulong" };
+                return Err(Diag::error(name_span, format!("`{ty}` has the size of an address, which depends on the machine; a number kept in bytes has a size of its own"))
+                    .hint(format!("`{fixed}.{name}(...)` reads 8 bytes; a cast makes it `{ty}`")));
+            }
+            _ => {
+                return Err(Diag::error(name_span, format!("`{name}` reads an integer, and `{ty}` is a fractional type"))
+                    .note("reading a fractional number out of bytes is not here yet"));
+            }
+        };
+        let bytes = Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+        self.args(name, args, &[bytes], span)?;
+        let size = i128::from(int.bits() / 8);
+        if let Some(given) = known_width(self.src, &args[0]) {
+            if given != size {
+                let diag = Diag::error(args[0].span, format!("`{ty}.{name}` reads {size} bytes, and this window has {given}"));
+                let window = match &unwidened(&args[0]).kind {
+                    ExprKind::Slice { recv, from: Some(from), .. } => {
+                        let (recv, from) = (&self.src[recv.span.start..recv.span.end], &self.src[from.span.start..from.span.end]);
+                        Some(format!("`{recv}[{from}..{from} + {size}]`"))
+                    }
+                    ExprKind::Slice { recv, from: None, .. } => Some(format!("`{}[..{size}]`", &self.src[recv.span.start..recv.span.end])),
+                    _ => None,
+                };
+                return Err(match window {
+                    Some(window) => diag.hint(format!("a window of {size} bytes: {window}")),
+                    None => diag,
+                });
+            }
+        }
+        *callee = Callee::FromBytes { ty: int, big: name == "fromBigEndian" };
+        Ok(ty.clone())
+    }
+
     /// `File.readText(path)`, `Stdin.readLine(ref line)`: what reads and writes files and
     /// the input. A path is a `read string`; each gives a `Result` with an `IoError`.
     fn io_call(&mut self, owner: &str, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
@@ -5398,6 +5517,9 @@ impl<'a> Checker<'a> {
         // `int.parse(text)`: the number the text writes, or where it stops being one.
         // `int.parseHex(text)`: the same in hex digits.
         if let Some(ty) = self.number_type_named(recv) {
+            if matches!(name, "fromLittleEndian" | "fromBigEndian") {
+                return self.number_from_bytes(&ty, name, name_span, args, callee, span);
+            }
             let radix = match (name, &ty) {
                 ("parse", _) => 10,
                 ("parseHex", Ty::Int(_)) => 16,
@@ -5407,9 +5529,12 @@ impl<'a> Checker<'a> {
                 }
                 _ => {
                     let diag = Diag::error(name_span, format!("`{ty}` has no function `{name}`"));
-                    let functions = if matches!(ty, Ty::Int(_)) { "parse, parseHex" } else { "parse" };
+                    let functions = if matches!(ty, Ty::Int(_)) { "parse, parseHex, fromLittleEndian, fromBigEndian" } else { "parse" };
                     return Err(match constant(&ty, name, name_span) {
                         Ok(()) => diag.hint(format!("`{name}` is a constant: `{ty}.{name}`, without parentheses")),
+                        Err(_) if matches!(ty, Ty::Int(_)) && endian_hint(name, true).is_some() => {
+                            diag.hint(format!("`{ty}.{}(bytes)`", endian_hint(name, true).expect("tested above")))
+                        }
                         Err(_) => match nearest(name, functions.split(", ")) {
                             Some(close) => diag.hint(format!("`{close}`")),
                             None => diag.note(format!("functions for now: {functions}")),
@@ -5656,6 +5781,27 @@ impl<'a> Checker<'a> {
                 self.typed(&mut args[0], &Ty::Char)?;
                 Ok(if name == "compare" { Ty::Int(IntTy::Int) } else { Ty::Bool })
             }
+            // `n.toLittleEndian()`: the bytes of the number, the lowest first (or the highest
+            // first with `toBigEndian`), in an array where the value is.
+            (Ty::Int(ty), "toLittleEndian" | "toBigEndian") => {
+                arity(0)?;
+                let text = &self.src[recv.span.start..recv.span.end];
+                match ty {
+                    IntTy::Byte | IntTy::Sbyte => {
+                        let item = if *ty == IntTy::Byte { text.to_string() } else { format!("(byte){text}") };
+                        return Err(Diag::error(name_span, format!("a `{target}` is one byte, and one byte has no order to be written in"))
+                            .hint(format!("an array of the one byte: `byte[1] {{ {item} }}`")));
+                    }
+                    IntTy::Nint | IntTy::Nuint => {
+                        let fixed = if ty.signed() { "long" } else { "ulong" };
+                        return Err(Diag::error(name_span, format!("`{target}` has the size of an address, which depends on the machine; a number kept in bytes has a size of its own"))
+                            .hint(format!("make it a `{fixed}` first: `(({fixed}){text}).{name}()` gives 8 bytes")));
+                    }
+                    _ => {}
+                }
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Array(Box::new(Ty::Int(IntTy::Byte)), (ty.bits() / 8) as usize))
+            }
             // `code.tryToChar()`: `null` if no character has this code.
             (Ty::Int(_), "tryToChar") => {
                 arity(0)?;
@@ -5896,6 +6042,12 @@ impl<'a> Checker<'a> {
                 }
                 if matches!(target, Ty::Int(_)) && matches!(name, "isWhitespace" | "utf8Length") {
                     return Err(diag.note(format!("`{name}` is a method of `char`")));
+                }
+                if let (Ty::Int(_), "fromLittleEndian" | "fromBigEndian") = (target, name) {
+                    return Err(diag.hint(format!("`{name}` is a function of the type: `{target}.{name}(bytes)`")));
+                }
+                if let (Ty::Int(_), Some(method)) = (target, endian_hint(name, false)) {
+                    return Err(diag.hint(format!("`{method}()` gives the bytes of the number")));
                 }
                 if matches!(target, Ty::Char | Ty::Str) {
                     return Err(text_method_hint(diag, target, name));

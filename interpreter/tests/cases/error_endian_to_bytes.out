@@ -1,0 +1,5 @@
+error: type `long` has no method `toBytes`
+  --> error_endian_to_bytes.sg:3:13
+ 3 |     print(n.toBytes())
+   |             ^^^^^^^
+  hint: `toLittleEndian()` gives the bytes of the number

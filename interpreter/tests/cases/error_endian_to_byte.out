@@ -1,0 +1,5 @@
+error: a `byte` is one byte, and one byte has no order to be written in
+  --> error_endian_to_byte.sg:3:13
+ 3 |     print(b.toLittleEndian())
+   |             ^^^^^^^^^^^^^^
+  hint: an array of the one byte: `byte[1] { b }`

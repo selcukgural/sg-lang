@@ -1,0 +1,5 @@
+error: the value that `toBigEndian` gives is not used
+  --> error_endian_to_unused.sg:3:5
+ 3 |     n.toBigEndian()
+   |     ^^^^^^^^^^^^^^^
+  hint: keep it in a variable: `var value = n.toBigEndian()`

@@ -1,0 +1,4 @@
+panic: `ulong.fromBigEndian` reads 8 bytes, and it was given 10
+  --> panic_endian_long.sg:4:11
+ 4 |     print(ulong.fromBigEndian(data[at..]))
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

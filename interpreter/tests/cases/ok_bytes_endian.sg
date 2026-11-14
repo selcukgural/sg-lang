@@ -1,0 +1,83 @@
+struct Header {
+    ushort width
+    ushort height
+}
+
+// The logical screen of a GIF: two numbers of two bytes each, the lowest byte first.
+Header header(read byte[] data) {
+    return Header { width = ushort.fromLittleEndian(data[6..8]), height = ushort.fromLittleEndian(data[8..10]) }
+}
+
+List<byte> made() {
+    var bytes = List<byte>()
+    bytes.add(0x78)
+    bytes.add(0x56)
+    bytes.add(0x34)
+    bytes.add(0x12)
+    return bytes
+}
+
+void grow(ref int n) {
+    var bytes = n.toBigEndian()
+    print(bytes)
+    n += 1
+}
+
+void main() {
+    var gif = byte[10] { 0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x40, 0x01, 0xf0, 0x00 }
+    var screen = header(read gif)
+    print($"{screen.width} x {screen.height}")
+
+    // A window cut where a variable says, a window with no end, and an array as it is.
+    nint at = 6
+    print(ushort.fromLittleEndian(gif[at..at + 2]))
+    print(ushort.fromBigEndian(gif[at..at + 2]))
+    print(uint.fromLittleEndian(gif[..4]))
+    print(uint.fromBigEndian(gif[..4]))
+    print(ulong.fromLittleEndian(gif[2..]))
+    print(long.fromBigEndian(gif[2..]))
+    print(uint.fromLittleEndian(read made()))
+
+    // The signed types read the highest bit as the sign.
+    var high = byte[8](0xff)
+    print(short.fromLittleEndian(high[..2]))
+    print(int.fromBigEndian(high[..4]))
+    print(long.fromLittleEndian(read high))
+    print(ushort.fromLittleEndian(high[..2]))
+    print(uint.fromBigEndian(high[..4]))
+    print(ulong.fromLittleEndian(read high))
+
+    // Into bytes: an array where the value is.
+    print(0x0102_0304.toLittleEndian())
+    print(0x0102_0304.toBigEndian())
+    print(((short)-300).toBigEndian())
+    print(((ushort)513).toLittleEndian())
+    print(long.MinValue.toBigEndian())
+    print(ulong.MaxValue.toLittleEndian())
+    print(screen.width.toBigEndian())
+    int count = 255
+    grow(ref count)
+    grow(ref count)
+
+    // There and back, in both orders, for each type.
+    var small = short.MinValue.toLittleEndian()
+    print(short.fromLittleEndian(read small))
+    var word = ushort.MaxValue.toBigEndian()
+    print(ushort.fromBigEndian(read word))
+    var four = int.MinValue.toBigEndian()
+    print(int.fromBigEndian(read four))
+    var unsigned = ((uint)3_000_000_000).toLittleEndian()
+    print(uint.fromLittleEndian(read unsigned))
+    var eight = (-1_234_567_890_123).toLittleEndian()
+    print(long.fromLittleEndian(read eight))
+    var large = ulong.MaxValue.toBigEndian()
+    print(ulong.fromBigEndian(read large))
+
+    // Bytes gathered into a list, as a file is written.
+    var out = List<byte>()
+    out.addAll(read screen.width.toLittleEndian())
+    var length = ((uint)70000).toBigEndian()
+    out.addAll(read length)
+    print(out)
+    print(uint.fromBigEndian(out[2..6]))
+}

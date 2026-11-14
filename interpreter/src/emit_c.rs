@@ -15,7 +15,7 @@
 //! enums with methods, `match` and `is` (with patterns inside patterns, `or`, ranges, `null`, `true` and
 //! `false`, and on text, a `bool` and a `T?`; the names of `is` reach along `&&`, those of `is not` along `||`
 //! and past an `if` that leaves), `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
-//! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, `print` and `printError`, files
+//! slices, numbers read out of bytes and written into them (`fromLittleEndian`, `toBigEndian`), function values, `T*` and `new`, `T?`, `read` and `ref`, `print` and `printError`, files
 //! read and written whole or piece by piece, as text or as bytes (`StreamReader`, `StreamWriter`,
 //! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`). Anything else is an error that names what is missing, so nothing is compiled
 //! wrongly in silence.
@@ -467,6 +467,29 @@ SG_COLD static _Noreturn void sg_span_fail(long long from, long long to, long lo
     fflush(stdout);
     if (from < 0 || from > len || to < 0 || to > len) fprintf(stderr, "panic: range %lld..%lld is out of range: the length is %lld\n", from, to, len);
     else fprintf(stderr, "panic: range %lld..%lld ends before it starts\n", from, to);
+    sg_die(loc);
+}
+/* A number kept in bytes, the lowest byte first (little-endian) or the highest first
+   (big-endian): one load or one store, turned around where the machine keeps its bytes the
+   other way. */
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define SG_LE16(v) __builtin_bswap16(v)
+#define SG_LE32(v) __builtin_bswap32(v)
+#define SG_LE64(v) __builtin_bswap64(v)
+#define SG_BE16(v) (v)
+#define SG_BE32(v) (v)
+#define SG_BE64(v) (v)
+#else
+#define SG_LE16(v) (v)
+#define SG_LE32(v) (v)
+#define SG_LE64(v) (v)
+#define SG_BE16(v) __builtin_bswap16(v)
+#define SG_BE32(v) __builtin_bswap32(v)
+#define SG_BE64(v) __builtin_bswap64(v)
+#endif
+SG_COLD static _Noreturn void sg_bytes_fail(const char* what, int64_t want, int64_t len, const char* loc) {
+    fflush(stdout);
+    fprintf(stderr, "panic: `%s` reads %lld bytes, and it was given %lld\n", what, (long long)want, (long long)len);
     sg_die(loc);
 }
 /* Where the first byte lies that is not part of valid UTF-8, or -1 when the bytes are text. */
@@ -6737,6 +6760,28 @@ impl<'a> Emitter<'a> {
                 }
                 Callee::Io(call) => self.io(*call, args, head, expr),
                 Callee::Stream(call) => self.stream(*call, recv, args, head, expr),
+                // `ulong.fromLittleEndian(bytes)`: the count is checked, then the bytes are one
+                // load. Where the window was cut with a constant width just before, the C
+                // compiler sees that the check never fails.
+                Callee::FromBytes { ty, big } => {
+                    let (bits, size) = (ty.bits(), ty.bits() / 8);
+                    let fname = format!("sg_from_{}_{}", if *big { "be" } else { "le" }, int_name(*ty));
+                    let bytes = Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+                    let (given, int) = (self.ctype(&bytes, expr.span)?, int_ctype(*ty));
+                    if self.made.insert(fname.clone()) {
+                        let order = if *big { "BE" } else { "LE" };
+                        let what = c_string(&format!("{}.{name}", ty.name()));
+                        let _ = writeln!(
+                            self.glue,
+                            "static inline {int} {fname}({given} bytes, const char* loc) {{ \
+                             if (__builtin_expect(bytes.len != {size}, 0)) sg_bytes_fail({what}, {size}, bytes.len, loc); \
+                             uint{bits}_t v; memcpy(&v, bytes.ptr, {size}); return ({int})SG_{order}{bits}(v); }}"
+                        );
+                    }
+                    let value = self.value_as(&args[0], &bytes)?;
+                    let loc = self.loc(expr.span);
+                    Ok(format!("{fname}({value}, {loc})"))
+                }
                 // `int.parse(text)`: one function for each type, made where it is first used.
                 Callee::Parse(radix) => {
                     let Ty::Result(ty, _) = &expr.ty else { return Err(not_yet(expr.span, "`parse`")) };
@@ -6991,6 +7036,16 @@ impl<'a> Emitter<'a> {
                              {temp}.has = (__int128){temp}.value == {temp}v; {temp}; }})"
                         ),
                     })
+                }
+                // `n.toLittleEndian()`: the number is stored into the array as one store.
+                Callee::Plain if matches!(name.as_str(), "toLittleEndian" | "toBigEndian") => {
+                    let Ty::Int(ty) = recv.ty.strip_borrow() else { return Err(not_yet(expr.span, &format!("the method `{name}`"))) };
+                    let (bits, size, order) = (ty.bits(), ty.bits() / 8, if name == "toBigEndian" { "BE" } else { "LE" });
+                    let (array, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+                    let value = self.first(recv, head)?;
+                    Ok(format!(
+                        "({{ {array} {temp}; uint{bits}_t {temp}v = SG_{order}{bits}((uint{bits}_t)({value})); memcpy({temp}.items, &{temp}v, {size}); {temp}; }})"
+                    ))
                 }
                 Callee::Plain if name == "toString" => {
                     let (format, values) = self.format(recv)?;

@@ -1,0 +1,7 @@
+void main() {
+    var data = List<byte>()
+    data.add(1)
+    data.add(2)
+    print("start")
+    print(uint.fromLittleEndian(read data))
+}

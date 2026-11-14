@@ -1,0 +1,5 @@
+error: `fromLittleEndian` reads an integer, and `double` is a fractional type
+  reading a fractional number out of bytes is not here yet
+  --> error_endian_fractional.sg:3:18
+ 3 |     print(double.fromLittleEndian(read data))
+   |                  ^^^^^^^^^^^^^^^^

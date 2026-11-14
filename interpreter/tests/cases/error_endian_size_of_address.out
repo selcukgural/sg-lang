@@ -1,0 +1,5 @@
+error: `nint` has the size of an address, which depends on the machine; a number kept in bytes has a size of its own
+  --> error_endian_size_of_address.sg:3:16
+ 3 |     print(nint.fromLittleEndian(read data))
+   |                ^^^^^^^^^^^^^^^^
+  hint: `long.fromLittleEndian(...)` reads 8 bytes; a cast makes it `nint`
