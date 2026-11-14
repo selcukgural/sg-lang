@@ -1,0 +1,10 @@
+error: `xs` cannot be changed here: `r` borrows from it and is used again later
+  the right side of an assignment is computed first, then the place on the left is found: `r` is used there after this
+  --> error_assign_place_borrow.sg:10:35
+ 10 |     counts[r.length()] = grow(ref xs)
+    |                                   ^^
+  `r` borrowed it here:
+  --> error_assign_place_borrow.sg:9:13
+ 9 |     var r = read xs[0]
+   |             ^^^^^^^^^^
+  hint: finish with `r` before this line: a borrow ends at its last use

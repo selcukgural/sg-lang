@@ -1,0 +1,12 @@
+nint bump(ref List<string> ys) {
+    ys.add("more")
+    return 0
+}
+
+void main() {
+    var ys = List<string> { "a" }
+    var counts = List<int> { 1, 2, 3 }
+    var r = read ys[0]
+    counts[bump(ref ys) + r.length()] = 1
+    print(counts)
+}

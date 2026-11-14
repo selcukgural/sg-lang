@@ -1,0 +1,10 @@
+error: `ps` cannot be used here: `r` holds a `ref` borrow of it and is used again later
+  the right side of an assignment is computed first, then the place on the left is found: `r` is used there after this
+  --> error_assign_through_borrow.sg:14:20
+ 14 |     r.x = grow(ref ps)
+    |                    ^^
+  `r` borrowed it here:
+  --> error_assign_through_borrow.sg:13:13
+ 13 |     var r = ref ps[0]
+    |             ^^^^^^^^^
+  hint: finish with `r` before this line: a borrow ends at its last use

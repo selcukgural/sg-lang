@@ -1,0 +1,9 @@
+error: `ys` cannot be changed here: `r` borrows from it and is used again later
+  --> error_assign_place_parts.sg:10:21
+ 10 |     counts[bump(ref ys) + r.length()] = 1
+    |                     ^^
+  `r` borrowed it here:
+  --> error_assign_place_parts.sg:9:13
+ 9 |     var r = read ys[0]
+   |             ^^^^^^^^^^
+  hint: finish with `r` before this line: a borrow ends at its last use

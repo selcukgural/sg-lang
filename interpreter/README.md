@@ -41,7 +41,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`; on a `read T?` it gives a `read T`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`) |
-| Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type |
+| Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
 | Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x`. On integers `& \| ^ ~ << >>`; they bind tighter than a comparison, so `flags & mask == 0` tests the masked value |
 | Numbers | `42`, `0xde`, `0b1010`, and `_` between digits: `1_000_000`, `0xdead_beef` |
@@ -228,7 +228,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (177 of 678 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (178 of 682 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -288,7 +288,8 @@ same way. Since the forty-first slice the width and the letter after a value in 
 patterns inside patterns, `match` on text and methods on enums, the same way. Since the forty-fourth slice
 `or`, ranges, `null`, `true` and `false` in patterns, and `match` on a `bool` and on a `T?`, the same way.
 Since the forty-fifth slice the names of `is` and the narrowing of `is not null` along `&&` and `||`, the
-same way. What is still missing is an error that names it (not silence): the few positions listed with the
+same way. Since the forty-sixth slice an assignment computes its right side before it finds the place, as
+the interpreter always did (choice 270). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -602,7 +603,8 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
     values of a formatted text (`$"{a()} {b()}"`) follow the same rule. One case is refused instead: a text
     written before a value that lends with `ref` in the same `$"..."`, since the text is only looked at and
     could be gone by the time it is written. `tests/cases/ok_evaluation_order.sg` goes through the cases; all
-    compiled test programs give the same output when built with gcc 16 instead of clang.
+    compiled test programs give the same output when built with gcc 16 instead of clang. An assignment is
+    not an expression and has an order of its own: the right side first, then the place (choice 270).
 
 ## How it is built
 
@@ -2277,6 +2279,38 @@ interpreter and back end together), approved on 14 November 2026:
      condition, which now names values nothing sees. Every compiled one left no memory behind; the two
      programs give the same output under gcc. Not measured on its own (see the measurements above).
 
+Choices made in the forty-sixth slice (the order of an assignment, and the borrows its right side reads;
+checker and back end; the interpreter already worked so), approved on 14 November 2026:
+
+270. **An assignment computes its right side first, then finds the place and writes it**, for `=` and for
+     `+=` and the others: `xs[place()] = value()` calls `value` first. This is Rust's order; C# and Java
+     find the place first. The interpreter always worked so, but compiled code took the place first:
+     `xs[place()] = value()` printed in the other order, and `words[i] = $"{grow(ref words)}".toString()`
+     wrote through the address of an item that `grow` had moved (the sanitizer saw it). The place is found
+     right before it is written, so its address cannot be stale, and the right side can be made from the
+     value it replaces. Decided during the slice, on 14 November 2026, when the two orders were found.
+271. **A borrow that the right side reads last ends before the write**: `b = Box { n = r.n + 1 }` where `r`
+     borrows `b`, `while s is Circle(r) { s = Shape.Circle(r + 1) }`, `names[1] = $"{first}{first}".toString()`
+     where `first` borrows `names[0]`, `t = part.clone()` where `part` is a range of `t`. These were refused
+     with "`b` cannot be changed here: `r` borrows from it and is used again later". Rust accepts them.
+272. **The place counts as after the right side**: what the place uses must still hold when the right side
+     is done. A borrow read by the place (`counts[r.length()] = grow(ref xs)` where `r` borrows `xs[0]`) or
+     written through (`r.x = grow(ref ps)` where `r` is a `ref` of `ps[0]`) cannot have its owner changed by
+     the right side; the error gets a note: "the right side of an assignment is computed first, then the
+     place on the left is found: `r` is used there after this". Inside the place the parts keep their
+     order from left to right (`counts[bump(ref ys) + r.length()] = 1` is the usual error, without the note).
+273. **Compiled code**: when the place is more than a variable, the right side is computed into a C variable
+     first and the address of the item is taken after it. The C compiler removes the variable, so nothing is
+     paid: the five measured programs that write items (`bits`, `blocks`, `buffer`, `nbody`, `vector`)
+     compile to the same instructions as before, up to the names of registers, and take the same time.
+     Where the place is a variable nothing changed. A value that owns something was already made
+     before the old one is dropped.
+274. **The tests**: the order of the value and the place with `=`, `+=` and a field of an item, printed by
+     both programs; five right sides that read a borrow of what they replace (a struct, a struct that owns
+     text, an enum in a `while`, an item of a list, a range of a text) and one `+=`; a right side that adds a
+     hundred items to the list it is written into, as a number and as a text. Three tests of errors. Every
+     compiled one left no memory behind; the two programs give the same output under gcc.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -2317,10 +2351,7 @@ check off.
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
   pattern>`); storing a borrow from outside into a value reached through `ref` (the design's
   `where r from name`); a `List<read T>`, and a borrow as the error of a `Result` (a list of a type that
-  carries a borrow works); a `match` used as a value that gives a borrow is not followed. An assignment
-  whose right side reads a borrow of the place it writes is refused, though the right side is computed
-  first: `b = Box { n = r.n + 1 }` where `r` borrows `b`, and so `while s is Circle(r) { s =
-  Shape.Circle(r + 1) }`. Rust accepts both; for now the value is put in a variable first.
+  carries a borrow works); a `match` used as a value that gives a borrow is not followed.
 - `swap(ref a, ref b)`, and `this` with a type (`read FolderRef this`).
 - A string literal has the type `string` here; in the design it is `read string` that becomes `string` without
   allocating.
@@ -2401,8 +2432,10 @@ stands inside a pattern (`Add(Number(0), right)`), a `match` looks at text, and 
 characters come in ranges (`'a'..='z'`), and `null`, `true` and `false` are patterns; sorting bytes into
 the classes of a lexer takes 0.87 times the time of the chain of `if`s in C. The names of `is` reach along
 `&&` (`if int.parse(read text) is Ok(value) && value > 0 { ... }`), and `is not null` and `is null` narrow
-along `&&` and `||`, as in C#; in compiled code a name is one pointer set inside the condition.
+along `&&` and `||`, as in C#; in compiled code a name is one pointer set inside the condition. An
+assignment computes its right side first and then finds the place, as Rust does, so the right side can
+read a borrow of the value it replaces (`b = Box { n = r.n + 1 }`) and can grow the list it is written
+into.
 
-Candidates for what comes next: an assignment whose right side reads a borrow of the place it writes
-(see "Not here yet"), `text.replace` and `repeat`, type aliases (`using`), threads, the places that are
-slower than C.
+Candidates for what comes next: `text.replace` and `repeat`, type aliases (`using`), threads, the places
+that are slower than C.

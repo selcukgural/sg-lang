@@ -36,6 +36,9 @@
 //! is one test on the tag and, on an error, a `return`. A `List<T>` is a pointer to its items,
 //! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index, and
 //! `addAll` is one test for room and a `memcpy` (the items are `Copyable`).
+//! An assignment computes its right side first (into a C variable when the place is more than a
+//! variable), then takes the address of the place, so an item is found after the right side has
+//! grown its list.
 //!
 //! An array `T[N]` is a C array inside a struct, so that it is passed, returned and copied by
 //! value like any other value: it lies where its variable or its field lies, and nothing is
@@ -3663,9 +3666,13 @@ impl<'a> Emitter<'a> {
                     _ => None,
                 };
                 let rebinds = rebound.is_some();
-                let (place, held) = match rebound {
-                    Some(variable) => variable,
-                    None => self.slot(target)?,
+                // The right side is computed first, then the place is found (Rust's order): the
+                // address of an item is taken only once the right side, which may grow the list,
+                // is done.
+                let held = match (&rebound, &target.kind) {
+                    (Some((_, ty)), _) => ty.clone(),
+                    (None, ExprKind::Var(name)) => self.local(name).ty.strip_borrow().clone(),
+                    (None, _) => target.ty.strip_borrow().clone(),
                 };
                 let new = if matches!(value.kind, ExprKind::Match { .. }) {
                     let (ctype, temp) = (self.ctype(&held, value.span)?, self.temp());
@@ -3673,7 +3680,19 @@ impl<'a> Emitter<'a> {
                     self.match_stmt(value, &Dest::Place(temp.clone(), held.clone()), depth, out)?;
                     temp
                 } else {
-                    self.head_value(value, &held)?
+                    let new = self.head_value(value, &held)?;
+                    match &target.kind {
+                        ExprKind::Var(_) => new,
+                        _ => {
+                            let (ctype, temp) = (self.ctype(&held, value.span)?, self.temp());
+                            self.pre.push(format!("{ctype} {temp} = {new};"));
+                            temp
+                        }
+                    }
+                };
+                let (place, held) = match rebound {
+                    Some(variable) => variable,
+                    None => self.slot(target)?,
                 };
                 self.flush_pre(&pad, out);
                 match op {

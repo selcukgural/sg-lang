@@ -1,0 +1,99 @@
+// An assignment computes its right side first, then finds the place on the left and writes it
+// (Rust's order). The right side can read a borrow of the place it replaces, and it can grow
+// the list whose item it is written into.
+struct Box {
+    int n
+}
+
+struct Holder {
+    string name
+    int n
+}
+
+struct Pair {
+    int first
+    int second
+}
+
+enum Shape : Formattable {
+    Circle(int r)
+    Label(string text)
+    Empty
+}
+
+int say(read string what, int value) {
+    print($"{what} {value}")
+    return value
+}
+
+nint at(read string what, nint value) {
+    print($"{what} {value}")
+    return value
+}
+
+int grow(ref List<string> xs) {
+    for i in 0..100 {
+        xs.add("more")
+    }
+    return 7
+}
+
+void main() {
+    // The value, then the place.
+    var counts = List<int> { 1, 2, 3 }
+    counts[at("place", 0)] = say("value", 5)
+    counts[at("place", 1)] += say("value", 20)
+    var pairs = List<Pair> { Pair { first = 1, second = 2 } }
+    pairs[at("item", 0)].second = say("value", 9)
+    print(counts)
+    print($"{pairs[0].first} {pairs[0].second}")
+
+    // The right side reads a borrow of the place it replaces.
+    var b = Box { n = 1 }
+    var r = read b
+    b = Box { n = r.n + 1 }
+    print(b.n)
+
+    var h = Holder { name = "first", n = 1 }
+    var view = read h
+    h = Holder { name = $"{view.name}-{view.n}".toString(), n = view.n + 1 }
+    print(h.name)
+
+    var s = Shape.Circle(1)
+    while s is Circle(radius) {
+        if radius > 3 {
+            break
+        }
+        s = Shape.Circle(radius + 1)
+    }
+    print(s)
+
+    var label = Shape.Label("a")
+    if label is Label(text) {
+        label = Shape.Label($"{text}b".toString())
+    }
+    print(label)
+
+    var names = List<string> { "x", "y" }
+    var first = read names[0]
+    names[1] = $"{first}{first}".toString()
+    print(names)
+
+    var t = "abc".clone()
+    var part = t[1..]
+    t = part.clone()
+    print(t)
+
+    var numbers = List<int> { 1, 2 }
+    var one = read numbers[0]
+    numbers[1] += one
+    print(numbers)
+
+    // The right side grows the list; the item is found after it.
+    var words = List<string> { "a", "b" }
+    counts[at("place", 2)] = grow(ref words)
+    words[at("place", 1)] = $"{grow(ref words)}".toString()
+    print(words[1])
+    print(words.length())
+    print(counts)
+}

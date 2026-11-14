@@ -1415,6 +1415,12 @@ struct Loan {
 #[derive(Clone, Default)]
 struct Point {
     pos: usize,
+    /// The order in which the checker came to it: it decides between two points at the same
+    /// position (the parts of the place an assignment writes, counted after its right side).
+    seq: usize,
+    /// In the place an assignment writes, which counts as after the right side: where that
+    /// right side starts.
+    placed: Option<usize>,
     /// For each `if` or `match` around: which one, and which branch of it.
     branches: Vec<(usize, usize)>,
     loops: Vec<usize>,
@@ -1452,6 +1458,8 @@ struct Clash {
 #[derive(Default)]
 struct Borrows {
     next_id: usize,
+    /// The number of the last point made.
+    seq: usize,
     /// Where the function is being read right now.
     branches: Vec<(usize, usize)>,
     loops: Vec<usize>,
@@ -1848,13 +1856,19 @@ impl<'a> Checker<'a> {
         }
         var.unopened = None;
         let id = var.id;
-        let at = Point { pos: span.start, branches: self.borrows.branches.clone(), loops: self.borrows.loops.clone() };
+        let at = self.point(span.start);
         self.borrows.uses.push((id, at));
         self.borrows.pos = self.borrows.pos.max(span.start);
         Ok(self.find(name).expect("just found"))
     }
 
     // ---- borrows ----
+
+    /// The point the checker is at, for a thing at this position.
+    fn point(&mut self, pos: usize) -> Point {
+        self.borrows.seq += 1;
+        Point { pos, seq: self.borrows.seq, placed: None, branches: self.borrows.branches.clone(), loops: self.borrows.loops.clone() }
+    }
 
     /// A number for the next `if`, `match` or loop, to tell them apart.
     fn node(&mut self) -> usize {
@@ -2102,7 +2116,7 @@ impl<'a> Checker<'a> {
         let root = var.id;
         let behind = var.declared.strip_borrow().clone();
         let copy_as = (var.declared.is_borrow() && behind.is_copyable(self.copyable)).then(|| behind.to_string());
-        let at = Point { pos: expr.span.start, branches: self.borrows.branches.clone(), loops: self.borrows.loops.clone() };
+        let at = self.point(expr.span.start);
         let mut found = Vec::new();
         for var in self.scopes.iter().flat_map(|scope| &scope.vars) {
             if var.id == root {
@@ -2132,20 +2146,18 @@ impl<'a> Checker<'a> {
     /// borrow is an error if the variable that held the borrow is used afterwards.
     fn borrow_conflicts(&self) -> Res<()> {
         for clash in &self.borrows.clashes {
-            let used_later = self.borrows.uses.iter().any(|(var, at)| {
+            let used_later = self.borrows.uses.iter().find(|(var, at)| {
                 if *var != clash.holder {
                     return false;
                 }
                 // Not reached from here: the other branch of an `if` or a `match` around both.
                 let other_branch = at.branches.iter().any(|(node, branch)| clash.at.branches.iter().any(|(n, b)| n == node && b != branch));
-                let after = at.pos > clash.at.pos && !other_branch;
+                let after = (at.pos, at.seq) > (clash.at.pos, clash.at.seq) && !other_branch;
                 // A loop comes round again, unless the variable is new in every round.
                 let next_round = clash.at.loops.iter().any(|l| !clash.holder_loops.contains(l) && at.loops.contains(l));
                 after || next_round
             });
-            if !used_later {
-                continue;
-            }
+            let Some((_, later)) = used_later else { continue };
             let text = &self.src[clash.span.start..clash.span.end];
             let holder = &clash.holder_name;
             if clash.access == Access::Gone {
@@ -2158,7 +2170,11 @@ impl<'a> Checker<'a> {
                 (Access::Write, _) => Diag::error(clash.span, format!("`{text}` cannot be changed here: `{holder}` borrows from it and is used again later")),
                 (Access::Move | Access::Gone, _) => Diag::error(clash.span, format!("`{text}` cannot be moved here: `{holder}` borrows from it and is used again later")),
             };
-            let diag = diag.related(clash.loan.span, format!("`{holder}` borrowed it here"));
+            let mut diag = diag.related(clash.loan.span, format!("`{holder}` borrowed it here"));
+            // Used by the place of the assignment whose right side touched it.
+            if later.placed.is_some_and(|from| clash.at.placed.is_none() && (from..=later.pos).contains(&clash.at.pos)) {
+                diag = diag.note(format!("the right side of an assignment is computed first, then the place on the left is found: `{holder}` is used there after this"));
+            }
             return Err(match &clash.copy_as {
                 Some(ty) => diag.hint(format!("`{holder}` is a second borrow of the same place; to copy the value instead, write its type: `{ty} {holder} = ...`")),
                 None => diag.hint(format!("finish with `{holder}` before this line: a borrow ends at its last use")),
@@ -2337,7 +2353,7 @@ impl<'a> Checker<'a> {
         }
         let scope = self.scopes.pop().expect("an open scope");
         // A variable outside that still holds a borrow of an owner that ends here.
-        let at = Point { pos: self.borrows.pos, branches: self.borrows.branches.clone(), loops: self.borrows.loops.clone() };
+        let at = self.point(self.borrows.pos);
         for owner in scope.vars.iter().filter(|var| !var.declared.is_borrow()) {
             for holder in self.scopes.iter().flat_map(|outer| &outer.vars) {
                 for loan in holder.loans.iter().filter(|loan| loan.root == owner.id && !loan.held) {
@@ -2495,6 +2511,11 @@ impl<'a> Checker<'a> {
                 _ => {}
             },
             StmtKind::Assign { target, op, value, through } => {
+                // The right side is computed first; then the place is found and written (Rust's
+                // order). What the place uses and the write itself count as after the right side,
+                // so a borrow that the right side reads last ends before the write (`b = Box { n
+                // = r.n + 1 }`), and a borrow the place goes through must outlive the right side.
+                let (first_use, first_clash) = (self.borrows.uses.len(), self.borrows.clashes.len());
                 let target_ty = match &target.kind {
                     ExprKind::Var(name) => {
                         let var = if op.is_some() { self.live_var(name, target.span)? } else { self.var(name, target.span)? };
@@ -2550,6 +2571,7 @@ impl<'a> Checker<'a> {
                 if !rebinds {
                     self.not_locked(target, Access::Write)?;
                 }
+                let (place_uses, place_clashes) = (first_use..self.borrows.uses.len(), first_clash..self.borrows.clashes.len());
                 if let (Some(op), Ty::Float(_)) = (*op, &target_ty) {
                     if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem) {
                         return Err(Diag::error(stmt_span, format!("`{}=` needs an integer on the left, found `{target_ty}`", op.symbol()))
@@ -2577,6 +2599,14 @@ impl<'a> Checker<'a> {
                     _ => {
                         self.typed(value, &target_ty)?;
                     }
+                }
+                for (_, at) in &mut self.borrows.uses[place_uses] {
+                    at.pos = value.span.end;
+                    at.placed = Some(value.span.start);
+                }
+                for clash in &mut self.borrows.clashes[place_clashes] {
+                    clash.at.pos = value.span.end;
+                    clash.at.placed = Some(value.span.start);
                 }
                 // A value that borrows, put into a field, an item or a variable of a type that
                 // carries a borrow.

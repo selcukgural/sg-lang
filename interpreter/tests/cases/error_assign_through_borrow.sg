@@ -1,0 +1,16 @@
+struct Point {
+    int x
+    int y
+}
+
+int grow(ref List<Point> ps) {
+    ps.add(Point { x = 0, y = 0 })
+    return 7
+}
+
+void main() {
+    var ps = List<Point> { Point { x = 1, y = 2 } }
+    var r = ref ps[0]
+    r.x = grow(ref ps)
+    print(ps.length())
+}

@@ -1,0 +1,12 @@
+int grow(ref List<string> xs) {
+    xs.add("more")
+    return 7
+}
+
+void main() {
+    var xs = List<string> { "a", "b" }
+    var counts = List<int> { 1, 2 }
+    var r = read xs[0]
+    counts[r.length()] = grow(ref xs)
+    print(counts)
+}
