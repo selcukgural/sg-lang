@@ -1,0 +1,51 @@
+// A tree of folders, as in the design's example (05): each folder owns its subfolders through
+// `shared checked` values and looks at its parent with `weak`. Each round builds a tree of
+// 111,111 folders; each new folder gets a file whose size is added to it and to every folder
+// above it. The round adds up what the root holds and lets the tree go. What is measured:
+// `new shared`, `share` and the end of an owner, `weak` and `share` of it, and the checks of
+// the borrows of `shared checked` values, against the same tree in C with plain pointers.
+using FolderRef = shared checked Folder
+
+struct Folder {
+    long bytes
+    weak checked Folder? parent
+    List<FolderRef> children
+
+    public FolderRef add(read FolderRef this) {
+        var created = new FolderRef { bytes = 0, parent = weak this, children = List<FolderRef>() }
+        this.children.add(share created)
+        return created
+    }
+
+    // Adds to itself and to every folder above it.
+    public void addBytes(read FolderRef this, long amount) {
+        FolderRef? cur = share this
+        while cur is not null {
+            cur.bytes += amount
+            cur = share cur.parent
+        }
+    }
+}
+
+void grow(read FolderRef folder, int depth, ref long made) {
+    if depth == 0 {
+        return
+    }
+    for i in 0..10 {
+        var child = folder.add()
+        made += 1
+        child.addBytes(made % 1000)
+        grow(read child, depth - 1, ref made)
+    }
+}
+
+void main() {
+    long total = 0
+    long made = 0
+    for round in 0..20 {
+        var root = new FolderRef { bytes = 0, parent = null, children = List<FolderRef>() }
+        grow(read root, 5, ref made)
+        total += root.bytes
+    }                                        // the tree is freed here, from the root down
+    print(total)
+}

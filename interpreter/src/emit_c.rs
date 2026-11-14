@@ -17,9 +17,9 @@
 //! and past an `if` that leaves), `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
 //! slices, numbers read out of bytes and written into them (`fromLittleEndian`, `toBigEndian`), function values, `T*` and `new`, `T?`, `read` and `ref`, `print` and `printError`, files
 //! read and written whole or piece by piece, as text or as bytes (`StreamReader`, `StreamWriter`,
-//! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`).
-//! A type alias is the type it names. Anything else, `shared`, `weak` and `checked` among them (with the
-//! `as` blocks and `this` with a type), is an error
+//! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`),
+//! `shared`, `weak` and `shared checked` values with the `as` blocks, `this` with a type and the leak
+//! report (see `SHARED_RUNTIME`). A type alias is the type it names. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
 //! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`), and
@@ -35,6 +35,14 @@
 //! on text is a test of the length and of the bytes (`sg_eq`). A range is two comparisons and a
 //! `or` is `||`; an `or` with names is opened into one pattern for each way to match, and the way
 //! that matched sets the names (`take_apart_choices`).
+//! A `shared T` and a `weak T` are a pointer to the value, with the counts in front of it (see
+//! `SHARED_RUNTIME`), so what a `shared T` holds is reached as through a `T*`; `share`, `weak`
+//! and the end of an owner change the counts. Where the checker opened a `shared checked` value
+//! (`Open`), the access is checked against the borrows of it in progress; a borrow that lasts
+//! (`sg_guard`) is declared at the start of the function and let go where the checker said it
+//! ends (`Within`, the end of the statement) and on every way out (it is a `Local` with a drop
+//! line). The receiver of a method that changes it is lent in two steps: the receiver and the
+//! arguments are computed into variables, then it is lent to change (`reserved`).
 //! A `Result<T, E>` is such an enum with the variants `Ok(T value)` and `Error(E cause)`; `try`
 //! is one test on the tag and, on an error, a `return`. A `List<T>` is a pointer to its items,
 //! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index, and
@@ -1261,6 +1269,191 @@ static void sg_test_failed(sg_str text) {
 }
 "#;
 
+/// What a program with `shared` values needs. The value lies on the heap, and in front of it
+/// the count of its owners and the count of its `weak` lookers (the owners together count as
+/// one of those, as in Rust's `Arc`); a `shared checked` value has the borrows of it in
+/// progress in front of the counts, and a debug build (`SG_TRACK`) keeps every value that is
+/// alive in a list, in the order they were made, for the leak report. A `shared T` and a
+/// `weak T` are pointers to the value, so what a `shared T` holds is reached as through a `T*`.
+/// The counts are atomic, as the design asks ("Shared ownership"); the list of the values that
+/// are alive and the borrows are not, since a program has one thread so far.
+const SHARED_RUNTIME: &str = r#"
+typedef struct { int64_t strong; int64_t weak; } __attribute__((aligned(16))) sg_rc;
+/* A borrow of a `shared checked` value in progress: it lives in the frame of the function that
+   lent it, from where it is lent until the line, the call, the loop or the block that lent it
+   ends (`sg_unlend`, also on every way out). The borrows that read are a list, the last first. */
+typedef struct sg_guard { struct sg_guard* next; void* held; const char* at; const char* what; bool write; bool reserved; } sg_guard;
+typedef struct { sg_guard* reads; sg_guard* write; } __attribute__((aligned(16))) sg_lock;
+/* What the leak report says of a value: the name of its type and, for a struct, the first of
+   its fields that owns a `shared` value (`through`), with that field's name and the hint. */
+typedef struct { const char* name; int (*through)(const void* value); const char* const* fields; const char* const* hints; } sg_kind;
+typedef struct sg_live { struct sg_live* prev; struct sg_live* next; const char* made; const sg_kind* kind; void* value; } __attribute__((aligned(16))) sg_live;
+static sg_live sg_alive = { &sg_alive, &sg_alive, NULL, NULL, NULL };
+
+static inline sg_rc* sg_rc_of(void* p) { return (sg_rc*)p - 1; }
+static inline sg_lock* sg_lock_of(void* p) { return (sg_lock*)sg_rc_of(p) - 1; }
+static inline size_t sg_front(bool checked) { return sizeof(sg_rc) + (checked ? sizeof(sg_lock) : 0) + (SG_TRACK ? sizeof(sg_live) : 0); }
+static void* sg_rc_new(size_t size, bool checked, const sg_kind* kind, const char* made) {
+    size_t front = sg_front(checked);
+    char* block = malloc(front + size);
+    if (!block) abort();
+    void* p = block + front;
+    *sg_rc_of(p) = (sg_rc){ 1, 1 };
+    if (checked) *sg_lock_of(p) = (sg_lock){ NULL, NULL };
+#if SG_TRACK
+    sg_live* live = (sg_live*)block;
+    *live = (sg_live){ sg_alive.prev, &sg_alive, made, kind, p };
+    sg_alive.prev->next = live;
+    sg_alive.prev = live;
+#else
+    (void)kind; (void)made;
+#endif
+    return p;
+}
+/* `share x`: one more owner. */
+static inline void* sg_rc_share(void* p) { if (p) __atomic_fetch_add(&sg_rc_of(p)->strong, 1, __ATOMIC_RELAXED); return p; }
+/* `weak x`: one more looker. */
+static inline void* sg_rc_weaken(void* p) { if (p) __atomic_fetch_add(&sg_rc_of(p)->weak, 1, __ATOMIC_RELAXED); return p; }
+/* An owner lets go: true if it was the last, and the value is to be dropped. */
+static inline bool sg_rc_last(void* p, bool checked) {
+    if (__atomic_fetch_sub(&sg_rc_of(p)->strong, 1, __ATOMIC_RELEASE) != 1) return false;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+#if SG_TRACK
+    sg_live* live = (sg_live*)((char*)p - sg_front(checked));
+    live->prev->next = live->next;
+    live->next->prev = live->prev;
+#else
+    (void)checked;
+#endif
+    return true;
+}
+/* A looker lets go (or the owners, together, once the value is dropped): the last frees the block. */
+static inline void sg_rc_unweak(void* p, bool checked) {
+    if (__atomic_fetch_sub(&sg_rc_of(p)->weak, 1, __ATOMIC_RELEASE) != 1) return;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    free((char*)p - sg_front(checked));
+}
+/* `share w`: an owner while one is left, otherwise `null`. */
+static inline void* sg_rc_upgrade(void* p) {
+    if (!p) return NULL;
+    int64_t n = __atomic_load_n(&sg_rc_of(p)->strong, __ATOMIC_RELAXED);
+    while (n != 0) {
+        if (__atomic_compare_exchange_n(&sg_rc_of(p)->strong, &n, n + 1, true, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return p;
+    }
+    return NULL;
+}
+
+/* An access to a `shared checked` value that a borrow in progress does not allow. */
+SG_COLD static _Noreturn void sg_conflict(const char* what, bool changing, const sg_guard* other, const char* loc) {
+    fflush(stdout);
+    const char* doing = other->write ? "changed" : "read";
+    fprintf(stderr, "panic: this `%s` is being %s, so it cannot be %s here\n", what, doing, changing ? "changed" : "read");
+    fputs("  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once\n", stderr);
+    fputs(loc, stderr);
+    fprintf(stderr, "  it is being %s from here:\n", doing);
+    sg_die(other->at);
+}
+static inline void sg_look(void* p, const char* what, const char* loc) {
+    sg_lock* lock = sg_lock_of(p);
+    if (__builtin_expect(lock->write != NULL, 0)) sg_conflict(what, false, lock->write, loc);
+}
+static inline void sg_change(void* p, const char* what, const char* loc) {
+    sg_lock* lock = sg_lock_of(p);
+    if (__builtin_expect(lock->write != NULL, 0)) sg_conflict(what, true, lock->write, loc);
+    if (__builtin_expect(lock->reads != NULL, 0)) sg_conflict(what, true, lock->reads, loc);
+}
+/* Lent for longer than the access: to read, to change, or, for the receiver of a method that
+   changes it, to read while the arguments are computed (`reserved`, see `sg_change_reserved`). */
+static inline void sg_lend(sg_guard* g, void* p, bool write, bool reserved, const char* what, const char* loc) {
+    if (g->held == p) return;
+    if (write) sg_change(p, what, loc);
+    else sg_look(p, what, loc);
+    sg_lock* lock = sg_lock_of(p);
+    *g = (sg_guard){ NULL, p, loc, what, write, reserved };
+    if (write) lock->write = g;
+    else { g->next = lock->reads; lock->reads = g; }
+}
+static inline void sg_drop_read(sg_lock* lock, sg_guard* g) {
+    sg_guard** at = &lock->reads;
+    while (*at != g) at = &(*at)->next;
+    *at = g->next;
+}
+/* The borrow ends; a borrow that was never made, or has ended, is left as it is. */
+static inline void sg_unlend(sg_guard* g) {
+    if (!g->held) return;
+    sg_lock* lock = sg_lock_of(g->held);
+    if (g->write) lock->write = NULL;
+    else sg_drop_read(lock, g);
+    g->held = NULL;
+}
+/* The arguments are computed: the receiver is lent to change now, if nothing else looks at it. */
+static void sg_change_reserved(sg_guard* g) {
+    if (!g->held || !g->reserved) return;
+    sg_lock* lock = sg_lock_of(g->held);
+    sg_drop_read(lock, g);
+    const sg_guard* other = lock->write ? lock->write : lock->reads;
+    if (other) sg_conflict(g->what, true, other, g->at);
+    lock->write = g;
+    g->write = true;
+    g->reserved = false;
+}
+
+#if SG_TRACK
+#define SG_LEAKS 1
+/* The `shared` values still alive when the program or a test ends hold each other up: they are
+   counted by the type and the place they were made at, the most first, and the first field
+   found that owns one of them is named. True if there were any. */
+static bool sg_leaks(const char* ended) {
+    if (sg_alive.next == &sg_alive) return false;
+    fflush(stdout);
+    int64_t count = 0;
+    for (sg_live* live = sg_alive.next; live != &sg_alive; live = live->next) count++;
+    sg_live** first = malloc(sizeof(sg_live*) * (size_t)count);
+    int64_t* many = malloc(sizeof(int64_t) * (size_t)count);
+    if (!first || !many) abort();
+    int64_t groups = 0;
+    const char* field = NULL;
+    const char* hint = NULL;
+    for (sg_live* live = sg_alive.next; live != &sg_alive; live = live->next) {
+        int64_t at = 0;
+        while (at < groups && !(first[at]->kind->name == live->kind->name && strcmp(first[at]->made, live->made) == 0)) at++;
+        if (at == groups) { first[at] = live; many[at] = 0; groups++; }
+        many[at]++;
+        if (!field && live->kind->through) {
+            int found = live->kind->through(live->value);
+            if (found >= 0) { field = live->kind->fields[found]; hint = live->kind->hints[found]; }
+        }
+    }
+    /* The most first; of two as many, the one made first. */
+    for (int64_t i = 1; i < groups; i++) {
+        for (int64_t j = i; j > 0 && many[j] > many[j - 1]; j--) {
+            sg_live* f = first[j]; first[j] = first[j - 1]; first[j - 1] = f;
+            int64_t m = many[j]; many[j] = many[j - 1]; many[j - 1] = m;
+        }
+    }
+    const char* plural = count == 1 ? "value" : "values";
+    if (field && count == 1) fprintf(stderr, "leak: %s ended with 1 `shared` value still alive, which holds itself through `%s`\n", ended, field);
+    else if (field) fprintf(stderr, "leak: %s ended with %lld `shared` %s still alive, which hold each other through `%s`\n", ended, (long long)count, plural, field);
+    else fprintf(stderr, "leak: %s ended with %lld `shared` %s still alive\n", ended, (long long)count, plural);
+    fprintf(stderr, "  %lld x `%s`, made here:\n", (long long)many[0], first[0]->kind->name);
+    if (groups > 2) {
+        int64_t rest = 0;
+        for (int64_t i = 2; i < groups; i++) rest += many[i];
+        fprintf(stderr, "  and %lld more, made elsewhere\n", (long long)rest);
+    }
+    fputs(first[0]->made, stderr);
+    if (groups > 1) {
+        fprintf(stderr, "  %lld x `%s`, made here:\n", (long long)many[1], first[1]->kind->name);
+        fputs(first[1]->made, stderr);
+    }
+    fprintf(stderr, "  hint: %s\n", field ? hint : "one of the values that hold each other should look at the other with `weak`");
+    free(first);
+    free(many);
+    return true;
+}
+#endif
+"#;
+
 /// What a program that reads or writes files, or reads its input, needs: the calls of the
 /// system (`open`, `read`, `write`) and the input in blocks of its own. Added only to such a
 /// program.
@@ -1574,6 +1767,9 @@ static int sg_run_test(const sg_test* test) {
     sg_test_error = 0;
     test->run();
     fflush(stdout);
+#ifdef SG_LEAKS
+    if (sg_test_error == 0 && sg_leaks("the test")) return 1;
+#endif
     return sg_test_error;
 }
 static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) {
@@ -1662,6 +1858,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         late_types: String::new(),
         unchecked: Vec::new(),
         break_to: None,
+        guards: Vec::new(),
+        guard_decls: Vec::new(),
+        reserving: None,
     };
     // Every struct and enum is named first, so that a type can point at itself or at a later
     // one. Then the types themselves, each after the types it holds by value.
@@ -1745,6 +1944,10 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     if tests {
         out.push_str(TEST_SUPPORT);
     }
+    if emitter.made.contains("shared") {
+        let _ = write!(out, "\n#define SG_TRACK {}", u8::from(checked));
+        out.push_str(SHARED_RUNTIME);
+    }
     out.push('\n');
     out.push_str(&emitter.types);
     out.push_str(&emitter.late_types);
@@ -1803,9 +2006,17 @@ fn is_char_method(name: &str) -> bool {
     name.starts_with("isAscii") || matches!(name, "toAsciiUpper" | "toAsciiLower" | "isWhitespace" | "utf8Length" | "tryToChar")
 }
 
+/// What a `T*` or a `shared T` points at: what is reached through it as through a `T*`.
+fn pointee(ty: &Ty) -> Option<&Ty> {
+    match ty {
+        Ty::Ptr(inner) | Ty::Shared(inner, _) => Some(inner),
+        _ => None,
+    }
+}
+
 fn has_helper(ty: &Ty) -> bool {
     let mut core = ty.strip_borrow();
-    while let Ty::Ptr(inner) = core {
+    while let Some(inner) = pointee(core) {
         core = inner;
     }
     matches!(core, Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Array(..) | Ty::Slice(_))
@@ -1966,7 +2177,7 @@ fn flat(mut ty: &Ty) -> &Ty {
 /// The C place of the value behind the borrows and pointers at `place`, and its type.
 fn behind<'t>(place: &str, ty: &'t Ty) -> (String, &'t Ty) {
     let (mut at, mut ty) = (place.to_string(), flat(ty));
-    while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Ptr(inner) = ty {
+    while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Ptr(inner) | Ty::Shared(inner, _) = ty {
         (at, ty) = (format!("(*{at})"), flat(inner));
     }
     (at, ty)
@@ -1986,7 +2197,7 @@ fn is_window(ty: &Ty) -> bool {
 /// The array or the slice a value is or leads to, behind borrows and pointers.
 fn items_behind(ty: &Ty) -> Option<&Ty> {
     let mut ty = ty.strip_borrow();
-    while let Ty::Ptr(inner) = ty {
+    while let Some(inner) = pointee(ty) {
         ty = inner;
     }
     matches!(ty, Ty::Array(..) | Ty::Slice(_)).then_some(ty)
@@ -2000,7 +2211,7 @@ fn is_text(ty: &Ty) -> bool {
 fn is_text_behind_pointer(ty: &Ty) -> bool {
     let mut ty = ty.strip_borrow();
     let mut behind = false;
-    while let Ty::Ptr(inner) = ty {
+    while let Some(inner) = pointee(ty) {
         (ty, behind) = (inner, true);
     }
     behind && *ty == Ty::Str
@@ -2020,9 +2231,11 @@ fn mangle(ty: &Ty) -> Option<String> {
         Ty::Struct(name) => format!("S_{}", cname(name)),
         Ty::Enum(name) => format!("E_{}", cname(name)),
         Ty::Ptr(inner) => format!("P_{}", mangle(inner)?),
+        Ty::Shared(inner, checked) => format!("{}_{}", if *checked { "SC" } else { "SH" }, mangle(inner)?),
+        Ty::Weak(inner, checked) => format!("{}_{}", if *checked { "WC" } else { "WK" }, mangle(inner)?),
         Ty::Nullable(inner) => match &**inner {
             // A pointer that may be `null` is the same pointer.
-            Ty::Ptr(_) => mangle(inner)?,
+            Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) => mangle(inner)?,
             Ty::Nullable(_) => return None,
             _ => format!("O_{}", mangle(inner)?),
         },
@@ -2123,7 +2336,7 @@ fn may_leave(expr: &Expr) -> bool {
 
 /// A `T?` that is kept as a value and a flag: every `T?` but a pointer.
 fn is_option(ty: &Ty) -> bool {
-    matches!(ty, Ty::Nullable(inner) if !matches!(**inner, Ty::Ptr(_)))
+    matches!(ty, Ty::Nullable(inner) if !matches!(**inner, Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..)))
 }
 
 /// A `read T?` whose `T?` would be a value and a flag: the `T?` behind it. In C it is not a
@@ -2141,7 +2354,7 @@ fn lent_option(ty: &Ty) -> Option<&Ty> {
 fn held_types<'t>(ty: &'t Ty, found: &mut Vec<&'t str>) {
     match ty {
         Ty::Struct(name) | Ty::Enum(name) => found.push(name),
-        Ty::Nullable(inner) | Ty::Ptr(inner) | Ty::Array(inner, _) => held_types(inner, found),
+        Ty::Nullable(inner) | Ty::Ptr(inner) | Ty::Shared(inner, _) | Ty::Weak(inner, _) | Ty::Array(inner, _) => held_types(inner, found),
         Ty::Result(ok, error) => {
             held_types(ok, found);
             held_types(error, found);
@@ -2154,7 +2367,7 @@ fn held_types<'t>(ty: &'t Ty, found: &mut Vec<&'t str>) {
 fn list_behind(ty: &Ty) -> Option<(&Ty, usize)> {
     let mut ty = ty.strip_borrow();
     let mut boxes = 0;
-    while let Ty::Ptr(inner) = ty {
+    while let Some(inner) = pointee(ty) {
         (ty, boxes) = (inner, boxes + 1);
     }
     matches!(ty, Ty::List(_)).then_some((ty, boxes))
@@ -2164,7 +2377,7 @@ fn list_behind(ty: &Ty) -> Option<(&Ty, usize)> {
 fn table_behind(ty: &Ty) -> Option<(&Ty, usize)> {
     let mut ty = ty.strip_borrow();
     let mut boxes = 0;
-    while let Ty::Ptr(inner) = ty {
+    while let Some(inner) = pointee(ty) {
         (ty, boxes) = (inner, boxes + 1);
     }
     matches!(ty, Ty::Map(..) | Ty::Set(_)).then_some((ty, boxes))
@@ -2212,6 +2425,10 @@ type Carried = Vec<(String, Ty, Span)>;
 
 /// The tag an enum has after its value was moved out: no variant, so nothing is dropped.
 const MOVED_TAG: usize = 255;
+
+/// What `main` does after it has returned and its values are gone: a `shared` value still
+/// alive holds itself up, and is reported (only a debug build keeps the list, see `sg_leaks`).
+const LEAKS: &str = "#ifdef SG_LEAKS\n    if (sg_leaks(\"the program\")) return 1;\n#endif\n";
 
 /// What computing an expression can do besides giving its value. It decides whether the
 /// order in which two expressions are computed can be seen.
@@ -2364,6 +2581,15 @@ struct Emitter<'a> {
     /// In that copy, `break` leaves both copies: it goes to this label after them, and the
     /// flag says that one did.
     break_to: Option<(String, bool)>,
+    /// The borrows of `shared checked` values (`sg_guard`) the statements being written have
+    /// made so far, innermost statement last; each is let go at the end of what lent it.
+    guards: Vec<String>,
+    /// Every borrow of the function being written: they are declared at its start, so that a
+    /// way out from anywhere in it can let them go.
+    guard_decls: Vec<String>,
+    /// The receiver of a method that changes it, lent to read while the arguments are computed
+    /// (`Opening::Reserve`): the call lends it to change once they are (see `reserved_call`).
+    reserving: Option<String>,
 }
 
 impl<'a> Emitter<'a> {
@@ -2483,11 +2709,11 @@ impl<'a> Emitter<'a> {
                 if **held == Ty::Str { "sg_str".to_string() } else { format!("{}*", self.ctype(held, span)?) }
             }
             Ty::Read(inner) | Ty::Ref(inner) => format!("{}*", self.ctype(inner, span)?),
-            Ty::Ptr(inner) | Ty::Nullable(inner) => {
+            Ty::Ptr(inner) | Ty::Shared(inner, _) | Ty::Weak(inner, _) | Ty::Nullable(inner) => {
                 let Some(name) = mangle(ty) else { return Err(not_yet(span, &format!("the type `{ty}`"))) };
                 self.need(ty, span)?;
                 match ty {
-                    Ty::Ptr(_) => format!("{}*", self.ctype(inner, span)?),
+                    Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) => format!("{}*", self.ctype(inner, span)?),
                     _ if is_option(ty) => format!("sg_{name}"),
                     _ => self.ctype(inner, span)?,
                 }
@@ -2579,6 +2805,41 @@ impl<'a> Emitter<'a> {
                     ),
                     None => writeln!(self.glue, "static inline void sg_drop_{name}({target}** v) {{ {target}* p = *v; if (p) {{ {drop_inner}free(p); }} }}"),
                 };
+            }
+            // A `shared T`: made with its counts in front (`sg_rc_new`), dropped by the last owner.
+            // A `shared checked T` has the place of its borrows there too.
+            Ty::Shared(inner, checked) => {
+                if !self.made.insert(name.clone()) {
+                    return Ok(());
+                }
+                self.made.insert("shared".to_string());
+                let target = self.ctype(inner, span)?;
+                let drop_inner = match self.droppable(inner) {
+                    true => format!("sg_drop_{}(p); ", mangle(inner).expect("it has a C type")),
+                    false => String::new(),
+                };
+                let kind = self.kind(inner, span)?;
+                let _ = writeln!(self.glue_protos, "static inline {target}* sg_new_{name}({target} value, const char* made);");
+                let _ = writeln!(self.glue_protos, "static inline {target}* sg_move_{name}({target}** v);");
+                let _ = writeln!(self.glue_protos, "static inline void sg_drop_{name}({target}** v);");
+                let _ = writeln!(
+                    self.glue,
+                    "static inline {target}* sg_new_{name}({target} value, const char* made) {{\n    {target}* p = sg_rc_new(sizeof({target}), {checked}, {kind}, made);\n    *p = value;\n    return p;\n}}"
+                );
+                let _ = writeln!(self.glue, "static inline {target}* sg_move_{name}({target}** v) {{ {target}* out = *v; *v = NULL; return out; }}");
+                let _ = writeln!(self.glue, "static inline void sg_drop_{name}({target}** v) {{ {target}* p = *v; if (p && sg_rc_last(p, {checked})) {{ {drop_inner}sg_rc_unweak(p, {checked}); }} }}");
+            }
+            // A `weak T` keeps the block, not the value: the last looker frees it.
+            Ty::Weak(inner, checked) => {
+                if !self.made.insert(name.clone()) {
+                    return Ok(());
+                }
+                self.made.insert("shared".to_string());
+                let target = self.ctype(inner, span)?;
+                let _ = writeln!(self.glue_protos, "static inline {target}* sg_move_{name}({target}** v);");
+                let _ = writeln!(self.glue_protos, "static inline void sg_drop_{name}({target}** v);");
+                let _ = writeln!(self.glue, "static inline {target}* sg_move_{name}({target}** v) {{ {target}* out = *v; *v = NULL; return out; }}");
+                let _ = writeln!(self.glue, "static inline void sg_drop_{name}({target}** v) {{ if (*v) sg_rc_unweak(*v, {checked}); }}");
             }
             Ty::Nullable(inner) if is_option(ty) => {
                 if !self.made.insert(name.clone()) {
@@ -2830,6 +3091,144 @@ impl<'a> Emitter<'a> {
     /// The full name of the type written as `name` in the file at `at`: with its module in
     /// front it is the full name already; otherwise a type of the file's own module, then one
     /// of a module the file names with `use`. The checker has seen that there is exactly one.
+    /// What the leak report says of a `shared` value of this type (see `sg_kind`): the name of
+    /// the constant, or `NULL` in a release build, which keeps no list.
+    fn kind(&mut self, ty: &Ty, span: Span) -> Res<String> {
+        if !self.checked {
+            return Ok("NULL".to_string());
+        }
+        let name = format!("sg_kind_{}", mangle(ty).expect("a shared value has a C type"));
+        if !self.made.insert(name.clone()) {
+            return Ok(format!("&{name}"));
+        }
+        let shown = match ty {
+            Ty::Struct(owner) | Ty::Enum(owner) => short_name(owner).to_string(),
+            Ty::Int(ty) => ty.name().to_string(),
+            Ty::Str => "string".to_string(),
+            Ty::List(_) => "List".to_string(),
+            Ty::Map(..) => "HashMap".to_string(),
+            Ty::Set(_) => "HashSet".to_string(),
+            _ => "value".to_string(),
+        };
+        // A struct: the first of its fields that owns a `shared` value, the name of that field
+        // and the hint, which writes the field's type with `weak` (and its aliases spelled out).
+        let mut through = ("NULL".to_string(), "NULL".to_string(), "NULL".to_string());
+        if let Ty::Struct(owner) = ty {
+            let decl: &'a StructDecl = self.structs[owner.as_str()];
+            let (mut tests, mut fields, mut hints) = (String::new(), Vec::new(), Vec::new());
+            for field in &decl.fields {
+                let field_ty = self.written(&field.ty)?;
+                let Some(holds) = self.holds(&field_ty, span)? else { continue };
+                let _ = write!(tests, " if ({holds}(&v->m_{})) return {};", field.name, fields.len());
+                fields.push(c_string(&format!("{}.{}", short_name(owner), field.name)));
+                let mut text = self.text(field.ty.span).to_string();
+                for (alias, decl) in &self.aliases {
+                    text = crate::interp::replace_word(&text, short_name(alias), self.text(decl.ty.span));
+                }
+                hints.push(c_string(&match text.contains("shared ") {
+                    true => format!("the side that does not own is `weak`: `{}`", text.replace("shared ", "weak ")),
+                    false => "the side that does not own is `weak`".to_string(),
+                }));
+            }
+            if !fields.is_empty() {
+                let base = mangle(ty).expect("it has a C type");
+                let ctype = self.ctype(ty, span)?;
+                let _ = writeln!(self.glue_protos, "static int sg_through_{base}(const void* value);");
+                let _ = writeln!(self.glue, "static int sg_through_{base}(const void* value) {{ const {ctype}* v = value;{tests} return -1; }}");
+                let _ = writeln!(self.glue, "static const char* const sg_fields_{base}[] = {{ {} }};", fields.join(", "));
+                let _ = writeln!(self.glue, "static const char* const sg_hints_{base}[] = {{ {} }};", hints.join(", "));
+                through = (format!("sg_through_{base}"), format!("sg_fields_{base}"), format!("sg_hints_{base}"));
+            }
+        }
+        let _ = writeln!(self.glue_protos, "static const sg_kind {name};");
+        let _ = writeln!(self.glue, "static const sg_kind {name} = {{ {}, {}, {}, {} }};", c_string(&shown), through.0, through.1, through.2);
+        Ok(format!("&{name}"))
+    }
+
+    /// Whether a value of this type can own a `shared` value somewhere inside it; `seen`: the
+    /// structs and enums on the way, so that a type that holds itself is looked at once.
+    fn may_hold(&self, ty: &Ty, seen: &mut Vec<String>) -> bool {
+        match ty {
+            Ty::Shared(..) => true,
+            Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Array(inner, _) | Ty::List(inner) => self.may_hold(inner, seen),
+            Ty::Map(_, value) => self.may_hold(value, seen),
+            Ty::Result(ok, error) => self.may_hold(ok, seen) || self.may_hold(error, seen),
+            Ty::Struct(name) | Ty::Enum(name) => {
+                if seen.contains(name) {
+                    return false;
+                }
+                seen.push(name.clone());
+                let fields: Vec<&FieldDecl> = match self.structs.get(name.as_str()) {
+                    Some(decl) => decl.fields.iter().collect(),
+                    None => self.enums[name.as_str()].variants.iter().flat_map(|variant| &variant.fields).collect(),
+                };
+                fields.iter().any(|field| self.written(&field.ty).is_ok_and(|field| self.may_hold(&field, seen)))
+            }
+            _ => false,
+        }
+    }
+
+    /// The helper that tells whether a value of this type owns a `shared` value somewhere
+    /// inside it, for the leak report; `None` if it never can.
+    fn holds(&mut self, ty: &Ty, span: Span) -> Res<Option<String>> {
+        if !self.may_hold(ty, &mut Vec::new()) {
+            return Ok(None);
+        }
+        // A `T*?` and a `shared T?` are the `T*` and the `shared T`, `NULL` for `null`.
+        if let Ty::Nullable(inner) = ty {
+            if !is_option(ty) {
+                return self.holds(inner, span);
+            }
+        }
+        let name = format!("sg_holds_{}", mangle(ty).expect("it has a C type"));
+        if !self.made.insert(name.clone()) {
+            return Ok(Some(name));
+        }
+        let ctype = self.ctype(ty, span)?;
+        let _ = writeln!(self.glue_protos, "static bool {name}({ctype} const* v);");
+        let body = match ty {
+            Ty::Shared(..) => "return *v != NULL;".to_string(),
+            Ty::Ptr(inner) => format!("return *v != NULL && {}(*v);", self.holds(inner, span)?.expect("it may hold one")),
+            Ty::Nullable(inner) => format!("return v->has && {}(&v->value);", self.holds(inner, span)?.expect("it may hold one")),
+            Ty::List(item) => format!("for (int64_t i = 0; i < v->len; i++) if ({}(&v->ptr[i])) return true; return false;", self.holds(item, span)?.expect("it may hold one")),
+            Ty::Array(item, length) => format!("for (int64_t i = 0; i < {length}; i++) if ({}(&v->items[i])) return true; return false;", self.holds(item, span)?.expect("it may hold one")),
+            Ty::Map(_, value) => {
+                let _ = self.ctype(ty, span)?;
+                format!("for (int64_t i = 0; i < v->len; i++) if ({}(&v->entries[i].m_value)) return true; return false;", self.holds(value, span)?.expect("it may hold one"))
+            }
+            Ty::Struct(owner) => {
+                let decl: &'a StructDecl = self.structs[owner.as_str()];
+                let mut tests = String::new();
+                for field in &decl.fields {
+                    let field_ty = self.written(&field.ty)?;
+                    if let Some(holds) = self.holds(&field_ty, span)? {
+                        let _ = write!(tests, "if ({holds}(&v->m_{})) return true; ", field.name);
+                    }
+                }
+                format!("{tests}return false;")
+            }
+            Ty::Enum(_) | Ty::Result(..) => {
+                let variants = self.variants(ty, span)?.expect("an enum or a `Result`");
+                let mut cases = String::new();
+                for (index, fields) in variants.iter().enumerate() {
+                    let mut tests = String::new();
+                    for (field, field_ty, _) in fields {
+                        if let Some(holds) = self.holds(field_ty, span)? {
+                            let _ = write!(tests, "if ({holds}(&v->u.v{index}.m_{field})) return true; ");
+                        }
+                    }
+                    if !tests.is_empty() {
+                        let _ = write!(cases, "case {index}: {tests}break; ");
+                    }
+                }
+                format!("switch (v->tag) {{ {cases}default: break; }} return false;")
+            }
+            _ => "return false;".to_string(),
+        };
+        let _ = writeln!(self.glue, "static bool {name}({ctype} const* v) {{ {body} }}");
+        Ok(Some(name))
+    }
+
     fn full(&self, name: &str, at: Span) -> Option<String> {
         let known = |full: &str| self.structs.contains_key(full) || self.enums.contains_key(full) || self.aliases.contains_key(full);
         let file = self.files.iter().find(|file| at.start <= file.end)?;
@@ -2852,9 +3251,6 @@ impl<'a> Emitter<'a> {
     /// A type as it is written in a signature or a field.
     fn written(&self, ty: &TypeExpr) -> Res<Ty> {
         let unknown = || not_yet(ty.span, &format!("the type `{}`", self.text(ty.span)));
-        if ty.holder.is_some() {
-            return Err(not_yet(ty.span, "a `shared` or a `weak` value"));
-        }
         let mut found = match (Ty::from_name(&ty.name), ty.args.as_slice()) {
             (None, [ok, error]) if ty.name == "Result" => Ty::Result(Box::new(self.written(ok)?), Box::new(self.written(error)?)),
             (None, [item]) if ty.name == "List" => Ty::List(Box::new(self.written(item)?)),
@@ -2874,7 +3270,18 @@ impl<'a> Emitter<'a> {
             },
             _ => return Err(unknown()),
         };
+        // `shared Node?`: the holder goes around the type before `?` does, as in the checker.
+        let held = |holder: Holder, inner: Ty| match holder {
+            Holder::Shared => Ty::Shared(Box::new(inner), ty.checked),
+            Holder::Weak => Ty::Weak(Box::new(inner), ty.checked),
+        };
+        let mut holder = ty.holder;
         for suffix in &ty.suffixes {
+            if *suffix == Suffix::Nullable {
+                if let Some(word) = holder.take() {
+                    found = held(word, found);
+                }
+            }
             found = match suffix {
                 Suffix::Pointer => Ty::Ptr(Box::new(found)),
                 Suffix::Nullable => Ty::Nullable(Box::new(found)),
@@ -2884,6 +3291,9 @@ impl<'a> Emitter<'a> {
             if mangle(&found).is_none() {
                 return Err(unknown());
             }
+        }
+        if let Some(word) = holder {
+            found = held(word, found);
         }
         Ok(match ty.mode {
             Some(Mode::Read) => Ty::Read(Box::new(found)),
@@ -2895,7 +3305,7 @@ impl<'a> Emitter<'a> {
     /// Whether a value of this type owns something that is freed when it ends.
     fn droppable(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Str | Ty::Ptr(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader | Ty::Writer => true,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader | Ty::Writer => true,
             Ty::Entry(key, value) => self.droppable(key) || self.droppable(value),
             Ty::Nullable(inner) | Ty::Array(inner, _) => self.droppable(inner),
             Ty::Result(ok, error) => self.droppable(ok) || self.droppable(error),
@@ -2950,7 +3360,7 @@ impl<'a> Emitter<'a> {
     /// between brackets. Text inside is quoted.
     fn shower(&mut self, ty: &Ty, span: Span) -> Res<String> {
         if let Ty::Nullable(inner) = ty {
-            if matches!(**inner, Ty::Ptr(_)) {
+            if matches!(**inner, Ty::Ptr(_) | Ty::Shared(..)) {
                 return self.shower(inner, span);
             }
         }
@@ -2973,8 +3383,9 @@ impl<'a> Emitter<'a> {
             Ty::Bool => body.push_str("if (*v) sg_put(out, \"true\", 4); else sg_put(out, \"false\", 5);"),
             Ty::Char => body.push_str("sg_put_quoted_char(out, *v);"),
             Ty::Str => body.push_str("sg_put_quoted(out, sg_view(v));"),
-            // A `T*` and a `T*?` are one C type and share this helper, so it knows `null`.
-            Ty::Ptr(inner) => {
+            // A `T*` and a `T*?` are one C type and share this helper, so it knows `null`. A
+            // `shared T` is written as what it points to.
+            Ty::Ptr(inner) | Ty::Shared(inner, _) => {
                 let _ = write!(body, "if (*v) {}(out, *v); else sg_put(out, \"null\", 4);", self.shower(inner, span)?);
             }
             Ty::Nullable(inner) if is_option(ty) => {
@@ -3084,7 +3495,7 @@ impl<'a> Emitter<'a> {
     /// carries, a list item by item.
     fn equaler(&mut self, ty: &Ty, span: Span) -> Res<String> {
         if let Ty::Nullable(inner) = ty {
-            if matches!(**inner, Ty::Ptr(_)) {
+            if matches!(**inner, Ty::Ptr(_) | Ty::Shared(..)) {
                 return self.equaler(inner, span);
             }
         }
@@ -3100,7 +3511,9 @@ impl<'a> Emitter<'a> {
             Ty::Int(_) | Ty::Bool | Ty::Char => body.push_str("return *a == *b;"),
             Ty::Float(_) => body.push_str("return sg_feq(*a, *b);"),
             Ty::Str => body.push_str("return sg_eq(sg_view(a), sg_view(b));"),
-            Ty::Ptr(inner) => {
+            // Two `shared` values are equal when what they point to is (`same` asks whether
+            // they are one).
+            Ty::Ptr(inner) | Ty::Shared(inner, _) => {
                 let _ = write!(body, "return (*a == NULL) == (*b == NULL) && (*a == NULL || {}(*a, *b));", self.equaler(inner, span)?);
             }
             Ty::Nullable(inner) if is_option(ty) => {
@@ -3172,6 +3585,17 @@ impl<'a> Emitter<'a> {
     }
 
     /// A pointer to a value that is only looked at: `read x`, or a value kept for the statement.
+    /// The pointer a `shared` or a `weak` value is (or a `T?` of one, or a borrow of one), only
+    /// looked at: `share`, `weak` and `same` do not move it. Its type, behind the borrows.
+    fn counted(&mut self, expr: &'a Expr) -> Res<(String, Ty)> {
+        let of = expr.ty.strip_borrow().clone();
+        let place = match expr.ty.is_borrow() && !expr.is_place() {
+            true => format!("(*{})", self.value(expr)?),
+            false => self.look(expr)?,
+        };
+        Ok((place, of))
+    }
+
     fn pointer(&mut self, expr: &'a Expr) -> Res<String> {
         // A window is not a pointer to its items: it is pointed at where it is kept.
         if expr.ty.is_borrow() && !expr.is_place() && !is_window(&expr.ty) {
@@ -3187,7 +3611,7 @@ impl<'a> Emitter<'a> {
             return self.value(expr);
         }
         let mut core = expr.ty.strip_borrow();
-        while let Ty::Ptr(inner) = core {
+        while let Some(inner) = pointee(core) {
             core = inner;
         }
         let (Ty::List(item) | Ty::Array(item, _)) = core else { return Err(not_yet(expr.span, &format!("a `{}` used as a slice", expr.ty))) };
@@ -3516,10 +3940,32 @@ impl<'a> Emitter<'a> {
     }
 
     /// A pointer to the list, the table or the array that `recv` is, borrows or points at.
+    /// What a `for` that lends the items goes over, as `list_address`; a `shared` value that
+    /// owns them and is handed to the loop (`for word in words`) is kept beside the statement
+    /// and let go when the loop ends.
+    fn loop_address(&mut self, iter: &'a Expr) -> Res<String> {
+        // A `shared checked` one is opened for the loop once it is kept.
+        let (owner, how) = match &iter.kind {
+            ExprKind::Open { inner, how } => (&**inner, Some(*how)),
+            _ => (iter, None),
+        };
+        if !(owner.moved && matches!(owner.ty, Ty::Shared(..))) {
+            return self.list_address(iter);
+        }
+        let (value, ctype, temp) = (self.value(owner)?, self.ctype(&owner.ty, owner.span)?, self.temp());
+        self.pre.push(format!("{ctype} {temp} = {value};"));
+        let post_from = self.post.len();
+        self.post.push(self.drop_of(&owner.ty, &temp));
+        Ok(match how.and_then(|how| self.opening(&temp, how, owner, post_from)) {
+            Some(open) => format!("({open}, {temp})"),
+            None => temp,
+        })
+    }
+
     fn list_address(&mut self, recv: &'a Expr) -> Res<String> {
         let mut boxes = 0;
         let mut behind = recv.ty.strip_borrow();
-        while let Ty::Ptr(inner) = behind {
+        while let Some(inner) = pointee(behind) {
             (behind, boxes) = (inner, boxes + 1);
         }
         let mut address = match recv.is_place() {
@@ -3668,10 +4114,10 @@ impl<'a> Emitter<'a> {
                 };
                 format!(
                     "{head}    {ctype} result = {call};\n    if (result.tag != 0) {{\n        fflush(stdout);\n        {shown}\
-                     fprintf(stderr, \"error: {format}\\n\", {values});\n        {drop}\n        return 1;\n    }}\n    return 0;\n}}\n"
+                     fprintf(stderr, \"error: {format}\\n\", {values});\n        {drop}\n        return 1;\n    }}\n{LEAKS}    return 0;\n}}\n"
                 )
             }
-            _ => format!("{head}    {call};\n    return 0;\n}}\n"),
+            _ => format!("{head}    {call};\n{LEAKS}    return 0;\n}}\n"),
         })
     }
 
@@ -3685,15 +4131,18 @@ impl<'a> Emitter<'a> {
         self.temps = 0;
         self.scopes = vec![streams()];
         self.in_test = true;
-        let written = self.stmts(&test.body, 1, bodies);
+        let mut body = String::new();
+        let written = self.stmts(&test.body, 1, &mut body);
         self.in_test = false;
         written?;
         if !ends_by_leaving(&test.body) {
             for line in self.drops(0) {
-                let _ = writeln!(bodies, "    {line}");
+                let _ = writeln!(body, "    {line}");
             }
         }
         self.scopes.clear();
+        self.declare_guards(bodies);
+        bodies.push_str(&body);
         bodies.push_str("}\n\n");
         Ok(())
     }
@@ -3710,6 +4159,11 @@ impl<'a> Emitter<'a> {
             let owner_ty = match self.structs.contains_key(owner) {
                 true => Ty::Struct(owner.to_string()),
                 false => Ty::Enum(owner.to_string()),
+            };
+            // `read FolderRef this`: the `shared` value that holds the struct.
+            let owner_ty = match &func.this_ty {
+                Some(written) => self.written(written)?,
+                None => owner_ty,
             };
             let ty = match this {
                 This::Value => owner_ty,
@@ -3731,16 +4185,99 @@ impl<'a> Emitter<'a> {
         self.ret = ret;
         self.temps = 0;
         self.scopes = vec![scope];
-        self.stmts(&func.body, 1, bodies)?;
+        let mut body = String::new();
+        self.stmts(&func.body, 1, &mut body)?;
         // What the function was given by value and still owns at its end.
         if !ends_by_leaving(&func.body) {
             for line in self.drops(0) {
-                let _ = writeln!(bodies, "    {line}");
+                let _ = writeln!(body, "    {line}");
             }
         }
         self.scopes.clear();
+        self.declare_guards(bodies);
+        bodies.push_str(&body);
         bodies.push_str("}\n\n");
         Ok(())
+    }
+
+    /// A call of a built-in method on a receiver that may have been lent in two steps
+    /// (`Opening::Reserve`): then the receiver and the arguments are computed, in order, before
+    /// it is lent to change and the method runs.
+    fn reserved(&mut self, guard: Option<String>, helper: &str, values: Vec<String>) -> String {
+        let Some(guard) = guard else { return format!("{helper}({})", values.join(", ")) };
+        let mut lines = String::new();
+        let mut names = Vec::new();
+        for value in values {
+            let temp = self.temp();
+            let _ = write!(lines, "__auto_type {temp} = {value}; ");
+            names.push(temp);
+        }
+        format!("({{ {lines}sg_change_reserved(&{guard}); {helper}({}); }})", names.join(", "))
+    }
+
+    /// The borrows of `shared checked` values the function makes, declared at its start with
+    /// nothing lent (see `guard_decls`).
+    fn declare_guards(&mut self, out: &mut String) {
+        if !self.guard_decls.is_empty() {
+            let _ = writeln!(out, "    sg_guard {};", self.guard_decls.iter().map(|name| format!("{name} = {{ 0 }}")).collect::<Vec<_>>().join(", "));
+        }
+        self.guard_decls.clear();
+        self.guards.clear();
+    }
+
+    /// A new borrow of a `shared checked` value: let go with the statement (its line goes in
+    /// `post`, before the lines from `post_from` on, which drop what the statement made: the value
+    /// may be one of them), and on every way out of the function before that.
+    fn new_guard(&mut self, post_from: usize) -> String {
+        let name = format!("sg_g{}", self.guard_decls.len());
+        self.guard_decls.push(name.clone());
+        self.guards.push(name.clone());
+        let line = format!("sg_unlend(&{name});");
+        self.post.insert(post_from.min(self.post.len()), line.clone());
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.push(Local { name: String::new(), cname: name.clone(), ty: Ty::Void, gone: false, drop: Some(line) });
+        }
+        name
+    }
+
+    /// The borrows made since `from` have ended: they are let go where this line is written,
+    /// and no longer at the end of the statement.
+    fn end_guards(&mut self, from: usize) -> String {
+        let ended: Vec<String> = self.guards.drain(from..).collect();
+        let lines: Vec<String> = ended.iter().map(|name| format!("sg_unlend(&{name});")).collect();
+        self.post.retain(|line| !lines.contains(line));
+        for scope in &mut self.scopes {
+            scope.retain(|local| !ended.contains(&local.cname));
+        }
+        lines.join(" ")
+    }
+
+    /// Where what a `shared checked` value holds is reached (`Open`): `pointer` is the value,
+    /// as C can name it more than once. The access is checked against the borrows of it in
+    /// progress, and one that goes on after it is recorded. Gives the C expression that does it.
+    /// A plain `shared` value has no borrows to check (it is opened only to be read, by `read x
+    /// as n`): `None`.
+    fn opening(&mut self, pointer: &str, how: Opening, holder: &Expr, post_from: usize) -> Option<String> {
+        if !matches!(holder.ty.strip_borrow(), Ty::Shared(_, true)) {
+            return None;
+        }
+        let mut ty = &holder.ty;
+        while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Shared(inner, _) = ty {
+            ty = inner;
+        }
+        let what = c_string(short_name(&ty.to_string()));
+        let loc = self.loc(holder.span);
+        Some(match how {
+            Opening::Look => format!("sg_look({pointer}, {what}, {loc})"),
+            Opening::Change => format!("sg_change({pointer}, {what}, {loc})"),
+            Opening::Lend | Opening::LendChange | Opening::Reserve => {
+                let guard = self.new_guard(post_from);
+                if how == Opening::Reserve {
+                    self.reserving = Some(guard.clone());
+                }
+                format!("sg_lend(&{guard}, {pointer}, {}, {}, {what}, {loc})", how == Opening::LendChange, how == Opening::Reserve)
+            }
+        })
     }
 
     /// Holds back what the statement would free at its end (the values in it that have no
@@ -3883,11 +4420,36 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// A statement. What it lent of `shared checked` values is let go at its end (the lines
+    /// in `post`); the borrows are then forgotten.
     fn stmt(&mut self, stmt: &'a Stmt, depth: usize, out: &mut String) -> Res<()> {
+        let from = self.guards.len();
+        self.reserving = None;
+        let written = self.stmt_in(stmt, depth, out);
+        self.end_guards(from);
+        written
+    }
+
+    fn stmt_in(&mut self, stmt: &'a Stmt, depth: usize, out: &mut String) -> Res<()> {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
-            StmtKind::As { value, .. } => return Err(not_yet(value.span, "a `shared` or a `weak` value")),
+            // `read x as n { }`: what the `shared` value holds, lent for the block (the borrow is
+            // let go after it, with the statement), under a name.
+            StmtKind::As { mutable, value, name, name_span, body } => {
+                let Ty::Shared(held, _) = value.ty.strip_borrow() else { unreachable!("the checker opens only a `shared` value") };
+                let held = (**held).clone();
+                let place = self.look(value)?;
+                let ty = if *mutable { Ty::Ref(Box::new(held)) } else { Ty::Read(Box::new(held)) };
+                let named = self.borrowed_name(name, ty, &format!("(*{place})"), *name_span)?;
+                self.flush_pre(&pad, out);
+                let kept = self.hold();
+                let _ = writeln!(out, "{pad}{{");
+                self.block_with(body, depth + 1, out, vec![named])?;
+                self.release(kept, &format!("{pad}    "), out);
+                let _ = writeln!(out, "{pad}}}");
+            }
             StmtKind::Let { ty, name, init, .. } => {
+                let init = bare(init);
                 let ty = match ty {
                     Some(written) => self.written(written)?,
                     None => init.ty.clone(),
@@ -4083,7 +4645,7 @@ impl<'a> Emitter<'a> {
                 self.nothing_gone();
                 match by {
                     Some(mode) => {
-                        let address = self.list_address(iter)?;
+                        let address = self.loop_address(iter)?;
                         self.flush_pre(&pad, out);
                         let kept = self.hold();
                         let _ = writeln!(out, "{pad}{{");
@@ -4203,7 +4765,7 @@ impl<'a> Emitter<'a> {
                     // A borrowed list lends its items, one position after the other. The
                     // checker keeps the list from changing while the loop runs.
                     Some(mode) => {
-                        let address = self.list_address(iter)?;
+                        let address = self.loop_address(iter)?;
                         self.flush_pre(&pad, out);
                         let kept = self.hold();
                         let _ = writeln!(out, "{pad}{{");
@@ -4236,9 +4798,9 @@ impl<'a> Emitter<'a> {
                     }
                 }
             }
-            StmtKind::Return(Some(value)) if matches!(value.kind, ExprKind::Match { .. }) => self.match_stmt(value, &Dest::Return, depth, out)?,
+            StmtKind::Return(Some(value)) if matches!(bare(value).kind, ExprKind::Match { .. }) => self.match_stmt(bare(value), &Dest::Return, depth, out)?,
             StmtKind::Return(value) => {
-                for line in self.return_lines(value.as_ref(), &[], stmt.span)? {
+                for line in self.return_lines(value.as_ref().map(bare), &[], stmt.span)? {
                     let _ = writeln!(out, "{pad}{line}");
                 }
             }
@@ -4262,8 +4824,8 @@ impl<'a> Emitter<'a> {
                     }
                 }
             }
-            StmtKind::Discard(value) => self.unused(value, &pad, out)?,
-            StmtKind::Expr(expr) => self.expr_stmt(expr, depth, out)?,
+            StmtKind::Discard(value) => self.unused(bare(value), &pad, out)?,
+            StmtKind::Expr(expr) => self.expr_stmt(bare(expr), depth, out)?,
         }
         Ok(())
     }
@@ -4667,6 +5229,11 @@ impl<'a> Emitter<'a> {
                             boxes.push(at.clone());
                             flat(inner)
                         }
+                        // What a `shared` value holds is never taken out: the names look.
+                        Ty::Shared(inner, _) => {
+                            inner_mode = inner_mode.or(Some(Mode::Read));
+                            flat(inner)
+                        }
                         _ => break,
                     };
                     at = format!("(*{at})");
@@ -4820,7 +5387,7 @@ impl<'a> Emitter<'a> {
         // the pointer.
         let mut core = subject.ty.strip_borrow();
         let mut boxes = 0;
-        while let Ty::Ptr(behind) = core {
+        while let Some(behind) = pointee(core) {
             (core, boxes) = (behind, boxes + 1);
         }
         let literal = matches!(core, Ty::Int(_) | Ty::Char | Ty::Str | Ty::Bool | Ty::Nullable(_));
@@ -5100,6 +5667,8 @@ impl<'a> Emitter<'a> {
 
     /// A function called with its arguments, each shaped for its parameter.
     fn call(&mut self, name: String, receiver: Option<Part>, args: &'a [Expr], head: bool, gives: &Ty) -> Res<String> {
+        // The receiver was lent to read while the arguments are computed (`Opening::Reserve`).
+        let reserved = self.reserving.take();
         let params = self.sigs.get(&name).cloned().unwrap_or_default();
         // An argument can leave the function for as long as no argument before it owns anything.
         let mut taking = Taking { head: head && receiver.is_none(), handed: Vec::new() };
@@ -5112,7 +5681,16 @@ impl<'a> Emitter<'a> {
             };
             parts.push(self.taken(arg, value, &ty, before, args[position + 1..].iter().any(may_leave), &mut taking)?);
         }
-        let (values, names) = self.in_order(parts)?;
+        let (mut values, mut names) = self.in_order(parts)?;
+        // The receiver, then every argument, is computed before the receiver is lent to change.
+        if let Some(guard) = reserved {
+            for value in values.iter_mut() {
+                let temp = self.temp();
+                let _ = write!(names, "__auto_type {temp} = {value}; ");
+                *value = temp;
+            }
+            let _ = write!(names, "sg_change_reserved(&{guard}); ");
+        }
         let span = args.first().map_or(Span::new(0, 0), |arg| arg.span);
         let called = self.handed_over(format!("{name}({})", values.join(", ")), gives, &taking.handed, span)?;
         Ok(sequence(&names, called))
@@ -5174,8 +5752,6 @@ impl<'a> Emitter<'a> {
             ExprKind::Field { recv: inner, .. }
             | ExprKind::New(inner)
             | ExprKind::NewShared { value: inner, .. }
-            | ExprKind::Open { inner, .. }
-            | ExprKind::Within(inner)
             | ExprKind::Share(inner)
             | ExprKind::WeakOf(inner)
             | ExprKind::Load(inner)
@@ -5184,6 +5760,10 @@ impl<'a> Emitter<'a> {
             | ExprKind::IsNull { expr: inner, .. }
             | ExprKind::IsVariant { expr: inner, .. }
             | ExprKind::Unary(UnOp::Not | UnOp::BitNot, inner) => of(inner),
+            // Checked against the borrows in progress; a borrow that goes on changes what the
+            // accesses beside it find, and so does its end.
+            ExprKind::Open { inner, how: Opening::Look | Opening::Change } => of(inner).max(Effect::Stops),
+            ExprKind::Open { .. } | ExprKind::Within(_) => Effect::Changes,
             // A code that is not a character stops the program in every build.
             ExprKind::Cast { ty: Ty::Char, expr: inner } if *inner.ty.strip_borrow() != Ty::Char => of(inner).max(Effect::Stops),
             ExprKind::Unary(UnOp::Neg, inner) | ExprKind::Cast { expr: inner, .. } => of(inner).max(if self.checked { Effect::Stops } else { Effect::Reads }),
@@ -5483,7 +6063,7 @@ impl<'a> Emitter<'a> {
             None => self.formatted_as_printed(expr, format, values)?,
         }
         let mut ty = expr.ty.strip_borrow();
-        while let Ty::Ptr(inner) = ty {
+        while let Some(inner) = pointee(ty) {
             ty = inner.strip_borrow();
         }
         let ascii = matches!(ty, Ty::Int(_) | Ty::Float(_) | Ty::Bool);
@@ -5497,10 +6077,10 @@ impl<'a> Emitter<'a> {
     /// number is, and given as text.
     fn lettered(&mut self, expr: &'a Expr, letter: Letter, digits: u32, format: &mut String, values: &mut Vec<String>) -> Res<()> {
         let (value, ty) = match expr.ty.strip_borrow() {
-            Ty::Ptr(_) => {
+            Ty::Ptr(_) | Ty::Shared(..) => {
                 let mut place = self.look(expr)?;
                 let mut ty = expr.ty.strip_borrow();
-                while let Ty::Ptr(inner) = ty {
+                while let Some(inner) = pointee(ty) {
                     place = format!("(*{place})");
                     ty = inner;
                 }
@@ -5556,10 +6136,10 @@ impl<'a> Emitter<'a> {
             return Ok(());
         }
         // A value on the heap is written like the value: `print(count)` with `int* count`.
-        if let Ty::Ptr(_) = expr.ty.strip_borrow() {
+        if let Ty::Ptr(_) | Ty::Shared(..) = expr.ty.strip_borrow() {
             let mut place = self.look(expr)?;
             let mut ty = expr.ty.strip_borrow();
-            while let Ty::Ptr(inner) = ty {
+            while let Some(inner) = pointee(ty) {
                 place = format!("(*{place})");
                 ty = inner;
             }
@@ -5946,13 +6526,22 @@ impl<'a> Emitter<'a> {
                 let place = if expr.ty.is_borrow() && !is_text_view(local) && !is_window(local) { format!("(*{cname})") } else { cname };
                 Ok(if self.narrowed(name, &expr.ty) { format!("{place}.value") } else { place })
             }
+            // A `shared checked` value whose contents are reached: the same place, opened.
+            ExprKind::Open { inner, how } => {
+                let post_from = self.post.len();
+                let place = self.look(inner)?;
+                Ok(match self.opening(&place, *how, inner, post_from) {
+                    Some(open) => format!("(*({open}, &{place}))"),
+                    None => place,
+                })
+            }
             // A field is reached through any number of `T*` on its own.
             ExprKind::Field { recv, name, .. } => {
                 // A field of a value that has no name (`longer(a, b).text`): the value is kept
                 // for the statement.
                 let mut place = self.look(recv)?;
                 let mut ty = recv.ty.strip_borrow();
-                while let Ty::Ptr(inner) = ty {
+                while let Some(inner) = pointee(ty) {
                     place = format!("(*{place})");
                     ty = inner;
                 }
@@ -6059,7 +6648,7 @@ impl<'a> Emitter<'a> {
     /// A value that is only looked at, as something C can name more than once. A value that
     /// has no name and owns something is kept in a temporary and dropped after the statement.
     fn look(&mut self, expr: &'a Expr) -> Res<String> {
-        if matches!(expr.kind, ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List | IndexKind::Map | IndexKind::Array, .. }) {
+        if matches!(expr.kind, ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List | IndexKind::Map | IndexKind::Array, .. } | ExprKind::Open { .. }) {
             return self.lvalue(expr);
         }
         let late = self.late.take();
@@ -6143,7 +6732,7 @@ impl<'a> Emitter<'a> {
             (_, ty) if is_text_behind_pointer(ty) => {
                 let mut place = self.look(expr)?;
                 let mut ty = ty.strip_borrow();
-                while let Ty::Ptr(inner) = ty {
+                while let Some(inner) = pointee(ty) {
                     place = format!("(*{place})");
                     ty = inner;
                 }
@@ -6228,7 +6817,7 @@ impl<'a> Emitter<'a> {
             ExprKind::Field { recv, name, .. } if lent_option(&expr.ty).is_some() => {
                 let mut place = self.look(recv)?;
                 let mut ty = recv.ty.strip_borrow();
-                while let Ty::Ptr(inner) = ty {
+                while let Some(inner) = pointee(ty) {
                     place = format!("(*{place})");
                     ty = inner;
                 }
@@ -6240,7 +6829,7 @@ impl<'a> Emitter<'a> {
             ExprKind::FuncRef(name) => Ok(format!("f_{}", cname(name))),
             ExprKind::Constant { ty, name } => Ok(constant(ty, name)),
             // A number read out of a pointer that has no name: the pointer is freed after the statement.
-            ExprKind::Load(inner) if matches!(inner.ty, Ty::Ptr(_)) => Ok(format!("(*{})", self.look(inner)?)),
+            ExprKind::Load(inner) if matches!(inner.ty, Ty::Ptr(_) | Ty::Shared(..)) => Ok(format!("(*{})", self.look(inner)?)),
             // A `T?` copied out of a `read T?`.
             ExprKind::Load(inner) if lent_option(&inner.ty).is_some() => {
                 let value = self.first(inner, head)?;
@@ -6249,8 +6838,44 @@ impl<'a> Emitter<'a> {
             ExprKind::Load(inner) => Ok(format!("(*{})", self.first(inner, head)?)),
             // A borrow of a `T*` used as a borrow of the `T`: one step along the pointer.
             ExprKind::Unbox(inner) => Ok(format!("(*{})", self.value(inner)?)),
-            ExprKind::NewShared { .. } | ExprKind::Share(_) | ExprKind::WeakOf(_) | ExprKind::Open { .. } | ExprKind::Within(_) => {
-                Err(not_yet(expr.span, "a `shared` or a `weak` value"))
+            // The value and its first owner; a debug build notes where it was made, for the
+            // leak report.
+            ExprKind::NewShared { value: inner, .. } => {
+                let Ty::Shared(target, _) = &expr.ty else { return Err(not_yet(expr.span, "this `new`")) };
+                self.ctype(&expr.ty, expr.span)?;
+                let value = self.first_as(inner, target, head)?;
+                let made = if self.checked { self.loc(expr.span) } else { "NULL".to_string() };
+                Ok(format!("sg_new_{}({value}, {made})", mangle(&expr.ty).expect("it has a C type")))
+            }
+            // `share x` is one more owner; `share w`, an owner while one is left.
+            ExprKind::Share(inner) => {
+                let (pointer, of) = self.counted(inner)?;
+                let target = self.ctype(&expr.ty, expr.span)?;
+                let core = if let Ty::Nullable(held) = &of { &**held } else { &of };
+                let how = if matches!(core, Ty::Weak(..)) { "sg_rc_upgrade" } else { "sg_rc_share" };
+                Ok(format!("(({target}){how}({pointer}))"))
+            }
+            ExprKind::WeakOf(inner) => {
+                let (pointer, _) = self.counted(inner)?;
+                let target = self.ctype(&expr.ty, expr.span)?;
+                Ok(format!("(({target})sg_rc_weaken({pointer}))"))
+            }
+            // A borrow of a `shared checked` value, opened: its value is a pointer, as a borrow's is.
+            ExprKind::Open { .. } if expr.ty.is_borrow() => Ok(format!("(&{})", self.lvalue(expr)?)),
+            ExprKind::Open { .. } => self.lvalue(expr),
+            // What was lent while the value was computed ends with it.
+            ExprKind::Within(inner) => {
+                let from = self.guards.len();
+                let value = self.value(inner)?;
+                let ended = self.end_guards(from);
+                if ended.is_empty() {
+                    return Ok(value);
+                }
+                let temp = self.temp();
+                Ok(match &inner.ty {
+                    Ty::Void | Ty::Never => format!("({{ {value}; {ended} }})"),
+                    _ => format!("({{ __auto_type {temp} = {value}; {ended} {temp}; }})"),
+                })
             }
             ExprKind::New(inner) => {
                 let Ty::Ptr(target) = &expr.ty else { return Err(not_yet(expr.span, "this `new`")) };
@@ -6519,7 +7144,7 @@ impl<'a> Emitter<'a> {
             }
             // Structs, enums and lists are compared where they are, through pointers.
             ExprKind::Binary(op, left, right)
-                if matches!(left.ty.strip_borrow(), Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Result(..) | Ty::Array(..) | Ty::Slice(_)) =>
+                if matches!(left.ty.strip_borrow(), Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Result(..) | Ty::Array(..) | Ty::Slice(_) | Ty::Shared(..)) =>
             {
                 let ty = left.ty.strip_borrow().clone();
                 let lent = Ty::Read(Box::new(ty.clone()));
@@ -6754,6 +7379,12 @@ impl<'a> Emitter<'a> {
                 Ok(sequence(&names, made))
             }
             ExprKind::Call { name, args, callee, .. } => match callee {
+                // `same(a, b)`: one object, whatever it holds.
+                Callee::Plain if name == "same" => {
+                    let (a, _) = self.counted(&args[0])?;
+                    let (b, _) = self.counted(&args[1])?;
+                    Ok(format!("((void*){a} == (void*){b})"))
+                }
                 // `x ?? panic("...")`: the program stops, so there is no value to shape.
                 Callee::Plain if name == "panic" => {
                     let before = (self.pre.len(), self.post.len());
@@ -6789,7 +7420,19 @@ impl<'a> Emitter<'a> {
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
                 Callee::Static { owner, name } => self.call(format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
-                Callee::Method { whole: true, .. } => Err(not_yet(expr.span, "a `shared` or a `weak` value")),
+                // `read FolderRef this`: the method borrows the owner, not what it holds (it is not
+                // opened); `FolderRef this` takes an owner of its own.
+                Callee::Method { whole: true, owner, this } => {
+                    let holder = recv.ty.strip_borrow().clone();
+                    let before = self.mark();
+                    let (receiver, this_ty) = match this {
+                        This::Value => (self.value(recv)?, holder.clone()),
+                        _ if recv.ty.is_borrow() && !recv.is_place() => (self.value(recv)?, Ty::Read(Box::new(holder.clone()))),
+                        _ => (self.address(recv)?, Ty::Read(Box::new(holder.clone()))),
+                    };
+                    let receiver = self.part(recv, &this_ty, receiver, before);
+                    self.call(format!("f_{}_{name}", cname(owner)), Some(receiver), args, false, &expr.ty)
+                }
                 Callee::Method { owner, this, .. } => {
                     let held = recv.ty.strip_borrow().clone();
                     let before = self.mark();
@@ -6803,10 +7446,10 @@ impl<'a> Emitter<'a> {
                             }
                             (This::Value, Ty::Ptr(_)) => return Err(not_yet(recv.span, "a method that takes `this` called on a pointer that has no name").hint("give it a name first")),
                             // The box is kept until the statement ends; the method goes along the pointer.
-                            (_, Ty::Ptr(_)) => {
+                            (_, Ty::Ptr(_) | Ty::Shared(..)) => {
                                 let mut place = self.look(recv)?;
                                 let mut ty = &held;
-                                while let Ty::Ptr(inner) = ty {
+                                while let Some(inner) = pointee(ty) {
                                     place = format!("(*{place})");
                                     ty = inner;
                                 }
@@ -6831,7 +7474,7 @@ impl<'a> Emitter<'a> {
                         (This::Read | This::Ref, _) => {
                             let mut address = self.address(recv)?;
                             let mut ty = &held;
-                            while let Ty::Ptr(inner) = ty {
+                            while let Some(inner) = pointee(ty) {
                                 address = format!("(*{address})");
                                 ty = inner;
                             }
@@ -6850,7 +7493,7 @@ impl<'a> Emitter<'a> {
                 Callee::FieldValue(_) => {
                     let mut place = self.look(recv)?;
                     let mut ty = recv.ty.strip_borrow();
-                    while let Ty::Ptr(inner) = ty {
+                    while let Some(inner) = pointee(ty) {
                         place = format!("(*{place})");
                         ty = inner;
                     }
@@ -6889,6 +7532,9 @@ impl<'a> Emitter<'a> {
                     let base = mangle(&table).ok_or_else(|| not_yet(expr.span, &format!("the type `{table}`")))?;
                     self.ctype(&table, expr.span)?;
                     let address = self.list_address(recv)?;
+                    // A table in a `shared checked` value that the method changes: lent to read
+                    // while the arguments are computed, then to change (`reserved`).
+                    let reserved = self.reserving.take();
                     let is_map = matches!(table, Ty::Map(..));
                     match (name.as_str(), is_map) {
                         ("length", _) => Ok(format!("{address}->len")),
@@ -6905,16 +7551,22 @@ impl<'a> Emitter<'a> {
                             }
                             let (values, names) = self.in_order(parts)?;
                             let loc = self.loc(expr.span);
-                            Ok(sequence(&names, format!("sg_add_{base}({address}, {}, {}, {loc})", values[0], values[1])))
+                            let called = self.reserved(reserved, &format!("sg_add_{base}"), vec![address, values[0].clone(), values[1].clone(), loc]);
+                            Ok(sequence(&names, called))
                         }
                         ("add", false) => {
                             let Ty::Set(key) = &table else { unreachable!("it is a set") };
-                            Ok(format!("sg_add_{base}({address}, {})", self.value_as(&args[0], key)?))
+                            let item = self.value_as(&args[0], key)?;
+                            Ok(self.reserved(reserved, &format!("sg_add_{base}"), vec![address, item]))
                         }
-                        ("remove", false) => Ok(format!("sg_remove_{base}({address}, {})", self.key(&table, &args[0])?)),
+                        ("remove", false) => {
+                            let key = self.key(&table, &args[0])?;
+                            Ok(self.reserved(reserved, &format!("sg_remove_{base}"), vec![address, key]))
+                        }
                         ("remove", true) => {
                             let helper = self.table_helper(&table, "remove", expr.span)?;
-                            Ok(format!("{helper}({address}, {})", self.key(&table, &args[0])?))
+                            let key = self.key(&table, &args[0])?;
+                            Ok(self.reserved(reserved, &helper, vec![address, key]))
                         }
                         // A look at a value that may not be there; see `get` of a list.
                         ("get", true) => {
@@ -6932,7 +7584,8 @@ impl<'a> Emitter<'a> {
                             let Ty::Map(_, value) = &table else { unreachable!("it is a map") };
                             let helper = self.table_helper(&table, "getOrAdd", expr.span)?;
                             let key = self.key(&table, &args[0])?;
-                            Ok(format!("{helper}({address}, {key}, {})", self.value_as(&args[1], value)?))
+                            let value = self.value_as(&args[1], value)?;
+                            Ok(self.reserved(reserved, &helper, vec![address, key, value]))
                         }
                         _ => Err(not_yet(expr.span, &format!("the method `{name}`"))),
                     }
@@ -7204,6 +7857,12 @@ impl<'a> Emitter<'a> {
                     "clone" => Ok(format!("sg_clone({})", self.view(recv)?)),
                     _ => Err(not_yet(expr.span, &format!("the method `{name}`"))),
                 },
+                // `.clone()` of a `shared` value is one more owner, not a copy.
+                Callee::Plain if name == "clone" && matches!(recv.ty.strip_borrow(), Ty::Shared(..)) => {
+                    let (pointer, _) = self.counted(recv)?;
+                    let target = self.ctype(&expr.ty, expr.span)?;
+                    Ok(format!("(({target})sg_rc_share({pointer}))"))
+                }
                 // `f.write(...)` adds to the text a `format` method is writing.
                 Callee::Plain if *recv.ty.strip_borrow() == Ty::Formatter => {
                     let out = self.value(recv)?;
@@ -7388,6 +8047,15 @@ fn fractional(op: BinOp, ty: FloatTy, left: &str, right: &str) -> String {
 
 /// A C expression that first runs the declarations `names` (the earlier parts, kept in
 /// variables) and then gives `value`.
+/// An expression without the `Within` the checker put around it: where a statement ends with
+/// the expression, what it lent is let go with the statement anyway.
+fn bare(expr: &Expr) -> &Expr {
+    match &expr.kind {
+        ExprKind::Within(inner) => bare(inner),
+        _ => expr,
+    }
+}
+
 fn sequence(names: &str, value: String) -> String {
     if names.is_empty() { value } else { format!("({{ {names}{value}; }})") }
 }

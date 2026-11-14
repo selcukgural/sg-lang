@@ -1,0 +1,48 @@
+// The methods that change a table or a list in a `shared checked` value, with arguments: the
+// value is lent to read while the arguments are computed, then to change.
+
+struct Index {
+    HashMap<string, nint> counts
+    HashSet<nint> seen
+    List<nint> order
+}
+
+nint size(read Index index) {
+    return index.order.length()
+}
+
+void main() {
+    var index = new shared checked Index { counts = HashMap<string, nint>(), seen = HashSet<nint>(), order = List<nint>() }
+    var other = share index
+    index.counts.add("a", other.order.length())
+    index.counts.add("b", size(read other) + 1)
+    print(index.seen.add(other.counts.length()))
+    print(index.seen.add(2))
+    print(index.seen.remove(other.counts.length()))
+    index.order.add(other.seen.length())
+    index.order.add(index.order[0] + other.order[0])
+    print(index.counts.remove("a") ?? -1)
+    ref index as i {
+        var n = i.counts.getOrAdd("c", 0)
+        n += 5
+    }
+    print(index.counts)
+    print(index.seen)
+    print(index.order)
+
+    // A `for` over a `shared` list that owns it: the loop lends the items.
+    var words = new shared List<string> { "x", "y" }
+    var w = weak words
+    for word in words {
+        print(word)
+    }
+    print(share w is null)
+
+    // The same with a `shared checked` list.
+    var numbers = new shared checked List<nint> { 1, 2 }
+    var wn = weak numbers
+    for number in numbers {
+        print(number)
+    }
+    print(share wn is null)
+}

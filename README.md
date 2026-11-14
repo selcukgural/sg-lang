@@ -159,7 +159,7 @@ either order (`ushort.fromLittleEndian(data[6..8])`, `n.toBigEndian()`), and ran
 function values; ownership, moves and the borrow check; several owners of one value (`shared T`, `share x`,
 and `weak T`, which looks without owning), changed through any of them with `shared checked T` (each access
 checked against the borrows in progress, a certain conflict a compile error, the values that hold each
-other up reported when the program ends) and type aliases (`using NodeRef = shared Node`), not yet compiled;
+other up reported when the program ends) and type aliases (`using NodeRef = shared Node`);
 modules (`use`, `public`, `readonly`); `test` blocks.
 
 Programs read and write files whole or piece by piece, as text or as bytes, and append to them (a writer left open is a compile error), read

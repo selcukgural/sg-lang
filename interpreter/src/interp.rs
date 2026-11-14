@@ -206,7 +206,7 @@ fn owns_any(value: &Value, ids: &[usize]) -> bool {
 }
 
 /// `text` with every whole word `word` replaced by `with`.
-fn replace_word(text: &str, word: &str, with: &str) -> String {
+pub(crate) fn replace_word(text: &str, word: &str, with: &str) -> String {
     let mut out = String::new();
     let mut rest = text;
     let is_name = |c: char| c.is_alphanumeric() || c == '_';

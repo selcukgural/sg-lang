@@ -42,7 +42,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`; on a `read T?` it gives a `read T`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
 | Several owners | `new shared x` gives a `shared T`, one of the owners of a value on the heap; `share x` makes one more without moving `x` (so does `x.clone()`), and a move hands one over. What a `shared T` points to is read (`node.value`, a method that takes `read this`, `match`, `for item in read node.items`, `read node` where a `read T` goes) and never written or taken out; what a `shared checked T` points to is changed too (the next row). `weak x` gives a `weak T`, which looks without owning: `share w` gives a `shared T?`, `null` once the last owner is gone. `same(a, b)` tells whether two point to one object, `==` compares what they point to |
-| Changed through several owners | `new shared checked x` gives a `shared checked T`: what it points to is changed through any of its owners (`a.count += 1`, `a.items.add(x)`, a method that takes `ref this`, `ref a` where a `ref T` goes), and each access is checked against the borrows of it in progress, one that changes it or any number that read it. A read or a write borrows nothing after it; a value lent to a call is borrowed until the call returns, the head of a `for` for the loop, a `match` and an `is` with names for the statement. `read x as n { ... }` and `ref x as n { ... }` lend it for a block. A conflict through the same variable is a compile error, one through another variable a panic that shows both lines. A method can take the owner itself, `read FolderRef this`, so that it can write `share this` and `weak this`. The `shared` values still alive when a program or a test ends hold each other up and are reported (`leak: ...`) |
+| Changed through several owners | `new shared checked x` gives a `shared checked T`: what it points to is changed through any of its owners (`a.count += 1`, `a.items.add(x)`, a method that takes `ref this`, `ref a` where a `ref T` goes), and each access is checked against the borrows of it in progress, one that changes it or any number that read it. A read or a write borrows nothing after it; a value lent to a call is borrowed until the call returns, the head of a `for` for the loop, a `match` and an `is` with names for the statement. `read x as n { ... }` and `ref x as n { ... }` lend it for a block. A conflict through the same variable is a compile error, one through another variable a panic that shows both lines. A method can take the owner itself, `read FolderRef this`, so that it can write `share this` and `weak this`. The `shared` values still alive when a program or a test ends hold each other up and are reported (`leak: ...`; in compiled code by a debug build) |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -245,7 +245,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (191 of 820 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (206 of 821 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -318,17 +318,18 @@ overflow with the place, one comparison where there were two, and the program st
 the fifty-third: in a checked build a sum kept in a loop runs without its overflow test for as many rounds
 as it has room for, the loop written twice (315); on the way the variable of `for i in a..b` became a copy
 of the count in compiled code too, as it was in the interpreter (319). The fifty-fourth slice (`shared`,
-`weak` and `using`) is in the checker and the interpreter; compiled code takes an alias as the type it
-names, and refuses `shared` and `weak` with an error that names them, until the third part of that work
-(330). So is the fifty-fifth (`shared checked`, the `as` blocks, `this` with a type and the leak report),
-refused in compiled code the same way. What is still missing is an error that names it (not silence): the few positions listed with the
+`weak` and `using`) and the fifty-fifth (`shared checked`, the `as` blocks, `this` with a type and the leak
+report) were written in the checker and the interpreter; since the fifty-sixth they are compiled too: a
+`shared` value is a pointer with the counts of its owners and of its `weak` lookers in front of it, a
+`shared checked` one has the borrows of it in progress there as well, and a debug build keeps the values
+that are alive in a list for the leak report (347-355). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
 value (a `string`, a `T*`, a struct, an enum or a `T?` that holds one) is freed where its variable ends, on every way
 out of the block (`return`, `break`, `continue`, and the `return` inside `try` and `?? return`). A use that moves the value empties the place it came from, so the later free
 finds nothing to do; a text constant has no capacity and is never allocated or freed. There is no garbage
-collector and no reference count.
+collector, and a count of owners only where the program asks for several (`shared`).
 
 A debug build (`sg build file.sg`) checks integer overflow and is not optimised; a release build
 (`sg build file.sg --release`) wraps on overflow and is optimised. The interpreter and `sg test` behave like a
@@ -365,6 +366,7 @@ hand with no checks):
 | `keywords`: a million words sorted forty times into twelve keywords and the rest by a `match` on text | 0.199 s | 0.200 s | 0.194 s | 1.03 |
 | `classes`: ten million bytes sorted twenty times into the classes of a lexer by a `match` of ranges and `or` (`'a'..='z' or 'A'..='Z' or '_'`) | 0.239 s | 0.299 s | 0.274 s | 0.87 |
 | `rewrite`: two hundred thousand lines gone over twenty times, the tabs replaced by four spaces and a word by another with `replaceAll`, and an indent made with `repeat` | 0.588 s | 0.597 s | 0.625 s | 0.94 |
+| `tree`: the design's folder tree, 111,111 `shared checked` folders that look at their parent with `weak`, each adding a size to every folder above it, built and freed twenty times | 0.095 s | 0.102 s | 0.062 s | 1.53 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -540,6 +542,16 @@ pointer set inside the condition where its test holds, `(s.tag == 0 && (r = &s.u
 the narrowing under `!` and after a `while` (forty-ninth slice) is not measured either. Nor are the names
 of `is not` and the names seen after a statement (fiftieth slice): the same pointer, set in the same
 place, under a `!`.
+`tree` is the folder tree of the design's examples (05), the first program with several owners: each
+folder owns its subfolders through `shared checked` values in a list and looks at its parent with `weak`,
+and each new folder adds a size to itself and to every folder above it, getting an owner of each with
+`share cur.parent` on the way up. The C program is the same tree with plain pointers: a parent pointer, an
+array of the subfolders, and one free of the whole tree from the root. Of the 0.033 s between them, about
+0.010 s are the atomic counts (the same C with plain `++` and `--` took 0.086 s), about 0.003 s the checks
+of the borrows (0.084 s without them), and the rest is what the model asks for and C does not do: each
+folder is 32 bytes larger (the counts and the borrows), the walk up takes and lets go of an owner at each
+step, and each folder is freed when its count reaches zero, its `weak` parent let go with it. The checked
+build pays for the overflow test of `made` and of the sizes (choices 347-355).
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
@@ -2847,6 +2859,56 @@ report, in the checker and the interpreter), approved on 14 November 2026:
      `leak_cities`, the design's wrong version), a test file where one test leaks (`tests_checked_leak`),
      and twenty-three tests of errors.
 
+Choices made in the fifty-sixth slice (`shared`, `weak` and `shared checked` in compiled code, and the leak
+report there), approved on 14 November 2026:
+
+347. **A `shared T` is a pointer to the value, with two counts in front of it**: the owners, and the `weak`
+     lookers, where the owners together count as one looker (Rust's `Arc`). `shared T` and `weak T` are the
+     size of a pointer, what a `shared T` holds is reached as through a `T*` (fields, methods, `print`,
+     `==`, `match`), and `shared T?` and `weak T?` are the same pointer with `NULL` for `null`, as `T*?` is.
+     `share x` adds an owner, the end of an owner takes one away, and the last one drops the value; the last
+     looker frees the block. `share w` adds an owner only while there is one (a compare-and-swap that
+     fails at zero), `same(a, b)` compares the two pointers, `.clone()` is `share`.
+348. **The counts are atomic**, as the design decided ("Shared ownership": one name for `Rc` and `Arc`,
+     because a count made atomic later is the hard direction): adding is relaxed, letting go releases and
+     the last one acquires, as in Rust. In `tree` they are about 0.010 s of the 0.033 s between SG and C;
+     a program has one thread so far, so this is a price paid ahead of threads (see "Slower than C").
+349. **A `shared checked` value has its borrows in front of its counts** (16 bytes more): the borrow that
+     changes it, and the borrows that read it, the last made first, so that a conflict names the line the
+     interpreter names. A borrow that lasts is a small record in the frame of the function that lent it:
+     declared at the start of the function, made where the checker opened the value (`Open`), let go where
+     the checker said it ends (the end of the call, the line, the loop, the `match`, the `as` block) and on
+     every way out before that (`return`, `break`, `continue`, `try`). An access that copies a value or
+     assigns one is a check and records nothing. A conflict panics with the interpreter's two lines; the
+     checks are kept in a release build, as the check of an index is. A plain `shared` value opened for
+     reading (`read plain as items`) has nothing to check, and nothing is written for it.
+350. **The receiver of a method that changes it is lent in two steps here too** (336): the receiver and then
+     each argument are computed into variables, and only then is the receiver lent to change and the
+     method called, for the methods you write and for the built-in ones (`add`, `addAll`, `remove`,
+     `getOrAdd`).
+351. **The leak report is in a debug build and in the tests, not in a release build**, as the design wrote
+     ("in test and debug builds"). A debug build keeps every `shared` value that is alive in a list (48
+     bytes in front of its counts), in the order they were made, with the place it was made at; when `main`
+     returns and its values are gone, or a test that passed ends, the values still in the list are reported
+     with the interpreter's text, and the program ends with exit code 1 (the test fails). The field through
+     which they hold each other is the first field, in the order the values were made, that owns a `shared`
+     value somewhere inside it: a helper for each type that can hold one looks. A release build keeps no list
+     and reports nothing; its values cost the counts alone.
+352. **What leaks on purpose is not counted as left behind by `cargo test`**: the two programs that leak
+     (`leak_cycle`, `leak_cities`) report it themselves, and their blocks are still reached from the list,
+     so the system's leak check does not see them; every other program frees all it took.
+353. **A `for` over a `shared` collection that owns it takes that owner** (`for word in words`, 323) and lets
+     it go when the loop ends, as the interpreter does: a `weak` look after the loop finds it gone.
+354. **Measured** (`tree`): the folder tree of 05 with 111,111 folders, built and freed twenty times: 0.095 s
+     against 0.062 s for C with plain pointers (1.53), 0.102 s in a checked build. What the 0.033 s are is
+     under the table; the counts are the decision of 348, the rest is the price of several owners and a
+     check of the borrows, which C does not pay because it checks nothing.
+355. **The tests**: every program with `shared`, `weak` and `checked` is compiled now, gives the interpreter's
+     output (the panics of a conflict and the leak reports included) and runs clean under the sanitizers;
+     the test file where one test leaks is compiled too. One new program, `ok_checked_tables` (the methods
+     of a map, a set and a list in a `shared checked` value lent in two steps, and a `for` that takes the
+     owner of a `shared` and of a `shared checked` list).
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -2877,6 +2939,11 @@ check off.
 - **Wrapping arithmetic in a loop that is only arithmetic** (`vector`'s first version, 1.28 times): C may
   assume a signed overflow never happens and turn `i * 7 + round` into a counter; wrapping is defined, so
   the C compiler keeps the arithmetic. Rust pays the same. No candidate yet.
+- **Several owners** (`tree`, 1.53 times C with plain pointers, choice 354): of the 0.033 s, the atomic
+  counts are about 0.010 s and the checks of the borrows about 0.003 s; the rest is the larger blocks and
+  the owner taken and let go at each step up the tree. Candidates: counts that are not atomic while a
+  program has one thread (the design keeps them atomic, 348), and fewer owners taken on a walk (an owner
+  of the parent is needed only because a `weak` look gives one).
 - **Checking that a line is UTF-8** (`lines`, 1.08 times `getline`, which checks nothing; without the
   check the SG program takes 0.058 s against 0.090 s): the check looks at eight bytes at a time while they
   are ASCII and at one byte at a time from the first that is not (choice 202). Candidates: a check with
@@ -2903,8 +2970,7 @@ check off.
 - Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
   in the design), and so an alias with type parameters (`using Link<T> = ...`).
-- The other parts of the work on several owners: `shared`, `weak` and `checked` in compiled code, and the
-  leak report there (the third); threads and `locked` (the fourth). `checked` on its own, in a value with one
+- The last part of the work on several owners: threads and `locked`. `checked` on its own, in a value with one
   owner (`checked int hits` in a plain struct, the design's `RefCell` outside `Rc`). `List<shared T>.clone()`,
   since a list has no `clone` yet, so the design's hint "loop over a copy" is not given. A conflict through two
   items of one list (`xs[i]` and `xs[j]`) is left to run time even when `i` and `j` are the same name.
@@ -2936,6 +3002,7 @@ check off.
   `IoError` does not carry the path (choice 195). `PermissionDenied` and `NoSpace` are mapped but have no
   test: the tests cannot make a file they may not read or fill a disk.
 - Freeing a long linked list recurses, the open stack-depth question from the design; here it runs on a 1 GB stack.
+  Compiled code frees a chain of `T*` in a loop, but a chain of `shared` values recursively, one call for each.
 
 Words from the design that are not implemented produce "is not in the interpreter yet" instead of a confusing
 error.
@@ -2997,8 +3064,8 @@ against the borrows in progress: a conflict through the same variable is a compi
 another a panic with both lines. `read x as n { }` and `ref x as n { }` lend it for a block, a method takes
 the owner with `read FolderRef this`, and the `shared` values that hold each other up when a program or a
 test ends are reported. The design's folder tree and its cities and roads run as it wrote them (the
-cities without the lambda); all of this in the checker and the interpreter.
+cities without the lambda). All of it is compiled too: a `shared` value is a pointer with the counts in
+front of it, the borrows of a `shared checked` one are checked where the checker opened it, and a debug
+build reports the leaks; the folder tree takes 1.53 times the same tree in C with plain pointers.
 
-What comes next was chosen with the split of that work: its third part, compiled code for `shared`,
-`weak` and `checked` (an atomic count of the owners, a count of the `weak` ones, the borrow flags) and
-the leak report there, measured against C; then threads and `locked`.
+What comes next was chosen with the split of that work: threads and `locked`.
