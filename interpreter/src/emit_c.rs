@@ -36,7 +36,9 @@
 //! A `Result<T, E>` is such an enum with the variants `Ok(T value)` and `Error(E cause)`; `try`
 //! is one test on the tag and, on an error, a `return`. A `List<T>` is a pointer to its items,
 //! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index, and
-//! `addAll` is one test for room and a `memcpy` (the items are `Copyable`).
+//! `addAll` is one test for room and a `memcpy` (the items are `Copyable`). In a checked build an
+//! index or an end of a range written `a + c` is tested for overflow with the place: the sum wraps,
+//! and an overflow is told only where the check of the place fails (`index_sum`, `sg_sum`).
 //! An assignment computes its right side first (into a C variable when the place is more than a
 //! variable), then takes the address of the place, so an item is found after the right side has
 //! grown its list.
@@ -468,6 +470,43 @@ SG_COLD static _Noreturn void sg_span_fail(long long from, long long to, long lo
     if (from < 0 || from > len || to < 0 || to > len) fprintf(stderr, "panic: range %lld..%lld is out of range: the length is %lld\n", from, to, len);
     else fprintf(stderr, "panic: range %lld..%lld ends before it starts\n", from, to);
     sg_die(loc);
+}
+/* An index or an end of a range written `a + c`, with `c` a constant that is not negative and
+   the sum of a signed type, in a checked build. The sum is not tested on its own: it wraps, a
+   sum that overflowed is negative, and the check of the place refuses it. Only there, on the
+   way out, is the overflow found and told as the test of the sum would have told it: `a` is
+   what the wrapped sum less `c` is in the type of the sum. One test where there were two, and
+   the program stops where and as it stopped before. */
+typedef struct { long long c; const char* ty; int bits; int first; const char* loc; } sg_sum;
+SG_COLD static void sg_sum_told(long long at, const sg_sum* s) {
+    if (!s || at >= 0) return;
+    int drop = 64 - s->bits;
+    long long a = (long long)(((unsigned long long)at - (unsigned long long)s->c) << drop) >> drop;
+    if (a < 0) return;
+    if (s->first) sg_overflow(s->c, "+", a, s->ty, s->loc);
+    sg_overflow(a, "+", s->c, s->ty, s->loc);
+}
+SG_COLD static _Noreturn void sg_index_sum_fail(long long at, long long len, const sg_sum* s, const char* loc) {
+    sg_sum_told(at, s);
+    sg_index_fail(at, len, loc);
+}
+SG_COLD static _Noreturn void sg_span_sum_fail(long long from, long long to, long long len, const sg_sum* sf, const sg_sum* st, const char* loc) {
+    sg_sum_told(from, sf);
+    sg_sum_told(to, st);
+    sg_span_fail(from, to, len, loc);
+}
+static inline uint8_t sg_ats(sg_str s, int64_t at, const sg_sum* sum, const char* loc) {
+    if (__builtin_expect((uint64_t)at >= (uint64_t)s.len, 0)) sg_index_sum_fail(at, s.len, sum, loc);
+    return s.ptr[at];
+}
+static inline sg_str sg_slices(sg_str s, int64_t from, int64_t to, const sg_sum* sf, const sg_sum* st, const char* loc) {
+    if (__builtin_expect(from < 0 || to > s.len || from > to
+            || (from < s.len && (s.ptr[from] & 0xC0) == 0x80) || (to < s.len && (s.ptr[to] & 0xC0) == 0x80), 0)) {
+        sg_sum_told(from, sf);
+        sg_sum_told(to, st);
+        sg_range_fail(s, from, to, loc);
+    }
+    return (sg_str){ s.ptr + from, to - from };
 }
 /* A number kept in bytes, the lowest byte first (little-endian) or the highest first
    (big-endian): one load or one store, turned around where the machine keeps its bytes the
@@ -1585,6 +1624,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         enums,
         checked,
         locs: Vec::new(),
+        sums: Vec::new(),
         temps: 0,
         scopes: Vec::new(),
         loops: Vec::new(),
@@ -1698,6 +1738,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     out.push_str(&emitter.glue);
     for (number, text) in emitter.locs.iter().enumerate() {
         let _ = writeln!(out, "static const char sg_loc_{number}[] = {};", c_string(text));
+    }
+    for (number, sum) in emitter.sums.iter().enumerate() {
+        let _ = writeln!(out, "static const sg_sum sg_sum_{number} = {sum};");
     }
     out.push('\n');
     out.push_str(&bodies);
@@ -2160,6 +2203,17 @@ enum Effect {
     Changes,
 }
 
+/// An index written `a + c` (see `Emitter::index_sum`): the sum, the type it is widened to, `a`,
+/// `c`, whether `c` is written first, and the type of the sum.
+struct IndexSum<'a> {
+    sum: &'a Expr,
+    widened: Option<&'a Ty>,
+    other: &'a Expr,
+    c: i128,
+    first: bool,
+    ty: IntTy,
+}
+
 /// One piece of a line that is being written.
 enum Piece {
     /// A `printf` format and the values for it, each with its comma in front.
@@ -2230,6 +2284,9 @@ struct Emitter<'a> {
     checked: bool,
     /// The place of each line that can panic, as it is printed under the message.
     locs: Vec<String>,
+    /// An index or an end of a range written `a + c` in a checked build: what the place's
+    /// check needs to tell an overflow of the sum (see `sg_sum`), one `static` each.
+    sums: Vec<String>,
     temps: usize,
     /// The variables in scope, innermost last.
     scopes: Vec<Vec<Local>>,
@@ -2282,6 +2339,65 @@ impl<'a> Emitter<'a> {
     fn loc(&mut self, span: Span) -> String {
         self.locs.push(self.sources.snippet(span));
         format!("sg_loc_{}", self.locs.len() - 1)
+    }
+
+    /// An index or an end of a range in a checked build written `a + c` (or `c + a`), with `c`
+    /// a constant and the sum of a signed type: the sum, wrapping, and the name of what tells
+    /// its overflow where the place is checked (see `sg_sum` in the prelude). A sum that
+    /// overflowed is negative, so the check of the place cannot miss it; nothing else is
+    /// computed between the two. `None` for every other index, which is computed as it is.
+    fn index_sum(&mut self, end: &'a Expr) -> Res<Option<(String, String)>> {
+        let Some(IndexSum { sum, widened, other, c, first, ty }) = self.sum_parts(end) else { return Ok(None) };
+        let value = self.value(other)?;
+        let literal = int_literal(c, ty);
+        let (a, b) = if first { (&literal, &value) } else { (&value, &literal) };
+        let mut wrapped = format!("sg_wadd_{}({a}, {b})", int_name(ty));
+        if let Some(widened) = widened {
+            wrapped = format!("(({}){wrapped})", self.ctype(widened, end.span)?);
+        }
+        let loc = self.loc(sum.span);
+        self.sums.push(format!("{{ {c}LL, \"{}\", {}, {}, {loc} }}", ty.name(), ty.bits(), first as u8));
+        Ok(Some((wrapped, format!("sg_sum_{}", self.sums.len() - 1))))
+    }
+
+    /// The parts of an index that `index_sum` writes as a wrapping sum, if it is one.
+    fn sum_parts(&self, end: &'a Expr) -> Option<IndexSum<'a>> {
+        if !self.checked {
+            return None;
+        }
+        let (sum, widened) = match &end.kind {
+            ExprKind::Widen(ty, inner) => (&**inner, Some(ty)),
+            _ => (end, None),
+        };
+        let ExprKind::Binary(BinOp::Add, left, right) = &sum.kind else { return None };
+        let Ty::Int(ty) = sum.ty.strip_borrow() else { return None };
+        let (other, c, first) = match (&left.kind, &right.kind) {
+            (_, ExprKind::Int(c, _)) => (&**left, *c, false),
+            (ExprKind::Int(c, _), _) => (&**right, *c, true),
+            _ => return None,
+        };
+        (ty.signed() && c >= 0).then_some(IndexSum { sum, widened, other, c, first, ty: *ty })
+    }
+
+    /// An index as `index_sum` gives it where it can, and as it is otherwise.
+    fn index_or_sum(&mut self, end: &'a Expr) -> Res<(String, Option<String>)> {
+        Ok(match self.index_sum(end)? {
+            Some((value, sum)) => (value, Some(sum)),
+            None => (self.value(end)?, None),
+        })
+    }
+
+    /// The ends of a range, the start first, and whether each may be a sum that the check of the
+    /// range tells (`index_sum`). The start may be only where the end cannot stop the program or
+    /// do anything else: computed between the two, the end would come before the overflow.
+    /// An end that is such a sum is quiet too when what it adds to is: it wraps, and its overflow
+    /// is told after that of the start.
+    fn range_ends(&self, from: &'a Option<Box<Expr>>, to: &'a Option<Box<Expr>>) -> Vec<(&'a Expr, bool)> {
+        let quiet = to.as_deref().is_none_or(|to| {
+            let computed = self.sum_parts(to).map_or(to, |sum| sum.other);
+            self.effect(computed) == Effect::Reads
+        });
+        from.as_deref().map(|from| (from, quiet)).into_iter().chain(to.as_deref().map(|to| (to, true))).collect()
     }
 
     fn temp(&mut self) -> String {
@@ -2576,6 +2692,11 @@ impl<'a> Emitter<'a> {
                     self.glue,
                     "static inline {held}* sg_at_{name}(const {list}* v, int64_t at, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t)v->len, 0)) sg_index_fail(at, v->len, loc); return &v->ptr[at]; }}"
                 );
+                // The same where the index is `a + c` (see `sg_sum`).
+                let _ = writeln!(
+                    self.glue,
+                    "static inline {held}* sg_ats_{name}(const {list}* v, int64_t at, const sg_sum* sum, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t)v->len, 0)) sg_index_sum_fail(at, v->len, sum, loc); return &v->ptr[at]; }}"
+                );
                 let _ = writeln!(
                     self.glue,
                     "static inline void sg_reverse_{name}({list}* v) {{ for (int64_t i = 0, j = v->len - 1; i < j; i++, j--) {{ {held} item = v->ptr[i]; v->ptr[i] = v->ptr[j]; v->ptr[j] = item; }} }}"
@@ -2597,6 +2718,10 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(
                     self.glue,
                     "static inline {held}* sg_at_{name}({array}* v, int64_t at, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t){length}, 0)) sg_index_fail(at, {length}, loc); return &v->items[at]; }}"
+                );
+                let _ = writeln!(
+                    self.glue,
+                    "static inline {held}* sg_ats_{name}({array}* v, int64_t at, const sg_sum* sum, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t){length}, 0)) sg_index_sum_fail(at, {length}, sum, loc); return &v->items[at]; }}"
                 );
                 if self.droppable(item) {
                     let (drop, forget) = (self.drop_of(item, "v->items[i]"), self.move_of(item, "v->items[i]"));
@@ -2630,6 +2755,17 @@ impl<'a> Emitter<'a> {
                 );
                 let _ = writeln!(self.glue, "static inline {window} sg_after_{name}({window} v, int64_t from, const char* loc) {{ return sg_cut_{name}(v, from, v.len, loc); }}");
                 let _ = writeln!(self.glue, "static inline {window} sg_before_{name}({window} v, int64_t to, const char* loc) {{ return sg_cut_{name}(v, 0, to, loc); }}");
+                // The same where an index or an end is `a + c` (see `sg_sum`).
+                let _ = writeln!(
+                    self.glue,
+                    "static inline {held}* sg_ats_{name}({window} v, int64_t at, const sg_sum* sum, const char* loc) {{ if (__builtin_expect((uint64_t)at >= (uint64_t)v.len, 0)) sg_index_sum_fail(at, v.len, sum, loc); return &v.ptr[at]; }}"
+                );
+                let _ = writeln!(
+                    self.glue,
+                    "static inline {window} sg_cuts_{name}({window} v, int64_t from, int64_t to, const sg_sum* sf, const sg_sum* st, const char* loc) {{ if (__builtin_expect(from < 0 || to > v.len || from > to, 0)) sg_span_sum_fail(from, to, v.len, sf, st, loc); return ({window}){{ from ? v.ptr + from : v.ptr, to - from }}; }}"
+                );
+                let _ = writeln!(self.glue, "static inline {window} sg_afters_{name}({window} v, int64_t from, const sg_sum* sf, const char* loc) {{ return sg_cuts_{name}(v, from, v.len, sf, NULL, loc); }}");
+                let _ = writeln!(self.glue, "static inline {window} sg_befores_{name}({window} v, int64_t to, const sg_sum* st, const char* loc) {{ return sg_cuts_{name}(v, 0, to, NULL, st, loc); }}");
             }
             // The same shape as an enum with the variants `Ok(T value)` and `Error(E cause)`,
             // so `match` and `is` read both in one way.
@@ -5715,9 +5851,14 @@ impl<'a> Emitter<'a> {
                 // A place may be written more than once in a statement (`xs[i] += 1`): what
                 // finds it is computed once if computing it does more than read.
                 let once = self.effect(index).max(self.effect(recv)) >= Effect::Acts;
-                let (address, at) = (self.list_address(recv)?, self.value(index)?);
-                let loc = self.loc(expr.span);
-                let found = format!("sg_at_{name}({address}, {at}, {loc})");
+                let address = self.list_address(recv)?;
+                let found = match self.index_sum(index)? {
+                    Some((at, sum)) => format!("sg_ats_{name}({address}, {at}, &{sum}, {})", self.loc(expr.span)),
+                    None => {
+                        let at = self.value(index)?;
+                        format!("sg_at_{name}({address}, {at}, {})", self.loc(expr.span))
+                    }
+                };
                 if !once {
                     return Ok(format!("(*{found})"));
                 }
@@ -5740,11 +5881,14 @@ impl<'a> Emitter<'a> {
                 };
                 let mut parts = vec![self.part(recv, &from_ty, from, before)];
                 let before = self.mark();
-                let at = self.value(index)?;
+                let (at, sum) = self.index_or_sum(index)?;
                 parts.push(self.part(index, &index.ty, at, before));
                 let (values, names) = self.in_order(parts)?;
                 let loc = self.loc(expr.span);
-                let found = sequence(&names, format!("sg_at_{name}({}, {}, {loc})", values[0], values[1]));
+                let found = match sum {
+                    Some(sum) => sequence(&names, format!("sg_ats_{name}({}, {}, &{sum}, {loc})", values[0], values[1])),
+                    None => sequence(&names, format!("sg_at_{name}({}, {}, {loc})", values[0], values[1])),
+                };
                 if !once {
                     return Ok(format!("(*{found})"));
                 }
@@ -6401,11 +6545,14 @@ impl<'a> Emitter<'a> {
                 let text = self.view(recv)?;
                 let mut parts = vec![self.part(recv, &Ty::Read(Box::new(Ty::Str)), text, before)];
                 let before = self.mark();
-                let at = self.value(index)?;
+                let (at, sum) = self.index_or_sum(index)?;
                 parts.push(self.part(index, &index.ty, at, before));
                 let (values, names) = self.in_order(parts)?;
                 let loc = self.loc(expr.span);
-                Ok(sequence(&names, format!("sg_at({}, {}, {loc})", values[0], values[1])))
+                Ok(match sum {
+                    Some(sum) => sequence(&names, format!("sg_ats({}, {}, &{sum}, {loc})", values[0], values[1])),
+                    None => sequence(&names, format!("sg_at({}, {}, {loc})", values[0], values[1])),
+                })
             }
             // A range of items: a window onto a part of them. The ends are checked in every build.
             ExprKind::Slice { recv, from, to } if !is_text_view(&expr.ty) => {
@@ -6417,10 +6564,12 @@ impl<'a> Emitter<'a> {
                     return Ok(whole);
                 }
                 let mut parts = vec![self.part(recv, &expr.ty, whole, before)];
-                for end in from.iter().chain(to) {
+                let mut sums = Vec::new();
+                for (end, may_sum) in self.range_ends(from, to) {
                     let before = self.mark();
-                    let value = self.value(end)?;
+                    let (value, sum) = if may_sum { self.index_or_sum(end)? } else { (self.value(end)?, None) };
                     parts.push(self.part(end, &end.ty, value, before));
+                    sums.push(sum);
                 }
                 let (values, names) = self.in_order(parts)?;
                 let helper = match (from, to) {
@@ -6429,7 +6578,11 @@ impl<'a> Emitter<'a> {
                     _ => "before",
                 };
                 let loc = self.loc(expr.span);
-                Ok(sequence(&names, format!("sg_{helper}_{name}({}, {loc})", values.join(", "))))
+                if sums.iter().all(Option::is_none) {
+                    return Ok(sequence(&names, format!("sg_{helper}_{name}({}, {loc})", values.join(", "))));
+                }
+                let sums: Vec<String> = sums.into_iter().map(|sum| sum.map_or("NULL".to_string(), |sum| format!("&{sum}"))).collect();
+                Ok(sequence(&names, format!("sg_{helper}s_{name}({}, {}, {loc})", values.join(", "), sums.join(", "))))
             }
             ExprKind::Slice { recv, from, to } => {
                 let text = self.view(recv)?;
@@ -6439,17 +6592,26 @@ impl<'a> Emitter<'a> {
                 // The text is named once: its length is one of the ends.
                 let temp = self.temp();
                 self.pre.push(format!("sg_str {temp} = {text};"));
-                let (from, to, names) = match (from, to) {
-                    (Some(from), Some(to)) => {
-                        let (values, names) = self.two(from, to, false)?;
-                        (values[0].clone(), values[1].clone(), names)
-                    }
-                    (Some(from), None) => (self.value(from)?, format!("{temp}.len"), String::new()),
-                    (None, Some(to)) => ("0".to_string(), self.value(to)?, String::new()),
+                let mut parts = Vec::new();
+                let mut sums = Vec::new();
+                for (end, may_sum) in self.range_ends(from, to) {
+                    let before = self.mark();
+                    let (value, sum) = if may_sum { self.index_or_sum(end)? } else { (self.value(end)?, None) };
+                    parts.push(self.part(end, &end.ty, value, before));
+                    sums.push(sum.map_or("NULL".to_string(), |sum| format!("&{sum}")));
+                }
+                let (values, names) = self.in_order(parts)?;
+                let (from, to, sf, st) = match (from, to) {
+                    (Some(_), Some(_)) => (values[0].clone(), values[1].clone(), sums[0].clone(), sums[1].clone()),
+                    (Some(_), None) => (values[0].clone(), format!("{temp}.len"), sums[0].clone(), "NULL".to_string()),
+                    (None, Some(_)) => ("0".to_string(), values[0].clone(), "NULL".to_string(), sums[0].clone()),
                     (None, None) => unreachable!("handled above"),
                 };
                 let loc = self.loc(expr.span);
-                Ok(sequence(&names, format!("sg_slice({temp}, {from}, {to}, {loc})")))
+                if sf == "NULL" && st == "NULL" {
+                    return Ok(sequence(&names, format!("sg_slice({temp}, {from}, {to}, {loc})")));
+                }
+                Ok(sequence(&names, format!("sg_slices({temp}, {from}, {to}, {sf}, {st}, {loc})")))
             }
             ExprKind::StructLit { name, fields, .. } => {
                 let mut parts = Vec::new();

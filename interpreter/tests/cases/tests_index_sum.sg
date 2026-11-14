@@ -1,0 +1,122 @@
+// An index or an end of a range written `a + c`: a checked build of compiled code tests the
+// sum only where the place is checked (`sg_sum` in the back end), and the program has to stop
+// where and as the interpreter stops. Each test is its own process, so each one may panic.
+
+nint far() {
+    return nint.MaxValue
+}
+
+nint loud(nint n) {
+    print("the end of the range is computed")
+    return n
+}
+
+test "sums that fit find their place" {
+    var xs = List<int> { 10, 20, 30, 40 }
+    var a = int[4] { 1, 2, 3, 4 }
+    var text = "abcd"
+    nint i = 1
+    int j = 1
+    sbyte k = 1
+    assert(xs[i + 1] == 30)
+    assert(xs[1 + i] == 30)
+    assert(a[j + 2] == 4)
+    assert(xs[..][k + 1] == 30)
+    assert(text[i + 2] == 'd')
+    assert(xs[i..i + 2] == xs[1..3])
+    assert(xs[i + 1..i + 3] == xs[2..])
+    assert(text[i + 1..i + 3] == "cd")
+    assert(xs[i + 1..] == xs[2..])
+    assert(xs[..i + 1] == xs[..2])
+    assert(text[i..i + 2] == "bc")
+    assert(text[i + 1..] == "cd")
+    xs[i + 2] += 1
+    assert(xs[3] == 41)
+}
+
+test "an index of a list that overflows" {
+    var xs = List<int> { 1, 2, 3 }
+    nint at = far()
+    print(xs[at + 1])
+}
+
+test "the constant first" {
+    var xs = List<int> { 1, 2, 3 }
+    nint at = far()
+    print(xs[2 + at])
+}
+
+test "a sum that fits and is past the end" {
+    var xs = List<int> { 1, 2, 3 }
+    nint at = 1
+    print(xs[at + 5])
+}
+
+test "a negative sum that fits" {
+    var xs = List<int> { 1, 2, 3 }
+    nint at = -9
+    print(xs[at + 2])
+}
+
+test "an int index of an array" {
+    var a = int[3] { 1, 2, 3 }
+    int at = int.MaxValue
+    print(a[at + 1])
+}
+
+test "an sbyte index of a slice" {
+    var xs = List<int> { 1, 2, 3 }
+    sbyte at = sbyte.MaxValue
+    print(xs[..][at + 1])
+}
+
+test "an index of a text" {
+    var text = "abc"
+    nint at = far()
+    print(text[at + 1])
+}
+
+test "the end of a range" {
+    var xs = List<int> { 1, 2, 3 }
+    nint at = far()
+    print(xs[at..at + 8])
+}
+
+test "the start of a range" {
+    var xs = List<int> { 1, 2, 3 }
+    nint at = far()
+    print(xs[at + 1..])
+}
+
+test "the start of a range whose end prints" {
+    var xs = List<int> { 1, 2, 3 }
+    nint at = far()
+    print(xs[at + 1..loud(2)])
+}
+
+test "the start of a range whose end is a sum too" {
+    var xs = List<int> { 1, 2, 3 }
+    nint at = far()
+    print(xs[at + 1..at + 3])
+}
+
+test "the start of a range whose end is a sum of what prints" {
+    var xs = List<int> { 1, 2, 3 }
+    nint at = far()
+    print(xs[at + 1..loud(2) + 1])
+}
+
+test "the end of a range of text" {
+    var text = "abc"
+    nint at = far()
+    print(text[0..at + 2])
+}
+
+test "the start of a range of text" {
+    var text = "abc"
+    nint at = far()
+    print(text[at + 3..])
+}
+
+void main() {
+}

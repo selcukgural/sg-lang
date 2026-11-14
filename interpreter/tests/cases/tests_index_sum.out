@@ -1,0 +1,84 @@
+ok    sums that fit find their place
+FAIL  an index of a list that overflows
+panic: overflow: 9223372036854775807 + 1 does not fit in nint
+  --> tests_index_sum.sg:40:14
+ 40 |     print(xs[at + 1])
+    |              ^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  the constant first
+panic: overflow: 2 + 9223372036854775807 does not fit in nint
+  --> tests_index_sum.sg:46:14
+ 46 |     print(xs[2 + at])
+    |              ^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  a sum that fits and is past the end
+panic: index 6 is out of range: the length is 3
+  --> tests_index_sum.sg:52:11
+ 52 |     print(xs[at + 5])
+    |           ^^^^^^^^^^
+FAIL  a negative sum that fits
+panic: index -7 is out of range: the length is 3
+  --> tests_index_sum.sg:58:11
+ 58 |     print(xs[at + 2])
+    |           ^^^^^^^^^^
+FAIL  an int index of an array
+panic: overflow: 2147483647 + 1 does not fit in int
+  --> tests_index_sum.sg:64:13
+ 64 |     print(a[at + 1])
+    |             ^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  an sbyte index of a slice
+panic: overflow: 127 + 1 does not fit in sbyte
+  --> tests_index_sum.sg:70:18
+ 70 |     print(xs[..][at + 1])
+    |                  ^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  an index of a text
+panic: overflow: 9223372036854775807 + 1 does not fit in nint
+  --> tests_index_sum.sg:76:16
+ 76 |     print(text[at + 1])
+    |                ^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  the end of a range
+panic: overflow: 9223372036854775807 + 8 does not fit in nint
+  --> tests_index_sum.sg:82:18
+ 82 |     print(xs[at..at + 8])
+    |                  ^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  the start of a range
+panic: overflow: 9223372036854775807 + 1 does not fit in nint
+  --> tests_index_sum.sg:88:14
+ 88 |     print(xs[at + 1..])
+    |              ^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  the start of a range whose end prints
+panic: overflow: 9223372036854775807 + 1 does not fit in nint
+  --> tests_index_sum.sg:94:14
+ 94 |     print(xs[at + 1..loud(2)])
+    |              ^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  the start of a range whose end is a sum too
+panic: overflow: 9223372036854775807 + 1 does not fit in nint
+  --> tests_index_sum.sg:100:14
+ 100 |     print(xs[at + 1..at + 3])
+     |              ^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  the start of a range whose end is a sum of what prints
+panic: overflow: 9223372036854775807 + 1 does not fit in nint
+  --> tests_index_sum.sg:106:14
+ 106 |     print(xs[at + 1..loud(2) + 1])
+     |              ^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  the end of a range of text
+panic: overflow: 9223372036854775807 + 2 does not fit in nint
+  --> tests_index_sum.sg:112:19
+ 112 |     print(text[0..at + 2])
+     |                   ^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  the start of a range of text
+panic: overflow: 9223372036854775807 + 3 does not fit in nint
+  --> tests_index_sum.sg:118:16
+ 118 |     print(text[at + 3..])
+     |                ^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+14 of 15 test(s) failed

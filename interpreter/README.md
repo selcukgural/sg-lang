@@ -309,7 +309,9 @@ the forty-ninth (narrowing under `!` and after a `while`). Since the fiftieth sl
 and the names seen after an `if` or a `while`, written together with the checker and the interpreter; an
 `is` with names on a value made by a call after the first `&&` or `||` is compiled when that value owns
 no memory (299). Since the fifty-first slice `fromLittleEndian`, `fromBigEndian`, `toLittleEndian`
-and `toBigEndian`, written together with the checker and the interpreter. What is still missing is an error that names it (not silence): the few positions listed with the
+and `toBigEndian`, written together with the checker and the interpreter. The fifty-second slice is in
+compiled code alone: in a checked build an index or an end of a range written `a + c` is tested for
+overflow with the place, one comparison where there were two, and the program stops as it did (309). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -341,7 +343,7 @@ hand with no checks):
 | `lookup`: three hundred million lookups in a list of records of 128 bytes, through a function that gives back a `read Record?` | 0.498 s | 0.488 s | 0.491 s | 1.01 |
 | `buffer`: 32 bytes on the stack written as hex into a buffer of 64 through a `ref byte[]`, added up through a `read byte[]` and a range of it, fifteen million times | 0.280 s | 0.733 s | 0.283 s | 0.99 |
 | `bits`: a sieve below sixty-four million with one bit for each number, then thirty million numbers written seven bits at a time into a buffer on the stack and read back | 0.322 s | 0.321 s | 0.407 s | 0.79 |
-| `hash`: XXH64, the 64-bit xxHash, written with `ulong`, over one megabyte, two thousand times, the bytes read eight at a time with `ulong.fromLittleEndian` | 0.129 s | 0.154 s | 0.125 s | 1.03 |
+| `hash`: XXH64, the 64-bit xxHash, written with `ulong`, over one megabyte, two thousand times, the bytes read eight at a time with `ulong.fromLittleEndian` | 0.128 s | 0.129 s | 0.128 s | 1.00 |
 | `nbody`: the sun and the four giant planets moved twenty million steps in `double`, a square root for each pair at each step | 0.661 s | 0.662 s | 0.679 s | 0.97 |
 | `numbers`: a million lines of whole and fractional numbers read ten times with `long.parse` and `double.parse` and added up | 0.186 s | 0.191 s | 0.196 s | 0.95 |
 | `fields`: a million lines like ` Ada17 , 120, -45 ,6789` gone over twenty times with `lines`, `split`, `trim`, `long.parse` and `chars` | 1.228 s | 1.259 s | 1.202 s | 1.02 |
@@ -403,8 +405,10 @@ C arrays and a slice is the pointer and the count the C program passes by hand. 
 range are checked in the C that is generated; here the C compiler, once it has put the small functions
 into `main`, sees both lengths and removes every one of those checks, so the built program holds none.
 That is this program, not a promise: where a length is not known, the check stays, one comparison that
-is never taken. The overflow-checked build takes 2.6 times as long: the checks on `i * 2`, on the sum
-and on the cast to `byte` keep the C compiler from handling several bytes at a time.
+is never taken. The overflow-checked build takes 2.6 times as long: the overflow test of `sum += b` in
+`total` keeps the C compiler from adding several bytes at a time. With that one test left out of the
+generated C, and the tests on `i * 2`, on `i * 2 + 1` and on the cast to `byte` kept, it takes the time of
+C (choice 313).
 `bits` is the first program with the bit operators, in two halves. The sieve keeps one bit for each
 number in a list of `long`s and sets and tests it with `|=`, `&`, `<<` and `>>`: that half takes the
 time of C (0.25 s for both). A shift by `n & 63` is one instruction in both programs, and the cut of
@@ -426,8 +430,10 @@ same program took 3.5 times the time of C (choice 136). The overflow-checked bui
 additions `at + 8`, `at + 16` and `at + 24` that give the place of each read are checked, and those tests
 stood between the eight reads. Since the fifty-first slice it reads with `ulong.fromLittleEndian(data[at..at
 + 8])`: the range is checked once, the count of eight is then known to the C compiler, and the bytes are one
-load. The release build takes the time of C as before, and the checked build now takes 1.23 times, since
-its tests no longer stand between eight reads (choice 307).
+load. The release build takes the time of C as before, and the checked build took 1.23 times, since its
+tests no longer stood between eight reads (choice 307). Since the fifty-second slice the sum `at + 8` that
+ends the window is tested with the window (choice 309), and the checked build takes the time of the
+release build.
 `nbody` is the first program with fractional numbers: five bodies in a `Body[5]` on the stack, ten
 pairs at each step, a `sqrt` for each pair. The two take the same time (0.97 here; 1.00 when timed by
 hand before): a `double` is C's `double`, `sqrt` is one instruction, and nothing on a fractional number
@@ -2577,6 +2583,52 @@ and back end), approved on 14 November 2026:
      `nint`) and two panics (too few bytes, too many). Every compiled one left no memory behind; the
      program gives the same output under gcc.
 
+Choices made in the fifty-second slice (the overflow test of an index written `a + c`, in a checked build;
+compiled code alone, since nothing a program can see changes), approved on 14 November 2026:
+
+309. **An index written `a + c` is tested with the place**: where an index of a list, an array, a slice
+     or a text, or an end of a range, is `a + c` (or `c + a`) with `c` a constant and the sum of a signed
+     type, a checked build no longer tests the sum by itself before it tests the place. The sum wraps;
+     one that overflowed is negative (`c` is not, so a sum can only overflow upward), and the check of the
+     place refuses every negative index. Only there, on the way out, is the overflow found, and it is told
+     as the test of the sum told it: the same message, the same numbers, the same line. The program stops
+     where and as it stopped before, so the interpreter does not change; one comparison stands where two
+     did. The idea is the one the "Slower than C" list wrote down after the fifty-first slice.
+310. **What keeps its test**: `xs[i - 1]` (a difference that overflows downward wraps to a large positive
+     number, which the check refuses only while no length comes near 2^63; that holds on every machine,
+     but it is a fact about machines, not something the language promises), `a + b` with two variables
+     (`b` may be negative), an unsigned index type (it wraps to a small number, which may be a place),
+     `i * 2` (a product can wrap past zero to a small number), and a sum that is not the place itself:
+     handed to a function (`read64(data, at + 8)`) or compared (`at + 32 <= length`). Measured, those
+     cost nothing in `hash`.
+311. **The start of a range waits only for a quiet end**: the overflow of `xs[at + 1..to]` is found
+     after the end is computed, so the start is tested with the range only where computing the end can
+     neither stop the program nor do anything else (a constant, a variable, a field, or such an end plus
+     a constant, which wraps: in `xs[at + 1..at + 3]` both sums are tested with the range, the start's
+     overflow told first). `xs[at + 1..loud(2)]` and `xs[at + 1..loud(2) + 1]` keep the test of their
+     start, so `loud` does not print before the overflow is told. The end of a range, and an index, are
+     the last thing computed before the check.
+312. **Compiled code**: each such place gets a `static const sg_sum` with the constant, the type and the
+     line of the sum, and calls `sg_ats_...`, `sg_cuts_...`, `sg_afters_...`, `sg_befores_...`, `sg_ats`
+     or `sg_slices`, which are the helpers they were with that one pointer more; the pointer is read only
+     on the way out (`sg_sum_told`), where `a` is the wrapped sum less `c` in the type of the sum. Other
+     places, and every release build, are written as before.
+313. **Measured**: `hash` checked takes 0.129 s, where it took 0.154 s; the release build takes 0.128 s and C
+     0.122 to 0.128 s over two runs. Nothing else in the table moves, and no release build changes. `buffer` (2.6 times) and `vector` (2 times) do not change, and they were never paying for an
+     index: left out one at a time in the generated C, the tests that cost are the test of `sum += b` in
+     `buffer`'s `total` (0.72 s to 0.28 s, the time of C, with that one test gone and every other kept),
+     and in `vector` the test of `sum += x` (0.66 s to 0.53 s) and those of `xs[i] * 3 + 1` (to 0.33 s).
+     Those tests are real, since a sum can overflow, and they keep the C compiler from adding several
+     numbers at once. The "Slower than C" list says so now.
+314. **The tests**: one program of fifteen tests, each its own process, since all but the first panic:
+     sums that fit, as an index of a list, an array, a slice and a text, as both ends of a range and with
+     `+=`; an overflow as the index of a list, with the constant first, as an `int` index of an array and
+     an `sbyte` index of a slice (both widened to `nint`), as the index of a text, at each end of a range of
+     items and of text, at the start of a range whose end prints, whose end is a sum too and whose end is
+     a sum of what prints; a sum that fits and is past the end;
+     a negative sum that fits. The interpreter and compiled code print the same, also under the
+     sanitizers.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -2587,14 +2639,17 @@ check off.
   each index, the C compiler cannot join the reads, and the program takes 3.5 times the time of C. Cutting
   the window first (`data[at..at + 8]`) already takes the time of C, and `ulong.fromLittleEndian` (301)
   does too, in the checked build as well. What is left: a hint from the checker where it sees the pattern.
-- **Overflow checks on the arithmetic of an index in a checked build** (`hash`, 3.6 times while it read
-  the bytes one by one, 1.23 times with `fromLittleEndian`): `at + 8` is tested for overflow before it is
-  used as a place, and those tests stood between reads that could be joined; with them written as
-  wrapping additions the checked build takes the time of C. A release build has none. The checked builds
-  of `vector` (2 times) and `buffer` (2.6 times) may have the same cause; that is not looked at yet. Candidates: leave out the
-  overflow test of an addition whose result goes straight into an index or a range that is checked
-  anyway (an overflow there could only give a place the bounds check refuses), or let the checker prove
-  the range of a loop counter.
+- **Overflow tests on a sum kept in a loop, in a checked build** (`buffer` 2.6 times, `vector` 2 times):
+  `sum += b` over the bytes of a slice is tested at each step, and the test keeps the C compiler from
+  adding several numbers at once; `vector` pays the same for `sum += x` and for `xs[i] * 3 + 1` (choice
+  313 measured each). A release build has none, and the tests are real: a sum can overflow. Candidate: a
+  loop that adds a number narrower than the sum a known number of times can be shown not to overflow
+  before it starts (a `long` that adds fewer than 2^32 `int`s cannot overflow while it starts below 2^62
+  in size), and then run without the test, the loop written twice and one of the two chosen at its
+  start, as Java's and Swift's compilers do for index checks. The other half of this entry was the
+  overflow test of an index (`hash`, 1.23 times): since the fifty-second slice an index or an end of a
+  range written `a + c` is tested with the place (309), and the checked `hash` takes the time of the
+  release build.
 - **The hash of a `HashMap`** (`counts`, 1.17 times): SipHash-1-3 with a key drawn at start against C's
   one multiplication. Keeping it is a decision (13 November, choice 50); a faster hash for integer keys
   that still resists chosen keys is the open question.
