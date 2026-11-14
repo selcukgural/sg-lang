@@ -1,0 +1,9 @@
+error: `r` cannot be changed here: `text` borrows from it and is used again later
+  --> error_is_names_after_borrow.sg:8:5
+ 8 |     r = Ok("second".clone())
+   |     ^
+  `text` borrowed it here:
+  --> error_is_names_after_borrow.sg:5:8
+ 5 |     if r is not Ok(text) {
+   |        ^
+  hint: finish with `text` before this line: a borrow ends at its last use

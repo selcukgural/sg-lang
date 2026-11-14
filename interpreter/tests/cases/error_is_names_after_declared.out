@@ -1,0 +1,10 @@
+error: `value` is already declared in this scope
+  the names of this `is` are seen after the `if`, in the same scope
+  --> error_is_names_after_declared.sg:6:20
+ 6 |     if r is not Ok(value) {
+   |                    ^^^^^
+  it is declared here:
+  --> error_is_names_after_declared.sg:4:9
+ 4 |     var value = 0
+   |         ^^^^^
+  hint: give the name in the pattern another name

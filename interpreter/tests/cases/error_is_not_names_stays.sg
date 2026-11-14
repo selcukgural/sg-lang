@@ -1,0 +1,8 @@
+// The code after an `if` with no `else` also runs when the block has run, so the names of
+// `is not` are seen nowhere.
+void main() {
+    var r = int.parse("12")
+    if r is not Ok(value) {
+        print("not a number")
+    }
+}

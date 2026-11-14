@@ -1,0 +1,17 @@
+// The names seen after the `if` borrow the value: it cannot be moved while they are used.
+enum Reply {
+    Text(string body)
+    Nothing
+}
+
+void consume(Reply reply) {
+}
+
+void main() {
+    var reply = Reply.Text("hello")
+    if reply is not Text(body) {
+        return
+    }
+    consume(reply)
+    print(body)
+}

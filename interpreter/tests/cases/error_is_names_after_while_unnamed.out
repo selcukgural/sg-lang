@@ -1,0 +1,5 @@
+error: `text` borrows from `line(round)`, a value with no name that the `while` makes again in every round, so the code after it cannot look at it
+  --> error_is_names_after_while_unnamed.sg:9:33
+ 9 |     while line(round) is not Ok(text) {
+   |                                 ^^^^
+  hint: give the value a name before the loop: `var value = line(round)`, and change it in the loop

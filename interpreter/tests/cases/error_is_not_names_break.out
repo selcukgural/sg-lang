@@ -1,0 +1,10 @@
+error: nothing here can use the names in this pattern
+  after a `while`, the names of `is not` are seen only when the test is what ends the loop
+  --> error_is_not_names_break.sg:10:20
+ 10 |     while r is not Ok(value) {
+    |                    ^^^^^^^^^
+  this `break` leaves the loop while the test may still hold:
+  --> error_is_not_names_break.sg:13:13
+ 13 |             break
+    |             ^^^^^
+  hint: test the value again after the loop, or use `match`

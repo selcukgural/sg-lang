@@ -1,0 +1,143 @@
+// The names of `is not` are seen where its test fails: on the right of `||`, in `else`, after
+// an `if` whose block leaves, and after a `while` that only its test ends. The names of `is`
+// are seen after an `if` whose `else` leaves.
+enum Shape : Formattable {
+    Circle(int radius)
+    Square(int side)
+}
+
+enum Reply {
+    Text(string body)
+    Nothing
+}
+
+int parsed(read string text) {
+    if int.parse(read text) is not Ok(value) {
+        return -1
+    }
+    return value * 2
+}
+
+int positive(read string text) {
+    if !(int.parse(read text) is Ok(value)) || value < 0 {
+        return 0
+    }
+    return value
+}
+
+// A value made by a call after the first `||`.
+int sum(read string a, read string b) {
+    if int.parse(read a) is not Ok(x) || int.parse(read b) is not Ok(y) {
+        return 0
+    }
+    return x + y
+}
+
+nint bodyLength(read Reply reply) {
+    if reply is not Text(body) {
+        return 0
+    }
+    return body.length()
+}
+
+Reply fetch(bool found) {
+    if found {
+        return Reply.Text("a reply that owns its text")
+    }
+    return Reply.Nothing
+}
+
+// The value has no name and owns memory: it stays until the block ends.
+void show(bool found) {
+    if fetch(found) is not Text(body) {
+        print("nothing")
+        return
+    }
+    print(body)
+    print(body.length())
+}
+
+int radiusOr(read Shape s) {
+    if s is Circle(r) {
+        print("a circle")
+    } else {
+        return 0
+    }
+    return r
+}
+
+string describe(read Shape s) {
+    if s is not Circle(r) {
+        return "not round"
+    } else {
+        return $"round, {r}".toString()
+    }
+}
+
+void grow(ref Shape s) {
+    if s is not Circle(r) {
+        return
+    }
+    r += 10
+}
+
+Result<int, NumberError> attempt(int round) {
+    if round < 3 {
+        return int.parse("x")
+    }
+    return int.parse("42")
+}
+
+int retry() {
+    var round = 0
+    var r = attempt(round)
+    while r is not Ok(value) {
+        round += 1
+        r = attempt(round)
+    }
+    return value + round
+}
+
+bool bad(read string text) {
+    return int.parse(read text) is not Ok(n) || n < 0
+}
+
+void main() {
+    print(parsed("21"))
+    print(parsed("x"))
+    print(positive("-5"))
+    print(positive("7"))
+    print(sum("2", "3"))
+    print(sum("2", "z"))
+    print(bodyLength(read Reply.Text("hello")))
+    print(bodyLength(read Reply.Nothing))
+    show(true)
+    show(false)
+    print(radiusOr(read Shape.Circle(4)))
+    print(radiusOr(read Shape.Square(4)))
+    print(describe(read Shape.Circle(3)))
+    print(describe(read Shape.Square(3)))
+    var s = Shape.Circle(1)
+    grow(ref s)
+    print(s)
+    print(retry())
+    print(bad("-1"))
+    print(bad("1"))
+    var total = 0
+    for line in "4 x 5".split(" ") {
+        if int.parse(read line) is not Ok(n) {
+            continue
+        }
+        total += n
+    }
+    print(total)
+    // A name of an inner block may be one of the block around it.
+    var n = 100
+    if total > 0 {
+        if int.parse("8") is not Ok(n) {
+            return
+        }
+        print(n)
+    }
+    print(n)
+}

@@ -151,7 +151,8 @@ constants, math and reading out of text, `bool`, `char` and text (split, trimmed
 copying, replaced and repeated into a new text, built piece by piece in place, numbers written with a width, in hex or binary, or with so many
 digits after the point: `$"{crc:x8} {price,8:F2}"`); structs, enums with methods, and `match` with patterns inside
 patterns, on text, joined with `or` and in ranges (`Add(Number(0), right)`, `"if" => ...`, `'a'..='z' or '_'`,
-`null`), and `is` whose names reach along `&&` (`if int.parse(read text) is Ok(n) && n > 0`); `T*`, `T?`
+`null`), and `is` whose names reach along `&&` (`if int.parse(read text) is Ok(n) && n > 0`) and, for `is not`,
+past an `if` that leaves (`if int.parse(read text) is not Ok(n) { return }`); `T*`, `T?`
 (narrowed along `&&` and `||`, under `!` and after `while x is null`) and `Result` with `try` and `??`; `List`, `HashMap` and `HashSet`; fixed-size arrays (`int[8]`) and slices (`read byte[]`), with bytes
 gathered into a list in one copy (`buffer.addAll(piece)`) and ranges sorted where they are (`xs[2..5].sort()`);
 function values; ownership, moves and the borrow check; modules (`use`, `public`, `readonly`); `test`

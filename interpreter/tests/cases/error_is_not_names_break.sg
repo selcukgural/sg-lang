@@ -1,0 +1,17 @@
+// A `break` can end the loop while the test still holds, so the names of `is not` are not seen
+// after it.
+Result<int, NumberError> attempt(int round) {
+    return int.parse("x")
+}
+
+void main() {
+    var round = 0
+    var r = attempt(round)
+    while r is not Ok(value) {
+        round += 1
+        if round > 5 {
+            break
+        }
+        r = attempt(round)
+    }
+}

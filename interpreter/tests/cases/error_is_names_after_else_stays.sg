@@ -1,0 +1,15 @@
+// An `else` that does not leave: the code after the `if` also runs where the test failed.
+enum Shape {
+    Circle(int radius)
+    Square(int side)
+}
+
+void main() {
+    var s = Shape.Circle(2)
+    if s is Circle(r) {
+        print(r)
+    } else {
+        print("not round")
+    }
+    print(r)
+}

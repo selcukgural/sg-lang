@@ -37,7 +37,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Arrays | `int[8] values`: a fixed number of items, kept where the value is (in the variable, inside the struct), with the length in the type. Built as `int[3] { 1, 2, 3 }` (the items), `byte[16](255)` (one value in every item) or `byte[16]` (zeros: 0, `false`, `null`). `xs[i]` to read and to write, `xs.length()`, `xs.get(i)`, `xs.indexOf(v)`, `xs.contains(v)`, `xs.sort()`, `xs.reverse()`, `==`, `print`. An array of items that can be copied is copied like a number; any other is moved |
 | Slices | `read T[]` looks at items that something else owns, `ref T[]` can also write them. `read xs` and `ref xs` give one where a slice is expected, for a `List<T>` and a `T[N]`; a range gives one too: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` for a range that is written through. `s[i]`, `s.length()`, `s.get(i)`, `s.indexOf(v)`, `s.contains(v)`, `==`, `print`, `for`; `s.sort()` and `s.reverse()` through a `ref T[]`, and on a range in front of them: `xs[2..5].sort()` puts those items of `xs` in order where they are. `text.asBytes()` looks at a text as a `read byte[]`; `string.fromUtf8(bytes)` looks at bytes as text and gives a `Result<read string, TextError>` |
 | `for` over a collection | `for x in xs` hands the collection over and `x` owns each item; `for x in read xs` and `for x in ref xs` lend, and so does a collection that is already borrowed. Over a `HashMap` the variable has a `key` and a `value`; a `HashSet` is gone over by hand-over or `read`. An array is gone over like a list; a slice lends its items |
-| `is` | `if s is Circle(r) { ... }`, `if e is Add(Number(0), right) { ... }`, `if e is Add(l, _) or Mul(l, _) { ... }`, `while next() is not End { ... }`. The names reach along `&&`: `if int.parse(read text) is Ok(n) && n > 0 { ... }`, `return s is Circle(r) && r > 10` |
+| `is` | `if s is Circle(r) { ... }`, `if e is Add(Number(0), right) { ... }`, `if e is Add(l, _) or Mul(l, _) { ... }`, `while next() is not End { ... }`. The names reach along `&&`: `if int.parse(read text) is Ok(n) && n > 0 { ... }`, `return s is Circle(r) && r > 10`. The names of `is not` are seen where it fails: `if int.parse(read text) is not Ok(n) { return }` and `n` after it, `if r is not Ok(n) \|\| n < 0 { return }`, `else`, and after `while r is not Ok(n) { ... }` |
 | Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`; on a `read T?` it gives a `read T`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
@@ -117,7 +117,10 @@ Design rules that are already enforced:
   counts as `T` unless a `break` leaves the loop (choice 288). Fields are not narrowed: copy to a
   local first.
 - The names of `x is Circle(r)` are seen on the right of `&&` and in the block of the `if` or `while` whose
-  condition the chain is, not in `else` and not after it (choice 263).
+  condition the chain is, not in `else`, and after the `if` only when its `else` leaves (choices 263, 294).
+  The names of `x is not Circle(r)` (or `!(x is Circle(r))`) are seen where the test fails: on the right of
+  `||`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends (choices
+  293, 295).
 - A value that was moved cannot be used again; the error shows both places. This covers branches (moved in
   either one) and loops (moved in one iteration, gone in the next).
 - A field can be moved out of a value that is owned (`this.top = node.next`); the other fields stay usable,
@@ -234,7 +237,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (185 of 719 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (186 of 729 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -297,7 +300,10 @@ Since the forty-fifth slice the names of `is` and the narrowing of `is not null`
 same way. Since the forty-sixth slice an assignment computes its right side before it finds the place, as
 the interpreter always did (choice 270). Since the forty-seventh slice `replaceAll` and `repeat`, written
 together with the checker and the interpreter. The forty-eighth slice is in the checker alone, and so is
-the forty-ninth (narrowing under `!` and after a `while`). What is still missing is an error that names it (not silence): the few positions listed with the
+the forty-ninth (narrowing under `!` and after a `while`). Since the fiftieth slice the names of `is not`,
+and the names seen after an `if` or a `while`, written together with the checker and the interpreter; an
+`is` with names on a value made by a call after the first `&&` or `||` is compiled when that value owns
+no memory (299). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -504,7 +510,9 @@ needles. Most of both programs is `malloc`, `memcpy` and `free`.
 The names of an `is` along `&&` (forty-fifth slice) are not measured on their own either: each is one
 pointer set inside the condition where its test holds, `(s.tag == 0 && (r = &s.u.v0.m_radius, 1)) &&
 *r > 10`, which is the C a person writes with the same names, and a narrowing writes nothing at all, so
-the narrowing under `!` and after a `while` (forty-ninth slice) is not measured either.
+the narrowing under `!` and after a `while` (forty-ninth slice) is not measured either. Nor are the names
+of `is not` and the names seen after a statement (fiftieth slice): the same pointer, set in the same
+place, under a `!`.
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
@@ -2273,7 +2281,8 @@ interpreter and back end together), approved on 14 November 2026:
      value. An `is` with names under `!`, or as a whole value (`var round = s is Circle(r)`), is an error
      whose hint is `_` or `match`. The message changed from "the names in this pattern exist only when `is`
      is the whole condition of an `if` or `while`" to "nothing here can use the names in this pattern", with
-     a note that says where the names of `is` are seen.
+     a note that says where the names of `is` are seen. (The fiftieth slice gives names to `is not` and to
+     an `is` under `!`, seen where the test fails: 293.)
 266. **A name used where it is not seen says why**: a name of an `is` used in `else`, after the `if` or after
      the chain was "there is no variable named `r`" with a guess at a near name (`a`). The error now points at
      the `is` that named it and says where its names are seen, and the hint is to use the value there or
@@ -2287,7 +2296,8 @@ interpreter and back end together), approved on 14 November 2026:
      chain stays until the block is done, as for a lone `is` (57). An `is` with names on a value made by a
      call after the first `&&` (`x > 0 && make(x) is Word(w)`) is refused with "not in the C back end yet":
      that value is made only sometimes and would have to stay until the block ends. The interpreter runs it
-     (`tests/cases/ok_is_chain_late.sg`). Narrowing writes nothing new: a narrowed `x` is read as its value,
+     (`tests/cases/ok_is_chain_late.sg`). (The fiftieth slice compiles it when the value owns no memory:
+     299.) Narrowing writes nothing new: a narrowed `x` is read as its value,
      as before.
 269. **The tests**: the names of `is` along `&&` in an `if`, a `while` over values made by a call, a
      `return`, a `var`, a `when`, under `!` and beside `||`, with `or` patterns, with a `ref` change after
@@ -2420,7 +2430,8 @@ Choices made in the forty-ninth slice (narrowing under `!` and after a `while`; 
 289. **No new words in the error**: a variable left a `T?` because of a `break` gets the usual error that
      it may be `null`, as one assigned again does. A note that names the `break` is not here yet. The names
      of an `is` still do not reach under `!` or past the `if` (`if !(r is Ok(v)) { return }` and then `v`,
-     which C# allows and Rust writes as `let ... else`); that stays the error of 265.
+     which C# allows and Rust writes as `let ... else`); that stays the error of 265. (The fiftieth slice
+     brings both: 293, 294; for the names of `is not` the error names the `break`: 298.)
 290. **A `break` inside an expression is seen**: the check for a `break` in a loop looked only at a
      `match` standing alone as a statement or a value, so `var n = 1 + match k { 1 => { break } _ => 2 }`
      inside `while true { ... }` counted as a loop that never ends. A function that ended with that loop
@@ -2443,6 +2454,65 @@ Choices made in the forty-ninth slice (narrowing under `!` and after a `while`; 
      condition of the `while`, `!` over `&&`, `else` of `!(x is null)`, the function of 290, and `take` in
      the condition of an `if` and of a `while`). Every compiled one left no memory behind; the two programs
      give the same output under gcc.
+
+Choices made in the fiftieth slice (the names of `is not`, and the names seen after an `if` or a `while`;
+checker, interpreter and back end), approved on 14 November 2026:
+
+293. **The names of `is not` are seen where it fails**: `x is not Circle(r)` fails exactly where `x is
+     Circle(r)` holds, so its names are seen by the code that runs only there: on the right of `||`, in
+     `else`, after an `if` whose block leaves (`return`, `break`, `continue`, `panic`, `exit`), and after a
+     `while` that only its test ends. `!(x is Circle(r))` is the same test. So `if int.parse(read text) is
+     not Ok(value) { return -1 }` and then `return value * 2`, and `while r is not Ok(value) { r = attempt()
+     }` and then `value`. Before, `is not` with names, and an `is` with names under `!`, were the errors of
+     265. C# 9 allows `if (o is not int n) return;` and then `n`; Rust writes it `let Ok(value) = r else {
+     return };`, which moves the value out where SG's `is` only looks.
+294. **After an `if` whose `else` leaves, the names of `is`**: `if s is Circle(r) { ... } else { return 0 }`
+     and then `r`, its mirror image. Narrowing has worked so after an `if` since the forty-fifth slice (264),
+     and now the names follow the same rule: what the code after the `if` sees is what the way that reaches
+     it is sure of.
+295. **Along `||`, and only as a whole chain**: on the left of `||` an `is not` names values for its right
+     side (`if r is not Ok(n) || n < 0 { return }`), and after the `if` every `is not` of the chain has
+     failed, so the names of all of them are seen (`if parse(a) is not Ok(x) || parse(b) is not Ok(y) {
+     return 0 }` and then `x + y`). An `is not` with names on the left of `&&` is an error, since what comes
+     after it runs only where the value is another variant; an `is` with names beside `||` stays the error
+     of 265. A `!` around a whole chain (`if !(r is Ok(v) && v > 0) { return }`) is not read for names,
+     though C# reads it; it stays an error where the names are used (Not here yet).
+296. **The names live in the block that holds the statement**: the names seen after an `if` or a `while`
+     are declared in the scope that holds it, from there to its end, as a `var` would be. A name already
+     declared in that scope is an error that points at both (`var value = 0` and then `if r is not
+     Ok(value)`), with the hint to name the pattern's value otherwise; in an inner block it hides the outer
+     one, as a `var` does. They stay borrows of the tested value, so changing or moving that value while
+     they are used later is the usual error (267).
+297. **A value with no name stays until the block ends**: after `if fetch() is not Text(body) { return }`,
+     `body` borrows from a value that has no name. That value now stays until the block around the `if`
+     ends, so the names can be used there; in compiled code its drop moves from the end of the `if` to the
+     end of the block. A `while` makes such a value again in every round, so a name after a `while` that
+     borrows from one is an error whose hint is to name the value before the loop and change it inside. A
+     number is a `read` borrow too (`int.parse(read text) is not Ok(value)`), and its value has no name, so
+     this is what lets the common form be written without a `var` first.
+298. **Errors where nothing sees the names**: an `if` with no `else` whose block does not leave sees the
+     names of its `is not` nowhere: "nothing here can use the names in this pattern", a note that says why,
+     and the hint to end the block with `return` or use `match`. A `while` tested with `is not` whose body
+     has a `break` gives the same error, and it points at the `break` that leaves the loop while the test
+     may still hold (for a `T?` after a `while`, the note that names the `break` is still not here: 289).
+     An `is not` on the left of `&&` is "`is not` holds when the value is another variant, so nothing here
+     can use the names". A name used where it is not seen (266) now says where the names of `is`, or of
+     `is not`, are seen. The error of an `is` beside `||` keeps its own note and drops the general one.
+299. **Compiled code**: `x is not Circle(r)` is the test of `x is Circle(r)` that sets the names, under a
+     `!`: `(!(s.tag == 0 && (r = &s.u.v0.m_radius, 1)))`. The names are declared before the statement (for a
+     `while`, before the loop, so that they outlive it) and stay in scope after it; a chain of `||` is
+     written as one of `&&` is. The limit of 268 is narrowed: a value made by a call after the first `&&`
+     or `||` is now compiled when it owns no memory: it is declared before the statement and made inside the
+     condition, `(t = sg_parse_int(b), (!(t.tag == 0 && (y = &t.u.v0.m_value, 1))))`, so the form with two
+     numbers above compiles. One that owns memory is still refused: it would have to be dropped only when it
+     was made. Nothing is measured: it is the C a person writes with the same names.
+300. **The tests**: one program (`is not` alone, under `!`, along `||` with a call after the first `||`, in
+     `else`, through a `ref`, on a value with no name that owns its text, after an `if` whose `else` leaves,
+     after a `while`, in a value, with `continue` in a loop, and a name hiding an outer one in an inner
+     block) and nine tests of errors (an `if` that does not leave, a `break`, `&&`, the block of `is not`, a
+     name already declared, an `else` that does not leave, a value made again by a `while`, and a change and
+     a move of the tested value while a name is used later). Every compiled one left no memory behind; the
+     program gives the same output under gcc.
 
 ## Slower than C, and could be better
 
@@ -2488,9 +2558,10 @@ check off.
 - `swap(ref a, ref b)`, and `this` with a type (`read FolderRef this`).
 - A string literal has the type `string` here; in the design it is `read string` that becomes `string` without
   allocating.
-- The names of an `is` after an `if` whose block leaves (`if !(r is Ok(v)) { return }`, Rust's `let ... else`),
-  and a note that names the `break` which keeps a variable a `T?` after a `while` (289). An `is` with names
-  on a value made by a call after the first `&&`, in compiled code (268).
+- The names of an `is` inside a `!` around a whole chain (`if !(r is Ok(v) && v > 0) { return }` and then
+  `v`, 295), and a note that names the `break` which keeps a variable a `T?` after a `while` (289). An `is`
+  with names on a value that owns memory, made by a call after the first `&&` or `||`, in compiled code
+  (268, 299).
 - A name for a value whose pattern is tested at the same time (Rust's `n @ Number(_)`), a text tested
   for how it starts (choices 243, 248), a constant as an end of a range (`int.MaxValue`), a range open at
   one end (`5..=`), `..=` outside a pattern (254, 255). A pattern of an `or` inside the parentheses that the
@@ -2573,6 +2644,8 @@ thrown away is a compile error; rewriting lines with them takes 0.94 times the t
 So is every other built-in method that only gives a value (`line.trim()`, `xs.contains(3)` alone), while
 the ones that change their value (`removeLast`) and the functions you write may stand alone. `!` swaps what
 a test of `null` says (`if !(x is null)`), and after `while x is null { ... }` the variable is not `null`.
+The names of `is not` are seen where it fails, after the `if` too (`if int.parse(read text) is not Ok(n) {
+return }` and then `n`), and so are those of an `is` after an `if` whose `else` leaves.
 
-Candidates for what comes next: type aliases (`using`), threads, the places that are slower than C, the
-names of an `is` after an `if` that leaves (`if !(r is Ok(v)) { return }`).
+Candidates for what comes next: type aliases (`using`), threads, the places that are slower than C, a
+value that owns memory made after the first `&&` or `||` for an `is` with names in compiled code (268).

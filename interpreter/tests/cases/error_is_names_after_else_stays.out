@@ -1,0 +1,10 @@
+error: there is no variable named `r`
+  the names of `is` are seen where its test is sure to have held: on the right of `&&`, in the block of its `if` or `while`, and after an `if` whose `else` leaves
+  --> error_is_names_after_else_stays.sg:14:11
+ 14 |     print(r)
+    |           ^
+  `r` is named by this `is`:
+  --> error_is_names_after_else_stays.sg:9:20
+ 9 |     if s is Circle(r) {
+   |                    ^
+  hint: use the value where the name is seen, or take it out with `match`

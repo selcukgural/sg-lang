@@ -1,0 +1,10 @@
+// The names seen after the `if` borrow the value: it cannot be given another value while they
+// are used.
+void main() {
+    Result<string, NumberError> r = Ok("first".clone())
+    if r is not Ok(text) {
+        return
+    }
+    r = Ok("second".clone())
+    print(text)
+}

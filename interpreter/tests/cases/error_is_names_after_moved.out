@@ -1,0 +1,9 @@
+error: `reply` cannot be moved here: `body` borrows from it and is used again later
+  --> error_is_names_after_moved.sg:15:13
+ 15 |     consume(reply)
+    |             ^^^^^
+  `body` borrowed it here:
+  --> error_is_names_after_moved.sg:12:8
+ 12 |     if reply is not Text(body) {
+    |        ^^^^^
+  hint: finish with `body` before this line: a borrow ends at its last use

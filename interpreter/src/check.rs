@@ -1567,9 +1567,9 @@ struct Checker<'a> {
     func_name: String,
     /// A `test` block is being checked: `try` passes any error on, and the test fails with it.
     in_test: bool,
-    /// Every name an `is` pattern has given, with where: to explain a use of one after its
-    /// `if` has ended.
-    is_names: Vec<(String, Span)>,
+    /// Every name an `is` pattern has given, with where and whether it is seen where the test
+    /// fails (`is not`): to explain a use of one where it is not seen.
+    is_names: Vec<(String, Span, bool)>,
     /// The struct whose method is being checked.
     owner: Option<&'a str>,
     /// The module the code being checked is in; empty for the root.
@@ -1612,14 +1612,22 @@ struct Variants {
 /// Names a pattern brings into the block it guards: name, type, where it is written.
 type Binds = Vec<(String, Ty, Span)>;
 
-/// Whether anything sees the names of an `is` pattern where it is written.
+/// The names of `is` patterns, each group with what its value was lent from.
+type Named = Vec<(Binds, Vec<Loan>)>;
+
+/// Where the code that comes after an `is` test sees its names.
 #[derive(Clone, Copy)]
 enum NamesSeen {
-    /// The right of `&&`, or the block of an `if` or `while`.
-    Yes,
-    /// Nothing: an `is` joined by `||`.
-    AfterOr,
-    /// Nothing: an `is` anywhere else.
+    /// Where the test holds: the right of `&&`, the block of an `if` or `while`.
+    Holds,
+    /// Where the test fails: the right of `||`, `else`, after an `if` whose block leaves.
+    Fails,
+    /// Nowhere: an `if` whose block does not leave and has no `else`, tested with `is not`.
+    StaysIn,
+    /// Nowhere: a `while` tested with `is not`, which this `break` can leave while the test
+    /// still holds.
+    Break(Span),
+    /// Nowhere: an `is` anywhere else.
     No,
 }
 
@@ -1665,6 +1673,30 @@ fn condition_facts(cond: &Expr) -> (Vec<String>, Vec<String>) {
     let (holds, fails) = null_facts(cond);
     let kept = |names: Vec<String>| names.into_iter().filter(|name| !taken.contains(&name.as_str())).collect();
     (kept(holds), kept(fails))
+}
+
+/// Where the names of `is` are seen, for the notes of the errors about them.
+const NAMES_SEEN: &str = "the names of `is` are seen where its test is sure to have held: on the right of `&&`, in the block of its `if` or `while`, and after an `if` whose `else` leaves";
+const NOT_NAMES_SEEN: &str = "the names of `is not` are seen where its test is sure to have failed: on the right of `||`, in `else`, after an `if` whose block leaves, and after a `while` that only its test ends";
+
+/// `x is Circle(r)` or `x is not Circle(r)` (`Some(false)`), or one of them under `!`
+/// (`Some(true)`).
+fn is_test(expr: &Expr) -> Option<bool> {
+    match &expr.kind {
+        ExprKind::IsVariant { .. } => Some(false),
+        ExprKind::Unary(UnOp::Not, inner) if matches!(inner.kind, ExprKind::IsVariant { .. }) => Some(true),
+        _ => None,
+    }
+}
+
+/// An `is` test that holds when the value is not what the pattern says: `x is not
+/// Circle(r)`, `!(x is Circle(r))`.
+fn tests_not(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::IsVariant { negated, .. } => *negated,
+        ExprKind::Unary(UnOp::Not, inner) => !tests_not(inner),
+        _ => false,
+    }
 }
 
 /// A variable with the fields that lead from it to the place: `a.b.c` is (`a`, `b.c`).
@@ -1798,10 +1830,10 @@ impl<'a> Checker<'a> {
         if let Some(hint) = self.names.use_hint(name, span) {
             return diag.hint(hint);
         }
-        if let Some((_, at)) = self.is_names.iter().rev().find(|(named, at)| named == name && at.start < span.start) {
+        if let Some((_, at, fails)) = self.is_names.iter().rev().find(|(named, at, _)| named == name && at.start < span.start) {
             return diag
                 .related(*at, format!("`{name}` is named by this `is`"))
-                .note("the names of `is` are seen on the right of `&&` and in the block of its `if` or `while`, not in `else` or after it")
+                .note(if *fails { NOT_NAMES_SEEN } else { NAMES_SEEN })
                 .hint("use the value where the name is seen, or take it out with `match`");
         }
         let visible = self.scopes.iter().flat_map(|scope| scope.vars.iter().map(|var| var.name.as_str()));
@@ -2691,11 +2723,12 @@ impl<'a> Checker<'a> {
                     None => {}
                 }
             }
-            StmtKind::If { cond, then, els } => {
+            StmtKind::If { cond, then, els, after } => {
                 // The condition has a scope of its own, which the block shares and `else` does
                 // not: the names of `x is Circle(r)` and what `x is not null` narrows.
                 self.scopes.push(Scope::default());
-                self.condition(cond)?;
+                let fails = if els.is_some() || leaves(then, true) { NamesSeen::Fails } else { NamesSeen::StaysIn };
+                let (holds, fails) = self.condition(cond, fails)?;
                 // Not `null` where the condition holds: `x is not null && ...`; where it does
                 // not: `x is null || ...`, `!(x is not null)`.
                 let (when_true, when_false) = condition_facts(cond);
@@ -2711,9 +2744,16 @@ impl<'a> Checker<'a> {
                 self.set_moves(&before);
                 let mut else_leaves = false;
                 if let Some(els) = els {
+                    // `if x is not Circle(r) { ... } else { ... }`: `else` sees `r`.
                     self.borrows.branches.push((node, 1));
-                    self.block(els, &when_false)?;
+                    self.scopes.push(Scope::default());
+                    for (binds, loans) in fails.clone() {
+                        self.declare_group(binds, loans)?;
+                    }
+                    let result = self.block(els, &when_false);
                     self.borrows.branches.pop();
+                    result?;
+                    self.pop_scope(!leaves(els, true))?;
                     else_leaves = leaves(els, true);
                 }
                 // A branch that leaves does not reach the code after the `if`.
@@ -2722,31 +2762,37 @@ impl<'a> Checker<'a> {
                     (false, true) => self.set_moves(&after_then),
                     (false, false) => self.merge_moves(&after_then),
                 }
-                // `if x is null { return }`: from here on `x` is not null.
-                let after = match (then_leaves, else_leaves) {
-                    (true, _) => when_false,
-                    (false, true) => when_true,
-                    (false, false) => Vec::new(),
+                // `if x is null { return }`: from here on `x` is not null; `if r is not Ok(value)
+                // { return }`: from here on `value` is seen.
+                let (narrowed, named) = match (then_leaves, else_leaves) {
+                    (true, _) => (when_false, fails),
+                    (false, true) => (when_true, holds),
+                    (false, false) => (Vec::new(), Vec::new()),
                 };
-                for name in &after {
+                for name in &narrowed {
                     self.narrow(name);
                 }
+                *after = self.names_after(named, "if")?;
             }
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, after } => {
                 self.forget_narrowing_of_assigned(body, Some(cond));
                 let node = self.node();
                 self.borrows.loops.push(node);
                 self.scopes.push(Scope::default());
-                let result = self.condition(cond).and_then(|_| self.loop_body(body, &[], Vec::new()));
+                let exit = first_break(body);
+                let fails = exit.map_or(NamesSeen::Fails, NamesSeen::Break);
+                let result = self.condition(cond, fails).and_then(|(_, fails)| self.loop_body(body, &[], Vec::new()).map(|_| fails));
                 self.borrows.loops.pop();
-                result?;
+                let fails = result?;
                 self.pop_scope(true)?;
                 // `while x is null { ... }`: the loop ends only when the condition fails, so
-                // after it `x` is not null, unless a `break` leaves it earlier.
-                if !has_break(body) {
+                // after it `x` is not null, unless a `break` leaves it earlier; the same for
+                // the names of `while r is not Ok(value) { ... }`.
+                if exit.is_none() {
                     for name in condition_facts(cond).1 {
                         self.narrow(&name);
                     }
+                    *after = self.names_after(fails, "while")?;
                 }
             }
             StmtKind::For { var, var_span, from, to, body } => {
@@ -2980,36 +3026,110 @@ impl<'a> Checker<'a> {
 
     /// The condition of an `if` or `while`, checked in the scope that its block shares: the
     /// names of `x is Circle(r)` and the narrowing of `x is not null`, alone or on the left of
-    /// `&&`, hold in the block.
-    fn condition(&mut self, cond: &mut Expr) -> Res<()> {
-        self.link(cond, BinOp::And)
+    /// `&&`, hold in the block. Gives the names seen where the condition holds and those seen
+    /// where it fails: `x is not Circle(r)` alone, or on the left of `||`. Those of a chain of
+    /// `||` are checked in a scope of its own, which the block does not see. `fails`: where
+    /// the code after the statement sees the names of `x is not Circle(r)` alone.
+    fn condition(&mut self, cond: &mut Expr, fails: NamesSeen) -> Res<(Named, Named)> {
+        if matches!(cond.kind, ExprKind::Binary(BinOp::Or, ..)) {
+            self.scopes.push(Scope::default());
+            let named = self.link(cond, BinOp::Or)?;
+            self.pop_scope(true)?;
+            return Ok((Vec::new(), named));
+        }
+        if let Some(flip) = is_test(cond).filter(|_| tests_not(cond)) {
+            let named = self.named_test(cond, flip, fails, false)?;
+            return Ok((Vec::new(), named));
+        }
+        Ok((self.link(cond, BinOp::And)?, Vec::new()))
     }
 
     /// One part of a chain of `&&` (or of `||`), checked in the scope of the chain. On the
     /// left of `&&`, an `is` names values and what holds when the part holds narrows for what
     /// comes after it (`x is not null`, `!(x is null)`); on the left of `||`, what holds when the
-    /// part fails does (`x is null`), since the right side runs only when it did not hold.
-    fn link(&mut self, part: &mut Expr, op: BinOp) -> Res<()> {
+    /// part fails does (`x is null`, `x is not Circle(r)`), since the right side runs only when
+    /// it did not hold. Gives the names it declared.
+    fn link(&mut self, part: &mut Expr, op: BinOp) -> Res<Named> {
         if let ExprKind::Binary(inner, left, right) = &mut part.kind {
             if *inner == op {
-                self.link(left, op)?;
-                self.link(right, op)?;
+                let mut named = self.link(left, op)?;
+                named.extend(self.link(right, op)?);
                 part.ty = Ty::Bool;
-                return Ok(());
+                return Ok(named);
             }
         }
-        if matches!(part.kind, ExprKind::IsVariant { .. }) {
-            let binds = self.is_variant(part, if op == BinOp::And { NamesSeen::Yes } else { NamesSeen::AfterOr })?;
-            part.ty = Ty::Bool;
-            self.is_names.extend(binds.iter().map(|(name, _, span)| (name.clone(), *span)));
-            return self.declare_binds(binds);
+        if let Some(flip) = is_test(part) {
+            let seen = if op == BinOp::And { NamesSeen::Holds } else { NamesSeen::Fails };
+            return self.named_test(part, flip, seen, true);
         }
         self.typed(part, &Ty::Bool)?;
         let (holds, fails) = null_facts(part);
         for name in if op == BinOp::And { holds } else { fails } {
             self.narrow(&name);
         }
-        Ok(())
+        Ok(Vec::new())
+    }
+
+    /// `x is Circle(r)`, `x is not Circle(r)` or `!(x is Circle(r))` (`flip`), seen as `seen`
+    /// says; with `declare`, its names are declared here.
+    fn named_test(&mut self, part: &mut Expr, flip: bool, seen: NamesSeen, declare: bool) -> Res<Named> {
+        part.ty = Ty::Bool;
+        let test = match flip {
+            true => match &mut part.kind {
+                ExprKind::Unary(UnOp::Not, inner) => &mut **inner,
+                _ => unreachable!("`flip` is an `is` under `!`"),
+            },
+            false => part,
+        };
+        let binds = self.is_variant(test, seen, flip)?;
+        test.ty = Ty::Bool;
+        let loans = std::mem::take(&mut self.borrows.binds);
+        if binds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let fails = matches!(seen, NamesSeen::Fails | NamesSeen::StaysIn | NamesSeen::Break(_));
+        self.is_names.extend(binds.iter().map(|(name, _, span)| (name.clone(), *span, fails)));
+        if declare {
+            self.declare_group(binds.clone(), loans.clone())?;
+        }
+        Ok(vec![(binds, loans)])
+    }
+
+    /// Declares the names of an `is` in the current scope; those that are borrows hold what
+    /// its value was lent from.
+    fn declare_group(&mut self, binds: Binds, loans: Vec<Loan>) -> Res<()> {
+        self.borrows.binds = loans;
+        self.declare_binds(binds)
+    }
+
+    /// The names of an `is` that the code after an `if` or `while` sees, declared in the
+    /// scope around it. The value with no name that an `if` looks at stays until that scope
+    /// ends; one that a `while` looks at is made again in every round, so a borrow of it is
+    /// refused.
+    fn names_after(&mut self, named: Named, keyword: &str) -> Res<Vec<String>> {
+        let mut names = Vec::new();
+        for (binds, loans) in named {
+            for (name, ty, span) in &binds {
+                // After an `if`, the value stays until the block around it ends; a `while` makes
+                // it again in every round.
+                if self.holds(ty) && keyword == "while" {
+                    if let Some(loan) = loans.iter().find(|loan| loan.root == UNNAMED) {
+                        let text = &self.src[loan.span.start..loan.span.end];
+                        return Err(Diag::error(*span, format!("`{name}` borrows from `{text}`, a value with no name that the `while` makes again in every round, so the code after it cannot look at it"))
+                            .hint(format!("give the value a name before the loop: `var value = {text}`, and change it in the loop")));
+                    }
+                }
+                if let Some(var) = self.scopes.last().and_then(|scope| scope.vars.iter().find(|var| var.name == *name)) {
+                    return Err(Diag::error(*span, format!("`{name}` is already declared in this scope"))
+                        .related(var.at, "it is declared here")
+                        .note(format!("the names of this `is` are seen after the `{keyword}`, in the same scope"))
+                        .hint("give the name in the pattern another name"));
+                }
+                names.push(name.clone());
+            }
+            self.declare_group(binds, loans)?;
+        }
+        Ok(names)
     }
 
     /// A value moved inside a loop is gone when the next iteration starts.
@@ -4053,7 +4173,7 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Never)
             }
             ExprKind::IsVariant { .. } => {
-                self.is_variant(expr, NamesSeen::No)?;
+                self.is_variant(expr, NamesSeen::No, false)?;
                 Ok(Ty::Bool)
             }
             ExprKind::Match { subject, arms, borrowed } => self.match_expr(subject, arms, borrowed, expected, false),
@@ -4647,9 +4767,9 @@ impl<'a> Checker<'a> {
     }
 
     /// `x is Circle(r)`: looks at the value without taking it, so the names are borrows.
-    /// They are seen by what comes after the test on the right of `&&`, and by the block of
-    /// the `if` or `while` whose condition it is part of.
-    fn is_variant(&mut self, expr: &mut Expr, seen: NamesSeen) -> Res<Binds> {
+    /// They are seen by the code that runs only where the test holds (for `is not`, or under
+    /// `!` when `flip`, where it fails), as `seen` says.
+    fn is_variant(&mut self, expr: &mut Expr, seen: NamesSeen, flip: bool) -> Res<Binds> {
         let ExprKind::IsVariant { expr: subject, negated, pattern, by_ref } = &mut expr.kind else {
             unreachable!("only called for an `is` test");
         };
@@ -4661,21 +4781,30 @@ impl<'a> Checker<'a> {
             return Ok(binds);
         }
         self.borrows.binds = self.place_loans(subject, *by_ref, subject.span);
-        if *negated {
-            return Err(Diag::error(pattern.span, "`is not` holds when the value is another variant, so there is nothing to name")
-                .hint("write `_` for each value"));
-        }
-        let diag = Diag::error(pattern.span, "nothing here can use the names in this pattern")
-            .note("the names of `is` are seen on the right of `&&` and in the block of the `if` or `while` it tests");
-        match seen {
-            NamesSeen::Yes => {}
-            NamesSeen::AfterOr => {
-                return Err(diag.note("with `||` the block also runs when this test does not hold, and then the names have no value")
-                    .hint("test it alone in an `if` of its own, or use `match`"))
+        let not = *negated != flip;
+        let nowhere = Diag::error(pattern.span, "nothing here can use the names in this pattern");
+        let seen_where = if not { NOT_NAMES_SEEN } else { NAMES_SEEN };
+        match (seen, not) {
+            (NamesSeen::Holds, false) | (NamesSeen::Fails, true) => Ok(binds),
+            (NamesSeen::Holds, true) => {
+                let what = if *negated { "`is not`" } else { "under `!`, `is`" };
+                Err(Diag::error(pattern.span, format!("{what} holds when the value is another variant, so nothing here can use the names"))
+                    .note(NOT_NAMES_SEEN)
+                    .hint("write `_` for each value, or test `is` without `not`"))
             }
-            NamesSeen::No => return Err(diag.hint("write `_` for each value, or use `match`")),
+            (NamesSeen::Fails, false) => Err(nowhere
+                .note("with `||` the block also runs when this test does not hold, and then the names have no value")
+                .hint("test it alone in an `if` of its own, or use `match`")),
+            (NamesSeen::StaysIn, _) => Err(nowhere
+                .note(seen_where)
+                .note("this `if` has no `else`, and the code after it also runs when the block has run")
+                .hint("end the block with `return`, or use `match`")),
+            (NamesSeen::Break(at), _) => Err(nowhere
+                .related(at, "this `break` leaves the loop while the test may still hold")
+                .note("after a `while`, the names of `is not` are seen only when the test is what ends the loop")
+                .hint("test the value again after the loop, or use `match`")),
+            (NamesSeen::No, _) => Err(nowhere.note(seen_where).hint("write `_` for each value, or use `match`")),
         }
-        Ok(binds)
     }
 
     /// `match subject { ... }`. As a statement (`unused`) the arms give no value.
@@ -6234,14 +6363,14 @@ fn changed_in<'b>(block: &'b Block, names: &mut Vec<&'b str>) {
                 taken_in(target, names);
                 taken_in(value, names);
             }
-            StmtKind::If { cond, then, els } => {
+            StmtKind::If { cond, then, els, .. } => {
                 taken_in(cond, names);
                 changed_in(then, names);
                 if let Some(els) = els {
                     changed_in(els, names);
                 }
             }
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, .. } => {
                 taken_in(cond, names);
                 changed_in(body, names);
             }
@@ -6537,7 +6666,7 @@ fn leaves(block: &Block, in_loop: bool) -> bool {
         StmtKind::Return(_) => true,
         StmtKind::Break | StmtKind::Continue => in_loop,
         StmtKind::If { then, els: Some(els), .. } => leaves(then, in_loop) && leaves(els, in_loop),
-        StmtKind::While { cond, body } => matches!(cond.kind, ExprKind::Bool(true)) && !has_break(body),
+        StmtKind::While { cond, body, .. } => matches!(cond.kind, ExprKind::Bool(true)) && !has_break(body),
         StmtKind::Expr(expr) => never_returns(expr, in_loop),
         _ => false,
     }
@@ -6563,22 +6692,27 @@ fn arm_leaves(arm: &Arm, in_loop: bool) -> bool {
 /// Whether a `break` leaves this loop (those of inner loops do not count), also from inside
 /// a `match` anywhere in an expression: `1 + match k { 1 => { break } _ => 2 }`.
 fn has_break(block: &Block) -> bool {
-    block.iter().any(|stmt| match &stmt.kind {
-        StmtKind::Break => true,
-        StmtKind::If { cond, then, els } => breaks_in(cond) || has_break(then) || els.as_ref().is_some_and(has_break),
+    first_break(block).is_some()
+}
+
+/// The first `break` that leaves this loop, as `has_break` finds them.
+fn first_break(block: &Block) -> Option<Span> {
+    block.iter().find_map(|stmt| match &stmt.kind {
+        StmtKind::Break => Some(stmt.span),
+        StmtKind::If { cond, then, els, .. } => breaks_in(cond).or_else(|| first_break(then)).or_else(|| els.as_ref().and_then(first_break)),
         // The condition, the range and the collection are reached outside the inner loop.
         StmtKind::While { cond: expr, .. } | StmtKind::ForEach { iter: expr, .. } => breaks_in(expr),
-        StmtKind::For { from, to, .. } => breaks_in(from) || breaks_in(to),
+        StmtKind::For { from, to, .. } => breaks_in(from).or_else(|| breaks_in(to)),
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Discard(expr) | StmtKind::Let { init: expr, .. } => breaks_in(expr),
-        StmtKind::Assign { target, value, .. } => breaks_in(target) || breaks_in(value),
-        StmtKind::Return(None) | StmtKind::Continue => false,
+        StmtKind::Assign { target, value, .. } => breaks_in(target).or_else(|| breaks_in(value)),
+        StmtKind::Return(None) | StmtKind::Continue => None,
     })
 }
 
-/// Whether an arm of a `match` in this expression has a `break`.
-fn breaks_in(expr: &Expr) -> bool {
-    parts(expr).into_iter().any(|part| match part {
+/// The first `break` in an arm of a `match` in this expression.
+fn breaks_in(expr: &Expr) -> Option<Span> {
+    parts(expr).into_iter().find_map(|part| match part {
         Part::Expr(inner) => breaks_in(inner),
-        Part::Block(block) => has_break(block),
+        Part::Block(block) => first_break(block),
     })
 }

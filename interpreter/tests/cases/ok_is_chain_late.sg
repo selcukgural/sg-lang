@@ -1,5 +1,5 @@
-// Interpreted only: the back end does not yet keep a value made after the first `&&`
-// for the names of an `is` that point into it.
+// Interpreted only: the back end does not yet keep a value that owns memory, made after the
+// first `&&`, for the names of an `is` that point into it (one that owns nothing it does).
 enum Token {
     Word(string text)
     End

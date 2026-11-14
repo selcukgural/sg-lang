@@ -1,0 +1,9 @@
+// On the left of `&&`, what comes after it runs only where `is not` held: the value is
+// another variant, and there is nothing to name.
+void main() {
+    var r = int.parse("12")
+    var x = 1
+    if r is not Ok(value) && x > 0 {
+        return
+    }
+}

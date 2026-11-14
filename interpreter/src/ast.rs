@@ -262,8 +262,10 @@ pub enum StmtKind {
     /// `x = e`, `a.b += e`. `through`: the target is a `ref` variable and the write goes to
     /// what it borrows (set by the checker).
     Assign { target: Expr, op: Option<BinOp>, value: Expr, through: bool },
-    If { cond: Expr, then: Block, els: Option<Block> },
-    While { cond: Expr, body: Block },
+    /// `after`: the names of an `is` in the condition that the code after the statement sees
+    /// (`if r is not Ok(value) { return }`), set by the checker.
+    If { cond: Expr, then: Block, els: Option<Block>, after: Vec<String> },
+    While { cond: Expr, body: Block, after: Vec<String> },
     /// `for i in a..b`
     For { var: String, var_span: Span, from: Expr, to: Expr, body: Block },
     /// `for x in xs`, `for x in read xs`, `for x in ref xs`. `by`: the items are lent to the

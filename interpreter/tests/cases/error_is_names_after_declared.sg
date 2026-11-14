@@ -1,0 +1,10 @@
+// The names seen after the `if` are in the scope that holds it, where `value` is already
+// declared.
+void main() {
+    var value = 0
+    var r = int.parse("12")
+    if r is not Ok(value) {
+        return
+    }
+    print(value)
+}

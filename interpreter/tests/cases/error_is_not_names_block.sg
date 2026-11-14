@@ -1,0 +1,10 @@
+// The block of `if ... is not` runs where the value is another variant: the names are not seen
+// there.
+void main() {
+    var r = int.parse("12")
+    if r is not Ok(value) {
+        print(value)
+    } else {
+        print("a number")
+    }
+}

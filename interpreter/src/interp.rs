@@ -652,6 +652,16 @@ enum Flow {
     Return(Value),
 }
 
+/// Moves the names of an `is` that the checker lets the code after an `if` or `while` see
+/// out of the scope of its condition, into the scope around the statement.
+fn keep_names(after: &[String], mut names: HashMap<String, Cell>, frame: &mut Frame) {
+    for name in after {
+        if let Some(value) = names.remove(name) {
+            frame.scopes.last_mut().expect("an open scope").insert(name.clone(), value);
+        }
+    }
+}
+
 /// What a loop body did, when it left from inside an expression: a `break` or `continue`
 /// in a `match` arm ends here.
 fn loop_flow(result: Res<Flow>) -> Res<Flow> {
@@ -931,7 +941,7 @@ impl<'a> Interp<'a> {
                 }
                 *target.borrow_mut() = new;
             }
-            StmtKind::If { cond, then, els } => {
+            StmtKind::If { cond, then, els, after } => {
                 // The scope holds the names of an `is` pattern in the condition.
                 frame.scopes.push(HashMap::new());
                 let flow = if self.condition(cond, frame)? {
@@ -941,16 +951,23 @@ impl<'a> Interp<'a> {
                 } else {
                     Flow::Next
                 };
-                frame.scopes.pop();
+                let names = frame.scopes.pop().expect("the scope of the condition");
+                // `if r is not Ok(value) { return }`: the code after it sees `value`.
+                keep_names(after, names, frame);
                 return Ok(flow);
             }
-            StmtKind::While { cond, body } => {
+            StmtKind::While { cond, body, after } => {
                 let depth = frame.scopes.len();
                 loop {
                     frame.scopes.push(HashMap::new());
                     let flow = match self.condition(cond, frame)? {
                         true => loop_flow(self.block(body, frame))?,
-                        false => Flow::Break,
+                        false => {
+                            // `while r is not Ok(value) { ... }`: the code after it sees `value`.
+                            let names = frame.scopes.pop().expect("the scope of the condition");
+                            keep_names(after, names, frame);
+                            Flow::Break
+                        }
                     };
                     frame.scopes.truncate(depth);
                     match flow {

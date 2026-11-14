@@ -498,7 +498,8 @@ int keyword(read string word) {
 ```
 
 The names of `is` are seen on the right of `&&` and in the block of the `if` or `while` whose condition the chain is,
-as in C#; not in `else`, not after the `if`, and not beside `||`, where the block could run without them. `x is not null`
+as in C#; not in `else`, after the `if` only when its `else` leaves, and not beside `||`, where the block could run
+without them. `x is not null`
 narrows `x` the same way, and `x is null` narrows it on the right of `||`, which runs only when `x` is there.
 
 ```
@@ -537,6 +538,26 @@ int firstFound(read List<int> xs) {
         found = find(read xs, wanted)
     }
     return found                                           // not `null` here: no `break` in the loop
+}
+```
+
+The names of `is not` are seen where its test fails: on the right of `||`, in `else`, after an `if` whose block leaves,
+and after a `while` that only its test ends. This is C#'s `if (o is not int n) return;`, and what Rust writes as
+`let ... else`; `!(x is Ok(n))` is the same test.
+
+```
+int doubled(read string text) {
+    if int.parse(read text) is not Ok(value) {             // `value` is seen where the test fails
+        return -1
+    }
+    return value * 2                                       // the block left: `value` is here
+}
+
+int sum(read string a, read string b) {
+    if int.parse(read a) is not Ok(x) || int.parse(read b) is not Ok(y) {
+        return 0
+    }
+    return x + y                                           // both tests failed: both names are here
 }
 ```
 

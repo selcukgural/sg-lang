@@ -1,0 +1,12 @@
+// A `while` makes the value again in every round: what the names after it would look at is
+// gone.
+Result<string, NumberError> line(int round) {
+    return Ok("a line".clone())
+}
+
+void main() {
+    var round = 0
+    while line(round) is not Ok(text) {
+        round += 1
+    }
+}

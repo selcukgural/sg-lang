@@ -572,7 +572,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let cond = self.head_expr(false)?;
                 let body = self.block()?;
-                StmtKind::While { cond, body }
+                StmtKind::While { cond, body, after: Vec::new() }
             }
             Tok::For => {
                 self.bump();
@@ -912,7 +912,7 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        Ok(StmtKind::If { cond, then, els })
+        Ok(StmtKind::If { cond, then, els, after: Vec::new() })
     }
 
     /// `a ?? b` binds loosest and groups to the right, as in C#.
