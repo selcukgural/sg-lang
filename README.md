@@ -191,6 +191,7 @@ its reason and its cost, what is still open, and what comes next. The others:
 | File | Contents |
 |---|---|
 | [Example programs](design/05-examples.md) | Twelve programs written before there was a compiler, and the questions they raised |
+| [From Rust to SG](design/06-rust-to-sg.md) | What a Rust programmer writes and what SG writes for it, with how far each line is built; updated with every slice |
 | [Syntax draft](design/02-syntax-draft.md) | The ownership notation, and the earlier drafts that were dropped |
 | [Memory model](design/01-memory-model.md) | The first model (generation-checked pointers), kept for the record; it was dropped |
 | [Roadmap](design/03-roadmap.md) | Where to start when designing a language, the steps and the traps |
