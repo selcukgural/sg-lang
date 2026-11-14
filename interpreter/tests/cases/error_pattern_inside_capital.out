@@ -1,0 +1,5 @@
+error: this value is a `int`, and `Empty` is not a variant of it
+  a name that takes the value starts with a small letter
+  --> error_pattern_inside_capital.sg:15:16
+ 15 |         Number(Empty) => 1
+    |                ^^^^^

@@ -1,0 +1,5 @@
+error: an enum holds variants and functions, not fields
+  --> error_enum_field.sg:3:9
+ 3 |     int size
+   |         ^^^^
+  hint: a value every variant carries is written in each variant: `Name(int size)`

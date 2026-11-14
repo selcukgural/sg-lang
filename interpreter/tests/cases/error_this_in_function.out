@@ -2,4 +2,4 @@ error: `this` can only be a parameter of a method
   --> error_this_in_function.sg:5:11
  5 | void bump(ref this) {
    |           ^^^^^^^^
-  hint: a method is written inside the body of its struct
+  hint: a method is written inside the body of its struct or enum

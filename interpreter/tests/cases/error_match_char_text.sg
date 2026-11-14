@@ -1,0 +1,7 @@
+void main() {
+    var c = 'a'
+    match c {
+        "a" => print("a")
+        _ => print("other")
+    }
+}

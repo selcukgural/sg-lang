@@ -233,12 +233,12 @@ is always atomic, Rust's `Send` and `Sync` distinction comes down to this single
 > **Deferred on 12 November 2026.** Generics of your own, `where` and your own `interface` are not in the first
 > version; this section is kept as the record of what was designed. What stays: the built-in generic types
 > (`Result<T, E>`, `T?`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`), the built-in interfaces written after `:`
-> (`Copyable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`), methods in the struct body, and the rule that
+> (`Copyable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`), methods in the body of a struct or an enum, and the rule that
 > `==` is `equals` and `<` is `compare`. A container of your own is written for the type it holds.
 
 Generic code is compiled separately for each type (monomorphization): as fast as C, at the cost of a larger binary.
 
-A method is written in the struct body. `this` is the first parameter and, like the other parameters, states how it is
+A method is written in the body of its struct or enum. `this` is the first parameter and, like the other parameters, states how it is
 passed. A function without `this` is called on the type. Fields are accessed with `this.x`.
 
 ```
@@ -424,6 +424,41 @@ a block; in a block the last line is the value, and `return` exits the function.
 | `match read s` | `read` borrow | Can be used |
 | `match ref s` | `ref` borrow, fields can be modified | Can be used |
 | `match s` (`s` is already `read` or `ref`) | Same kind of borrow | Can be used |
+
+A pattern can stand where a name stands: inside the parentheses go a variant with its own parentheses, a variant that
+carries nothing, a number, a character, a text, `_` or a name. Inside the parentheses a name alone is the variant when the
+enum there has a variant of that name, otherwise it takes the value; a capitalised name that is not a variant is an error,
+so a mistyped variant never takes everything. A `match` that misses a value is a compile error that names one, and so is
+an arm the arms above already cover. A `match` on text has texts as its patterns and needs `_` or `var name`, as a `match`
+on a number does.
+
+An enum has methods, written after or between its variants as in a struct; with `match this` it looks at itself.
+
+```
+public enum Expr {
+    Number(int value)
+    Negate(Expr* inner)
+    Add(Expr* left, Expr* right)
+
+    public int eval(read this) {
+        return match this {
+            Number(v) => v
+            Negate(Negate(inner)) => inner.eval()        // two minus signs cancel
+            Negate(inner) => -inner.eval()
+            Add(Number(0), right) => right.eval()
+            Add(left, right) => left.eval() + right.eval()
+        }
+    }
+}
+
+int keyword(read string word) {
+    return match word {
+        "if" => 1
+        "else" => 2
+        _ => 0
+    }
+}
+```
 
 ### Error model
 

@@ -66,6 +66,9 @@ pub struct EnumDecl {
     pub sources: Vec<(String, Span)>,
     pub interfaces: Vec<(String, Span)>,
     pub variants: Vec<VariantDecl>,
+    /// Functions written in the enum body after or between the variants, with or without
+    /// `this`.
+    pub methods: Vec<Func>,
 }
 
 /// `Circle(int radius)` or `Empty`
@@ -413,9 +416,29 @@ pub enum PatternKind {
     Int(i128),
     /// `'+'`. The checker turns it into an `Int`.
     Char(char),
-    /// `Circle(r)`, `Rect(w, _)`, `Empty`. A name is `None` for `_`. `args` is `None` when
-    /// no parentheses were written. `index` is the variant's position, set by the checker.
-    Variant { name: String, args: Option<Vec<(Option<String>, Span)>>, index: usize },
+    /// `"if"`: a text, for a `match` on text.
+    Str(String),
+    /// `Circle(r)`, `Rect(w, _)`, `Add(Number(a), _)`, `Empty`. `args` is `None` when no
+    /// parentheses were written; each one is a pattern for what the variant carries there.
+    /// Inside the parentheses a name alone takes the value (`Bind`), unless the checker finds
+    /// that it names a variant that carries nothing. `index` is the variant's position, set
+    /// by the checker.
+    Variant { name: String, args: Option<Vec<Pattern>>, index: usize },
+}
+
+impl Pattern {
+    /// Whether the pattern takes every value: `_` or a name.
+    pub fn takes_all(&self) -> bool {
+        matches!(self.kind, PatternKind::Wildcard | PatternKind::Bind(_))
+    }
+
+    /// Whether a pattern is written inside this one in place of a name or `_`.
+    pub fn is_nested(&self) -> bool {
+        match &self.kind {
+            PatternKind::Variant { args: Some(args), .. } => args.iter().any(|arg| !arg.takes_all()),
+            _ => false,
+        }
+    }
 }
 
 pub struct FieldInit {

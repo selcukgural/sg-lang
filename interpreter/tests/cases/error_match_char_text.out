@@ -1,0 +1,5 @@
+error: this `match` looks at a `char`, and a text is not one
+  --> error_match_char_text.sg:4:9
+ 4 |         "a" => print("a")
+   |         ^^^
+  hint: a character is written in single quotes: `'a'`

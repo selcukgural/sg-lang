@@ -1,0 +1,5 @@
+error: this `match` does not handle every `string` value
+  --> error_match_text_no_rest.sg:14:18
+ 14 |     return match s {
+    |                  ^
+  hint: add `_ => ...` for everything else

@@ -3,6 +3,6 @@ error: `secret` exists in the `stock` module but is not public
  4 |     print(secret())
    |           ^^^^^^^^
   it is defined here, without `public`:
-  --> stock/product.sg:38:5
- 38 | int secret() {
+  --> stock/product.sg:55:5
+ 55 | int secret() {
     |     ^^^^^^

@@ -1,0 +1,7 @@
+void main() {
+    var n = 3
+    match n {
+        "3" => print("three")
+        _ => print("other")
+    }
+}

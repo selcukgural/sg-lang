@@ -1,0 +1,5 @@
+error: a pattern is a text as it is written, without `$`
+  to compare with a text that is built, use `==` in an `if` or a `when`
+  --> error_match_text_built.sg:15:9
+ 15 |         $"a" => 1
+    |         ^^^^

@@ -1,0 +1,4 @@
+error: `Circle` is already a variant of `Shape`
+  --> error_enum_method_variant_name.sg:4:9
+ 4 |     int Circle(read this) {
+   |         ^^^^^^

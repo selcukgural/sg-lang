@@ -1,6 +1,6 @@
 void main() {
-    var name = "x"
-    match name {
+    var ratio = 0.5
+    match ratio {
         _ => print("any")
     }
 }

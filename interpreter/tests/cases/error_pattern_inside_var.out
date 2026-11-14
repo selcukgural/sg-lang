@@ -1,0 +1,5 @@
+error: inside the parentheses a name alone takes the value; `var` is not written there
+  --> error_pattern_inside_var.sg:15:14
+ 15 |         Full(var e) => 1
+    |              ^^^^^
+  hint: `e`

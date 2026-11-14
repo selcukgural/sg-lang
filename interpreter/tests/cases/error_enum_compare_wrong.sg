@@ -1,0 +1,8 @@
+enum Level : Comparable {
+    Low
+    High
+    int compare(read this, read int other) {
+        return 0
+    }
+}
+void main() {}

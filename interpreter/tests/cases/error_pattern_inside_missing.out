@@ -1,0 +1,5 @@
+error: this `match` does not handle `Add(Name(_), _)`
+  --> error_pattern_inside_missing.sg:14:18
+ 14 |     return match e {
+    |                  ^
+  hint: add an arm for it, or `_ => ...` for everything else

@@ -1,0 +1,5 @@
+error: `Expr` has no variant `Empy`
+  --> error_pattern_inside_typo.sg:15:14
+ 15 |         Full(Empy) => 1
+    |              ^^^^
+  hint: `Empty`

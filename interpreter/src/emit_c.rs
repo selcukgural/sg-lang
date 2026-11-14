@@ -12,7 +12,7 @@
 //! text (with `trim`, the searches, the iterators `chars`, `split`, `splitWhitespace` and `lines`,
 //! `write` and `clear`, which add to a text where it is, as `f.write` does, and the width and the
 //! letter after a value in `$"..."`), functions, structs,
-//! enums with `match` and `is`, `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
+//! enums with methods, `match` and `is` (with patterns inside patterns, and on text), `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
 //! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, `print` and `printError`, files
 //! read and written whole or piece by piece, as text or as bytes (`StreamReader`, `StreamWriter`,
 //! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`). Anything else is an error that names what is missing, so nothing is compiled
@@ -27,6 +27,8 @@
 //! pointer to one `malloc`ed `T`. A `T*?` is the same pointer, where `NULL` is `null`: it
 //! costs nothing. Any other `T?` is the value and a flag beside it. An enum is a tag and,
 //! beside it, room for the largest variant (a C union); a `match` is a chain of tests on the tag.
+//! An arm with patterns inside tests the tags and the values it names, joined by `&&`; an arm
+//! on text is a test of the length and of the bytes (`sg_eq`).
 //! A `Result<T, E>` is such an enum with the variants `Ok(T value)` and `Error(E cause)`; `try`
 //! is one test on the tag and, on an error, a `return`. A `List<T>` is a pointer to its items,
 //! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index, and
@@ -41,7 +43,8 @@
 //!
 //! Writing and comparing: for each struct, enum and list that is written or compared, one
 //! helper is made that writes it into a text (`sg_show_...`) and one that tells whether two
-//! are equal (`sg_same_...`). They call the `format`, `equals` and `compare` a struct wrote.
+//! are equal (`sg_same_...`). They call the `format`, `equals` and `compare` a struct or an
+//! enum wrote.
 //!
 //! Borrows inside values: a field that borrows is the same pointer a borrowed variable is,
 //! and a function value is the address of the function.
@@ -1547,10 +1550,14 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         let params = func.params.iter().map(|param| emitter.written(&param.ty)).collect::<Res<Vec<Ty>>>()?;
         emitter.sigs.insert(format!("f_{}", cname(&func.name)), params);
     }
-    for decl in &prog.structs {
-        for method in &decl.methods {
+    let typed = || {
+        let structs = prog.structs.iter().map(|decl| (&decl.name, &decl.methods));
+        structs.chain(prog.enums.iter().map(|decl| (&decl.name, &decl.methods)))
+    };
+    for (owner, methods) in typed() {
+        for method in methods {
             let params = method.params.iter().map(|param| emitter.written(&param.ty)).collect::<Res<Vec<Ty>>>()?;
-            emitter.sigs.insert(format!("f_{}_{}", cname(&decl.name), method.name), params);
+            emitter.sigs.insert(format!("f_{}_{}", cname(owner), method.name), params);
         }
     }
 
@@ -1559,9 +1566,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     for func in &prog.funcs {
         emitter.func(func, None, &mut protos, &mut bodies)?;
     }
-    for decl in &prog.structs {
-        for method in &decl.methods {
-            emitter.func(method, Some(&decl.name), &mut protos, &mut bodies)?;
+    for (owner, methods) in typed() {
+        for method in methods {
+            emitter.func(method, Some(owner), &mut protos, &mut bodies)?;
         }
     }
 
@@ -1817,6 +1824,15 @@ fn flat(mut ty: &Ty) -> &Ty {
         ty = inner;
     }
     ty
+}
+
+/// The C place of the value behind the borrows and pointers at `place`, and its type.
+fn behind<'t>(place: &str, ty: &'t Ty) -> (String, &'t Ty) {
+    let (mut at, mut ty) = (place.to_string(), flat(ty));
+    while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Ptr(inner) = ty {
+        (at, ty) = (format!("(*{at})"), flat(inner));
+    }
+    (at, ty)
 }
 
 /// `read string`: the one borrow that is not a plain pointer.
@@ -2665,9 +2681,13 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// Whether a struct wrote this method itself.
+    /// Whether a struct or an enum wrote this method itself.
     fn own_method(&self, owner: &str, method: &str) -> bool {
-        self.structs[owner].methods.iter().any(|func| func.name == method)
+        let methods = match self.structs.get(owner) {
+            Some(decl) => &decl.methods,
+            None => &self.enums[owner].methods,
+        };
+        methods.iter().any(|func| func.name == method)
     }
 
     /// The helper that writes a value of this type as text into a `Formatter`, written once:
@@ -2706,7 +2726,7 @@ impl<'a> Emitter<'a> {
                 let _ = write!(body, "if (v->has) {}(out, &v->value); else sg_put(out, \"null\", 4);", self.shower(inner, span)?);
             }
             Ty::Nullable(_) => unreachable!("a `T*?` has the name of the `T*`"),
-            Ty::Struct(owner) if self.own_method(owner, "format") => {
+            Ty::Struct(owner) | Ty::Enum(owner) if self.own_method(owner, "format") => {
                 let _ = write!(body, "f_{}_format(({ctype}*)v, out);", cname(owner));
             }
             Ty::Struct(owner) => {
@@ -2832,7 +2852,7 @@ impl<'a> Emitter<'a> {
                 let _ = write!(body, "return a->has == b->has && (!a->has || {}(&a->value, &b->value));", self.equaler(inner, span)?);
             }
             Ty::Nullable(_) => unreachable!("a `T*?` has the name of the `T*`"),
-            Ty::Struct(owner) if self.own_method(owner, "equals") => {
+            Ty::Struct(owner) | Ty::Enum(owner) if self.own_method(owner, "equals") => {
                 let _ = write!(body, "return f_{}_equals(({ctype}*)a, ({ctype}*)b);", cname(owner));
             }
             Ty::Struct(owner) => {
@@ -3005,7 +3025,7 @@ impl<'a> Emitter<'a> {
         match (op, ty) {
             (BinOp::Eq, _) => Ok(format!("{}({l}, {r})", self.equaler(ty, span)?)),
             (BinOp::Ne, _) => Ok(format!("(!{}({l}, {r}))", self.equaler(ty, span)?)),
-            (_, Ty::Struct(owner)) if self.own_method(owner, "compare") => Ok(format!("(f_{}_compare({l}, {r}) {} 0)", cname(owner), op.symbol())),
+            (_, Ty::Struct(owner) | Ty::Enum(owner)) if self.own_method(owner, "compare") => Ok(format!("(f_{}_compare({l}, {r}) {} 0)", cname(owner), op.symbol())),
             _ => Err(not_yet(span, &format!("`{}` on `{ty}`", op.symbol()))),
         }
     }
@@ -3233,7 +3253,7 @@ impl<'a> Emitter<'a> {
             Ty::Int(_) | Ty::Char => format!("{held} x = *(const {held}*)a, y = *(const {held}*)b; return (x > y) - (x < y);"),
             Ty::Float(_) => format!("return sg_fcmp(*(const {held}*)a, *(const {held}*)b);"),
             Ty::Str => "return sg_cmp(sg_view((const sg_string*)a), sg_view((const sg_string*)b));".to_string(),
-            Ty::Struct(owner) if self.own_method(owner, "compare") => format!("return f_{}_compare(({held}*)a, ({held}*)b);", cname(owner)),
+            Ty::Struct(owner) | Ty::Enum(owner) if self.own_method(owner, "compare") => format!("return f_{}_compare(({held}*)a, ({held}*)b);", cname(owner)),
             _ => return Err(not_yet(span, &format!("putting the items of a `{holder}` in order"))),
         };
         let _ = writeln!(self.glue, "static int {helper}(const void* a, const void* b) {{ {compare} }}");
@@ -3432,7 +3452,10 @@ impl<'a> Emitter<'a> {
         let mut params = Vec::new();
         let mut scope = streams();
         if let (Some(this), Some(owner)) = (func.this, owner) {
-            let owner_ty = Ty::Struct(owner.to_string());
+            let owner_ty = match self.structs.contains_key(owner) {
+                true => Ty::Struct(owner.to_string()),
+                false => Ty::Enum(owner.to_string()),
+            };
             let ty = match this {
                 This::Value => owner_ty,
                 This::Read => Ty::Read(Box::new(owner_ty)),
@@ -3983,32 +4006,134 @@ impl<'a> Emitter<'a> {
         self.variant_test(cond)
     }
 
-    /// `x is Circle(r)`: a test on the tag. The names are borrows of what the variant carries.
+    /// `x is Circle(r)`: a test on the tag, and on what the variant carries where patterns
+    /// are written inside. The names are borrows of what the variant carries.
     fn variant_test(&mut self, expr: &'a Expr) -> Res<(String, Vec<(Local, String)>)> {
         let ExprKind::IsVariant { expr: subject, negated, pattern, by_ref } = &expr.kind else {
             unreachable!("only called for an `is` test");
         };
-        let PatternKind::Variant { index, args, .. } = &pattern.kind else {
-            unreachable!("`is` only tests for a variant");
-        };
-        let mut place = self.look(subject)?;
-        let mut ty = subject.ty.strip_borrow();
-        while let Ty::Ptr(inner) = ty {
-            place = format!("(*{place})");
-            ty = inner;
+        let place = self.look(subject)?;
+        let ty = subject.ty.strip_borrow();
+        if self.variants(behind("", ty).1, subject.span)?.is_none() {
+            return Err(not_yet(expr.span, &format!("`is` on `{ty}`")));
         }
-        let Some(variants) = self.variants(ty, subject.span)? else { return Err(not_yet(expr.span, &format!("`is` on `{ty}`"))) };
+        let test = self.pattern_test(pattern, &place, ty, subject.span)?.expect("`is` names a variant");
         let mut names = Vec::new();
-        for (position, (name, _)) in args.iter().flatten().enumerate() {
-            let Some(name) = name else { continue };
-            let (field, held, span) = variants[*index][position].clone();
-            let held = Box::new(held);
-            let ty = if *by_ref { Ty::Ref(held) } else { Ty::Read(held) };
-            let at = format!("{place}.u.v{index}.m_{field}");
-            names.push(self.borrowed_name(name, ty, &at, span)?);
+        let mode = if *by_ref { Mode::Ref } else { Mode::Read };
+        self.take_apart(pattern, &place, ty, Some(mode), &mut names, &mut Vec::new())?;
+        Ok((if *negated { format!("(!{test})") } else { test }, names))
+    }
+
+    /// The C test that the value at `place`, of type `ty`, matches the pattern; `None` when
+    /// every value does. A variant is tested by its tag, then what it carries, left to right.
+    fn pattern_test(&mut self, pattern: &Pattern, place: &str, ty: &Ty, span: Span) -> Res<Option<String>> {
+        Ok(match &pattern.kind {
+            PatternKind::Wildcard | PatternKind::Bind(_) => None,
+            PatternKind::Int(wanted) => {
+                let (at, core) = behind(place, ty);
+                let int = match core {
+                    Ty::Int(int) => *int,
+                    // A character is tested by its code.
+                    _ => IntTy::Uint,
+                };
+                Some(format!("({at} == {})", int_literal(*wanted, int)))
+            }
+            PatternKind::Char(_) => unreachable!("the checker turns a character into a number"),
+            PatternKind::Str(text) => {
+                let view = match flat(ty) {
+                    _ if is_text_view(ty) => place.to_string(),
+                    Ty::Ref(_) => format!("sg_view({place})"),
+                    _ => format!("sg_view(&{place})"),
+                };
+                Some(format!("sg_eq({view}, SG_STR({}, {}))", c_string(text), text.len()))
+            }
+            PatternKind::Variant { index, args, .. } => {
+                let (at, core) = behind(place, ty);
+                let fields = self.variants(core, span)?.expect("the checker allows a variant only for an enum")[*index].clone();
+                let mut tests = vec![format!("{at}.tag == {index}")];
+                for (arg, (field, ty, span)) in args.iter().flatten().zip(&fields) {
+                    if let Some(test) = self.pattern_test(arg, &format!("{at}.u.v{index}.m_{field}"), ty, *span)? {
+                        tests.push(test);
+                    }
+                }
+                Some(match tests.len() {
+                    1 => format!("({})", tests[0]),
+                    _ => format!("({})", tests.join(" && ")),
+                })
+            }
+        })
+    }
+
+    /// What a chosen arm does with the value at `place`, of type `ty`: the names of the
+    /// pattern, each with the C line that declares it (not in scope yet), and for a value that
+    /// is owned (`mode` is `None`) the lines that drop what the pattern skips and give back the
+    /// boxes it looked into. With `mode` the names borrow.
+    fn take_apart(&mut self, pattern: &Pattern, place: &str, ty: &Ty, mode: Option<Mode>, names: &mut Vec<(Local, String)>, chosen: &mut Vec<String>) -> Res<()> {
+        match &pattern.kind {
+            PatternKind::Bind(name) => {
+                let span = pattern.span;
+                match mode {
+                    None => {
+                        let ctype = self.ctype(ty, span)?;
+                        self.temps += 1;
+                        let cname = format!("v_{name}_{}", self.temps);
+                        let line = format!("{ctype} {cname} = {place};");
+                        names.push((Local { name: name.clone(), cname, ty: ty.clone(), gone: false, drop: None }, line));
+                    }
+                    Some(mode) => {
+                        let held = Box::new(ty.clone());
+                        let ty = if mode == Mode::Ref { Ty::Ref(held) } else { Ty::Read(held) };
+                        names.push(self.borrowed_name(name, ty, place, span)?);
+                    }
+                }
+            }
+            PatternKind::Wildcard | PatternKind::Int(_) | PatternKind::Char(_) | PatternKind::Str(_) => {
+                if mode.is_none() && self.droppable(ty) {
+                    chosen.push(self.drop_of(ty, place));
+                }
+            }
+            PatternKind::Variant { index, args, .. } => {
+                // Through a borrow the names borrow too; `read` anywhere makes them `read`.
+                let mut inner_mode = mode;
+                let mut layer = flat(ty);
+                let mut boxes = Vec::new();
+                let mut at = place.to_string();
+                loop {
+                    layer = match layer {
+                        Ty::Read(inner) => {
+                            inner_mode = Some(Mode::Read);
+                            flat(inner)
+                        }
+                        Ty::Ref(inner) => {
+                            inner_mode = inner_mode.or(Some(Mode::Ref));
+                            flat(inner)
+                        }
+                        Ty::Ptr(inner) => {
+                            boxes.push(at.clone());
+                            flat(inner)
+                        }
+                        _ => break,
+                    };
+                    at = format!("(*{at})");
+                }
+                let fields = self.variants(layer, pattern.span)?.expect("the checker allows a variant only for an enum")[*index].clone();
+                for (position, (field, ty, _)) in fields.iter().enumerate() {
+                    let value = format!("{at}.u.v{index}.m_{field}");
+                    match args.as_ref().map(|args| &args[position]) {
+                        Some(arg) => self.take_apart(arg, &value, ty, inner_mode, names, chosen)?,
+                        None if inner_mode.is_none() && self.droppable(ty) => chosen.push(self.drop_of(ty, &value)),
+                        None => {}
+                    }
+                }
+                // An owned box that was looked into is given back, after what it held.
+                if inner_mode.is_none() {
+                    for held in boxes.iter().rev() {
+                        chosen.push(format!("free({held});"));
+                    }
+                }
+            }
         }
-        let op = if *negated { "!=" } else { "==" };
-        Ok((format!("({place}.tag {op} {index})"), names))
+        Ok(())
     }
 
     /// A name that borrows what is at `at`, and the C line that declares it. The name is not
@@ -4061,23 +4186,11 @@ impl<'a> Emitter<'a> {
         while let Ty::Ptr(behind) = core {
             (core, boxes) = (behind, boxes + 1);
         }
-        let number = match core {
-            Ty::Int(ty) => Some((if subject.ty.is_borrow() { format!("(*{held})") } else { held.clone() }, *ty)),
-            // A character is tested by its code.
-            Ty::Char => Some((if subject.ty.is_borrow() { format!("(*{held})") } else { held.clone() }, IntTy::Uint)),
-            _ => None,
-        };
+        let literal = matches!(core, Ty::Int(_) | Ty::Char | Ty::Str);
         let variants = self.variants(core, subject.span)?;
-        if (number.is_none() && variants.is_none()) || (number.is_some() && boxes > 0) {
+        if (!literal && variants.is_none()) || (literal && boxes > 0) || boxes > 1 {
             return Err(not_yet(subject.span, &format!("a `match` on `{}`", subject.ty)));
         }
-        // The enum as C reaches it: through a pointer in every case.
-        let at = match (*borrowed, boxes) {
-            (true, 0) | (false, 1) => held.clone(),
-            (true, 1) => format!("(*{held})"),
-            (false, 0) => format!("(&{held})"),
-            _ => return Err(not_yet(subject.span, &format!("a `match` on `{}`", subject.ty))),
-        };
         // `read` if the value is reached through a `read` anywhere, otherwise `ref`.
         let mode = match (*borrowed, &subject.ty) {
             (false, _) => None,
@@ -4089,11 +4202,7 @@ impl<'a> Emitter<'a> {
         let end = format!("{held}_end");
         for (position, arm) in arms.iter().enumerate() {
             let last = position + 1 == arms.len();
-            let test = match (&arm.pattern.kind, &number) {
-                (PatternKind::Variant { index, .. }, _) => Some(format!("{at}->tag == {index}")),
-                (PatternKind::Int(wanted), Some((number, ty))) => Some(format!("{number} == {}", int_literal(*wanted, *ty))),
-                _ => None,
-            };
+            let test = self.pattern_test(&arm.pattern, &held, &subject.ty, subject.span)?;
             // Every value has an arm (the checker saw to it), so the last one needs no test.
             let test = test.filter(|_| !(last && arm.guard.is_none()));
             let _ = match (&test, guarded || position == 0) {
@@ -4115,33 +4224,14 @@ impl<'a> Emitter<'a> {
                     let cname = self.declare(name, subject.ty.clone());
                     let _ = writeln!(out, "{body_pad}{ctype} {cname} = {held};");
                 }
-                PatternKind::Wildcard if !*borrowed && self.droppable(&subject.ty) => chosen.push(self.drop_of(&subject.ty, &held)),
-                PatternKind::Variant { index, args, .. } => {
-                    let fields = &variants.as_ref().expect("the checker allows a variant only for an enum")[*index];
-                    for (place, (field, ty, span)) in fields.iter().cloned().enumerate() {
-                        let value = format!("{at}->u.v{index}.m_{field}");
-                        let name = args.as_ref().and_then(|args| args[place].0.as_ref());
-                        match (name, mode) {
-                            (Some(name), None) => {
-                                let ctype = self.ctype(&ty, span)?;
-                                let cname = self.declare(name, ty);
-                                let _ = writeln!(out, "{body_pad}{ctype} {cname} = {value};");
-                            }
-                            (Some(name), Some(mode)) => {
-                                let ty = if mode == Mode::Ref { Ty::Ref(Box::new(ty)) } else { Ty::Read(Box::new(ty)) };
-                                let (local, line) = self.borrowed_name(name, ty, &value, span)?;
-                                let _ = writeln!(out, "{body_pad}{line}");
-                                self.scopes.last_mut().expect("an open scope").push(local);
-                            }
-                            (None, None) if self.droppable(&ty) => chosen.push(self.drop_of(&ty, &value)),
-                            (None, _) => {}
-                        }
-                    }
-                    if !*borrowed && boxes == 1 {
-                        chosen.push(format!("free({held});"));
+                _ => {
+                    let mut names = Vec::new();
+                    self.take_apart(&arm.pattern, &held, &subject.ty, mode, &mut names, &mut chosen)?;
+                    for (local, line) in names {
+                        let _ = writeln!(out, "{body_pad}{line}");
+                        self.scopes.last_mut().expect("an open scope").push(local);
                     }
                 }
-                _ => {}
             }
 
             if let Some(guard) = &arm.guard {

@@ -1,0 +1,6 @@
+use stock
+
+void main() {
+    var red = Color.Red
+    print(red.channel(16))
+}

@@ -1,0 +1,9 @@
+enum Shape {
+    Circle(int radius)
+    int area(read this) {
+        return 1
+    }
+}
+void main() {
+    print(Shape.area())
+}

@@ -1,0 +1,4 @@
+error: this `match` looks at a `int`, and a text is not a number
+  --> error_match_number_text.sg:4:9
+ 4 |         "3" => print("three")
+   |         ^^^

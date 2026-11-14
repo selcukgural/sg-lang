@@ -1,0 +1,22 @@
+enum Expr {
+    Number(int value)
+    Name(string text)
+    Add(Expr* left, Expr* right)
+    Empty
+}
+enum Slot {
+    Full(Expr item)
+    Maybe(Expr? item)
+    Nothing
+}
+
+int f(read Slot s) {
+    return match s {
+        Full(Empty) => 1
+        Full(Number(n)) => n
+        Full(Name(_)) => 2
+        Nothing => 0
+        Maybe(_) => 0
+    }
+}
+void main() {}

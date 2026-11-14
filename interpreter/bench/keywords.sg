@@ -1,0 +1,40 @@
+// Words sorted by kind with a `match` on text. A million words, each picked from a table of
+// keywords and names, are gone over forty times. Each arm of the `match` is a test of the
+// length and then of the bytes, which is what the C program writes by hand.
+int kind(read string word) {
+    return match word {
+        "if" => 1
+        "else" => 2
+        "while" => 3
+        "for" => 4
+        "return" => 5
+        "match" => 6
+        "struct" => 7
+        "enum" => 8
+        "var" => 9
+        "true" => 10
+        "false" => 11
+        "null" => 12
+        _ => 0
+    }
+}
+
+void main() {
+    var table = List<string> {
+        "if", "else", "while", "for", "return", "match", "struct", "enum", "var", "true", "false", "null",
+        "value", "count", "index", "name", "total", "result", "left", "right", "item", "next", "size", "word"
+    }
+    var words = List<string>()
+    long seed = 7
+    for i in 0..1000000 {
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        words.add(table[(nint)(seed % 24)].clone())
+    }
+    long total = 0
+    for round in 0..40 {
+        for word in read words {
+            total += kind(word) + round
+        }
+    }
+    print(total)
+}

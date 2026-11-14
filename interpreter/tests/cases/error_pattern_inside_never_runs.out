@@ -1,0 +1,4 @@
+error: this arm can never run: the arms above take every value it matches
+  --> error_pattern_inside_never_runs.sg:17:9
+ 17 |         Add(Number(c), Number(d)) => c
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^

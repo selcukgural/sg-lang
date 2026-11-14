@@ -1,0 +1,6 @@
+12
+Negate(Negate(Number(4)))
+Name("x")
+Number(0)
+Number(-5)
+Name("y")

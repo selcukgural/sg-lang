@@ -1,4 +1,5 @@
-error: `Level` is `Comparable`, so it needs a `compare` method, and methods on enums are not in the interpreter yet
+error: `Level` is `Comparable`, so it needs a `compare` method
   --> error_comparable_enum.sg:1:6
  1 | enum Level : Comparable {
    |      ^^^^^
+  hint: `int compare(read this, read Level other)`: negative if this one comes first, 0 if they are equal

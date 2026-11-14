@@ -673,6 +673,35 @@ fn enum_parts(mut value: Value) -> (usize, Rc<Vec<Cell>>) {
     }
 }
 
+/// Whether the value in `held` matches the pattern, and what the names in it take: what the
+/// value holds there, or with `borrowed` a borrow of it. Through a borrow the names borrow.
+fn fits(pattern: &Pattern, held: &Cell, borrowed: bool, binds: &mut Vec<(String, Value)>) -> bool {
+    match &pattern.kind {
+        PatternKind::Wildcard => true,
+        PatternKind::Bind(name) => {
+            let bound = if borrowed { Value::Borrow(held.clone()) } else { held.borrow().clone() };
+            binds.push((name.clone(), bound));
+            true
+        }
+        PatternKind::Int(wanted) => match strip(held.borrow().clone()) {
+            Value::Int(_, number) => number == *wanted,
+            Value::Char(value) => value as i128 == *wanted,
+            _ => unreachable!("the checker lets a number match only a number or a character"),
+        },
+        PatternKind::Char(_) => unreachable!("the checker turns a character into a number"),
+        PatternKind::Str(text) => match strip(held.borrow().clone()) {
+            Value::Str(found) => *found == *text,
+            _ => unreachable!("the checker lets a text match only a text"),
+        },
+        PatternKind::Variant { index, args, .. } => {
+            let value = held.borrow().clone();
+            let borrowed = borrowed || matches!(value, Value::Borrow(_));
+            let (found, fields) = enum_parts(value);
+            found == *index && args.iter().flatten().zip(fields.iter()).all(|(arg, field)| fits(arg, field, borrowed, binds))
+        }
+    }
+}
+
 /// Variables of one function call.
 struct Frame {
     scopes: Vec<HashMap<String, Cell>>,
@@ -695,6 +724,9 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
     let funcs = prog.funcs.iter().map(|func| (func.name.as_str(), func)).collect();
     let mut methods: HashMap<&str, HashMap<&str, &Func>> = HashMap::new();
     for decl in &prog.structs {
+        methods.insert(&decl.name, decl.methods.iter().map(|method| (method.name.as_str(), method)).collect());
+    }
+    for decl in &prog.enums {
         methods.insert(&decl.name, decl.methods.iter().map(|method| (method.name.as_str(), method)).collect());
     }
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
@@ -736,6 +768,9 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let funcs = prog.funcs.iter().map(|func| (func.name.as_str(), func)).collect();
     let mut methods: HashMap<&str, HashMap<&str, &Func>> = HashMap::new();
     for decl in &prog.structs {
+        methods.insert(&decl.name, decl.methods.iter().map(|method| (method.name.as_str(), method)).collect());
+    }
+    for decl in &prog.enums {
         methods.insert(&decl.name, decl.methods.iter().map(|method| (method.name.as_str(), method)).collect());
     }
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
@@ -1282,55 +1317,37 @@ impl<'a> Interp<'a> {
                 _ => unreachable!("the checker only unboxes a borrow"),
             },
             ExprKind::IsVariant { expr: inner, negated, pattern, .. } => {
-                let (index, fields) = enum_parts(self.expr(inner, frame)?);
-                let PatternKind::Variant { index: wanted, args, .. } = &pattern.kind else {
-                    unreachable!("`is` only tests for a variant")
-                };
-                let found = index == *wanted;
+                let value = cell(self.expr(inner, frame)?);
+                // `is` only looks, so the names borrow.
+                let mut binds = Vec::new();
+                let found = fits(pattern, &value, true, &mut binds);
                 if found {
-                    // `is` only looks, so the names borrow.
-                    for ((name, _), field) in args.iter().flatten().zip(fields.iter()) {
-                        if let Some(name) = name {
-                            frame.scopes.last_mut().expect("an open scope").insert(name.clone(), cell(Value::Borrow(field.clone())));
-                        }
+                    for (name, bound) in binds {
+                        frame.scopes.last_mut().expect("an open scope").insert(name, cell(bound));
                     }
                 }
                 Ok(Value::Bool(found != *negated))
             }
             ExprKind::Match { subject, arms, borrowed } => {
                 let value = self.expr(subject, frame)?;
-                // A number is compared with the arms; an enum is taken apart.
-                let number = match strip(value.clone()) {
-                    Value::Int(_, number) => Some(number),
-                    Value::Char(value) => Some(value as i128),
-                    _ => None,
-                };
-                let (index, fields) = match number {
-                    Some(_) => (0, Rc::new(Vec::new())),
-                    None => enum_parts(value.clone()),
-                };
+                let held = cell(value.clone());
                 let depth = frame.scopes.len();
                 for arm in arms {
                     frame.scopes.push(HashMap::new());
+                    // `var other` takes the value as it was given; any other pattern looks inside.
+                    let mut binds = Vec::new();
                     let fits = match &arm.pattern.kind {
-                        PatternKind::Wildcard => true,
                         PatternKind::Bind(name) => {
-                            frame.declare(name, value.clone());
+                            binds.push((name.clone(), value.clone()));
                             true
                         }
-                        PatternKind::Int(wanted) => number == Some(*wanted),
-                        PatternKind::Char(_) => unreachable!("the checker turns a character into a number"),
-                        PatternKind::Variant { index: wanted, args, .. } => {
-                            if index == *wanted {
-                                for ((name, _), field) in args.iter().flatten().zip(fields.iter()) {
-                                    let Some(name) = name else { continue };
-                                    let bound = if *borrowed { Value::Borrow(field.clone()) } else { field.borrow().clone() };
-                                    frame.declare(name, bound);
-                                }
-                            }
-                            index == *wanted
-                        }
+                        _ => fits(&arm.pattern, &held, *borrowed, &mut binds),
                     };
+                    if fits {
+                        for (name, bound) in binds {
+                            frame.declare(&name, bound);
+                        }
+                    }
                     let chosen = fits
                         && match &arm.guard {
                             Some(guard) => self.condition(guard, frame)?,
@@ -1667,12 +1684,7 @@ impl<'a> Interp<'a> {
             Value::Null => Ok("null".to_string()),
             Value::Void => Ok(String::new()),
             Value::Struct(name, fields) => {
-                if let Some(format) = self.methods.get(&**name).and_then(|methods| methods.get("format")).copied() {
-                    let written = Rc::new(RefCell::new(String::new()));
-                    let this = Value::Borrow(cell(value.clone()));
-                    let formatter = Value::Borrow(cell(Value::Formatter(written.clone())));
-                    self.call(format, Some(this), vec![formatter], span)?;
-                    let text = written.borrow().clone();
+                if let Some(text) = self.own_format(name, value, span)? {
                     return Ok(text);
                 }
                 let decl = self.structs[&**name];
@@ -1681,6 +1693,9 @@ impl<'a> Interp<'a> {
                 Ok(format!("{} {{ {} }}", short_name(name), named.join(", ")))
             }
             Value::Enum(name, index, fields) => {
+                if let Some(text) = self.own_format(name, value, span)? {
+                    return Ok(text);
+                }
                 let word = match &**name {
                     "Result" => ["Ok", "Error"][*index],
                     _ => self.enums[&**name].variants[*index].name.as_str(),
@@ -1737,10 +1752,21 @@ impl<'a> Interp<'a> {
         }))
     }
 
-    /// The method of a struct that `==`, `<`, `indexOf` or `sort` runs, if the struct wrote
-    /// its own: called with both values lent.
+    /// The text a struct or an enum writes with its own `format`, if it wrote one.
+    fn own_format(&mut self, name: &str, value: &Value, span: Span) -> Res<Option<String>> {
+        let Some(format) = self.methods.get(name).and_then(|methods| methods.get("format")).copied() else { return Ok(None) };
+        let written = Rc::new(RefCell::new(String::new()));
+        let this = Value::Borrow(cell(value.clone()));
+        let formatter = Value::Borrow(cell(Value::Formatter(written.clone())));
+        self.call(format, Some(this), vec![formatter], span)?;
+        let text = written.borrow().clone();
+        Ok(Some(text))
+    }
+
+    /// The method of a struct or an enum that `==`, `<`, `indexOf` or `sort` runs, if the
+    /// type wrote its own: called with both values lent.
     fn compared(&mut self, method: &str, left: &Value, right: &Value, span: Span) -> Res<Option<Value>> {
-        let Value::Struct(name, _) = left else { return Ok(None) };
+        let (Value::Struct(name, _) | Value::Enum(name, ..)) = left else { return Ok(None) };
         let Some(func) = self.methods.get(&**name).and_then(|methods| methods.get(method)).copied() else { return Ok(None) };
         let this = Value::Borrow(cell(left.clone()));
         let other = Value::Borrow(cell(right.clone()));
@@ -2536,7 +2562,7 @@ fn float_method(ty: FloatTy, value: f64, name: &str) -> Value {
 
 /// A character inside another value, or in an `assert` message: in single quotes, with the
 /// escapes a character constant has. Compiled code writes it the same way.
-fn quoted_char(value: char) -> String {
+pub fn quoted_char(value: char) -> String {
     match value {
         '\'' => "'\\''".to_string(),
         '\\' => "'\\\\'".to_string(),

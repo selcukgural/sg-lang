@@ -3,6 +3,6 @@ error: `Shelf` exists in the `stock` module but is not public
  3 | void show(read Shelf shelf) {
    |           ^^^^^^^^^^
   it is defined here, without `public`:
-  --> stock/product.sg:34:8
- 34 | struct Shelf {
+  --> stock/product.sg:51:8
+ 51 | struct Shelf {
     |        ^^^^^

@@ -24,6 +24,23 @@ public enum Color : Formattable, Copyable {
     Red
     Green
     Custom(int rgb)
+
+    // A method of a `public` enum is seen from outside only when it is `public` too.
+    public int rgb(read this) {
+        return match this {
+            Red => this.channel(16)
+            Green => this.channel(8)
+            Custom(rgb) => rgb
+        }
+    }
+
+    int channel(read this, int shift) {
+        return 255 << shift
+    }
+
+    public Color gray() {
+        return Color.Custom(0x808080)
+    }
 }
 
 public struct Point : Copyable, Formattable {

@@ -1,0 +1,5 @@
+error: `unit` does not take `this`, so it is called on the type
+  --> error_enum_function_on_value.sg:9:13
+ 9 |     print(s.unit())
+   |             ^^^^
+  hint: `Shape.unit(...)`

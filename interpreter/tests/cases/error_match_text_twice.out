@@ -1,0 +1,4 @@
+error: this arm can never run: `"a"` is already handled above
+  --> error_match_text_twice.sg:16:9
+ 16 |         "a" => 2
+    |         ^^^

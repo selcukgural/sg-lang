@@ -1,0 +1,5 @@
+error: `area` works on a value, not on the type `Shape`
+  --> error_enum_method_on_type.sg:8:17
+ 8 |     print(Shape.area())
+   |                 ^^^^
+  hint: call it on a `Shape` value: `value.area(...)`

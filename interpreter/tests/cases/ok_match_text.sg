@@ -1,0 +1,81 @@
+enum Token<from source> {
+    Word(read string text)
+    Number(int value)
+    End
+}
+
+enum Inner {
+    Number(int value)
+    Other
+}
+
+enum Pair {
+    Two(Inner* first, int count)
+    None
+}
+
+int keyword(read string word) {
+    return match word {
+        "if" => 1
+        "else" => 2
+        "" => -1
+        _ => 0
+    }
+}
+
+void bump(ref Pair p) {
+    match p {
+        Two(Number(v), count) => {
+            v += 10
+            count += 1
+        }
+        _ => {}
+    }
+}
+
+void main(List<string> args) {
+    print(keyword("if"))
+    print(keyword("else"))
+    print(keyword("elsewhere"))
+    print(keyword(""))
+    var line = "let x = if"
+    for word in line.split(' ') {
+        var kind = match word {
+            "let" => "keyword"
+            "if" => "keyword"
+            "=" => "operator"
+            var other => $"name {other}".toString()
+        }
+        print(kind)
+    }
+    var owned = "stop"
+    match owned {
+        "go" => print("going")
+        "stop" => print("stopping")
+        _ => print("?")
+    }
+    var tokens = List<Token>()
+    tokens.add(Token.Word(line[0..3]))
+    tokens.add(Token.Number(7))
+    tokens.add(Token.End)
+    for t in read tokens {
+        match t {
+            Word("let") => print("let!")
+            Word(text) => print(text)
+            Number(0) => print("zero")
+            Number(n) => print(n)
+            End => print("end")
+        }
+    }
+    var p = Pair.Two(new Inner.Number(1), 0)
+    bump(ref p)
+    if p is Two(Number(v), c) {
+        print($"{v} {c}")
+    }
+    var c = 'x'
+    var said = match c {
+        'x' => "ex"
+        _ => "other"
+    }
+    print(said)
+}

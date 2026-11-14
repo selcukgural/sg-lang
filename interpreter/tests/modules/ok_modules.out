@@ -7,6 +7,8 @@ Point { x = 2, y = 3 }
 255
 Red
 Custom(7)
+65280
+8421504
 Line { name = "K-1", total = 5250 }
 5
 Point { column = 4 }

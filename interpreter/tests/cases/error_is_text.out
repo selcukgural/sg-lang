@@ -1,0 +1,5 @@
+error: `is` needs a value of an enum, found `string`
+  --> error_is_text.sg:3:8
+ 3 |     if word is If {
+   |        ^^^^
+  hint: a text is compared with `==`, or matched with `match`: `match word { "if" => ... }`

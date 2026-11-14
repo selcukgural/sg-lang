@@ -1,0 +1,19 @@
+enum Expr {
+    Number(int value)
+    Name(string text)
+    Add(Expr* left, Expr* right)
+    Empty
+}
+enum Slot {
+    Full(Expr item)
+    Maybe(Expr? item)
+    Nothing
+}
+
+int f(read string s) {
+    return match s {
+        $"a" => 1
+        _ => 0
+    }
+}
+void main() {}

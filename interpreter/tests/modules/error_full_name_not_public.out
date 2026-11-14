@@ -3,6 +3,6 @@ error: `Shelf` exists in the `stock` module but is not public
  2 |     var shelf = stock.Shelf { row = 1 }
    |                 ^^^^^^^^^^^^^^^^^^^^^^^
   it is defined here, without `public`:
-  --> stock/product.sg:34:8
- 34 | struct Shelf {
+  --> stock/product.sg:51:8
+ 51 | struct Shelf {
     |        ^^^^^

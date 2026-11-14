@@ -1,0 +1,10 @@
+enum Shape {
+    Circle(int radius)
+    Shape unit() {
+        return Shape.Circle(1)
+    }
+}
+void main() {
+    var s = Shape.Circle(2)
+    print(s.unit())
+}

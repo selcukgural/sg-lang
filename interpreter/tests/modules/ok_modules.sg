@@ -30,6 +30,8 @@ void main() {
     }
     print(stock.Color.Red)
     print(stock.Color.Custom(7))
+    print(Color.Green.rgb())
+    print(stock.Color.gray().rgb())
 
     // The full name works without `use`.
     var line = billing.lineFor(read products[0], 3)

@@ -1,0 +1,5 @@
+error: this is not the `compare` that `Comparable` asks for
+  --> error_enum_compare_wrong.sg:4:9
+ 4 |     int compare(read this, read int other) {
+   |         ^^^^^^^
+  hint: `int compare(read this, read Level other)`

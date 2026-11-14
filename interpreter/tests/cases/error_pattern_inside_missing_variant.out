@@ -1,0 +1,5 @@
+error: this `match` does not handle `Full(Add(_, _))`
+  --> error_pattern_inside_missing_variant.sg:14:18
+ 14 |     return match s {
+    |                  ^
+  hint: add an arm for it, or `_ => ...` for everything else

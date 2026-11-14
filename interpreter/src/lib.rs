@@ -6,6 +6,7 @@ pub mod ast;
 pub mod check;
 pub mod diag;
 pub mod emit_c;
+pub mod exhaust;
 pub mod interp;
 pub mod lexer;
 pub mod parser;

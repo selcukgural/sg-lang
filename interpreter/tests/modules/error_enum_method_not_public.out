@@ -1,0 +1,4 @@
+error: `channel` is not public: it stays inside the `stock` module
+  --> error_enum_method_not_public.sg:5:15
+ 5 |     print(red.channel(16))
+   |               ^^^^^^^

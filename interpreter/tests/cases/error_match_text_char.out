@@ -1,0 +1,5 @@
+error: this `match` looks at a text, and a character is not one
+  --> error_match_text_char.sg:15:9
+ 15 |         'a' => 1
+    |         ^^^
+  hint: a text is written in double quotes: `"a"`

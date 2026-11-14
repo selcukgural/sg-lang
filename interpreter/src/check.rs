@@ -10,9 +10,11 @@
 //! Not checked yet: borrow lifetimes (`from`), and conflicts between a `ref` and other borrows.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::ast::*;
 use crate::diag::{nearest, Diag, Span};
+use crate::exhaust;
 use crate::types::{FloatTy, IntTy, TextIter, Ty};
 
 type Res<T> = Result<T, Diag>;
@@ -42,6 +44,8 @@ struct StructInfo {
 struct EnumInfo {
     /// Variants in declaration order, each with the fields it carries.
     variants: Vec<(String, Vec<(String, Ty)>)>,
+    /// Functions written in the enum body, with or without `this`.
+    methods: HashMap<String, FuncSig>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -304,7 +308,7 @@ fn number_error() -> EnumDecl {
         VariantDecl { name: "Invalid".to_string(), span: nowhere, fields: vec![position] },
         VariantDecl { name: "OutOfRange".to_string(), span: nowhere, fields: Vec::new() },
     ];
-    EnumDecl { public: true, name: NUMBER_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants }
+    EnumDecl { public: true, name: NUMBER_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants, methods: Vec::new() }
 }
 
 /// What reading or writing a file, or the input of the program, gives when it fails.
@@ -331,7 +335,7 @@ fn io_error() -> EnumDecl {
         variant("InvalidText", vec![field("long", "position")]),
         variant("Other", vec![field("int", "code")]),
     ];
-    EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants }
+    EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants, methods: Vec::new() }
 }
 
 #[derive(Clone, PartialEq)]
@@ -594,30 +598,8 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             }
             fields.push((field.name.clone(), resolve_type(&field.ty, &names, false)?));
         }
-        let mut methods: HashMap<String, FuncSig> = HashMap::new();
-        for method in &decl.methods {
-            if method.name == "replace" {
-                return Err(Diag::error(method.name_span, "`replace` is built in for every type and cannot be defined"));
-            }
-            if fields.iter().any(|(name, _)| *name == method.name) {
-                return Err(Diag::error(
-                    method.name_span,
-                    format!("`{}` is already a field of `{}`", method.name, decl.name),
-                ));
-            }
-            if methods.insert(method.name.clone(), func_sig(method, &names, Some(&decl.name))?).is_some() {
-                return Err(Diag::error(method.name_span, format!("method `{}` is defined twice", method.name)));
-            }
-            // The body of `Formattable`, when the struct writes its own.
-            if method.name == "format" && formattable.contains(&decl.name) {
-                let sig = &methods["format"];
-                let fits = sig.this == Some(This::Read) && sig.ret == Ty::Void && sig.params == [Ty::Ref(Box::new(Ty::Formatter))];
-                if !fits {
-                    return Err(Diag::error(method.name_span, "this is not the `format` that `Formattable` asks for")
-                        .hint("`void format(read this, ref Formatter f)`"));
-                }
-            }
-        }
+        let taken = fields.iter().map(|(name, _)| name.as_str());
+        let methods = type_methods(&decl.name, &decl.methods, taken, "a field", &names, &formattable)?;
         let open = decl.fields.iter().map(|field| field.public).collect();
         let readonly = decl.fields.iter().map(|field| field.readonly).collect();
         structs.insert(decl.name.clone(), StructInfo { fields, open, readonly, methods });
@@ -646,7 +628,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         if variants.is_empty() {
             return Err(Diag::error(decl.name_span, format!("enum `{}` has no variants, so it can never have a value", decl.name)));
         }
-        enums.insert(decl.name.clone(), EnumInfo { variants });
+        let taken = variants.iter().map(|(name, _)| name.as_str());
+        let methods = type_methods(&decl.name, &decl.methods, taken, "a variant", &names, &formattable)?;
+        enums.insert(decl.name.clone(), EnumInfo { variants, methods });
     }
 
     // What each type holds by value, to find a type that would have to contain itself.
@@ -693,82 +677,19 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     }
 
     // What a type promises after `:` must hold for everything it carries.
+    let sets = Promised { copyable: &copyable, formattable: &formattable, equatable: &equatable, keys: &names.keys, comparable: &comparable };
     for decl in &prog.structs {
         let info = &structs[&decl.name];
         let fields = || decl.fields.iter().zip(&info.fields);
-        if copyable.contains(&decl.name) {
-            all_copyable(&decl.name, fields(), &copyable)?;
-        }
-        if formattable.contains(&decl.name) && !info.methods.contains_key("format") {
-            all_formattable(&decl.name, fields(), &formattable)?;
-        }
-        let name = &decl.name;
-        let own = |method: &str| decl.methods.iter().find(|func| func.name == method);
-        // `equals` and `compare` look at this value and another one of the same type.
-        let takes_other = |method: &str| {
-            let sig = &info.methods[method];
-            sig.this == Some(This::Read) && sig.params == [Ty::Read(Box::new(Ty::Struct(name.clone())))]
-        };
-        if equatable.contains(name) {
-            match own("equals") {
-                Some(func) if !takes_other("equals") || info.methods["equals"].ret != Ty::Bool => {
-                    return Err(Diag::error(func.name_span, "this is not the `equals` that `Equatable` asks for")
-                        .hint(format!("`bool equals(read this, read {name} other)`")));
-                }
-                Some(_) => {}
-                None => all_have(name, fields(), "Equatable", &equatable)?,
-            }
-        }
-        if names.keys.contains(name) {
-            if !equatable.contains(name) {
-                return Err(Diag::error(decl.name_span, format!("`{name}` is `Hashable`, so it must be `Equatable` too: a key is found by its hash and then compared"))
-                    .hint(format!("`{name} : Equatable, Hashable`")));
-            }
-            if let Some(func) = own("hash").or_else(|| own("equals")) {
-                return Err(Diag::error(func.name_span, "a `Hashable` type with its own `equals` or `hash` is not in the interpreter yet")
-                    .note("leave both out: they are made from the fields"));
-            }
-            all_have(name, fields(), "Hashable", &names.keys)?;
-        }
-        if comparable.contains(name) {
-            match own("compare") {
-                None => {
-                    return Err(Diag::error(decl.name_span, format!("`{name}` is `Comparable`, so it needs a `compare` method"))
-                        .hint(format!("`int compare(read this, read {name} other)`: negative if this one comes first, 0 if they are equal")));
-                }
-                Some(func) if !takes_other("compare") || info.methods["compare"].ret != Ty::Int(IntTy::Int) => {
-                    return Err(Diag::error(func.name_span, "this is not the `compare` that `Comparable` asks for")
-                        .hint(format!("`int compare(read this, read {name} other)`")));
-                }
-                Some(_) => {}
-            }
-        }
+        promises(&decl.name, decl.name_span, Ty::Struct(decl.name.clone()), &decl.methods, &info.methods, fields, &sets)?;
     }
     for decl in &prog.enums {
+        let info = &enums[&decl.name];
         let fields = || {
             let written = decl.variants.iter().flat_map(|variant| &variant.fields);
-            written.zip(enums[&decl.name].variants.iter().flat_map(|(_, fields)| fields))
+            written.zip(info.variants.iter().flat_map(|(_, fields)| fields))
         };
-        if copyable.contains(&decl.name) {
-            all_copyable(&decl.name, fields(), &copyable)?;
-        }
-        if formattable.contains(&decl.name) {
-            all_formattable(&decl.name, fields(), &formattable)?;
-        }
-        let name = &decl.name;
-        if equatable.contains(name) {
-            all_have(name, fields(), "Equatable", &equatable)?;
-        }
-        if names.keys.contains(name) {
-            if !equatable.contains(name) {
-                return Err(Diag::error(decl.name_span, format!("`{name}` is `Hashable`, so it must be `Equatable` too: a key is found by its hash and then compared"))
-                    .hint(format!("`{name} : Equatable, Hashable`")));
-            }
-            all_have(name, fields(), "Hashable", &names.keys)?;
-        }
-        if comparable.contains(name) {
-            return Err(Diag::error(decl.name_span, format!("`{name}` is `Comparable`, so it needs a `compare` method, and methods on enums are not in the interpreter yet")));
-        }
+        promises(&decl.name, decl.name_span, Ty::Enum(decl.name.clone()), &decl.methods, &info.methods, fields, &sets)?;
     }
 
     let mut sigs: HashMap<String, FuncSig> = HashMap::new();
@@ -812,6 +733,12 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         let types = enums[&decl.name].variants.iter().flat_map(|(_, fields)| fields);
         for (field, (_, ty)) in decl.variants.iter().flat_map(|variant| &variant.fields).zip(types) {
             exposes(short_name(&decl.name), field.span, ty, &names)?;
+        }
+        for method in decl.methods.iter().filter(|method| method.public) {
+            let sig = &enums[&decl.name].methods[&method.name];
+            for ty in sig.params.iter().chain([&sig.ret]) {
+                exposes(&method.name, method.name_span, ty, &names)?;
+            }
         }
     }
 
@@ -883,7 +810,10 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             src,
         };
         if let (Some(this), Some(owner)) = (func.this, owner) {
-            let ty = Ty::Struct(owner.to_string());
+            let ty = match names.kinds[owner] {
+                TypeKind::Struct => Ty::Struct(owner.to_string()),
+                TypeKind::Enum => Ty::Enum(owner.to_string()),
+            };
             let ty = match this {
                 This::Value => ty,
                 This::Read => Ty::Read(Box::new(ty)),
@@ -925,6 +855,12 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         let owner = decl.name.as_str();
         for method in &mut decl.methods {
             body(method, &structs[owner].methods[&method.name], Some(owner))?;
+        }
+    }
+    for decl in &mut prog.enums {
+        let owner = decl.name.as_str();
+        for method in &mut decl.methods {
+            body(method, &enums[owner].methods[&method.name], Some(owner))?;
         }
     }
     if !tests {
@@ -1189,6 +1125,114 @@ fn not_a_key(span: Span, ty: &Ty, what: &str) -> Diag {
         _ => diag.note("integers, `bool`, `char`, `string` and the types written with `: Equatable, Hashable` are"),
     }
 }
+
+/// The functions written in the body of a struct or an enum. `taken` are the names of its
+/// fields or its variants, which a function cannot have.
+fn type_methods<'t>(
+    owner: &str,
+    written: &[Func],
+    taken: impl Iterator<Item = &'t str> + Clone,
+    what: &str,
+    names: &Names,
+    formattable: &HashSet<String>,
+) -> Res<HashMap<String, FuncSig>> {
+    let mut methods: HashMap<String, FuncSig> = HashMap::new();
+    for method in written {
+        if method.name == "replace" {
+            return Err(Diag::error(method.name_span, "`replace` is built in for every type and cannot be defined"));
+        }
+        if taken.clone().any(|name| name == method.name) {
+            return Err(Diag::error(method.name_span, format!("`{}` is already {what} of `{owner}`", method.name)));
+        }
+        if methods.insert(method.name.clone(), func_sig(method, names, Some(owner))?).is_some() {
+            return Err(Diag::error(method.name_span, format!("method `{}` is defined twice", method.name)));
+        }
+        // The body of `Formattable`, when the type writes its own.
+        if method.name == "format" && formattable.contains(owner) {
+            let sig = &methods["format"];
+            let fits = sig.this == Some(This::Read) && sig.ret == Ty::Void && sig.params == [Ty::Ref(Box::new(Ty::Formatter))];
+            if !fits {
+                return Err(Diag::error(method.name_span, "this is not the `format` that `Formattable` asks for")
+                    .hint("`void format(read this, ref Formatter f)`"));
+            }
+        }
+    }
+    Ok(methods)
+}
+
+/// The types that said each interface after `:`.
+struct Promised<'s> {
+    copyable: &'s HashSet<String>,
+    formattable: &'s HashSet<String>,
+    equatable: &'s HashSet<String>,
+    keys: &'s HashSet<String>,
+    comparable: &'s HashSet<String>,
+}
+
+/// What a struct or an enum promises after `:` holds for everything it carries, and the
+/// methods it writes itself for an interface (`format`, `equals`, `compare`) are the ones
+/// the interface asks for.
+fn promises<'d, I>(
+    name: &str,
+    name_span: Span,
+    this_ty: Ty,
+    written: &[Func],
+    methods: &HashMap<String, FuncSig>,
+    fields: impl Fn() -> I,
+    sets: &Promised,
+) -> Res<()>
+where
+    I: Iterator<Item = (&'d FieldDecl, &'d (String, Ty))>,
+{
+    if sets.copyable.contains(name) {
+        all_copyable(name, fields(), sets.copyable)?;
+    }
+    if sets.formattable.contains(name) && !methods.contains_key("format") {
+        all_formattable(name, fields(), sets.formattable)?;
+    }
+    let own = |method: &str| written.iter().find(|func| func.name == method);
+    // `equals` and `compare` look at this value and another one of the same type.
+    let takes_other = |method: &str| {
+        let sig = &methods[method];
+        sig.this == Some(This::Read) && sig.params == [Ty::Read(Box::new(this_ty.clone()))]
+    };
+    if sets.equatable.contains(name) {
+        match own("equals") {
+            Some(func) if !takes_other("equals") || methods["equals"].ret != Ty::Bool => {
+                return Err(Diag::error(func.name_span, "this is not the `equals` that `Equatable` asks for")
+                    .hint(format!("`bool equals(read this, read {name} other)`")));
+            }
+            Some(_) => {}
+            None => all_have(name, fields(), "Equatable", sets.equatable)?,
+        }
+    }
+    if sets.keys.contains(name) {
+        if !sets.equatable.contains(name) {
+            return Err(Diag::error(name_span, format!("`{name}` is `Hashable`, so it must be `Equatable` too: a key is found by its hash and then compared"))
+                .hint(format!("`{name} : Equatable, Hashable`")));
+        }
+        if let Some(func) = own("hash").or_else(|| own("equals")) {
+            return Err(Diag::error(func.name_span, "a `Hashable` type with its own `equals` or `hash` is not in the interpreter yet")
+                .note("leave both out: they are made from the fields"));
+        }
+        all_have(name, fields(), "Hashable", sets.keys)?;
+    }
+    if sets.comparable.contains(name) {
+        match own("compare") {
+            None => {
+                return Err(Diag::error(name_span, format!("`{name}` is `Comparable`, so it needs a `compare` method"))
+                    .hint(format!("`int compare(read this, read {name} other)`: negative if this one comes first, 0 if they are equal")));
+            }
+            Some(func) if !takes_other("compare") || methods["compare"].ret != Ty::Int(IntTy::Int) => {
+                return Err(Diag::error(func.name_span, "this is not the `compare` that `Comparable` asks for")
+                    .hint(format!("`int compare(read this, read {name} other)`")));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
 
 /// `: Copyable` holds only if everything the type carries can be copied.
 fn all_copyable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d (String, Ty))>, copyable: &HashSet<String>) -> Res<()> {
@@ -1469,7 +1513,7 @@ struct Checker<'a> {
     formattable: &'a HashSet<String>,
     /// Structs and enums written with `: Equatable`.
     equatable: &'a HashSet<String>,
-    /// Structs written with `: Comparable`.
+    /// Structs and enums written with `: Comparable`.
     comparable: &'a HashSet<String>,
     structs: &'a HashMap<String, StructInfo>,
     enums: &'a HashMap<String, EnumInfo>,
@@ -1575,6 +1619,15 @@ fn without_null(ty: &Ty) -> Option<Ty> {
 }
 
 impl<'a> Checker<'a> {
+    /// The functions written in the body of a struct or an enum.
+    fn methods_of(&self, owner: &str) -> &'a HashMap<String, FuncSig> {
+        let (structs, enums) = (self.structs, self.enums);
+        match structs.get(owner) {
+            Some(info) => &info.methods,
+            None => &enums[owner].methods,
+        }
+    }
+
     // ---- variables ----
 
     fn declare(&mut self, name: &str, ty: Ty, span: Span) -> Res<()> {
@@ -1657,7 +1710,7 @@ impl<'a> Checker<'a> {
                 .note("`this` exists in a method that takes it as its first parameter: `this`, `read this` or `ref this`");
         }
         let diag = Diag::error(span, format!("there is no variable named `{name}`"));
-        let is_field = self.owner.is_some_and(|owner| self.structs[owner].fields.iter().any(|(field, _)| field == name));
+        let is_field = self.owner.is_some_and(|owner| self.structs.get(owner).is_some_and(|info| info.fields.iter().any(|(field, _)| field == name)));
         if is_field && has_this {
             return diag.hint(format!("a field is reached through `this`: `this.{name}`"));
         }
@@ -1925,7 +1978,7 @@ impl<'a> Checker<'a> {
                     return loans;
                 }
                 let sig = match callee {
-                    Callee::Method { owner, .. } | Callee::Static { owner, .. } => self.structs[owner.as_str()].methods.get(name.as_str()),
+                    Callee::Method { owner, .. } | Callee::Static { owner, .. } => self.methods_of(owner).get(name.as_str()),
                     _ => None,
                 };
                 let source_of = |param: &str| sig.and_then(|sig| sig.sources.iter().find(|source| source.param == param));
@@ -1953,7 +2006,7 @@ impl<'a> Checker<'a> {
             ExprKind::Call { name, args, callee, .. } => {
                 let sigs = self.sigs;
                 let sig = match callee {
-                    Callee::Static { owner, name } => self.structs[owner.as_str()].methods.get(name.as_str()),
+                    Callee::Static { owner, name } => self.methods_of(owner).get(name.as_str()),
                     Callee::Plain => sigs.get(name.as_str()),
                     _ => None,
                 };
@@ -3379,7 +3432,8 @@ impl<'a> Checker<'a> {
                 return Ok(ty);
             }
             ExprKind::Method { recv, name, name_span, args, .. } => {
-                if let Some(owner) = self.enum_named(recv) {
+                // `Shape.unit()`: a function of the enum, not a variant.
+                if let Some(owner) = self.enum_named(recv).filter(|owner| !self.methods_of(owner).contains_key(name.as_str())) {
                     let (index, ty) = self.variant(owner, name, *name_span, Some(args), span)?;
                     let args = std::mem::take(args);
                     expr.kind = ExprKind::Variant { owner: owner.to_string(), index, args };
@@ -4103,7 +4157,10 @@ impl<'a> Checker<'a> {
                     let diag = Diag::error(span, format!("{what} needs a value of an enum, found `{ty}`"));
                     return Err(match inner {
                         Ty::Int(_) => diag.hint("a number is compared with `==`, or matched with `match`"),
-                        _ => diag.note("patterns for text are not in the interpreter yet; compare with `==`"),
+                        Ty::Char => diag.hint("a character is compared with `==`, or matched with `match`"),
+                        Ty::Str => diag.hint("a text is compared with `==`, or matched with `match`: `match word { \"if\" => ... }`"),
+                        _ if what == "`match`" => diag.note("a `match` looks at an enum, an integer, a `char` or a text"),
+                        _ => diag,
                     });
                 }
             };
@@ -4114,13 +4171,26 @@ impl<'a> Checker<'a> {
     /// names borrow from the value; without, they take what the value holds.
     fn pattern_binds(&mut self, pattern: &mut Pattern, of: &Variants, mode: Option<Mode>, subject: &Ty) -> Res<Binds> {
         let span = pattern.span;
-        let (name, args, index) = match &mut pattern.kind {
-            PatternKind::Wildcard => return Ok(Vec::new()),
-            PatternKind::Bind(name) => return Ok(vec![(name.clone(), subject.clone(), span)]),
-            PatternKind::Int(_) | PatternKind::Char(_) => {
-                return Err(Diag::error(span, format!("`{}` is an enum; a pattern here names one of its variants", of.owner)));
+        match &pattern.kind {
+            PatternKind::Wildcard => Ok(Vec::new()),
+            PatternKind::Bind(name) => Ok(vec![(name.clone(), subject.clone(), span)]),
+            PatternKind::Int(_) | PatternKind::Char(_) | PatternKind::Str(_) => {
+                Err(Diag::error(span, format!("`{}` is an enum; a pattern here names one of its variants", of.owner)))
             }
-            PatternKind::Variant { name, args, index } => (name, args, index),
+            PatternKind::Variant { .. } => {
+                let mut binds = Vec::new();
+                self.variant_pattern(pattern, of, mode, &mut binds)?;
+                Ok(binds)
+            }
+        }
+    }
+
+    /// `Circle(r)`, `Add(Number(a), _)`: the variant is one of the enum's, and the patterns
+    /// in the parentheses name, skip or test each value it carries.
+    fn variant_pattern(&mut self, pattern: &mut Pattern, of: &Variants, mode: Option<Mode>, binds: &mut Binds) -> Res<()> {
+        let span = pattern.span;
+        let PatternKind::Variant { name, args, index } = &mut pattern.kind else {
+            unreachable!("only called for a variant");
         };
         let (owner, variants) = (&of.owner, &of.list);
         let Some(position) = variants.iter().position(|(variant, _)| variant == name) else {
@@ -4135,7 +4205,7 @@ impl<'a> Checker<'a> {
         let names = fields.iter().map(|(field, _)| field.as_str()).collect::<Vec<_>>().join(", ");
         let Some(args) = args else {
             if fields.is_empty() {
-                return Ok(Vec::new());
+                return Ok(());
             }
             let blanks = vec!["_"; fields.len()].join(", ");
             return Err(Diag::error(span, format!("`{name}` carries {} value(s); the pattern must name or skip each", fields.len()))
@@ -4149,17 +4219,123 @@ impl<'a> Checker<'a> {
             return Err(Diag::error(span, format!("`{name}` carries {} value(s), the pattern has {}", fields.len(), args.len()))
                 .hint(format!("`{name}({names})`; write `_` for a value that is not needed")));
         }
-        let mut binds = Vec::new();
-        for ((arg, arg_span), (_, ty)) in args.iter().zip(fields) {
-            let Some(arg) = arg else { continue };
-            let ty = match mode {
-                None => ty.clone(),
-                Some(Mode::Read) => Ty::Read(Box::new(ty.clone())),
-                Some(Mode::Ref) => Ty::Ref(Box::new(ty.clone())),
-            };
-            binds.push((arg.clone(), ty, *arg_span));
+        for (arg, (_, ty)) in args.iter_mut().zip(fields) {
+            self.inner_pattern(arg, ty, mode, binds)?;
         }
-        Ok(binds)
+        Ok(())
+    }
+
+    /// A pattern inside the parentheses of a variant, for a value of type `ty` that is held
+    /// as `mode` says. A name alone takes the value, unless it is a variant of the enum there:
+    /// then it is that variant (`Paint(Red)`).
+    fn inner_pattern(&mut self, pattern: &mut Pattern, ty: &Ty, mode: Option<Mode>, binds: &mut Binds) -> Res<()> {
+        let span = pattern.span;
+        let inner_enum = match peel(ty) {
+            Ty::Enum(_) | Ty::Result(..) => self.enum_behind(ty, span, "a pattern").ok(),
+            _ => None,
+        };
+        if let PatternKind::Bind(name) = &pattern.kind {
+            let variant = inner_enum.as_ref().is_some_and(|(of, _)| of.list.iter().any(|(variant, _)| variant == name));
+            if variant {
+                pattern.kind = PatternKind::Variant { name: name.clone(), args: None, index: 0 };
+            } else if name.starts_with(|c: char| c.is_ascii_uppercase()) {
+                // A capital letter is where a variant was meant: `Empy` stays an error.
+                return Err(match &inner_enum {
+                    Some((of, _)) => {
+                        let diag = Diag::error(span, format!("`{}` has no variant `{name}`", of.owner));
+                        match nearest(name, of.list.iter().map(|(variant, _)| variant.as_str())) {
+                            Some(close) => diag.hint(format!("`{close}`")),
+                            None => diag.note("a name that takes the value starts with a small letter"),
+                        }
+                    }
+                    None => Diag::error(span, format!("this value is a `{ty}`, and `{name}` is not a variant of it"))
+                        .note("a name that takes the value starts with a small letter"),
+                });
+            }
+        }
+        let written = &self.src[span.start..span.end];
+        match &mut pattern.kind {
+            PatternKind::Wildcard => Ok(()),
+            PatternKind::Bind(name) => {
+                let ty = match mode {
+                    None => ty.clone(),
+                    Some(Mode::Read) => Ty::Read(Box::new(ty.clone())),
+                    Some(Mode::Ref) => Ty::Ref(Box::new(ty.clone())),
+                };
+                binds.push((name.clone(), ty, span));
+                Ok(())
+            }
+            PatternKind::Int(_) | PatternKind::Char(_) | PatternKind::Str(_) => {
+                let kind = match &pattern.kind {
+                    PatternKind::Int(_) => "a number",
+                    PatternKind::Char(_) => "a character",
+                    _ => "a text",
+                };
+                let mismatch = || Diag::error(span, format!("this value is a `{ty}`, and `{written}` is {kind}"));
+                match (ty.strip_borrow(), &pattern.kind) {
+                    (Ty::Int(int), PatternKind::Int(_) | PatternKind::Char(_)) => {
+                        self.int_pattern(pattern, *int, ty)?;
+                    }
+                    (Ty::Char, PatternKind::Char(_)) => {
+                        char_pattern(pattern, ty)?;
+                    }
+                    (Ty::Str, PatternKind::Str(_)) => {}
+                    (Ty::Nullable(_), _) => {
+                        return Err(Diag::error(span, format!("this value is a `{ty}` and may be `null`; a pattern inside a pattern needs a value"))
+                            .hint("name it, and test it in the arm"));
+                    }
+                    (Ty::Char, PatternKind::Int(value)) => {
+                        let diag = mismatch();
+                        return Err(match char_of(*value) {
+                            Some(found) if !found.is_control() => diag.hint(format!("a character is written in quotes: `'{found}'`")),
+                            _ => diag,
+                        });
+                    }
+                    _ => return Err(mismatch()),
+                }
+                Ok(())
+            }
+            PatternKind::Variant { .. } => {
+                if let Ty::Nullable(_) = ty.strip_borrow() {
+                    return Err(Diag::error(span, format!("this value is a `{ty}` and may be `null`; a pattern inside a pattern needs a value"))
+                        .hint("name it, and test it in the arm"));
+                }
+                let Some((of, held)) = inner_enum else {
+                    return Err(Diag::error(span, format!("this value is a `{ty}`, and `{written}` names a variant of an enum")));
+                };
+                // Through a borrow the names borrow too; `read` anywhere makes them `read`.
+                let mode = match (mode, held) {
+                    (Some(Mode::Read), _) | (_, Some(Mode::Read)) => Some(Mode::Read),
+                    (Some(Mode::Ref), _) | (_, Some(Mode::Ref)) => Some(Mode::Ref),
+                    _ => None,
+                };
+                self.variant_pattern(pattern, &of, mode, binds)
+            }
+        }
+    }
+
+    /// The pattern as the search for missing values sees it (`exhaust`), for a value of `ty`.
+    fn search_pattern(&self, pattern: &Pattern, ty: &Ty) -> exhaust::Pat {
+        use exhaust::{Lit, Pat};
+        match &pattern.kind {
+            PatternKind::Wildcard | PatternKind::Bind(_) => Pat::Any,
+            PatternKind::Int(value) => Pat::Lit(Lit::Num(*value)),
+            PatternKind::Char(value) => Pat::Lit(Lit::Num(*value as i128)),
+            PatternKind::Str(text) => Pat::Lit(Lit::Text(text.clone())),
+            PatternKind::Variant { index, args, .. } => {
+                let (of, _) = self.enum_behind(ty, pattern.span, "a pattern").expect("the pattern was checked against the type");
+                let shape = Rc::new(exhaust::Enum {
+                    names: of.list.iter().map(|(name, _)| name.clone()).collect(),
+                    arities: of.list.iter().map(|(_, fields)| fields.len()).collect(),
+                });
+                let fields = &of.list[*index].1;
+                let args = match args {
+                    None => vec![Pat::Any; fields.len()],
+                    Some(args) => args.iter().zip(fields).map(|(arg, (_, ty))| self.search_pattern(arg, ty)).collect(),
+                };
+                Pat::Variant { of: shape, index: *index, args }
+            }
+        }
     }
 
     /// A pattern in a `match` on an integer: a number or a character that fits the type,
@@ -4171,6 +4347,9 @@ impl<'a> Checker<'a> {
             PatternKind::Bind(name) => return Ok(vec![(name.clone(), subject.clone(), span)]),
             PatternKind::Int(value) => *value,
             PatternKind::Char(value) => byte_of(*value, span)?,
+            PatternKind::Str(_) => {
+                return Err(Diag::error(span, format!("this `match` looks at a `{}`, and a text is not a number", ty.name())));
+            }
             PatternKind::Variant { name, args, .. } => {
                 let diag = Diag::error(span, format!("this `match` looks at a `{}`, and `{name}` is not a number or a character", ty.name()));
                 return Err(match args {
@@ -4222,15 +4401,18 @@ impl<'a> Checker<'a> {
     ) -> Res<Ty> {
         // Like `var y = subject`: an owned value is moved in, a borrow stays a borrow.
         let subject_ty = self.expr(subject, None)?;
-        // On an integer the arms are numbers; on anything else, the variants of an enum.
+        // On an integer the arms are numbers, on a `char` characters, on a text texts; on
+        // anything else, the variants of an enum.
         let number = match subject_ty.strip_borrow() {
-            Ty::Int(ty) => Some(Some(*ty)),
-            // On a `char` the arms are characters.
-            Ty::Char => Some(None),
+            Ty::Int(ty) => Some(Literal::Int(*ty)),
+            Ty::Char => Some(Literal::Char),
+            Ty::Str => Some(Literal::Text),
             _ => None,
         };
         let (of, mode) = match number {
-            Some(ty) => (Variants { owner: ty.map_or("char", IntTy::name).to_string(), list: Vec::new() }, None),
+            Some(Literal::Int(ty)) => (Variants { owner: ty.name().to_string(), list: Vec::new() }, None),
+            Some(Literal::Char) => (Variants { owner: "char".to_string(), list: Vec::new() }, None),
+            Some(Literal::Text) => (Variants { owner: "string".to_string(), list: Vec::new() }, None),
             None => self.enum_behind(&subject_ty, subject.span, "`match`")?,
         };
         *borrowed = mode.is_some();
@@ -4245,7 +4427,14 @@ impl<'a> Checker<'a> {
 
         // What the arms without a condition have settled: variant positions, or numbers.
         let mut handled: Vec<i128> = Vec::new();
+        let mut handled_texts: Vec<String> = Vec::new();
         let mut handled_all = false;
+        // The variants an arm without a condition names, with patterns inside or not.
+        let mut named: Vec<i128> = Vec::new();
+        // With patterns inside patterns, the arms so far as the search for missing values sees
+        // them (only those without a condition).
+        let mut nested = false;
+        let mut rows: Vec<Vec<exhaust::Pat>> = Vec::new();
         let mut result: Option<Ty> = expected.cloned();
         let before = self.moves();
         let mut after: Option<Moves> = None;
@@ -4254,8 +4443,9 @@ impl<'a> Checker<'a> {
             self.scopes.push(Scope::default());
             self.borrows.branches.push((node, arm_index));
             let binds = match number {
-                Some(Some(ty)) => self.int_pattern(&mut arm.pattern, ty, &subject_ty)?,
-                Some(None) => char_pattern(&mut arm.pattern, &subject_ty)?,
+                Some(Literal::Int(ty)) => self.int_pattern(&mut arm.pattern, ty, &subject_ty)?,
+                Some(Literal::Char) => char_pattern(&mut arm.pattern, &subject_ty)?,
+                Some(Literal::Text) => text_pattern(&mut arm.pattern, &subject_ty)?,
                 None => self.pattern_binds(&mut arm.pattern, &of, mode, &subject_ty)?,
             };
             let position = match &arm.pattern.kind {
@@ -4263,15 +4453,32 @@ impl<'a> Checker<'a> {
                 PatternKind::Int(value) => Some(*value),
                 _ => None,
             };
+            let text = match &arm.pattern.kind {
+                PatternKind::Str(text) => Some(text.clone()),
+                _ => None,
+            };
             if handled_all {
                 return Err(Diag::error(arm.pattern.span, "this arm can never run: an arm above takes every value"));
             }
-            if let Some(position) = position.filter(|position| handled.contains(position)) {
-                let what = match number {
-                    Some(_) => &self.src[arm.pattern.span.start..arm.pattern.span.end],
-                    None => variants[position as usize].0.as_str(),
+            let again = position.is_some_and(|position| handled.contains(&position)) || text.as_ref().is_some_and(|text| handled_texts.contains(text));
+            if again {
+                let what = match (number, position) {
+                    (None, Some(position)) => variants[position as usize].0.as_str(),
+                    _ => &self.src[arm.pattern.span.start..arm.pattern.span.end],
                 };
                 return Err(Diag::error(arm.pattern.span, format!("this arm can never run: `{what}` is already handled above")));
+            }
+            // With patterns inside patterns, an arm can be covered by several arms above.
+            nested |= arm.pattern.is_nested();
+            let row = vec![self.search_pattern(&arm.pattern, &subject_ty)];
+            if nested && exhaust::useful(&rows, &row).is_none() {
+                return Err(Diag::error(arm.pattern.span, "this arm can never run: the arms above take every value it matches"));
+            }
+            if arm.guard.is_none() {
+                rows.push(row);
+                if let Some(position) = position.filter(|_| number.is_none()) {
+                    named.push(position);
+                }
             }
             self.borrows.binds = subject_loans.clone();
             self.declare_binds(binds)?;
@@ -4281,10 +4488,13 @@ impl<'a> Checker<'a> {
                     self.typed(guard, &Ty::Bool)?;
                     self.only_looked(&unmoved)?;
                 }
-                // Only an arm without a condition settles its variant.
-                None => match position {
-                    Some(position) => handled.push(position),
-                    None => handled_all = true,
+                // Only an arm without a condition settles its variant, and only when it takes
+                // every value the variant carries.
+                None => match (position, text) {
+                    (Some(_), _) if arm.pattern.is_nested() => {}
+                    (Some(position), _) => handled.push(position),
+                    (None, Some(text)) => handled_texts.push(text),
+                    (None, None) => handled_all = true,
                 },
             }
             for stmt in arm.body.iter_mut() {
@@ -4330,7 +4540,7 @@ impl<'a> Checker<'a> {
         }
         if !handled_all {
             let missing: Vec<String> = (0..variants.len())
-                .filter(|position| !handled.contains(&(*position as i128)))
+                .filter(|position| !handled.contains(&(*position as i128)) && !named.contains(&(*position as i128)))
                 .map(|position| format!("`{}`", variants[position].0))
                 .collect();
             if !missing.is_empty() {
@@ -4342,6 +4552,16 @@ impl<'a> Checker<'a> {
                 return Err(match guarded {
                     true => diag.note("an arm with `when` does not settle its variant: the condition may be false"),
                     false => diag.note(format!("every variant of `{owner}` needs an arm")),
+                });
+            }
+            // Every variant has an arm; with patterns inside, some of its values may not.
+            if let Some(found) = exhaust::useful(&rows, &[exhaust::Pat::Any]) {
+                let value = exhaust::show(&found[0]);
+                let diag = Diag::error(subject.span, format!("this `match` does not handle `{value}`"))
+                    .hint("add an arm for it, or `_ => ...` for everything else");
+                return Err(match arms.iter().any(|arm| arm.guard.is_some()) {
+                    true => diag.note("an arm with `when` does not settle what it matches: the condition may be false"),
+                    false => diag,
                 });
             }
         }
@@ -4641,8 +4861,7 @@ impl<'a> Checker<'a> {
         callee: &mut Callee,
         span: Span,
     ) -> Res<Ty> {
-        let structs = self.structs;
-        let methods = &structs[owner].methods;
+        let methods = self.methods_of(owner);
         let Some(sig) = methods.get(name) else {
             let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
             return Err(match nearest(name, methods.keys().map(String::as_str)) {
@@ -4728,7 +4947,7 @@ impl<'a> Checker<'a> {
         // A type name in front of the dot: `Stack.create()`.
         if let ExprKind::Var(owner) = &recv.kind {
             if self.find(owner).is_none() && owner != "this" {
-                if self.structs.contains_key(owner.as_str()) {
+                if self.structs.contains_key(owner.as_str()) || self.enums.contains_key(owner.as_str()) {
                     return self.static_call(owner, name, name_span, args, callee, span);
                 }
                 if owner == "File" {
@@ -4814,8 +5033,8 @@ impl<'a> Checker<'a> {
         }
 
         let structs = self.structs;
-        if let Ty::Struct(owner) = target {
-            if let Some(sig) = structs[owner].methods.get(name) {
+        if let Ty::Struct(owner) | Ty::Enum(owner) = target {
+            if let Some(sig) = self.methods_of(owner).get(name) {
                 if !sig.public && !self.inside(owner) {
                     return Err(self.not_public(name, owner, name_span));
                 }
@@ -5176,14 +5395,13 @@ impl<'a> Checker<'a> {
                 if matches!(target, Ty::Char | Ty::Str) {
                     return Err(text_method_hint(diag, target, name));
                 }
-                let Ty::Struct(owner) = target else {
+                let (Ty::Struct(owner) | Ty::Enum(owner)) = target else {
                     return Err(if name.starts_with("try") { diag.note(format!("`{name}` is not in the interpreter yet")) } else { diag });
                 };
-                let info = &structs[owner];
-                if info.fields.iter().any(|(field, _)| field == name) {
+                if structs.get(owner).is_some_and(|info| info.fields.iter().any(|(field, _)| field == name)) {
                     return Err(diag.hint(format!("`{name}` is a field; read it without the parentheses")));
                 }
-                Err(match nearest(name, info.methods.keys().map(String::as_str)) {
+                Err(match nearest(name, self.methods_of(owner).keys().map(String::as_str)) {
                     Some(close) => diag.hint(format!("`{close}`")),
                     None => diag,
                 })
@@ -5250,7 +5468,7 @@ impl<'a> Checker<'a> {
         let can_equal = item.is_some_and(|item| has(item, self.equatable, true));
         let can_order = item.is_some_and(|item| match item {
             Ty::Int(_) | Ty::Float(_) | Ty::Char | Ty::Str => true,
-            Ty::Struct(name) => self.comparable.contains(name),
+            Ty::Struct(name) | Ty::Enum(name) => self.comparable.contains(name),
             _ => false,
         });
         let compares = |item: &Ty, needs: &str| match item {
@@ -5745,6 +5963,33 @@ fn byte_of(value: char, span: Span) -> Res<i128> {
         .hint(format!("the type for any character is `char`: `char c = '{value}'`")))
 }
 
+/// What the arms of a `match` on a value that is not an enum are written as.
+#[derive(Clone, Copy)]
+enum Literal {
+    Int(IntTy),
+    Char,
+    Text,
+}
+
+/// An arm of a `match` on a text: a text as it is written, `_` or `var name`.
+fn text_pattern(pattern: &mut Pattern, subject: &Ty) -> Res<Binds> {
+    let span = pattern.span;
+    match &pattern.kind {
+        PatternKind::Wildcard | PatternKind::Str(_) => Ok(Vec::new()),
+        PatternKind::Bind(name) => Ok(vec![(name.clone(), subject.clone(), span)]),
+        PatternKind::Char(value) => Err(Diag::error(span, "this `match` looks at a text, and a character is not one")
+            .hint(format!("a text is written in double quotes: `{:?}`", value.to_string()))),
+        PatternKind::Int(_) => Err(Diag::error(span, "this `match` looks at a text, and a number is not one")),
+        PatternKind::Variant { name, args, .. } => {
+            let diag = Diag::error(span, format!("this `match` looks at a text, and `{name}` is not one"));
+            Err(match args {
+                None => diag.hint(format!("to take any value under this name, write `var {name}`")),
+                Some(_) => diag,
+            })
+        }
+    }
+}
+
 /// An arm of a `match` on a `char`: a character, `_` or `var name`. The character is kept as
 /// its code.
 fn char_pattern(pattern: &mut Pattern, subject: &Ty) -> Res<Binds> {
@@ -5753,6 +5998,14 @@ fn char_pattern(pattern: &mut Pattern, subject: &Ty) -> Res<Binds> {
         PatternKind::Wildcard => return Ok(Vec::new()),
         PatternKind::Bind(name) => return Ok(vec![(name.clone(), subject.clone(), span)]),
         PatternKind::Char(value) => *value as i128,
+        PatternKind::Str(text) => {
+            let diag = Diag::error(span, "this `match` looks at a `char`, and a text is not one");
+            let mut chars = text.chars();
+            return Err(match (chars.next(), chars.next()) {
+                (Some(only), None) => diag.hint(format!("a character is written in single quotes: `{}`", crate::interp::quoted_char(only))),
+                _ => diag,
+            });
+        }
         PatternKind::Int(value) => {
             let diag = Diag::error(span, "this `match` looks at a `char`, and a number is not one");
             return Err(match char_of(*value) {

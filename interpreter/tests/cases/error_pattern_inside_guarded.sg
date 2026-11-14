@@ -1,0 +1,14 @@
+enum Expr {
+    Number(int value)
+    Add(Expr* left, Expr* right)
+}
+
+int f(read Expr e) {
+    return match e {
+        Add(Number(a), _) when a > 0 => a
+        Add(Add(_, _), _) => 1
+        Number(n) => n
+    }
+}
+
+void main() {}

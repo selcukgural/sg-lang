@@ -1,0 +1,5 @@
+error: this value is a `Expr?` and may be `null`; a pattern inside a pattern needs a value
+  --> error_pattern_inside_nullable.sg:15:15
+ 15 |         Maybe(Number(n)) => n
+    |               ^^^^^^^^^
+  hint: name it, and test it in the arm

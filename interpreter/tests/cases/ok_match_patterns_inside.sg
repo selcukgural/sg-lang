@@ -1,0 +1,46 @@
+enum Expr : Formattable {
+    Number(int value)
+    Name(string text)
+    Add(Expr* left, Expr* right)
+    Mul(Expr* left, Expr* right)
+    Negate(Expr* inner)
+}
+
+// Borrowed: the names look into the tree.
+int eval(read Expr e) {
+    return match e {
+        Number(v) => v
+        Name(_) => 0
+        Add(Number(0), right) => eval(right)
+        Add(left, Number(0)) => eval(left)
+        Add(left, right) => eval(left) + eval(right)
+        Mul(Number(0), _) => 0
+        Mul(_, Number(0)) => 0
+        Mul(left, right) => eval(left) * eval(right)
+        Negate(Negate(inner)) => eval(inner)
+        Negate(inner) => -eval(inner)
+    }
+}
+
+// Owned: the parts a name takes are moved out, the rest is dropped.
+Expr* simplify(Expr* e) {
+    return match e {
+        Add(Number(0), right) => simplify(right)
+        Negate(Negate(inner)) => simplify(inner)
+        Negate(Number(v)) => new Expr.Number(-v)
+        Name("zero") => new Expr.Number(0)
+        var other => other
+    }
+}
+
+void main() {
+    var e = Expr.Add(new Expr.Number(0), new Expr.Mul(new Expr.Number(3), new Expr.Negate(new Expr.Negate(new Expr.Number(4)))))
+    print(eval(read e))
+    if e is Add(Number(0), Mul(_, right)) {
+        print(right)
+    }
+    print(simplify(new Expr.Negate(new Expr.Negate(new Expr.Name("x")))))
+    print(simplify(new Expr.Name("zero")))
+    print(simplify(new Expr.Negate(new Expr.Number(5))))
+    print(simplify(new Expr.Add(new Expr.Number(0), new Expr.Name("y"))))
+}

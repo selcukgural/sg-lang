@@ -330,10 +330,32 @@ impl<'a> Parser<'a> {
         let interfaces = self.interfaces()?;
         self.open_brace()?;
         let mut variants = Vec::new();
+        let mut methods = Vec::new();
         self.skip_newlines();
         while *self.peek() != Tok::RBrace {
             if *self.peek() == Tok::Eof {
                 return Err(self.unexpected("`}`"));
+            }
+            // A variant is a name alone on its line or followed by `(`; anything else is a
+            // function: a type, then its name.
+            let variant_line = matches!(self.peek(), Tok::Ident(_))
+                && matches!(self.peek_at(1), Tok::LParen | Tok::Newline | Tok::RBrace | Tok::Comma | Tok::Eof);
+            if !variant_line {
+                let public = self.eat(&Tok::Public);
+                let ty = self.type_expr()?;
+                let (member, span) = self.ident("a method name")?;
+                if *self.peek() != Tok::LParen {
+                    return Err(Diag::error(span, "an enum holds variants and functions, not fields")
+                        .hint(format!("a value every variant carries is written in each variant: `Name({} {member})`", &self.src[ty.span.start..ty.span.end])));
+                }
+                let mut method = self.func(ty, member, span, true)?;
+                method.public = public;
+                methods.push(method);
+                if *self.peek() != Tok::RBrace {
+                    self.expect(Tok::Newline, "end of line")?;
+                }
+                self.skip_newlines();
+                continue;
             }
             let (variant, span) = self.ident("a variant name")?;
             let mut fields = Vec::new();
@@ -364,7 +386,7 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         }
         self.bump();
-        Ok(EnumDecl { public: false, name, name_span, sources, interfaces, variants })
+        Ok(EnumDecl { public: false, name, name_span, sources, interfaces, variants, methods })
     }
 
     /// The rest of a function after its return type and name. In a struct body the first
@@ -389,7 +411,7 @@ impl<'a> Parser<'a> {
                 let span = start.to(self.bump().span);
                 if !in_struct {
                     return Err(Diag::error(span, "`this` can only be a parameter of a method")
-                        .hint("a method is written inside the body of its struct"));
+                        .hint("a method is written inside the body of its struct or enum"));
                 }
                 if this.is_some() || !params.is_empty() {
                     return Err(Diag::error(span, "`this` must be the first parameter"));
@@ -712,10 +734,22 @@ impl<'a> Parser<'a> {
         Ok((stmts, value))
     }
 
-    /// `Circle(r)`, `Rect(w, _)`, `Empty`, `_`, `var other`
+    /// `Circle(r)`, `Rect(w, _)`, `Add(Number(a), _)`, `Empty`, `"if"`, `42`, `_`, `var other`
     fn pattern(&mut self) -> Res<Pattern> {
+        self.pattern_at(false)
+    }
+
+    /// A pattern; `inside` is true within the parentheses of a variant, where a name alone
+    /// takes the value.
+    fn pattern_at(&mut self, inside: bool) -> Res<Pattern> {
         let start = self.span();
         let kind = match self.peek().clone() {
+            Tok::Var if inside => {
+                self.bump();
+                let (name, span) = self.ident("a variable name")?;
+                return Err(Diag::error(start.to(span), "inside the parentheses a name alone takes the value; `var` is not written there")
+                    .hint(format!("`{name}`")));
+            }
             Tok::Var => {
                 self.bump();
                 PatternKind::Bind(self.ident("a variable name")?.0)
@@ -743,8 +777,13 @@ impl<'a> Parser<'a> {
                 }
                 PatternKind::Int(value)
             }
-            Tok::Str(_) | Tok::Interp(_) => {
-                return Err(self.unexpected("a pattern").note("patterns for text are not in the interpreter yet; compare with `==`"))
+            Tok::Str(text) => {
+                self.bump();
+                PatternKind::Str(text)
+            }
+            Tok::Interp(_) => {
+                return Err(Diag::error(start, "a pattern is a text as it is written, without `$`")
+                    .note("to compare with a text that is built, use `==` in an `if` or a `when`"))
             }
             Tok::Ident(_) => {
                 let (name, _) = self.ident("a variant name")?;
@@ -755,40 +794,28 @@ impl<'a> Parser<'a> {
                         _ => diag,
                     });
                 }
-                let mut args = None;
-                if self.eat(&Tok::LParen) {
-                    let mut names = Vec::new();
-                    while *self.peek() != Tok::RParen {
-                        match self.peek().clone() {
-                            Tok::Ident(_) if !matches!(self.peek_at(1), Tok::Comma | Tok::RParen) => {
-                                self.bump();
-                                return Err(self
-                                    .unexpected("`,` or `)`")
-                                    .note("a pattern inside a pattern is not in the interpreter yet; name the value and test it in the arm"));
-                            }
-                            Tok::Ident(word) => {
-                                let span = self.bump().span;
-                                names.push(((word != "_").then_some(word), span));
-                            }
-                            _ => {
-                                return Err(self.unexpected("a name or `_`").note(
-                                    "a pattern inside a pattern is not in the interpreter yet; name the value and test it in the arm",
-                                ))
+                if inside && *self.peek() != Tok::LParen {
+                    PatternKind::Bind(name)
+                } else {
+                    let mut args = None;
+                    if self.eat(&Tok::LParen) {
+                        let mut list = Vec::new();
+                        while *self.peek() != Tok::RParen {
+                            list.push(self.pattern_at(true)?);
+                            if !self.eat(&Tok::Comma) {
+                                break;
                             }
                         }
-                        if !self.eat(&Tok::Comma) {
-                            break;
-                        }
+                        self.expect(Tok::RParen, "`)`")?;
+                        args = Some(list);
                     }
-                    self.expect(Tok::RParen, "`)`")?;
-                    args = Some(names);
+                    PatternKind::Variant { name, args, index: 0 }
                 }
-                PatternKind::Variant { name, args, index: 0 }
             }
             _ => {
                 return Err(self
                     .unexpected("a pattern")
-                    .note("patterns for now: a variant such as `Circle(r)`, a number, a character, `_`, or `var name`"))
+                    .note("a pattern is a variant such as `Circle(r)`, a number, a character, a text, `_`, or `var name`"))
             }
         };
         Ok(Pattern { kind, span: Span::new(start.start, self.prev_end()) })

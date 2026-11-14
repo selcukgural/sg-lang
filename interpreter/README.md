@@ -26,10 +26,10 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
-| Methods | Written in the struct body with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`. Called as `stack.push(1)`, also through pointers and borrows. A function without `this` is called on the type: `Stack.create()`. `Stack(args)` is short for `Stack.create(args)` |
-| Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)` |
-| `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a name or `_` for each value, `_`, `var other`; a condition with `when`. On an integer the patterns are numbers and characters, on a `char` characters: `match c { '+' => ... _ => ... }`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
-| Interfaces | Five built-in ones, written after the name: `struct Point : Copyable`, `enum AppError : Formattable`. A `Copyable` value is copied where another would be moved. A `Formattable` value is accepted by `print`, `$"..."` and `f.write`; a struct can write its own `void format(read this, ref Formatter f)`, otherwise the text is made from the fields. `Equatable` gives `==` and `!=` (field by field, or the struct's own `bool equals(read this, read T other)`), `Hashable` lets the type be a key of a `HashMap` or an item of a `HashSet`, `Comparable` gives `<` `<=` `>` `>=` and `sort` through the struct's `int compare(read this, read T other)` |
+| Methods | Written in the body of a struct or an enum with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`, and an enum looks at itself with `match this`. Called as `stack.push(1)`, `shape.area()`, also through pointers and borrows. A function without `this` is called on the type: `Stack.create()`, `Shape.unit()`. `Stack(args)` is short for `Stack.create(args)` |
+| Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line, and methods after or between them. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)` |
+| `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a pattern for each value it carries (a name, `_`, or a pattern inside: `Add(Number(0), right)`, `Word("let")`, `Paint(Red)`), `_`, `var other`; a condition with `when`. On an integer the patterns are numbers and characters, on a `char` characters (`match c { '+' => ... _ => ... }`), on a text texts (`match word { "if" => ... _ => ... }`). A value no arm takes, or an arm that can never run, is a compile error that names the value: `does not handle Add(Name(_), _)`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
+| Interfaces | Five built-in ones, written after the name: `struct Point : Copyable`, `enum AppError : Formattable`. A `Copyable` value is copied where another would be moved. A `Formattable` value is accepted by `print`, `$"..."` and `f.write`; a struct or an enum can write its own `void format(read this, ref Formatter f)`, otherwise the text is made from the fields. `Equatable` gives `==` and `!=` (field by field, or the type's own `bool equals(read this, read T other)`), `Hashable` lets the type be a key of a `HashMap` or an item of a `HashSet`, `Comparable` gives `<` `<=` `>` `>=` and `sort` through the type's `int compare(read this, read T other)` |
 | `List<T>` | Built in. `List<int>()`, `List<int> { 1, 2 }`; `xs.add(v)`, `xs.length()`, `xs[i]` to read and to write (`xs[i] = v`, `xs[i] += 1`, `xs[i].name = ...`, `ref xs[i]`), `xs.get(i)` gives `null` where `xs[i]` would panic, `xs.removeLast()`, `xs.reverse()`, `xs.clear()`, `xs.addAll(items)` copies the items of a slice to the end (`buffer.addAll(text.asBytes())`, `xs.addAll(read ys)`, `xs.addAll(ys[2..])`) when they are `Copyable`. `xs.indexOf(v)` and `xs.contains(v)` on `Equatable` items, `xs.sort()` on `Comparable` ones (numbers and text are both). `string.join(", ", read names)` |
 | `HashMap<K, V>` | Built in; a key is an integer, a `bool`, a `string` or a type written `: Equatable, Hashable`. `HashMap<string, int>()`, `HashMap<string, int> { {"x", 10} }`; `map.add(key, value)`, `map[key]` to read and to write what is under a key that is there, `map.get(key)` gives `null` for a missing key, `map.getOrAdd(key, initial)` gives a `ref V`, `map.contains(key)`, `map.remove(key)`, `map.length()`, `map.clear()` |
 | Text of a collection | `print(xs)`, `$"{xs}"`: `[1, 2, 3]`, `{"ada": 36}`, `{1, 2, 3}`, when the items can be written as text |
@@ -37,7 +37,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Arrays | `int[8] values`: a fixed number of items, kept where the value is (in the variable, inside the struct), with the length in the type. Built as `int[3] { 1, 2, 3 }` (the items), `byte[16](255)` (one value in every item) or `byte[16]` (zeros: 0, `false`, `null`). `xs[i]` to read and to write, `xs.length()`, `xs.get(i)`, `xs.indexOf(v)`, `xs.contains(v)`, `xs.sort()`, `xs.reverse()`, `==`, `print`. An array of items that can be copied is copied like a number; any other is moved |
 | Slices | `read T[]` looks at items that something else owns, `ref T[]` can also write them. `read xs` and `ref xs` give one where a slice is expected, for a `List<T>` and a `T[N]`; a range gives one too: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` for a range that is written through. `s[i]`, `s.length()`, `s.get(i)`, `s.indexOf(v)`, `s.contains(v)`, `==`, `print`, `for`; `s.sort()` and `s.reverse()` through a `ref T[]`, and on a range in front of them: `xs[2..5].sort()` puts those items of `xs` in order where they are. `text.asBytes()` looks at a text as a `read byte[]`; `string.fromUtf8(bytes)` looks at bytes as text and gives a `Result<read string, TextError>` |
 | `for` over a collection | `for x in xs` hands the collection over and `x` owns each item; `for x in read xs` and `for x in ref xs` lend, and so does a collection that is already borrowed. Over a `HashMap` the variable has a `key` and a `value`; a `HashSet` is gone over by hand-over or `read`. An array is gone over like a list; a slice lends its items |
-| `is` | `if s is Circle(r) { ... }`, `while next() is not End { ... }` |
+| `is` | `if s is Circle(r) { ... }`, `if e is Add(Number(0), right) { ... }`, `while next() is not End { ... }` |
 | Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`; on a `read T?` it gives a `read T`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters |
@@ -224,7 +224,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (170 of 614 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (173 of 639 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -280,7 +280,8 @@ read line by line, the command line, `printError` and `exit`, the same way. Sinc
 files read and written piece by piece (`StreamReader`, `StreamWriter`, `Stdin`, `Stdout`, `Stderr`), the
 same way. Since the forty-first slice the width and the letter after a value in `$"..."` (`{n,5}`,
 `{b:X2}`, `{x:F2}`) and `parseHex`, the same way. Since the forty-second slice `list.addAll(slice)` and
-`sort` and `reverse` on an array and through a `ref T[]`, the same way.
+`sort` and `reverse` on an array and through a `ref T[]`, the same way. Since the forty-third slice
+patterns inside patterns, `match` on text and methods on enums, the same way.
 What is still missing is an error that names it (not silence): the few positions listed with the choices
 below (81, 111).
 
@@ -322,6 +323,7 @@ hand with no checks):
 | `bytes`: the same log read in pieces of 4 KB with `readBytes` and written with `writeBytes` through a writer from `File.openAppend` | 0.030 s | 0.030 s | 0.032 s | 0.94 |
 | `table`: two million lines printed with widths, hex, binary and two digits after the point (`{i:x8} {a,10}  {name,-8}\|{x,10:F3}  {mask:b16} {code:X6}`) | 0.471 s | 0.471 s | 0.533 s | 0.89 |
 | `blocks`: eight million pieces of 1 to 255 bytes (about a gigabyte) gathered with `addAll` into a `List<byte>` that is emptied at 64 MB | 0.035 s | 0.035 s | 0.035 s | 1.00 |
+| `keywords`: a million words sorted forty times into twelve keywords and the rest by a `match` on text | 0.199 s | 0.200 s | 0.194 s | 1.03 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -464,6 +466,12 @@ own beside the value. Now the digits after the point are worked out by a functio
 The C program keeps the same block, length and capacity by hand and adds each piece with `memcpy`. The two
 take the same time (0.035 s over three runs of fifteen): `addAll` is one test for room and one `memcpy`.
 Adding the same bytes one at a time with `add` took ten times as long (0.344 s).
+`keywords` sorts words as a lexer sorts the names it reads: a `match` on text with twelve keywords and `_`.
+The C program is the chain a person writes by hand, one test of the length and one `memcmp` for each
+keyword, and that is what the arms compile to (`sg_eq` is the same two tests); the million words are
+copied to the heap first in both. 1.03 over seven runs is within what moves from run to run. A pattern
+inside a pattern is not measured on its own: it compiles to the tests of the tags and the values joined
+by `&&`, which is what `expr` already measures one level at a time.
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
@@ -816,7 +824,7 @@ Approved on 12 November 2026. Each has a test in `tests/cases/`.
 4. **`Hashable` needs `Equatable`**, and the hash is made from the fields. Here a `Hashable` type cannot write
    its own `equals` or `hash` yet: the interpreter keeps its maps in order of the fields and never calls `hash`.
 5. **`Comparable` needs a `compare` that is written**; it is not made from the fields (the design generates
-   only `equals` and `hash`). An enum cannot be `Comparable` until enums have methods.
+   only `equals` and `hash`). An enum cannot be `Comparable` until enums have methods (they came in the forty-third slice, 251).
 6. **`a.compare(b)` and `a.equals(b)` exist on integers and text** (`equals` on `bool` too), as the design's
    `this.major.compare(other.major)` needs.
 7. **An argument that is only looked at is lent when it cannot be copied**: `old.compare(read next)`,
@@ -2072,6 +2080,73 @@ a `ref T[]`; checker, interpreter and back end together), approved on 14 Novembe
      field and one behind a `T*`, text, a `Comparable` struct with equal keys (the order is kept), one item
      and none; fifteen tests of errors.
 
+Choices made in the forty-third slice (patterns inside patterns, `match` on text, methods on enums;
+checker, interpreter and back end together), approved on 14 November 2026:
+
+242. **A pattern stands where a name stands**: inside the parentheses of a variant goes a variant with its
+     own parentheses (`Add(Number(0), right)`), a variant that carries nothing (`Paint(Red)`), a number,
+     a character, a text (`Word("let")`), `_` or a name, as deep as wanted, in `match` and in `is`. Through
+     a `T*` the pattern looks into the box, as `match` and `is` already do. The design had put "nested
+     patterns" among the things after the first version; they cost nothing at run time (the arm tests what
+     a person would test by hand) and the checker gains the search of 244. C#, Rust and Swift have them.
+243. **A name alone inside the parentheses**: it is the variant when the enum of that value has a variant
+     of that name, otherwise a name that takes the value. A name that starts with a capital letter and is
+     not a variant there is an error (`Full(Empy)`: hint `Empty`; `Number(Empty)` on an `int`), so that a
+     mistyped variant does not quietly take every value (the "Patterns" row of the design). Variants
+     begin with a capital letter and names with a small one, as everywhere in SG; the rule leans on that
+     only here. Rust has the same question and answers it with a warning about the case of the name. `var`
+     is not written inside the parentheses (an error whose hint is the name alone).
+244. **What a `match` misses is named**: with patterns inside, a `match` that does not take every value is a
+     compile error that names one it misses (`this match does not handle Add(Name(_), _)`), and an arm
+     that the arms above take together is one too ("the arms above take every value it matches"). The
+     messages of a `match` without patterns inside stay as they were: a variant with no arm at all is
+     listed by name, and an arm whose variant an arm above settled is "already handled above". The search
+     is Maranget's (2007), the one Rust uses, and runs in the checker only. An arm with `when` takes
+     nothing for the search, as before.
+245. **An arm with a pattern inside does not settle its variant**: after `Add(Number(a), b)` an arm for
+     `Add(l, r)` still runs for the other sums; after `Add(l, r)` an arm `Add(Number(a), b)` is
+     "already handled above".
+246. **Ownership as before**: on a value that is owned, the names take what they name, at any depth; what
+     no name takes is dropped once the arm is chosen, and a box the pattern looked into is given back after
+     what it held. On a borrowed value the names borrow, and through a `read` field (a type that carries a
+     borrow) they are `read`. `is` only looks.
+247. **No pattern inside a value that may be `null`**: `Maybe(Number(n))` on an `Expr?` field is an error
+     whose hint is to name it and test it in the arm. A `null` pattern is not here yet.
+248. **`match` on text**: on a `string`, a `read string` (a range of a text included) and a `ref string`.
+     The arms are texts as they are written (with the escapes of a text), `_` and `var name`; as on a
+     number, `_` or `var name` is required, and the same text twice is an error. `$"..."` is not a pattern:
+     a text that is built is compared with `==`, in a `when` if need be. A `match` on a `string` that is
+     owned moves it, as every `match` moves (`match read text` keeps it); `for word in read words` gives
+     borrows, so nothing moves there.
+249. **A text arm in compiled code is a test of the length and then of the bytes**: `sg_eq(word,
+     SG_STR("if", 2))`, the chain a person writes in C with `memcmp`. No hash and no switch on the
+     length: with a dozen arms the chain is as fast as the hand-written one (`keywords`, 1.03). A switch on
+     the length or on the first byte can come if a measurement with many arms asks for it.
+250. **Methods on enums**: written in the enum body, after or between the variants, as in a struct, with
+     `this`, `read this`, `ref this` or none; `public` as in a struct. A line that is a name alone or a name
+     followed by `(` is a variant, any other line a function (a type, then the name). A function cannot
+     have a variant's name, and an enum has no fields: `int size` in an enum is an error whose hint is to
+     put the value in each variant. `Shape.unit()` calls a function without `this`; `Shape.Circle(2)` is
+     still the variant.
+251. **The interfaces on an enum with methods of its own**: `Formattable` with its own `format`,
+     `Equatable` with its own `equals`, and `Comparable`, which needs its `compare`, under the rules a
+     struct has (the two checks are now one). This settles the design's "an enum cannot be `Comparable`
+     until enums have methods". `Hashable` with its own `equals` or `hash` stays out, as for a struct.
+252. **Compiled code**: a method of an enum is a C function like a struct's (`f_Shape_area`), and the
+     helpers that write, compare and order an enum call its own `format`, `equals` and `compare`. An arm
+     with patterns inside is one condition: the tests of the tags and the values joined by `&&` in the
+     order they are written, so a value is read only after the tag of its variant was tested. Each arm
+     tests from the top; a decision tree that tests a shared part once can come if a measurement shows the
+     repeated tests cost something.
+253. **The measurement and the tests**: `keywords` (above) takes 1.03 times the time of the chain of
+     `memcmp` in C. The tests take apart an expression tree that is owned and one that is borrowed, two
+     levels deep, with numbers and text inside, through `T*`, with `ref` names that change the tree, in
+     `is` as well; `match` on owned, borrowed and ranged text, on the words of `split`, and texts inside
+     the variants of a type that carries a borrow; methods of every kind on enums, an enum's own `format`,
+     `compare` (with `<` and `sort`) and `equals` (with `==` and `indexOf`), and a `public` enum method seen
+     from another module while a hidden one is not; twenty-two tests of errors. Every compiled one left no
+     memory behind.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -2118,8 +2193,9 @@ check off.
   allocating.
 - Narrowing only follows a direct `x is null` / `x is not null` test, not `&&` chains. The same holds for
   the names of `x is Circle(r)`: they exist when the test is the whole condition of an `if` or `while`.
-- Patterns inside patterns (`Negate(Number(v))`), patterns for text (`match word { "if" => ... }`),
-  methods on enums.
+- Patterns of several shapes in one arm (`Add(_, _) | Multiply(_, _)`), a `null` pattern, ranges
+  (`'a'..'z'`), a name for a value whose pattern is tested at the same time (Rust's `n @ Number(_)`),
+  `true` and `false` as patterns, and a text tested for how it starts (choices 243, 247, 248).
 - Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
   in the design); threads, `shared` / `weak` / `checked` / `locked`.
@@ -2132,7 +2208,7 @@ check off.
 - What text needs Unicode tables for: changing the case of a text (`toUpper`), letters and digits beyond
   ASCII (`isLetter`), comparing without case beyond ASCII. `replace`, `repeat` (a `padLeft` is a width:
   `$"{name,10}"`, 229); the positions
-  of the characters (`charIndices`); splitting at most n times; `match` on text. Writing the type of an
+  of the characters (`charIndices`); splitting at most n times. Writing the type of an
   iterator, and a `for` over a type of your own that has `next` (with generics). `text.capacity()` and
   `text.reserve(n)`; a `ref string` given to a `format` method in place of its `Formatter`.
 - A number is written in decimal, hex and binary (`{n:x}`, `{n:b}`) and read in decimal and hex
@@ -2184,7 +2260,9 @@ written piece by piece (`readBytes`, `writeBytes`); copying the log as bytes tak
 `{mask:b8}`, `{n:D3}`, `{x:F2}`), and `parseHex` reads hex; printing two million lines with them takes
 0.89 times the time of `printf` in C. `list.addAll(slice)` copies a slice of `Copyable` items to the end of
 a list, and gathering a gigabyte of bytes in pieces of up to 255 with it takes the time of `memcpy` in C;
-`sort` and `reverse` work on an array and through a `ref T[]`, and on a range in front of them.
+`sort` and `reverse` work on an array and through a `ref T[]`, and on a range in front of them. A pattern
+stands inside a pattern (`Add(Number(0), right)`), a `match` looks at text, and an enum has methods; a
+`match` on text takes the time of a chain of `memcmp` in C.
 
 Candidates for what comes next: `text.replace` and `repeat`, type aliases (`using`), threads, the places
 that are slower than C.

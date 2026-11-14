@@ -1,5 +1,5 @@
-error: `match` needs a value of an enum, found `string`
-  patterns for text are not in the interpreter yet; compare with `==`
+error: `match` needs a value of an enum, found `double`
+  a `match` looks at an enum, an integer, a `char` or a text
   --> error_match_not_enum.sg:3:11
- 3 |     match name {
-   |           ^^^^
+ 3 |     match ratio {
+   |           ^^^^^

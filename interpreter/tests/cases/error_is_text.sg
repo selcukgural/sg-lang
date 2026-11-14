@@ -1,0 +1,6 @@
+void main() {
+    var word = "if"
+    if word is If {
+        print("keyword")
+    }
+}

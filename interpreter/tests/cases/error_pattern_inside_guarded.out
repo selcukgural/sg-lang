@@ -1,0 +1,6 @@
+error: this `match` does not handle `Add(Number(_), _)`
+  an arm with `when` does not settle what it matches: the condition may be false
+  --> error_pattern_inside_guarded.sg:7:18
+ 7 |     return match e {
+   |                  ^
+  hint: add an arm for it, or `_ => ...` for everything else

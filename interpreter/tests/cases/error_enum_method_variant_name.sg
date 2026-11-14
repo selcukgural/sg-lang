@@ -1,0 +1,8 @@
+enum Shape {
+    Circle(int radius)
+    Empty
+    int Circle(read this) {
+        return 1
+    }
+}
+void main() {}
