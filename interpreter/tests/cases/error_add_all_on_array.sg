@@ -1,0 +1,4 @@
+void main() {
+    var a = byte[4] { 1, 2, 3, 4 }
+    a.addAll("ab".asBytes())
+}

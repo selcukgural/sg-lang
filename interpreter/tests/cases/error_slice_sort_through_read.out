@@ -1,0 +1,5 @@
+error: `sort` changes the slice, but it is reached through a `read` borrow
+  --> error_slice_sort_through_read.sg:2:5
+ 2 |     items.sort()
+   |     ^^^^^
+  hint: lend it as a `ref int[]`: `ref xs` or `ref xs[a..b]`

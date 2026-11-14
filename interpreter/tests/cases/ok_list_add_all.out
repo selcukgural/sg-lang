@@ -1,0 +1,7 @@
+GIF89a
+6
+[1, 2, 3, 4, 5, 4, 5, 7, 8, 9]
+[3, 4, 5]
+Pixel { red = 255, green = 0, blue = 0 }
+Pixel { red = 255, green = 128, blue = 0 }
+5000 15000

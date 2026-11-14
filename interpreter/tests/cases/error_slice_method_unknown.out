@@ -1,0 +1,5 @@
+error: `int[]` has no method `revers`
+  --> error_slice_method_unknown.sg:4:12
+ 4 |     window.revers()
+   |            ^^^^^^
+  hint: `reverse`

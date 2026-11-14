@@ -1,0 +1,6 @@
+error: `xs` is added to itself
+  `xs` may move to a larger block while it grows, and the items would be read from the old one
+  --> error_add_all_itself.sg:4:15
+ 4 |     xs.addAll(read xs)
+   |               ^^^^^^^
+  hint: add the items one by one: `xs.add(xs[i])` copies each before the list grows

@@ -1,0 +1,9 @@
+error: `xs` cannot be changed here: `first` borrows from it and is used again later
+  --> error_range_sort_while_borrowed.sg:4:5
+ 4 |     xs[1..].reverse()
+   |     ^^
+  `first` borrowed it here:
+  --> error_range_sort_while_borrowed.sg:3:17
+ 3 |     var first = xs[0..1]
+   |                 ^^^^^^^^
+  hint: finish with `first` before this line: a borrow ends at its last use

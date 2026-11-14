@@ -1,0 +1,6 @@
+void main() {
+    var xs = List<int> { 3, 1, 2 }
+    for x in read xs {
+        xs[1..].sort()
+    }
+}

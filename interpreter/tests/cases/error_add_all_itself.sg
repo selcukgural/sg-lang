@@ -1,0 +1,5 @@
+// The list may move to a larger block while it grows; the items would be read from the old one.
+void main() {
+    var xs = List<int> { 1, 2 }
+    xs.addAll(read xs)
+}

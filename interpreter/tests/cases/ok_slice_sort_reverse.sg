@@ -1,0 +1,70 @@
+// `sort` and `reverse` through a `ref T[]`, on a range and on an array: the items change
+// places where they are, in the list or the array.
+struct Entry : Copyable, Formattable, Comparable {
+    int key
+    int order
+
+    int compare(read this, read Entry other) {
+        return this.key - other.key
+    }
+}
+
+void sortAll(ref int[] items) {
+    items.sort()
+}
+
+void flip(ref string[] names) {
+    names.reverse()
+}
+
+struct Frame {
+    int[4] delays
+}
+
+void main() {
+    var xs = List<int> { 9, 4, 7, 1, 8, 2 }
+    xs[1..4].sort()
+    print(xs)
+    xs[..3].reverse()
+    print(xs)
+    sortAll(ref xs)
+    print(xs)
+    sortAll(ref xs[0..0])
+
+    var window = ref xs[2..]
+    window.reverse()
+    print(xs)
+
+    var names = List<string> { "pear", "kiwi", "apple", "fig" }
+    names[1..].sort()
+    print(names)
+    flip(ref names)
+    print(names)
+
+    var a = int[5] { 5, 3, 4, 1, 2 }
+    a.sort()
+    print(a)
+    a.reverse()
+    print(a)
+    a[1..4].sort()
+    print(a)
+
+    var frame = Frame { delays = int[4] { 40, 10, 30, 20 } }
+    frame.delays.sort()
+    print(frame.delays)
+    var boxed = new Frame { delays = int[4] { 1, 2, 3, 4 } }
+    boxed.delays[1..].reverse()
+    print(boxed.delays)
+
+    // Equal items keep the order they had.
+    var entries = Entry[5] { Entry { key = 2, order = 0 }, Entry { key = 1, order = 1 }, Entry { key = 2, order = 2 }, Entry { key = 1, order = 3 }, Entry { key = 0, order = 4 } }
+    entries.sort()
+    for e in read entries {
+        print($"{e.key}:{e.order}")
+    }
+
+    var one = List<double> { 2.5 }
+    one[..].sort()
+    one[..].reverse()
+    print(one)
+}

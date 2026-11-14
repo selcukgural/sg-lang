@@ -1,0 +1,8 @@
+void sortAll(read int[] items) {
+    items.sort()
+}
+
+void main() {
+    var xs = List<int> { 2, 1 }
+    sortAll(read xs)
+}

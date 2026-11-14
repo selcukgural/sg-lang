@@ -1,0 +1,9 @@
+struct Layer {
+    List<byte> pixels
+}
+
+void main() {
+    var layers = List<Layer>()
+    var more = List<Layer>()
+    layers.addAll(read more)
+}

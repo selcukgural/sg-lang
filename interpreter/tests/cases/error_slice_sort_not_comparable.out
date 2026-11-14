@@ -1,0 +1,5 @@
+error: `sort` compares the items, and `bool` is not `Comparable`
+  `Comparable`: numbers, `char`, `string` and the types written with `: Comparable`
+  --> error_slice_sort_not_comparable.sg:3:11
+ 3 |     flags.sort()
+   |           ^^^^

@@ -1501,7 +1501,11 @@ impl<'a> Interp<'a> {
                     Ok(Value::Void)
                 }
                 Callee::Plain => {
-                    let recv = owned(self.expr(recv, frame)?);
+                    // An array that is put in order is the one in its place, not a copy of it.
+                    let recv = match recv.is_place() && matches!(name.as_str(), "sort" | "reverse") {
+                        true => owned(self.place(recv, frame)?.borrow().clone()),
+                        false => owned(self.expr(recv, frame)?),
+                    };
                     if let Value::Lines(lines) = &recv {
                         return Ok(self.next_line(lines)?.unwrap_or(Value::Null));
                     }
@@ -1515,6 +1519,19 @@ impl<'a> Interp<'a> {
                     let mut values = Vec::new();
                     for arg in args {
                         values.push(strip(self.expr(arg, frame)?));
+                    }
+                    // An array or a slice keeps its cells, which are those of its owner; the
+                    // values move between them.
+                    if let (Value::Array(cells) | Value::Slice(cells), "sort" | "reverse") = (&recv, name.as_str()) {
+                        let order = match name.as_str() {
+                            "sort" => self.sorted((**cells).clone(), expr.span)?,
+                            _ => cells.iter().rev().cloned().collect(),
+                        };
+                        let values: Vec<Value> = order.iter().map(|item| item.borrow().clone()).collect();
+                        for (item, value) in cells.iter().zip(values) {
+                            *item.borrow_mut() = value;
+                        }
+                        return Ok(Value::Void);
                     }
                     let recv = as_list(recv);
                     if matches!(recv, Value::List(_) | Value::Map(_) | Value::Set(_)) {
@@ -1795,6 +1812,27 @@ impl<'a> Interp<'a> {
         }
     }
 
+    /// The cells of the items in order; equal items keep the order they had. The items are
+    /// taken out while they are compared, so that a `compare` that fails leaves through here.
+    fn sorted(&mut self, mut cells: Vec<Cell>, span: Span) -> Res<Vec<Cell>> {
+        let mut failed = None;
+        cells.sort_by(|a, b| {
+            let (a, b) = (a.borrow().clone(), b.borrow().clone());
+            match self.compare(&a, &b, span) {
+                Ok(ordering) if failed.is_none() => ordering,
+                Ok(_) => std::cmp::Ordering::Equal,
+                Err(stop) => {
+                    failed.get_or_insert(stop);
+                    std::cmp::Ordering::Equal
+                }
+            }
+        });
+        match failed {
+            Some(stop) => Err(stop),
+            None => Ok(cells),
+        }
+    }
+
     /// The methods of `List<T>`, `HashMap<K, V>` and `HashSet<T>`.
     fn collection_method(&mut self, recv: Value, name: &str, mut args: Vec<Value>, span: Span) -> Res<Value> {
         match (&recv, name) {
@@ -1815,24 +1853,7 @@ impl<'a> Interp<'a> {
                 })
             }
             (Value::List(items), "sort") => {
-                // The list is taken out while its items are compared, so that a `compare`
-                // that fails leaves through here.
-                let mut sorted: Vec<Cell> = items.borrow().clone();
-                let mut failed = None;
-                sorted.sort_by(|a, b| {
-                    let (a, b) = (a.borrow().clone(), b.borrow().clone());
-                    match self.compare(&a, &b, span) {
-                        Ok(ordering) if failed.is_none() => ordering,
-                        Ok(_) => std::cmp::Ordering::Equal,
-                        Err(stop) => {
-                            failed.get_or_insert(stop);
-                            std::cmp::Ordering::Equal
-                        }
-                    }
-                });
-                if let Some(stop) = failed {
-                    return Err(stop);
-                }
+                let sorted = self.sorted(items.borrow().clone(), span)?;
                 *items.borrow_mut() = sorted;
                 Ok(Value::Void)
             }
@@ -2245,6 +2266,12 @@ fn collection_method(recv: Value, name: &str, mut args: Vec<Value>) -> Value {
         }
         (Value::List(items), "add") => {
             items.borrow_mut().push(cell(args.remove(0)));
+            Value::Void
+        }
+        // The items are `Copyable`: each gets a cell of its own.
+        (Value::List(items), "addAll") => {
+            let added: Vec<Cell> = cells_of(&args[0]).iter().map(|item| cell(fresh(&item.borrow()))).collect();
+            items.borrow_mut().extend(added);
             Value::Void
         }
         (Value::List(items), "get") => {

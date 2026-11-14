@@ -29,13 +29,15 @@
 //! beside it, room for the largest variant (a C union); a `match` is a chain of tests on the tag.
 //! A `Result<T, E>` is such an enum with the variants `Ok(T value)` and `Error(E cause)`; `try`
 //! is one test on the tag and, on an error, a `return`. A `List<T>` is a pointer to its items,
-//! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index.
+//! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index, and
+//! `addAll` is one test for room and a `memcpy` (the items are `Copyable`).
 //!
 //! An array `T[N]` is a C array inside a struct, so that it is passed, returned and copied by
 //! value like any other value: it lies where its variable or its field lies, and nothing is
 //! allocated for it. A slice (`read T[]`, `ref T[]`) is a window: a pointer to the first item
 //! and a count, whatever the items are kept in. A range `xs[a..b]` checks its two ends once and
-//! gives such a window; an index into a window is checked against the count.
+//! gives such a window; an index into a window is checked against the count. `sort` and
+//! `reverse` on a window move the items where they are, with the list's merge sort.
 //!
 //! Writing and comparing: for each struct, enum and list that is written or compared, one
 //! helper is made that writes it into a text (`sg_show_...`) and one that tells whether two
@@ -569,6 +571,17 @@ static inline uint64_t sg_hash_word(uint64_t h, uint64_t word) {
 /* A list that is full gets room for twice as many items. */
 static void* sg_grow(void* items, int64_t* cap, size_t size) {
     int64_t room = *cap ? *cap * 2 : 4;
+    void* grown = realloc(items, (size_t)room * size);
+    if (!grown) abort();
+    *cap = room;
+    return grown;
+}
+/* Room for at least `need` items: twice as many as there was room for, or `need` if that is
+   more, so that adding many items one call at a time still grows the block only now and then. */
+static void* sg_reserve(void* items, int64_t* cap, int64_t need, size_t size) {
+    int64_t room = *cap ? *cap * 2 : 4;
+    if (room < need) room = need;
+    if ((uint64_t)room > PTRDIFF_MAX / size) abort();
     void* grown = realloc(items, (size_t)room * size);
     if (!grown) abort();
     *cap = room;
@@ -2967,6 +2980,20 @@ impl<'a> Emitter<'a> {
                 let key = if **item == Ty::Str { Ty::Read(item.clone()) } else { (**item).clone() };
                 self.sigs.insert(helper.clone(), vec![key]);
             }
+            // The items in order where they are, in the list or the array that the window
+            // looks at; the same merge sort as a list's.
+            "sort" => {
+                let compare = self.item_compare(item, slice, span)?;
+                let _ = writeln!(self.glue, "static void {helper}({window} v) {{ sg_sort(v.ptr, v.len, sizeof({held}), {compare}); }}");
+                self.sigs.insert(helper.clone(), Vec::new());
+            }
+            "reverse" => {
+                let _ = writeln!(
+                    self.glue,
+                    "static inline void {helper}({window} v) {{ for (int64_t i = 0, j = v.len - 1; i < j; i++, j--) {{ {held} item = v.ptr[i]; v.ptr[i] = v.ptr[j]; v.ptr[j] = item; }} }}"
+                );
+                self.sigs.insert(helper.clone(), Vec::new());
+            }
             _ => unreachable!("the helpers are named here"),
         }
         Ok(helper)
@@ -3169,22 +3196,47 @@ impl<'a> Emitter<'a> {
                 self.sigs.insert(helper.clone(), vec![key]);
             }
             "sort" => {
-                let compare = match &**item {
-                    Ty::Int(_) | Ty::Char => format!("{held} x = *(const {held}*)a, y = *(const {held}*)b; return (x > y) - (x < y);"),
-                    Ty::Float(_) => format!("return sg_fcmp(*(const {held}*)a, *(const {held}*)b);"),
-                    Ty::Str => "return sg_cmp(sg_view((const sg_string*)a), sg_view((const sg_string*)b));".to_string(),
-                    Ty::Struct(owner) if self.own_method(owner, "compare") => format!("return f_{}_compare(({held}*)a, ({held}*)b);", cname(owner)),
-                    _ => return Err(not_yet(span, &format!("putting the items of a `{list}` in order"))),
-                };
-                let _ = writeln!(self.glue, "static int {helper}_compare(const void* a, const void* b) {{ {compare} }}");
+                let compare = self.item_compare(item, list, span)?;
                 let _ = writeln!(
                     self.glue,
-                    "static void {helper}({list_c}* v) {{ sg_sort(v->ptr, v->len, sizeof({held}), {helper}_compare); }}"
+                    "static void {helper}({list_c}* v) {{ sg_sort(v->ptr, v->len, sizeof({held}), {compare}); }}"
                 );
                 self.sigs.insert(helper.clone(), Vec::new());
             }
+            // The items are `Copyable`, so a copy of their bytes is a copy of them; the checker
+            // has seen that they do not lie in the list itself.
+            "addAll" => {
+                let slice = Ty::Slice(item.clone());
+                let window = self.ctype(&slice, span)?;
+                let _ = writeln!(
+                    self.glue,
+                    "static inline void {helper}({list_c}* v, {window} items) {{ if (items.len == 0) return; \
+                     if (items.len > v->cap - v->len) v->ptr = sg_reserve(v->ptr, &v->cap, v->len + items.len, sizeof({held})); \
+                     memcpy(v->ptr + v->len, items.ptr, (size_t)items.len * sizeof({held})); v->len += items.len; }}"
+                );
+                self.sigs.insert(helper.clone(), vec![Ty::Read(Box::new(slice))]);
+            }
             _ => unreachable!("the helpers are named here"),
         }
+        Ok(helper)
+    }
+
+    /// The function `sg_sort` compares two items of this type with, written once.
+    fn item_compare(&mut self, item: &Ty, holder: &Ty, span: Span) -> Res<String> {
+        let name = mangle(item).ok_or_else(|| not_yet(span, &format!("putting the items of a `{holder}` in order")))?;
+        let helper = format!("sg_order_{name}");
+        if !self.made.insert(helper.clone()) {
+            return Ok(helper);
+        }
+        let held = self.ctype(item, span)?;
+        let compare = match item {
+            Ty::Int(_) | Ty::Char => format!("{held} x = *(const {held}*)a, y = *(const {held}*)b; return (x > y) - (x < y);"),
+            Ty::Float(_) => format!("return sg_fcmp(*(const {held}*)a, *(const {held}*)b);"),
+            Ty::Str => "return sg_cmp(sg_view((const sg_string*)a), sg_view((const sg_string*)b));".to_string(),
+            Ty::Struct(owner) if self.own_method(owner, "compare") => format!("return f_{}_compare(({held}*)a, ({held}*)b);", cname(owner)),
+            _ => return Err(not_yet(span, &format!("putting the items of a `{holder}` in order"))),
+        };
+        let _ = writeln!(self.glue, "static int {helper}(const void* a, const void* b) {{ {compare} }}");
         Ok(helper)
     }
 
@@ -4412,6 +4464,7 @@ impl<'a> Emitter<'a> {
                     // A list is only read by these.
                     Callee::Plain if list_behind(&recv.ty).is_some() && matches!(name.as_str(), "length" | "get" | "indexOf" | "contains") => Effect::Reads,
                     Callee::Plain if list_behind(&recv.ty).is_some() => Effect::Changes,
+                    Callee::Plain if items_behind(&recv.ty).is_some() && matches!(name.as_str(), "sort" | "reverse") => Effect::Changes,
                     Callee::Plain if table_behind(&recv.ty).is_some() && matches!(name.as_str(), "length" | "get" | "contains") => Effect::Reads,
                     Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::Map(..) | Ty::Set(_) | Ty::Formatter) => Effect::Changes,
                     Callee::Plain if matches!(name.as_str(), "write" | "clear") && (is_text(&recv.ty) || is_text_behind_pointer(&recv.ty)) => Effect::Changes,
@@ -6093,6 +6146,7 @@ impl<'a> Emitter<'a> {
                         "removeLast" => self.list_helper(&list, "pop", expr.span)?,
                         "indexOf" | "contains" => self.list_helper(&list, "index", expr.span)?,
                         "sort" => self.list_helper(&list, "sort", expr.span)?,
+                        "addAll" => self.list_helper(&list, "addAll", expr.span)?,
                         _ => return Err(not_yet(expr.span, &format!("the method `{name}`"))),
                     };
                     let before = self.mark();
@@ -6138,6 +6192,7 @@ impl<'a> Emitter<'a> {
                         ("length", _) => return Ok(format!("{}.len", self.window(recv)?)),
                         ("get", _) => self.window_helper(&slice, "get", expr.span)?,
                         ("indexOf" | "contains", _) => self.window_helper(&slice, "index", expr.span)?,
+                        ("sort" | "reverse", _) => self.window_helper(&slice, name, expr.span)?,
                         _ => return Err(not_yet(expr.span, &format!("the method `{name}`"))),
                     };
                     let before = self.mark();
@@ -6161,7 +6216,8 @@ impl<'a> Emitter<'a> {
                             let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
                             Ok(format!("({{ int64_t {temp} = {called}; (({ctype}){{ {temp} >= 0, {temp} }}); }})"))
                         }
-                        _ => Ok(format!("({called} >= 0)")),
+                        "contains" => Ok(format!("({called} >= 0)")),
+                        _ => Ok(called),
                     }
                 }
                 // `string.withCapacity(n)`: a block of `n` bytes, or a panic that says why not.

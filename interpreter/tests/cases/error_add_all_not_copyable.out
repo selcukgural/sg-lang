@@ -1,0 +1,5 @@
+error: `addAll` copies the items, and `string` is not `Copyable`
+  --> error_add_all_not_copyable.sg:5:11
+ 5 |     names.addAll(read more)
+   |           ^^^^^^
+  hint: add them one by one, each a copy: `names.add(item.clone())`

@@ -1,0 +1,49 @@
+// `addAll` copies the items of a slice to the end of a list.
+struct Pixel : Copyable, Formattable {
+    byte red
+    byte green
+    byte blue
+}
+
+void main() {
+    // Bytes that come in pieces, as from a file.
+    var buffer = List<byte>()
+    buffer.addAll("GIF8".asBytes())
+    buffer.addAll("9a".asBytes())
+    print(string.fromUtf8(read buffer) ?? "not text")
+    print(buffer.length())
+
+    // From a list, a range of it, an array and an empty slice.
+    var xs = List<int> { 1, 2 }
+    var more = List<int> { 3, 4, 5 }
+    xs.addAll(read more)
+    xs.addAll(more[1..])
+    var three = int[3] { 7, 8, 9 }
+    xs.addAll(read three)
+    xs.addAll(more[0..0])
+    xs.addAll(read List<int>())
+    print(xs)
+    print(more)
+
+    // The items are copies: changing the source afterwards leaves the list as it was.
+    var palette = Pixel[2] { Pixel { red = 255, green = 0, blue = 0 }, Pixel { red = 0, green = 0, blue = 255 } }
+    var pixels = List<Pixel>()
+    pixels.addAll(read palette)
+    palette[0].green = 128
+    print(pixels[0])
+    print(palette[0])
+
+    // Many items one call at a time, and many in one call.
+    var counts = List<long>()
+    var piece = long[5] { 1, 2, 3, 4, 5 }
+    for i in 0..1000 {
+        counts.addAll(read piece)
+    }
+    var all = List<long>()
+    all.addAll(read counts)
+    long sum = 0
+    for n in read all {
+        sum += n
+    }
+    print($"{all.length()} {sum}")
+}

@@ -1,0 +1,8 @@
+void sortSome(read List<int> xs) {
+    xs[0..2].sort()
+}
+
+void main() {
+    var xs = List<int> { 2, 1 }
+    sortSome(read xs)
+}

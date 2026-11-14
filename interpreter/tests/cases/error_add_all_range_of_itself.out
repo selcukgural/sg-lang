@@ -1,0 +1,6 @@
+error: `xs[1..]` looks at `xs`, which this call adds to
+  `xs` may move to a larger block while it grows, and `xs[1..]` would be read from the old one
+  --> error_add_all_range_of_itself.sg:3:15
+ 3 |     xs.addAll(xs[1..])
+   |               ^^^^^^^
+  hint: add the items one by one: `xs.add(xs[i])` copies each before the list grows

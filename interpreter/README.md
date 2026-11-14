@@ -30,12 +30,12 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)` |
 | `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a name or `_` for each value, `_`, `var other`; a condition with `when`. On an integer the patterns are numbers and characters, on a `char` characters: `match c { '+' => ... _ => ... }`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
 | Interfaces | Five built-in ones, written after the name: `struct Point : Copyable`, `enum AppError : Formattable`. A `Copyable` value is copied where another would be moved. A `Formattable` value is accepted by `print`, `$"..."` and `f.write`; a struct can write its own `void format(read this, ref Formatter f)`, otherwise the text is made from the fields. `Equatable` gives `==` and `!=` (field by field, or the struct's own `bool equals(read this, read T other)`), `Hashable` lets the type be a key of a `HashMap` or an item of a `HashSet`, `Comparable` gives `<` `<=` `>` `>=` and `sort` through the struct's `int compare(read this, read T other)` |
-| `List<T>` | Built in. `List<int>()`, `List<int> { 1, 2 }`; `xs.add(v)`, `xs.length()`, `xs[i]` to read and to write (`xs[i] = v`, `xs[i] += 1`, `xs[i].name = ...`, `ref xs[i]`), `xs.get(i)` gives `null` where `xs[i]` would panic, `xs.removeLast()`, `xs.reverse()`, `xs.clear()`. `xs.indexOf(v)` and `xs.contains(v)` on `Equatable` items, `xs.sort()` on `Comparable` ones (numbers and text are both). `string.join(", ", read names)` |
+| `List<T>` | Built in. `List<int>()`, `List<int> { 1, 2 }`; `xs.add(v)`, `xs.length()`, `xs[i]` to read and to write (`xs[i] = v`, `xs[i] += 1`, `xs[i].name = ...`, `ref xs[i]`), `xs.get(i)` gives `null` where `xs[i]` would panic, `xs.removeLast()`, `xs.reverse()`, `xs.clear()`, `xs.addAll(items)` copies the items of a slice to the end (`buffer.addAll(text.asBytes())`, `xs.addAll(read ys)`, `xs.addAll(ys[2..])`) when they are `Copyable`. `xs.indexOf(v)` and `xs.contains(v)` on `Equatable` items, `xs.sort()` on `Comparable` ones (numbers and text are both). `string.join(", ", read names)` |
 | `HashMap<K, V>` | Built in; a key is an integer, a `bool`, a `string` or a type written `: Equatable, Hashable`. `HashMap<string, int>()`, `HashMap<string, int> { {"x", 10} }`; `map.add(key, value)`, `map[key]` to read and to write what is under a key that is there, `map.get(key)` gives `null` for a missing key, `map.getOrAdd(key, initial)` gives a `ref V`, `map.contains(key)`, `map.remove(key)`, `map.length()`, `map.clear()` |
 | Text of a collection | `print(xs)`, `$"{xs}"`: `[1, 2, 3]`, `{"ada": 36}`, `{1, 2, 3}`, when the items can be written as text |
 | `HashSet<T>` | Built in; an item is what a key of a `HashMap` can be. `HashSet<int>()`, `HashSet<int> { 1, 2 }`; `set.add(v)` gives `true` if the item was not there, `set.contains(v)`, `set.remove(v)` gives `true` if it was there, `set.length()`, `set.clear()` |
-| Arrays | `int[8] values`: a fixed number of items, kept where the value is (in the variable, inside the struct), with the length in the type. Built as `int[3] { 1, 2, 3 }` (the items), `byte[16](255)` (one value in every item) or `byte[16]` (zeros: 0, `false`, `null`). `xs[i]` to read and to write, `xs.length()`, `xs.get(i)`, `xs.indexOf(v)`, `xs.contains(v)`, `==`, `print`. An array of items that can be copied is copied like a number; any other is moved |
-| Slices | `read T[]` looks at items that something else owns, `ref T[]` can also write them. `read xs` and `ref xs` give one where a slice is expected, for a `List<T>` and a `T[N]`; a range gives one too: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` for a range that is written through. `s[i]`, `s.length()`, `s.get(i)`, `s.indexOf(v)`, `s.contains(v)`, `==`, `print`, `for`. `text.asBytes()` looks at a text as a `read byte[]`; `string.fromUtf8(bytes)` looks at bytes as text and gives a `Result<read string, TextError>` |
+| Arrays | `int[8] values`: a fixed number of items, kept where the value is (in the variable, inside the struct), with the length in the type. Built as `int[3] { 1, 2, 3 }` (the items), `byte[16](255)` (one value in every item) or `byte[16]` (zeros: 0, `false`, `null`). `xs[i]` to read and to write, `xs.length()`, `xs.get(i)`, `xs.indexOf(v)`, `xs.contains(v)`, `xs.sort()`, `xs.reverse()`, `==`, `print`. An array of items that can be copied is copied like a number; any other is moved |
+| Slices | `read T[]` looks at items that something else owns, `ref T[]` can also write them. `read xs` and `ref xs` give one where a slice is expected, for a `List<T>` and a `T[N]`; a range gives one too: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` for a range that is written through. `s[i]`, `s.length()`, `s.get(i)`, `s.indexOf(v)`, `s.contains(v)`, `==`, `print`, `for`; `s.sort()` and `s.reverse()` through a `ref T[]`, and on a range in front of them: `xs[2..5].sort()` puts those items of `xs` in order where they are. `text.asBytes()` looks at a text as a `read byte[]`; `string.fromUtf8(bytes)` looks at bytes as text and gives a `Result<read string, TextError>` |
 | `for` over a collection | `for x in xs` hands the collection over and `x` owns each item; `for x in read xs` and `for x in ref xs` lend, and so does a collection that is already borrowed. Over a `HashMap` the variable has a `key` and a `value`; a `HashSet` is gone over by hand-over or `read`. An array is gone over like a list; a slice lends its items |
 | `is` | `if s is Circle(r) { ... }`, `while next() is not End { ... }` |
 | Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`; on a `read T?` it gives a `read T`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
@@ -100,6 +100,10 @@ Design rules that are already enforced:
   `ref string`) and not in a `readonly` field. Writing a text into itself, or anything that looks at it
   (`s.write(s[..3])`, `s.write(s.trim())`), is an error whose hint is `.clone()`; a number computed from
   it is fine (`s.write($"{s.length()}")`). `text += "x"` is an error whose hint is `write`.
+- `addAll` copies, so the items must be `Copyable` (for text the hint is `add(item.clone())`), and a list
+  is not added to itself (`xs.addAll(xs[1..])`; the hint is `xs.add(xs[i])`). `sort` and `reverse` change
+  the order of the items and not their number, so an array and a `ref T[]` have them and a `read T[]` does
+  not; a range in front of them (`xs[2..5].sort()`) is lent as `ref`, with what `ref xs[2..5]` needs.
 - `assert` prints the expression text and, for a comparison, the value of both sides.
 - Deep recursion ends in a readable panic (limit: 5000 nested calls), not a crash.
 - Errors come with the source line, a marker and, where the fix is known, a hint.
@@ -220,7 +224,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (168 of 597 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (170 of 614 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -275,7 +279,8 @@ searches in a text, the same way. Since the thirty-seventh slice building a text
 read line by line, the command line, `printError` and `exit`, the same way. Since the thirty-ninth slice
 files read and written piece by piece (`StreamReader`, `StreamWriter`, `Stdin`, `Stdout`, `Stderr`), the
 same way. Since the forty-first slice the width and the letter after a value in `$"..."` (`{n,5}`,
-`{b:X2}`, `{x:F2}`) and `parseHex`, the same way.
+`{b:X2}`, `{x:F2}`) and `parseHex`, the same way. Since the forty-second slice `list.addAll(slice)` and
+`sort` and `reverse` on an array and through a `ref T[]`, the same way.
 What is still missing is an error that names it (not silence): the few positions listed with the choices
 below (81, 111).
 
@@ -316,6 +321,7 @@ hand with no checks):
 | `copy`: the same log read from a file with `File.openText` and written to another, each line with its number in front, through `File.createText` | 0.252 s | 0.253 s | 0.270 s | 0.93 |
 | `bytes`: the same log read in pieces of 4 KB with `readBytes` and written with `writeBytes` through a writer from `File.openAppend` | 0.030 s | 0.030 s | 0.032 s | 0.94 |
 | `table`: two million lines printed with widths, hex, binary and two digits after the point (`{i:x8} {a,10}  {name,-8}\|{x,10:F3}  {mask:b16} {code:X6}`) | 0.471 s | 0.471 s | 0.533 s | 0.89 |
+| `blocks`: eight million pieces of 1 to 255 bytes (about a gigabyte) gathered with `addAll` into a `List<byte>` that is emptied at 64 MB | 0.035 s | 0.035 s | 0.035 s | 1.00 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -453,6 +459,11 @@ binary digits put together by a small function first, since `printf` has no conv
 and then copied by `printf` (the format read twice), and the spaces of a width were a conversion of their
 own beside the value. Now the digits after the point are worked out by a function of the program, exactly
 (choice 232), and a width is one conversion; `printf`'s own `%10.3f` is the slower part of the C program.
+`blocks` gathers bytes as a GIF decoder gathers the data of an image, which comes in sub-blocks of at most
+255 bytes: a range of an array on the stack is added with `addAll` to a `List<byte>`, eight million times.
+The C program keeps the same block, length and capacity by hand and adds each piece with `memcpy`. The two
+take the same time (0.035 s over three runs of fifteen): `addAll` is one test for room and one `memcpy`.
+Adding the same bytes one at a time with `add` took ten times as long (0.344 s).
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
@@ -1246,7 +1257,8 @@ end comes after), approved on 13 November 2026:
 94. **An array and a slice have the methods of a list that only look**: `length`, `get`, `indexOf`,
     `contains`. `add`, `clear` and `removeLast` are errors that say the number of items is fixed and
     name `List<T>`. `sort` and `reverse` through a `ref T[]`, `addAll` on a list and looking for a run
-    of items (`data.indexOf(other)`) are not here yet.
+    of items (`data.indexOf(other)`) are not here yet. (The first three came in the forty-second slice,
+    choices 234 to 241.)
 95. **`==` on two arrays or two slices compares the items in order** when the items are `Equatable`,
     as for a list; `print` writes `[1, 2, 3]`. An array is not a key of a `HashMap` for now. An array
     and a slice are not compared with each other: `read a == s` has two different types.
@@ -2011,6 +2023,55 @@ checker, interpreter and back end together), approved on 14 November 2026:
      of errors. A program that writes 780 000 fractional numbers with eleven letters gives the same text
      interpreted and compiled, with both C compilers.
 
+Choices made in the forty-second slice (`list.addAll(slice)`, and `sort` and `reverse` on an array and through
+a `ref T[]`; checker, interpreter and back end together), approved on 14 November 2026:
+
+234. **`list.addAll(items)` takes a `read T[]`**: whatever a slice is made from, `read ys` for a list or
+     an array, a range (`ys[2..]`), `text.asBytes()`. The design's HTTP example (05) already writes
+     `buffer.addAll("...".asBytes())`, and the name is the design's. C# calls it `AddRange`, Rust
+     `extend_from_slice`, Go `append(xs, ys...)`; those names and `extend`, `pushAll`, `appendAll` and
+     `concat` are errors whose hint is `addAll`. A list given without `read` is the error any slice
+     parameter gives (hint `read ys`).
+235. **The items must be `Copyable`**: numbers, `bool`, `char`, and structs and enums written
+     `: Copyable`. A copy of their bytes is then a copy of them, so `addAll` is one `memcpy`. On a
+     `List<string>` or a list of structs that own memory it is an error: each text would be copied into a
+     block of its own, an allocation per item that the call does not show, and moving them instead would
+     empty a source that is only lent with `read`. The hint is `names.add(item.clone())` for text and
+     `: Copyable` for a struct. Moving every item of one list to the end of another (Rust's `append`) would
+     be a method of its own and is not here yet. Items that carry a borrow are refused ("not in the
+     language yet"); a list cannot hold them yet anyway.
+236. **A list is not added to itself**: `xs.addAll(read xs)` and `xs.addAll(xs[1..])` are compile errors,
+     the rule of `s.write(s)` (choice 185): the list may move to a larger block while it grows, and the
+     items would be read from the old one. The hint is `xs.add(xs[i])`, which copies each item before the
+     list grows. Rust refuses the same and has `extend_from_within(range)` for it; that can come when a
+     program needs it (a decoder that copies from what it already wrote, as `deflate` does; the LZW of GIF
+     does not).
+237. **`sort` and `reverse` on an array and through a `ref T[]`**: the items change places where they are,
+     in the list or the array the slice looks at. The number of items stays the same, which is why these
+     two come and `add` or `clear` do not. Through a `read T[]` it is an error whose hint is `ref xs` or
+     `ref xs[a..b]`; `sort` asks for `Comparable` items, as on a list.
+238. **A range in front of `sort` or `reverse` is lent as `ref`**: `xs[2..5].sort()` puts those items of
+     `xs` in order, as `ref xs[2..5]` would, without the brackets `(ref xs[2..5]).sort()` would need. A
+     variable in front of a method is lent as the method needs, with nothing written (`xs.sort()`), and a
+     range in front of these two follows that rule; a bare range anywhere else still only looks (choice
+     90). It needs what `ref xs[a..b]` needs: `xs` can be written, is not `readonly`, is not borrowed and
+     is not being gone over by a `for`. Rust writes `xs[2..5].sort()` too.
+239. **The same sort as a list's**: a merge sort that keeps equal items in the order they had. In compiled
+     code it takes a block of the slice's size from the heap while it sorts, as a list's sort does, so
+     sorting an array on the stack allocates. A sort that does not (an insertion sort for a few items, or
+     a merge in place) can come when a measurement asks for it.
+240. **Compiled code**: `addAll` tests for room once, grows the block to twice its room or to what is needed
+     if that is more, and copies with `memcpy`; an empty slice does nothing. `sort` on a slice is the
+     list's `sg_sort` on the slice's pointer and count, with the same function that compares two items
+     (now one per item type, for lists and slices alike); `reverse` swaps from both ends.
+241. **The measurement and the tests**: `blocks` (above) takes the time of `memcpy` in C (1.00); adding the
+     same bytes one at a time with `add` takes ten times as long. The tests add text bytes, a list, a range,
+     an array, an empty slice and `Copyable` structs (copies, which stay as they were when the source
+     changes), five thousand pieces one call at a time and the result in one call; they sort and turn
+     around ranges of lists, slices given as `ref T[]` parameters and kept in a variable, arrays, an array
+     field and one behind a `T*`, text, a `Comparable` struct with equal keys (the order is kept), one item
+     and none; fifteen tests of errors.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -2080,8 +2141,9 @@ check off.
   (choices 224, 229). No way to read a number out of bytes in one step
   (`ulong.fromLittleEndian(bytes)`): it is put together from the bytes by hand (see 136). `abs` and
   `clamp` on integers, `sinh` and the other functions of `<math.h>` that are not listed in 162.
-- Arrays of arrays, `read T[]?`, an array as a key, `sort` and
-  `reverse` through a `ref T[]`, `list.addAll(slice)`, looking for a run of items in a slice.
+- Arrays of arrays, `read T[]?`, an array as a key, looking for a run of items in a slice. `addAll` of
+  items that are not `Copyable`, moving every item of one list into another, adding a range of a list to
+  the same list (`extend_from_within`), a sort that does not allocate (choices 235, 236, 239).
 - A panic of `-x` and of a shift names no way out: there is no `tryNegate` or `tryShiftLeft` yet.
 - `Closable` and `Disposable` on a type of your own. Folders, removing or renaming a file, asking whether one is there; the
   variables of the environment; the command line as bytes (a word that is not UTF-8 stops the program).
@@ -2120,7 +2182,9 @@ of `getline` and `fprintf` in C. A writer appends with `File.openAppend`, and by
 written piece by piece (`readBytes`, `writeBytes`); copying the log as bytes takes 0.94 times the time of
 `fread` and `fwrite` in C. A value in `$"..."` takes a width and a letter, as in C# (`{n,5}`, `{b:X2}`,
 `{mask:b8}`, `{n:D3}`, `{x:F2}`), and `parseHex` reads hex; printing two million lines with them takes
-0.89 times the time of `printf` in C.
+0.89 times the time of `printf` in C. `list.addAll(slice)` copies a slice of `Copyable` items to the end of
+a list, and gathering a gigabyte of bytes in pieces of up to 255 with it takes the time of `memcpy` in C;
+`sort` and `reverse` work on an array and through a `ref T[]`, and on a range in front of them.
 
-Candidates for what comes next: `list.addAll(slice)` and `sort` through a `ref T[]`, type aliases
-(`using`), threads, the places that are slower than C.
+Candidates for what comes next: `text.replace` and `repeat`, type aliases (`using`), threads, the places
+that are slower than C.

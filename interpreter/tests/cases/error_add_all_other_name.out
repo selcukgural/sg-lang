@@ -1,0 +1,5 @@
+error: `List<int>` has no method `extend`
+  --> error_add_all_other_name.sg:4:8
+ 4 |     xs.extend(read ys)
+   |        ^^^^^^
+  hint: `addAll`

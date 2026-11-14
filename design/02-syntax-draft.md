@@ -1067,6 +1067,16 @@ var raw = "GET /".asBytes()                      // from text to bytes, free
 var text = try string.fromUtf8(data[..end])      // from bytes to text: validates, does not copy
 byte[] copy = data                               // error: byte[] is not a type on its own.
                                                  // Hint: List<byte> to own, read byte[] for a window
+
+buffer.addAll(block[..size])                     // the items copied to the end of a list: one memcpy.
+                                                 // Rust: extend_from_slice, C#: AddRange
+buffer.addAll(read buffer)                       // error: buffer is added to itself; it may move while it grows.
+                                                 // Hint: buffer.add(buffer[i])
+names.addAll(read others)                        // error: addAll copies the items, and string is not Copyable
+scores[2..5].sort()                              // a range in front of sort or reverse is lent as ref:
+                                                 // those items are put in order where they are
+void sortAll(ref int[] items) { items.sort() }   // sort and reverse through a ref T[] and on an array;
+                                                 // through a read T[] it is an error. Hint: ref xs
 ```
 
 ### Fixed-size arrays

@@ -2161,6 +2161,7 @@ impl<'a> Checker<'a> {
     /// `text.write(x)` where `x` looks at `text`: the text may move to a larger block while
     /// it is written, and `x` would be read from the old one. Numbers, `bool`s and characters
     /// in a `$"..."` are computed before anything is written, so they may come from it.
+    /// `list.addAll(items)` where `items` looks at `list` is refused for the same reason.
     fn written_into_itself(&self, recv: &Expr, arg: &Expr) -> Res<()> {
         let Some((name, path)) = store_path(recv) else { return Ok(()) };
         let Some(root) = self.var_named(name).map(|var| var.id) else { return Ok(()) };
@@ -2181,14 +2182,18 @@ impl<'a> Checker<'a> {
             let lent = self.loans_of(part, false).iter().any(|loan| loan.root == root && overlaps(&loan.path));
             if same_place || lent {
                 let (text, into) = (&self.src[part.span.start..part.span.end], &self.src[recv.span.start..recv.span.end]);
-                let diag = match text == into {
-                    true => Diag::error(part.span, format!("`{into}` is written into itself"))
+                let items = matches!(part.ty.strip_borrow(), Ty::Slice(_));
+                let diag = match (text == into || text == format!("read {into}"), items) {
+                    (true, false) => Diag::error(part.span, format!("`{into}` is written into itself"))
                         .note(format!("`{into}` may move to a larger block while it grows, and what is written would be read from the old one")),
-                    false => Diag::error(part.span, format!("`{text}` looks at `{into}`, which this call writes into"))
+                    (true, true) => Diag::error(part.span, format!("`{into}` is added to itself"))
+                        .note(format!("`{into}` may move to a larger block while it grows, and the items would be read from the old one")),
+                    (false, _) => Diag::error(part.span, format!("`{text}` looks at `{into}`, which this call {}", if items { "adds to" } else { "writes into" }))
                         .note(format!("`{into}` may move to a larger block while it grows, and `{text}` would be read from the old one")),
                 };
                 return Err(match part.ty.strip_borrow() {
                     Ty::Str => diag.hint(format!("copy it first: `var copy = {text}.clone()`")),
+                    Ty::Slice(_) => diag.hint(format!("add the items one by one: `{into}.add({into}[i])` copies each before the list grows")),
                     _ => diag.hint("write it into a text of its own first"),
                 });
             }
@@ -4764,9 +4769,31 @@ impl<'a> Checker<'a> {
             }
         }
 
-        let (recv_ty, mut writable, is_place) = match self.place(recv)? {
-            Some((ty, writable)) => (ty, writable, true),
-            None => (self.expr(recv, None)?, true, false),
+        // `xs[a..b].sort()`: a range in front of a method that changes the items is lent as
+        // the method needs, as a variable in front of it is; the range is then `ref xs[a..b]`.
+        if matches!(name, "sort" | "reverse") {
+            if let ExprKind::Slice { recv: inner, from, to } = &mut recv.kind {
+                let (window, writable) = self.range(inner, from, to)?;
+                let Ty::Read(behind) = window else { unreachable!("a range is a `read` window") };
+                if *behind != Ty::Str {
+                    if let Some(diag) = self.readonly(inner) {
+                        return Err(diag.note(format!("`{name}` changes the items of a range of it")));
+                    }
+                    if !writable {
+                        return Err(Diag::error(inner.span, format!("`{name}` changes the items, but this is reached through a `read` borrow"))
+                            .hint("take the value as `ref` instead of `read`"));
+                    }
+                    self.not_locked(inner, Access::Write)?;
+                }
+                recv.ty = if *behind == Ty::Str { Ty::Read(behind) } else { Ty::Ref(behind) };
+            }
+        }
+        let (recv_ty, mut writable, is_place) = match &recv.kind {
+            ExprKind::Slice { .. } if matches!(name, "sort" | "reverse") => (recv.ty.clone(), true, false),
+            _ => match self.place(recv)? {
+                Some((ty, writable)) => (ty, writable, true),
+                None => (self.expr(recv, None)?, true, false),
+            },
         };
         // Like field access, a method call looks through pointers and borrows.
         let mut borrowed = false;
@@ -4845,22 +4872,27 @@ impl<'a> Checker<'a> {
             _ => {}
         }
         if matches!(target, Ty::List(_) | Ty::Map(..) | Ty::Set(_)) {
-            return self.collection_method(recv, target, writable, name, name_span, args, span);
+            return self.collection_method(recv, target, target, writable, name, name_span, args, span);
         }
         if matches!(target, Ty::Reader | Ty::Writer) {
             let target = target.clone();
             return self.stream_method(recv, &target, writable, borrowed, name, name_span, args, callee, span);
         }
-        // An array and a slice have the methods of a list that only look.
+        // An array and a slice have the methods of a list that only look, and the two that
+        // change the order of the items without changing how many there are.
         if let Ty::Array(item, _) | Ty::Slice(item) = target {
-            if !matches!(name, "length" | "get" | "indexOf" | "contains") {
+            if !matches!(name, "length" | "get" | "indexOf" | "contains" | "sort" | "reverse") {
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 return Err(match name {
-                    "add" | "removeLast" | "clear" => diag.note(format!("`{target}` has a fixed number of items; a `List<{item}>` grows and shrinks")),
-                    _ => diag.note("methods for now: length, get, indexOf, contains"),
+                    "add" | "addAll" | "removeLast" | "clear" => diag.note(format!("`{target}` has a fixed number of items; a `List<{item}>` grows and shrinks")),
+                    _ => match nearest(name, ["length", "get", "indexOf", "contains", "sort", "reverse"].into_iter()) {
+                        Some(close) => diag.hint(format!("`{close}`")),
+                        None => diag.note("methods for now: length, get, indexOf, contains, sort, reverse"),
+                    },
                 });
             }
-            return self.collection_method(recv, &Ty::List(item.clone()), writable, name, name_span, args, span);
+            let shown = target.clone();
+            return self.collection_method(recv, &Ty::List(item.clone()), &shown, writable, name, name_span, args, span);
         }
 
         let arity = |count: usize| {
@@ -5180,6 +5212,7 @@ impl<'a> Checker<'a> {
         &mut self,
         recv: &Expr,
         target: &Ty,
+        shown: &Ty,
         writable: bool,
         name: &str,
         name_span: Span,
@@ -5193,12 +5226,14 @@ impl<'a> Checker<'a> {
                 Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len())))
             }
         };
-        let what = match target {
+        let what = match shown {
             Ty::List(_) => "list",
             Ty::Map(..) => "map",
+            Ty::Array(..) => "array",
+            Ty::Slice(_) => "slice",
             _ => "set",
         };
-        let changing = matches!(name, "add" | "clear" | "removeLast" | "reverse" | "remove" | "getOrAdd" | "sort");
+        let changing = matches!(name, "add" | "addAll" | "clear" | "removeLast" | "reverse" | "remove" | "getOrAdd" | "sort");
         if changing && writable {
             self.not_locked(recv, Access::Write)?;
         }
@@ -5231,8 +5266,11 @@ impl<'a> Checker<'a> {
             if writable {
                 Ok(())
             } else {
-                Err(Diag::error(recv.span, format!("`{name}` changes the {what}, but it is reached through a `read` borrow"))
-                    .hint("take the value as `ref` instead of `read`"))
+                let diag = Diag::error(recv.span, format!("`{name}` changes the {what}, but it is reached through a `read` borrow"));
+                Err(match shown {
+                    Ty::Slice(item) => diag.hint(format!("lend it as a `ref {item}[]`: `ref xs` or `ref xs[a..b]`")),
+                    _ => diag.hint("take the value as `ref` instead of `read`"),
+                })
             }
         };
         let nullable = |ty: &Ty| Ty::Nullable(Box::new(ty.clone()));
@@ -5253,6 +5291,26 @@ impl<'a> Checker<'a> {
                 if self.holds(item) {
                     self.stores(recv, &args[0])?;
                 }
+                Ok(Ty::Void)
+            }
+            // The items of a slice, copied to the end: one copy of a block in compiled code.
+            (Ty::List(item), "addAll") => {
+                arity(1)?;
+                changes()?;
+                if self.holds(item) {
+                    return Err(Diag::error(name_span, format!("`addAll` on a `List<{item}>` is not in the language yet: the items carry borrows"))
+                        .hint("add them one by one with `add`"));
+                }
+                if !item.is_copyable(self.copyable) {
+                    let diag = Diag::error(name_span, format!("`addAll` copies the items, and `{item}` is not `Copyable`"));
+                    return Err(match &**item {
+                        Ty::Str => diag.hint(format!("add them one by one, each a copy: `{}.add(item.clone())`", &self.src[recv.span.start..recv.span.end])),
+                        Ty::Struct(inner) | Ty::Enum(inner) => diag.hint(format!("make `{inner}` `Copyable`, or add the items one by one with `add`")),
+                        _ => diag.hint("add them one by one with `add`"),
+                    });
+                }
+                self.args(name, args, &[Ty::Read(Box::new(Ty::Slice(item.clone())))], span)?;
+                self.written_into_itself(recv, &args[0])?;
                 Ok(Ty::Void)
             }
             // `null` where `xs[i]` would panic.
@@ -5343,12 +5401,13 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let known: &[&str] = match target {
-                    Ty::List(_) => &["add", "get", "length", "indexOf", "contains", "sort", "removeLast", "reverse", "clear"],
+                    Ty::List(_) => &["add", "addAll", "get", "length", "indexOf", "contains", "sort", "removeLast", "reverse", "clear"],
                     Ty::Map(..) => &["add", "get", "getOrAdd", "contains", "remove", "length", "clear"],
                     _ => &["add", "contains", "remove", "length", "clear"],
                 };
                 // Names the same thing has in other languages.
                 let other_name = match (target, name) {
+                    (Ty::List(_), "extend" | "extendFromSlice" | "addRange" | "pushAll" | "appendAll" | "concat") => Some("addAll"),
                     (_, "push" | "append" | "insert" | "put" | "set") => Some("add"),
                     (_, "count" | "size" | "len" | "Count") => Some("length"),
                     (Ty::List(_), "pop") => Some("removeLast"),

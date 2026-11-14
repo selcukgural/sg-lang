@@ -1,0 +1,25 @@
+// Pieces of bytes gathered into one buffer, as the data of a GIF image comes in sub-blocks of
+// at most 255 bytes: eight million pieces of 1 to 255 bytes (about a gigabyte in all) are
+// added with `addAll` to a `List<byte>`, which is emptied each time it holds more than 64 MB.
+// The list keeps its block when it is emptied, so the copying is what is measured.
+void main() {
+    byte[255] block = byte[255]
+    for i in 0..255 {
+        block[i] = (byte)i
+    }
+    var buffer = List<byte>()
+    long total = 0
+    long check = 0
+    for round in 0..8000000 {
+        nint size = 1 + round % 255
+        block[0] = (byte)(round & 0xff)
+        buffer.addAll(block[0..size])
+        if buffer.length() > 64 << 20 {
+            total += buffer.length()
+            check += buffer[buffer.length() / 2]
+            buffer.clear()
+        }
+    }
+    total += buffer.length()
+    print($"{total} bytes, check {check}")
+}

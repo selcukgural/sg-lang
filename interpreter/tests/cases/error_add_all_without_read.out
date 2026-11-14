@@ -1,0 +1,5 @@
+error: expected `read int[]`, found `List<int>`
+  --> error_add_all_without_read.sg:4:15
+ 4 |     xs.addAll(ys)
+   |               ^^
+  hint: lend it with `read`: `read ys`

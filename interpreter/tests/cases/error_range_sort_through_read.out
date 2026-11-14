@@ -1,0 +1,5 @@
+error: `sort` changes the items, but this is reached through a `read` borrow
+  --> error_range_sort_through_read.sg:2:5
+ 2 |     xs[0..2].sort()
+   |     ^^
+  hint: take the value as `ref` instead of `read`

@@ -1,0 +1,6 @@
+// `addAll` copies the items, and a text owns its bytes.
+void main() {
+    var names = List<string> { "ada" }
+    var more = List<string> { "grace" }
+    names.addAll(read more)
+}

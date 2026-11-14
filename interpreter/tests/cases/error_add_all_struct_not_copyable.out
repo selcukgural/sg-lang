@@ -1,0 +1,5 @@
+error: `addAll` copies the items, and `Layer` is not `Copyable`
+  --> error_add_all_struct_not_copyable.sg:8:12
+ 8 |     layers.addAll(read more)
+   |            ^^^^^^
+  hint: make `Layer` `Copyable`, or add the items one by one with `add`

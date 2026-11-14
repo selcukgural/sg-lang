@@ -1,0 +1,7 @@
+void fill(read List<byte> buffer) {
+    buffer.addAll("ab".asBytes())
+}
+
+void main() {
+    fill(read List<byte>())
+}

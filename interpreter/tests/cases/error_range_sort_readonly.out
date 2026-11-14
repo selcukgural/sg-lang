@@ -1,0 +1,5 @@
+error: `colors` is `readonly`: it is given when the value is built and not changed afterwards
+  `sort` changes the items of a range of it
+  --> error_range_sort_readonly.sg:7:7
+ 7 |     p.colors[..].sort()
+   |       ^^^^^^

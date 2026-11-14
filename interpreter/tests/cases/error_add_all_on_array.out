@@ -1,0 +1,5 @@
+error: `byte[4]` has no method `addAll`
+  `byte[4]` has a fixed number of items; a `List<byte>` grows and shrinks
+  --> error_add_all_on_array.sg:3:7
+ 3 |     a.addAll("ab".asBytes())
+   |       ^^^^^^
