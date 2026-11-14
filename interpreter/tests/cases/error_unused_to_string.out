@@ -1,0 +1,5 @@
+error: the new text that `toString` gives is not used
+  --> error_unused_to_string.sg:3:5
+ 3 |     count.toString()
+   |     ^^^^^^^^^^^^^^^^
+  hint: keep it in a variable: `var text = count.toString()`

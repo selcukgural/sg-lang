@@ -235,6 +235,18 @@ fn is_text_value(ty: &Ty) -> bool {
     }
 }
 
+/// A built-in method that only gives a value: computing it and throwing the value away does
+/// nothing. The built-in methods that change their value and give one too (`removeLast`, the
+/// `add` and `remove` of a set, the `remove` and `getOrAdd` of a map, `next`) are left out:
+/// the change is what they are called for.
+fn gives_only(name: &str, callee: &Callee) -> bool {
+    match callee {
+        Callee::Join | Callee::WithCapacity => true,
+        Callee::Plain => !matches!(name, "removeLast" | "add" | "remove" | "getOrAdd" | "next"),
+        _ => false,
+    }
+}
+
 /// The methods of `char` and `byte` that test a character against ASCII.
 const ASCII_TESTS: &[&str] = &["isAscii", "isAsciiDigit", "isAsciiLetter", "isAsciiAlphanumeric", "isAsciiUpper", "isAsciiLower", "isAsciiWhitespace"];
 
@@ -2893,17 +2905,11 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Try { .. } => {
                 let ty = self.expr(expr, None)?;
-                // `line.replaceAll("a", "b")` alone changes nothing: the new text is thrown away.
-                if let ExprKind::Method { recv, name, callee: Callee::Plain, .. } = &expr.kind {
-                    if matches!(name.as_str(), "replaceAll" | "repeat") && is_text_value(&recv.ty) {
-                        let text = &self.src[recv.span.start..recv.span.end];
-                        let call = &self.src[span.start..span.end];
-                        return Err(match &recv.kind {
-                            ExprKind::Var(_) | ExprKind::Field { .. } => Diag::error(span, format!("the new text of `{name}` is not used: it leaves `{text}` as it was"))
-                                .hint(format!("to change `{text}`, assign the new text to it: `{text} = {call}`")),
-                            _ => Diag::error(span, format!("the new text that `{name}` gives is not used"))
-                                .hint(format!("keep it in a variable: `var text = {call}`")),
-                        });
+                // `line.trim()` alone changes nothing: a built-in method that only gives a value
+                // gives it to nobody.
+                if let ExprKind::Method { recv, name, callee, .. } = &expr.kind {
+                    if ty != Ty::Void && gives_only(name, callee) {
+                        return Err(self.not_used(recv, name, &ty, span));
                     }
                 }
                 if matches!(ty, Ty::Result(..)) {
@@ -2918,6 +2924,34 @@ impl<'a> Checker<'a> {
             }
         }
         Ok(())
+    }
+
+    /// The error for a call of a built-in method whose value is not used: `line.trim()`,
+    /// `x.abs()`, `xs.contains(3)` written alone.
+    fn not_used(&self, recv: &Expr, name: &str, ty: &Ty, span: Span) -> Diag {
+        let call = &self.src[span.start..span.end];
+        let text = &self.src[recv.span.start..recv.span.end];
+        let given = ty.strip_borrow();
+        let what = match given {
+            Ty::Str if name == "clone" => "the copy that `clone` makes".to_string(),
+            // `trim` gives a look at the same text, not a new one.
+            Ty::Str if matches!(ty, Ty::Read(_)) => format!("the text that `{name}` gives"),
+            Ty::Str => format!("the new text that `{name}` gives"),
+            _ if given == recv.ty.strip_borrow() => format!("the new value that `{name}` gives"),
+            _ => format!("the value that `{name}` gives"),
+        };
+        let place = matches!(recv.kind, ExprKind::Var(_) | ExprKind::Field { .. }) && !matches!(recv.kind, ExprKind::Var(ref var) if var == "string");
+        // `x.abs()` and `line.replaceAll(...)` are a new `x` and a new `line`; `xs.length()` is not.
+        let changed = place && name != "clone" && given == recv.ty.strip_borrow();
+        let keep = if *given == Ty::Str { "text" } else { "value" };
+        match changed {
+            // Only a value of its own type that is not a borrow can be assigned back to it.
+            true if !matches!(ty, Ty::Read(_)) => Diag::error(span, format!("{what} is not used: it leaves `{text}` as it was"))
+                .hint(format!("to change `{text}`, assign the new {keep} to it: `{text} = {call}`")),
+            true => Diag::error(span, format!("{what} is not used: it leaves `{text}` as it was"))
+                .hint(format!("keep it in a variable: `var {keep} = {call}`")),
+            false => Diag::error(span, format!("{what} is not used")).hint(format!("keep it in a variable: `var {keep} = {call}`")),
+        }
     }
 
     /// The condition of an `if` or `while`, checked in the scope that its block shares: the

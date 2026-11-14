@@ -1,0 +1,5 @@
+error: the copy that `clone` makes is not used
+  --> error_unused_clone.sg:3:5
+ 3 |     name.clone()
+   |     ^^^^^^^^^^^^
+  hint: keep it in a variable: `var text = name.clone()`

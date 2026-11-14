@@ -1,0 +1,5 @@
+error: the new value that `max` gives is not used: it leaves `counter.count` as it was
+  --> error_unused_field.sg:7:5
+ 7 |     counter.count.max(10)
+   |     ^^^^^^^^^^^^^^^^^^^^^
+  hint: to change `counter.count`, assign the new value to it: `counter.count = counter.count.max(10)`

@@ -1,0 +1,5 @@
+error: the text that `trim` gives is not used: it leaves `line` as it was
+  --> error_unused_trim.sg:3:5
+ 3 |     line.trim()
+   |     ^^^^^^^^^^^
+  hint: keep it in a variable: `var text = line.trim()`

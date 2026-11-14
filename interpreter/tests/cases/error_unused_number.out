@@ -1,0 +1,5 @@
+error: the new value that `abs` gives is not used: it leaves `distance` as it was
+  --> error_unused_number.sg:3:5
+ 3 |     distance.abs()
+   |     ^^^^^^^^^^^^^^
+  hint: to change `distance`, assign the new value to it: `distance = distance.abs()`

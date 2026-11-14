@@ -1,0 +1,51 @@
+// The built-in methods that change their value may be called alone even when they give a
+// value too: the change is what they are called for. A value thrown away on purpose is
+// written with `_ =`.
+struct Stack {
+    List<int> items
+
+    nint push(ref this, int item) {
+        this.items.add(item)
+        print($"pushed {item}")
+        return this.items.length()
+    }
+}
+
+int noisy(int n) {
+    print($"noisy {n}")
+    return n * 2
+}
+
+void main() {
+    var xs = List<int>()
+    xs.add(1)
+    xs.add(2)
+    xs.removeLast()
+    print(xs)
+
+    var seen = HashSet<string>()
+    seen.add("a")
+    seen.add("a")
+    seen.remove("b")
+    print(seen.length())
+
+    var ages = HashMap<string, int>()
+    ages.add("ada", 36)
+    ages.remove("ada")
+    ages.getOrAdd("bob", 7)
+    print(ages.get("bob") ?? 0)
+
+    var words = "one two".splitWhitespace()
+    words.next()
+    print(words.next() ?? "")
+
+    // Functions and methods of your own may print or change through `ref`: their value may
+    // be left unused.
+    noisy(4)
+    var stack = Stack { items = List<int>() }
+    stack.push(5)
+
+    _ = xs.contains(1)
+    _ = "  x ".trim()
+    _ = (-3).max(0)
+}

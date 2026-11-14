@@ -575,6 +575,18 @@ Result<int, AppError> load(read string path) {
 A `Result` whose value is not used is a compile error. To discard it on purpose, write `_ = parse(s)`. A `Result` that
 is assigned to a variable and never unwrapped gives the same error.
 
+So is the value of a built-in method that only gives one: alone it does nothing. A built-in method that changes its
+value may stand alone even when it gives one too, and so may a function of your own, which can print or change through
+`ref`:
+
+```
+line.trim()                                      // error: the text that `trim` gives is not used
+distance.abs()                                   // error: ... it leaves `distance` as it was; hint: `distance = distance.abs()`
+xs.contains(3)                                   // error: the value that `contains` gives is not used
+xs.removeLast()                                  // the item is dropped; the list changed
+_ = xs.contains(3)                               // thrown away on purpose
+```
+
 ### Construction
 
 `new` puts the value on the heap and gives a `T*`; it does not mean creating an object:
@@ -938,7 +950,7 @@ error. The name is not `replace`, because `x.replace(value)` already puts a new 
 var wide = line.replaceAll('\t', "    ")          // every place; old and new are a char or a read string
 line = line.replaceAll("draft", "final")         // the new text takes the old one's place
 print("-".repeat(20))                            // n is a nint; a negative n panics
-line.replaceAll("a", "b")                        // error: the new text of `replaceAll` is not used
+line.replaceAll("a", "b")                        // error: the new text that `replaceAll` gives is not used
 ```
 
 Kept in a variable, what `split` gives hands out one part at a time. A part borrows the text, not the iterator, and

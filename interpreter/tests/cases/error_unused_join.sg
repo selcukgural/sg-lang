@@ -1,0 +1,6 @@
+void main() {
+    var names = List<string>()
+    names.add("a")
+    names.add("b")
+    string.join(", ", read names)
+}

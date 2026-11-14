@@ -1,4 +1,4 @@
-error: the new text of `replaceAll` is not used: it leaves `line` as it was
+error: the new text that `replaceAll` gives is not used: it leaves `line` as it was
   --> error_replace_all_unused.sg:3:5
  3 |     line.replaceAll('\t', "    ")
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

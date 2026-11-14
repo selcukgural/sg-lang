@@ -1,0 +1,9 @@
+struct Counter {
+    int count
+}
+
+void main() {
+    var counter = Counter { count = 7 }
+    counter.count.max(10)
+    print(counter.count)
+}

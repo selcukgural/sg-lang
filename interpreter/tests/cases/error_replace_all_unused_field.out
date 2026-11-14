@@ -1,4 +1,4 @@
-error: the new text of `replaceAll` is not used: it leaves `doc.body` as it was
+error: the new text that `replaceAll` gives is not used: it leaves `doc.body` as it was
   --> error_replace_all_unused_field.sg:7:5
  7 |     doc.body.replaceAll("draft", "final")
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

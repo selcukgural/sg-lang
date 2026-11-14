@@ -1,0 +1,5 @@
+error: the value that `contains` gives is not used
+  --> error_unused_query.sg:4:5
+ 4 |     xs.contains(3)
+   |     ^^^^^^^^^^^^^^
+  hint: keep it in a variable: `var value = xs.contains(3)`

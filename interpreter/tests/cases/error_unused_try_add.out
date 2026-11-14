@@ -1,0 +1,5 @@
+error: the value that `tryAdd` gives is not used
+  --> error_unused_try_add.sg:3:5
+ 3 |     total.tryAdd(1)
+   |     ^^^^^^^^^^^^^^^
+  hint: keep it in a variable: `var value = total.tryAdd(1)`

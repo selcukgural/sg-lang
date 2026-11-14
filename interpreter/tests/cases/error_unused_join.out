@@ -1,0 +1,5 @@
+error: the new text that `join` gives is not used
+  --> error_unused_join.sg:5:5
+ 5 |     string.join(", ", read names)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: keep it in a variable: `var text = string.join(", ", read names)`

@@ -135,6 +135,10 @@ Design rules that are already enforced:
 - A borrow of a `T*` is accepted where a borrow of `T` is expected (`eval(left)` with `left` a `read Expr*`).
 - A `Result` that is not used is an error, as a statement (`save()`) and as a variable that nothing looks at.
   The hint names `try` and `_ = ...`.
+- A built-in method that only gives a value is an error when the value is not used: `line.trim()`,
+  `distance.abs()` or `xs.contains(3)` alone does nothing. The built-in methods that change their value and
+  give one too (`removeLast`, `next`, the `add` and `remove` of a set) and the functions you write may stand
+  alone.
 - `try` needs a function that can pass the error on: one that returns a `Result` (or a `T?` for `try` on a
   `T?`). With a different error type, `try` wraps the error in the one variant of the caller's error type that
   carries it; none or more than one is an error.
@@ -228,7 +232,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (182 of 700 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (183 of 709 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -290,7 +294,7 @@ patterns inside patterns, `match` on text and methods on enums, the same way. Si
 Since the forty-fifth slice the names of `is` and the narrowing of `is not null` along `&&` and `||`, the
 same way. Since the forty-sixth slice an assignment computes its right side before it finds the place, as
 the interpreter always did (choice 270). Since the forty-seventh slice `replaceAll` and `repeat`, written
-together with the checker and the interpreter. What is still missing is an error that names it (not silence): the few positions listed with the
+together with the checker and the interpreter. The forty-eighth slice is in the checker alone. What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -2344,7 +2348,8 @@ approved on 14 November 2026:
      " ")` alone changes nothing. When the text is a variable or a field the hint assigns the new text to it
      (`line = line.replaceAll(...)`). Rust gives a warning (`#[must_use]`), Zig an error for every value
      that is thrown away; SG has no warnings. The other methods that give a new value (`trim`, `clone`,
-     `toString`) are left as they were for now.
+     `toString`) are left as they were for now. (The forty-eighth slice took the rule to every built-in
+     method that only gives a value: 282.)
 280. **Compiled code**: `replaceAll` finds each place with the search of `indexOf` (`memchr` for the first
      byte, then `memcmp`) and copies the pieces into a block that starts with the size of the text and
      doubles when it is full; `repeat` allocates the whole size once and copies what it has written after
@@ -2355,6 +2360,38 @@ approved on 14 November 2026:
      assigned back to a field; `repeat` of zero, of an empty text, with an `int` and a `byte`, a thousand
      times, inside `$"..."` and into a list. Fourteen tests of errors and three of panics. Every compiled one
      left no memory behind; the two programs give the same output under gcc.
+
+Choices made in the forty-eighth slice (the value of a built-in method that is not used; checker only),
+approved on 14 November 2026:
+
+282. **Every built-in method that only gives a value is a compile error when the value is not used**, not
+     only `replaceAll` and `repeat` (279): `line.trim()`, `name.clone()`, `count.toString()`,
+     `distance.abs()`, `xs.contains(3)`, `xs.length()`, `total.tryAdd(1)` and `string.join(", ", read
+     names)` written alone do nothing. The rule takes the methods that give a new value, which 279 left
+     for later, and the ones that answer a question (`contains`, `length`, `indexOf`, `compare`), which
+     are as useless alone; so it is one sentence with no list to learn. Zig refuses every value that is
+     thrown away; Rust marks most of these methods `#[must_use]` and warns.
+283. **A built-in method that changes its value and gives one too may stand alone**: `xs.removeLast()`, the
+     `add` and `remove` of a `HashSet` (they give whether something changed), the `remove` and `getOrAdd`
+     of a `HashMap`, and `next` on an iterator. The change is what they are called for. The ones that give
+     nothing (`add` on a list, `sort`, `write`, `clear`) are statements as before.
+284. **Functions and methods you write are left as they are**: `noisy(4)` and `stack.push(5)` alone are
+     accepted even when they give a value, since they can print, change through `ref` or stop, and the
+     checker does not know which ones do nothing else. Zig asks for `_ =` there too; SG keeps the error for
+     what it knows does nothing. A `Result` stays an error everywhere (the rule above).
+285. **The words of the error**: when the method gives a new value of the type of the variable or the field
+     it is called on, the error says "it leaves `x` as it was" and the hint assigns it back (`x =
+     x.abs()`, `counter.count = counter.count.max(10)`). `trim` gives a look at the same text, which
+     cannot be assigned back to a `string`, so it says "it leaves `line` as it was" with `var text =
+     line.trim()` as the hint. The others name what was not used ("the copy that `clone` makes", "the new
+     text that `toString` gives", "the value that `contains` gives") with `var` as the hint. The two
+     messages of 279 now read "the new text that `replaceAll` gives is not used", like the rest. `_ =
+     xs.contains(3)` still throws a value away on purpose.
+286. **No cost, and compiled code as it was**: the rule is in the checker alone; the interpreter and the back
+     end do not change. The tests: eight tests of errors (`trim`, `abs`, `max` on a field, `contains`,
+     `clone`, `toString`, `string.join`, `tryAdd`) and one program that calls the changing methods, a
+     function and a method of its own alone and throws values away with `_ =`. It left no memory behind;
+     the two programs give the same output under gcc.
 
 ## Slower than C, and could be better
 
@@ -2418,8 +2455,7 @@ check off.
   type with its own `equals` or `hash`.
 - What text needs Unicode tables for: changing the case of a text (`toUpper`), letters and digits beyond
   ASCII (`isLetter`), comparing without case beyond ASCII. Replacing only the first places
-  (`replacen`), replacing in place without a new text, an error for the unused result of the other methods
-  that give a new value (`trim`, `clone`; choice 279); a `padLeft` is a width: `$"{name,10}"` (229); the positions
+  (`replacen`), replacing in place without a new text; a `padLeft` is a width: `$"{name,10}"` (229); the positions
   of the characters (`charIndices`); splitting at most n times. Writing the type of an
   iterator, and a `for` over a type of your own that has `next` (with generics). `text.capacity()` and
   `text.reserve(n)`; a `ref string` given to a `format` method in place of its `Formatter`.
@@ -2483,6 +2519,8 @@ assignment computes its right side first and then finds the place, as Rust does,
 read a borrow of the value it replaces (`b = Box { n = r.n + 1 }`) and can grow the list it is written
 into. `text.replaceAll(old, new)` and `text.repeat(n)` give a new text, and a call of them whose result is
 thrown away is a compile error; rewriting lines with them takes 0.94 times the time of the same program in C.
+So is every other built-in method that only gives a value (`line.trim()`, `xs.contains(3)` alone), while
+the ones that change their value (`removeLast`) and the functions you write may stand alone.
 
 Candidates for what comes next: type aliases (`using`), threads, the places that are slower than C, the
 narrowing after a `while` and under `!`.
