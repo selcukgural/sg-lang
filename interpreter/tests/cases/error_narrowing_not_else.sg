@@ -1,0 +1,8 @@
+void main() {
+    string? name = "Ada"
+    if !(name is null) {
+        print(name.length())
+    } else {
+        print(name.length())
+    }
+}

@@ -1,0 +1,8 @@
+// When the condition fails, `b` was there and `take` emptied it.
+void main() {
+    string? b = "x"
+    if b is null || b.take() is null {
+        return
+    }
+    print(b.length())
+}

@@ -1,0 +1,16 @@
+// The `break` in the arm leaves the loop, so `pick` reaches its end without a value.
+int pick(int k) {
+    while true {
+        var n = 1 + match k {
+            1 => {
+                break
+            }
+            _ => 2
+        }
+        print(n)
+    }
+}
+
+void main() {
+    print(pick(1))
+}

@@ -1,0 +1,7 @@
+void main() {
+    string? b = "x"
+    while b is null || b.take() is null {
+        print(1)
+    }
+    print(b.length())
+}

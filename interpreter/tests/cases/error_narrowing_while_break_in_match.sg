@@ -1,0 +1,14 @@
+void main() {
+    int? got = null
+    var k = 1
+    while got is null {
+        var n = 1 + match k {
+            1 => {
+                break
+            }
+            _ => 2
+        }
+        print(n)
+    }
+    print(got + 1)
+}

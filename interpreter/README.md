@@ -40,7 +40,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | `is` | `if s is Circle(r) { ... }`, `if e is Add(Number(0), right) { ... }`, `if e is Add(l, _) or Mul(l, _) { ... }`, `while next() is not End { ... }`. The names reach along `&&`: `if int.parse(read text) is Ok(n) && n > 0 { ... }`, `return s is Circle(r) && r > 10` |
 | Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`; on a `read T?` it gives a `read T`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
-| Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`) |
+| Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
 | Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x`. On integers `& \| ^ ~ << >>`; they bind tighter than a comparison, so `flags & mask == 0` tests the masked value |
@@ -112,7 +112,9 @@ Design rules that are already enforced:
 - `T` is never `null`; only `T?` is. Reaching into a `T?` without a test is an error. After
   `if x is not null { ... }`, `while x is not null { ... }` or `if x is null { return }` the variable counts as
   `T` until it is assigned again. The same holds along a chain: `x is not null` on the left of `&&`, and
-  `x is null` on the left of `||`, narrow `x` on the right (choice 264). Fields are not narrowed: copy to a
+  `x is null` on the left of `||`, narrow `x` on the right (choice 264). `!` swaps what a test says, so
+  `!(x is null)` narrows like `x is not null` (choice 287), and after `while x is null { ... }` the variable
+  counts as `T` unless a `break` leaves the loop (choice 288). Fields are not narrowed: copy to a
   local first.
 - The names of `x is Circle(r)` are seen on the right of `&&` and in the block of the `if` or `while` whose
   condition the chain is, not in `else` and not after it (choice 263).
@@ -232,7 +234,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (183 of 709 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (185 of 719 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -294,7 +296,8 @@ patterns inside patterns, `match` on text and methods on enums, the same way. Si
 Since the forty-fifth slice the names of `is` and the narrowing of `is not null` along `&&` and `||`, the
 same way. Since the forty-sixth slice an assignment computes its right side before it finds the place, as
 the interpreter always did (choice 270). Since the forty-seventh slice `replaceAll` and `repeat`, written
-together with the checker and the interpreter. The forty-eighth slice is in the checker alone. What is still missing is an error that names it (not silence): the few positions listed with the
+together with the checker and the interpreter. The forty-eighth slice is in the checker alone, and so is
+the forty-ninth (narrowing under `!` and after a `while`). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -500,7 +503,8 @@ its place the C program took 0.70 s (0.84), because the `memmem` of macOS is slo
 needles. Most of both programs is `malloc`, `memcpy` and `free`.
 The names of an `is` along `&&` (forty-fifth slice) are not measured on their own either: each is one
 pointer set inside the condition where its test holds, `(s.tag == 0 && (r = &s.u.v0.m_radius, 1)) &&
-*r > 10`, which is the C a person writes with the same names, and a narrowing writes nothing at all.
+*r > 10`, which is the C a person writes with the same names, and a narrowing writes nothing at all, so
+the narrowing under `!` and after a `while` (forty-ninth slice) is not measured either.
 The numbers move by a few percent from run to run, and a dozen small programs are not a benchmark suite.
 
 Choices made here, approved on 12 November 2026:
@@ -2262,7 +2266,8 @@ interpreter and back end together), approved on 14 November 2026:
      { return }` narrows `a` and `b`); a `&&` chain of `is not null` tests narrows them after the `if` when
      `else` always leaves. Only the parts of the chain itself count: `!(x is null)`, and a test inside the
      other operator (`a && (x is not null || b)`), narrow nothing. The first half was decided before the
-     slice; the `||` half, its mirror image, was added during it. C# narrows the same way.
+     slice; the `||` half, its mirror image, was added during it. C# narrows the same way. (The forty-ninth
+     slice reads the whole condition, `!` included: 287.)
 265. **No names where nothing sees them**: an `is` that names values and is joined by `||` is an error whose
      note says why: with `||` the block also runs when this test does not hold, and then the names have no
      value. An `is` with names under `!`, or as a whole value (`var round = s is Circle(r)`), is an error
@@ -2393,6 +2398,52 @@ approved on 14 November 2026:
      function and a method of its own alone and throws values away with `_ =`. It left no memory behind;
      the two programs give the same output under gcc.
 
+Choices made in the forty-ninth slice (narrowing under `!` and after a `while`; checker only), approved on
+14 November 2026:
+
+287. **`!` swaps what a test says, and a condition is read as a whole**: each condition says which
+     variables are not `null` where it holds and which where it does not. `x is not null` says `x` where
+     it holds, `x is null` where it does not, and `!` swaps the two, so `if !(x is null)` narrows `x` in
+     the block and `if !(x is not null) { ... } else { ... }` in `else`. Where `a && b` holds both sides
+     held; where it does not, only what both sides say when they fail is known. `a || b` is the other way
+     round. So `if !(a is null || b is null)` narrows `a` and `b`, `if (a is not null && b > 0) || (a is
+     not null && c > 0)` narrows `a`, and `if !(a is null && b is null)` narrows neither. The same reading
+     serves a part of a chain (choice 264), `else`, and the code after an `if` whose branch leaves. This
+     takes back the sentence of 264 that `!(x is null)` and a test inside the other operator narrow
+     nothing. C# reads a condition the same way.
+288. **After a `while`, what its failed condition says holds**: a loop ends when its condition fails, so
+     after `while x is null { x = ... }` the variable is a `T`, and after `while first is null || second
+     is null { ... }` both are. `while x is null && tries < 3` narrows nothing, since the loop may end
+     because of `tries`. A `break` that leaves this loop turns it off, wherever it stands, a `match` arm
+     inside an expression included; a `break` of an inner loop does not. C# does the same; Rust has no
+     `null` to narrow.
+289. **No new words in the error**: a variable left a `T?` because of a `break` gets the usual error that
+     it may be `null`, as one assigned again does. A note that names the `break` is not here yet. The names
+     of an `is` still do not reach under `!` or past the `if` (`if !(r is Ok(v)) { return }` and then `v`,
+     which C# allows and Rust writes as `let ... else`); that stays the error of 265.
+290. **A `break` inside an expression is seen**: the check for a `break` in a loop looked only at a
+     `match` standing alone as a statement or a value, so `var n = 1 + match k { 1 => { break } _ => 2 }`
+     inside `while true { ... }` counted as a loop that never ends. A function that ended with that loop
+     was accepted without a `return` and gave whatever was left in a register in compiled code, and no
+     value at all in the interpreter. The check now looks inside every expression, the condition of an
+     `if` and the range of an inner loop too, and the function is the error that it does not return a
+     value on every path. This was there before the slice; it came up because narrowing after a `while`
+     depends on the same check. The search for `take` in a loop goes over expressions the same way now.
+291. **A variable the condition empties is not narrowed by it**: `if b is null || b.take() is null { return
+     }` narrowed `b` after the `if`, but when that condition fails `b` was there and `take` then emptied it,
+     so `b.length()` after it reached into `null` (the interpreter stopped on it). What a whole condition
+     says, in `else`, after the `if` and after a `while`, now leaves out the variables the condition empties
+     with `take` or assigns in a `match` arm. Along the chain itself it was already right: `take` ends the
+     narrowing for the parts after it. This was there since the forty-fifth slice; narrowing after a `while`
+     would have had it too.
+292. **No cost, and compiled code as it was**: a narrowed variable is read as its value, as before, so the
+     interpreter and the back end do not change. The tests: two programs (`!` in a block, in `else`, along
+     `&&` and `||` and after an `if`; `while` over a search, and over two variables with an inner loop that
+     breaks) and eight tests of errors (a `break` of the loop, a `break` in a `match` arm, `&&` in the
+     condition of the `while`, `!` over `&&`, `else` of `!(x is null)`, the function of 290, and `take` in
+     the condition of an `if` and of a `while`). Every compiled one left no memory behind; the two programs
+     give the same output under gcc.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -2437,9 +2488,9 @@ check off.
 - `swap(ref a, ref b)`, and `this` with a type (`read FolderRef this`).
 - A string literal has the type `string` here; in the design it is `read string` that becomes `string` without
   allocating.
-- Narrowing after a `while` (`while x is null { ... }` leaves `x` a `T?` after the loop), and through `!`
-  (`if !(x is null)`). An `is` with names on a value made by a call after the first `&&`, in compiled code
-  (268).
+- The names of an `is` after an `if` whose block leaves (`if !(r is Ok(v)) { return }`, Rust's `let ... else`),
+  and a note that names the `break` which keeps a variable a `T?` after a `while` (289). An `is` with names
+  on a value made by a call after the first `&&`, in compiled code (268).
 - A name for a value whose pattern is tested at the same time (Rust's `n @ Number(_)`), a text tested
   for how it starts (choices 243, 248), a constant as an end of a range (`int.MaxValue`), a range open at
   one end (`5..=`), `..=` outside a pattern (254, 255). A pattern of an `or` inside the parentheses that the
@@ -2520,7 +2571,8 @@ read a borrow of the value it replaces (`b = Box { n = r.n + 1 }`) and can grow 
 into. `text.replaceAll(old, new)` and `text.repeat(n)` give a new text, and a call of them whose result is
 thrown away is a compile error; rewriting lines with them takes 0.94 times the time of the same program in C.
 So is every other built-in method that only gives a value (`line.trim()`, `xs.contains(3)` alone), while
-the ones that change their value (`removeLast`) and the functions you write may stand alone.
+the ones that change their value (`removeLast`) and the functions you write may stand alone. `!` swaps what
+a test of `null` says (`if !(x is null)`), and after `while x is null { ... }` the variable is not `null`.
 
 Candidates for what comes next: type aliases (`using`), threads, the places that are slower than C, the
-narrowing after a `while` and under `!`.
+names of an `is` after an `if` that leaves (`if !(r is Ok(v)) { return }`).

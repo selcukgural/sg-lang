@@ -1,0 +1,8 @@
+void main() {
+    var tries = 0
+    int? got = null
+    while got is null && tries < 3 {
+        tries += 1
+    }
+    print(got + 1)
+}

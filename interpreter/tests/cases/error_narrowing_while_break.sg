@@ -1,0 +1,19 @@
+int? next(ref int tries) {
+    tries += 1
+    if tries > 3 {
+        return tries
+    }
+    return null
+}
+
+void main() {
+    var tries = 0
+    int? got = null
+    while got is null {
+        got = next(ref tries)
+        if tries > 10 {
+            break
+        }
+    }
+    print(got + 1)
+}

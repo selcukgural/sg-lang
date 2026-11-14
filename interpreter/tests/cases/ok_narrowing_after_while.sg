@@ -1,0 +1,44 @@
+// A `while` ends only when its condition fails, so what the failed condition says holds after
+// the loop: after `while x is null { ... }` `x` is not null. A `break` of an inner loop does
+// not leave this one.
+int? find(read List<int> xs, int wanted) {
+    for x in xs {
+        if x == wanted {
+            return x
+        }
+    }
+    return null
+}
+
+void main() {
+    var xs = List<int>()
+    xs.add(2)
+    xs.add(7)
+    int? got = null
+    var wanted = 0
+    while got is null {
+        wanted += 1
+        got = find(read xs, wanted)
+    }
+    print(got * 10)
+
+    string? first = null
+    string? second = null
+    var round = 0
+    while first is null || !(second is not null) {
+        round += 1
+        for i in 0..10 {
+            if i == round {
+                break
+            }
+        }
+        if round == 2 {
+            first = "one"
+        }
+        if round == 3 {
+            second = "two"
+        }
+    }
+    print(first.length() + second.length())
+    print(round)
+}

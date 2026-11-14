@@ -1,0 +1,5 @@
+error: this is `string?` and may be `null`; `.length()` needs a value
+  --> error_narrowing_taken_in_condition.sg:7:11
+ 7 |     print(b.length())
+   |           ^
+  hint: test it first: `if b is not null { ... }`

@@ -1,0 +1,7 @@
+void main() {
+    int? a = 1
+    int? b = null
+    if !(a is null && b is null) {
+        print(a + 1)
+    }
+}

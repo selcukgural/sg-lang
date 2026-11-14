@@ -1,0 +1,40 @@
+// `!` swaps what a test says: `!(x is null)` narrows like `x is not null`, in the block, in
+// `else`, along `&&` and `||`, and after an `if` whose branch leaves.
+nint lengthOf(read string? text) {
+    if !(text is not null) || text.length() == 0 {
+        return 0
+    }
+    return text.length()
+}
+
+void main() {
+    string? name = "Ada"
+    if !(name is null) {
+        print(name.length())
+    }
+    if !(name is not null) {
+        print("none")
+    } else {
+        print(name.length() + 1)
+    }
+    var long = !(name is null) && name.length() > 2
+    print(long)
+    print(lengthOf(read name))
+    string? none = null
+    print(lengthOf(read none))
+
+    int? a = 3
+    int? b = 4
+    if !(a is null || b is null) {
+        print(a * b)
+    }
+    if !(a is not null && b is not null) {
+        return
+    }
+    print(a + b)
+    int? c = 5
+    if !!(c is null) {
+        return
+    }
+    print(c + 1)
+}

@@ -1,0 +1,4 @@
+error: `pick` does not return a value on every path; it must return `int`
+  --> error_return_break_in_match.sg:2:5
+ 2 | int pick(int k) {
+   |     ^^^^

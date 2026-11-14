@@ -517,6 +517,29 @@ nint lengthOf(read string? text) {
 }
 ```
 
+`!` swaps what a test says, so `!(x is null)` narrows like `x is not null`, and a condition is read as a whole:
+where `a && b` holds both sides held, where `a || b` fails both sides failed. A `while` ends only when its condition
+fails, so what the failed condition says holds after the loop, unless a `break` leaves it earlier.
+
+```
+int area(int? width, int? height) {
+    if !(width is null || height is null) {                // both are there
+        return width * height
+    }
+    return 0
+}
+
+int firstFound(read List<int> xs) {
+    int? found = null
+    var wanted = 0
+    while found is null {                                  // ends only when `found` is there
+        wanted += 1
+        found = find(read xs, wanted)
+    }
+    return found                                           // not `null` here: no `break` in the loop
+}
+```
+
 ### Error model
 
 Panic is for programmer errors. Conditions expected from the environment are returned as values with `Result`:

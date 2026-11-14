@@ -1,0 +1,4 @@
+error: operator `+` is not defined for `int?` and `int`
+  --> error_narrowing_while_break_in_match.sg:13:11
+ 13 |     print(got + 1)
+    |           ^^^^^^^

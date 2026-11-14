@@ -1612,9 +1612,6 @@ struct Variants {
 /// Names a pattern brings into the block it guards: name, type, where it is written.
 type Binds = Vec<(String, Ty, Span)>;
 
-/// `x is null` or `x is not null` on a plain variable: (name, is the test "not null").
-type Narrowing = (String, bool);
-
 /// Whether anything sees the names of an `is` pattern where it is written.
 #[derive(Clone, Copy)]
 enum NamesSeen {
@@ -1626,27 +1623,48 @@ enum NamesSeen {
     No,
 }
 
-/// The variables that a chain of `op` tests with `x is null` (`negated`: `x is not null`)
-/// as one of its parts: `a is not null && b is not null` tests `a` and `b`.
-fn null_tests(cond: &Expr, op: BinOp, negated: bool) -> Vec<String> {
+/// What a condition says about plain variables of a `T?` type: those that are not `null`
+/// where it holds, and those that are not `null` where it does not. `x is not null` says `x`
+/// where it holds, `x is null` where it does not, and `!` swaps the two. Where `a && b` holds,
+/// both sides held; where it does not, only what both sides say when they fail is known.
+/// `a || b` is the other way round.
+fn null_facts(cond: &Expr) -> (Vec<String>, Vec<String>) {
     match &cond.kind {
-        ExprKind::Binary(inner, left, right) if *inner == op => {
-            let mut names = null_tests(left, op, negated);
-            names.extend(null_tests(right, op, negated));
-            names
+        ExprKind::IsNull { expr, negated } => match &expr.kind {
+            ExprKind::Var(name) if *negated => (vec![name.clone()], Vec::new()),
+            ExprKind::Var(name) => (Vec::new(), vec![name.clone()]),
+            _ => (Vec::new(), Vec::new()),
+        },
+        ExprKind::Unary(UnOp::Not, inner) => {
+            let (holds, fails) = null_facts(inner);
+            (fails, holds)
         }
-        _ => narrowing(cond).filter(|(_, not)| *not == negated).map(|(name, _)| name).into_iter().collect(),
+        ExprKind::Binary(op @ (BinOp::And | BinOp::Or), left, right) => {
+            let (left_holds, left_fails) = null_facts(left);
+            let (right_holds, right_fails) = null_facts(right);
+            let both = |one: Vec<String>, other: Vec<String>| one.into_iter().filter(|name| other.contains(name)).collect();
+            let either = |mut one: Vec<String>, other: Vec<String>| {
+                one.extend(other.into_iter().filter(|name| !one.contains(name)).collect::<Vec<_>>());
+                one
+            };
+            match op {
+                BinOp::And => (either(left_holds, right_holds), both(left_fails, right_fails)),
+                _ => (both(left_holds, right_holds), either(left_fails, right_fails)),
+            }
+        }
+        _ => (Vec::new(), Vec::new()),
     }
 }
 
-fn narrowing(cond: &Expr) -> Option<Narrowing> {
-    match &cond.kind {
-        ExprKind::IsNull { expr, negated } => match &expr.kind {
-            ExprKind::Var(name) => Some((name.clone(), *negated)),
-            _ => None,
-        },
-        _ => None,
-    }
+/// What a whole condition says once it has run, as `null_facts` reads it, without the
+/// variables it empties with `take`: when `b is null || b.take() is null` fails, `b` was
+/// there and then was emptied.
+fn condition_facts(cond: &Expr) -> (Vec<String>, Vec<String>) {
+    let mut taken = Vec::new();
+    taken_in(cond, &mut taken);
+    let (holds, fails) = null_facts(cond);
+    let kept = |names: Vec<String>| names.into_iter().filter(|name| !taken.contains(&name.as_str())).collect();
+    (kept(holds), kept(fails))
 }
 
 /// A variable with the fields that lead from it to the place: `a.b.c` is (`a`, `b.c`).
@@ -2679,9 +2697,8 @@ impl<'a> Checker<'a> {
                 self.scopes.push(Scope::default());
                 self.condition(cond)?;
                 // Not `null` where the condition holds: `x is not null && ...`; where it does
-                // not: `x is null || ...`.
-                let when_true = null_tests(cond, BinOp::And, true);
-                let when_false = null_tests(cond, BinOp::Or, false);
+                // not: `x is null || ...`, `!(x is not null)`.
+                let (when_true, when_false) = condition_facts(cond);
 
                 let before = self.moves();
                 let node = self.node();
@@ -2724,6 +2741,13 @@ impl<'a> Checker<'a> {
                 self.borrows.loops.pop();
                 result?;
                 self.pop_scope(true)?;
+                // `while x is null { ... }`: the loop ends only when the condition fails, so
+                // after it `x` is not null, unless a `break` leaves it earlier.
+                if !has_break(body) {
+                    for name in condition_facts(cond).1 {
+                        self.narrow(&name);
+                    }
+                }
             }
             StmtKind::For { var, var_span, from, to, body } => {
                 self.forget_narrowing_of_assigned(body, None);
@@ -2962,9 +2986,9 @@ impl<'a> Checker<'a> {
     }
 
     /// One part of a chain of `&&` (or of `||`), checked in the scope of the chain. On the
-    /// left of `&&`, an `is` names values and `x is not null` narrows `x` for what comes after
-    /// it; on the left of `||`, `x is null` does, since the right side runs only when it did
-    /// not hold.
+    /// left of `&&`, an `is` names values and what holds when the part holds narrows for what
+    /// comes after it (`x is not null`, `!(x is null)`); on the left of `||`, what holds when the
+    /// part fails does (`x is null`), since the right side runs only when it did not hold.
     fn link(&mut self, part: &mut Expr, op: BinOp) -> Res<()> {
         if let ExprKind::Binary(inner, left, right) = &mut part.kind {
             if *inner == op {
@@ -2981,10 +3005,9 @@ impl<'a> Checker<'a> {
             return self.declare_binds(binds);
         }
         self.typed(part, &Ty::Bool)?;
-        if let Some((name, negated)) = narrowing(part) {
-            if negated == (op == BinOp::And) {
-                self.narrow(&name);
-            }
+        let (holds, fails) = null_facts(part);
+        for name in if op == BinOp::And { holds } else { fails } {
+            self.narrow(&name);
         }
         Ok(())
     }
@@ -6239,49 +6262,61 @@ fn changed_in<'b>(block: &'b Block, names: &mut Vec<&'b str>) {
 
 /// Collects the variables an expression empties with `x.take()`.
 fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
-    match &expr.kind {
-        ExprKind::Method { recv, name, args, .. } => {
-            if let (ExprKind::Var(var), "take") = (&recv.kind, name.as_str()) {
-                names.push(var);
-            }
-            taken_in(recv, names);
-            args.iter().for_each(|arg| taken_in(arg, names));
+    if let ExprKind::Method { recv, name, .. } = &expr.kind {
+        if let (ExprKind::Var(var), "take") = (&recv.kind, name.as_str()) {
+            names.push(var);
         }
-        ExprKind::Call { args, .. } => args.iter().for_each(|arg| taken_in(arg, names)),
-        ExprKind::StructLit { fields, .. } => fields.iter().for_each(|field| taken_in(&field.value, names)),
-        ExprKind::Interp(parts) => {
-            for part in parts {
-                if let InterpPart::Expr(inner, _) = part {
-                    taken_in(inner, names);
+    }
+    for part in parts(expr) {
+        match part {
+            Part::Expr(inner) => taken_in(inner, names),
+            Part::Block(block) => changed_in(block, names),
+        }
+    }
+}
+
+/// What an expression is made of, one level down.
+enum Part<'b> {
+    Expr(&'b Expr),
+    /// The block of an arm of a `match`.
+    Block(&'b Block),
+}
+
+fn parts(expr: &Expr) -> Vec<Part<'_>> {
+    let mut list = Vec::new();
+    match &expr.kind {
+        ExprKind::Method { recv, args, .. } => {
+            list.push(Part::Expr(recv));
+            list.extend(args.iter().map(Part::Expr));
+        }
+        ExprKind::Call { args, .. } | ExprKind::Variant { args, .. } => list.extend(args.iter().map(Part::Expr)),
+        ExprKind::StructLit { fields, .. } => list.extend(fields.iter().map(|field| Part::Expr(&field.value))),
+        ExprKind::Interp(pieces) => {
+            for piece in pieces {
+                if let InterpPart::Expr(inner, _) = piece {
+                    list.push(Part::Expr(inner));
                 }
             }
         }
         ExprKind::Collection { args, items, .. } => {
             let given = items.iter().flatten().flat_map(|item| &item.values);
-            args.iter().chain(given).for_each(|value| taken_in(value, names));
+            list.extend(args.iter().chain(given).map(Part::Expr));
         }
-        ExprKind::Array { args, items, .. } => args.iter().chain(items.iter().flatten()).for_each(|value| taken_in(value, names)),
+        ExprKind::Array { args, items, .. } => list.extend(args.iter().chain(items.iter().flatten()).map(Part::Expr)),
         ExprKind::Binary(_, left, right) | ExprKind::Coalesce { left, right, .. } | ExprKind::Index { recv: left, index: right, .. } => {
-            taken_in(left, names);
-            taken_in(right, names);
+            list.push(Part::Expr(left));
+            list.push(Part::Expr(right));
         }
         ExprKind::Slice { recv, from, to } => {
-            taken_in(recv, names);
-            for end in [from, to].into_iter().flatten() {
-                taken_in(end, names);
-            }
+            list.push(Part::Expr(recv));
+            list.extend([from, to].into_iter().flatten().map(|end| Part::Expr(end)));
         }
-        ExprKind::Variant { args, .. } => args.iter().for_each(|arg| taken_in(arg, names)),
         ExprKind::Match { subject, arms, .. } => {
-            taken_in(subject, names);
+            list.push(Part::Expr(subject));
             for arm in arms {
-                if let Some(guard) = &arm.guard {
-                    taken_in(guard, names);
-                }
-                changed_in(&arm.body, names);
-                if let Some(value) = &arm.value {
-                    taken_in(value, names);
-                }
+                list.extend(arm.guard.iter().map(Part::Expr));
+                list.push(Part::Block(&arm.body));
+                list.extend(arm.value.iter().map(Part::Expr));
             }
         }
         ExprKind::Field { recv: inner, .. }
@@ -6296,7 +6331,7 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
         | ExprKind::Borrow { expr: inner, .. }
         | ExprKind::IsNull { expr: inner, .. }
         | ExprKind::Widen(_, inner)
-        | ExprKind::Load(inner) => taken_in(inner, names),
+        | ExprKind::Load(inner) => list.push(Part::Expr(inner)),
         ExprKind::Int(..)
         | ExprKind::Float(..)
         | ExprKind::Bool(_)
@@ -6308,6 +6343,7 @@ fn taken_in<'b>(expr: &'b Expr, names: &mut Vec<&'b str>) {
         | ExprKind::Constant { .. }
         | ExprKind::Return(None) => {}
     }
+    list
 }
 
 /// The character with this code, if there is one.
@@ -6524,23 +6560,25 @@ fn arm_leaves(arm: &Arm, in_loop: bool) -> bool {
     }
 }
 
-/// Whether a `break` leaves this loop (those of inner loops do not count).
+/// Whether a `break` leaves this loop (those of inner loops do not count), also from inside
+/// a `match` anywhere in an expression: `1 + match k { 1 => { break } _ => 2 }`.
 fn has_break(block: &Block) -> bool {
     block.iter().any(|stmt| match &stmt.kind {
         StmtKind::Break => true,
-        StmtKind::If { then, els, .. } => has_break(then) || els.as_ref().is_some_and(has_break),
-        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Discard(expr) => breaks_in(expr),
-        StmtKind::Let { init: expr, .. } | StmtKind::Assign { value: expr, .. } => breaks_in(expr),
-        _ => false,
+        StmtKind::If { cond, then, els } => breaks_in(cond) || has_break(then) || els.as_ref().is_some_and(has_break),
+        // The condition, the range and the collection are reached outside the inner loop.
+        StmtKind::While { cond: expr, .. } | StmtKind::ForEach { iter: expr, .. } => breaks_in(expr),
+        StmtKind::For { from, to, .. } => breaks_in(from) || breaks_in(to),
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Discard(expr) | StmtKind::Let { init: expr, .. } => breaks_in(expr),
+        StmtKind::Assign { target, value, .. } => breaks_in(target) || breaks_in(value),
+        StmtKind::Return(None) | StmtKind::Continue => false,
     })
 }
 
-/// Whether a `match` here has an arm with a `break`.
+/// Whether an arm of a `match` in this expression has a `break`.
 fn breaks_in(expr: &Expr) -> bool {
-    match &expr.kind {
-        ExprKind::Match { arms, .. } => {
-            arms.iter().any(|arm| has_break(&arm.body) || arm.value.as_ref().is_some_and(breaks_in))
-        }
-        _ => false,
-    }
+    parts(expr).into_iter().any(|part| match part {
+        Part::Expr(inner) => breaks_in(inner),
+        Part::Block(block) => has_break(block),
+    })
 }
