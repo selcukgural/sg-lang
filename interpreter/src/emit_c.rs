@@ -39,6 +39,9 @@
 //! `addAll` is one test for room and a `memcpy` (the items are `Copyable`). In a checked build an
 //! index or an end of a range written `a + c` is tested for overflow with the place: the sum wraps,
 //! and an overflow is told only where the check of the place fails (`index_sum`, `sg_sum`).
+//! A sum kept in a loop (`sum += b`) runs without its overflow test for as many rounds as it
+//! has room for: the loop is written twice, and the second copy, with the test, takes over
+//! (`counted_loop`, `sums.rs`).
 //! An assignment computes its right side first (into a C variable when the place is more than a
 //! variable), then takes the address of the place, so an item is found after the right side has
 //! grown its list.
@@ -80,6 +83,7 @@ use std::fmt::Write as _;
 use crate::ast::*;
 use crate::diag::{Diag, Span};
 use crate::source::Sources;
+use crate::sums;
 use crate::types::{FloatTy, IntTy, TextIter, Ty};
 
 type Res<T> = Result<T, Diag>;
@@ -369,7 +373,11 @@ static int64_t sg_read_fraction(const uint8_t* p, int64_t n, bool single, double
 #define SG_MAX(T) ((T)-1 < 0 ? (T)((((uint64_t)1) << (sizeof(T) * 8 - 1)) - 1) : (T)-1)
 
 /* One set of checked operations for each integer type. Overflow is caught by the compiler's
-   own overflow builtins: one branch that is never taken in a correct program. */
+   own overflow builtins: one branch that is never taken in a correct program. `sg_steps`:
+   how many rounds of a loop a sum can take when one round adds between `lo` and `hi`, before
+   it could overflow; `sg_upto`: the counter of a loop that many rounds on, or the most the
+   type holds (see `sums.rs`). */
+static inline __int128 sg_fewer(__int128 a, __int128 b) { return a < b ? a : b; }
 #define SG_INT(T, N, NAME) \
 static inline T sg_add_##N(T a, T b, const char* loc) { T r; if (__builtin_expect(__builtin_add_overflow(a, b, &r), 0)) sg_overflow(a, "+", b, NAME, loc); return r; } \
 static inline T sg_sub_##N(T a, T b, const char* loc) { T r; if (__builtin_expect(__builtin_sub_overflow(a, b, &r), 0)) sg_overflow(a, "-", b, NAME, loc); return r; } \
@@ -392,7 +400,13 @@ static inline T sg_wmul_##N(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); }
 static inline T sg_shl_##N(T a, __int128 n, const char* loc) { if (__builtin_expect(n < 0 || n >= (__int128)sizeof(T) * 8, 0)) sg_shift_fail(n, NAME, (int)sizeof(T) * 8, loc); return (T)((uint64_t)a << n); } \
 static inline T sg_shr_##N(T a, __int128 n, const char* loc) { if (__builtin_expect(n < 0 || n >= (__int128)sizeof(T) * 8, 0)) sg_shift_fail(n, NAME, (int)sizeof(T) * 8, loc); return (T)(a >> n); } \
 static inline T sg_wshl_##N(T a, uint64_t n) { return (T)((uint64_t)a << (n & (sizeof(T) * 8 - 1))); } \
-static inline T sg_wshr_##N(T a, uint64_t n) { return (T)(a >> (n & (sizeof(T) * 8 - 1))); }
+static inline T sg_wshr_##N(T a, uint64_t n) { return (T)(a >> (n & (sizeof(T) * 8 - 1))); } \
+static inline __int128 sg_steps_##N(T sum, int64_t lo, int64_t hi) { \
+    __int128 room = (__int128)1 << 100; \
+    if (hi > 0) room = ((__int128)SG_MAX(T) - sum) / hi; \
+    if (lo < 0) { __int128 down = ((__int128)sum - ((T)-1 < 0 ? -(__int128)SG_MAX(T) - 1 : 0)) / -lo; if (down < room) room = down; } \
+    return room; } \
+static inline T sg_upto_##N(T at, __int128 rounds) { return (__int128)at + rounds > (__int128)SG_MAX(T) ? SG_MAX(T) : (T)(at + rounds); }
 
 SG_INT(int8_t, sbyte, "sbyte")
 SG_INT(uint8_t, byte, "byte")
@@ -1643,6 +1657,8 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         ways_out: 0,
         in_test: false,
         late_types: String::new(),
+        unchecked: Vec::new(),
+        break_to: None,
     };
     // Every struct and enum is named first, so that a type can point at itself or at a later
     // one. Then the types themselves, each after the types it holds by value.
@@ -2332,6 +2348,12 @@ struct Emitter<'a> {
     in_test: bool,
     /// What the entries of the hash tables are made of: written after every struct is whole.
     late_types: String,
+    /// The copy of a loop that runs without the overflow test of its sums is being written:
+    /// the statements that add to them, written without the test.
+    unchecked: Vec<&'a Stmt>,
+    /// In that copy, `break` leaves both copies: it goes to this label after them, and the
+    /// flag says that one did.
+    break_to: Option<(String, bool)>,
 }
 
 impl<'a> Emitter<'a> {
@@ -3915,6 +3937,13 @@ impl<'a> Emitter<'a> {
                     }
                     Some(op) => {
                         let operation = match held {
+                            // A sum that cannot overflow in this copy of its loop.
+                            Ty::Int(ty) if self.unchecked.iter().any(|step| std::ptr::eq(*step, stmt)) => {
+                                let checked = std::mem::replace(&mut self.checked, false);
+                                let operation = self.arithmetic(*op, ty, &place, &new, stmt.span);
+                                self.checked = checked;
+                                operation
+                            }
                             Ty::Int(ty) => self.arithmetic(*op, ty, &place, &new, stmt.span),
                             Ty::Float(ty) => fractional(*op, ty, &place, &new),
                             _ => return Err(not_yet(stmt.span, "this assignment")),
@@ -4000,23 +4029,26 @@ impl<'a> Emitter<'a> {
                 }
             }
             StmtKind::For { var, from, to, body, .. } => {
-                // The ends are computed once; the counter stops before the end, so it cannot overflow.
+                // The ends are computed once; the counter stops before the end, so it cannot
+                // overflow. The variable is a copy of the counter made in each round: the body
+                // may change it without changing the rounds, as in the interpreter.
                 let ty = self.ctype(&from.ty, from.span)?;
-                let end = self.temp();
+                let (counter, end) = (self.temp(), self.temp());
                 let (from_value, to_value) = (self.value(from)?, self.value(to)?);
                 self.flush_pre(&pad, out);
-                self.scopes.push(Vec::new());
-                let cname = self.declare(var, from.ty.clone());
                 let _ = writeln!(out, "{pad}{{");
-                let _ = writeln!(out, "{pad}{ty} {cname} = {from_value}; {ty} {end} = {to_value};");
+                let _ = writeln!(out, "{pad}{ty} {counter} = {from_value}; {ty} {end} = {to_value};");
                 self.flush_post(&pad, out);
                 self.nothing_gone();
-                self.loops.push(self.scopes.len());
-                let _ = writeln!(out, "{pad}for (; {cname} < {end}; {cname}++) {{");
-                self.block(body, depth + 1, out)?;
-                self.loops.pop();
-                self.scopes.pop();
-                let _ = writeln!(out, "{pad}}}\n{pad}}}");
+                let Ty::Int(counter_ty) = from.ty else { return Err(not_yet(from.span, "a range of this type")) };
+                self.counted_loop(&pad, out, (&counter, counter_ty), &format!("{counter} < {end}"), var, body, depth, |this| {
+                    this.temps += 1;
+                    let cname = format!("v_{var}_{}", this.temps);
+                    // `(void)`: a body that does not use the variable leaves no warning.
+                    let line = format!("{ty} {cname} = {counter}; (void){cname};");
+                    Ok(vec![(Local { name: var.clone(), cname, ty: from.ty.clone(), gone: false, drop: None }, line)])
+                })?;
+                let _ = writeln!(out, "{pad}}}");
             }
             StmtKind::ForEach { var, iter, body, by, .. } if table_behind(&iter.ty).is_some_and(|(_, boxes)| by.is_some() || boxes == 0) => {
                 let table = table_behind(&iter.ty).expect("just tested").0.clone();
@@ -4036,14 +4068,10 @@ impl<'a> Emitter<'a> {
                         self.flush_pre(&pad, out);
                         let kept = self.hold();
                         let _ = writeln!(out, "{pad}{{");
-                        let _ = writeln!(out, "{inner}const {table_c}* {it} = {address};");
-                        let _ = writeln!(out, "{inner}for (int64_t {at} = 0; {at} < {it}->len; {at}++) {{");
+                        let _ = writeln!(out, "{inner}const {table_c}* {it} = {address}; int64_t {at} = 0;");
                         let ty = if *mode == Mode::Ref { Ty::Ref(Box::new(item)) } else { Ty::Read(Box::new(item)) };
-                        let lent = self.borrowed_name(var, ty, &format!("{it}->entries[{at}]{at_item}"), iter.span)?;
-                        self.loops.push(self.scopes.len());
-                        self.block_with(body, depth + 2, out, vec![lent])?;
-                        self.loops.pop();
-                        let _ = writeln!(out, "{inner}}}");
+                        let place = format!("{it}->entries[{at}]{at_item}");
+                        self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}->len"), var, body, depth + 1, |this| Ok(vec![this.borrowed_name(var, ty.clone(), &place, iter.span)?]))?;
                         self.release(kept, &inner, out);
                         let _ = writeln!(out, "{pad}}}");
                     }
@@ -4055,16 +4083,15 @@ impl<'a> Emitter<'a> {
                         self.flush_post(&inner, out);
                         let rest = format!("sg_drop_from_{name}(&{it}, {at} + 1);");
                         self.scopes.push(vec![Local { name: String::new(), cname: it.clone(), ty: table.clone(), gone: false, drop: Some(rest.clone()) }]);
-                        let _ = writeln!(out, "{inner}for (; {at} < {it}.len; {at}++) {{");
-                        self.temps += 1;
-                        let cname = format!("v_{var}_{}", self.temps);
-                        let line = format!("{} {cname} = {it}.entries[{at}]{at_item};", self.ctype(&item, iter.span)?);
-                        let owned = Local { name: var.clone(), cname, ty: item, gone: false, drop: None };
-                        self.loops.push(self.scopes.len());
-                        self.block_with(body, depth + 2, out, vec![(owned, line)])?;
-                        self.loops.pop();
+                        let item_c = self.ctype(&item, iter.span)?;
+                        self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}.len"), var, body, depth + 1, |this| {
+                            this.temps += 1;
+                            let cname = format!("v_{var}_{}", this.temps);
+                            let line = format!("{item_c} {cname} = {it}.entries[{at}]{at_item};");
+                            Ok(vec![(Local { name: var.clone(), cname, ty: item.clone(), gone: false, drop: None }, line)])
+                        })?;
                         self.scopes.pop();
-                        let _ = writeln!(out, "{inner}}}\n{inner}{rest}\n{pad}}}");
+                        let _ = writeln!(out, "{inner}{rest}\n{pad}}}");
                     }
                 }
             }
@@ -4083,14 +4110,10 @@ impl<'a> Emitter<'a> {
                         self.flush_pre(&pad, out);
                         let kept = self.hold();
                         let _ = writeln!(out, "{pad}{{");
-                        let _ = writeln!(out, "{inner}{window_c} {it} = {window};");
-                        let _ = writeln!(out, "{inner}for (int64_t {at} = 0; {at} < {it}.len; {at}++) {{");
+                        let _ = writeln!(out, "{inner}{window_c} {it} = {window}; int64_t {at} = 0;");
                         let ty = if *mode == Mode::Ref { Ty::Ref(item.clone()) } else { Ty::Read(item.clone()) };
-                        let lent = self.borrowed_name(var, ty, &format!("{it}.ptr[{at}]"), iter.span)?;
-                        self.loops.push(self.scopes.len());
-                        self.block_with(body, depth + 2, out, vec![lent])?;
-                        self.loops.pop();
-                        let _ = writeln!(out, "{inner}}}");
+                        let place = format!("{it}.ptr[{at}]");
+                        self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}.len"), var, body, depth + 1, |this| Ok(vec![this.borrowed_name(var, ty.clone(), &place, iter.span)?]))?;
                         self.release(kept, &inner, out);
                         let _ = writeln!(out, "{pad}}}");
                     }
@@ -4106,16 +4129,13 @@ impl<'a> Emitter<'a> {
                         self.flush_post(&inner, out);
                         let rest = self.droppable(item).then(|| format!("sg_drop_from_{name}(&{it}, {at} + 1);"));
                         self.scopes.push(vec![Local { name: String::new(), cname: it.clone(), ty: Ty::Void, gone: false, drop: rest.clone() }]);
-                        let _ = writeln!(out, "{inner}for (; {at} < {length}; {at}++) {{");
-                        self.temps += 1;
-                        let cname = format!("v_{var}_{}", self.temps);
-                        let line = format!("{held} {cname} = {it}.items[{at}];");
-                        let owned = Local { name: var.clone(), cname, ty: (**item).clone(), gone: false, drop: None };
-                        self.loops.push(self.scopes.len());
-                        self.block_with(body, depth + 2, out, vec![(owned, line)])?;
-                        self.loops.pop();
+                        self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {length}"), var, body, depth + 1, |this| {
+                            this.temps += 1;
+                            let cname = format!("v_{var}_{}", this.temps);
+                            let line = format!("{held} {cname} = {it}.items[{at}];");
+                            Ok(vec![(Local { name: var.clone(), cname, ty: (**item).clone(), gone: false, drop: None }, line)])
+                        })?;
                         self.scopes.pop();
-                        let _ = writeln!(out, "{inner}}}");
                         if let Some(rest) = rest {
                             let _ = writeln!(out, "{inner}{rest}");
                         }
@@ -4168,14 +4188,10 @@ impl<'a> Emitter<'a> {
                         self.flush_pre(&pad, out);
                         let kept = self.hold();
                         let _ = writeln!(out, "{pad}{{");
-                        let _ = writeln!(out, "{inner}const {list_c}* {it} = {address};");
-                        let _ = writeln!(out, "{inner}for (int64_t {at} = 0; {at} < {it}->len; {at}++) {{");
+                        let _ = writeln!(out, "{inner}const {list_c}* {it} = {address}; int64_t {at} = 0;");
                         let ty = if *mode == Mode::Ref { Ty::Ref(item.clone()) } else { Ty::Read(item.clone()) };
-                        let lent = self.borrowed_name(var, ty, &format!("{it}->ptr[{at}]"), iter.span)?;
-                        self.loops.push(self.scopes.len());
-                        self.block_with(body, depth + 2, out, vec![lent])?;
-                        self.loops.pop();
-                        let _ = writeln!(out, "{inner}}}");
+                        let place = format!("{it}->ptr[{at}]");
+                        self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}->len"), var, body, depth + 1, |this| Ok(vec![this.borrowed_name(var, ty.clone(), &place, iter.span)?]))?;
                         self.release(kept, &inner, out);
                         let _ = writeln!(out, "{pad}}}");
                     }
@@ -4190,16 +4206,14 @@ impl<'a> Emitter<'a> {
                         self.flush_post(&inner, out);
                         let rest = format!("sg_drop_from_{name}(&{it}, {at} + 1);");
                         self.scopes.push(vec![Local { name: String::new(), cname: it.clone(), ty: list.clone(), gone: false, drop: Some(rest.clone()) }]);
-                        let _ = writeln!(out, "{inner}for (; {at} < {it}.len; {at}++) {{");
-                        self.temps += 1;
-                        let cname = format!("v_{var}_{}", self.temps);
-                        let line = format!("{held} {cname} = {it}.ptr[{at}];");
-                        let owned = Local { name: var.clone(), cname, ty: (**item).clone(), gone: false, drop: None };
-                        self.loops.push(self.scopes.len());
-                        self.block_with(body, depth + 2, out, vec![(owned, line)])?;
-                        self.loops.pop();
+                        self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}.len"), var, body, depth + 1, |this| {
+                            this.temps += 1;
+                            let cname = format!("v_{var}_{}", this.temps);
+                            let line = format!("{held} {cname} = {it}.ptr[{at}];");
+                            Ok(vec![(Local { name: var.clone(), cname, ty: (**item).clone(), gone: false, drop: None }, line)])
+                        })?;
                         self.scopes.pop();
-                        let _ = writeln!(out, "{inner}}}\n{inner}{rest}\n{pad}}}");
+                        let _ = writeln!(out, "{inner}{rest}\n{pad}}}");
                     }
                 }
             }
@@ -4216,11 +4230,94 @@ impl<'a> Emitter<'a> {
                     let _ = writeln!(out, "{pad}{line}");
                 }
                 self.ways_out += 1;
-                let word = if matches!(stmt.kind, StmtKind::Break) { "break" } else { "continue" };
-                let _ = writeln!(out, "{pad}{word};");
+                match (&stmt.kind, &self.break_to) {
+                    (StmtKind::Break, Some((label, _))) => {
+                        let _ = writeln!(out, "{pad}goto {label};");
+                        self.break_to = Some((label.clone(), true));
+                    }
+                    (StmtKind::Break, None) => {
+                        let _ = writeln!(out, "{pad}break;");
+                    }
+                    _ => {
+                        let _ = writeln!(out, "{pad}continue;");
+                    }
+                }
             }
             StmtKind::Discard(value) => self.unused(value, &pad, out)?,
             StmtKind::Expr(expr) => self.expr_stmt(expr, depth, out)?,
+        }
+        Ok(())
+    }
+
+    /// A loop that goes by a counter declared before it, `counter` (its C name and type),
+    /// while `cond` holds, adding one to the counter after each round. `var` is the name the
+    /// loop declares (never the counter); `names` gives what the body sees first in each round. Written inside a block at `pad`; the body is a level
+    /// deeper.
+    ///
+    /// In a checked build, when the body adds to sums that cannot overflow for a number of
+    /// rounds (see `sums.rs`), the loop is written twice: the first copy runs those rounds
+    /// without the tests of the sums, the second takes over with them, and a `break` in the
+    /// first leaves both.
+    #[allow(clippy::too_many_arguments)]
+    fn counted_loop(
+        &mut self,
+        pad: &str,
+        out: &mut String,
+        counter: (&str, IntTy),
+        cond: &str,
+        var: &str,
+        body: &'a Block,
+        depth: usize,
+        mut names: impl FnMut(&mut Self) -> Res<Vec<(Local, String)>>,
+    ) -> Res<()> {
+        let (at, at_ty) = counter;
+        let found = if self.checked {
+            sums::sums(body, var, |name| {
+                let local = self.scopes.iter().rev().find_map(|scope| scope.iter().rev().find(|local| local.name == name))?;
+                match local.ty {
+                    Ty::Int(ty) => Some(ty),
+                    _ => None,
+                }
+            })
+        } else {
+            Vec::new()
+        };
+        let mut label = None;
+        if !found.is_empty() {
+            let mut rounds = String::new();
+            for sum in &found {
+                let local = self.local(sum.name);
+                let Ty::Int(ty) = local.ty else { unreachable!("`sums` takes integers only") };
+                let steps = format!("sg_steps_{}({}, {}LL, {}LL)", int_name(ty), local.cname, sum.lo, sum.hi);
+                rounds = if rounds.is_empty() { steps } else { format!("sg_fewer({rounds}, {steps})") };
+            }
+            let (stop, end) = (self.temp(), self.temp());
+            let names_list = found.iter().map(|sum| format!("`{}`", sum.name)).collect::<Vec<_>>().join(", ");
+            let _ = writeln!(out, "{pad}/* {names_list} cannot overflow for this many rounds: they run without the test. */");
+            let _ = writeln!(out, "{pad}{} {stop} = sg_upto_{}({at}, {rounds});", int_ctype(at_ty), int_name(at_ty));
+            let _ = writeln!(out, "{pad}for (; {at} < {stop} && {cond}; {at}++) {{");
+            let lent = names(self)?;
+            let unchecked = std::mem::replace(&mut self.unchecked, found.iter().flat_map(|sum| sum.steps.iter().copied()).collect());
+            let outer = self.break_to.replace((end.clone(), false));
+            self.loops.push(self.scopes.len());
+            self.block_with(body, depth + 1, out, lent)?;
+            self.loops.pop();
+            let used = std::mem::replace(&mut self.break_to, outer).is_some_and(|(_, used)| used);
+            self.unchecked = unchecked;
+            let _ = writeln!(out, "{pad}}}");
+            label = used.then_some(end);
+        }
+        let _ = writeln!(out, "{pad}for (; {cond}; {at}++) {{");
+        let lent = names(self)?;
+        // The body of the second copy is its own loop: a `break` in it is a C `break`.
+        let outer = self.break_to.take();
+        self.loops.push(self.scopes.len());
+        self.block_with(body, depth + 1, out, lent)?;
+        self.loops.pop();
+        self.break_to = outer;
+        let _ = writeln!(out, "{pad}}}");
+        if let Some(label) = label {
+            let _ = writeln!(out, "{pad}{label}: ;");
         }
         Ok(())
     }

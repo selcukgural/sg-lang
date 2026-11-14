@@ -242,7 +242,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (189 of 745 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (190 of 746 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -311,7 +311,10 @@ and the names seen after an `if` or a `while`, written together with the checker
 no memory (299). Since the fifty-first slice `fromLittleEndian`, `fromBigEndian`, `toLittleEndian`
 and `toBigEndian`, written together with the checker and the interpreter. The fifty-second slice is in
 compiled code alone: in a checked build an index or an end of a range written `a + c` is tested for
-overflow with the place, one comparison where there were two, and the program stops as it did (309). What is still missing is an error that names it (not silence): the few positions listed with the
+overflow with the place, one comparison where there were two, and the program stops as it did (309). So is
+the fifty-third: in a checked build a sum kept in a loop runs without its overflow test for as many rounds
+as it has room for, the loop written twice (315); on the way the variable of `for i in a..b` became a copy
+of the count in compiled code too, as it was in the interpreter (319). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -337,11 +340,11 @@ hand with no checks):
 | `list`: a linked list of a million nodes built with `new`, walked and freed, twenty times | 0.238 s | 0.243 s | 0.236 s | 1.01 |
 | `expr`: a tree of enum values built, evaluated twenty times with `match`, rewritten and freed | 0.309 s | 0.302 s | 0.303 s | 1.02 |
 | `parse`: numbers read out of text, an error found three calls deep and passed up with `try` | 0.290 s | 0.320 s | 0.293 s | 0.99 |
-| `vector`: a list of a million numbers filled with `add`, changed through `xs[i]`, added up with `for`, turned around and freed, six hundred times | 0.331 s | 0.682 s | 0.324 s | 1.02 |
+| `vector`: a list of a million numbers filled with `add`, changed through `xs[i]`, added up with `for`, turned around and freed, six hundred times | 0.331 s | 0.529 s | 0.324 s | 1.02 |
 | `counts`: a million numbers counted in a `HashMap` of fifty thousand keys, read back and a third removed, twenty times | 0.382 s | 0.376 s | 0.319 s | 1.20 |
 | `show`: two million structs and half a million lists of numbers printed, one on each line | 0.214 s | 0.191 s | 0.374 s | 0.57 |
 | `lookup`: three hundred million lookups in a list of records of 128 bytes, through a function that gives back a `read Record?` | 0.498 s | 0.488 s | 0.491 s | 1.01 |
-| `buffer`: 32 bytes on the stack written as hex into a buffer of 64 through a `ref byte[]`, added up through a `read byte[]` and a range of it, fifteen million times | 0.280 s | 0.733 s | 0.283 s | 0.99 |
+| `buffer`: 32 bytes on the stack written as hex into a buffer of 64 through a `ref byte[]`, added up through a `read byte[]` and a range of it, fifteen million times | 0.280 s | 0.290 s | 0.283 s | 0.99 |
 | `bits`: a sieve below sixty-four million with one bit for each number, then thirty million numbers written seven bits at a time into a buffer on the stack and read back | 0.322 s | 0.321 s | 0.407 s | 0.79 |
 | `hash`: XXH64, the 64-bit xxHash, written with `ulong`, over one megabyte, two thousand times, the bytes read eight at a time with `ulong.fromLittleEndian` | 0.128 s | 0.129 s | 0.128 s | 1.00 |
 | `nbody`: the sun and the four giant planets moved twenty million steps in `double`, a square root for each pair at each step | 0.661 s | 0.662 s | 0.679 s | 0.97 |
@@ -383,6 +386,8 @@ arithmetic wraps, which is defined, and the same compiler then keeps two more in
 eight. With `i % 1000` in both programs they take the same time. This is a cost of the overflow rule that
 the three integer programs did not show: where a loop is nothing but arithmetic on its counter, wrapping
 can cost what C's undefined overflow saves. Rust wraps in release in the same way and gets the same code.
+The overflow-checked build took 2.1 times the time of C; since the fifty-third slice the `sum += x` of
+`total` runs without its test (315), and what is left (1.6 times) are the tests of `xs[i] * 3 + 1`.
 `counts` is the first program with a hash table, and the first that is clearly slower than its C: 1.20
 times. All of it is the hash. The C program hashes a key with one multiplication, as a C programmer does;
 SG uses SipHash-1-3 with a key drawn when the program starts, as Rust does, so that someone who chooses
@@ -405,10 +410,11 @@ C arrays and a slice is the pointer and the count the C program passes by hand. 
 range are checked in the C that is generated; here the C compiler, once it has put the small functions
 into `main`, sees both lengths and removes every one of those checks, so the built program holds none.
 That is this program, not a promise: where a length is not known, the check stays, one comparison that
-is never taken. The overflow-checked build takes 2.6 times as long: the overflow test of `sum += b` in
-`total` keeps the C compiler from adding several bytes at a time. With that one test left out of the
-generated C, and the tests on `i * 2`, on `i * 2 + 1` and on the cast to `byte` kept, it takes the time of
-C (choice 313).
+is never taken. The overflow-checked build took 2.6 times as long: the overflow test of `sum += b` in
+`total` kept the C compiler from adding several bytes at a time (choice 313). Since the fifty-third slice
+the loop is written twice and runs without that test for as many rounds as the sum has room for, which
+for a `long` adding bytes is every round, and the checked build takes the time of C too (0.290 s against 0.733 s,
+choice 320); the tests on `i * 2`, on `i * 2 + 1` and on the cast to `byte` are still there.
 `bits` is the first program with the bit operators, in two halves. The sieve keeps one bit for each
 number in a list of `long`s and sets and tests it with `|=`, `&`, `<<` and `>>`: that half takes the
 time of C (0.25 s for both). A shift by `n & 63` is one instruction in both programs, and the cut of
@@ -654,6 +660,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/check.rs` | Static checks: names, types, `null` safety, use after move (per variable and per field), `match` covering every variant, `return` on every path, unused `Result`, what `try` may pass on, what `Copyable` and `Formattable` promise. Writes resolved details (literal types, field indexes, implicit conversions, what each call runs) into the tree |
 | `src/interp.rs` | Runs the checked tree; only data-dependent failures (panics) are left to it |
 | `src/emit_c.rs` | The back end: writes the checked tree as C, with the same panics |
+| `src/sums.rs` | For the back end: the sums in a loop that cannot overflow for a number of rounds, so that a checked build runs those rounds without their test |
 | `src/diag.rs` | Error and panic messages |
 | `src/source.rs` | The files of a program: which folders are modules and which of them are read. All files are kept as one text, so a position says which file it is in |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
@@ -2629,6 +2636,66 @@ compiled code alone, since nothing a program can see changes), approved on 14 No
      a negative sum that fits. The interpreter and compiled code print the same, also under the
      sanitizers.
 
+Choices made in the fifty-third slice (the overflow tests of a sum kept in a loop, in a checked build;
+compiled code alone, since nothing a program can see changes, and a fix on the way), approved on 14 November 2026:
+
+315. **A sum kept in a loop runs without its test for as many rounds as it has room for.** In a checked
+     build, before a loop that adds to a sum (`sum += b`) starts, compiled code works out how many rounds
+     cannot overflow the sum from the value it has then: the room to the top of its type divided by the
+     most one round can add, and the room to the bottom divided by the most it can take. The loop is
+     written twice: the first copy runs that many rounds (or to the end, if that comes first) with the
+     sum added without its test, the second takes over at the same position with the test. A sum that
+     does come near its end stops the program at the same step, with the same message and line, so the
+     interpreter does not change. Java's and Swift's compilers split loops this way for their index
+     checks; it is the candidate the "Slower than C" list wrote down after the fifty-second slice.
+316. **Which sums**: a variable of an integer type declared before the loop that the body changes only
+     with `+=` and `-=`, where every value added is a constant or of a narrower integer type (`long +=
+     byte`, `long += int`, `int += 1`, `ulong += uint`). A `byte` added to a `long` that starts at zero
+     leaves room for 2^63 / 255 rounds; a `short` adding `byte`s has room for 128, and the rest of a
+     longer loop runs in the second copy. Left with their test: a sum that the body assigns in another
+     way or lends as `ref`, a `ref` parameter or a field, `sum = sum + x`, a value of the sum's own type
+     (`int += int` would have room for one round), and a sum of a `float`, which has no test. A sum read
+     in the body (`if sum > highest`) is not changed by being read.
+317. **Which loops**: `for i in a..b`, and `for` over a list, an array, a slice, a map or a set, lent or
+     handed over: each has a count that goes up by one a round. Not a `while` or a `for` over the parts
+     of a text, which have no count before they start (there the decoding of the text costs far more
+     than the test), and only a loop with no loop inside, so that a step runs at most once a round and
+     no loop is written more than twice. Nor a loop whose body calls anything (a function, a method, a
+     lookup in a map, a formatted text): a call keeps the C compiler from doing several rounds at once
+     whatever the test does, so the test costs little next to it, and the second copy calls the
+     function from a second place, after which the C compiler may stop putting it where it is called.
+     Measured before this was added: `classes` (checked) went from 0.30 s to 0.40 s, because `kind`
+     stopped being put in place, and `numbers` and `keywords` lost about a tenth.
+318. **Compiled code**: the count is `sg_upto` of the position and `sg_steps` of each sum (the least of
+     them when there are several), computed once on 128 bits. The first copy is `for (; at < stop &&
+     at < end; at++)` with the sums written as a release build writes them; the second is the loop as it
+     was. A `break` in the first copy leaves both, with a `goto` to a label after the second. A release
+     build is written as before.
+319. **The variable of `for i in a..b` is a copy of the count, in compiled code too.** Found while the
+     loops were split: the body may change `i`, and in the interpreter that changes only the round it is
+     in (`for i in 0..4 { i += 1; print(i) }` prints 1, 2, 3, 4), while compiled code changed the count
+     and printed 1 and 3. Compiled code now keeps the count in a variable of its own and makes `i` from it
+     at the start of each round, as the interpreter does, as Go's `for i := range n` does and as Rust
+     does with `for mut i`. C#'s `for` would print 1 and 3; its `foreach` variable cannot be assigned. The design
+     did not say; this writes down what the interpreter did.
+320. **Measured**: the checked `buffer` takes 0.290 s, where it took 0.733 s (release 0.280 s, C 0.282
+     s), and the checked `vector` 0.529 s, where it took 0.682 s; what is left there are the tests of
+     `xs[i] * 3 + 1` ("Slower than C"). With gcc 16 the checked `buffer` goes from 0.90 s to 0.62 s (its
+     release build takes 0.50 s). Five of the measured programs have a loop written twice (`bits`,
+     `buffer`, `counts`, `vector`, `words`), and no other row moves: each program was built with the
+     back end before and after the slice and the two run side by side, since the machine itself drifted
+     by up to a tenth between runs of the table (`fields` and `numbers` in release, which this slice does
+     not touch). A loop written twice is about twice the code of that loop.
+321. **The tests**: one program of eleven tests, each its own process, since five of them panic: sums
+     that fit over a slice, a list, a range, a map, several sums in one loop with one taken from and a
+     constant counted, a `uint` added to a `ulong`; the first copy handing over to the second in the
+     middle of a loop, for a `long` and for a `short`; `break` and `continue`; a sum lent as `ref`; a loop
+     inside a loop; the loop's own variable named like a sum; and an overflow after the rounds without
+     the test, a count at the top of `int`, a `ulong` taken below zero, a `short` past its rounds and a
+     negative sum. The interpreter and compiled code print the same, also under the sanitizers. And
+     one program for 319. To try the second copy everywhere, every loop of every program was written
+     twice for a run of all the tests (three rounds in the first copy): they passed, under the sanitizers.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -2639,17 +2706,15 @@ check off.
   each index, the C compiler cannot join the reads, and the program takes 3.5 times the time of C. Cutting
   the window first (`data[at..at + 8]`) already takes the time of C, and `ulong.fromLittleEndian` (301)
   does too, in the checked build as well. What is left: a hint from the checker where it sees the pattern.
-- **Overflow tests on a sum kept in a loop, in a checked build** (`buffer` 2.6 times, `vector` 2 times):
-  `sum += b` over the bytes of a slice is tested at each step, and the test keeps the C compiler from
-  adding several numbers at once; `vector` pays the same for `sum += x` and for `xs[i] * 3 + 1` (choice
-  313 measured each). A release build has none, and the tests are real: a sum can overflow. Candidate: a
-  loop that adds a number narrower than the sum a known number of times can be shown not to overflow
-  before it starts (a `long` that adds fewer than 2^32 `int`s cannot overflow while it starts below 2^62
-  in size), and then run without the test, the loop written twice and one of the two chosen at its
-  start, as Java's and Swift's compilers do for index checks. The other half of this entry was the
-  overflow test of an index (`hash`, 1.23 times): since the fifty-second slice an index or an end of a
-  range written `a + c` is tested with the place (309), and the checked `hash` takes the time of the
-  release build.
+- **Overflow tests on a product in a loop, in a checked build** (`vector` 1.6 times): `xs[i] = xs[i] * 3 +
+  1` tests the product and the sum of an item, whose size nothing tells before the loop, and the tests
+  keep the C compiler from working on several items at once. A release build has none, and the tests are
+  real. No candidate yet. The rest of this entry is done: the overflow test of an index (`hash`, 1.23
+  times) since the fifty-second slice (309), and the test of a sum kept in a loop (`buffer` 2.6 times,
+  `vector`'s `sum += x`) since the fifty-third, which runs a loop without it for as many rounds as the sum
+  has room for (315); the checked `buffer` now takes the time of C. A sum in a `while`, in a `for` over
+  the parts of a text, written `sum = sum + x`, or in a loop with a loop inside or with a call keeps its
+  test (316, 317); none of the measured programs has one where it costs.
 - **The hash of a `HashMap`** (`counts`, 1.17 times): SipHash-1-3 with a key drawn at start against C's
   one multiplication. Keeping it is a decision (13 November, choice 50); a faster hash for integer keys
   that still resists chosen keys is the open question.

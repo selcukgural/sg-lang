@@ -1,0 +1,184 @@
+// A sum kept in a loop (`sum += b`): a checked build of compiled code writes the loop twice
+// when every value added is narrower than the sum or a constant (`sums.rs` in the back end).
+// The first copy runs as many rounds as the sum has room for without the overflow test, the
+// second takes over with it. A sum that overflows has to stop the program at the same step,
+// with the same message, as in the interpreter. Each test is its own process, so each one may
+// panic.
+
+long total(read byte[] bytes) {
+    long sum = 0
+    for b in bytes {
+        sum += b
+    }
+    return sum
+}
+
+void addTo(ref long sum, int value) {
+    sum += value
+}
+
+test "sums that fit" {
+    var bytes = byte[300](255)
+    assert(total(read bytes) == 76500)
+    assert(total(bytes[10..20]) == 2550)
+
+    var xs = List<int> { 5, -7, 2147483647, -2147483648 }
+    long listed = 0
+    for x in read xs {
+        listed += x
+    }
+    assert(listed == -3)
+
+    long ranged = 0
+    for i in 0..xs.length() {
+        ranged += xs[i]
+    }
+    assert(ranged == -3)
+
+    var counts = HashMap<string, int> { {"a", 3}, {"b", 4} }
+    long counted = 0
+    for item in read counts {
+        counted += item.value
+    }
+    assert(counted == 7)
+
+    // Two sums, one taken from, a constant, and a sum read inside the loop.
+    long up = 0
+    long down = 0
+    int rounds = 0
+    long highest = 0
+    for x in read xs {
+        up += x
+        down -= x
+        rounds += 1
+        if up > highest {
+            highest = up
+        }
+    }
+    assert(up == -3 && down == 3 && rounds == 4 && highest == 2147483645)
+
+    ulong wide = 0
+    var halves = List<uint> { 4294967295, 4294967295 }
+    for h in read halves {
+        wide += h
+    }
+    assert(wide == 8589934590)
+}
+
+test "the first copy and the second together" {
+    // Room for three rounds of 255 at the start: three run without the test, seven with it.
+    long sum = long.MaxValue - 1000
+    var bytes = byte[10](100)
+    for b in bytes {
+        sum += b
+    }
+    assert(sum == long.MaxValue)
+
+    // A `short` has room for 128 rounds of 255 from 0; 200 rounds of 100 fit.
+    short small = 0
+    var hundreds = byte[200](100)
+    var ones = byte[200](1)
+    for b in ones {
+        small += b
+    }
+    assert(small == 200)
+    small = 0
+    for i in 0..150 {
+        small += hundreds[i]
+    }
+    assert(small == 15000)
+}
+
+test "break and continue" {
+    var bytes = byte[8] { 1, 2, 3, 0, 5, 6, 7, 8 }
+    long sum = 0
+    int seen = 0
+    for b in bytes {
+        if b == 2 {
+            continue
+        }
+        if b == 0 {
+            break
+        }
+        sum += b
+        seen += 1
+    }
+    assert(sum == 4 && seen == 2)
+}
+
+test "a sum lent as ref keeps its test" {
+    long sum = 0
+    for i in 0..10 {
+        addTo(ref sum, i)
+        sum += 1
+    }
+    assert(sum == 55)
+}
+
+test "a loop inside a loop" {
+    var rows = List<int> { 1, 2, 3 }
+    long sum = 0
+    for row in read rows {
+        long inner = 0
+        for i in 0..row {
+            inner += i
+        }
+        sum += inner
+    }
+    assert(sum == 4)
+}
+
+test "the loop's own variable is never a sum" {
+    long sum = 0
+    var xs = List<int> { 1, 2, 3 }
+    for sum in read xs {
+        long seen = sum
+        assert(seen > 0)
+    }
+    var ys = int[3] { 1, 2, 3 }
+    for sum in ys {
+        sum += 10
+        assert(sum > 10)
+    }
+    assert(sum == 0)
+}
+
+test "a sum that overflows after the rounds without the test" {
+    long sum = long.MaxValue - 500
+    var bytes = byte[3](255)
+    for b in bytes {
+        print(sum)
+        sum += b
+    }
+}
+
+test "a count at the top of int" {
+    int count = int.MaxValue - 2
+    for i in 0..5 {
+        count += 1
+    }
+}
+
+test "taking below zero" {
+    ulong left = 600
+    var bytes = byte[3](255)
+    for b in bytes {
+        left -= b
+    }
+}
+
+test "a short that overflows past its rounds" {
+    short small = 0
+    var bytes = byte[200](200)
+    for b in bytes {
+        small += b
+    }
+}
+
+test "a negative sum that overflows" {
+    long sum = long.MinValue + 3
+    var xs = List<sbyte> { -1, -1, -1, -1 }
+    for x in read xs {
+        sum += x
+    }
+}

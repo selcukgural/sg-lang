@@ -1,0 +1,18 @@
+// The variable of `for i in a..b` is a copy of the count made in each round: changing it
+// changes nothing about the rounds, in the interpreter and in compiled code alike.
+void main() {
+    long sum = 5
+    for i in 0..4 {
+        i += 1
+        sum += 1
+        print(i)
+    }
+    print(sum)
+    // A variable of the loop with the name of one before it is another variable.
+    var ys = int[3] { 3, 4, 5 }
+    for sum in ys {
+        sum += 1
+        print(sum)
+    }
+    print(sum)
+}

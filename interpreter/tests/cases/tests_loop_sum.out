@@ -1,0 +1,39 @@
+ok    sums that fit
+ok    the first copy and the second together
+ok    break and continue
+ok    a sum lent as ref keeps its test
+ok    a loop inside a loop
+ok    the loop's own variable is never a sum
+9223372036854775307
+9223372036854775562
+FAIL  a sum that overflows after the rounds without the test
+panic: overflow: 9223372036854775562 + 255 does not fit in long
+  --> tests_loop_sum.sg:151:9
+ 151 |         sum += b
+     |         ^^^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  a count at the top of int
+panic: overflow: 2147483647 + 1 does not fit in int
+  --> tests_loop_sum.sg:158:9
+ 158 |         count += 1
+     |         ^^^^^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  taking below zero
+panic: overflow: 90 - 255 does not fit in ulong
+  --> tests_loop_sum.sg:166:9
+ 166 |         left -= b
+     |         ^^^^^^^^^
+  hint: `trySubtract` gives `null` instead, and `wrappingSubtract` wraps around
+FAIL  a short that overflows past its rounds
+panic: overflow: 32600 + 200 does not fit in short
+  --> tests_loop_sum.sg:174:9
+ 174 |         small += b
+     |         ^^^^^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+FAIL  a negative sum that overflows
+panic: overflow: -9223372036854775808 + -1 does not fit in long
+  --> tests_loop_sum.sg:182:9
+ 182 |         sum += x
+     |         ^^^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
+5 of 11 test(s) failed
