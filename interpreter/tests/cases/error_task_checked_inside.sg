@@ -1,0 +1,18 @@
+struct Node {
+    int value
+    shared checked Node? next
+}
+
+struct Holder {
+    Node first
+}
+
+int count(Holder holder) {
+    return 1
+}
+
+void main() {
+    var holder = Holder { first = Node { value = 1, next = null } }
+    var t = Task.run(count, holder)
+    print(t.wait())
+}

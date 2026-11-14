@@ -1,0 +1,12 @@
+struct Node {
+    int value
+    shared locked Node? next
+}
+
+void main() {
+    var a = new shared locked Node { value = 1, next = null }
+    lock a as node {
+        node.next = share a
+    }
+    print("made")
+}

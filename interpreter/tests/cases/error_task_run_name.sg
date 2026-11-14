@@ -1,0 +1,7 @@
+int twice(int x) {
+    return x * 2
+}
+
+void main() {
+    var t = Task.start(twice, 1)
+}

@@ -1,0 +1,4 @@
+error: `locked` is written after `shared`: `new shared locked ...`
+  --> error_locked_new_alone.sg:2:17
+ 2 |     var a = new locked 1
+   |                 ^^^^^^

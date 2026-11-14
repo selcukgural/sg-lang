@@ -1,0 +1,15 @@
+void add(shared locked int a, shared locked int b) {
+    lock a as x, b as y {
+        x += y
+    }
+}
+
+void main() {
+    var a = new shared locked 1
+    var b = new shared locked 2
+    add(share a, share b)
+    lock a as x {
+        print(x)
+    }
+    add(share a, share a)
+}

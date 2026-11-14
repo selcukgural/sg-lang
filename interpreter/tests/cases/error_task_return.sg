@@ -1,0 +1,15 @@
+int twice(int x) {
+    return x * 2
+}
+
+int run(bool early) {
+    var t = Task.run(twice, 2)
+    if early {
+        return 0
+    }
+    return t.wait()
+}
+
+void main() {
+    print(run(false))
+}

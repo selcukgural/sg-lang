@@ -1,0 +1,10 @@
+struct Node {
+    int value
+    shared checked Node? next
+}
+
+void walk(shared locked Node node) {
+}
+
+void main() {
+}

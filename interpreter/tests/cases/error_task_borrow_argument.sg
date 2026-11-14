@@ -1,0 +1,9 @@
+nint size(read string text) {
+    return text.length()
+}
+
+void main() {
+    var name = "Ann"
+    var t = Task.run(size, read name)
+    print(t.wait())
+}

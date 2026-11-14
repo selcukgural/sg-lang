@@ -1,0 +1,57 @@
+// Two values locked together, a `weak locked` value, a list and a struct behind a lock.
+struct Account {
+    string owner
+    int balance
+}
+
+void move(shared locked Account from, shared locked Account to, int amount) {
+    lock from as a, to as b {
+        a.balance -= amount
+        b.balance += amount
+    }
+}
+
+void fill(shared locked List<int> xs, int start) {
+    for i in start..start + 3 {
+        lock xs as items {
+            items.add(i)
+        }
+    }
+}
+
+void main() {
+    var ann = new shared locked Account { owner = "Ann", balance = 100 }
+    var bob = new shared locked Account { owner = "Bob", balance = 20 }
+    var one = Task.run(move, share ann, share bob, 30)
+    var two = Task.run(move, share bob, share ann, 5)
+    one.wait()
+    two.wait()
+    lock ann as a, bob as b {
+        print($"{a.owner} {a.balance}, {b.owner} {b.balance}")
+    }
+
+    var xs = new shared locked List<int>()
+    var left = Task.run(fill, share xs, 0)
+    var right = Task.run(fill, share xs, 10)
+    left.wait()
+    right.wait()
+    lock xs as items {
+        print(items)
+    }
+
+    var look = weak ann
+    var owner = share look
+    if owner is not null {
+        lock owner as a {
+            print(a.owner)
+        }
+    }
+    shared locked int counter = new shared locked 1
+    lock counter as c {
+        c *= 7
+    }
+    var other = share counter
+    lock other as c {
+        print(c)
+    }
+}

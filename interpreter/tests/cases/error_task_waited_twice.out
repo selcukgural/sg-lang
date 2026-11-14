@@ -1,0 +1,8 @@
+error: `t` was moved and can no longer be used
+  --> error_task_waited_twice.sg:8:11
+ 8 |     print(t.wait())
+   |           ^
+  it was moved here:
+  --> error_task_waited_twice.sg:7:11
+ 7 |     print(t.wait())
+   |           ^

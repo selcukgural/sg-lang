@@ -1,0 +1,13 @@
+struct Node {
+    int value
+}
+
+int read_value(shared checked Node node) {
+    return 1
+}
+
+void main() {
+    var node = new shared checked Node { value = 1 }
+    var t = Task.run(read_value, share node)
+    print(t.wait())
+}

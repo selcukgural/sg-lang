@@ -1,0 +1,6 @@
+void main() {
+    var a = new shared locked 1
+    read a as x {
+        print(x)
+    }
+}

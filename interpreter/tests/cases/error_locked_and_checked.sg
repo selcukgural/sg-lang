@@ -1,0 +1,5 @@
+void count(shared checked locked int x) {
+}
+
+void main() {
+}

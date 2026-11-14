@@ -1,0 +1,5 @@
+error: a `Task<int>` has the method `wait`, not `join`
+  `wait` waits for the task and gives what its function returned
+  --> error_task_other_method.sg:7:13
+ 7 |     print(t.join())
+   |             ^^^^

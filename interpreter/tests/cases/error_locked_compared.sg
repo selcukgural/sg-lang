@@ -1,0 +1,5 @@
+void main() {
+    var a = new shared locked 1
+    var b = new shared locked 1
+    print(a == b)
+}

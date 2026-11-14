@@ -1,0 +1,5 @@
+error: a `locked` value cannot hold a `Node`, which holds a `shared checked Node` (the field `next` of `Node`): a `shared checked Node` is checked within one task; one that several tasks change is `shared locked`
+  what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`
+  --> error_locked_type_holds_checked.sg:6:11
+ 6 | void walk(shared locked Node node) {
+   |           ^^^^^^^^^^^^^^^^^^

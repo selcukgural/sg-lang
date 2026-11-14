@@ -1,0 +1,5 @@
+error: this `Result` is not used, so an error would be lost silently
+  --> error_task_result_unused.sg:7:5
+ 7 |     t.wait()
+   |     ^^^^^^^^
+  hint: pass the error on with `try t.wait()`, or drop it on purpose with `_ = t.wait()`

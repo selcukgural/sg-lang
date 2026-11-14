@@ -1,0 +1,5 @@
+error: `read ... as` opens a `shared` value that one task uses, and this is `shared locked int`, which several tasks share
+  --> error_locked_read_as.sg:3:10
+ 3 |     read a as x {
+   |          ^
+  hint: `lock a as name { ... }`

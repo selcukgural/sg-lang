@@ -1,0 +1,30 @@
+// In the interpreter a task runs when it is waited for, so what is printed is the same on
+// every run. A function that ends with an error waits for the tasks it did not wait for.
+void say(string text) {
+    print(text)
+}
+
+Result<int, string> check(int x) {
+    if x > 1 {
+        return Error("too big")
+    }
+    return Ok(x)
+}
+
+Result<void, string> run() {
+    var first = Task.run(say, "first")
+    var second = Task.run(say, "second")
+    var bad = Task.run(check, 5)
+    print("started")
+    second.wait()
+    var value = try bad.wait()
+    print(value)
+    first.wait()
+    return Ok()
+}
+
+void main() {
+    if run() is Error(cause) {
+        print($"run: {cause}")
+    }
+}

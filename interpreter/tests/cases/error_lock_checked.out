@@ -1,0 +1,5 @@
+error: `lock` is for a `shared locked` value, and this is `shared checked int`, which one task changes
+  --> error_lock_checked.sg:3:10
+ 3 |     lock a as x {
+   |          ^
+  hint: `ref a as name { ... }` changes it for a block

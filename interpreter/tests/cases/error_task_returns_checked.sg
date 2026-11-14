@@ -1,0 +1,12 @@
+struct Node {
+    int value
+}
+
+shared checked Node make(int value) {
+    return new shared checked Node { value = value }
+}
+
+void main() {
+    var t = Task.run(make, 1)
+    var node = t.wait()
+}

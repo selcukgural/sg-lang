@@ -1,0 +1,5 @@
+error: what a `shared locked` value holds is reached only inside a `lock` block, where no other task reaches it
+  --> error_locked_field_outside.sg:7:11
+ 7 |     print(p.x)
+   |           ^
+  hint: `lock p as name { ... }`

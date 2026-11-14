@@ -1,0 +1,5 @@
+error: this calls `twice` here and gives `Task.run` what it returns
+  --> error_task_called_first.sg:6:22
+ 6 |     var t = Task.run(twice(1))
+   |                      ^^^^^^^^
+  hint: the function and what it is given are written apart: `Task.run(twice, 1)`

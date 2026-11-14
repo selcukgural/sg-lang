@@ -1,0 +1,5 @@
+error: a `Task` is kept only in a local variable, a parameter or a return value, as it is
+  every task is waited for, and the compiler sees that only where the task stays in one function's hands
+  --> error_task_borrowed.sg:5:12
+ 5 | int finish(read Task<int> task) {
+   |            ^^^^^^^^^^^^^^

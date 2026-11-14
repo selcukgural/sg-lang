@@ -8,12 +8,13 @@ use crate::types::{FloatTy, IntTy, Ty};
 /// Words that are in the design but not in the interpreter yet. They get an explicit
 /// message instead of "unknown name".
 const NOT_YET: &[&str] = &[
-    "interface", "locked", "raw", "unsafe", "lock", "spawn",
+    "interface", "raw", "unsafe",
 ];
 
 /// Words of the language that are read where they stand, not names: `shared T`, `weak T`,
-/// `shared checked T`, `share x`, `weak x`, `using Name = T`.
-const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked"];
+/// `shared checked T`, `shared locked T`, `share x`, `weak x`, `using Name = T`,
+/// `lock x as c { }`.
+const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock"];
 
 type Res<T> = Result<T, Diag>;
 
@@ -131,7 +132,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `[read | ref] [shared | weak [checked]] Name [<Type, ...>] { * | ? }`
+    /// `[read | ref] [shared | weak [checked | locked]] Name [<Type, ...>] { * | ? }`
     fn type_expr(&mut self) -> Res<TypeExpr> {
         let start = self.span();
         let mode = match self.peek() {
@@ -150,11 +151,17 @@ impl<'a> Parser<'a> {
             None
         };
         let mut checked = false;
+        let mut locked = false;
         if holder.is_some() {
             self.bump();
             checked = self.at_word("checked");
-            if checked {
+            locked = self.at_word("locked");
+            if checked || locked {
                 self.bump();
+            }
+            if self.at_word("checked") || self.at_word("locked") {
+                return Err(Diag::error(self.span(), "a value with several owners is `checked` or `locked`, not both")
+                    .note("`checked` lets one task change it, each access checked; `locked` lets several tasks change it, inside a `lock` block"));
             }
             if self.at_word("shared") || self.at_word("weak") {
                 return Err(Diag::error(self.span(), "`shared` and `weak` are written once, in front of the type they hold"));
@@ -162,6 +169,9 @@ impl<'a> Parser<'a> {
         } else if self.at_word("checked") {
             return Err(Diag::error(self.span(), "`checked` is written after `shared` or `weak`: it is what makes a value with several owners changeable")
                 .hint("`shared checked T` for an owner, `weak checked T` for a look at one"));
+        } else if self.at_word("locked") {
+            return Err(Diag::error(self.span(), "`locked` is written after `shared` or `weak`: several tasks own the value it holds")
+                .hint("`shared locked T` for an owner, `weak locked T` for a look at one"));
         }
         let (mut name, _) = self.ident("a type name")?;
         // `billing.Line`: the module is written in front.
@@ -210,7 +220,7 @@ impl<'a> Parser<'a> {
             }
             self.bump();
         }
-        Ok(TypeExpr { mode, holder, checked, name, args, suffixes, span: Span::new(start.start, self.prev_end()) })
+        Ok(TypeExpr { mode, holder, checked, locked, name, args, suffixes, span: Span::new(start.start, self.prev_end()) })
     }
 
     /// `using NodeRef = shared Node`
@@ -567,7 +577,7 @@ impl<'a> Parser<'a> {
     fn type_len(&self, start: usize) -> Option<usize> {
         let holder = matches!(self.peek_at(start), Tok::Ident(word) if word == "shared" || word == "weak");
         let mut first = if holder { start + 1 } else { start };
-        if holder && matches!(self.peek_at(first), Tok::Ident(word) if word == "checked") {
+        if holder && matches!(self.peek_at(first), Tok::Ident(word) if word == "checked" || word == "locked") {
             first += 1;
         }
         if !matches!(self.peek_at(first), Tok::Ident(_)) {
@@ -680,6 +690,25 @@ impl<'a> Parser<'a> {
                 let (name, name_span) = self.ident("a name for what is opened")?;
                 let body = self.block()?;
                 StmtKind::As { mutable, value, name, name_span, body }
+            }
+            // `lock total as c { ... }`, `lock a as x, b as y { ... }`
+            Tok::Ident(word) if word == "lock" => {
+                self.bump();
+                let mut items = Vec::new();
+                loop {
+                    let value = self.head_expr(false)?;
+                    if !matches!(self.peek(), Tok::Ident(word) if word == "as") {
+                        return Err(self.unexpected("`as` and a name for what is locked").hint("`lock total as c { c += 1 }`"));
+                    }
+                    self.bump();
+                    let (name, name_span) = self.ident("a name for what is locked")?;
+                    items.push(LockItem { value, name, name_span });
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                let body = self.block()?;
+                StmtKind::Lock { items, body }
             }
             Tok::Return => {
                 self.bump();
@@ -1136,15 +1165,17 @@ impl<'a> Parser<'a> {
                 if self.at_word("shared") {
                     self.bump();
                     let checked = self.at_word("checked");
-                    if checked {
+                    let locked = self.at_word("locked");
+                    if checked || locked {
                         self.bump();
                     }
                     let operand = self.unary()?;
                     let span = start.to(operand.span);
-                    return Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::NewShared { value: Box::new(operand), checked }, span });
+                    return Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::NewShared { value: Box::new(operand), checked, locked }, span });
                 }
-                if self.at_word("checked") {
-                    return Err(Diag::error(self.span(), "`checked` is written after `shared`: `new shared checked ...`"));
+                if self.at_word("checked") || self.at_word("locked") {
+                    let word = if self.at_word("checked") { "checked" } else { "locked" };
+                    return Err(Diag::error(self.span(), format!("`{word}` is written after `shared`: `new shared {word} ...`")));
                 }
                 if self.at_word("weak") {
                     return Err(Diag::error(self.span(), "a `weak` value is not made with `new`: it looks at a `shared` one")

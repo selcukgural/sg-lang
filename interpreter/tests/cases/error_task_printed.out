@@ -1,0 +1,5 @@
+error: a `Task<int>` cannot be written as text
+  --> error_task_printed.sg:7:11
+ 7 |     print(t)
+   |           ^
+  hint: wait for it and write what it gives: `print(task.wait())`

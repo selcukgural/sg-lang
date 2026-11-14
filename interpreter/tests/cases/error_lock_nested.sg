@@ -1,0 +1,11 @@
+void add(shared locked int a, shared locked int b) {
+    lock a as x {
+        lock b as y {
+            x += y
+        }
+    }
+}
+
+void main() {
+    add(new shared locked 1, new shared locked 2)
+}

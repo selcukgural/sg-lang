@@ -1,0 +1,44 @@
+// Tasks that start tasks, a task handed to a function and given back, a `Func` started as a
+// task, a task in a loop.
+int twice(int x) {
+    return x * 2
+}
+
+int both(int x) {
+    var a = Task.run(twice, x)
+    var b = Task.run(twice, x + 1)
+    return a.wait() + b.wait()
+}
+
+int finish(Task<int> task) {
+    return task.wait()
+}
+
+Task<int> start(int x) {
+    return Task.run(twice, x)
+}
+
+void say(string text) {
+    print(text)
+}
+
+void main() {
+    var t = Task.run(both, 10)
+    var u = Task.run(both, 20)
+    print(t.wait() + u.wait())
+    print(finish(start(4)))
+    Func<int, int> work = twice
+    var v = Task.run(work, 21)
+    print(v.wait())
+    int sum = 0
+    for i in 0..4 {
+        var task = Task.run(twice, i)
+        sum += task.wait()
+    }
+    print(sum)
+    var quiet = Task.run(say, "a task that returns nothing")
+    quiet.wait()
+    // `spawn` is a name like any other.
+    var spawn = 3
+    print(spawn)
+}

@@ -163,7 +163,9 @@ other up reported when the program ends) and type aliases (`using NodeRef = shar
 modules (`use`, `public`, `readonly`); `test` blocks.
 
 Programs read and write files whole or piece by piece, as text or as bytes, and append to them (a writer left open is a compile error), read
-their input line by line and see their command line. Designed but not built yet: tasks (`Task.run`, `locked`, a `lock` block that cannot deadlock) and, after them, async in the way of C#. Generics of your
+their input line by line and see their command line. Tasks (`Task.run`, `t.wait()`, every task waited for) and
+values that several tasks change (`shared locked T`, a `lock` block that cannot deadlock) run in the
+interpreter; compiled code is next, and after them async in the way of C#. Generics of your
 own are put off. There is nothing for the network yet, no standard library, no package manager and no
 editor support.
 

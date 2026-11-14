@@ -1,0 +1,5 @@
+error: `read_value` takes a `shared checked Node` here, which cannot go to another task: a `shared checked Node` is checked within one task; one that several tasks change is `shared locked`
+  what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`
+  --> error_task_checked_argument.sg:11:34
+ 11 |     var t = Task.run(read_value, share node)
+    |                                  ^^^^^^^^^^

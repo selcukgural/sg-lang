@@ -1,0 +1,7 @@
+void main() {
+    var a = new shared locked 1
+    var w = weak a
+    lock w as x {
+        x += 1
+    }
+}

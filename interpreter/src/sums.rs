@@ -159,6 +159,12 @@ impl<'a> Scan<'a> {
                 self.expr(value);
                 self.block(body);
             }
+            StmtKind::Lock { items, body } => {
+                for item in items {
+                    self.expr(&item.value);
+                }
+                self.block(body);
+            }
             StmtKind::Return(value) => {
                 if let Some(value) = value {
                     self.expr(value);
@@ -227,7 +233,7 @@ fn names_in<'a>(expr: &'a Expr, found: &mut Vec<&'a str>) {
 
 /// Calls `each` on the expressions directly inside `expr`; the blocks of a `match` are not
 /// expressions and are left to the caller.
-fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
+pub(crate) fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
     match &expr.kind {
         ExprKind::Int(..)
         | ExprKind::Float(..)

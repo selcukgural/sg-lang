@@ -1,0 +1,6 @@
+error: `t` is not waited for before its block ends
+  every task is waited for: its error is not lost, and no work is cut off
+  --> error_task_not_waited.sg:6:9
+ 6 |     var t = Task.run(twice, 1)
+   |         ^
+  hint: `t.wait()`

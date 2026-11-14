@@ -1,0 +1,5 @@
+error: what a `shared locked` value holds is reached only inside a `lock` block, where no other task reaches it
+  --> error_locked_method_outside.sg:3:5
+ 3 |     xs.add(1)
+   |     ^^
+  hint: `lock xs as name { ... }`

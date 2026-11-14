@@ -1,0 +1,5 @@
+error: `count` takes a `Holder` here, which holds a `shared checked Node` (the field `next` of `Node`), which cannot go to another task: a `shared checked Node` is checked within one task; one that several tasks change is `shared locked`
+  what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`
+  --> error_task_checked_inside.sg:16:29
+ 16 |     var t = Task.run(count, holder)
+    |                             ^^^^^^

@@ -1,0 +1,6 @@
+void main() {
+    var xs = new shared locked List<int>()
+    for x in xs {
+        print(x)
+    }
+}

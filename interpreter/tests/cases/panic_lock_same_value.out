@@ -1,0 +1,5 @@
+3
+panic: `x` and `y` are one value, which a `lock` takes once
+  --> panic_lock_same_value.sg:2:18
+ 2 |     lock a as x, b as y {
+   |                  ^

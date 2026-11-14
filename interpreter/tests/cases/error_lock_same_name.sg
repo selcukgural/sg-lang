@@ -1,0 +1,7 @@
+void main() {
+    var a = new shared locked 1
+    var b = new shared locked 2
+    lock a as x, b as x {
+        x += 1
+    }
+}

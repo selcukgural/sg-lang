@@ -1,0 +1,5 @@
+void count(locked int x) {
+}
+
+void main() {
+}

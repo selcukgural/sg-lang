@@ -1,0 +1,6 @@
+void main() {
+    var a = new shared checked 1
+    lock a as x {
+        x += 1
+    }
+}

@@ -1,0 +1,8 @@
+int add(int a, int b) {
+    return a + b
+}
+
+void main() {
+    var t = Task.run(add, 1)
+    print(t.wait())
+}

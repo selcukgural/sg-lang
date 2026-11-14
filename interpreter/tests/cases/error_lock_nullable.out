@@ -1,0 +1,5 @@
+error: this is `shared locked int?` and may be `null`; `lock` needs a value
+  --> error_lock_nullable.sg:3:10
+ 3 |     lock a as x {
+   |          ^
+  hint: test it first: `if a is not null { ... }`

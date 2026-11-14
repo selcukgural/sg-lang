@@ -1,0 +1,5 @@
+error: expected a variable name, found `lock`
+  `lock` is a word of the language, not a name
+  --> error_lock_as_name.sg:2:9
+ 2 |     var lock = 1
+   |         ^^^^

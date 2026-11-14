@@ -29,7 +29,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "File", "Stdin", "Stdout", "Stderr"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "File", "Stdin", "Stdout", "Stderr", "Task"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -323,7 +323,7 @@ const TEXT_ERROR: &str = "TextError";
 fn text_error() -> StructDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
-    let ty = TypeExpr { mode: None, holder: None, checked: false, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
     let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere };
     StructDecl { public: true, name: TEXT_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: vec![position], methods: Vec::new() }
 }
@@ -337,7 +337,7 @@ const NUMBER_ERROR: &str = "NumberError";
 fn number_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
-    let ty = TypeExpr { mode: None, holder: None, checked: false, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
     let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere };
     let variants = vec![
         VariantDecl { name: "Invalid".to_string(), span: nowhere, fields: vec![position] },
@@ -358,7 +358,7 @@ fn io_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
     let field = |ty: &str, name: &str| {
-        let ty = TypeExpr { mode: None, holder: None, checked: false, name: ty.to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+        let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, name: ty.to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
         FieldDecl { public: true, readonly: true, ty, name: name.to_string(), span: nowhere }
     };
     let variant = |name: &str, fields: Vec<FieldDecl>| VariantDecl { name: name.to_string(), span: nowhere, fields };
@@ -534,6 +534,7 @@ fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
 /// With `tests` the `test` blocks are checked too and `main` may be missing: that is what the
 /// test command compiles. A normal run leaves the tests out.
 pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
+    LOCKED.with(|found| found.borrow_mut().clear());
     let mut names = Names { files: prog.files.clone(), ..Names::default() };
     names.modules = prog.files.iter().filter(|file| !file.module.is_empty()).map(|file| file.module.clone()).collect();
     for file in &prog.files {
@@ -665,7 +666,11 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 return Err(Diag::error(field.ty.span, format!("`{}` borrows, so `{}` names where the borrow comes from", field.name, decl.name))
                     .hint(format!("`struct {}<from source>`", decl.name)));
             }
-            fields.push((field.name.clone(), resolve_type(&field.ty, &names, false)?));
+            let field_ty = resolve_type(&field.ty, &names, false)?;
+            if matches!(field_ty, Ty::Task(_)) {
+                return Err(task_kept(field.ty.span));
+            }
+            fields.push((field.name.clone(), field_ty));
         }
         let taken = fields.iter().map(|(name, _)| name.as_str());
         let methods = type_methods(&decl.name, &decl.methods, taken, "a field", &names, &formattable)?;
@@ -690,7 +695,11 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                     return Err(Diag::error(field.ty.span, format!("`{}` borrows, so `{}` names where the borrow comes from", field.name, decl.name))
                         .hint(format!("`enum {}<from source>`", decl.name)));
                 }
-                fields.push((field.name.clone(), resolve_type(&field.ty, &names, false)?));
+                let field_ty = resolve_type(&field.ty, &names, false)?;
+                if matches!(field_ty, Ty::Task(_)) {
+                    return Err(task_kept(field.ty.span));
+                }
+                fields.push((field.name.clone(), field_ty));
             }
             variants.push((variant.name.clone(), fields));
         }
@@ -944,9 +953,34 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             body(method, &enums[owner].methods[&method.name], Some(owner))?;
         }
     }
-    if !tests {
-        return Ok(());
+    if tests {
+        check_tests(prog, &names, &sets, &structs, &enums, &sigs, src)?;
     }
+    thread_rule_of_locked(&structs, &enums, &names)?;
+    crate::waits::check(prog)
+}
+
+/// What each `shared locked T` holds follows the thread rule: several tasks reach it.
+fn thread_rule_of_locked(structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, names: &Names) -> Res<()> {
+    for (inner, span) in LOCKED.with(|found| std::mem::take(&mut *found.borrow_mut())) {
+        if let Some((part, at)) = stays(&inner, structs, enums, names, &mut Vec::new()) {
+            let what = if part == inner { String::new() } else { format!(", which holds a `{part}`{at}") };
+            return Err(Diag::error(span, format!("a `locked` value cannot hold a `{inner}`{what}: {}", why_it_stays(&part, names))).note(THREAD_RULE));
+        }
+    }
+    Ok(())
+}
+
+fn check_tests(
+    prog: &mut Program,
+    names: &Names,
+    sets: &Promised,
+    structs: &HashMap<String, StructInfo>,
+    enums: &HashMap<String, EnumInfo>,
+    sigs: &HashMap<String, FuncSig>,
+    src: &str,
+) -> Res<()> {
+    let (copyable, formattable, equatable, comparable) = (sets.copyable, sets.formattable, sets.equatable, sets.comparable);
     for position in 0..prog.tests.len() {
         let test = &prog.tests[position];
         let test_span = test.name_span;
@@ -955,14 +989,14 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 .related(first.name_span, "the other one is here"));
         }
         let mut checker = Checker {
-            names: &names,
-            copyable: &copyable,
-            formattable: &formattable,
-            equatable: &equatable,
-            comparable: &comparable,
-            structs: &structs,
-            enums: &enums,
-            sigs: &sigs,
+            names,
+            copyable,
+            formattable,
+            equatable,
+            comparable,
+            structs,
+            enums,
+            sigs,
             scopes: vec![Scope::default()],
             locks: Vec::new(),
             borrows: Borrows::default(),
@@ -980,15 +1014,15 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         checker.declare_streams(test_span)?;
         checker.block(&mut prog.tests[position].body, &[])?;
         checker.borrow_conflicts()?;
-        crate::opening::open(&mut prog.tests[position].body, &|ty: &Ty| lends(ty, &names), src)?;
+        crate::opening::open(&mut prog.tests[position].body, &|ty: &Ty| lends(ty, names), src)?;
     }
     Ok(())
 }
 
 fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
-    if !matches!(ty.name.as_str(), "Result" | "List" | "HashMap" | "HashSet" | "Func") && !ty.args.is_empty() {
+    if !matches!(ty.name.as_str(), "Result" | "List" | "HashMap" | "HashSet" | "Func" | "Task") && !ty.args.is_empty() {
         return Err(Diag::error(ty.span, format!("`{}<...>`: generic types are not in the interpreter yet", ty.name))
-            .note("the types written with `<` and `>` for now are `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>` and `Func<A, R>`"));
+            .note("the types written with `<` and `>` for now are `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, `Func<A, R>` and `Task<R>`"));
     }
     let no_borrow = |arg: &TypeExpr, of: &str| match arg.mode {
         Some(_) => Err(Diag::error(arg.span, format!("a `{of}` that holds borrows is not in the interpreter yet"))
@@ -996,6 +1030,15 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
         None => Ok(()),
     };
     let mut resolved = match Ty::from_name(&ty.name) {
+        // What a task started with `Task.run` gives when it is waited for.
+        _ if ty.name == "Task" => {
+            let [result] = ty.args.as_slice() else {
+                return Err(Diag::error(ty.span, "`Task` is written with what the task returns: `Task<R>`")
+                    .note("a task whose function returns nothing is a `Task<void>`"));
+            };
+            no_borrow(result, "Task")?;
+            Ty::Task(Box::new(resolve_type(result, names, true)?))
+        }
         _ if ty.name == "List" => {
             let [item] = ty.args.as_slice() else {
                 return Err(Diag::error(ty.span, "`List` is written with the type of its items: `List<T>`"));
@@ -1150,6 +1193,13 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
     if ty.mode.is_none() && matches!(resolved, Ty::Slice(_)) {
         return Err(bare_slice(ty.span, &resolved));
     }
+    let nested = match &resolved {
+        Ty::Task(result) => task_inside(result),
+        other => task_inside(other),
+    };
+    if nested || (ty.mode.is_some() && matches!(resolved, Ty::Task(_))) {
+        return Err(task_kept(ty.span));
+    }
     Ok(match ty.mode {
         Some(Mode::Read) => Ty::Read(Box::new(resolved)),
         Some(Mode::Ref) => Ty::Ref(Box::new(resolved)),
@@ -1197,6 +1247,9 @@ fn not_shared(word: &str, span: Span, found: &Ty) -> Diag {
 /// carries no borrow.
 fn held(holder: Holder, inner: Ty, ty: &TypeExpr, names: &Names) -> Res<Ty> {
     let checked = ty.checked;
+    if matches!(inner, Ty::Task(_)) {
+        return Err(task_kept(ty.span));
+    }
     let word = if holder == Holder::Shared { "shared" } else { "weak" };
     let refuse = |what: String| Err(Diag::error(ty.span, format!("`{word}` cannot hold {what}")));
     match &inner {
@@ -1217,10 +1270,91 @@ fn held(holder: Holder, inner: Ty, ty: &TypeExpr, names: &Names) -> Res<Ty> {
         return Err(Diag::error(ty.span, format!("`{word}` cannot hold a `{inner}`, which carries a borrow"))
             .note("a `shared` value lives as long as its last owner, which can be longer than anything it borrows from"));
     }
+    // What a `locked` value holds follows the thread rule, which needs the fields of every
+    // type: it is checked once they are all known (`thread_rule_of_locked`).
+    let inner = match ty.locked {
+        true => {
+            LOCKED.with(|found| found.borrow_mut().push((inner.clone(), ty.span)));
+            Ty::Locked(Box::new(inner))
+        }
+        false => inner,
+    };
     Ok(match holder {
         Holder::Shared => Ty::Shared(Box::new(inner), checked),
         Holder::Weak => Ty::Weak(Box::new(inner), checked),
     })
+}
+
+thread_local! {
+    /// What each `shared locked T` written in the program holds, and where: checked against
+    /// the thread rule once the fields of every type are known.
+    static LOCKED: std::cell::RefCell<Vec<(Ty, Span)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Why a value may not go to another task, for the messages of the thread rule.
+const THREAD_RULE: &str = "what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`";
+
+/// Whether a `Task` lies inside the type, not counting the types a `Func` takes and gives.
+fn task_inside(ty: &Ty) -> bool {
+    match ty {
+        Ty::Task(_) => true,
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) | Ty::Slice(inner) => task_inside(inner),
+        Ty::Shared(inner, _) | Ty::Weak(inner, _) | Ty::Locked(inner) | Ty::Read(inner) | Ty::Ref(inner) => task_inside(inner),
+        Ty::Result(a, b) | Ty::Map(a, b) | Ty::Entry(a, b) => task_inside(a) || task_inside(b),
+        _ => false,
+    }
+}
+
+/// A `Task` written where the compiler could not see it waited for.
+fn task_kept(span: Span) -> Diag {
+    Diag::error(span, "a `Task` is kept only in a local variable, a parameter or a return value, as it is")
+        .note("every task is waited for, and the compiler sees that only where the task stays in one function's hands")
+}
+
+/// The part of a type that cannot go to another task (the thread rule), and where it lies:
+/// `None` when all of it can. `seen`: the structs and enums being looked at, so that a type
+/// that holds itself through a pointer ends.
+fn stays(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, names: &Names, seen: &mut Vec<String>) -> Option<(Ty, String)> {
+    match ty {
+        Ty::Read(_) | Ty::Ref(_) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Entry(..) | Ty::Formatter | Ty::Task(_) => Some((ty.clone(), String::new())),
+        Ty::Shared(_, true) | Ty::Weak(_, true) => Some((ty.clone(), String::new())),
+        Ty::Shared(inner, false) | Ty::Weak(inner, false) | Ty::Locked(inner) => stays(inner, structs, enums, names, seen),
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) => stays(inner, structs, enums, names, seen),
+        Ty::Result(a, b) | Ty::Map(a, b) => stays(a, structs, enums, names, seen).or_else(|| stays(b, structs, enums, names, seen)),
+        Ty::Struct(name) | Ty::Enum(name) => {
+            if names.carriers.contains_key(name) {
+                return Some((ty.clone(), String::new()));
+            }
+            if seen.contains(name) {
+                return None;
+            }
+            seen.push(name.clone());
+            let fields: Vec<&(String, Ty)> = match (structs.get(name), enums.get(name)) {
+                (Some(info), _) => info.fields.iter().collect(),
+                (_, Some(info)) => info.variants.iter().flat_map(|(_, fields)| fields).collect(),
+                _ => Vec::new(),
+            };
+            let found = fields.iter().find_map(|(field, field_ty)| {
+                stays(field_ty, structs, enums, names, seen).map(|(part, at)| match at.is_empty() {
+                    true => (part, format!(" (the field `{field}` of `{}`)", short_name(name))),
+                    false => (part, at),
+                })
+            });
+            seen.pop();
+            found
+        }
+        _ => None,
+    }
+}
+
+/// Why the part `stays` found does not go to another task.
+fn why_it_stays(part: &Ty, names: &Names) -> String {
+    match part {
+        Ty::Shared(..) | Ty::Weak(..) => format!("a `{part}` is checked within one task; one that several tasks change is `shared locked`"),
+        Ty::Task(_) => "a task is waited for by the task that started it, and by no other".to_string(),
+        Ty::Struct(name) | Ty::Enum(name) if names.carriers.contains_key(name) => format!("a `{part}` carries a borrow, and the task could outlive what it borrows from"),
+        _ => format!("a `{part}` is a borrow, and the task could outlive what it borrows from"),
+    }
 }
 
 /// `byte[]` written without `read` or `ref`: a slice owns nothing, so it is not a type alone.
@@ -2027,9 +2161,18 @@ impl<'a> Checker<'a> {
     /// be closed, or moved somewhere, before they end, since `close` is where the error of
     /// writing its buffer shows up. `exit`: the `return`, `break`, `continue` or `exit` that
     /// ends them, or `None` for the end of the innermost block.
+    ///
+    /// A `Task` is the same: it is waited for before its variable ends (every task is waited
+    /// for). An exit with an error is let go for both; the task is waited for there.
     fn unclosed(&self, from: usize, exit: Option<(Span, &str)>) -> Res<()> {
         for var in self.scopes[from..].iter().flat_map(|scope| &scope.vars) {
-            if var.declared != Ty::Writer || (var.moved.whole.is_some() && !var.moved.partly) {
+            if var.moved.whole.is_some() && !var.moved.partly {
+                continue;
+            }
+            if matches!(var.declared, Ty::Task(_)) {
+                return Err(self.unwaited(var, exit));
+            }
+            if var.declared != Ty::Writer {
                 continue;
             }
             let name = &var.name;
@@ -2049,6 +2192,31 @@ impl<'a> Checker<'a> {
             return Err(diag.hint(hint));
         }
         Ok(())
+    }
+
+    /// What a `shared locked` value holds, reached outside a `lock` block.
+    fn locked_outside(&self, span: Span) -> Diag {
+        let text = &self.src[span.start..span.end];
+        Diag::error(span, "what a `shared locked` value holds is reached only inside a `lock` block, where no other task reaches it")
+            .hint(format!("`lock {text} as name {{ ... }}`"))
+    }
+
+    /// A task kept in `var` is not waited for where its scope ends.
+    fn unwaited(&self, var: &Var, exit: Option<(Span, &str)>) -> Diag {
+        let name = &var.name;
+        let ends = if var.param { "the function ends" } else { "its block ends" };
+        let diag = match (exit, var.moved.whole.is_some()) {
+            (_, true) => Diag::error(var.at, format!("`{name}` is waited for on some paths but not on all of them"))
+                .note("wait for it on every path, or once where the paths meet"),
+            (Some((span, word)), false) => Diag::error(span, format!("`{name}` is not waited for at this `{word}`"))
+                .related(var.at, "the task is kept here"),
+            (None, false) => Diag::error(var.at, format!("`{name}` is not waited for before {ends}")),
+        };
+        let diag = match exit {
+            Some((_, "exit")) => diag.note("`exit` ends the program at once, and would cut the task off"),
+            _ => diag.note("every task is waited for: its error is not lost, and no work is cut off"),
+        };
+        diag.hint(format!("`{name}.wait()`"))
     }
 
     fn find(&mut self, name: &str) -> Option<&mut Var> {
@@ -2186,7 +2354,8 @@ impl<'a> Checker<'a> {
 
     /// `new NodeRef(1)` or `new NodeRef { ... }` with an alias of a `shared` struct: the name
     /// becomes the struct's, and the caller makes it `new shared`.
-    fn shared_alias(&mut self, inner: &mut Expr) -> Res<Option<bool>> {
+    /// Gives whether the alias is `checked` and whether it is `locked`.
+    fn shared_alias(&mut self, inner: &mut Expr) -> Res<Option<(bool, bool)>> {
         let span = inner.span;
         self.unqualify(inner);
         let (ExprKind::Call { name, .. } | ExprKind::StructLit { name, .. }) = &mut inner.kind else { return Ok(None) };
@@ -2198,7 +2367,12 @@ impl<'a> Checker<'a> {
             Some(Ty::Shared(behind, checked)) => match *behind {
                 Ty::Struct(target) | Ty::Enum(target) => {
                     *name = target;
-                    Ok(Some(checked))
+                    Ok(Some((checked, false)))
+                }
+                Ty::Locked(locked) if matches!(&*locked, Ty::Struct(_) | Ty::Enum(_)) => {
+                    let (Ty::Struct(target) | Ty::Enum(target)) = *locked else { unreachable!("matched above") };
+                    *name = target;
+                    Ok(Some((false, true)))
                 }
                 other => Err(Diag::error(span, format!("`{}` is `shared {other}`, which is not built this way", short_name(&full)))),
             },
@@ -2894,6 +3068,11 @@ impl<'a> Checker<'a> {
                         .hint("write the call alone, without `_ =`"));
                 }
                 Ty::Null => return Err(Diag::error(value.span, "there is nothing to discard in `null`")),
+                Ty::Task(_) => {
+                    return Err(Diag::error(value.span, "a task is not dropped: it would go on with no one to wait for it")
+                        .note("every task is waited for, and none is cancelled without being told")
+                        .hint("keep it in a variable and wait for it: `task.wait()`"));
+                }
                 _ => {}
             },
             StmtKind::Assign { target, op, value, through } => {
@@ -3013,6 +3192,12 @@ impl<'a> Checker<'a> {
                     Some((name, path)) if path.is_empty() => {
                         if let Some(what) = std_stream(name) {
                             return Err(Diag::error(target.span, format!("`{name}` is {what} of the program and cannot be given another value")));
+                        }
+                        let var = self.var(name, target.span)?;
+                        if matches!(var.declared, Ty::Task(_)) && (var.moved.whole.is_none() || var.moved.partly) {
+                            return Err(Diag::error(target.span, format!("`{name}` is given another task while the one it holds is not waited for"))
+                                .related(var.at, "it is declared here")
+                                .hint(format!("wait for it first: `{name}.wait()`")));
                         }
                         let var = self.var(name, target.span)?;
                         if var.declared == Ty::Writer && (var.moved.whole.is_none() || var.moved.partly) {
@@ -3150,6 +3335,7 @@ impl<'a> Checker<'a> {
                             behind
                         }
                         Ty::Ptr(behind) => behind,
+                        Ty::Locked(_) => return Err(self.locked_outside(iter.span)),
                         // What a `shared checked` value points to is lent as the loop asks.
                         Ty::Shared(behind, true) => {
                             mode = mode.or(Some(Mode::Read));
@@ -3241,6 +3427,10 @@ impl<'a> Checker<'a> {
                 let word = if *mutable { "ref" } else { "read" };
                 let text = self.src[value.span.start..value.span.end].to_string();
                 let (inner, checked) = match found.strip_borrow() {
+                    Ty::Shared(inner, _) if matches!(&**inner, Ty::Locked(_)) => {
+                        return Err(Diag::error(value.span, format!("`{word} ... as` opens a `shared` value that one task uses, and this is `{found}`, which several tasks share"))
+                            .hint(format!("`lock {text} as name {{ ... }}`")));
+                    }
                     Ty::Shared(inner, checked) => ((**inner).clone(), *checked),
                     Ty::Nullable(inner) if matches!(&**inner, Ty::Shared(..)) => {
                         return Err(Diag::error(value.span, format!("this is `{found}` and may be `null`; `{word} ... as` needs a value"))
@@ -3268,6 +3458,58 @@ impl<'a> Checker<'a> {
                     false => Vec::new(),
                 };
                 self.block_with(body, &[], vec![(name.clone(), ty, *name_span)])?;
+            }
+            StmtKind::Lock { items, body } => {
+                let mut binds = Vec::new();
+                let mut loans = Vec::new();
+                for position in 0..items.len() {
+                    let item = &mut items[position];
+                    let found = match self.place(&mut item.value)? {
+                        Some((ty, _)) => ty,
+                        None => self.expr(&mut item.value, None)?,
+                    };
+                    let value = &item.value;
+                    let text = self.src[value.span.start..value.span.end].to_string();
+                    let inner = match found.strip_borrow() {
+                        Ty::Shared(held, _) if matches!(&**held, Ty::Locked(_)) => {
+                            let Ty::Locked(inner) = &**held else { unreachable!("matched above") };
+                            (**inner).clone()
+                        }
+                        Ty::Nullable(inner) if matches!(&**inner, Ty::Shared(..)) => {
+                            return Err(Diag::error(value.span, format!("this is `{found}` and may be `null`; `lock` needs a value"))
+                                .hint(format!("test it first: `if {text} is not null {{ ... }}`")));
+                        }
+                        Ty::Weak(held, _) if matches!(&**held, Ty::Locked(_)) => {
+                            return Err(Diag::error(value.span, format!("this is `{found}`: what it looks at may be gone"))
+                                .hint(format!("ask for an owner first: `var owner = share {text}`, which is `null` if it is gone")));
+                        }
+                        Ty::Shared(_, true) => {
+                            return Err(Diag::error(value.span, format!("`lock` is for a `shared locked` value, and this is `{found}`, which one task changes"))
+                                .hint(format!("`ref {text} as name {{ ... }}` changes it for a block")));
+                        }
+                        other => {
+                            return Err(Diag::error(value.span, format!("`lock` is for a `shared locked` value, which several tasks change, and this is `{other}`"))
+                                .note("a value that several tasks change is made with `new shared locked`"));
+                        }
+                    };
+                    for earlier in &items[..position] {
+                        let item = &items[position];
+                        if earlier.name == item.name {
+                            return Err(Diag::error(item.name_span, format!("`{}` names two values of this `lock`", item.name)).related(earlier.name_span, "the first one"));
+                        }
+                        if steady(&earlier.value) && steady(&item.value) && self.src[earlier.value.span.start..earlier.value.span.end] == text {
+                            return Err(Diag::error(item.value.span, format!("`{text}` is locked twice in one `lock`")).related(earlier.value.span, "the first time"));
+                        }
+                    }
+                    let item = &items[position];
+                    if item.value.is_place() {
+                        loans.extend(self.place_loans(&item.value, false, item.value.span));
+                    }
+                    binds.push((item.name.clone(), Ty::Ref(Box::new(inner)), item.name_span));
+                }
+                // Each name borrows what its value holds, so the values stay where they are.
+                self.borrows.binds = loans;
+                self.block_with(body, &[], binds)?;
             }
             StmtKind::Return(value) => self.returned(value.as_mut(), stmt_span)?,
             StmtKind::Break | StmtKind::Continue => {
@@ -3330,9 +3572,23 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Try { .. } => {
                 let ty = self.expr(expr, None)?;
+                if matches!(ty, Ty::Task(_)) {
+                    let text = &self.src[span.start..span.end];
+                    return Err(Diag::error(span, "this task is started and then not waited for")
+                        .note("every task is waited for: its error is not lost, and no work is cut off when the program ends")
+                        .hint(format!("keep it and wait for it later: `var task = {text}`, then `task.wait()`")));
+                }
                 // `line.trim()` alone changes nothing: a built-in method that only gives a value
                 // gives it to nobody.
                 if let ExprKind::Method { recv, name, callee, .. } = &expr.kind {
+                    // What a task gives is dropped only on purpose (an error is left to the
+                    // check of a `Result` below).
+                    if *callee == Callee::Wait && !matches!(ty, Ty::Void | Ty::Result(..)) {
+                        let text = &self.src[span.start..span.end];
+                        let task = &self.src[recv.span.start..recv.span.end];
+                        return Err(Diag::error(span, format!("the `{ty}` that `{task}` gives is not used"))
+                            .hint(format!("keep it: `var value = {text}`; to drop it on purpose, `_ = {text}`")));
+                    }
                     if ty != Ty::Void && gives_only(name, callee) {
                         return Err(self.not_used(recv, name, &ty, span));
                     }
@@ -3660,6 +3916,15 @@ impl<'a> Checker<'a> {
             (Ty::Read(_) | Ty::Ref(_), _) if !expected.is_borrow() => {
                 mismatch(Some(format!("`{found}` only borrows the value; `{expected}` needs to own it")))
             }
+            // What a `shared locked` value holds is lent only by `lock`.
+            (Ty::Read(from) | Ty::Ref(from), Ty::Read(to) | Ty::Ref(to)) if matches!(&**from, Ty::Shared(inner, _) if matches!(&**inner, Ty::Locked(held) if held == to)) => {
+                let shared = match &expr.kind {
+                    ExprKind::Borrow { expr: inner, .. } => &self.src[inner.span.start..inner.span.end],
+                    _ => text,
+                };
+                let word = if matches!(expected, Ty::Ref(_)) { "ref " } else { "" };
+                Err(self.locked_outside(expr.span).hint(format!("lend what it holds inside a `lock` block: `lock {shared} as v {{ ... {word}v ... }}`")))
+            }
             // A borrow of a `shared T` stands in for a `read` of the `T` it points to.
             (Ty::Read(from) | Ty::Ref(from), Ty::Read(to)) if matches!(&**from, Ty::Shared(inner, _) if inner == to) => {
                 wrap(expr, ExprKind::Unbox);
@@ -3753,7 +4018,7 @@ impl<'a> Checker<'a> {
             if let (ExprKind::Var(name), ExprKind::Int(length, _)) = (&recv.kind, &index.kind) {
                 let is_type = Ty::from_name(name).is_some() || self.names.full(name, recv.span)?.is_some_and(|full| self.names.kinds.contains_key(&full));
                 if self.find(name).is_none() && name != "this" && is_type && *length >= 0 {
-                    let ty = TypeExpr { mode: None, holder: None, checked: false, name: name.clone(), args: Vec::new(), suffixes: vec![Suffix::Array(*length as usize)], span };
+                    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, name: name.clone(), args: Vec::new(), suffixes: vec![Suffix::Array(*length as usize)], span };
                     expr.kind = ExprKind::Array { ty, args: Vec::new(), items: None };
                     return Ok(None);
                 }
@@ -3790,6 +4055,7 @@ impl<'a> Checker<'a> {
                             *inner
                         }
                         Ty::Ptr(inner) => *inner,
+                        Ty::Locked(_) => return Err(self.locked_outside(recv.span)),
                         // What a `shared` value points to is only read; through `shared
                         // checked` it is changed, however the owner itself was reached.
                         Ty::Shared(inner, checked) => {
@@ -3872,6 +4138,7 @@ impl<'a> Checker<'a> {
                             behind
                         }
                         Ty::Ptr(behind) => behind,
+                        Ty::Locked(_) => return Err(self.locked_outside(recv.span)),
                         Ty::Shared(behind, checked) => {
                             writable = *checked;
                             behind
@@ -4138,9 +4405,9 @@ impl<'a> Checker<'a> {
 
         // `new NodeRef(1)` with `using NodeRef = shared Node` is `new shared Node(1)`.
         if let ExprKind::New(inner) = &mut expr.kind {
-            if let Some(checked) = self.shared_alias(inner)? {
+            if let Some((checked, locked)) = self.shared_alias(inner)? {
                 let ExprKind::New(inner) = std::mem::replace(&mut expr.kind, ExprKind::Null) else { unreachable!("matched above") };
-                expr.kind = ExprKind::NewShared { value: inner, checked };
+                expr.kind = ExprKind::NewShared { value: inner, checked, locked };
             }
         }
 
@@ -4506,12 +4773,18 @@ impl<'a> Checker<'a> {
                 }
                 Ok(Ty::Ptr(Box::new(ty)))
             }
-            ExprKind::NewShared { value: inner, checked } => {
-                let checked = *checked;
+            ExprKind::NewShared { value: inner, checked, locked } => {
+                let (checked, locked) = (*checked, *locked);
+                let unlocked = |ty: &Ty| match ty {
+                    Ty::Locked(inner) if locked => Some((**inner).clone()),
+                    Ty::Locked(_) => None,
+                    other if !locked => Some(other.clone()),
+                    _ => None,
+                };
                 let wanted = expected.and_then(|ty| match ty {
-                    Ty::Shared(inner, _) => Some((**inner).clone()),
+                    Ty::Shared(inner, _) => unlocked(inner),
                     Ty::Nullable(nullable) => match &**nullable {
-                        Ty::Shared(inner, _) => Some((**inner).clone()),
+                        Ty::Shared(inner, _) => unlocked(inner),
                         _ => None,
                     },
                     _ => None,
@@ -4533,6 +4806,14 @@ impl<'a> Checker<'a> {
                 if lends(&ty, self.names) {
                     return Err(Diag::error(inner.span, format!("a `shared` value cannot hold a `{ty}`, which carries a borrow"))
                         .note("a `shared` value lives as long as its last owner, which can be longer than anything it borrows from"));
+                }
+                if locked {
+                    if let Some((part, at)) = stays(&ty, self.structs, self.enums, self.names, &mut Vec::new()) {
+                        let what = if part == ty { String::new() } else { format!(", which holds a `{part}`{at}") };
+                        return Err(Diag::error(inner.span, format!("a `locked` value cannot hold a `{ty}`{what}: {}", why_it_stays(&part, self.names)))
+                            .note(THREAD_RULE));
+                    }
+                    return Ok(Ty::Shared(Box::new(Ty::Locked(Box::new(ty))), false));
                 }
                 Ok(Ty::Shared(Box::new(ty), checked))
             }
@@ -4688,6 +4969,7 @@ impl<'a> Checker<'a> {
                     behind
                 }
                 Ty::Ptr(behind) => behind,
+                Ty::Locked(_) => return Err(self.locked_outside(recv.span)),
                 Ty::Shared(behind, checked) => {
                     writable = *checked;
                     behind
@@ -4932,6 +5214,7 @@ impl<'a> Checker<'a> {
                     behind
                 }
                 Ty::Ptr(behind) => behind,
+                Ty::Locked(_) => return Err(self.locked_outside(span)),
                 Ty::Shared(behind, true) => {
                     mode = mode.or(Some(Mode::Read));
                     behind
@@ -5580,6 +5863,11 @@ impl<'a> Checker<'a> {
             }
         };
 
+        for (side, ty) in [(&*left, &left_ty), (&*right, &right_ty)] {
+            if matches!(peel(ty), Ty::Locked(_)) {
+                return Err(self.locked_outside(side.span));
+            }
+        }
         let undefined = || Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()));
         // `a == b` is `a.equals(b)` and `a < b` is `a.compare(b) < 0`, for the types that have them.
         if let (Ty::Struct(name) | Ty::Enum(name), true, true) = (peel(&left_ty), peel(&left_ty) == peel(&right_ty), op.is_comparison()) {
@@ -5722,6 +6010,8 @@ impl<'a> Checker<'a> {
             inner = behind.strip_borrow();
         }
         match inner {
+            Ty::Locked(_) => Err(self.locked_outside(span)),
+            Ty::Task(_) => Err(Diag::error(span, format!("a `{inner}` cannot be written as text")).hint("wait for it and write what it gives: `print(task.wait())`")),
             Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Fmt => Ok(()),
             Ty::Struct(name) | Ty::Enum(name) if self.formattable.contains(name) => Ok(()),
             Ty::Struct(name) | Ty::Enum(name) => Err(Diag::error(span, format!("`{name}` cannot be written as text: it is not `Formattable`"))
@@ -5948,6 +6238,50 @@ impl<'a> Checker<'a> {
         Ok(ty.clone())
     }
 
+    /// `Task.run(work, a, b)`: starts `work(a, b)` as a task of its own. The arguments are
+    /// checked as in a call; what the function takes and gives follows the thread rule.
+    fn task_run(&mut self, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+        if name != "run" {
+            return Err(Diag::error(name_span, format!("`Task` has the function `run`, not `{name}`")).hint("`Task.run(work, x)` starts `work(x)` as a task"));
+        }
+        let Some((first, rest)) = args.split_first_mut() else {
+            return Err(Diag::error(span, "`Task.run` takes the function to start, then what it is given: `Task.run(work, x)`"));
+        };
+        if let ExprKind::Call { name: called, .. } = &first.kind {
+            let text = &self.src[first.span.start..first.span.end];
+            let args = text.split_once('(').map_or("", |(_, args)| args.trim_end_matches(')'));
+            let sep = if args.trim().is_empty() { "" } else { ", " };
+            return Err(Diag::error(first.span, format!("this calls `{called}` here and gives `Task.run` what it returns"))
+                .hint(format!("the function and what it is given are written apart: `Task.run({called}{sep}{args})`")));
+        }
+        let found = self.expr(first, None)?;
+        let Ty::Func(params, ret) = found.strip_borrow().clone() else {
+            return Err(Diag::error(first.span, format!("`Task.run` starts a function, and this is a `{found}`")).hint("`Task.run(work, x)` starts `work(x)` as a task"));
+        };
+        let func = self.src[first.span.start..first.span.end].to_string();
+        if rest.len() != params.len() {
+            return Err(Diag::error(span, format!("`{func}` takes {} argument(s), {} given after it", params.len(), rest.len())));
+        }
+        for (position, param) in params.iter().enumerate() {
+            if let Some((part, at)) = stays(param, self.structs, self.enums, self.names, &mut Vec::new()) {
+                let what = if part == *param { String::new() } else { format!(", which holds a `{part}`{at}") };
+                let diag = Diag::error(rest[position].span, format!("`{func}` takes a `{param}` here{what}, which cannot go to another task: {}", why_it_stays(&part, self.names)));
+                return Err(match &part {
+                    Ty::Read(inner) | Ty::Ref(inner) => diag.hint(format!("give the task a value of its own: a `{inner}` to own, or a `shared {inner}` that both keep")),
+                    _ => diag.note(THREAD_RULE),
+                });
+            }
+        }
+        if let Some((part, at)) = stays(&ret, self.structs, self.enums, self.names, &mut Vec::new()) {
+            let what = if part == *ret { String::new() } else { format!(", which holds a `{part}`{at}") };
+            return Err(Diag::error(first.span, format!("`{func}` returns a `{ret}`{what}, which cannot come back from another task: {}", why_it_stays(&part, self.names)))
+                .note(THREAD_RULE));
+        }
+        self.args(&func, rest, &params, span)?;
+        *callee = Callee::TaskRun;
+        Ok(Ty::Task(ret))
+    }
+
     /// `File.readText(path)`, `Stdin.readLine(ref line)`: what reads and writes files and
     /// the input. A path is a `read string`; each gives a `Result` with an `IoError`.
     fn io_call(&mut self, owner: &str, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
@@ -6026,6 +6360,9 @@ impl<'a> Checker<'a> {
                 if owner == "File" {
                     return self.io_call(owner, name, name_span, args, callee, span);
                 }
+                if owner == "Task" {
+                    return self.task_run(name, name_span, args, callee, span);
+                }
                 // `string.join(", ", read names)`
                 // `string.fromUtf8(bytes)`: the bytes looked at as text, if they are text.
                 if owner == "string" && name == "fromUtf8" {
@@ -6087,6 +6424,24 @@ impl<'a> Checker<'a> {
                 None => (self.expr(recv, None)?, true, false),
             },
         };
+        // `t.wait()`: waits for the task and takes it.
+        if let Ty::Task(result) = recv_ty.strip_borrow() {
+            let result = (**result).clone();
+            if name != "wait" {
+                return Err(Diag::error(name_span, format!("a `{}` has the method `wait`, not `{name}`", recv_ty.strip_borrow()))
+                    .note("`wait` waits for the task and gives what its function returned"));
+            }
+            if !args.is_empty() {
+                return Err(Diag::error(span, format!("`wait` takes 0 argument(s), {} given", args.len())));
+            }
+            if recv_ty.is_borrow() || !is_place {
+                return Err(Diag::error(recv.span, "`wait` takes the task and uses it up, and this one is only borrowed").note("whoever started the task waits for it"));
+            }
+            self.move_out(recv, &recv_ty)?;
+            recv.moved = true;
+            *callee = Callee::Wait;
+            return Ok(result);
+        }
         // `.clone()` of a `shared` value is one more owner, as `share` is: what it points to
         // is not copied.
         if name == "clone" {
@@ -6112,6 +6467,7 @@ impl<'a> Checker<'a> {
                     inner
                 }
                 Ty::Ptr(inner) => inner,
+                Ty::Locked(_) => return Err(self.locked_outside(recv.span)),
                 // A method only reads what a `shared` value points to, and cannot take it;
                 // through `shared checked` it may change it.
                 Ty::Shared(inner, checked) => {
@@ -7059,6 +7415,12 @@ fn changed_in<'b>(block: &'b Block, names: &mut Vec<&'b str>) {
                 taken_in(iter, names);
                 changed_in(body, names);
             }
+            StmtKind::Lock { items, body } => {
+                for item in items {
+                    taken_in(&item.value, names);
+                }
+                changed_in(body, names);
+            }
             StmtKind::Return(Some(expr)) | StmtKind::Expr(expr) | StmtKind::Discard(expr) => taken_in(expr, names),
             StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
         }
@@ -7387,6 +7749,7 @@ fn first_break(block: &Block) -> Option<Span> {
         StmtKind::For { from, to, .. } => breaks_in(from).or_else(|| breaks_in(to)),
         // The block of `as` is not a loop: a `break` in it leaves the loop around it.
         StmtKind::As { value, body, .. } => breaks_in(value).or_else(|| first_break(body)),
+        StmtKind::Lock { items, body } => items.iter().find_map(|item| breaks_in(&item.value)).or_else(|| first_break(body)),
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Discard(expr) | StmtKind::Let { init: expr, .. } => breaks_in(expr),
         StmtKind::Assign { target, value, .. } => breaks_in(target).or_else(|| breaks_in(value)),
         StmtKind::Return(None) | StmtKind::Continue => None,

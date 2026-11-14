@@ -14,6 +14,7 @@ pub mod source;
 pub mod opening;
 pub mod sums;
 pub mod types;
+pub mod waits;
 
 use std::io::Write;
 
@@ -23,7 +24,7 @@ pub use source::{load, Sources};
 
 /// The tree is walked recursively, so deep calls need stack. `interp::MAX_DEPTH` sets the limit;
 /// this stack is large enough to reach it.
-const STACK_BYTES: usize = 1 << 30;
+pub(crate) const STACK_BYTES: usize = 1 << 30;
 
 /// Parses the files of the program into one tree. With `tests`, the test command: only the
 /// `test` blocks of the files it was pointed at are kept.

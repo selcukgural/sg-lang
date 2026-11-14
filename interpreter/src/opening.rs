@@ -252,6 +252,13 @@ impl Opener<'_> {
                 self.open_here(value, used)?;
                 self.block(body)?;
             }
+            // A `shared locked` value is never `checked`: nothing here is opened.
+            StmtKind::Lock { items, body } => {
+                for item in items {
+                    self.expr(&mut item.value, Use::Value)?;
+                }
+                self.block(body)?;
+            }
             StmtKind::Return(Some(value)) => {
                 self.expr(value, Use::Value)?;
                 if (self.lends)(&value.ty) {

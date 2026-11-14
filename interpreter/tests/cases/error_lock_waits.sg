@@ -1,0 +1,11 @@
+int twice(int x) {
+    return x * 2
+}
+
+void main() {
+    var total = new shared locked 0
+    var t = Task.run(twice, 2)
+    lock total as c {
+        c += t.wait()
+    }
+}

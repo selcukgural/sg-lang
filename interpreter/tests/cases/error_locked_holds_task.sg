@@ -1,0 +1,5 @@
+void main() {
+}
+
+void keep(shared locked List<int> xs, weak locked Task<int> t) {
+}

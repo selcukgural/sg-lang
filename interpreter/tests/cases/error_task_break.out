@@ -1,0 +1,10 @@
+error: `t` is not waited for at this `break`
+  every task is waited for: its error is not lost, and no work is cut off
+  --> error_task_break.sg:9:13
+ 9 |             break
+   |             ^^^^^
+  the task is kept here:
+  --> error_task_break.sg:7:13
+ 7 |         var t = Task.run(twice, i)
+   |             ^
+  hint: `t.wait()`

@@ -1,0 +1,5 @@
+error: what a `shared locked` value holds is reached only inside a `lock` block, where no other task reaches it
+  --> error_locked_for_outside.sg:3:14
+ 3 |     for x in xs {
+   |              ^^
+  hint: `lock xs as name { ... }`

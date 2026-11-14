@@ -1,0 +1,9 @@
+error: `t` is given another task while the one it holds is not waited for
+  --> error_task_given_another.sg:7:5
+ 7 |     t = Task.run(twice, 3)
+   |     ^
+  it is declared here:
+  --> error_task_given_another.sg:6:9
+ 6 |     var t = Task.run(twice, 2)
+   |         ^
+  hint: wait for it first: `t.wait()`

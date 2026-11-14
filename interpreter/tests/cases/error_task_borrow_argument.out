@@ -1,0 +1,5 @@
+error: `size` takes a `read string` here, which cannot go to another task: a `read string` is a borrow, and the task could outlive what it borrows from
+  --> error_task_borrow_argument.sg:7:28
+ 7 |     var t = Task.run(size, read name)
+   |                            ^^^^^^^^^
+  hint: give the task a value of its own: a `string` to own, or a `shared string` that both keep

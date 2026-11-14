@@ -1,0 +1,8 @@
+void show(read int x) {
+    print(x)
+}
+
+void main() {
+    var a = new shared locked 1
+    show(read a)
+}

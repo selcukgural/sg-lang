@@ -1,0 +1,10 @@
+int twice(int x) {
+    return x * 2
+}
+
+int finish(read Task<int> task) {
+    return 0
+}
+
+void main() {
+}

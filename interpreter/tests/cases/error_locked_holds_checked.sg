@@ -1,0 +1,8 @@
+struct Node {
+    int value
+    shared checked Node? next
+}
+
+void main() {
+    var a = new shared locked Node { value = 1, next = null }
+}

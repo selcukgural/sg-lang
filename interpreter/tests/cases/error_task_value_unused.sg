@@ -1,0 +1,10 @@
+int twice(int x) {
+    return x * 2
+}
+
+void main() {
+    var first = Task.run(twice, 1)
+    _ = first.wait()
+    var second = Task.run(twice, 2)
+    second.wait()
+}

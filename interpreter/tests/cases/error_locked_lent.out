@@ -1,0 +1,5 @@
+error: what a `shared locked` value holds is reached only inside a `lock` block, where no other task reaches it
+  --> error_locked_lent.sg:7:10
+ 7 |     show(read a)
+   |          ^^^^^^
+  hint: lend what it holds inside a `lock` block: `lock a as v { ... v ... }`

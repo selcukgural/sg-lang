@@ -1,0 +1,6 @@
+error: a task is not dropped: it would go on with no one to wait for it
+  every task is waited for, and none is cancelled without being told
+  --> error_task_discarded.sg:6:9
+ 6 |     _ = Task.run(twice, 1)
+   |         ^^^^^^^^^^^^^^^^^^
+  hint: keep it in a variable and wait for it: `task.wait()`

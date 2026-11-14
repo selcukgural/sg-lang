@@ -1,0 +1,7 @@
+error: `t` is waited for on some paths but not on all of them
+  wait for it on every path, or once where the paths meet
+  every task is waited for: its error is not lost, and no work is cut off
+  --> error_task_some_paths.sg:6:9
+ 6 |     var t = Task.run(twice, 2)
+   |         ^
+  hint: `t.wait()`

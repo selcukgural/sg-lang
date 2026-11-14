@@ -1,0 +1,20 @@
+void bump(shared locked int counter) {
+    lock counter as c {
+        c += 1
+    }
+}
+
+void quiet(shared locked int counter) {
+}
+
+void each(shared locked int a, Func<shared locked int, void> act) {
+    lock a as x {
+        act(share a)
+    }
+}
+
+void main() {
+    var a = new shared locked 0
+    each(share a, quiet)
+    each(share a, bump)
+}

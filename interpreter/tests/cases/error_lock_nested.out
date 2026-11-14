@@ -1,0 +1,6 @@
+error: a `lock` block does not take another lock
+  a task that holds a lock never waits, so it always lets the lock go: locks and waits cannot deadlock
+  --> error_lock_nested.sg:3:9
+ 3 |         lock b as y {
+   |         ^^^^^^^^^^^^^
+  hint: lock both in one block, which takes them in a fixed order: `lock a as x, b as y { ... }`

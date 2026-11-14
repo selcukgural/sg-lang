@@ -1,0 +1,8 @@
+Result<int, string> check(int x) {
+    return Ok(x)
+}
+
+void main() {
+    var t = Task.run(check, 1)
+    t.wait()
+}

@@ -1,0 +1,10 @@
+int divide(int x) {
+    return 10 / x
+}
+
+void main() {
+    var good = Task.run(divide, 2)
+    var bad = Task.run(divide, 0)
+    print(good.wait())
+    print(bad.wait())
+}

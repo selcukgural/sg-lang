@@ -1,0 +1,5 @@
+error: this is `weak locked int`: what it looks at may be gone
+  --> error_lock_weak.sg:4:10
+ 4 |     lock w as x {
+   |          ^
+  hint: ask for an owner first: `var owner = share w`, which is `null` if it is gone

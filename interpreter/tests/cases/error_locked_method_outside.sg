@@ -1,0 +1,4 @@
+void main() {
+    var xs = new shared locked List<int>()
+    xs.add(1)
+}

@@ -1,0 +1,4 @@
+error: `add` takes 2 argument(s), 1 given after it
+  --> error_task_arity.sg:6:13
+ 6 |     var t = Task.run(add, 1)
+   |             ^^^^^^^^^^^^^^^^

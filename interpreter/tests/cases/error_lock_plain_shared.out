@@ -1,0 +1,5 @@
+error: `lock` is for a `shared locked` value, which several tasks change, and this is `shared int`
+  a value that several tasks change is made with `new shared locked`
+  --> error_lock_plain_shared.sg:3:10
+ 3 |     lock a as x {
+   |          ^

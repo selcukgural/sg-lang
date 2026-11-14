@@ -1,0 +1,5 @@
+error: expected `as` and a name for what is locked, found `{`
+  --> error_lock_no_as.sg:3:12
+ 3 |     lock a {
+   |            ^
+  hint: `lock total as c { c += 1 }`

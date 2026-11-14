@@ -1,0 +1,5 @@
+error: `Task.run` starts a function, and this is a `int`
+  --> error_task_not_function.sg:2:22
+ 2 |     var t = Task.run(3, 1)
+   |                      ^
+  hint: `Task.run(work, x)` starts `work(x)` as a task

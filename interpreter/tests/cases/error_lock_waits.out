@@ -1,0 +1,6 @@
+error: a `lock` block does not wait for a task
+  a task that holds a lock never waits, so it always lets the lock go: locks and waits cannot deadlock
+  --> error_lock_waits.sg:9:16
+ 9 |         c += t.wait()
+   |                ^^^^
+  hint: wait for the task before the block or after it

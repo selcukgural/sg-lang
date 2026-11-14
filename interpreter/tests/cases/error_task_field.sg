@@ -1,0 +1,6 @@
+struct Job {
+    Task<int> task
+}
+
+void main() {
+}

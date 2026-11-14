@@ -1,0 +1,6 @@
+void main() {
+    shared locked int? a = new shared locked 1
+    lock a as x {
+        x += 1
+    }
+}

@@ -161,6 +161,10 @@ pub enum Callee {
     Value,
     /// A call through a function value kept in a field: `this.test(order)`; the field's position.
     FieldValue(usize),
+    /// `Task.run(work, x)`: starts the function given first with the arguments after it.
+    TaskRun,
+    /// `t.wait()`: waits for the task and gives what its function returned; takes the task.
+    Wait,
     /// `slot.take()`: gives the value and leaves `null`.
     Take,
     /// `slot.replace(value)`: gives the old value and leaves the new one.
@@ -239,6 +243,8 @@ pub struct TypeExpr {
     pub holder: Option<Holder>,
     /// `checked` after the holder: `shared checked T`.
     pub checked: bool,
+    /// `locked` after the holder: `shared locked T`.
+    pub locked: bool,
     /// With its module when one is written: `billing.Line`.
     pub name: String,
     /// The types between `<` and `>`: `Result<int, ParseError>`.
@@ -305,12 +311,22 @@ pub enum StmtKind {
     /// `read folder as f { ... }`, `ref folder as f { ... }`: what a `shared` value holds,
     /// lent under a name for the block. `value` is the `shared` value (opened by the checker).
     As { mutable: bool, value: Expr, name: String, name_span: Span, body: Block },
+    /// `lock total as c { ... }`, `lock a as x, b as y { ... }`: what `shared locked` values
+    /// hold, each lent to change under a name for the block, while no other task reaches it.
+    Lock { items: Vec<LockItem>, body: Block },
     Return(Option<Expr>),
     Break,
     Continue,
     Expr(Expr),
     /// `_ = e`: runs `e` and drops its value on purpose.
     Discard(Expr),
+}
+
+/// One value of a `lock` block and the name of what it holds.
+pub struct LockItem {
+    pub value: Expr,
+    pub name: String,
+    pub name_span: Span,
 }
 
 pub struct Expr {
@@ -361,8 +377,9 @@ pub enum ExprKind {
     /// `new e`: puts the value on the heap, gives `T*`.
     New(Box<Expr>),
     /// `new shared e`: puts the value on the heap with a count of its owners, gives `shared T`.
-    /// `new shared checked e` gives `shared checked T`.
-    NewShared { value: Box<Expr>, checked: bool },
+    /// `new shared checked e` gives `shared checked T`, `new shared locked e` gives
+    /// `shared locked T`.
+    NewShared { value: Box<Expr>, checked: bool, locked: bool },
     /// `share e`: one more owner of a `shared T`, or of what a `weak T` looks at (`null` once
     /// it is gone). Does not move `e`.
     Share(Box<Expr>),

@@ -1,0 +1,15 @@
+// A counter shared by two tasks (the syntax draft's example).
+void work(shared locked int counter) {
+    lock counter as c {              // c: ref int, the lock is released when the block ends
+        c += 1
+    }
+}
+
+void main() {
+    var counter = new shared locked 0
+    var t1 = Task.run(work, share counter)
+    var t2 = Task.run(work, share counter)
+    t1.wait()                        // a task that is not waited for on every path is a compile error
+    t2.wait()
+    lock counter as c { print(c) }
+}

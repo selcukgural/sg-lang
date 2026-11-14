@@ -1,0 +1,18 @@
+void bump(shared locked int counter) {
+    lock counter as c {
+        c += 1
+    }
+}
+
+void twice(shared locked int counter) {
+    bump(share counter)
+    bump(share counter)
+}
+
+void main() {
+    var a = new shared locked 0
+    var b = new shared locked 0
+    lock a as x {
+        twice(share b)
+    }
+}

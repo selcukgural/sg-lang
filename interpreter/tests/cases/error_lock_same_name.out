@@ -1,0 +1,8 @@
+error: `x` names two values of this `lock`
+  --> error_lock_same_name.sg:4:23
+ 4 |     lock a as x, b as x {
+   |                       ^
+  the first one:
+  --> error_lock_same_name.sg:4:15
+ 4 |     lock a as x, b as x {
+   |               ^

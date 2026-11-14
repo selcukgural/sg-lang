@@ -1,0 +1,4 @@
+error: `Task.run` takes the function to start, then what it is given: `Task.run(work, x)`
+  --> error_task_nothing.sg:2:13
+ 2 |     var t = Task.run()
+   |             ^^^^^^^^^^

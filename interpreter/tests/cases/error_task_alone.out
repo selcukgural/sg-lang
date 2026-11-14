@@ -1,0 +1,6 @@
+error: this task is started and then not waited for
+  every task is waited for: its error is not lost, and no work is cut off when the program ends
+  --> error_task_alone.sg:6:5
+ 6 |     Task.run(twice, 1)
+   |     ^^^^^^^^^^^^^^^^^^
+  hint: keep it and wait for it later: `var task = Task.run(twice, 1)`, then `task.wait()`

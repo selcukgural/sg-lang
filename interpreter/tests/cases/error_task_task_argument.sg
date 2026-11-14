@@ -1,0 +1,13 @@
+int twice(int x) {
+    return x * 2
+}
+
+int finish(Task<int> task) {
+    return task.wait()
+}
+
+void main() {
+    var t = Task.run(twice, 4)
+    var u = Task.run(finish, t)
+    print(u.wait())
+}

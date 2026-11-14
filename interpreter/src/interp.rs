@@ -75,6 +75,51 @@ pub enum Value {
     Writer(Rc<RefCell<Writer>>),
     /// `reader.lines()`.
     Lines(Rc<RefCell<Lines>>),
+    /// `Task<R>`: a task started with `Task.run`.
+    Task(Rc<RefCell<Task>>),
+}
+
+/// A task started with `Task.run`. Tasks change hands only where one waits, so a task runs
+/// when it is waited for: the one that waits gives it its turn until it ends.
+#[derive(Debug)]
+pub struct Task {
+    /// The function and what it is given; taken when the task runs.
+    work: Option<(Rc<str>, Vec<Value>)>,
+    /// Where it was started, for the message of a panic inside it.
+    started: Span,
+}
+
+/// What a task takes to the thread it runs on, and back: the values of one program are only
+/// ever used by one thread at a time.
+struct Baton<T>(T);
+
+// SAFETY: a task runs while the task that waits for it is blocked in `join` for the whole
+// time, and it is given every value (`Rc`, `RefCell`) it reaches through the baton, so no
+// two threads ever use one of them at the same time; `join` orders the uses before and after.
+unsafe impl<T> Send for Baton<T> {}
+
+/// What a thread keeps of the program running on it, taken to the thread a task runs on
+/// and brought back.
+struct Thread {
+    streams: Option<[Cell; 3]>,
+    ending: bool,
+    live: Live,
+}
+
+impl Thread {
+    fn take() -> Thread {
+        Thread {
+            streams: STREAMS.with(|streams| streams.borrow_mut().take()),
+            ending: ENDING.with(|ending| ending.get()),
+            live: LIVE.with(|live| std::mem::take(&mut *live.borrow_mut())),
+        }
+    }
+
+    fn put(self) {
+        STREAMS.with(|streams| *streams.borrow_mut() = self.streams);
+        ENDING.with(|ending| ending.set(self.ending));
+        LIVE.with(|live| *live.borrow_mut() = self.live);
+    }
 }
 
 /// How many bytes a writer keeps before it writes them, in the interpreter and in compiled
@@ -906,7 +951,7 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
-    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, in_test: false, test_err: String::new(), guards: Vec::new(), aliases };
+    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, in_test: false, test_err: String::new(), guards: Vec::new(), aliases, started: Vec::new() };
     let first = LIVE.with(|live| live.borrow().next);
     open_streams();
     let main = interp.funcs["main"];
@@ -956,7 +1001,7 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
-    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, in_test: true, test_err: String::new(), guards: Vec::new(), aliases };
+    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, in_test: true, test_err: String::new(), guards: Vec::new(), aliases, started: Vec::new() };
     let (mut passed, mut failed) = (0, 0);
     for test in &prog.tests {
         // Nothing is shared between tests: each starts with variables of its own.
@@ -972,6 +1017,11 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
         };
         drop(frame);
         interp.guards.clear();
+        // A test that ended with an error leaves the tasks it did not wait for: they run now.
+        let ended = match interp.unwaited() {
+            Ok(()) => ended,
+            Err(stop) => Err(stop),
+        };
         // A test that passes and leaves `shared` values alive fails with the report.
         let ended = match ended {
             Ok(Value::Enum(name, 1, fields)) => Ok(Value::Enum(name, 1, fields)),
@@ -1048,9 +1098,78 @@ struct Interp<'a> {
     /// program that lends one drops what it added when it ends.
     guards: Vec<Guard>,
     aliases: HashMap<&'a str, &'a TypeExpr>,
+    /// The tasks this task started that have not run yet.
+    started: Vec<Rc<RefCell<Task>>>,
 }
 
 impl<'a> Interp<'a> {
+    /// Waits for the tasks that nothing holds any more: a function that ended with an error
+    /// left them (the checker lets every other exit go only after they are waited for). What
+    /// they give is dropped; the error that ended the function is the one that counts.
+    fn unwaited(&mut self) -> Res<()> {
+        while let Some(at) = self.started.iter().position(|task| Rc::strong_count(task) == 1) {
+            let task = self.started.remove(at);
+            self.run_task(&task)?;
+        }
+        Ok(())
+    }
+
+    /// Runs a task to its end on a thread of its own, while this one waits, and gives what
+    /// its function returned.
+    fn run_task(&mut self, task: &Rc<RefCell<Task>>) -> Res<Value> {
+        self.started.retain(|other| !Rc::ptr_eq(other, task));
+        let (name, args, started) = {
+            let mut task = task.borrow_mut();
+            let (name, args) = task.work.take().expect("a task runs once");
+            (name, args, task.started)
+        };
+        let func = self.funcs[&*name];
+        let world = World { args: Vec::new(), input: &mut *self.world.input, input_is_terminal: self.world.input_is_terminal, err: &mut *self.world.err };
+        let mut inner = Interp {
+            funcs: self.funcs.clone(),
+            methods: self.methods.clone(),
+            structs: self.structs.clone(),
+            enums: self.enums.clone(),
+            src: self.src,
+            out: &mut *self.out,
+            depth: 0,
+            world,
+            in_test: self.in_test,
+            test_err: String::new(),
+            guards: Vec::new(),
+            aliases: self.aliases.clone(),
+            started: Vec::new(),
+        };
+        let thread = Thread::take();
+        let work = Baton(move || {
+            thread.put();
+            let result = inner.call(func, None, args, started);
+            let written = std::mem::take(&mut inner.test_err);
+            drop(inner);
+            Baton((result, written, Thread::take()))
+        });
+        let ran = std::thread::scope(|scope| {
+            let spawned = std::thread::Builder::new().stack_size(crate::STACK_BYTES).spawn_scoped(scope, move || {
+                let work = work;
+                (work.0)()
+            });
+            spawned.map(|handle| handle.join())
+        });
+        let (result, written, thread) = match ran {
+            Ok(Ok(Baton(ended))) => ended,
+            Ok(Err(panic)) => std::panic::resume_unwind(panic),
+            Err(error) => return Err(Diag::panic(started, format!("the system refused a thread for this task: {error}")).into()),
+        };
+        thread.put();
+        self.test_err.push_str(&written);
+        result.map_err(|unwind| match unwind {
+            Unwind::Stop(Stop::Diag(diag)) if diag.kind == crate::diag::Kind::Panic => {
+                Unwind::Stop(Stop::Diag(diag.related(started, format!("in the task `{}` started here", short_name(&name)))))
+            }
+            other => other,
+        })
+    }
+
     fn call(&mut self, func: &'a Func, this: Option<Value>, args: Vec<Value>, call_span: Span) -> Res<Value> {
         if self.depth == MAX_DEPTH {
             return Err(Diag::panic(call_span, format!("stack overflow: more than {MAX_DEPTH} nested calls"))
@@ -1066,7 +1185,11 @@ impl<'a> Interp<'a> {
         }
         self.depth += 1;
         let result = self.block(&func.body, &mut frame);
+        drop(frame);
         self.depth -= 1;
+        if !self.started.is_empty() {
+            self.unwaited()?;
+        }
         match result {
             Ok(Flow::Return(value)) | Err(Unwind::Return(value)) => Ok(value),
             Ok(_) => Ok(Value::Void),
@@ -1211,6 +1334,26 @@ impl<'a> Interp<'a> {
                 let Some(held) = held_of(&holder) else { unreachable!("the checker opens only a `shared` value") };
                 frame.scopes.push(HashMap::new());
                 frame.declare(name, Value::Borrow(held.value.clone()));
+                let flow = self.block(body, frame);
+                frame.scopes.pop();
+                return flow;
+            }
+            // `lock a as x, b as y { ... }`: what each `shared locked` value holds, lent to
+            // change for the block. Tasks change hands only where one waits, and nothing in
+            // the block waits, so no other task holds the lock here.
+            StmtKind::Lock { items, body } => {
+                let mut taken: Vec<Rc<Held>> = Vec::new();
+                frame.scopes.push(HashMap::new());
+                for item in items {
+                    let holder = self.expr(&item.value, frame)?;
+                    let Some(held) = held_of(&holder) else { unreachable!("the checker locks only a `shared locked` value") };
+                    if let Some(first) = taken.iter().position(|other| Rc::ptr_eq(other, &held)) {
+                        frame.scopes.pop();
+                        return Err(Diag::panic(item.value.span, format!("`{}` and `{}` are one value, which a `lock` takes once", items[first].name, item.name)).into());
+                    }
+                    frame.declare(&item.name, Value::Borrow(held.value.clone()));
+                    taken.push(held);
+                }
                 let flow = self.block(body, frame);
                 frame.scopes.pop();
                 return flow;
@@ -1500,7 +1643,7 @@ impl<'a> Interp<'a> {
                 Ok(Value::Struct(name.as_str().into(), Rc::new(cells)))
             }
             ExprKind::New(inner) => Ok(Value::Ptr(cell(self.expr(inner, frame)?))),
-            ExprKind::NewShared { value, checked } => Ok(Value::Shared(Held::new(self.expr(value, frame)?, *checked, expr.span))),
+            ExprKind::NewShared { value, checked, .. } => Ok(Value::Shared(Held::new(self.expr(value, frame)?, *checked, expr.span))),
             ExprKind::Open { inner, how } => {
                 let value = self.expr(inner, frame)?;
                 self.open(&value, *how, inner)?;
@@ -1760,6 +1903,18 @@ impl<'a> Interp<'a> {
                 }
                 Callee::Io(call) => self.io(*call, args, frame),
                 Callee::Stream(call) => self.stream(*call, recv, args, frame),
+                // `Task.run(work, x)`: the task runs when it is waited for.
+                Callee::TaskRun => {
+                    let Value::Func(name) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker lets `Task.run` start only a function") };
+                    let values = self.values(&args[1..], frame)?;
+                    let task = Rc::new(RefCell::new(Task { work: Some((name, values)), started: expr.span }));
+                    self.started.push(task.clone());
+                    Ok(Value::Task(task))
+                }
+                Callee::Wait => {
+                    let Value::Task(task) = strip(self.expr(recv, frame)?) else { unreachable!("the checker lets only a task be waited for") };
+                    self.run_task(&task)
+                }
                 Callee::Take => {
                     let slot = behind_borrows(self.place(recv, frame)?);
                     let old = slot.replace(Value::Null);

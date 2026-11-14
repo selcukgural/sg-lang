@@ -1,0 +1,5 @@
+error: the `int` that `second` gives is not used
+  --> error_task_value_unused.sg:9:5
+ 9 |     second.wait()
+   |     ^^^^^^^^^^^^^
+  hint: keep it: `var value = second.wait()`; to drop it on purpose, `_ = second.wait()`

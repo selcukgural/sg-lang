@@ -1,0 +1,5 @@
+error: a value with several owners is `checked` or `locked`, not both
+  `checked` lets one task change it, each access checked; `locked` lets several tasks change it, inside a `lock` block
+  --> error_locked_and_checked.sg:1:27
+ 1 | void count(shared checked locked int x) {
+   |                           ^^^^^^

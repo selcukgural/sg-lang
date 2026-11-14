@@ -1,0 +1,6 @@
+error: `task` is not waited for before the function ends
+  every task is waited for: its error is not lost, and no work is cut off
+  --> error_task_parameter.sg:5:23
+ 5 | void ignore(Task<int> task) {
+   |                       ^^^^
+  hint: `task.wait()`

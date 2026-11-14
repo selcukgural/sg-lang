@@ -1,0 +1,7 @@
+made
+leak: the program ended with 1 `shared` value still alive, which holds itself through `Node.next`
+  1 x `Node`, made here:
+  --> leak_locked_cycle.sg:7:13
+ 7 |     var a = new shared locked Node { value = 1, next = null }
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: the side that does not own is `weak`: `weak locked Node?`

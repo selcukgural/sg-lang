@@ -1,0 +1,31 @@
+// Counting the lines of two files in two tasks (the examples file), with the files made first.
+Result<void, IoError> countLines(string path, shared locked int total) {
+    var text = try File.readText(read path)
+    int lines = 0
+    for line in text.lines() {
+        lines += 1
+    }
+    lock total as c {
+        c += lines
+    }
+    return Ok()
+}
+
+Result<void, IoError> main(List<string> args) {
+    var a = $"{args[0]}/a.txt".toString()
+    var b = $"{args[0]}/b.txt".toString()
+    try File.writeText(read a, "one\ntwo\nthree\n")
+    try File.writeText(read b, "four\nfive\n")
+    var total = new shared locked 0
+    var first = Task.run(countLines, a, share total)
+    var second = Task.run(countLines, b, share total)
+    try first.wait()
+    try second.wait()
+    lock total as c { print(c) }
+    var missing = $"{args[0]}/missing.txt".toString()
+    var third = Task.run(countLines, missing, share total)
+    if third.wait() is Error(cause) {
+        print($"the third task: {cause}")
+    }
+    return Ok()
+}

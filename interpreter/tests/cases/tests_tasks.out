@@ -1,0 +1,10 @@
+ok    a task gives what its function returns
+FAIL  an error leaves the other task, which is waited for
+error: too big
+FAIL  what a task writes to the error shows under its test
+from the task
+panic: assert failed: false
+  --> tests_tasks.sg:31:5
+ 31 |     assert(false)
+    |     ^^^^^^^^^^^^^
+2 of 3 test(s) failed

@@ -1,0 +1,5 @@
+error: `locked` is written after `shared` or `weak`: several tasks own the value it holds
+  --> error_locked_alone.sg:1:12
+ 1 | void count(locked int x) {
+   |            ^^^^^^
+  hint: `shared locked T` for an owner, `weak locked T` for a look at one

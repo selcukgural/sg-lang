@@ -1,0 +1,8 @@
+error: `a` is locked twice in one `lock`
+  --> error_lock_same_variable.sg:3:18
+ 3 |     lock a as x, a as y {
+   |                  ^
+  the first time:
+  --> error_lock_same_variable.sg:3:10
+ 3 |     lock a as x, a as y {
+   |          ^

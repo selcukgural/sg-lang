@@ -19,7 +19,8 @@
 //! read and written whole or piece by piece, as text or as bytes (`StreamReader`, `StreamWriter`,
 //! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`),
 //! `shared`, `weak` and `shared checked` values with the `as` blocks, `this` with a type and the leak
-//! report (see `SHARED_RUNTIME`). A type alias is the type it names. Anything else is an error
+//! report (see `SHARED_RUNTIME`). A type alias is the type it names. Tasks, `locked` values and
+//! the `lock` block are not compiled yet. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
 //! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`), and
@@ -4435,6 +4436,7 @@ impl<'a> Emitter<'a> {
         match &stmt.kind {
             // `read x as n { }`: what the `shared` value holds, lent for the block (the borrow is
             // let go after it, with the statement), under a name.
+            StmtKind::Lock { .. } => return Err(not_yet(stmt.span, "a `lock` block")),
             StmtKind::As { mutable, value, name, name_span, body } => {
                 let Ty::Shared(held, _) = value.ty.strip_borrow() else { unreachable!("the checker opens only a `shared` value") };
                 let held = (**held).clone();

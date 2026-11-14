@@ -1,0 +1,10 @@
+error: `t` is not waited for at this `exit`
+  `exit` ends the program at once, and would cut the task off
+  --> error_task_exit.sg:7:5
+ 7 |     exit(2)
+   |     ^^^^^^^
+  the task is kept here:
+  --> error_task_exit.sg:6:9
+ 6 |     var t = Task.run(twice, 2)
+   |         ^
+  hint: `t.wait()`

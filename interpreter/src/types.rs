@@ -284,6 +284,11 @@ pub enum Ty {
     /// `weak T` (`weak checked T` with the `bool`): looks at a `shared` value without owning
     /// it; `share w` gives `null` once the owners are gone.
     Weak(Box<Ty>, bool),
+    /// `locked T`, only ever inside `shared` or `weak`: `shared locked T`. What it holds is
+    /// reached only inside a `lock` block, where no other task reaches it.
+    Locked(Box<Ty>),
+    /// `Task<R>`: a function started with `Task.run`, to be waited for; `R` is what it returns.
+    Task(Box<Ty>),
     /// `read T`: read-only borrow.
     Read(Box<Ty>),
     /// `ref T`: writable borrow.
@@ -318,7 +323,7 @@ impl Ty {
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader | Ty::Writer => false,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader | Ty::Writer | Ty::Locked(_) | Ty::Task(_) => false,
         }
     }
 
@@ -370,6 +375,8 @@ impl fmt::Display for Ty {
             Ty::TextIter(kind) => f.write_str(kind.name()),
             Ty::Reader => f.write_str("StreamReader"),
             Ty::Writer => f.write_str("StreamWriter"),
+            Ty::Locked(inner) => write!(f, "locked {inner}"),
+            Ty::Task(result) => write!(f, "Task<{result}>"),
             Ty::Read(inner) => write!(f, "read {inner}"),
             Ty::Ref(inner) => write!(f, "ref {inner}"),
         }

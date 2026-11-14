@@ -1,0 +1,13 @@
+int twice(int x) {
+    return x * 2
+}
+
+void main() {
+    for i in 0..3 {
+        var t = Task.run(twice, i)
+        if i == 1 {
+            break
+        }
+        print(t.wait())
+    }
+}

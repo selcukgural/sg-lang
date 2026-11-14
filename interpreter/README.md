@@ -23,7 +23,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
-| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
+| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
 | Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
@@ -43,6 +43,8 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
 | Several owners | `new shared x` gives a `shared T`, one of the owners of a value on the heap; `share x` makes one more without moving `x` (so does `x.clone()`), and a move hands one over. What a `shared T` points to is read (`node.value`, a method that takes `read this`, `match`, `for item in read node.items`, `read node` where a `read T` goes) and never written or taken out; what a `shared checked T` points to is changed too (the next row). `weak x` gives a `weak T`, which looks without owning: `share w` gives a `shared T?`, `null` once the last owner is gone. `same(a, b)` tells whether two point to one object, `==` compares what they point to |
 | Changed through several owners | `new shared checked x` gives a `shared checked T`: what it points to is changed through any of its owners (`a.count += 1`, `a.items.add(x)`, a method that takes `ref this`, `ref a` where a `ref T` goes), and each access is checked against the borrows of it in progress, one that changes it or any number that read it. A read or a write borrows nothing after it; a value lent to a call is borrowed until the call returns, the head of a `for` for the loop, a `match` and an `is` with names for the statement. `read x as n { ... }` and `ref x as n { ... }` lend it for a block. A conflict through the same variable is a compile error, one through another variable a panic that shows both lines. A method can take the owner itself, `read FolderRef this`, so that it can write `share this` and `weak this`. The `shared` values still alive when a program or a test ends hold each other up and are reported (`leak: ...`; in compiled code by a debug build) |
+| Tasks | `Task.run(work, x, share total)` starts `work(x, share total)` as a task and gives a `Task<R>`, `R` being what `work` returns; a `Func` can be started too. `t.wait()` waits for it and gives that value (`try t.wait()` passes its error on). A task that is not waited for on every path is a compile error, and so is `Task.run(...)` alone or dropped with `_ =`. What a task is given and gives back owns all it holds: no borrow, no `shared checked` value, no `Task` (the thread rule, also inside fields). In the interpreter a task runs on a thread of its own when it is waited for, so the output is the same on every run; a panic inside one names the line that started it |
+| Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -96,6 +98,12 @@ Design rules that are already enforced:
   lets it go: it writes its buffer as it ends. The hint is `try w.close()`, or `_ = w.close()` to drop the
   error on purpose. A writer in a field, a list or a `T?` is not followed. A panic and `exit` end the
   program without writing what a writer still holds.
+- A `Task` kept in a local variable (or given to a function by value) is waited for on every path before
+  it ends, as a `StreamWriter` is closed: at the end of its block, at `return`, `break`, `continue` and
+  `exit`, and before the variable gets another task. An exit with an error (`try`, `return Error(...)`)
+  lets it go: the task is waited for there and what it gives is dropped, since the caller gets the error
+  that made the function stop. A `Task` is kept only as it is, in a local variable, a parameter or a return
+  value: not in a field, a list, a `T?` or behind `read`.
 - `Stdin`, `Stdout` and `Stderr` are lent, never moved or closed, and no variable may have their names.
   Reading and writing go on from where a stream is, so they need it as `ref`, not `read`.
 - `exit` takes a `byte`, so `exit(256)` is a compile error. It gives no value, so a function that ends in
@@ -245,7 +253,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (206 of 821 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (206 of 880 programs for now; the others are programs the checker rejects, on purpose, and those with tasks, which the back end takes in the fifty-eighth slice).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -322,7 +330,9 @@ of the count in compiled code too, as it was in the interpreter (319). The fifty
 report) were written in the checker and the interpreter; since the fifty-sixth they are compiled too: a
 `shared` value is a pointer with the counts of its owners and of its `weak` lookers in front of it, a
 `shared checked` one has the borrows of it in progress there as well, and a debug build keeps the values
-that are alive in a list for the leak report (347-355). What is still missing is an error that names it (not silence): the few positions listed with the
+that are alive in a list for the leak report (347-355). The fifty-seventh slice (tasks, `locked` and
+`lock`) is in the checker and the interpreter; compiled code says it is not there yet, and the
+fifty-eighth slice brings it. What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -680,6 +690,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/interp.rs` | Runs the checked tree; only data-dependent failures (panics) are left to it |
 | `src/emit_c.rs` | The back end: writes the checked tree as C, with the same panics |
 | `src/opening.rs` | After the checker: where a `shared checked` value is reached and for how long it is borrowed (the `Open` and `Within` nodes the interpreter follows), the conflicts through the same variable that are certain before the program runs, and the borrows that would outlive their line |
+| `src/waits.rs` | After the checker, on the whole program: which functions wait (take a lock or wait for a task, themselves or through the functions they call), and what waits inside a `lock` block |
 | `src/sums.rs` | For the back end: the sums in a loop that cannot overflow for a number of rounds, so that a checked build runs those rounds without their test |
 | `src/diag.rs` | Error and panic messages |
 | `src/source.rs` | The files of a program: which folders are modules and which of them are read. All files are kept as one text, so a position says which file it is in |
@@ -2909,6 +2920,81 @@ report there), approved on 14 November 2026:
      of a map, a set and a list in a `shared checked` value lent in two steps, and a `for` that takes the
      owner of a `shared` and of a `shared checked` list).
 
+Choices made in the fifty-seventh slice (tasks, `locked` and `lock`, in the checker and the interpreter; the
+last of the four parts of the work on several owners, its compiled code to come in the fifty-eighth),
+approved on 14 November 2026:
+
+356. **In the interpreter a task runs when it is waited for.** The design lets tasks change hands only where
+     one waits ("Tasks in the interpreter"); which task runs then is the one waited for, on a thread of the
+     interpreter of its own while the one that waits is blocked, until it ends. `Task.run` only records the
+     function and what it is given, so the starter goes on first: in `ok_task_order` "started" comes before
+     what the tasks print. A task that starts tasks waits for them the same way, so the waits make a tree.
+     The values a task reaches (`Rc`) cross to its thread and back with it; no two threads use them at the
+     same time.
+357. **An exit with an error lets a task go, and the task is waited for there.** As for a `StreamWriter`
+     (`try`, `return Error(...)`): the task runs when the function ends (in the interpreter; compiled code
+     waits for it there) and what it gives is dropped, because the caller gets the error that made the
+     function stop. Without this the examples' two files could not be written as the design wrote them:
+     `try first.wait()` leaves `second` when `first` fails. Every other exit (the end of the block, `return`,
+     `break`, `continue`, `exit`, another task given to the variable) is a compile error, as the design says.
+358. **A `Task` is kept only as it is, in a local variable, a parameter or a return value**: not in a field,
+     a variant, a list, a map, a `T?`, a `T*`, a `shared` value, and not behind `read` or `ref`, where the
+     compiler could not see it waited for. A function that takes a `Task` waits for it, and one that
+     returns it hands that over to its caller. A list of tasks comes with `Task.whenAll`, which the design
+     keeps for later.
+359. **`wait` takes the task**, as `close` takes a writer: a task is waited for once, and a borrowed one
+     cannot be. What it gives is used or dropped on purpose: `t.wait()` alone on a line is an error when
+     the function returns a value (the hint is `var value = t.wait()`, or `_ = t.wait()`), as for the
+     built-in methods that only give a value (282); a `Result` left unused is the usual error, and a
+     `Task<void>` is waited for with `t.wait()` alone.
+360. **`Task.run` checks the function, then what it is given, as a call does.** The first argument is the
+     name of a function or a `Func`; `Task.run(work(1))` is an error whose hint is `Task.run(work, 1)`.
+     The thread rule is checked on the types of the function's parameters and on what it returns, so the
+     error names the parameter and, inside a struct, the field (`Holder` holds a `shared checked Node` in
+     `Node.next`).
+361. **The thread rule, as written in the checker**: a borrow, a slice, a type that carries a borrow, an
+     iterator over a text, a `shared checked` or `weak checked` value and a `Task` do not go to another
+     task, also inside the fields of a struct or an enum, the items of a collection, a `T?`, a `T*`, a
+     `shared` value. A `Func` goes (it is the address of a function, decided on 12 November), and so do a
+     `StreamReader` and a `StreamWriter`, which own their file, and a plain `shared T`, which is only read
+     and whose count is atomic.
+362. **What a `locked` value holds follows the thread rule** when every type is known, so a struct whose
+     field is `shared checked` cannot be locked, and the error names the field; `shared checked locked`
+     is an error, as is `locked` alone, after `new` alone, and around a `Task`.
+363. **Outside a `lock` block what a `locked` value holds is not reached at all**, not even read: a field,
+     a method, `for`, `match`, `print`, `==`, `read x` where a `read T` goes and `read x as` are each an
+     error whose hint is `lock x as name { ... }`. `share`, `weak`, `same` and `.clone()` (one more owner)
+     work on it, since they do not touch what it holds.
+364. **A `lock` block**: each name is a `ref T` for the block, and the values stay where they are while it
+     runs. The same variable twice is a compile error, the same value through two variables a panic
+     (`x` and `y` are one value, which a `lock` takes once); two names alike are an error. A `weak locked`
+     value is locked through `share w` (the hint), a `shared locked T?` after a test; a plain `shared` and
+     a `shared checked` value are refused with what fits them.
+365. **What waits is found on the whole program after the checker** (`src/waits.rs`): a function waits when
+     it takes a lock or waits for a task, or calls a function that does, until nothing more is found. A
+     call of a `Func` inside a `lock` block is refused when any function whose address the program takes,
+     with as many parameters and the same return type, waits: a little wider than the design's "could be
+     such a function", and never narrower. The error shows where the called function waits, through the
+     chain of calls (`twice` calls `bump`, which takes a lock here). Starting a task inside a `lock` block
+     is allowed: starting does not wait.
+366. **A panic inside a task** is the usual message and, under it, the line of `Task.run` that started the
+     task (`in the task `divide` started here`): the design's "which task and which line". In a test, what a
+     task writes with `printError` shows under the test's `FAIL` line, as what the test writes does.
+367. **In the interpreter a lock is never held by another task** when one is taken, because tasks change
+     hands only at `wait`, which a `lock` block cannot reach; so nothing is kept for a lock there, and "the
+     same value twice" is found by comparing the values. A system that refuses a thread for a task is a
+     panic that says so, as the design wrote.
+368. **`lock` and `locked` are words of the language**, not names (as `shared` and `checked` are), and
+     `spawn` is a name like any other now that there is no `spawn`.
+369. **The leak report covers `locked` values**: they are `shared` ones, and its hint is `weak locked T?`.
+370. **The tests**: `ok_task_counter` (the syntax draft's counter) and `ok_task_files` (the examples' two
+     files, which it writes first, and a third that is missing), `ok_task_kinds` (tasks that start tasks, a
+     task given to a function and one given back, a `Func`, a task in a loop, a `Task<void>`),
+     `ok_task_order`, `ok_lock_together` (two accounts locked together from two tasks, a list filled by two
+     tasks, a `weak locked` look), `panic_task`, `panic_lock_same_value`, `leak_locked_cycle`, a test file
+     (`tests_tasks`) and fifty-two tests of errors. Compiled code refuses each with "is not in the C back
+     end yet".
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -2970,7 +3056,9 @@ check off.
 - Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
   in the design), and so an alias with type parameters (`using Link<T> = ...`).
-- The last part of the work on several owners: threads and `locked`. `checked` on its own, in a value with one
+- Tasks, `locked` and `lock` in compiled code (the fifty-eighth slice). A list of tasks and waiting for
+  several at once (`Task.whenAll`, `Task.whenAny`), async, channels; a method or a function of a struct
+  started as a task (a `Func` is a function written at the top level). `checked` on its own, in a value with one
   owner (`checked int hits` in a plain struct, the design's `RefCell` outside `Rc`). `List<shared T>.clone()`,
   since a list has no `clone` yet, so the design's hint "loop over a copy" is not given. A conflict through two
   items of one list (`xs[i]` and `xs[j]`) is left to run time even when `i` and `j` are the same name.
@@ -3068,4 +3156,12 @@ cities without the lambda). All of it is compiled too: a `shared` value is a poi
 front of it, the borrows of a `shared checked` one are checked where the checker opened it, and a debug
 build reports the leaks; the folder tree takes 1.53 times the same tree in C with plain pointers.
 
-What comes next was chosen with the split of that work: threads and `locked`.
+Tasks start with `Task.run(work, x)` and are waited for with `t.wait()`; a task that is not waited for is a
+compile error, and what goes to a task owns all it holds. What several tasks change is a `shared locked`
+value, reached only inside a `lock` block, and nothing in such a block waits, so locks and waits cannot
+deadlock. In the interpreter a task runs on a thread of its own when it is waited for, and the output is the
+same on every run; the counter of the syntax draft and the two files of the examples run as the design wrote
+them.
+
+What comes next was chosen with the split of that work: tasks, `locked` and `lock` in compiled code, with
+threads of the system, a stack of 8 MB for each task, and a lock for each `locked` value.
