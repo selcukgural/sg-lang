@@ -497,6 +497,26 @@ int keyword(read string word) {
 }
 ```
 
+The names of `is` are seen on the right of `&&` and in the block of the `if` or `while` whose condition the chain is,
+as in C#; not in `else`, not after the `if`, and not beside `||`, where the block could run without them. `x is not null`
+narrows `x` the same way, and `x is null` narrows it on the right of `||`, which runs only when `x` is there.
+
+```
+int firstPositive(read string text) {
+    if int.parse(read text) is Ok(value) && value > 0 {    // `value` on the right and in the block
+        return value
+    }
+    return 0
+}
+
+nint lengthOf(read string? text) {
+    if text is null || text.length() == 0 {                // on the right of `||` the text is there
+        return 0
+    }
+    return text.length()                                   // the block always leaves: not `null` here
+}
+```
+
 ### Error model
 
 Panic is for programmer errors. Conditions expected from the environment are returned as values with `Result`:

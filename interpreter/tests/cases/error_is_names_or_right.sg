@@ -1,0 +1,12 @@
+enum Shape {
+    Circle(int radius)
+    Empty
+}
+
+void main() {
+    var s = Shape.Circle(2)
+    var x = 1
+    if x > 0 || s is Circle(r) {
+        print(x)
+    }
+}

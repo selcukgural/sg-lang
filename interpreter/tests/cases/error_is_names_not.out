@@ -1,0 +1,6 @@
+error: nothing here can use the names in this pattern
+  the names of `is` are seen on the right of `&&` and in the block of the `if` or `while` it tests
+  --> error_is_names_not.sg:8:15
+ 8 |     if !(s is Circle(r)) {
+   |               ^^^^^^^^^
+  hint: write `_` for each value, or use `match`

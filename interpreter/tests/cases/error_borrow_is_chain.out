@@ -1,0 +1,9 @@
+error: `s` cannot be changed here: `r` borrows from it and is used again later
+  --> error_borrow_is_chain.sg:13:35
+ 13 |     if s is Circle(r) && grow(ref s) && r > 1 {
+    |                                   ^
+  `r` borrowed it here:
+  --> error_borrow_is_chain.sg:13:8
+ 13 |     if s is Circle(r) && grow(ref s) && r > 1 {
+    |        ^
+  hint: finish with `r` before this line: a borrow ends at its last use

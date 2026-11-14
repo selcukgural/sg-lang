@@ -1,0 +1,55 @@
+// `x is not null` on the left of `&&`, and `x is null` on the left of `||`, narrow `x`
+// for the right side; an `if` with a chain of them narrows its block, its `else`, and
+// the code after it when a branch leaves.
+struct Node {
+    int value
+    Node*? next
+}
+
+nint lengthOf(read string? text) {
+    if text is null || text.length() == 0 {
+        return 0
+    }
+    return text.length()
+}
+
+void main() {
+    string? name = "Ada"
+    if name is not null && name.length() > 2 {
+        print(name.length())
+    }
+    string? none = null
+    var empty = none is null || none.length() == 0
+    print(empty)
+    print(lengthOf(read name))
+    print(lengthOf(read none))
+
+    int? a = 3
+    int? b = 4
+    if a is null || b is null {
+        print("missing")
+    } else {
+        print(a * b)
+    }
+    if a is not null && b is not null {
+        print("both")
+    } else {
+        return
+    }
+    print(a + b)
+    int? c = 5
+    int? d = 6
+    if c is null || d is null {
+        return
+    }
+    print(c + d)
+
+    var list = new Node { value = 1, next = new Node { value = 2, next = new Node { value = -1, next = null } } }
+    Node*? at = list
+    var sum = 0
+    while at is not null && at.value > 0 {
+        sum += at.value
+        at = at.next
+    }
+    print(sum)
+}

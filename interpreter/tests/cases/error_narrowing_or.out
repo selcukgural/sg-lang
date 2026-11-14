@@ -1,0 +1,5 @@
+error: this is `string?` and may be `null`; `.length()` needs a value
+  --> error_narrowing_or.sg:3:28
+ 3 |     if name is not null || name.length() > 0 {
+   |                            ^^^^
+  hint: test it first: `if name is not null { ... }`

@@ -1,0 +1,8 @@
+void main() {
+    int? a = 1
+    var x = 2
+    if a is null && x > 0 {
+        return
+    }
+    print(a + 1)
+}

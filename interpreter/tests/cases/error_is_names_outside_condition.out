@@ -1,5 +1,6 @@
-error: the names in this pattern exist only when `is` is the whole condition of an `if` or `while`
-  --> error_is_names_outside_condition.sg:9:20
- 9 |     var big = s is Circle(r) && r > 100
-   |                    ^^^^^^^^^
+error: nothing here can use the names in this pattern
+  the names of `is` are seen on the right of `&&` and in the block of the `if` or `while` it tests
+  --> error_is_names_outside_condition.sg:9:22
+ 9 |     var round = s is Circle(r)
+   |                      ^^^^^^^^^
   hint: write `_` for each value, or use `match`

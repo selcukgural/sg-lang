@@ -1,0 +1,11 @@
+enum Shape {
+    Circle(int radius)
+    Empty
+}
+
+void main() {
+    var s = Shape.Circle(2)
+    if !(s is Circle(r)) {
+        print("not round")
+    }
+}

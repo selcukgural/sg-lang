@@ -13,7 +13,7 @@
 //! `write` and `clear`, which add to a text where it is, as `f.write` does, and the width and the
 //! letter after a value in `$"..."`), functions, structs,
 //! enums with methods, `match` and `is` (with patterns inside patterns, `or`, ranges, `null`, `true` and
-//! `false`, and on text, a `bool` and a `T?`), `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
+//! `false`, and on text, a `bool` and a `T?`; the names of `is` reach along `&&`), `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
 //! slices, function values, `T*` and `new`, `T?`, `read` and `ref`, `print` and `printError`, files
 //! read and written whole or piece by piece, as text or as bytes (`StreamReader`, `StreamWriter`,
 //! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`). Anything else is an error that names what is missing, so nothing is compiled
@@ -3697,7 +3697,7 @@ impl<'a> Emitter<'a> {
                 self.flush_post(&pad, out);
             }
             StmtKind::If { cond, then, els } => {
-                let (mut cond, names) = self.condition(cond)?;
+                let (mut cond, names, chained) = self.condition(cond)?;
                 self.flush_pre(&pad, out);
                 let mut kept = None;
                 if !self.post.is_empty() {
@@ -3705,7 +3705,7 @@ impl<'a> Emitter<'a> {
                     let _ = writeln!(out, "{pad}bool {temp} = {cond};");
                     // The names of `x is Circle(r)` point into the value: it stays until
                     // the `if` is done.
-                    if names.is_empty() {
+                    if names.is_empty() && !chained {
                         self.flush_post(&pad, out);
                     } else {
                         kept = self.hold();
@@ -3720,10 +3720,13 @@ impl<'a> Emitter<'a> {
                 }
                 let _ = writeln!(out, "{pad}}}");
                 self.release(kept, &pad, out);
+                if chained {
+                    self.scopes.pop();
+                }
             }
             StmtKind::While { cond, body } => {
                 self.nothing_gone();
-                let (cond, names) = self.condition(cond)?;
+                let (cond, names, chained) = self.condition(cond)?;
                 self.loops.push(self.scopes.len());
                 let mut kept = None;
                 if self.pre.is_empty() && self.post.is_empty() {
@@ -3734,7 +3737,7 @@ impl<'a> Emitter<'a> {
                     let _ = writeln!(out, "{pad}while (1) {{");
                     self.flush_pre(&inner, out);
                     let _ = writeln!(out, "{inner}bool {temp} = {cond};");
-                    if names.is_empty() {
+                    if names.is_empty() && !chained {
                         self.flush_post(&inner, out);
                         let _ = writeln!(out, "{inner}if (!{temp}) break;");
                     } else {
@@ -3747,6 +3750,9 @@ impl<'a> Emitter<'a> {
                 self.release(kept, &format!("{pad}    "), out);
                 self.loops.pop();
                 let _ = writeln!(out, "{pad}}}");
+                if chained {
+                    self.scopes.pop();
+                }
             }
             StmtKind::For { var, from, to, body, .. } => {
                 // The ends are computed once; the counter stops before the end, so it cannot overflow.
@@ -4001,12 +4007,86 @@ impl<'a> Emitter<'a> {
     }
 
     /// The condition of an `if` or a `while`, and the names it gives to the block: those of
-    /// `x is Circle(r)`.
-    fn condition(&mut self, cond: &'a Expr) -> Res<(String, Vec<(Local, String)>)> {
-        if !matches!(cond.kind, ExprKind::IsVariant { .. }) {
-            return Ok((self.first(cond, true)?, Vec::new()));
+    /// `x is Circle(r)`, declared at the start of the block. When an `is` is part of a chain
+    /// of `&&`, its names are set in the condition instead, and they are in a scope that the
+    /// condition opens (the `bool`): the caller closes it after the statement.
+    fn condition(&mut self, cond: &'a Expr) -> Res<(String, Names, bool)> {
+        if matches!(cond.kind, ExprKind::IsVariant { .. }) {
+            let (test, names) = self.variant_test(cond)?;
+            return Ok((test, names, false));
         }
-        self.variant_test(cond)
+        if names_in_chain(cond) {
+            self.scopes.push(Vec::new());
+            return Ok((self.chain(cond, true)?, Vec::new(), true));
+        }
+        Ok((self.first(cond, true)?, Vec::new(), false))
+    }
+
+    /// `a && b && ...` where an `is` names values. Each name is declared before the statement
+    /// and set where its test holds, so that what comes after it on the right, and the block
+    /// of an `if` or `while`, can use it. The names go in the innermost scope.
+    fn chain(&mut self, expr: &'a Expr, head: bool) -> Res<String> {
+        let mut parts = Vec::new();
+        for (position, part) in conjuncts(expr).into_iter().enumerate() {
+            let named = matches!(&part.kind, ExprKind::IsVariant { pattern, .. } if !pattern.names().is_empty());
+            // What comes after the first part runs only sometimes.
+            let before = (self.pre.len(), self.post.len());
+            self.maybe += usize::from(position > 0);
+            let value = match (named, position) {
+                (true, _) => self.named_test(part),
+                (false, 0) => self.first(part, head).map(|value| (value, Vec::new())),
+                (false, _) => self.value(part).map(|value| (value, Vec::new())),
+            };
+            self.maybe -= usize::from(position > 0);
+            let (value, decls) = value?;
+            let value = match position {
+                0 => value,
+                // The names would point into a value that is dropped before they are used.
+                _ if named && before != (self.pre.len(), self.post.len()) => {
+                    return Err(not_yet(part.span, "an `is` with names on a value made after the first `&&`"));
+                }
+                _ => self.enclosed(before, value, &Ty::Bool, part.span)?,
+            };
+            self.pre.extend(decls);
+            parts.push(value);
+        }
+        Ok(format!("({})", parts.join(" && ")))
+    }
+
+    /// `x is Circle(r)` in a chain of `&&`: the test, which sets the names where it holds, and
+    /// the lines that declare them. The names are put in the innermost scope.
+    fn named_test(&mut self, expr: &'a Expr) -> Res<(String, Vec<String>)> {
+        let (test, names) = self.variant_test(expr)?;
+        let (mut decls, mut sets, mut plain) = (Vec::new(), Vec::new(), true);
+        for (local, line) in names {
+            let cname = &local.cname;
+            let alone = line.find(&format!(" {cname};"));
+            match alone.filter(|at| line.find(&format!(" {cname} = ")).is_none_or(|set| *at < set)) {
+                // Declared alone, and set by the statements after it: an `or` with names.
+                Some(at) => {
+                    let end = at + cname.len() + 2;
+                    decls.push(line[..end].to_string());
+                    let rest = line[end..].trim();
+                    if !rest.is_empty() {
+                        sets.push(rest.to_string());
+                        plain = false;
+                    }
+                }
+                None => {
+                    decls.push(declaration(&line, cname));
+                    sets.push(assignment(&line, cname, cname).trim_end_matches(';').to_string());
+                }
+            }
+            self.scopes.last_mut().expect("an open scope").push(local);
+        }
+        let set = match plain {
+            true => format!("({}, 1)", sets.join(", ")),
+            false => {
+                let lines: String = sets.iter().map(|line| if line.ends_with(';') || line.ends_with('}') { format!("{line} ") } else { format!("{line}; ") }).collect();
+                format!("({{ {lines}1; }})")
+            }
+        };
+        Ok((format!("({test} && {set})"), decls))
     }
 
     /// `x is Circle(r)`: a test on the tag, and on what the variant carries where patterns
@@ -5969,6 +6049,13 @@ impl<'a> Emitter<'a> {
                 let loc = self.loc(expr.span);
                 Ok(format!("sg_neg_{}({operand}, {loc})", int_name(*ty)))
             }
+            // The names of an `is` in the chain last until it ends.
+            ExprKind::Binary(BinOp::And, ..) if names_in_chain(expr) => {
+                self.scopes.push(Vec::new());
+                let test = self.chain(expr, head);
+                self.scopes.pop();
+                test
+            }
             ExprKind::Binary(op @ (BinOp::And | BinOp::Or), left, right) => {
                 let left = self.first(left, head)?;
                 // The right side runs only sometimes, so it cannot need a line before the statement.
@@ -6850,6 +6937,24 @@ fn takes_null(pattern: &Pattern) -> bool {
 }
 
 /// `T v_x_3 = init;` made into `T v_x_3;`.
+/// The parts of a chain of `&&`, left to right.
+fn conjuncts(expr: &Expr) -> Vec<&Expr> {
+    match &expr.kind {
+        ExprKind::Binary(BinOp::And, left, right) => {
+            let mut parts = conjuncts(left);
+            parts.extend(conjuncts(right));
+            parts
+        }
+        _ => vec![expr],
+    }
+}
+
+/// A chain of `&&` in which an `is` names values.
+fn names_in_chain(expr: &Expr) -> bool {
+    matches!(expr.kind, ExprKind::Binary(BinOp::And, ..))
+        && conjuncts(expr).iter().any(|part| matches!(&part.kind, ExprKind::IsVariant { pattern, .. } if !pattern.names().is_empty()))
+}
+
 fn declaration(line: &str, cname: &str) -> String {
     let marker = format!(" {cname} = ");
     let at = line.find(&marker).expect("a name is declared with its value");

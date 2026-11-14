@@ -1,0 +1,98 @@
+// The names of `is` on the left of `&&` are seen on its right and in the block of the
+// `if` or `while`; `x is not null` narrows the same way.
+enum Shape {
+    Circle(int radius)
+    Square(int side)
+    Rect(int width, int height)
+}
+
+enum Token {
+    Word(string text)
+    Number(int value)
+    End
+}
+
+int firstPositive(read string text) {
+    if int.parse(read text) is Ok(value) && value > 0 {
+        return value
+    }
+    return 0
+}
+
+bool roundAndBig(read Shape s) {
+    return s is Circle(r) && r > 10
+}
+
+// An `or` with names, and a chain in a `when`.
+int size(read Shape s) {
+    if s is Circle(n) or Square(n) && n > 2 {
+        return n
+    }
+    return match s {
+        Rect(w, h) when w > 0 && s is Rect(_, high) && high > 0 => w * h
+        _ => 0
+    }
+}
+
+bool grow(ref Shape s) {
+    s = Shape.Circle(100)
+    return true
+}
+
+Token tokenAt(read List<string> words, int i) {
+    if i >= words.length() {
+        return Token.End
+    }
+    if int.parse(read words[i]) is Ok(n) {
+        return Token.Number(n)
+    }
+    return Token.Word(words[i].clone())
+}
+
+void main() {
+    print(firstPositive("12"))
+    print(firstPositive("-3"))
+    print(firstPositive("x"))
+    print(roundAndBig(read Shape.Circle(11)))
+    print(roundAndBig(read Shape.Circle(3)))
+    print(size(read Shape.Square(5)))
+    print(size(read Shape.Circle(1)))
+    print(size(read Shape.Rect(2, 3)))
+
+    var s = Shape.Rect(3, 4)
+    var x = 4
+    var big = s is Rect(w, h) && w * h > 10
+    print(big)
+    if x > 3 && s is Rect(w, h) && w < h && h == 4 {
+        print($"{w} by {h}")
+    } else {
+        print("no")
+    }
+    print(s is Circle(r) && r > 0 || x == 4)
+    print(!(s is Square(side) && side > 0))
+
+    // The value tested is made by a call: it stays until the block ends.
+    var words = List<string> { "alpha", "beta", "", "7", "gamma" }
+    if tokenAt(read words, 0) is Word(w) && w.length() > 3 {
+        print($"long word {w}")
+    }
+    var i = 0
+    while tokenAt(read words, i) is Word(w) && w.length() > 0 {
+        print(w)
+        i += 1
+    }
+    print(i)
+
+    // The borrow ends at its last use, as anywhere.
+    var c = Shape.Circle(1)
+    if c is Circle(r) && r > 0 && grow(ref c) {
+        print(c is Circle(100))
+    }
+    Token t = Token.Number(5)
+    if t is Number(v) && v > 1 {
+        print(v)
+    } else {
+        t = Token.End
+    }
+    print(t is End)
+}

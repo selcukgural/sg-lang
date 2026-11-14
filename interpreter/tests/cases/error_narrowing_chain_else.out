@@ -1,0 +1,4 @@
+error: operator `+` is not defined for `int?` and `int`
+  --> error_narrowing_chain_else.sg:7:15
+ 7 |         print(a + 1)
+   |               ^^^^^

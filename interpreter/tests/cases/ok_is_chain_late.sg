@@ -1,0 +1,20 @@
+// Interpreted only: the back end does not yet keep a value made after the first `&&`
+// for the names of an `is` that point into it.
+enum Token {
+    Word(string text)
+    End
+}
+
+Token make(int i) {
+    if i > 0 {
+        return Token.Word("hello")
+    }
+    return Token.End
+}
+
+void main() {
+    var x = 1
+    if x > 0 && make(x) is Word(w) && w.length() > 2 {
+        print(w)
+    }
+}

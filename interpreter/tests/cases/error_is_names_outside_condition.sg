@@ -6,6 +6,6 @@ enum Shape {
 
 void main() {
     var s = Shape.Circle(2)
-    var big = s is Circle(r) && r > 100
-    print(big)
+    var round = s is Circle(r)
+    print(round)
 }

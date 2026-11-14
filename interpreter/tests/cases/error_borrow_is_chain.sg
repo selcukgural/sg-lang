@@ -1,0 +1,16 @@
+enum Shape {
+    Circle(int radius)
+    Empty
+}
+
+bool grow(ref Shape s) {
+    s = Shape.Circle(100)
+    return true
+}
+
+void main() {
+    var s = Shape.Circle(2)
+    if s is Circle(r) && grow(ref s) && r > 1 {
+        print("grown")
+    }
+}
