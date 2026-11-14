@@ -1,0 +1,9 @@
+error: this borrows what a `shared checked` value holds, and such a borrow ends with its line; `kids` would keep it
+  --> error_checked_kept.sg:31:16
+ 31 |     var kids = read folder.children
+    |                ^^^^^^^^^^^^^^^^^^^^
+  it is borrowed here:
+  --> error_checked_kept.sg:31:21
+ 31 |     var kids = read folder.children
+    |                     ^^^^^^
+  hint: lend it for a block instead: `read folder as value { ... }`

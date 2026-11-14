@@ -1,0 +1,12 @@
+// `this` with a type is taken with `read` or as it is.
+using PointRef = shared checked Point
+
+struct Point {
+    int x
+
+    public void move(ref PointRef this) {
+        this.x += 1
+    }
+}
+
+void main() {}

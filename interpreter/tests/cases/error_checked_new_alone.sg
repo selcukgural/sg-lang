@@ -1,0 +1,3 @@
+void main() {
+    var p = new checked 5
+}

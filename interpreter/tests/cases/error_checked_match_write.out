@@ -1,0 +1,10 @@
+error: `drawing` is being read for the whole `match`, so it cannot be changed here: this line would stop the program every time it ran
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> error_checked_match_write.sg:16:24
+ 16 |         Named(name) => drawing.moves += 1
+    |                        ^^^^^^^
+  it is being read from here:
+  --> error_checked_match_write.sg:14:16
+ 14 |     match read drawing.shape {
+    |                ^^^^^^^
+  hint: copy what the test needs into a variable first, and test that

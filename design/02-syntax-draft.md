@@ -166,9 +166,10 @@ void main() {
 }                                    // no cycle because prev is weak, both are freed
 ```
 
-`checked` borrows the access for the duration of the expression. A borrow at the head of a `for` or `match` lasts for
-the whole statement, and a local variable cannot hold this borrow. If several lines are needed, a block is written in
-the same form as `lock`:
+Each access to a `checked` value is checked against the borrows of it in progress: one that changes it, or any
+number that read it. A read or a write borrows nothing after it (`a.count += 1`); a value lent to a call is borrowed
+until the call returns, and a borrow at the head of a `for` or a `match` lasts for the whole statement. A local
+variable cannot hold this borrow. If several lines are needed, a block is written in the same form as `lock`:
 
 ```
 for child in read folder.children { ... }        // folder is being read for the whole loop

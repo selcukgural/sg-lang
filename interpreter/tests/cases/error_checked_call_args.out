@@ -1,0 +1,10 @@
+error: `folder` is being changed for the call, so it cannot be read here: this line would stop the program every time it ran
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> error_checked_call_args.sg:35:33
+ 35 |     move(ref folder.bytes, read folder.children)
+    |                                 ^^^^^^
+  it is being changed from here:
+  --> error_checked_call_args.sg:35:14
+ 35 |     move(ref folder.bytes, read folder.children)
+    |              ^^^^^^
+  hint: work the value out before the call: `var value = ...`

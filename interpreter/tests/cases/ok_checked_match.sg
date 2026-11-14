@@ -1,0 +1,30 @@
+enum Shape {
+    Circle(long radius)
+    Named(string name)
+}
+
+struct Drawing {
+    Shape shape
+    long moves
+}
+
+// A `match` or an `is` on what a `shared checked` value holds: the borrow lasts while their
+// names are used, and a test without names reads it once.
+void main() {
+    var drawing = new shared checked Drawing { shape = Shape.Named("a"), moves = 0 }
+    match read drawing.shape {
+        Circle(radius) => print(radius)
+        Named(name) => print(name)
+    }
+    if drawing.shape is Named(_) {
+        drawing.shape = Shape.Circle(2)
+    }
+    if drawing.shape is Circle(radius) {
+        print(radius)
+    }
+    drawing.moves += 1
+    var other = share drawing
+    if drawing.shape is Circle(radius) {
+        print(radius + other.moves)
+    }
+}

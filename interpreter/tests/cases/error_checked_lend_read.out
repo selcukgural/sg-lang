@@ -1,0 +1,5 @@
+error: expected `ref Folder`, found `read shared checked Folder`
+  --> error_checked_lend_read.sg:35:11
+ 35 |     reset(read folder)
+    |           ^^^^^^^^^^^
+  hint: lend what it points to with `ref`: `ref folder`

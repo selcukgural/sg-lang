@@ -1,0 +1,5 @@
+error: the type in front of `this` is a value that holds `Point`, and this is `shared checked Line`
+  --> error_this_type_other.sg:5:20
+ 5 |     public int get(read shared checked Line this) {
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `read shared checked Point this`, or an alias of it; `read this` for the `Point` itself

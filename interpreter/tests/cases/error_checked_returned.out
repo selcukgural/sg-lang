@@ -1,0 +1,9 @@
+error: this borrows what a `shared checked` value holds, and such a borrow ends with its line; it cannot be returned
+  --> error_checked_returned.sg:30:12
+ 30 |     return read folder.name
+    |            ^^^^^^^^^^^^^^^^
+  it is borrowed here:
+  --> error_checked_returned.sg:30:17
+ 30 |     return read folder.name
+    |                 ^^^^^^
+  hint: return a copy, or take what it holds as a `read` parameter, so that the caller lends it

@@ -1,0 +1,10 @@
+error: `sizes` is being changed for the whole loop, so it cannot be read here: this line would stop the program every time it ran
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> error_checked_loop_read.sg:33:17
+ 33 |         size += sizes.length()
+    |                 ^^^^^
+  it is being changed from here:
+  --> error_checked_loop_read.sg:32:17
+ 32 |     for size in ref sizes {
+    |                 ^^^^^^^^^
+  hint: copy what the loop needs from `sizes` into a variable before it

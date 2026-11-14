@@ -1,0 +1,109 @@
+// The wrong version of the cities example (05): the roads own the cities they lead to, so two
+// cities that are joined keep each other alive. The program runs correctly, and the cities
+// still alive when it ends are reported with the field that holds them.
+
+public using CityRef = shared checked City
+
+public struct City {
+    readonly int id
+    readonly string name
+    List<CityRef> roads
+
+    public City create(int id, string name) {
+        return City { id = id, name = name, roads = List<CityRef>() }
+    }
+}
+
+public struct RoadMap {
+    List<CityRef> cities                     // the map owns the cities
+    int nextId
+
+    public RoadMap create() {
+        return RoadMap { cities = List<CityRef>(), nextId = 0 }
+    }
+
+    public CityRef addCity(ref this, string name) {
+        var city = new CityRef(this.nextId, name)
+        this.nextId += 1
+        this.cities.add(share city)
+        return city
+    }
+
+    // Also takes the ownership held by the caller: city is moved, the caller can no longer use it
+    public void remove(ref this, CityRef city) {
+        var kept = List<CityRef>()
+        for other in read this.cities {
+            if !same(other, city) {
+                kept.add(share other)
+            }
+        }
+        this.cities = kept
+    }                                        // city is dropped here, the city dies if there is no other owner
+}
+
+void connect(read CityRef a, read CityRef b) {
+    a.roads.add(share b)
+    b.roads.add(share a)
+}
+
+// The route with the fewest roads, null if there is no route
+List<string>? route(read CityRef start, read CityRef goal) {
+    var seen = HashSet<int> { start.id }
+    var cameFrom = HashMap<int, CityRef>()       // city -> the city it was reached from
+    var waiting = List<CityRef> { share start }
+    nint next = 0
+
+    while next < waiting.length() {
+        var cur = share waiting[next]
+        next += 1
+        if same(read cur, goal) {
+            return pathTo(read cameFrom, goal)
+        }
+        for road in read cur.roads {         // cur is being read for the whole loop
+            CityRef? city = share road          // CityRef?, null if the city was removed
+            if city is null { continue }
+            if seen.contains(city.id) { continue }
+            seen.add(city.id)
+            cameFrom.add(city.id, share cur) // share touches the count, not the contents: no conflict
+            waiting.add(city)
+        }
+    }
+    return null
+}
+
+List<string> pathTo(read HashMap<int, CityRef> cameFrom, read CityRef goal) {
+    var names = List<string>()
+    CityRef? cur = share goal
+    while cur is not null {
+        names.add(cur.name.clone())
+        cur = share cameFrom.get(cur.id)     // null at the start city
+    }
+    names.reverse()
+    return names
+}
+
+void show(read CityRef start, read CityRef goal) {
+    var path = route(start, goal)
+    if path is null {
+        print("no route")
+    } else {
+        print(string.join(" > ", read path))
+    }
+}
+
+void main() {
+    var map = RoadMap()
+    var izmir = map.addCity("Izmir")
+    var ankara = map.addCity("Ankara")
+    var konya = map.addCity("Konya")
+    var adana = map.addCity("Adana")
+
+    connect(read izmir, read konya)
+    connect(read konya, read ankara)
+    connect(read konya, read adana)
+
+    show(read izmir, read ankara)            // Izmir > Konya > Ankara
+
+    map.remove(konya)                        // konya was moved, the city is dead
+    show(read izmir, read ankara)            // no route: the roads that look at Konya give null
+}

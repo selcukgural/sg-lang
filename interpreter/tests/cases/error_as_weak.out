@@ -1,0 +1,5 @@
+error: this is `weak checked Node`: what it looks at may be gone
+  --> error_as_weak.sg:8:10
+ 8 |     read looked as n {
+   |          ^^^^^^
+  hint: ask for an owner first: `var owner = share looked`, which is `null` if it is gone

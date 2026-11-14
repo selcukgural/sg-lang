@@ -1,0 +1,11 @@
+struct Node {
+    int value
+}
+
+void main() {
+    var node = new shared checked Node { value = 1 }
+    var looked = weak node
+    read looked as n {
+        print(n.value)
+    }
+}

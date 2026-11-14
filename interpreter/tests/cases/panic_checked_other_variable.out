@@ -1,0 +1,9 @@
+panic: this `Folder` is being read, so it cannot be changed here
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> panic_checked_other_variable.sg:22:13
+ 22 |             cur.bytes += amount
+    |             ^^^
+  it is being read from here:
+  --> panic_checked_other_variable.sg:31:23
+ 31 |     for child in read folder.children {
+    |                       ^^^^^^

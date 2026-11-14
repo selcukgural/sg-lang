@@ -1,0 +1,6 @@
+error: `child` is called on a `FolderRef`, and this is `Folder`
+  it takes the value that holds the `Folder`, so that it can write `share this` and `weak this`
+  --> error_this_type_on_plain.sg:31:9
+ 31 |     _ = plain.child("a")
+    |         ^^^^^
+  hint: make the `Folder` with `new FolderRef(...)`

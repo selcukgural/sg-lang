@@ -1,0 +1,10 @@
+ok    a list without a cycle
+FAIL  a node that owns itself
+leak: the test ended with 1 `shared` value still alive, which holds itself through `Node.next`
+  1 x `Node`, made here:
+  --> tests_checked_leak.sg:15:16
+ 15 |     var node = new shared checked Node { value = 1, next = null }
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: the side that does not own is `weak`: `weak checked Node?`
+ok    after it
+1 of 3 test(s) failed

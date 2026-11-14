@@ -1,0 +1,10 @@
+error: `folder` is being read for the whole loop, so it cannot be changed here: this line would stop the program every time it ran
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> error_checked_loop_write.sg:34:9
+ 34 |         folder.bytes += child.bytes
+    |         ^^^^^^
+  it is being read from here:
+  --> error_checked_loop_write.sg:33:23
+ 33 |     for child in read folder.children {
+    |                       ^^^^^^
+  hint: collect what to change in a list, and change it after the loop

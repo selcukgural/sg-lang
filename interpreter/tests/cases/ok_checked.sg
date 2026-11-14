@@ -1,0 +1,153 @@
+// `shared checked T`: several owners, and what they point to is changed through any of them.
+// Each access is checked against the borrows of the value in progress while the program runs.
+
+enum State : Copyable, Equatable {
+    Idle
+    Busy
+}
+
+using CounterRef = shared checked Counter
+
+struct Counter : Formattable, Equatable {
+    string name
+    nint count
+    State state
+    List<nint> seen
+    HashMap<string, nint> tally
+
+    public void bump(ref this, nint by) {
+        this.count += by
+        this.seen.add(by)
+    }
+
+    public nint total(read this) {
+        nint sum = 0
+        for x in read this.seen {
+            sum += x
+        }
+        return sum
+    }
+
+    // `this` with a type: the method gets the owner, so it can make one more of it.
+    public CounterRef again(read CounterRef this) {
+        return share this
+    }
+
+    public weak checked Counter look(read CounterRef this) {
+        return weak this
+    }
+
+    // `CounterRef this` takes an owner of its own.
+    public nint drop(CounterRef this) {
+        return this.count
+    }
+
+    public void format(read this, ref Formatter f) {
+        f.write($"{this.name}={this.count}")
+    }
+}
+
+// What a `shared checked` value holds, lent as `read` or as `ref`.
+nint countOf(read Counter c) {
+    return c.count
+}
+
+void reset(ref Counter c) {
+    c.count = 0
+}
+
+CounterRef make(string name) {
+    return new CounterRef { name = name, count = 0, state = State.Idle, seen = List<nint>(), tally = HashMap<string, nint>() }
+}
+
+void main() {
+    var a = make("a")
+    var b = share a                          // a second owner of the same counter
+    a.count = 5
+    print(b.count)                           // 5: changed through `a`, seen through `b`
+    b.count += 1
+    print(a)
+
+    // A method that changes it, through either owner.
+    a.bump(2)
+    b.bump(3)
+    print(a.seen)
+    print(a.total())
+
+    // A list in it that grows by its own length: the length is read before the list is lent
+    // to change.
+    a.seen.add(a.seen.length())
+    print(a.seen)
+
+    // Items changed in place; a map in it.
+    for x in ref a.seen {
+        x *= 10
+    }
+    print(b.seen)
+    a.tally.add("x", 1)
+    // A borrow kept in a variable needs a block: the value is lent for all of it.
+    ref b as counter {
+        var slot = counter.tally.getOrAdd("x", 0)
+        slot += 4
+    }
+    print(a.tally.get("x") ?? 0)
+
+    // A field assigned from a computation that reads the same value.
+    a.count = a.count + a.total()
+    print(b.count)
+
+    // A copyable field tested and changed in the same `match`: it is copied out first.
+    match a.state {
+        Idle => a.state = State.Busy
+        Busy => a.state = State.Idle
+    }
+    print(b.state == State.Busy)
+
+    // Lent where a `read Counter` or a `ref Counter` goes.
+    print(countOf(read a))
+    reset(ref b)
+    print(a.count)
+
+    // `==` compares what they point to, `same` whether they are one.
+    var c = make("a")
+    print(a == c)
+    print(same(a, c))
+    c.count = a.count
+    c.state = a.state
+    c.seen = List<nint> { 20, 30, 20 }
+    c.tally.add("x", 5)
+    print(a == c)
+
+    // A block that holds the borrow for several lines.
+    read a as counter {
+        print($"{counter.name}: {counter.count}")
+        for x in read counter.seen {
+            print(x)
+        }
+    }
+    ref a as counter {
+        counter.count = 100
+        counter.seen.clear()
+        counter.name = "renamed"
+    }
+    print(b)
+
+    // `this` with a type; `weak checked` and `share` on it.
+    var again = a.again()
+    print(same(again, b))
+    var looked = a.look()
+    var owner = share looked
+    print(owner is not null)
+    print(a.again().drop())
+
+    // A plain `shared` value is opened for reading too.
+    var plain = new shared List<nint> { 1, 2 }
+    read plain as items {
+        print(items.length())
+    }
+
+    // `.clone()` of a `shared checked` value is one more owner.
+    var d = a.clone()
+    d.count += 1
+    print(a.count)
+}

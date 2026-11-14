@@ -1,0 +1,5 @@
+error: `this` with a type is taken with `read` or as it is, not with `ref`
+  --> error_this_type_ref.sg:7:22
+ 7 |     public void move(ref PointRef this) {
+   |                      ^^^^^^^^^^^^^^^^^
+  hint: `read` lends the value that holds it, and what it holds is changed through that

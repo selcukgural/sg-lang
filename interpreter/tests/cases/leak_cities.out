@@ -1,0 +1,8 @@
+Izmir > Konya > Ankara
+Izmir > Konya > Ankara
+leak: the program ended with 4 `shared` values still alive, which hold each other through `City.roads`
+  4 x `City`, made here:
+  --> leak_cities.sg:26:20
+ 26 |         var city = new CityRef(this.nextId, name)
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: the side that does not own is `weak`: `List<weak checked City>`

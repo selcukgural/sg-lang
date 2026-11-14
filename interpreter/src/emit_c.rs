@@ -18,7 +18,8 @@
 //! slices, numbers read out of bytes and written into them (`fromLittleEndian`, `toBigEndian`), function values, `T*` and `new`, `T?`, `read` and `ref`, `print` and `printError`, files
 //! read and written whole or piece by piece, as text or as bytes (`StreamReader`, `StreamWriter`,
 //! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`).
-//! A type alias is the type it names. Anything else, `shared` and `weak` among them, is an error
+//! A type alias is the type it names. Anything else, `shared`, `weak` and `checked` among them (with the
+//! `as` blocks and `this` with a type), is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
 //! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`), and
@@ -2093,7 +2094,9 @@ fn may_leave(expr: &Expr) -> bool {
         ExprKind::AsSlice(inner) => may_leave(inner),
         ExprKind::Field { recv: inner, .. }
         | ExprKind::New(inner)
-        | ExprKind::NewShared(inner)
+        | ExprKind::NewShared { value: inner, .. }
+        | ExprKind::Open { inner, .. }
+        | ExprKind::Within(inner)
         | ExprKind::Share(inner)
         | ExprKind::WeakOf(inner)
         | ExprKind::Load(inner)
@@ -3883,6 +3886,7 @@ impl<'a> Emitter<'a> {
     fn stmt(&mut self, stmt: &'a Stmt, depth: usize, out: &mut String) -> Res<()> {
         let pad = "    ".repeat(depth);
         match &stmt.kind {
+            StmtKind::As { value, .. } => return Err(not_yet(value.span, "a `shared` or a `weak` value")),
             StmtKind::Let { ty, name, init, .. } => {
                 let ty = match ty {
                     Some(written) => self.written(written)?,
@@ -5169,7 +5173,9 @@ impl<'a> Emitter<'a> {
             ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::Constant { .. } => Effect::Reads,
             ExprKind::Field { recv: inner, .. }
             | ExprKind::New(inner)
-            | ExprKind::NewShared(inner)
+            | ExprKind::NewShared { value: inner, .. }
+            | ExprKind::Open { inner, .. }
+            | ExprKind::Within(inner)
             | ExprKind::Share(inner)
             | ExprKind::WeakOf(inner)
             | ExprKind::Load(inner)
@@ -6243,7 +6249,9 @@ impl<'a> Emitter<'a> {
             ExprKind::Load(inner) => Ok(format!("(*{})", self.first(inner, head)?)),
             // A borrow of a `T*` used as a borrow of the `T`: one step along the pointer.
             ExprKind::Unbox(inner) => Ok(format!("(*{})", self.value(inner)?)),
-            ExprKind::NewShared(_) | ExprKind::Share(_) | ExprKind::WeakOf(_) => Err(not_yet(expr.span, "a `shared` or a `weak` value")),
+            ExprKind::NewShared { .. } | ExprKind::Share(_) | ExprKind::WeakOf(_) | ExprKind::Open { .. } | ExprKind::Within(_) => {
+                Err(not_yet(expr.span, "a `shared` or a `weak` value"))
+            }
             ExprKind::New(inner) => {
                 let Ty::Ptr(target) = &expr.ty else { return Err(not_yet(expr.span, "this `new`")) };
                 self.ctype(&expr.ty, expr.span)?;
@@ -6781,7 +6789,8 @@ impl<'a> Emitter<'a> {
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
                 Callee::Static { owner, name } => self.call(format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
-                Callee::Method { owner, this } => {
+                Callee::Method { whole: true, .. } => Err(not_yet(expr.span, "a `shared` or a `weak` value")),
+                Callee::Method { owner, this, .. } => {
                     let held = recv.ty.strip_borrow().clone();
                     let before = self.mark();
                     let receiver = match (this, &held) {

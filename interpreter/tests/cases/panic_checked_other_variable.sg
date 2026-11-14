@@ -1,0 +1,40 @@
+using FolderRef = shared checked Folder
+
+struct Folder {
+    string name
+    long bytes
+    weak checked Folder? parent
+    List<FolderRef> children
+
+    public Folder create(string name, weak checked Folder? parent) {
+        return Folder { name = name, bytes = 0, parent = parent, children = List<FolderRef>() }
+    }
+
+    public FolderRef child(read FolderRef this, string name) {
+        var created = new FolderRef(name, weak this)
+        this.children.add(share created)
+        return created
+    }
+
+    public void addBytes(read FolderRef this, long amount) {
+        FolderRef? cur = share this
+        while cur is not null {
+            cur.bytes += amount
+            cur = share cur.parent
+        }
+    }
+}
+
+// A conflict through another variable is found while the program runs: the loop reads
+// `folder`, and `addBytes` walks up from a child and changes it. The message shows both lines.
+void touchAll(read FolderRef folder) {
+    for child in read folder.children {
+        child.addBytes(1)
+    }
+}
+
+void main() {
+    var root = new FolderRef("root", null)
+    _ = root.child("a")
+    touchAll(read root)
+}

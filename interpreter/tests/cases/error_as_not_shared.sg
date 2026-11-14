@@ -1,0 +1,7 @@
+// `read ... as` opens a `shared` value for a block.
+void main() {
+    var count = 5
+    read count as n {
+        print(n)
+    }
+}

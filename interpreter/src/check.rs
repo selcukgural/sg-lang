@@ -164,7 +164,7 @@ impl Names {
 fn closed_in<'t>(ty: &'t Ty, names: &Names) -> Option<&'t str> {
     match ty {
         Ty::Struct(name) | Ty::Enum(name) => (!names.public.contains(name)).then_some(name.as_str()),
-        Ty::Ptr(inner) | Ty::Shared(inner) | Ty::Weak(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Read(inner) | Ty::Ref(inner) => closed_in(inner, names),
+        Ty::Ptr(inner) | Ty::Shared(inner, _) | Ty::Weak(inner, _) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Read(inner) | Ty::Ref(inner) => closed_in(inner, names),
         Ty::Result(a, b) | Ty::Map(a, b) | Ty::Entry(a, b) => closed_in(a, names).or_else(|| closed_in(b, names)),
         Ty::Func(params, ret) => params.iter().find_map(|param| closed_in(param, names)).or_else(|| closed_in(ret, names)),
         _ => None,
@@ -323,7 +323,7 @@ const TEXT_ERROR: &str = "TextError";
 fn text_error() -> StructDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
-    let ty = TypeExpr { mode: None, holder: None, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+    let ty = TypeExpr { mode: None, holder: None, checked: false, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
     let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere };
     StructDecl { public: true, name: TEXT_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: vec![position], methods: Vec::new() }
 }
@@ -337,7 +337,7 @@ const NUMBER_ERROR: &str = "NumberError";
 fn number_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
-    let ty = TypeExpr { mode: None, holder: None, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+    let ty = TypeExpr { mode: None, holder: None, checked: false, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
     let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere };
     let variants = vec![
         VariantDecl { name: "Invalid".to_string(), span: nowhere, fields: vec![position] },
@@ -358,7 +358,7 @@ fn io_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
     let field = |ty: &str, name: &str| {
-        let ty = TypeExpr { mode: None, holder: None, name: ty.to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+        let ty = TypeExpr { mode: None, holder: None, checked: false, name: ty.to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
         FieldDecl { public: true, readonly: true, ty, name: name.to_string(), span: nowhere }
     };
     let variant = |name: &str, fields: Vec<FieldDecl>| VariantDecl { name: name.to_string(), span: nowhere, fields };
@@ -386,6 +386,9 @@ struct FuncSig {
     /// Written with `public`: other modules can call it.
     public: bool,
     this: Option<This>,
+    /// The type written in front of `this` (`read FolderRef this`), resolved: a `shared` value
+    /// of the struct the method belongs to. The method is called on that value.
+    holder: Option<(Ty, String)>,
     params: Vec<Ty>,
     param_names: Vec<String>,
     ret: Ty,
@@ -431,6 +434,27 @@ fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
         params.push(resolve_type(&param.ty, names, false)?);
     }
     let ret = resolve_type(&func.ret, names, true)?;
+    let holder = match (&func.this_ty, owner) {
+        (Some(written), Some(owner)) => {
+            let ty = resolve_type(written, names, false)?;
+            match &ty {
+                Ty::Shared(inner, _) if matches!(&**inner, Ty::Struct(name) | Ty::Enum(name) if name == owner) => {
+                    // An alias is shown by its name, as it was written.
+                    let shown = match written.holder {
+                        None => short_name(&written.name).to_string(),
+                        Some(_) => ty.to_string(),
+                    };
+                    Some((ty, shown))
+                }
+                _ => {
+                    let short = short_name(owner);
+                    return Err(Diag::error(written.span, format!("the type in front of `this` is a value that holds `{short}`, and this is `{ty}`"))
+                        .hint(format!("`read shared checked {short} this`, or an alias of it; `read this` for the `{short}` itself")));
+                }
+            }
+        }
+        _ => None,
+    };
     let param_names: Vec<String> = func.params.iter().map(|param| param.name.clone()).collect();
     let own_source = owner.and_then(|owner| names.carriers.get(owner));
 
@@ -504,7 +528,7 @@ fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
         }
         sources = borrowed;
     }
-    Ok(FuncSig { public: func.public, this: func.this, params, param_names, ret, sources })
+    Ok(FuncSig { public: func.public, this: func.this, holder, params, param_names, ret, sources })
 }
 
 /// With `tests` the `test` blocks are checked too and `main` may be missing: that is what the
@@ -864,10 +888,11 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             src,
         };
         if let (Some(this), Some(owner)) = (func.this, owner) {
-            let ty = match names.kinds[owner] {
-                TypeKind::Struct => Ty::Struct(owner.to_string()),
-                TypeKind::Enum => Ty::Enum(owner.to_string()),
-                TypeKind::Alias => unreachable!("an alias has no methods"),
+            let ty = match (&sig.holder, names.kinds[owner]) {
+                (Some((holder, _)), _) => holder.clone(),
+                (None, TypeKind::Struct) => Ty::Struct(owner.to_string()),
+                (None, TypeKind::Enum) => Ty::Enum(owner.to_string()),
+                (None, TypeKind::Alias) => unreachable!("an alias has no methods"),
             };
             let ty = match this {
                 This::Value => ty,
@@ -891,6 +916,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             checker.unclosed(0, None)?;
         }
         checker.borrow_conflicts()?;
+        crate::opening::open(&mut func.body, &|ty: &Ty| lends(ty, &names), src)?;
         if sig.ret != Ty::Void && !leaves(&func.body, false) {
             let diag = Diag::error(
                 func.name_span,
@@ -954,6 +980,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         checker.declare_streams(test_span)?;
         checker.block(&mut prog.tests[position].body, &[])?;
         checker.borrow_conflicts()?;
+        crate::opening::open(&mut prog.tests[position].body, &|ty: &Ty| lends(ty, &names), src)?;
     }
     Ok(())
 }
@@ -998,7 +1025,7 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             };
             no_borrow(item, "HashSet")?;
             let item_ty = resolve_type(item, names, false)?;
-            if !has(&item_ty, &names.keys, false) || matches!(item_ty, Ty::Ptr(_) | Ty::Nullable(_) | Ty::Shared(_) | Ty::Weak(_)) {
+            if !has(&item_ty, &names.keys, false) || matches!(item_ty, Ty::Ptr(_) | Ty::Nullable(_) | Ty::Shared(..) | Ty::Weak(..)) {
                 return Err(not_a_key(item.span, &item_ty, "an item of a `HashSet`"));
             }
             Ty::Set(Box::new(item_ty))
@@ -1011,7 +1038,7 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             no_borrow(key, "HashMap")?;
             no_borrow(value, "HashMap")?;
             let key_ty = resolve_type(key, names, false)?;
-            if !has(&key_ty, &names.keys, false) || matches!(key_ty, Ty::Ptr(_) | Ty::Nullable(_) | Ty::Shared(_) | Ty::Weak(_)) {
+            if !has(&key_ty, &names.keys, false) || matches!(key_ty, Ty::Ptr(_) | Ty::Nullable(_) | Ty::Shared(..) | Ty::Weak(..)) {
                 return Err(not_a_key(key.span, &key_ty, "the key of a `HashMap`"));
             }
             Ty::Map(Box::new(key_ty), Box::new(resolve_type(value, names, false)?))
@@ -1060,7 +1087,7 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
                 let resolved = resolve_type(target, names, false);
                 RESOLVING.with(|stack| stack.borrow_mut().pop());
                 let resolved = resolved?;
-                if ty.holder.is_some() && matches!(resolved, Ty::Shared(_) | Ty::Weak(_)) {
+                if ty.holder.is_some() && matches!(resolved, Ty::Shared(..) | Ty::Weak(..)) {
                     return Err(Diag::error(ty.span, format!("`{}` is already `{resolved}`", ty.name)));
                 }
                 resolved
@@ -1131,21 +1158,27 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
 }
 
 /// Why a `shared` value cannot be written through.
-const SHARED_READ_ONLY: &str = "a `shared` value has several owners, and none of them changes it alone; a value that is changed through several owners is a `shared checked T`, which is not in the interpreter yet";
+const SHARED_READ_ONLY: &str = "a `shared` value has several owners, and none of them changes it alone; a value that is changed through several owners is a `shared checked T`, whose every access is checked against the borrows of it in progress";
 
 /// Whether the place is reached through a `shared` value: `node.value`, `nodes[0]` of a
 /// `shared List<int> nodes`.
 fn through_shared(place: &Expr) -> bool {
+    through_holder(place, false)
+}
+
+/// Whether the place is reached through a `shared` value, or with `checked`, through a
+/// `shared checked` one.
+fn through_holder(place: &Expr, checked: bool) -> bool {
     let mut ty = &place.ty;
     while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Ptr(inner) = ty {
         ty = inner;
     }
-    if matches!(ty, Ty::Shared(_)) {
+    if matches!(ty, Ty::Shared(_, flag) if *flag == checked) {
         return true;
     }
     match &place.kind {
-        ExprKind::Field { recv, .. } | ExprKind::Index { recv, .. } | ExprKind::Slice { recv, .. } => through_shared(recv),
-        ExprKind::Load(inner) | ExprKind::Unbox(inner) | ExprKind::Borrow { expr: inner, .. } => through_shared(inner),
+        ExprKind::Field { recv, .. } | ExprKind::Index { recv, .. } | ExprKind::Slice { recv, .. } => through_holder(recv, checked),
+        ExprKind::Load(inner) | ExprKind::Unbox(inner) | ExprKind::Borrow { expr: inner, .. } => through_holder(inner, checked),
         _ => false,
     }
 }
@@ -1163,6 +1196,7 @@ fn not_shared(word: &str, span: Span, found: &Ty) -> Diag {
 /// `shared T` or `weak T` around a type that can be held so: one that owns its value and
 /// carries no borrow.
 fn held(holder: Holder, inner: Ty, ty: &TypeExpr, names: &Names) -> Res<Ty> {
+    let checked = ty.checked;
     let word = if holder == Holder::Shared { "shared" } else { "weak" };
     let refuse = |what: String| Err(Diag::error(ty.span, format!("`{word}` cannot hold {what}")));
     match &inner {
@@ -1174,7 +1208,7 @@ fn held(holder: Holder, inner: Ty, ty: &TypeExpr, names: &Names) -> Res<Ty> {
             return Err(Diag::error(ty.span, format!("`{word}` cannot hold a `{inner}`: the `?` goes on the outside"))
                 .hint(format!("`{word} {behind}?`, a `{word}` value that may be missing")));
         }
-        Ty::Shared(_) | Ty::Weak(_) => return refuse(format!("a `{inner}`")),
+        Ty::Shared(..) | Ty::Weak(..) => return refuse(format!("a `{inner}`")),
         Ty::Slice(_) => return refuse("a slice: a slice is a borrow".to_string()),
         Ty::Void => return refuse("`void`".to_string()),
         _ => {}
@@ -1184,8 +1218,8 @@ fn held(holder: Holder, inner: Ty, ty: &TypeExpr, names: &Names) -> Res<Ty> {
             .note("a `shared` value lives as long as its last owner, which can be longer than anything it borrows from"));
     }
     Ok(match holder {
-        Holder::Shared => Ty::Shared(Box::new(inner)),
-        Holder::Weak => Ty::Weak(Box::new(inner)),
+        Holder::Shared => Ty::Shared(Box::new(inner), checked),
+        Holder::Weak => Ty::Weak(Box::new(inner), checked),
     })
 }
 
@@ -1336,7 +1370,7 @@ fn as_slice(from: &Ty, to: &Ty) -> bool {
 }
 
 fn not_a_key(span: Span, ty: &Ty, what: &str) -> Diag {
-    if let Ty::Shared(_) | Ty::Weak(_) = ty {
+    if let Ty::Shared(..) | Ty::Weak(..) = ty {
         return Diag::error(span, format!("`{ty}` cannot be {what}: it is not `Hashable`"))
             .hint("keep something that tells the values apart instead, such as an `id` field: `HashSet<int>`");
     }
@@ -1470,7 +1504,7 @@ fn all_copyable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d
         return Err(match ty {
             Ty::Struct(inner) | Ty::Enum(inner) => diag.hint(format!("make `{inner}` `Copyable` too, or take `Copyable` off `{name}`")),
             Ty::Str | Ty::Ptr(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) => diag.note(format!("a `{ty}` owns memory on the heap; a copy would have to allocate, and that is written `.clone()`")),
-            Ty::Shared(_) | Ty::Weak(_) => diag.note(format!("a `{ty}` counts its owners; one more is made with `share`, so that the count changes where it can be seen")),
+            Ty::Shared(..) | Ty::Weak(..) => diag.note(format!("a `{ty}` counts its owners; one more is made with `share`, so that the count changes where it can be seen")),
             _ => diag,
         });
     }
@@ -1490,7 +1524,7 @@ fn has(ty: &Ty, declared: &HashSet<String>, collections: bool) -> bool {
         Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => has(inner, declared, collections),
         // `==` looks at what a `shared` value points to; a key it is not, as a collection is not.
-        Ty::Shared(inner) => collections && has(inner, declared, collections),
+        Ty::Shared(inner, _) => collections && has(inner, declared, collections),
         Ty::List(item) | Ty::Set(item) | Ty::Array(item, _) | Ty::Slice(item) => collections && has(item, declared, collections),
         Ty::Map(key, value) => collections && has(key, declared, collections) && has(value, declared, collections),
         _ => false,
@@ -1501,7 +1535,7 @@ fn has(ty: &Ty, declared: &HashSet<String>, collections: bool) -> bool {
 fn lacking<'t>(ty: &'t Ty, declared: &HashSet<String>) -> Option<&'t str> {
     match ty {
         Ty::Struct(name) | Ty::Enum(name) => (!declared.contains(name)).then_some(name.as_str()),
-        Ty::Ptr(inner) | Ty::Shared(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) | Ty::Slice(inner) => lacking(inner, declared),
+        Ty::Ptr(inner) | Ty::Shared(inner, _) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) | Ty::Slice(inner) => lacking(inner, declared),
         Ty::Map(key, value) => lacking(key, declared).or_else(|| lacking(value, declared)),
         _ => None,
     }
@@ -1517,8 +1551,8 @@ fn all_have<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d (St
         let diag = Diag::error(field.ty.span, format!("`{name}` cannot be `{word}` field by field: `{}` is a `{ty}`, which is not `{word}`", field.name));
         return Err(match (ty, lacking(ty, declared)) {
             (Ty::List(_) | Ty::Set(_) | Ty::Map(..), _) if word == "Hashable" => diag.note("a collection can be compared with `==`, but it is not a key"),
-            (Ty::Shared(_), _) if word == "Hashable" => diag.note("a `shared` value can be compared with `==`, but it is not a key"),
-            (Ty::Weak(_), _) => diag.note("a `weak` value may point to nothing any more, so it has no content to compare; `same(share a, share b)` tells whether two point to one object"),
+            (Ty::Shared(..), _) if word == "Hashable" => diag.note("a `shared` value can be compared with `==`, but it is not a key"),
+            (Ty::Weak(..), _) => diag.note("a `weak` value may point to nothing any more, so it has no content to compare; `same(share a, share b)` tells whether two point to one object"),
             (Ty::Float(_), _) => diag.note("a fractional number is not `Hashable`"),
             (_, Some(inner)) => diag.hint(format!("make `{inner}` `{word}` too")),
             _ => diag,
@@ -1529,7 +1563,7 @@ fn all_have<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d (St
 
 /// The type behind borrows and pointers.
 fn peel(mut ty: &Ty) -> &Ty {
-    while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Ptr(inner) | Ty::Shared(inner) = ty {
+    while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Ptr(inner) | Ty::Shared(inner, _) = ty {
         ty = inner;
     }
     ty
@@ -1546,7 +1580,7 @@ fn all_formattable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, 
         while let Ty::Nullable(behind) | Ty::List(behind) | Ty::Set(behind) | Ty::Array(behind, _) = inner {
             inner = behind;
         }
-        if let Ty::Weak(_) = inner {
+        if let Ty::Weak(..) = inner {
             return Err(diag
                 .note("what a `weak` value looks at may be gone, and following it may come back to where it started")
                 .hint("write `format` yourself, with the fields that say what the value is"));
@@ -1564,7 +1598,7 @@ fn can_format(ty: &Ty, formattable: &HashSet<String>) -> bool {
     match ty {
         Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Void => true,
         Ty::Struct(_) | Ty::Enum(_) => unformattable(ty, formattable).is_none(),
-        Ty::Ptr(inner) | Ty::Shared(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => can_format(inner, formattable),
+        Ty::Ptr(inner) | Ty::Shared(inner, _) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => can_format(inner, formattable),
         Ty::Result(ok, error) | Ty::Map(ok, error) => can_format(ok, formattable) && can_format(error, formattable),
         Ty::List(item) | Ty::Set(item) | Ty::Array(item, _) | Ty::Slice(item) => can_format(item, formattable),
         _ => false,
@@ -1575,7 +1609,7 @@ fn can_format(ty: &Ty, formattable: &HashSet<String>) -> bool {
 fn unformattable<'t>(ty: &'t Ty, formattable: &HashSet<String>) -> Option<&'t str> {
     match ty {
         Ty::Struct(name) | Ty::Enum(name) => (!formattable.contains(name)).then_some(name.as_str()),
-        Ty::Ptr(inner) | Ty::Shared(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => unformattable(inner, formattable),
+        Ty::Ptr(inner) | Ty::Shared(inner, _) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => unformattable(inner, formattable),
         Ty::Result(ok, error) | Ty::Map(ok, error) => unformattable(ok, formattable).or_else(|| unformattable(error, formattable)),
         Ty::List(item) | Ty::Set(item) | Ty::Array(item, _) | Ty::Slice(item) => unformattable(item, formattable),
         _ => None,
@@ -2126,7 +2160,7 @@ impl<'a> Checker<'a> {
         if let Some(target) = self.alias_target(name, span)? {
             match target {
                 Ty::Struct(full) | Ty::Enum(full) => *name = full,
-                Ty::Shared(behind) => {
+                Ty::Shared(behind, _) => {
                     let written = short_name(name).to_string();
                     return Err(Diag::error(span, format!("`{written}` is `shared {behind}`, which is made with `new`"))
                         .hint(format!("`new {}`", self.src[span.start..span.end].trim())));
@@ -2152,24 +2186,24 @@ impl<'a> Checker<'a> {
 
     /// `new NodeRef(1)` or `new NodeRef { ... }` with an alias of a `shared` struct: the name
     /// becomes the struct's, and the caller makes it `new shared`.
-    fn shared_alias(&mut self, inner: &mut Expr) -> Res<bool> {
+    fn shared_alias(&mut self, inner: &mut Expr) -> Res<Option<bool>> {
         let span = inner.span;
         self.unqualify(inner);
-        let (ExprKind::Call { name, .. } | ExprKind::StructLit { name, .. }) = &mut inner.kind else { return Ok(false) };
+        let (ExprKind::Call { name, .. } | ExprKind::StructLit { name, .. }) = &mut inner.kind else { return Ok(None) };
         if self.find(name).is_some() {
-            return Ok(false);
+            return Ok(None);
         }
-        let Some(full) = self.names.full(name, span)? else { return Ok(false) };
+        let Some(full) = self.names.full(name, span)? else { return Ok(None) };
         match self.alias_target(&full, span)? {
-            Some(Ty::Shared(behind)) => match *behind {
+            Some(Ty::Shared(behind, checked)) => match *behind {
                 Ty::Struct(target) | Ty::Enum(target) => {
                     *name = target;
-                    Ok(true)
+                    Ok(Some(checked))
                 }
                 other => Err(Diag::error(span, format!("`{}` is `shared {other}`, which is not built this way", short_name(&full)))),
             },
-            Some(Ty::Weak(_)) => Err(Diag::error(span, "a `weak` value is not made with `new`: it looks at a `shared` one")),
-            _ => Ok(false),
+            Some(Ty::Weak(..)) => Err(Diag::error(span, "a `weak` value is not made with `new`: it looks at a `shared` one")),
+            _ => Ok(None),
         }
     }
 
@@ -3116,7 +3150,12 @@ impl<'a> Checker<'a> {
                             behind
                         }
                         Ty::Ptr(behind) => behind,
-                        Ty::Shared(behind) => {
+                        // What a `shared checked` value points to is lent as the loop asks.
+                        Ty::Shared(behind, true) => {
+                            mode = mode.or(Some(Mode::Read));
+                            behind
+                        }
+                        Ty::Shared(behind, false) => {
                             mode = Some(Mode::Read);
                             behind
                         }
@@ -3193,6 +3232,42 @@ impl<'a> Checker<'a> {
                     self.locks.pop();
                 }
                 result?;
+            }
+            StmtKind::As { mutable, value, name, name_span, body } => {
+                let found = match self.place(value)? {
+                    Some((ty, _)) => ty,
+                    None => self.expr(value, None)?,
+                };
+                let word = if *mutable { "ref" } else { "read" };
+                let text = self.src[value.span.start..value.span.end].to_string();
+                let (inner, checked) = match found.strip_borrow() {
+                    Ty::Shared(inner, checked) => ((**inner).clone(), *checked),
+                    Ty::Nullable(inner) if matches!(&**inner, Ty::Shared(..)) => {
+                        return Err(Diag::error(value.span, format!("this is `{found}` and may be `null`; `{word} ... as` needs a value"))
+                            .hint(format!("test it first: `if {text} is not null {{ ... }}`")));
+                    }
+                    Ty::Weak(..) => {
+                        return Err(Diag::error(value.span, format!("this is `{found}`: what it looks at may be gone"))
+                            .hint(format!("ask for an owner first: `var owner = share {text}`, which is `null` if it is gone")));
+                    }
+                    other => {
+                        return Err(Diag::error(value.span, format!("`{word} ... as` opens a `shared` value for a block, and this is `{other}`"))
+                            .hint(format!("use `{text}` as it is")));
+                    }
+                };
+                if *mutable && !checked {
+                    return Err(Diag::error(value.span, format!("`ref ... as` changes what it holds, and a `{found}` is only read")).note(SHARED_READ_ONLY));
+                }
+                let ty = match mutable {
+                    true => Ty::Ref(Box::new(inner)),
+                    false => Ty::Read(Box::new(inner)),
+                };
+                // The name borrows what the value holds, so the value stays where it is for the block.
+                self.borrows.binds = match value.is_place() {
+                    true => self.place_loans(value, false, value.span),
+                    false => Vec::new(),
+                };
+                self.block_with(body, &[], vec![(name.clone(), ty, *name_span)])?;
             }
             StmtKind::Return(value) => self.returned(value.as_mut(), stmt_span)?,
             StmtKind::Break | StmtKind::Continue => {
@@ -3565,8 +3640,12 @@ impl<'a> Checker<'a> {
                 .hint("add `.toString()` at the end; that is where the allocation shows")),
             // `T` where `T?` is expected.
             (_, Ty::Nullable(inner)) => self.coerce(expr, found.clone(), inner),
+            (Ty::Shared(from, a), Ty::Shared(to, b)) if from == to && a != b => {
+                Err(Diag::error(expr.span, format!("expected `{expected}`, found `{found}`"))
+                    .note("what a `shared checked` value holds can be changed through any of its owners, and what a `shared` one holds cannot: they are two types"))
+            }
             // One more owner of a `shared` value is made with `share`, where it can be seen.
-            (Ty::Read(inner) | Ty::Ref(inner), Ty::Shared(_)) if **inner == *expected => {
+            (Ty::Read(inner) | Ty::Ref(inner), Ty::Shared(..)) if **inner == *expected => {
                 mismatch(Some(format!("`{found}` only borrows it; one more owner is made with `share`: `share {text}`")))
             }
             // A borrow of a copyable value stands in for the value.
@@ -3582,18 +3661,31 @@ impl<'a> Checker<'a> {
                 mismatch(Some(format!("`{found}` only borrows the value; `{expected}` needs to own it")))
             }
             // A borrow of a `shared T` stands in for a `read` of the `T` it points to.
-            (Ty::Read(from) | Ty::Ref(from), Ty::Read(to)) if matches!(&**from, Ty::Shared(inner) if inner == to) => {
+            (Ty::Read(from) | Ty::Ref(from), Ty::Read(to)) if matches!(&**from, Ty::Shared(inner, _) if inner == to) => {
                 wrap(expr, ExprKind::Unbox);
                 Ok(())
             }
-            (Ty::Read(from) | Ty::Ref(from), Ty::Ref(to)) if matches!(&**from, Ty::Shared(inner) if inner == to) => {
+            // What a `shared checked` value points to is lent to be changed with `ref`.
+            (Ty::Ref(from), Ty::Ref(to)) if matches!(&**from, Ty::Shared(inner, true) if inner == to) => {
+                wrap(expr, ExprKind::Unbox);
+                Ok(())
+            }
+            (Ty::Read(from), Ty::Ref(to)) if matches!(&**from, Ty::Shared(inner, true) if inner == to) => {
+                let place = match &expr.kind {
+                    ExprKind::Borrow { expr: inner, .. } => &self.src[inner.span.start..inner.span.end],
+                    _ => text,
+                };
+                mismatch(Some(format!("lend what it points to with `ref`: `ref {place}`")))
+            }
+            (Ty::Shared(from, true), Ty::Ref(to)) if from == to => mismatch(Some(format!("lend what it points to with `ref`: `ref {text}`"))),
+            (Ty::Read(from) | Ty::Ref(from), Ty::Ref(to)) if matches!(&**from, Ty::Shared(inner, _) if inner == to) => {
                 Err(Diag::error(expr.span, format!("a `shared {to}` is only read, so it cannot be lent as `ref {to}`")).note(SHARED_READ_ONLY))
             }
-            (Ty::Shared(from), Ty::Ref(to)) if from == to => {
+            (Ty::Shared(from, _), Ty::Ref(to)) if from == to => {
                 Err(Diag::error(expr.span, format!("a `shared {to}` is only read, so it cannot be lent as `ref {to}`")).note(SHARED_READ_ONLY))
             }
-            (Ty::Shared(inner), Ty::Read(to)) if inner == to => mismatch(Some(format!("lend what it points to with `read`: `read {text}`"))),
-            (Ty::Shared(inner), _) if **inner == *expected => {
+            (Ty::Shared(inner, _), Ty::Read(to)) if inner == to => mismatch(Some(format!("lend what it points to with `read`: `read {text}`"))),
+            (Ty::Shared(inner, _), _) if **inner == *expected => {
                 mismatch(Some(format!("`{found}` points to a value that others own too; lend it with `read`: `read {text}`")))
             }
             // A borrow of a `T*` stands in for a borrow of the `T` it owns.
@@ -3661,7 +3753,7 @@ impl<'a> Checker<'a> {
             if let (ExprKind::Var(name), ExprKind::Int(length, _)) = (&recv.kind, &index.kind) {
                 let is_type = Ty::from_name(name).is_some() || self.names.full(name, recv.span)?.is_some_and(|full| self.names.kinds.contains_key(&full));
                 if self.find(name).is_none() && name != "this" && is_type && *length >= 0 {
-                    let ty = TypeExpr { mode: None, holder: None, name: name.clone(), args: Vec::new(), suffixes: vec![Suffix::Array(*length as usize)], span };
+                    let ty = TypeExpr { mode: None, holder: None, checked: false, name: name.clone(), args: Vec::new(), suffixes: vec![Suffix::Array(*length as usize)], span };
                     expr.kind = ExprKind::Array { ty, args: Vec::new(), items: None };
                     return Ok(None);
                 }
@@ -3698,9 +3790,10 @@ impl<'a> Checker<'a> {
                             *inner
                         }
                         Ty::Ptr(inner) => *inner,
-                        // What a `shared` value points to is only read.
-                        Ty::Shared(inner) => {
-                            writable = false;
+                        // What a `shared` value points to is only read; through `shared
+                        // checked` it is changed, however the owner itself was reached.
+                        Ty::Shared(inner, checked) => {
+                            writable = checked;
                             *inner
                         }
                         Ty::Struct(name) => break name,
@@ -3736,7 +3829,7 @@ impl<'a> Checker<'a> {
                             return Err(Diag::error(recv.span, format!("this is `{ty}`: either a value or an error; `.{name}` needs the value"))
                                 .hint("open it first with `try`, `??` or `match`"));
                         }
-                        Ty::Weak(_) => {
+                        Ty::Weak(..) => {
                             let text = &self.src[recv.span.start..recv.span.end];
                             return Err(Diag::error(recv.span, format!("this is `{ty}`: what it looks at may be gone, so `.{name}` cannot reach it"))
                                 .hint(format!("ask for an owner first: `var owner = share {text}`, which is `null` if it is gone")));
@@ -3779,8 +3872,8 @@ impl<'a> Checker<'a> {
                             behind
                         }
                         Ty::Ptr(behind) => behind,
-                        Ty::Shared(behind) => {
-                            writable = false;
+                        Ty::Shared(behind, checked) => {
+                            writable = *checked;
                             behind
                         }
                         _ => break,
@@ -3880,6 +3973,14 @@ impl<'a> Checker<'a> {
             if through_shared(recv) {
                 return Err(Diag::error(span, format!("a `{ty}` field cannot be moved out of a `shared` value: its other owners still look at it"))
                     .hint(format!("borrow it instead: `read {text}`")));
+            }
+            // Through `shared checked` the field can be swapped, so that no owner sees a hole.
+            if through_holder(recv, true) {
+                let hint = match ty {
+                    Ty::Nullable(_) => format!("take it with `{text}.take()`, which leaves `null` there, or borrow it: `read {text}`"),
+                    _ => format!("swap it with `{text}.replace(value)`, or borrow it: `read {text}`"),
+                };
+                return Err(Diag::error(span, format!("a `{ty}` field cannot be moved out of a `shared checked` value: its other owners still look at it")).hint(hint));
             }
         }
         self.not_locked(expr, Access::Move)?;
@@ -4037,9 +4138,9 @@ impl<'a> Checker<'a> {
 
         // `new NodeRef(1)` with `using NodeRef = shared Node` is `new shared Node(1)`.
         if let ExprKind::New(inner) = &mut expr.kind {
-            if self.shared_alias(inner)? {
+            if let Some(checked) = self.shared_alias(inner)? {
                 let ExprKind::New(inner) = std::mem::replace(&mut expr.kind, ExprKind::Null) else { unreachable!("matched above") };
-                expr.kind = ExprKind::NewShared(inner);
+                expr.kind = ExprKind::NewShared { value: inner, checked };
             }
         }
 
@@ -4085,6 +4186,8 @@ impl<'a> Checker<'a> {
             expr.kind = ExprKind::Float(value.to_string(), to);
         }
         match &mut expr.kind {
+            // Put in after a function is checked; nothing is checked twice.
+            ExprKind::Open { .. } | ExprKind::Within(_) => unreachable!("the opening of `shared checked` values comes after the check"),
             ExprKind::Float(text, ty) => {
                 *ty = expected.and_then(wanted_float).unwrap_or(FloatTy::Double);
                 fractional_literal(text, *ty, span)?;
@@ -4403,11 +4506,12 @@ impl<'a> Checker<'a> {
                 }
                 Ok(Ty::Ptr(Box::new(ty)))
             }
-            ExprKind::NewShared(inner) => {
+            ExprKind::NewShared { value: inner, checked } => {
+                let checked = *checked;
                 let wanted = expected.and_then(|ty| match ty {
-                    Ty::Shared(inner) => Some((**inner).clone()),
+                    Ty::Shared(inner, _) => Some((**inner).clone()),
                     Ty::Nullable(nullable) => match &**nullable {
-                        Ty::Shared(inner) => Some((**inner).clone()),
+                        Ty::Shared(inner, _) => Some((**inner).clone()),
                         _ => None,
                     },
                     _ => None,
@@ -4422,7 +4526,7 @@ impl<'a> Checker<'a> {
                 if matches!(ty, Ty::Void | Ty::Null | Ty::Never) || ty.is_borrow() {
                     return Err(Diag::error(inner.span, format!("`new shared` needs a value to own, found `{ty}`")));
                 }
-                if let Ty::Shared(_) | Ty::Weak(_) | Ty::Ptr(_) | Ty::Nullable(_) = ty {
+                if let Ty::Shared(..) | Ty::Weak(..) | Ty::Ptr(_) | Ty::Nullable(_) = ty {
                     return Err(Diag::error(inner.span, format!("`new shared` needs a value to own, and this is a `{ty}`"))
                         .note("`new shared` puts a value on the heap with a count of its owners"));
                 }
@@ -4430,18 +4534,18 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(inner.span, format!("a `shared` value cannot hold a `{ty}`, which carries a borrow"))
                         .note("a `shared` value lives as long as its last owner, which can be longer than anything it borrows from"));
                 }
-                Ok(Ty::Shared(Box::new(ty)))
+                Ok(Ty::Shared(Box::new(ty), checked))
             }
             ExprKind::Share(inner) => {
                 let found = self.operand(inner, None)?;
                 match found.strip_borrow() {
-                    Ty::Shared(behind) => Ok(Ty::Shared(behind.clone())),
-                    Ty::Nullable(nullable) if matches!(**nullable, Ty::Shared(_)) => Ok((**nullable).clone()).map(|ty| Ty::Nullable(Box::new(ty))),
+                    Ty::Shared(behind, checked) => Ok(Ty::Shared(behind.clone(), *checked)),
+                    Ty::Nullable(nullable) if matches!(**nullable, Ty::Shared(..)) => Ok((**nullable).clone()).map(|ty| Ty::Nullable(Box::new(ty))),
                     // What a `weak` value looks at may be gone: then there is no owner to add.
-                    Ty::Weak(behind) => Ok(Ty::Nullable(Box::new(Ty::Shared(behind.clone())))),
-                    Ty::Nullable(nullable) if matches!(**nullable, Ty::Weak(_)) => {
-                        let Ty::Weak(behind) = &**nullable else { unreachable!("matched above") };
-                        Ok(Ty::Nullable(Box::new(Ty::Shared(behind.clone()))))
+                    Ty::Weak(behind, checked) => Ok(Ty::Nullable(Box::new(Ty::Shared(behind.clone(), *checked)))),
+                    Ty::Nullable(nullable) if matches!(**nullable, Ty::Weak(..)) => {
+                        let Ty::Weak(behind, checked) = &**nullable else { unreachable!("matched above") };
+                        Ok(Ty::Nullable(Box::new(Ty::Shared(behind.clone(), *checked))))
                     }
                     other => Err(not_shared("share", inner.span, other)),
                 }
@@ -4449,10 +4553,10 @@ impl<'a> Checker<'a> {
             ExprKind::WeakOf(inner) => {
                 let found = self.operand(inner, None)?;
                 match found.strip_borrow() {
-                    Ty::Shared(behind) | Ty::Weak(behind) => Ok(Ty::Weak(behind.clone())),
-                    Ty::Nullable(nullable) if matches!(**nullable, Ty::Shared(_) | Ty::Weak(_)) => {
-                        let (Ty::Shared(behind) | Ty::Weak(behind)) = &**nullable else { unreachable!("matched above") };
-                        Ok(Ty::Nullable(Box::new(Ty::Weak(behind.clone()))))
+                    Ty::Shared(behind, checked) | Ty::Weak(behind, checked) => Ok(Ty::Weak(behind.clone(), *checked)),
+                    Ty::Nullable(nullable) if matches!(**nullable, Ty::Shared(..) | Ty::Weak(..)) => {
+                        let (Ty::Shared(behind, checked) | Ty::Weak(behind, checked)) = &**nullable else { unreachable!("matched above") };
+                        Ok(Ty::Nullable(Box::new(Ty::Weak(behind.clone(), *checked))))
                     }
                     other => Err(not_shared("weak", inner.span, other)),
                 }
@@ -4584,8 +4688,8 @@ impl<'a> Checker<'a> {
                     behind
                 }
                 Ty::Ptr(behind) => behind,
-                Ty::Shared(behind) => {
-                    writable = false;
+                Ty::Shared(behind, checked) => {
+                    writable = *checked;
                     behind
                 }
                 _ => break,
@@ -4828,7 +4932,11 @@ impl<'a> Checker<'a> {
                     behind
                 }
                 Ty::Ptr(behind) => behind,
-                Ty::Shared(behind) => {
+                Ty::Shared(behind, true) => {
+                    mode = mode.or(Some(Mode::Read));
+                    behind
+                }
+                Ty::Shared(behind, false) => {
                     mode = Some(Mode::Read);
                     behind
                 }
@@ -5482,7 +5590,7 @@ impl<'a> Checker<'a> {
                 }
                 let diag = Diag::error(span, format!("`{symbol}` compares the values, and `{name}` is not `Equatable`"));
                 // Two `shared` values may be asked whether they are one object instead.
-                if matches!(left_ty.strip_borrow(), Ty::Shared(_)) && matches!(right_ty.strip_borrow(), Ty::Shared(_)) {
+                if matches!(left_ty.strip_borrow(), Ty::Shared(..)) && matches!(right_ty.strip_borrow(), Ty::Shared(..)) {
                     let (a, b) = (&self.src[left.span.start..left.span.end], &self.src[right.span.start..right.span.end]);
                     let not = if op == BinOp::Ne { "!" } else { "" };
                     return Err(diag
@@ -5582,7 +5690,7 @@ impl<'a> Checker<'a> {
     /// integer, `F` for a fractional number (also behind a pointer, as `print` looks).
     fn format_letter(&self, ty: &Ty, letter: Letter, span: Span, value: &Expr) -> Res<()> {
         let mut inner = ty.strip_borrow();
-        while let Ty::Ptr(behind) | Ty::Shared(behind) = inner {
+        while let Ty::Ptr(behind) | Ty::Shared(behind, _) = inner {
             inner = behind.strip_borrow();
         }
         let text = &self.src[value.span.start..value.span.end];
@@ -5610,7 +5718,7 @@ impl<'a> Checker<'a> {
 
     fn printable(&self, ty: &Ty, span: Span) -> Res<()> {
         let mut inner = ty.strip_borrow();
-        while let Ty::Ptr(behind) | Ty::Shared(behind) = inner {
+        while let Ty::Ptr(behind) | Ty::Shared(behind, _) = inner {
             inner = behind.strip_borrow();
         }
         match inner {
@@ -5632,7 +5740,7 @@ impl<'a> Checker<'a> {
                     None => diag,
                 })
             }
-            Ty::Weak(_) => Err(Diag::error(span, format!("a `{inner}` cannot be written as text: what it looks at may be gone"))
+            Ty::Weak(..) => Err(Diag::error(span, format!("a `{inner}` cannot be written as text: what it looks at may be gone"))
                 .hint("ask for an owner first with `share`, which gives `null` if it is gone")),
             other => Err(Diag::error(span, format!("a `{other}` value cannot be written as text"))),
         }
@@ -5697,15 +5805,15 @@ impl<'a> Checker<'a> {
                 for arg in args.iter_mut() {
                     let ty = self.operand(arg, None)?;
                     match ty.strip_borrow() {
-                        Ty::Shared(behind) => found.push((**behind).clone()),
-                        Ty::Nullable(inner) if matches!(**inner, Ty::Shared(_)) => {
+                        Ty::Shared(behind, _) => found.push((**behind).clone()),
+                        Ty::Nullable(inner) if matches!(**inner, Ty::Shared(..)) => {
                             let diag = Diag::error(arg.span, format!("this is `{}` and may be `null`; `same` compares two objects", ty.strip_borrow()));
                             return Err(match &arg.kind {
                                 ExprKind::Var(var) => diag.hint(format!("test it first: `if {var} is not null {{ ... }}`")),
                                 _ => diag,
                             });
                         }
-                        Ty::Weak(_) => {
+                        Ty::Weak(..) => {
                             return Err(Diag::error(arg.span, "a `weak` value may point to nothing any more; `same` compares two `shared` values")
                                 .hint(format!("`share {}` gives a `shared` one, or `null` if it is gone", self.src[arg.span.start..arg.span.end].trim())));
                         }
@@ -5982,7 +6090,7 @@ impl<'a> Checker<'a> {
         // `.clone()` of a `shared` value is one more owner, as `share` is: what it points to
         // is not copied.
         if name == "clone" {
-            if let Ty::Shared(_) = recv_ty.strip_borrow() {
+            if let Ty::Shared(..) = recv_ty.strip_borrow() {
                 if !args.is_empty() {
                     return Err(Diag::error(span, format!("`clone` takes 0 argument(s), {} given", args.len())));
                 }
@@ -6004,9 +6112,10 @@ impl<'a> Checker<'a> {
                     inner
                 }
                 Ty::Ptr(inner) => inner,
-                // A method only reads what a `shared` value points to, and cannot take it.
-                Ty::Shared(inner) => {
-                    (writable, borrowed) = (false, true);
+                // A method only reads what a `shared` value points to, and cannot take it;
+                // through `shared checked` it may change it.
+                Ty::Shared(inner, checked) => {
+                    (writable, borrowed) = (*checked, true);
                     inner
                 }
                 _ => break,
@@ -6023,6 +6132,35 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(name_span, format!("`{name}` does not take `this`, so it is called on the type"))
                         .hint(format!("`{owner}.{name}(...)`")));
                 };
+                // `read FolderRef this`: called on the value that holds the struct.
+                if let Some((holder, written)) = &sig.holder {
+                    if recv_ty.strip_borrow() != holder {
+                        let short = short_name(owner);
+                        return Err(Diag::error(recv.span, format!("`{name}` is called on a `{written}`, and this is `{recv_ty}`"))
+                            .note(format!("it takes the value that holds the `{short}`, so that it can write `share this` and `weak this`"))
+                            .hint(format!("make the `{short}` with `new {written}(...)`")));
+                    }
+                    match this {
+                        This::Value if !is_place || recv_ty.is_borrow() => {
+                            if recv_ty.is_borrow() {
+                                let text = &self.src[recv.span.start..recv.span.end];
+                                return Err(Diag::error(recv.span, format!("`{name}` takes `this` by value, an owner of its own, but this value is only borrowed"))
+                                    .hint(format!("give it one more owner: `var owner = share {text}`, then `owner.{name}(...)`")));
+                            }
+                        }
+                        This::Value => {
+                            self.move_out(recv, &recv_ty)?;
+                            recv.moved = true;
+                        }
+                        _ => {}
+                    }
+                    self.args(name, args, &sig.params, span)?;
+                    if is_place && this == This::Read {
+                        self.lent_twice(Some((recv, false)), args)?;
+                    }
+                    *callee = Callee::Method { owner: owner.clone(), this, whole: true };
+                    return Ok(sig.ret.clone());
+                }
                 match this {
                     This::Read => {}
                     This::Ref if !writable => {
@@ -6040,6 +6178,9 @@ impl<'a> Checker<'a> {
                             return Err(Diag::error(recv.span, format!("`{name}` takes `this` by value and uses it up, but this value is reached through a `shared` value, which its other owners still look at"))
                                 .note(SHARED_READ_ONLY));
                         }
+                        if through_holder(recv, true) {
+                            return Err(Diag::error(recv.span, format!("`{name}` takes `this` by value and uses it up, but this value is reached through a `shared checked` value, which its other owners still look at")));
+                        }
                         return Err(Diag::error(recv.span, format!("`{name}` takes `this` by value and uses it up, but this value is only borrowed")));
                     }
                     This::Value if is_place => {
@@ -6052,7 +6193,7 @@ impl<'a> Checker<'a> {
                 if is_place && this != This::Value {
                     self.lent_twice(Some((recv, this == This::Ref)), args)?;
                 }
-                *callee = Callee::Method { owner: owner.clone(), this };
+                *callee = Callee::Method { owner: owner.clone(), this, whole: false };
                 return Ok(sig.ret.clone());
             }
         }
@@ -6914,7 +7055,7 @@ fn changed_in<'b>(block: &'b Block, names: &mut Vec<&'b str>) {
                 taken_in(to, names);
                 changed_in(body, names);
             }
-            StmtKind::ForEach { iter, body, .. } => {
+            StmtKind::ForEach { iter, body, .. } | StmtKind::As { value: iter, body, .. } => {
                 taken_in(iter, names);
                 changed_in(body, names);
             }
@@ -6992,7 +7133,9 @@ fn parts(expr: &Expr) -> Vec<Part<'_>> {
         | ExprKind::Unary(_, inner)
         | ExprKind::Cast { expr: inner, .. }
         | ExprKind::New(inner)
-        | ExprKind::NewShared(inner)
+        | ExprKind::NewShared { value: inner, .. }
+        | ExprKind::Open { inner, .. }
+        | ExprKind::Within(inner)
         | ExprKind::Share(inner)
         | ExprKind::WeakOf(inner)
         | ExprKind::Borrow { expr: inner, .. }
@@ -7204,6 +7347,7 @@ fn leaves(block: &Block, in_loop: bool) -> bool {
         StmtKind::Return(_) => true,
         StmtKind::Break | StmtKind::Continue => in_loop,
         StmtKind::If { then, els: Some(els), .. } => leaves(then, in_loop) && leaves(els, in_loop),
+        StmtKind::As { body, .. } => leaves(body, in_loop),
         StmtKind::While { cond, body, .. } => matches!(cond.kind, ExprKind::Bool(true)) && !has_break(body),
         StmtKind::Expr(expr) => never_returns(expr, in_loop),
         _ => false,
@@ -7241,6 +7385,8 @@ fn first_break(block: &Block) -> Option<Span> {
         // The condition, the range and the collection are reached outside the inner loop.
         StmtKind::While { cond: expr, .. } | StmtKind::ForEach { iter: expr, .. } => breaks_in(expr),
         StmtKind::For { from, to, .. } => breaks_in(from).or_else(|| breaks_in(to)),
+        // The block of `as` is not a loop: a `break` in it leaves the loop around it.
+        StmtKind::As { value, body, .. } => breaks_in(value).or_else(|| first_break(body)),
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Discard(expr) | StmtKind::Let { init: expr, .. } => breaks_in(expr),
         StmtKind::Assign { target, value, .. } => breaks_in(target).or_else(|| breaks_in(value)),
         StmtKind::Return(None) | StmtKind::Continue => None,

@@ -1,0 +1,24 @@
+// A test that passes and leaves `shared` values alive fails with the leak report; the others
+// go on.
+struct Node {
+    int value
+    shared checked Node? next
+}
+
+test "a list without a cycle" {
+    var first = new shared checked Node { value = 1, next = null }
+    first.next = new shared checked Node { value = 2, next = null }
+    assert(first.value == 1)
+}
+
+test "a node that owns itself" {
+    var node = new shared checked Node { value = 1, next = null }
+    node.next = share node
+    assert(node.value == 1)
+}
+
+test "after it" {
+    var node = new shared checked Node { value = 3, next = null }
+    node.value += 1
+    assert(node.value == 4)
+}

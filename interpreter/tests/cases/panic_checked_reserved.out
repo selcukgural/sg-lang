@@ -1,0 +1,10 @@
+[1, 2, 2]
+panic: this `Stock` is being read, so it cannot be changed here
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> panic_checked_reserved.sg:12:5
+ 12 |     stock.counts.addAll(read other.counts)    // still read when the list would grow
+    |     ^^^^^
+  it is being read from here:
+  --> panic_checked_reserved.sg:12:30
+ 12 |     stock.counts.addAll(read other.counts)    // still read when the list would grow
+    |                              ^^^^^

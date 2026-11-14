@@ -1,0 +1,5 @@
+error: `read ... as` opens a `shared` value for a block, and this is `int`
+  --> error_as_not_shared.sg:4:10
+ 4 |     read count as n {
+   |          ^^^^^
+  hint: use `count` as it is

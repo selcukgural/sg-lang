@@ -22,6 +22,8 @@ pub enum Kind {
     Error,
     /// Data-dependent failures only: overflow, division by zero, `assert`, `panic`.
     Panic,
+    /// `shared` values still alive when a program or a test ends: they hold each other.
+    Leak,
 }
 
 #[derive(Debug)]
@@ -42,6 +44,10 @@ impl Diag {
 
     pub fn panic(span: Span, msg: impl Into<String>) -> Diag {
         Diag { kind: Kind::Panic, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None }
+    }
+
+    pub fn leak(span: Span, msg: impl Into<String>) -> Diag {
+        Diag { kind: Kind::Leak, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None }
     }
 
     pub fn hint(mut self, hint: impl Into<String>) -> Diag {
@@ -69,6 +75,7 @@ impl Diag {
         let label = match self.kind {
             Kind::Error => "error",
             Kind::Panic => "panic",
+            Kind::Leak => "leak",
         };
         let mut text = format!("{label}: {}\n", self.msg);
         for note in &self.notes {

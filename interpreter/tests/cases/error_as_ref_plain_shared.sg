@@ -1,0 +1,7 @@
+// A plain `shared` value is only read, so it is not opened with `ref`.
+void main() {
+    var items = new shared List<int> { 1 }
+    ref items as list {
+        list.add(2)
+    }
+}

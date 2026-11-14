@@ -1,0 +1,14 @@
+// The type in front of `this` is a value that holds the struct the method belongs to.
+struct Point {
+    int x
+
+    public int get(read shared checked Line this) {
+        return 0
+    }
+}
+
+struct Line {
+    int y
+}
+
+void main() {}

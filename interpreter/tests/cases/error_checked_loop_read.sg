@@ -1,0 +1,35 @@
+using FolderRef = shared checked Folder
+
+struct Folder {
+    string name
+    long bytes
+    weak checked Folder? parent
+    List<FolderRef> children
+
+    public Folder create(string name, weak checked Folder? parent) {
+        return Folder { name = name, bytes = 0, parent = parent, children = List<FolderRef>() }
+    }
+
+    public FolderRef child(read FolderRef this, string name) {
+        var created = new FolderRef(name, weak this)
+        this.children.add(share created)
+        return created
+    }
+
+    public void addBytes(read FolderRef this, long amount) {
+        FolderRef? cur = share this
+        while cur is not null {
+            cur.bytes += amount
+            cur = share cur.parent
+        }
+    }
+}
+
+// Lent to change for the whole loop, and read through the same variable inside it.
+void main() {
+    var folder = new FolderRef("root", null)
+    var sizes = new shared checked List<long> { 1, 2 }
+    for size in ref sizes {
+        size += sizes.length()
+    }
+}

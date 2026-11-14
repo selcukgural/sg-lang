@@ -1,0 +1,10 @@
+3
+panic: this `Counter` is being changed, so it cannot be read here
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> panic_checked_receiver.sg:9:23
+ 9 |         this.count += other.count
+   |                       ^^^^^
+  it is being changed from here:
+  --> panic_checked_receiver.sg:19:5
+ 19 |     a.addFrom(read c)
+    |     ^

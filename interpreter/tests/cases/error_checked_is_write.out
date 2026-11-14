@@ -1,0 +1,10 @@
+error: `drawing` is being read for the whole `if`, so it cannot be changed here: this line would stop the program every time it ran
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> error_checked_is_write.sg:15:9
+ 15 |         drawing.shape = Shape.Circle(1)
+    |         ^^^^^^^
+  it is being read from here:
+  --> error_checked_is_write.sg:14:8
+ 14 |     if drawing.shape is Named(name) {
+    |        ^^^^^^^
+  hint: copy what the test needs into a variable first, and test that

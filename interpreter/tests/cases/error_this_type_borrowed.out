@@ -1,0 +1,5 @@
+error: `keep` takes `this` by value, an owner of its own, but this value is only borrowed
+  --> error_this_type_borrowed.sg:13:12
+ 13 |     return p.keep()
+    |            ^
+  hint: give it one more owner: `var owner = share p`, then `owner.keep(...)`

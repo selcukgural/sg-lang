@@ -1,0 +1,114 @@
+// The folder tree of the example programs (05): a folder owns its subfolders and looks at its
+// parent with `weak`, sizes are added up the tree, and the three largest are printed.
+
+public using FolderRef = shared checked Folder   // the same type, not a new type
+
+public struct Folder {
+    readonly string name
+    long bytes                               // itself and everything below it
+    weak checked Folder? parent              // null at the root, not an owner
+    List<FolderRef> children                 // owner: keeps the subfolders alive
+
+    public Folder create(string name, weak checked Folder? parent) {
+        return Folder {
+            name = name,
+            bytes = 0,
+            parent = parent,
+            children = List<FolderRef>()
+        }
+    }
+
+    // Returns the subfolder, creating it if missing. The receiver is FolderRef because the child must be given weak this
+    public FolderRef child(read FolderRef this, read string name) {
+        for item in read this.children {     // the read borrow lasts for the whole loop
+            if item.name == name {
+                return share item
+            }
+        }
+        var created = new FolderRef(name.clone(), weak this)
+        this.children.add(share created)     // write borrow for the duration of the expression
+        return created
+    }
+
+    // Adds to itself and to all of its parents
+    public void addBytes(read FolderRef this, long amount) {
+        FolderRef? cur = share this
+        while cur is not null {
+            cur.bytes += amount
+            cur = share cur.parent           // null at the root
+        }
+    }
+
+    public string path(read FolderRef this) {
+        var names = List<string>()
+        FolderRef? cur = share this
+        while cur is not null {
+            names.add(cur.name.clone())
+            cur = share cur.parent
+        }
+        names.reverse()
+        return string.join("/", read names)
+    }
+}
+
+void addFile(read FolderRef root, read string folder, long bytes) {
+    var cur = share root
+    for name in folder.split('/') {
+        cur = cur.child(name)
+    }
+    cur.addBytes(bytes)
+}
+
+public struct TopList {
+    List<Ranked> items
+    nint limit
+
+    public TopList create(nint limit) {
+        return TopList { items = List<Ranked>(), limit = limit }
+    }
+
+    public void add(ref this, Ranked value) {
+        this.items.add(value)
+        this.items.sort()
+        if this.items.length() > this.limit {
+            _ = this.items.removeLast()
+        }
+    }
+}
+
+struct Ranked : Comparable, Formattable {
+    long bytes
+    string path
+
+    public int compare(read this, read Ranked other) {
+        return other.bytes.compare(this.bytes)   // larger first
+    }
+
+    public void format(read this, ref Formatter f) {
+        f.write($"{this.bytes}  {this.path}")
+    }
+}
+
+void collect(read FolderRef folder, ref TopList top) {
+    top.add(Ranked { bytes = folder.bytes, path = folder.path() })
+    for child in read folder.children {  // folder is being read for the whole loop
+        collect(child, ref top)          // path walks up but only reads, no conflict
+    }
+}
+
+void report(read TopList top) {
+    for item in read top.items {
+        print($"{item}")
+    }
+}
+
+void main() {
+    var root = new FolderRef("root", null)
+    addFile(read root, "docs/2026", 1200)
+    addFile(read root, "docs/2025", 800)
+    addFile(read root, "photos", 5000)
+
+    var top = TopList(3)
+    collect(read root, ref top)
+    report(read top)
+}

@@ -1,0 +1,6 @@
+// `checked` makes a value with several owners changeable; it is written after `shared`.
+struct Point {
+    checked int x
+}
+
+void main() {}

@@ -1,0 +1,5 @@
+error: `checked` is written after `shared` or `weak`: it is what makes a value with several owners changeable
+  --> error_checked_alone.sg:3:5
+ 3 |     checked int x
+   |     ^^^^^^^
+  hint: `shared checked T` for an owner, `weak checked T` for a look at one

@@ -1,0 +1,18 @@
+enum Shape {
+    Circle(long radius)
+    Named(string name)
+}
+
+struct Drawing {
+    Shape shape
+    long moves
+}
+
+// The names of a `match` borrow from what it looks into, for the whole `match`.
+void main() {
+    var drawing = new shared checked Drawing { shape = Shape.Named("a"), moves = 0 }
+    match read drawing.shape {
+        Circle(radius) => print(radius)
+        Named(name) => drawing.moves += 1
+    }
+}

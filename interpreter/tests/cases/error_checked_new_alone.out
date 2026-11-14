@@ -1,0 +1,4 @@
+error: `checked` is written after `shared`: `new shared checked ...`
+  --> error_checked_new_alone.sg:2:17
+ 2 |     var p = new checked 5
+   |                 ^^^^^^^

@@ -1,0 +1,36 @@
+using FolderRef = shared checked Folder
+
+struct Folder {
+    string name
+    long bytes
+    weak checked Folder? parent
+    List<FolderRef> children
+
+    public Folder create(string name, weak checked Folder? parent) {
+        return Folder { name = name, bytes = 0, parent = parent, children = List<FolderRef>() }
+    }
+
+    public FolderRef child(read FolderRef this, string name) {
+        var created = new FolderRef(name, weak this)
+        this.children.add(share created)
+        return created
+    }
+
+    public void addBytes(read FolderRef this, long amount) {
+        FolderRef? cur = share this
+        while cur is not null {
+            cur.bytes += amount
+            cur = share cur.parent
+        }
+    }
+}
+
+// Two borrows of one value in one call, one of them to change it.
+void move(ref long bytes, read List<FolderRef> from) {
+    bytes += 1
+}
+
+void main() {
+    var folder = new FolderRef("root", null)
+    move(ref folder.bytes, read folder.children)
+}

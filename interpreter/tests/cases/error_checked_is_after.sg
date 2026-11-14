@@ -1,0 +1,18 @@
+enum Shape {
+    Circle(long radius)
+    Named(string name)
+}
+
+struct Drawing {
+    Shape shape
+    long moves
+}
+
+// The names an `is` gives after its `if` would borrow past it.
+void main() {
+    var drawing = new shared checked Drawing { shape = Shape.Named("a"), moves = 0 }
+    if !(drawing.shape is Named(name)) {
+        return
+    }
+    print(name)
+}

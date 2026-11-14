@@ -1,0 +1,10 @@
+public struct DNode {
+    int value
+    shared checked DNode? next
+    weak checked DNode? prev
+}
+
+void main() {
+    var a = new shared checked DNode { value = 1, next = null, prev = null }
+    print(a.next.value)
+}

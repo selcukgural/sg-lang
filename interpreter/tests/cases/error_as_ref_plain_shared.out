@@ -1,0 +1,5 @@
+error: `ref ... as` changes what it holds, and a `shared List<int>` is only read
+  a `shared` value has several owners, and none of them changes it alone; a value that is changed through several owners is a `shared checked T`, whose every access is checked against the borrows of it in progress
+  --> error_as_ref_plain_shared.sg:4:9
+ 4 |     ref items as list {
+   |         ^^^^^

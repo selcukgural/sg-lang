@@ -1,0 +1,10 @@
+leak: the program ended with 2 `shared` values still alive, which hold each other through `Folder.children`
+  1 x `Folder`, made here:
+  --> leak_cycle.sg:31:16
+ 31 |     var root = new FolderRef("root", null)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  1 x `Folder`, made here:
+  --> leak_cycle.sg:14:23
+ 14 |         var created = new FolderRef(name, weak this)
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: the side that does not own is `weak`: `List<weak checked Folder>`

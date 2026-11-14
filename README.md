@@ -157,11 +157,13 @@ past an `if` that leaves (`if int.parse(read text) is not Ok(n) { return }`); `T
 gathered into a list in one copy (`buffer.addAll(piece)`), numbers read out of bytes and written into them in
 either order (`ushort.fromLittleEndian(data[6..8])`, `n.toBigEndian()`), and ranges sorted where they are (`xs[2..5].sort()`);
 function values; ownership, moves and the borrow check; several owners of one value (`shared T`, `share x`,
-and `weak T`, which looks without owning) and type aliases (`using NodeRef = shared Node`), not yet compiled;
+and `weak T`, which looks without owning), changed through any of them with `shared checked T` (each access
+checked against the borrows in progress, a certain conflict a compile error, the values that hold each
+other up reported when the program ends) and type aliases (`using NodeRef = shared Node`), not yet compiled;
 modules (`use`, `public`, `readonly`); `test` blocks.
 
 Programs read and write files whole or piece by piece, as text or as bytes, and append to them (a writer left open is a compile error), read
-their input line by line and see their command line. Designed but not built yet: threads, and changing a value that has several owners (`checked`). Generics of your
+their input line by line and see their command line. Designed but not built yet: threads (`spawn`, `locked`). Generics of your
 own are put off. There is nothing for the network yet, no standard library, no package manager and no
 editor support.
 

@@ -11,6 +11,7 @@ pub mod interp;
 pub mod lexer;
 pub mod parser;
 pub mod source;
+pub mod opening;
 pub mod sums;
 pub mod types;
 

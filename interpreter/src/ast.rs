@@ -104,6 +104,9 @@ pub struct Func {
     pub name_span: Span,
     /// How a method takes its receiver. `None` for a function without `this`.
     pub this: Option<This>,
+    /// The type written in front of `this` (`read FolderRef this`): the method is called on
+    /// the value that holds the struct, not on the struct.
+    pub this_ty: Option<TypeExpr>,
     pub params: Vec<Param>,
     /// What is written after `from`: where a returned borrow comes from.
     pub from: Vec<FromItem>,
@@ -134,8 +137,9 @@ pub enum Callee {
     Plain,
     /// A function of a struct that has no `this`: `Stack.create()`, `Stack()`.
     Static { owner: String, name: String },
-    /// A method of a struct, called on a value.
-    Method { owner: String, this: This },
+    /// A method of a struct, called on a value. `whole`: the method takes the value that
+    /// holds the struct (`read FolderRef this`), not the struct.
+    Method { owner: String, this: This, whole: bool },
     /// `string.join(separator, read names)`
     Join,
     /// `string.fromUtf8(bytes)`
@@ -233,6 +237,8 @@ pub struct TypeExpr {
     pub mode: Option<Mode>,
     /// `shared` or `weak` in front of the name.
     pub holder: Option<Holder>,
+    /// `checked` after the holder: `shared checked T`.
+    pub checked: bool,
     /// With its module when one is written: `billing.Line`.
     pub name: String,
     /// The types between `<` and `>`: `Result<int, ParseError>`.
@@ -296,6 +302,9 @@ pub enum StmtKind {
     /// `for x in xs`, `for x in read xs`, `for x in ref xs`. `by`: the items are lent to the
     /// loop, not handed over (set by the checker).
     ForEach { var: String, var_span: Span, iter: Expr, body: Block, by: Option<Mode> },
+    /// `read folder as f { ... }`, `ref folder as f { ... }`: what a `shared` value holds,
+    /// lent under a name for the block. `value` is the `shared` value (opened by the checker).
+    As { mutable: bool, value: Expr, name: String, name_span: Span, body: Block },
     Return(Option<Expr>),
     Break,
     Continue,
@@ -352,7 +361,8 @@ pub enum ExprKind {
     /// `new e`: puts the value on the heap, gives `T*`.
     New(Box<Expr>),
     /// `new shared e`: puts the value on the heap with a count of its owners, gives `shared T`.
-    NewShared(Box<Expr>),
+    /// `new shared checked e` gives `shared checked T`.
+    NewShared { value: Box<Expr>, checked: bool },
     /// `share e`: one more owner of a `shared T`, or of what a `weak T` looks at (`null` once
     /// it is gone). Does not move `e`.
     Share(Box<Expr>),
@@ -397,6 +407,29 @@ pub enum ExprKind {
     Widen(Ty, Box<Expr>),
     /// Inserted by the checker: a borrow of a copyable value used as the value itself.
     Load(Box<Expr>),
+    /// Inserted by the checker around a `shared checked T` whose value is reached: the access
+    /// is checked against the borrows of it in progress, and a borrow that goes on after it
+    /// is recorded (see `Opening`). Gives the same value.
+    Open { inner: Box<Expr>, how: Opening },
+    /// Inserted by the checker: the borrows of `shared checked` values recorded while this is
+    /// computed end when it ends (a call whose result borrows nothing, a condition).
+    Within(Box<Expr>),
+}
+
+/// How a `shared checked T` is reached.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Opening {
+    /// Read once: a value copied out, a field on the way to another.
+    Look,
+    /// Changed once: the target of an assignment.
+    Change,
+    /// Lent to read for longer: to a call, to a `for`, a `match`, an `as` block.
+    Lend,
+    /// Lent to change for longer.
+    LendChange,
+    /// The receiver of a method that changes it: lent to read while the arguments are
+    /// computed, then to change for the call.
+    Reserve,
 }
 
 /// What `x[i]` reaches into.
@@ -638,7 +671,12 @@ impl BinOp {
 impl Expr {
     /// A variable, a field or an item: something that has a location and can be borrowed.
     pub fn is_place(&self) -> bool {
-        matches!(self.kind, ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. })
+        match &self.kind {
+            ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => true,
+            // A `shared checked` value opened where it stands is still where it was.
+            ExprKind::Open { inner, .. } => inner.is_place(),
+            _ => false,
+        }
     }
 
     /// Whether the place lies inside an item of a collection: `xs[i]`, `xs[i].name`.

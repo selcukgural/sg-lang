@@ -154,6 +154,11 @@ impl<'a> Scan<'a> {
                 }
             }
             StmtKind::While { .. } | StmtKind::For { .. } | StmtKind::ForEach { .. } => self.loops = true,
+            // What it opens is `shared`, which compiled code does not take yet.
+            StmtKind::As { value, body, .. } => {
+                self.expr(value);
+                self.block(body);
+            }
             StmtKind::Return(value) => {
                 if let Some(value) = value {
                     self.expr(value);
@@ -244,7 +249,9 @@ fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
         | ExprKind::Unary(_, inner)
         | ExprKind::Cast { expr: inner, .. }
         | ExprKind::New(inner)
-        | ExprKind::NewShared(inner)
+        | ExprKind::NewShared { value: inner, .. }
+        | ExprKind::Open { inner, .. }
+        | ExprKind::Within(inner)
         | ExprKind::Share(inner)
         | ExprKind::WeakOf(inner)
         | ExprKind::IsNull { expr: inner, .. }

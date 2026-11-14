@@ -1,0 +1,35 @@
+using FolderRef = shared checked Folder
+
+struct Folder {
+    string name
+    long bytes
+    weak checked Folder? parent
+    List<FolderRef> children
+
+    public Folder create(string name, weak checked Folder? parent) {
+        return Folder { name = name, bytes = 0, parent = parent, children = List<FolderRef>() }
+    }
+
+    public FolderRef child(read FolderRef this, string name) {
+        var created = new FolderRef(name, weak this)
+        this.children.add(share created)
+        return created
+    }
+
+    public void addBytes(read FolderRef this, long amount) {
+        FolderRef? cur = share this
+        while cur is not null {
+            cur.bytes += amount
+            cur = share cur.parent
+        }
+    }
+}
+
+// `ref ... as` lends it to change for the whole block: the name it gives is the way in.
+void main() {
+    var folder = new FolderRef("root", null)
+    ref folder as f {
+        f.bytes = 3
+        print(folder.name)
+    }
+}

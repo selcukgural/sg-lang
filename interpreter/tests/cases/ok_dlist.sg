@@ -1,0 +1,24 @@
+// The doubly linked list of the syntax draft (02): `next` owns, `prev` looks back with `weak`.
+// No cycle keeps them alive, so both are freed when `main` ends (a leak would be reported).
+
+public struct DNode {
+    int value
+    shared checked DNode? next
+    weak checked DNode? prev
+}
+
+void main() {
+    var a = new shared checked DNode { value = 1, next = null, prev = null }
+    var b = new shared checked DNode { value = 2, next = null, prev = weak a }
+    a.next = share b                         // changed through `a`, while `b` owns it too
+    var n = share a.next
+    if n is not null {
+        print(n.value)
+        var p = share n.prev
+        if p is not null {
+            print(p.value)
+            p.value = 10
+        }
+    }
+    print(a.value)
+}

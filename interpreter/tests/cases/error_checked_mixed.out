@@ -1,0 +1,5 @@
+error: expected `shared Node`, found `shared checked Node`
+  what a `shared checked` value holds can be changed through any of its owners, and what a `shared` one holds cannot: they are two types
+  --> error_checked_mixed.sg:7:24
+ 7 |     shared Node node = new shared checked Node { value = 1 }
+   |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

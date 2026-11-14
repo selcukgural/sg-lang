@@ -823,7 +823,13 @@ public struct RoadMap {
 
     // Also takes the ownership held by the caller: city is moved, the caller can no longer use it
     public void remove(ref this, CityRef city) {
-        this.cities.removeAll(c => same(c, read city))
+        var kept = List<CityRef>()
+        for other in read this.cities {
+            if !same(other, city) {
+                kept.add(share other)
+            }
+        }
+        this.cities = kept
     }                                        // city is dropped here, the city dies if there is no other owner
 }
 
@@ -924,10 +930,12 @@ level and is correct. The compiler cannot tell from the type whether there will 
 the `shared` objects that are still alive when the program ends are reported.
 
 ```
-leak: program ended, 4 shared objects still alive
-  4 x City, created at line 28
-  field holding each other: City.roads
-hint: the non-owning direction should be weak, List<weak checked City>
+leak: the program ended with 4 `shared` values still alive, which hold each other through `City.roads`
+  4 x `City`, made here:
+  --> cities.sg:26:20
+ 26 |         var city = new CityRef(this.nextId, name)
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: the side that does not own is `weak`: `List<weak checked City>`
 ```
 
 Errors seen at compile time:

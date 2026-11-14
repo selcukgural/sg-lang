@@ -277,12 +277,13 @@ pub enum Ty {
     /// `StreamWriter`: a file or an output, written piece by piece through a buffer. A local
     /// one must be closed (`Closable`): `close` gives the error that writing the buffer met.
     Writer,
-    /// `shared T`: one of several owners of a value on the heap. Read only: what it points
-    /// to is changed through `checked` (not here yet).
-    Shared(Box<Ty>),
-    /// `weak T`: looks at a `shared` value without owning it; `share w` gives `null` once the
-    /// owners are gone.
-    Weak(Box<Ty>),
+    /// `shared T`: one of several owners of a value on the heap. With `checked` (the `bool`),
+    /// `shared checked T`: what it points to can be changed, and each access is checked at run
+    /// time against the borrows of it in progress. Without it what it points to is only read.
+    Shared(Box<Ty>, bool),
+    /// `weak T` (`weak checked T` with the `bool`): looks at a `shared` value without owning
+    /// it; `share w` gives `null` once the owners are gone.
+    Weak(Box<Ty>, bool),
     /// `read T`: read-only borrow.
     Read(Box<Ty>),
     /// `ref T`: writable borrow.
@@ -317,7 +318,7 @@ impl Ty {
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(_) | Ty::Weak(_) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader | Ty::Writer => false,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader | Ty::Writer => false,
         }
     }
 
@@ -349,8 +350,8 @@ impl fmt::Display for Ty {
             Ty::Struct(name) | Ty::Enum(name) => f.write_str(name),
             Ty::Formatter => f.write_str("Formatter"),
             Ty::Ptr(inner) => write!(f, "{inner}*"),
-            Ty::Shared(inner) => write!(f, "shared {inner}"),
-            Ty::Weak(inner) => write!(f, "weak {inner}"),
+            Ty::Shared(inner, checked) => write!(f, "shared {}{inner}", if *checked { "checked " } else { "" }),
+            Ty::Weak(inner, checked) => write!(f, "weak {}{inner}", if *checked { "checked " } else { "" }),
             Ty::Nullable(inner) => write!(f, "{inner}?"),
             Ty::Result(ok, error) => write!(f, "Result<{ok}, {error}>"),
             Ty::List(item) => write!(f, "List<{item}>"),

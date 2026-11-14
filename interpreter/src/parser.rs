@@ -8,12 +8,12 @@ use crate::types::{FloatTy, IntTy, Ty};
 /// Words that are in the design but not in the interpreter yet. They get an explicit
 /// message instead of "unknown name".
 const NOT_YET: &[&str] = &[
-    "interface", "checked", "locked", "raw", "unsafe", "lock", "spawn",
+    "interface", "locked", "raw", "unsafe", "lock", "spawn",
 ];
 
 /// Words of the language that are read where they stand, not names: `shared T`, `weak T`,
-/// `share x`, `weak x`, `using Name = T`.
-const WORDS: &[&str] = &["shared", "weak", "share", "using"];
+/// `shared checked T`, `share x`, `weak x`, `using Name = T`.
+const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked"];
 
 type Res<T> = Result<T, Diag>;
 
@@ -131,7 +131,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `[read | ref] [shared | weak] Name [<Type, ...>] { * | ? }`
+    /// `[read | ref] [shared | weak [checked]] Name [<Type, ...>] { * | ? }`
     fn type_expr(&mut self) -> Res<TypeExpr> {
         let start = self.span();
         let mode = match self.peek() {
@@ -149,11 +149,19 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let mut checked = false;
         if holder.is_some() {
             self.bump();
+            checked = self.at_word("checked");
+            if checked {
+                self.bump();
+            }
             if self.at_word("shared") || self.at_word("weak") {
                 return Err(Diag::error(self.span(), "`shared` and `weak` are written once, in front of the type they hold"));
             }
+        } else if self.at_word("checked") {
+            return Err(Diag::error(self.span(), "`checked` is written after `shared` or `weak`: it is what makes a value with several owners changeable")
+                .hint("`shared checked T` for an owner, `weak checked T` for a look at one"));
         }
         let (mut name, _) = self.ident("a type name")?;
         // `billing.Line`: the module is written in front.
@@ -202,7 +210,7 @@ impl<'a> Parser<'a> {
             }
             self.bump();
         }
-        Ok(TypeExpr { mode, holder, name, args, suffixes, span: Span::new(start.start, self.prev_end()) })
+        Ok(TypeExpr { mode, holder, checked, name, args, suffixes, span: Span::new(start.start, self.prev_end()) })
     }
 
     /// `using NodeRef = shared Node`
@@ -441,6 +449,7 @@ impl<'a> Parser<'a> {
     fn func(&mut self, ret: TypeExpr, name: String, name_span: Span, in_struct: bool) -> Res<Func> {
         self.expect(Tok::LParen, "`(`")?;
         let mut this = None;
+        let mut this_ty = None;
         let mut params: Vec<Param> = Vec::new();
         while *self.peek() != Tok::RParen {
             let start = self.span();
@@ -465,13 +474,31 @@ impl<'a> Parser<'a> {
                 }
                 this = Some(mode);
             } else {
-                let ty = self.type_expr()?;
-                let (name, span) = self.ident("a parameter name")?;
-                if name == "this" {
-                    return Err(Diag::error(start.to(span), "`this` with a type is not in the interpreter yet")
-                        .hint("write `this`, `read this` or `ref this`"));
+                let mut ty = self.type_expr()?;
+                // `read FolderRef this`: `this` with a type, the value that holds the struct.
+                if matches!(self.peek(), Tok::Ident(word) if word == "this") {
+                    let span = start.to(self.bump().span);
+                    if !in_struct {
+                        return Err(Diag::error(span, "`this` can only be a parameter of a method")
+                            .hint("a method is written inside the body of its struct or enum"));
+                    }
+                    if this.is_some() || !params.is_empty() {
+                        return Err(Diag::error(span, "`this` must be the first parameter"));
+                    }
+                    let mode = match ty.mode.take() {
+                        Some(Mode::Read) => This::Read,
+                        Some(Mode::Ref) => {
+                            return Err(Diag::error(span, "`this` with a type is taken with `read` or as it is, not with `ref`")
+                                .hint("`read` lends the value that holds it, and what it holds is changed through that"));
+                        }
+                        None => This::Value,
+                    };
+                    this = Some(mode);
+                    this_ty = Some(ty);
+                } else {
+                    let (name, span) = self.ident("a parameter name")?;
+                    params.push(Param { ty, name, span });
                 }
-                params.push(Param { ty, name, span });
             }
             if !self.eat(&Tok::Comma) {
                 break;
@@ -495,7 +522,7 @@ impl<'a> Parser<'a> {
             }
         }
         let body = self.block()?;
-        Ok(Func { public: false, ret, name, name_span, this, params, from, body })
+        Ok(Func { public: false, ret, name, name_span, this, this_ty, params, from, body })
     }
 
     fn open_brace(&mut self) -> Res<()> {
@@ -539,7 +566,10 @@ impl<'a> Parser<'a> {
     /// `?`. `None` if no type is written there.
     fn type_len(&self, start: usize) -> Option<usize> {
         let holder = matches!(self.peek_at(start), Tok::Ident(word) if word == "shared" || word == "weak");
-        let first = if holder { start + 1 } else { start };
+        let mut first = if holder { start + 1 } else { start };
+        if holder && matches!(self.peek_at(first), Tok::Ident(word) if word == "checked") {
+            first += 1;
+        }
         if !matches!(self.peek_at(first), Tok::Ident(_)) {
             return None;
         }
@@ -641,6 +671,16 @@ impl<'a> Parser<'a> {
                     StmtKind::ForEach { var, var_span, iter: from, body, by: None }
                 }
             }
+            // `read folder as f { ... }`; anything else that starts with `read` or `ref` is read
+            // again as an expression.
+            Tok::Read | Tok::Ref if self.as_block_ahead()? => {
+                let mutable = self.bump().tok == Tok::Ref;
+                let value = self.head_expr(false)?;
+                self.bump();
+                let (name, name_span) = self.ident("a name for what is opened")?;
+                let body = self.block()?;
+                StmtKind::As { mutable, value, name, name_span, body }
+            }
             Tok::Return => {
                 self.bump();
                 if matches!(self.peek(), Tok::Newline | Tok::RBrace | Tok::Eof) {
@@ -716,6 +756,15 @@ impl<'a> Parser<'a> {
             }
         };
         Ok(Ok(Stmt { kind, span: Span::new(start.start, self.prev_end()) }))
+    }
+
+    /// Whether `read x as name {` starts here: the word `as` follows the value.
+    fn as_block_ahead(&mut self) -> Res<bool> {
+        let at = self.i;
+        self.bump();
+        let found = self.head_expr(false).is_ok() && matches!(self.peek(), Tok::Ident(word) if word == "as");
+        self.i = at;
+        Ok(found)
     }
 
     /// `match subject { pattern [when condition] => body ... }`: one arm per line.
@@ -1086,8 +1135,16 @@ impl<'a> Parser<'a> {
                 self.bump();
                 if self.at_word("shared") {
                     self.bump();
+                    let checked = self.at_word("checked");
+                    if checked {
+                        self.bump();
+                    }
                     let operand = self.unary()?;
-                    return Ok(wrap(ExprKind::NewShared, operand));
+                    let span = start.to(operand.span);
+                    return Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::NewShared { value: Box::new(operand), checked }, span });
+                }
+                if self.at_word("checked") {
+                    return Err(Diag::error(self.span(), "`checked` is written after `shared`: `new shared checked ...`"));
                 }
                 if self.at_word("weak") {
                     return Err(Diag::error(self.span(), "a `weak` value is not made with `new`: it looks at a `shared` one")

@@ -111,6 +111,126 @@ fn ending() {
 #[derive(Debug)]
 pub struct Held {
     value: Cell,
+    /// `shared checked`: the borrows of the value in progress.
+    lock: Option<RefCell<Lock>>,
+    /// Its number in `LIVE`.
+    id: usize,
+}
+
+impl Held {
+    fn new(value: Value, checked: bool, made: Span) -> Rc<Held> {
+        let id = LIVE.with(|live| {
+            let mut live = live.borrow_mut();
+            live.next += 1;
+            live.next
+        });
+        let held = Rc::new(Held { value: cell(value), lock: checked.then(|| RefCell::new(Lock::default())), id });
+        LIVE.with(|live| live.borrow_mut().held.insert(id, (Rc::downgrade(&held), made)));
+        held
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // The program may be ending with this thread's storage already gone.
+        let _ = LIVE.try_with(|live| live.borrow_mut().held.remove(&self.id));
+    }
+}
+
+/// The `shared` values alive on this thread, by number, each with where it was made: what is
+/// left when a program or a test ends holds itself up, and is reported.
+#[derive(Default)]
+struct Live {
+    held: HashMap<usize, (std::rc::Weak<Held>, Span)>,
+    next: usize,
+}
+
+thread_local! {
+    static LIVE: RefCell<Live> = RefCell::new(Live::default());
+}
+
+/// The borrows of a `shared checked` value in progress: where each began.
+#[derive(Debug, Default)]
+struct Lock {
+    reads: Vec<Span>,
+    write: Option<Span>,
+}
+
+/// A borrow of a `shared checked` value in progress; it ends when this is dropped.
+struct Guard {
+    held: Rc<Held>,
+    write: bool,
+    /// Lent to read while the arguments of a method that changes it are computed.
+    reserved: bool,
+    span: Span,
+    /// The type it holds, for the message of a conflict.
+    what: String,
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        let Some(lock) = &self.held.lock else { return };
+        let mut lock = lock.borrow_mut();
+        if self.write {
+            lock.write = None;
+        } else if let Some(at) = lock.reads.iter().rposition(|span| *span == self.span) {
+            lock.reads.remove(at);
+        }
+    }
+}
+
+/// The name of what a value is, for the leak report.
+fn kind_name(value: &Value) -> String {
+    match value {
+        Value::Struct(name, _) | Value::Enum(name, ..) => short_name(name).to_string(),
+        Value::Int(ty, _) => ty.name().to_string(),
+        Value::Str(_) => "string".to_string(),
+        Value::List(_) => "List".to_string(),
+        Value::Map(_) => "HashMap".to_string(),
+        Value::Set(_) => "HashSet".to_string(),
+        _ => "value".to_string(),
+    }
+}
+
+/// Whether a value owns, somewhere inside it, one of the `shared` values numbered in `ids`.
+fn owns_any(value: &Value, ids: &[usize]) -> bool {
+    match value {
+        Value::Shared(held) => ids.contains(&held.id),
+        Value::Struct(_, cells) | Value::Enum(_, _, cells) | Value::Array(cells) => cells.iter().any(|item| owns_any(&item.borrow(), ids)),
+        Value::List(items) => items.borrow().iter().any(|item| owns_any(&item.borrow(), ids)),
+        Value::Map(entries) => entries.borrow().values().any(|(_, item)| owns_any(&item.borrow(), ids)),
+        Value::Set(items) => items.borrow().values().any(|item| owns_any(item, ids)),
+        Value::Ptr(inner) => owns_any(&inner.borrow(), ids),
+        _ => false,
+    }
+}
+
+/// `text` with every whole word `word` replaced by `with`.
+fn replace_word(text: &str, word: &str, with: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    let is_name = |c: char| c.is_alphanumeric() || c == '_';
+    while let Some(at) = rest.find(word) {
+        let before = rest[..at].chars().next_back();
+        let after = rest[at + word.len()..].chars().next();
+        out.push_str(&rest[..at]);
+        match before.is_some_and(is_name) || after.is_some_and(is_name) {
+            true => out.push_str(word),
+            false => out.push_str(with),
+        }
+        rest = &rest[at + word.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The `shared` value a value is, or that a borrow looks at.
+fn held_of(value: &Value) -> Option<Rc<Held>> {
+    match value {
+        Value::Shared(held) => Some(held.clone()),
+        Value::Borrow(inner) => held_of(&inner.borrow()),
+        _ => None,
+    }
 }
 
 /// What a pointer, a borrow or a `shared` value points to.
@@ -785,7 +905,9 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
     }
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
-    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, in_test: false, test_err: String::new() };
+    let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
+    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, in_test: false, test_err: String::new(), guards: Vec::new(), aliases };
+    let first = LIVE.with(|live| live.borrow().next);
     open_streams();
     let main = interp.funcs["main"];
     // `main(List<string> args)`: the words of the command line, each checked to be text.
@@ -809,7 +931,11 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
         other => other,
     };
     match result {
-        Ok(_) => Ok(()),
+        // What `main` owned is gone; a `shared` value still alive holds itself up.
+        Ok(_) => match interp.leaked(first, "the program") {
+            Some(report) => Err(Stop::Diag(report)),
+            None => Ok(()),
+        },
         Err(Unwind::Stop(stop)) => Err(stop),
         Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop"),
     }
@@ -829,18 +955,31 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     }
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
-    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, in_test: true, test_err: String::new() };
+    let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
+    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, in_test: true, test_err: String::new(), guards: Vec::new(), aliases };
     let (mut passed, mut failed) = (0, 0);
     for test in &prog.tests {
         // Nothing is shared between tests: each starts with variables of its own.
         interp.depth = 0;
         interp.test_err.clear();
         open_streams();
+        let first = LIVE.with(|live| live.borrow().next);
         let mut frame = Frame { scopes: vec![HashMap::new()] };
         let ended = match interp.block(&test.body, &mut frame) {
             Ok(Flow::Return(value)) | Err(Unwind::Return(value)) => Ok(value),
             Ok(_) => Ok(Value::Void),
             Err(other) => Err(other),
+        };
+        drop(frame);
+        interp.guards.clear();
+        // A test that passes and leaves `shared` values alive fails with the report.
+        let ended = match ended {
+            Ok(Value::Enum(name, 1, fields)) => Ok(Value::Enum(name, 1, fields)),
+            Ok(value) => match interp.leaked(first, "the test") {
+                Some(report) => Err(Unwind::Stop(Stop::Diag(report))),
+                None => Ok(value),
+            },
+            other => other,
         };
         let reason = match ended {
             // `try` met an error: the test fails with it.
@@ -905,6 +1044,10 @@ struct Interp<'a> {
     /// What the running test wrote with `printError`: it is shown under the test's `FAIL`
     /// line, and dropped when the test passes, as compiled tests do.
     test_err: String,
+    /// The borrows of `shared checked` values in progress, the latest last. Each part of the
+    /// program that lends one drops what it added when it ends.
+    guards: Vec<Guard>,
+    aliases: HashMap<&'a str, &'a TypeExpr>,
 }
 
 impl<'a> Interp<'a> {
@@ -944,7 +1087,15 @@ impl<'a> Interp<'a> {
         Ok(flow)
     }
 
+    /// A statement. What it lent of `shared checked` values ends with it.
     fn stmt(&mut self, stmt: &'a Stmt, frame: &mut Frame) -> Res<Flow> {
+        let mark = self.guards.len();
+        let flow = self.stmt_in(stmt, frame);
+        self.guards.truncate(mark);
+        flow
+    }
+
+    fn stmt_in(&mut self, stmt: &'a Stmt, frame: &mut Frame) -> Res<Flow> {
         match &stmt.kind {
             StmtKind::Let { name, init, .. } => {
                 let value = self.expr(init, frame)?;
@@ -979,7 +1130,10 @@ impl<'a> Interp<'a> {
             }
             StmtKind::While { cond, body, after } => {
                 let depth = frame.scopes.len();
+                let mark = self.guards.len();
                 loop {
+                    // What the condition lent for the names it gave ends with the round.
+                    self.guards.truncate(mark);
                     frame.scopes.push(HashMap::new());
                     let flow = match self.condition(cond, frame)? {
                         true => loop_flow(self.block(body, frame))?,
@@ -1051,6 +1205,16 @@ impl<'a> Interp<'a> {
                     }
                 }
             }
+            // `read folder as f { ... }`: what the `shared` value holds, lent for the block.
+            StmtKind::As { value, name, body, .. } => {
+                let holder = self.expr(value, frame)?;
+                let Some(held) = held_of(&holder) else { unreachable!("the checker opens only a `shared` value") };
+                frame.scopes.push(HashMap::new());
+                frame.declare(name, Value::Borrow(held.value.clone()));
+                let flow = self.block(body, frame);
+                frame.scopes.pop();
+                return flow;
+            }
             StmtKind::Return(value) => {
                 let value = match value {
                     Some(expr) => self.expr(expr, frame)?,
@@ -1079,6 +1243,12 @@ impl<'a> Interp<'a> {
     fn place(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Cell> {
         match &expr.kind {
             ExprKind::Var(name) => Ok(frame.slot(name)),
+            ExprKind::Open { inner, how } => {
+                let slot = self.place(inner, frame)?;
+                let value = slot.borrow().clone();
+                self.open(&value, *how, inner)?;
+                Ok(slot)
+            }
             ExprKind::Field { recv, index, .. } => {
                 let mut target = self.place(recv, frame)?;
                 loop {
@@ -1330,7 +1500,18 @@ impl<'a> Interp<'a> {
                 Ok(Value::Struct(name.as_str().into(), Rc::new(cells)))
             }
             ExprKind::New(inner) => Ok(Value::Ptr(cell(self.expr(inner, frame)?))),
-            ExprKind::NewShared(inner) => Ok(Value::Shared(Rc::new(Held { value: cell(self.expr(inner, frame)?) }))),
+            ExprKind::NewShared { value, checked } => Ok(Value::Shared(Held::new(self.expr(value, frame)?, *checked, expr.span))),
+            ExprKind::Open { inner, how } => {
+                let value = self.expr(inner, frame)?;
+                self.open(&value, *how, inner)?;
+                Ok(value)
+            }
+            ExprKind::Within(inner) => {
+                let mark = self.guards.len();
+                let value = self.expr(inner, frame);
+                self.guards.truncate(mark);
+                value
+            }
             ExprKind::Share(inner) => Ok(match strip(self.expr(inner, frame)?) {
                 Value::Shared(held) => Value::Shared(held),
                 Value::Weak(looked) => looked.upgrade().map_or(Value::Null, Value::Shared),
@@ -1474,19 +1655,27 @@ impl<'a> Interp<'a> {
                     let values = self.values(args, frame)?;
                     self.call(func, None, values, expr.span)
                 }
-                Callee::Method { owner, this } => {
+                Callee::Method { owner, this, whole } => {
                     let func = self.methods[owner.as_str()][name.as_str()];
                     // The receiver is lent or handed over without `read` / `ref` at the call.
+                    let mark = self.guards.len();
                     let mut target = self.place(recv, frame)?;
+                    // `read FolderRef this`: the method takes the value that holds the struct.
                     loop {
-                        let Some(inner) = behind(&target.borrow()) else { break };
+                        let next = match &*target.borrow() {
+                            Value::Shared(_) if *whole => None,
+                            value => behind(value),
+                        };
+                        let Some(inner) = next else { break };
                         target = inner;
                     }
+                    let lent = self.guards.len();
                     let this = match this {
                         This::Value => fresh(&target.borrow()),
                         This::Read | This::Ref => Value::Borrow(target),
                     };
                     let values = self.values(args, frame)?;
+                    self.change_reserved(mark..lent)?;
                     self.call(func, Some(this), values, expr.span)
                 }
                 Callee::FieldValue(index) => {
@@ -1610,13 +1799,15 @@ impl<'a> Interp<'a> {
                     Ok(Value::Void)
                 }
                 // `.clone()` of a `shared` value: one more owner.
-                Callee::Plain if name == "clone" && matches!(recv.ty.strip_borrow(), Ty::Shared(_)) => Ok(strip(self.expr(recv, frame)?)),
+                Callee::Plain if name == "clone" && matches!(recv.ty.strip_borrow(), Ty::Shared(..)) => Ok(strip(self.expr(recv, frame)?)),
                 Callee::Plain => {
                     // An array that is put in order is the one in its place, not a copy of it.
+                    let mark = self.guards.len();
                     let recv = match recv.is_place() && matches!(name.as_str(), "sort" | "reverse") {
                         true => owned(self.place(recv, frame)?.borrow().clone()),
                         false => owned(self.expr(recv, frame)?),
                     };
+                    let lent = self.guards.len();
                     if let Value::Lines(lines) = &recv {
                         return Ok(self.next_line(lines)?.unwrap_or(Value::Null));
                     }
@@ -1631,6 +1822,7 @@ impl<'a> Interp<'a> {
                     for arg in args {
                         values.push(strip(self.expr(arg, frame)?));
                     }
+                    self.change_reserved(mark..lent)?;
                     // An array or a slice keeps its cells, which are those of its owner; the
                     // values move between them.
                     if let (Value::Array(cells) | Value::Slice(cells), "sort" | "reverse") = (&recv, name.as_str()) {
@@ -1683,6 +1875,141 @@ impl<'a> Interp<'a> {
                 }
             },
         }
+    }
+
+    /// The `shared` values made since `first` that are still alive when a program or a test
+    /// (`what`) ends: nothing outside them owns them any more, so they hold each other up.
+    fn leaked(&self, first: usize, what: &str) -> Option<Diag> {
+        let mut alive: Vec<(usize, Rc<Held>, Span)> = LIVE.with(|live| {
+            let live = live.borrow();
+            live.held.iter().filter(|(id, _)| **id > first).filter_map(|(id, (held, made))| held.upgrade().map(|held| (*id, held, *made))).collect()
+        });
+        if alive.is_empty() {
+            return None;
+        }
+        alive.sort_by_key(|(id, _, _)| *id);
+        let ids: Vec<usize> = alive.iter().map(|(id, _, _)| *id).collect();
+        // The values of one type made at one place are counted together, the most first.
+        let mut groups: Vec<(String, Span, usize)> = Vec::new();
+        for (_, held, made) in &alive {
+            let name = kind_name(&held.value.borrow());
+            match groups.iter_mut().find(|(other, at, _)| *other == name && at == made) {
+                Some(group) => group.2 += 1,
+                None => groups.push((name, *made, 1)),
+            }
+        }
+        groups.sort_by_key(|group| std::cmp::Reverse(group.2));
+        // The first field found that owns one of the others.
+        let through = alive.iter().find_map(|(_, held, _)| {
+            let Value::Struct(name, fields) = &*held.value.borrow() else { return None };
+            let decl = self.structs.get(name.as_ref())?;
+            let at = fields.iter().position(|field| owns_any(&field.borrow(), &ids))?;
+            Some((format!("{}.{}", short_name(name), decl.fields[at].name), &decl.fields[at].ty))
+        });
+        let count = alive.len();
+        let plural = if count == 1 { "value" } else { "values" };
+        let msg = match &through {
+            Some((field, _)) if count == 1 => format!("{what} ended with 1 `shared` value still alive, which holds itself through `{field}`"),
+            Some((field, _)) => format!("{what} ended with {count} `shared` {plural} still alive, which hold each other through `{field}`"),
+            None => format!("{what} ended with {count} `shared` {plural} still alive"),
+        };
+        let (name, made, many) = &groups[0];
+        let mut diag = Diag::leak(*made, msg).note(format!("{many} x `{name}`, made here:"));
+        if let Some((name, made, many)) = groups.get(1) {
+            diag = diag.related(*made, format!("{many} x `{name}`, made here"));
+        }
+        if groups.len() > 2 {
+            let rest: usize = groups[2..].iter().map(|(_, _, many)| many).sum();
+            diag = diag.note(format!("and {rest} more, made elsewhere"));
+        }
+        diag = match through {
+            Some((_, written)) => {
+                // The field's type with its aliases spelled out and `weak` for `shared`.
+                let mut text = self.src[written.span.start..written.span.end].to_string();
+                for (alias, target) in &self.aliases {
+                    let short = short_name(alias);
+                    let spelled = &self.src[target.span.start..target.span.end];
+                    text = replace_word(&text, short, spelled);
+                }
+                match text.contains("shared ") {
+                    true => diag.hint(format!("the side that does not own is `weak`: `{}`", text.replace("shared ", "weak "))),
+                    false => diag.hint("the side that does not own is `weak`"),
+                }
+            }
+            None => diag.hint("one of the values that hold each other should look at the other with `weak`"),
+        };
+        Some(diag)
+    }
+
+    /// Reaches what a `shared checked` value holds: checks the access against the borrows of
+    /// it in progress, and records a borrow that goes on after it.
+    fn open(&mut self, value: &Value, how: Opening, holder: &Expr) -> Res<()> {
+        let Some(held) = held_of(value) else { return Ok(()) };
+        let Some(lock) = &held.lock else { return Ok(()) };
+        let changing = matches!(how, Opening::Change | Opening::LendChange);
+        let what = {
+            let mut ty = &holder.ty;
+            while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Shared(inner, _) = ty {
+                ty = inner;
+            }
+            short_name(&ty.to_string()).to_string()
+        };
+        let conflict = {
+            let lock = lock.borrow();
+            match (lock.write, lock.reads.last()) {
+                (Some(at), _) => Some((at, "changed", "it is being changed from here")),
+                (None, Some(at)) if changing => Some((*at, "read", "it is being read from here")),
+                _ => None,
+            }
+        };
+        if let Some((at, doing, there)) = conflict {
+            let verb = if changing { "changed" } else { "read" };
+            return Err(Diag::panic(holder.span, format!("this `{what}` is being {doing}, so it cannot be {verb} here"))
+                .related(at, there)
+                .note("a `shared checked` value is lent to one that changes it or to any number that read it, not both at once")
+                .into());
+        }
+        let write = how == Opening::LendChange;
+        match how {
+            Opening::Lend | Opening::Reserve | Opening::LendChange => {
+                let mut lock = lock.borrow_mut();
+                match write {
+                    true => lock.write = Some(holder.span),
+                    false => lock.reads.push(holder.span),
+                }
+            }
+            Opening::Look | Opening::Change => return Ok(()),
+        }
+        self.guards.push(Guard { held, write, reserved: how == Opening::Reserve, span: holder.span, what });
+        Ok(())
+    }
+
+    /// The receiver of a method that changes it was lent to read while the arguments were
+    /// computed; now it is lent to change, if nothing else looks at it.
+    fn change_reserved(&mut self, lent: std::ops::Range<usize>) -> Res<()> {
+        for at in lent {
+            let guard = &mut self.guards[at];
+            if !guard.reserved {
+                continue;
+            }
+            let Some(lock) = &guard.held.lock else { continue };
+            let mut lock = lock.borrow_mut();
+            if let Some(mine) = lock.reads.iter().rposition(|span| *span == guard.span) {
+                lock.reads.remove(mine);
+            }
+            if let Some(other) = lock.write.or(lock.reads.last().copied()) {
+                let doing = if lock.write.is_some() { "changed" } else { "read" };
+                lock.reads.push(guard.span);
+                return Err(Diag::panic(guard.span, format!("this `{}` is being {doing}, so it cannot be changed here", guard.what))
+                    .related(other, format!("it is being {doing} from here"))
+                    .note("a `shared checked` value is lent to one that changes it or to any number that read it, not both at once")
+                    .into());
+            }
+            lock.write = Some(guard.span);
+            guard.write = true;
+            guard.reserved = false;
+        }
+        Ok(())
     }
 
     fn int(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<i128> {

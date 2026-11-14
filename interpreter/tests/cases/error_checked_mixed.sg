@@ -1,0 +1,8 @@
+// `shared checked T` and `shared T` are two types.
+struct Node {
+    int value
+}
+
+void main() {
+    shared Node node = new shared checked Node { value = 1 }
+}

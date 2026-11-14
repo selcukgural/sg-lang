@@ -1,0 +1,9 @@
+error: the names of this condition borrow what a `shared checked` value holds, and such a borrow ends with the `if`; the code after it cannot see them
+  --> error_checked_is_after.sg:14:8
+ 14 |     if !(drawing.shape is Named(name)) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  it is borrowed here:
+  --> error_checked_is_after.sg:14:10
+ 14 |     if !(drawing.shape is Named(name)) {
+    |          ^^^^^^^
+  hint: use the names inside the `if`

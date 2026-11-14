@@ -1,0 +1,16 @@
+// `PointRef this` takes an owner of its own; a borrowed one is not handed over.
+using PointRef = shared checked Point
+
+struct Point {
+    int x
+
+    public int keep(PointRef this) {
+        return this.x
+    }
+}
+
+int keepOf(read PointRef p) {
+    return p.keep()
+}
+
+void main() {}

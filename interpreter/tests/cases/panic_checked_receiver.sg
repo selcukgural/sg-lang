@@ -1,0 +1,20 @@
+// A method that takes `ref this` has its value lent to change for the call; reading the same
+// value through another owner inside it stops the program.
+using CounterRef = shared checked Counter
+
+struct Counter {
+    nint count
+
+    public void addFrom(ref this, read CounterRef other) {
+        this.count += other.count
+    }
+}
+
+void main() {
+    var a = new CounterRef { count = 1 }
+    var b = new CounterRef { count = 2 }
+    a.addFrom(read b)
+    print(a.count)
+    var c = share a
+    a.addFrom(read c)
+}

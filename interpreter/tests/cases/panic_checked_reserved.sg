@@ -1,0 +1,13 @@
+// A method that changes a list is lent the list once its arguments are computed; an argument
+// that still reads the same value through another variable stops the program there.
+struct Stock {
+    List<nint> counts
+}
+
+void main() {
+    var stock = new shared checked Stock { counts = List<nint> { 1, 2 } }
+    var other = share stock
+    stock.counts.add(other.counts.length())   // read first, then changed: no conflict
+    print(stock.counts)
+    stock.counts.addAll(read other.counts)    // still read when the list would grow
+}
