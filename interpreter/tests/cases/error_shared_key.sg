@@ -1,0 +1,7 @@
+struct City : Equatable, Hashable {
+    int id
+}
+
+void main() {
+    var seen = HashSet<shared City>()
+}

@@ -1,0 +1,5 @@
+error: `add` changes the list, but it is reached through a `shared` value, which is only read
+  a `shared` value has several owners, and none of them changes it alone; a value that is changed through several owners is a `shared checked T`, which is not in the interpreter yet
+  --> error_shared_list_add.sg:16:5
+ 16 |     node.items.add(1)
+    |     ^^^^^^^^^^

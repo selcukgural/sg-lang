@@ -1,0 +1,5 @@
+error: `NodeRef` is `shared Node`, which is made with `new`
+  --> error_alias_shared_without_new.sg:8:16
+ 8 |     var node = NodeRef { value = 1 }
+   |                ^^^^^^^^^^^^^^^^^^^^^
+  hint: `new NodeRef { value = 1 }`

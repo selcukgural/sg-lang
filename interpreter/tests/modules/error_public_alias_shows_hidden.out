@@ -1,0 +1,9 @@
+error: `Box` is public, but it shows `Secret`, which is not
+  --> aliasleak/box.sg:1:14
+ 1 | public using Box = shared Secret
+   |              ^^^
+  `Secret` is defined here, without `public`:
+  --> aliasleak/box.sg:3:8
+ 3 | struct Secret {
+   |        ^^^^^^
+  hint: write `public` in front of `Secret`, or take it off `Box`

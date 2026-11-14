@@ -1,0 +1,19 @@
+use links
+
+int length(read NodeRef? list) {
+    int count = 0
+    NodeRef? cur = share list
+    while cur is not null {
+        count += 1
+        cur = share cur.next
+    }
+    return count
+}
+
+void main() {
+    var last = new NodeRef(2, null)
+    links.NodeRef first = new links.NodeRef(1, share last)
+    print(length(read first))
+    NodeRef? second = share first.next
+    print(second is not null && same(second, last))
+}

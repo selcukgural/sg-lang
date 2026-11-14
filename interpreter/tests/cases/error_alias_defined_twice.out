@@ -1,0 +1,4 @@
+error: type `Node` is defined twice
+  --> error_alias_defined_twice.sg:5:7
+ 5 | using Node = int
+   |       ^^^^

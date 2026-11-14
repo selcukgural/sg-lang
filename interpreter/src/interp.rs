@@ -58,6 +58,11 @@ pub enum Value {
     Formatter(Rc<RefCell<String>>),
     /// `T*`
     Ptr(Cell),
+    /// `shared T`: one owner of the value. `Rc` counts the owners; a borrow of what it points
+    /// to holds the cell inside, not the `Held`, so it does not count as an owner.
+    Shared(Rc<Held>),
+    /// `weak T`: looks at a `shared` value without owning it.
+    Weak(std::rc::Weak<Held>),
     /// `read T` / `ref T`
     Borrow(Cell),
     /// What goes over a text: `text.chars()`, `text.split(',')`. A copy goes on with the
@@ -100,6 +105,21 @@ fn stream_slot(name: &str) -> Option<Cell> {
 
 fn ending() {
     ENDING.with(|ending| ending.set(true));
+}
+
+/// What a `shared` value points to.
+#[derive(Debug)]
+pub struct Held {
+    value: Cell,
+}
+
+/// What a pointer, a borrow or a `shared` value points to.
+fn behind(value: &Value) -> Option<Cell> {
+    match value {
+        Value::Ptr(inner) | Value::Borrow(inner) => Some(inner.clone()),
+        Value::Shared(held) => Some(held.value.clone()),
+        _ => None,
+    }
 }
 
 /// A `StreamReader`: a file read through a buffer, or, with no file, the input of the program.
@@ -490,9 +510,9 @@ fn strip(mut value: Value) -> Value {
     value
 }
 
-/// The value behind any borrows and pointers.
+/// The value behind any borrows, pointers and `shared` values.
 fn owned(mut value: Value) -> Value {
-    while let Value::Borrow(target) | Value::Ptr(target) = value {
+    while let Some(target) = behind(&value) {
         value = target.borrow().clone();
     }
     value
@@ -678,6 +698,7 @@ fn enum_parts(mut value: Value) -> (usize, Rc<Vec<Cell>>) {
         value = match value {
             Value::Enum(_, index, fields) => return (index, fields),
             Value::Ptr(inner) | Value::Borrow(inner) => inner.borrow().clone(),
+            Value::Shared(held) => held.value.borrow().clone(),
             _ => unreachable!("the checker only lets enums be matched"),
         };
     }
@@ -1064,6 +1085,7 @@ impl<'a> Interp<'a> {
                     let value = target.borrow().clone();
                     match value {
                         Value::Ptr(inner) | Value::Borrow(inner) => target = inner,
+                        Value::Shared(held) => target = held.value.clone(),
                         Value::Struct(_, fields) => return Ok(fields[*index].clone()),
                         _ => unreachable!("the checker rules out field access on `null` and non-structs"),
                     }
@@ -1149,7 +1171,10 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Value::Fmt(text.into()))
             }
-            ExprKind::Var(_) if expr.moved && expr.ty == Ty::Writer => Ok(self.place(expr, frame)?.replace(Value::Null)),
+            // A moved value leaves its place empty, as it does in compiled code: what is left
+            // behind would otherwise count as one more owner of a `shared` value. A moved
+            // writer is the only one that writes its buffer, when it is dropped.
+            ExprKind::Var(_) | ExprKind::Field { .. } if expr.moved => Ok(self.place(expr, frame)?.replace(Value::Null)),
             ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
                 let value = fresh(&self.place(expr, frame)?.borrow());
                 Ok(value)
@@ -1305,6 +1330,19 @@ impl<'a> Interp<'a> {
                 Ok(Value::Struct(name.as_str().into(), Rc::new(cells)))
             }
             ExprKind::New(inner) => Ok(Value::Ptr(cell(self.expr(inner, frame)?))),
+            ExprKind::NewShared(inner) => Ok(Value::Shared(Rc::new(Held { value: cell(self.expr(inner, frame)?) }))),
+            ExprKind::Share(inner) => Ok(match strip(self.expr(inner, frame)?) {
+                Value::Shared(held) => Value::Shared(held),
+                Value::Weak(looked) => looked.upgrade().map_or(Value::Null, Value::Shared),
+                Value::Null => Value::Null,
+                _ => unreachable!("the checker lets `share` take only `shared` and `weak` values"),
+            }),
+            ExprKind::WeakOf(inner) => Ok(match strip(self.expr(inner, frame)?) {
+                Value::Shared(held) => Value::Weak(Rc::downgrade(&held)),
+                Value::Weak(looked) => Value::Weak(looked),
+                Value::Null => Value::Null,
+                _ => unreachable!("the checker lets `weak` take only `shared` and `weak` values"),
+            }),
             ExprKind::Borrow { expr: inner, .. } => Ok(Value::Borrow(self.place(inner, frame)?)),
             ExprKind::IsNull { expr: inner, negated } => {
                 let is_null = matches!(strip(self.expr(inner, frame)?), Value::Null);
@@ -1352,6 +1390,7 @@ impl<'a> Interp<'a> {
             ExprKind::Unbox(inner) => match self.expr(inner, frame)? {
                 Value::Borrow(target) => match &*behind_borrows(target).borrow() {
                     Value::Ptr(owned) => Ok(Value::Borrow(owned.clone())),
+                    Value::Shared(held) => Ok(Value::Borrow(held.value.clone())),
                     _ => unreachable!("the checker only unboxes a borrow of a pointer"),
                 },
                 _ => unreachable!("the checker only unboxes a borrow"),
@@ -1440,10 +1479,7 @@ impl<'a> Interp<'a> {
                     // The receiver is lent or handed over without `read` / `ref` at the call.
                     let mut target = self.place(recv, frame)?;
                     loop {
-                        let inner = match &*target.borrow() {
-                            Value::Ptr(inner) | Value::Borrow(inner) => inner.clone(),
-                            _ => break,
-                        };
+                        let Some(inner) = behind(&target.borrow()) else { break };
                         target = inner;
                     }
                     let this = match this {
@@ -1573,6 +1609,8 @@ impl<'a> Interp<'a> {
                     text.push_str(&added);
                     Ok(Value::Void)
                 }
+                // `.clone()` of a `shared` value: one more owner.
+                Callee::Plain if name == "clone" && matches!(recv.ty.strip_borrow(), Ty::Shared(_)) => Ok(strip(self.expr(recv, frame)?)),
                 Callee::Plain => {
                     // An array that is put in order is the one in its place, not a copy of it.
                     let recv = match recv.is_place() && matches!(name.as_str(), "sort" | "reverse") {
@@ -1697,6 +1735,10 @@ impl<'a> Interp<'a> {
                 Err(Unwind::Stop(Stop::Exit(code)))
             }
             "assert" => self.assert(expr, &args[0], frame),
+            "same" => match (strip(self.expr(&args[0], frame)?), strip(self.expr(&args[1], frame)?)) {
+                (Value::Shared(a), Value::Shared(b)) => Ok(Value::Bool(Rc::ptr_eq(&a, &b))),
+                _ => unreachable!("the checker lets `same` take only two `shared` values"),
+            },
             _ => {
                 let func = self.funcs[name];
                 let values = self.values(args, frame)?;
@@ -1755,6 +1797,10 @@ impl<'a> Interp<'a> {
         match value {
             Value::Ptr(inner) | Value::Borrow(inner) => {
                 let value = inner.borrow().clone();
+                self.show(&value, inside, span)
+            }
+            Value::Shared(held) => {
+                let value = held.value.borrow().clone();
                 self.show(&value, inside, span)
             }
             Value::Array(_) | Value::Slice(_) => self.show(&as_list(value.clone()), inside, span),

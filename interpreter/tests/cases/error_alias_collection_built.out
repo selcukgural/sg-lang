@@ -1,0 +1,5 @@
+error: `Names` is `List<string>`; a collection is built by the name of its type
+  --> error_alias_collection_built.sg:4:17
+ 4 |     var names = Names()
+   |                 ^^^^^^^
+  hint: `List<string>()`

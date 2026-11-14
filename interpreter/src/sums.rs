@@ -244,6 +244,9 @@ fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
         | ExprKind::Unary(_, inner)
         | ExprKind::Cast { expr: inner, .. }
         | ExprKind::New(inner)
+        | ExprKind::NewShared(inner)
+        | ExprKind::Share(inner)
+        | ExprKind::WeakOf(inner)
         | ExprKind::IsNull { expr: inner, .. }
         | ExprKind::Try { expr: inner, .. }
         | ExprKind::Unbox(inner)

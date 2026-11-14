@@ -1,0 +1,84 @@
+// `weak T` looks at a `shared` value without owning it. `share w` gives an owner while one is
+// left, and `null` once the last owner is gone.
+
+struct Node {
+    int value
+    weak Node? up
+}
+
+bool alive(read weak Node w) {
+    shared Node? owner = share w
+    return owner is not null
+}
+
+void drop(shared Node node) {
+    print(node.value)
+}                                            // the last owner ends here
+
+void main() {
+    var a = new shared Node { value = 1, up = null }
+    var w = weak a
+    print(alive(read w))
+    a = new shared Node { value = 2, up = null }     // the first node has no owner left
+    print(alive(read w))
+
+    // A child that looks at its parent.
+    var parent = new shared Node { value = 10, up = null }
+    var child = new shared Node { value = 11, up = weak parent }
+    shared Node? up = share child.up
+    if up is not null {
+        print(up.value)
+    }
+    up = null
+    parent = new shared Node { value = 12, up = null }
+    print(share child.up is null)
+
+    // A `weak` that was never linked is `null` too.
+    print(share a.up is null)
+
+    // Moved into a function that drops it.
+    var b = new shared Node { value = 3, up = null }
+    var wb = weak b
+    drop(b)
+    print(alive(read wb))
+
+    // The owner in a block.
+    weak Node? inner = null
+    if true {
+        var c = new shared Node { value = 4, up = null }
+        inner = weak c
+        print(share inner is null)
+    }
+    print(share inner is null)
+
+    // Owners in a list: the value lives while one of them does.
+    var d = new shared Node { value = 5, up = null }
+    var owners = List<shared Node> { share d, d }
+    var wd = weak owners[0]
+    _ = owners.removeLast()
+    print(alive(read wd))
+    owners.clear()
+    print(alive(read wd))
+
+    // A `T?` that is emptied with `take`.
+    shared Node? slot = new shared Node { value = 6, up = null }
+    var ws = weak slot
+    var taken = slot.take()
+    print(share ws is null)                  // `taken` owns it now
+    taken = null
+    print(share ws is null)
+
+    // A `weak` of a `weak` looks at the same value.
+    var e = new shared Node { value = 7, up = null }
+    var we = weak e
+    var again = weak we
+    print(alive(read again))
+    var lookers = List<weak Node> { weak e, weak a }
+    for looker in read lookers {
+        var owner = share looker
+        if owner is null {
+            continue
+        }
+        print(owner.value)
+    }
+}

@@ -1,0 +1,5 @@
+error: expected `shared Node`, found `read shared Node`
+  --> error_shared_owner_from_borrow.sg:18:10
+ 18 |     keep(node)
+    |          ^^^^
+  hint: `read shared Node` only borrows it; one more owner is made with `share`: `share node`

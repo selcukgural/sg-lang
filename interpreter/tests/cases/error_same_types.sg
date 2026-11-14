@@ -1,0 +1,5 @@
+void main() {
+    var a = new shared 1
+    var b = new shared "one"
+    print(same(a, b))
+}

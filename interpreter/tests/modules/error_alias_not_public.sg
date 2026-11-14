@@ -1,0 +1,5 @@
+use links
+
+void main() {
+    Count n = 1
+}

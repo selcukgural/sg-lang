@@ -1,0 +1,5 @@
+using Names = List<string>
+
+void main() {
+    var names = Names()
+}

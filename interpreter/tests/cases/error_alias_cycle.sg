@@ -1,0 +1,5 @@
+using A = B
+using B = List<A>
+
+void main() {
+}

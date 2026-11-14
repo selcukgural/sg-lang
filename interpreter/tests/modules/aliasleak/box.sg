@@ -1,0 +1,5 @@
+public using Box = shared Secret
+
+struct Secret {
+    int value
+}

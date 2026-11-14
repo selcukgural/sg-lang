@@ -1,0 +1,5 @@
+error: a `weak Node` cannot be written as text: what it looks at may be gone
+  --> error_weak_print.sg:17:11
+ 17 |     print(looker)
+    |           ^^^^^^
+  hint: ask for an owner first with `share`, which gives `null` if it is gone

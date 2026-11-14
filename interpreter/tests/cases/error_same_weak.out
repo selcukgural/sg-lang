@@ -1,0 +1,5 @@
+error: a `weak` value may point to nothing any more; `same` compares two `shared` values
+  --> error_same_weak.sg:4:19
+ 4 |     print(same(a, w))
+   |                   ^
+  hint: `share w` gives a `shared` one, or `null` if it is gone

@@ -1,0 +1,90 @@
+// `shared T`: several owners of one value on the heap. `share` makes one more owner, a move
+// hands one over, and what it points to is only read.
+
+struct Point : Equatable, Formattable {
+    int x
+    int y
+    string name
+
+    public int sum(read this) {
+        return this.x + this.y
+    }
+}
+
+enum Tree : Formattable {
+    Leaf(int value)
+    Pair(shared Tree left, shared Tree right)
+}
+
+int total(read shared Tree tree) {
+    return match tree {
+        Leaf(value) => value
+        Pair(left, right) => total(left) + total(right)
+    }
+}
+
+// A `read Point` takes what a `shared Point` points to: `read p`.
+int width(read Point p) {
+    return p.x
+}
+
+// A parameter that owns: the caller gives an owner, with `share` or by moving one.
+shared Point keep(shared Point p) {
+    return p
+}
+
+void main() {
+    var a = new shared Point { x = 1, y = 2, name = "a" }
+    var b = share a                          // a second owner of the same point
+    print(a.x)
+    print(b.sum())
+    print(b.name.length())
+    print(width(read a))
+    print(a)
+    print(same(a, b))
+
+    // `==` compares what they point to, `same` whether they are one object.
+    var c = new shared Point { x = 1, y = 2, name = "a" }
+    print(a == c)
+    print(same(a, c))
+    print(a != c)
+
+    // `.clone()` of a `shared` value is one more owner too: the point is not copied.
+    var d = a.clone()
+    print(same(a, d))
+
+    var kept = keep(share a)
+    print(same(kept, a))
+    var moved = keep(c)                      // `c` is handed over
+    print(moved.name)
+
+    // Numbers and text can be shared as well.
+    var count = new shared 5
+    var words = new shared List<string> { "x", "y" }
+    print(count)
+    print(words.length())
+    for word in read words {
+        print(word)
+    }
+
+    // A tree whose parts are shared: the same leaf twice.
+    var leaf = new shared Tree.Leaf(2)
+    var pair = new shared Tree.Pair(share leaf, share leaf)
+    var tree = new shared Tree.Pair(share pair, leaf)
+    print(total(read tree))
+    print(tree)
+    if tree is Pair(left, _) {
+        print(total(read left))
+    }
+
+    // In a collection.
+    var points = List<shared Point> { share a, share b }
+    print(points[0].x + points[1].y)
+    print(same(read points[0], read points[1]))
+    var byName = HashMap<string, shared Point>()
+    byName.add("a", share a)
+    shared Point? found = share byName.get("a")
+    shared Point? missing = share byName.get("z")
+    print(found is not null && same(found, a))
+    print(missing is null)
+}

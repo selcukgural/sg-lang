@@ -1,0 +1,10 @@
+struct Token<from source> {
+    read string text
+}
+
+void keep(read string source) {
+    var token = new shared Token { text = source }
+}
+
+void main() {
+}

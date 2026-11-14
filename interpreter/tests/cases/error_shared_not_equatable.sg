@@ -1,0 +1,9 @@
+struct Node {
+    int value
+}
+
+void main() {
+    var a = new shared Node { value = 1 }
+    var b = share a
+    print(a == b)
+}

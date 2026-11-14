@@ -1,0 +1,7 @@
+struct Node {
+    int value
+}
+
+void main() {
+    shared weak Node node = null
+}

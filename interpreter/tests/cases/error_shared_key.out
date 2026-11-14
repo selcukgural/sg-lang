@@ -1,0 +1,5 @@
+error: `shared City` cannot be an item of a `HashSet`: it is not `Hashable`
+  --> error_shared_key.sg:6:24
+ 6 |     var seen = HashSet<shared City>()
+   |                        ^^^^^^^^^^^
+  hint: keep something that tells the values apart instead, such as an `id` field: `HashSet<int>`

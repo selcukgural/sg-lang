@@ -1,0 +1,4 @@
+error: `same` compares two values of one type, and these are `shared int` and `shared string`
+  --> error_same_types.sg:4:11
+ 4 |     print(same(a, b))
+   |           ^^^^^^^^^^

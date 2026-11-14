@@ -1,0 +1,5 @@
+error: this is `shared int?` and may be `null`; `same` compares two objects
+  --> error_same_nullable.sg:4:19
+ 4 |     print(same(a, b))
+   |                   ^
+  hint: test it first: `if b is not null { ... }`

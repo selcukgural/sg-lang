@@ -1,0 +1,12 @@
+// An alias is public or not as a type is.
+public using NodeRef = shared Node
+using Count = int
+
+public struct Node {
+    public int value
+    public NodeRef? next
+
+    public Node create(int value, NodeRef? next) {
+        return Node { value = value, next = next }
+    }
+}

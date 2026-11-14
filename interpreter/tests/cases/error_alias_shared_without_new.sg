@@ -1,0 +1,9 @@
+struct Node {
+    int value
+}
+
+using NodeRef = shared Node
+
+void main() {
+    var node = NodeRef { value = 1 }
+}

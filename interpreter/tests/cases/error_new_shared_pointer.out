@@ -1,0 +1,5 @@
+error: `new shared` needs a value to own, and this is a `Node*`
+  `new shared` puts a value on the heap with a count of its owners
+  --> error_new_shared_pointer.sg:6:27
+ 6 |     var node = new shared (new Node { value = 1 })
+   |                           ^^^^^^^^^^^^^^^^^^^^^^^^

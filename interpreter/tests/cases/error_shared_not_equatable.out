@@ -1,0 +1,6 @@
+error: `==` compares the values, and `Node` is not `Equatable`
+  `==` looks at what two `shared` values point to; `same` tells whether they point to one object
+  --> error_shared_not_equatable.sg:8:11
+ 8 |     print(a == b)
+   |           ^^^^^^
+  hint: `same(a, b)`, or add `Equatable` to the definition: `Node : Equatable`

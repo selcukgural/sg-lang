@@ -1,0 +1,24 @@
+struct Node {
+    int value
+    string name
+    List<int> items
+
+    public void bump(ref this) {
+        this.value += 1
+    }
+
+    public void finish(this) {
+    }
+}
+
+void keep(shared Node node) {
+}
+
+void look(read shared Node node) {
+    keep(node)
+}
+
+void main() {
+    var node = new shared Node { value = 1, name = "a", items = List<int>() }
+    look(read node)
+}

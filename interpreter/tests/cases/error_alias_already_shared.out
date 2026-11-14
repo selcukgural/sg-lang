@@ -1,0 +1,4 @@
+error: `NodeRef` is already `shared Node`
+  --> error_alias_already_shared.sg:8:5
+ 8 |     shared NodeRef node = null
+   |     ^^^^^^^^^^^^^^

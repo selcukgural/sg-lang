@@ -1,0 +1,5 @@
+error: an alias with type parameters is not in the interpreter yet
+  generics of your own are deferred: `using Link<T> = ...` comes with them
+  --> error_alias_generic.sg:1:11
+ 1 | using Many<T> = List<T>
+   |           ^

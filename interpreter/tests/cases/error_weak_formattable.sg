@@ -1,0 +1,7 @@
+struct Node : Formattable {
+    int value
+    weak Node? up
+}
+
+void main() {
+}

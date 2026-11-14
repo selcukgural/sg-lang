@@ -17,8 +17,9 @@
 //! and past an `if` that leaves), `Result` and `try`, `List`, `HashMap` and `HashSet`, arrays and
 //! slices, numbers read out of bytes and written into them (`fromLittleEndian`, `toBigEndian`), function values, `T*` and `new`, `T?`, `read` and `ref`, `print` and `printError`, files
 //! read and written whole or piece by piece, as text or as bytes (`StreamReader`, `StreamWriter`,
-//! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`). Anything else is an error that names what is missing, so nothing is compiled
-//! wrongly in silence.
+//! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`).
+//! A type alias is the type it names. Anything else, `shared` and `weak` among them, is an error
+//! that names what is missing, so nothing is compiled wrongly in silence.
 //!
 //! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`), and
 //! `float` and `double` are C's, computed with no fused multiply-add (see `RUNTIME`); a
@@ -1636,6 +1637,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         files: &prog.files,
         structs,
         enums,
+        aliases: prog.aliases.iter().map(|alias| (alias.name.as_str(), alias)).collect(),
         checked,
         locs: Vec::new(),
         sums: Vec::new(),
@@ -2091,6 +2093,9 @@ fn may_leave(expr: &Expr) -> bool {
         ExprKind::AsSlice(inner) => may_leave(inner),
         ExprKind::Field { recv: inner, .. }
         | ExprKind::New(inner)
+        | ExprKind::NewShared(inner)
+        | ExprKind::Share(inner)
+        | ExprKind::WeakOf(inner)
         | ExprKind::Load(inner)
         | ExprKind::Unbox(inner)
         | ExprKind::Widen(_, inner)
@@ -2296,6 +2301,8 @@ struct Emitter<'a> {
     files: &'a [FileScope],
     structs: HashMap<&'a str, &'a StructDecl>,
     enums: HashMap<&'a str, &'a EnumDecl>,
+    /// `using P = Point`: each alias by full name.
+    aliases: HashMap<&'a str, &'a AliasDecl>,
     /// A debug build: overflow panics. Otherwise it wraps.
     checked: bool,
     /// The place of each line that can panic, as it is printed under the message.
@@ -2821,7 +2828,7 @@ impl<'a> Emitter<'a> {
     /// front it is the full name already; otherwise a type of the file's own module, then one
     /// of a module the file names with `use`. The checker has seen that there is exactly one.
     fn full(&self, name: &str, at: Span) -> Option<String> {
-        let known = |full: &str| self.structs.contains_key(full) || self.enums.contains_key(full);
+        let known = |full: &str| self.structs.contains_key(full) || self.enums.contains_key(full) || self.aliases.contains_key(full);
         let file = self.files.iter().find(|file| at.start <= file.end)?;
         let own = if file.module.is_empty() || name.contains('.') { name.to_string() } else { format!("{}.{name}", file.module) };
         if known(&own) {
@@ -2832,13 +2839,19 @@ impl<'a> Emitter<'a> {
         if name == "TextError" || name == "NumberError" {
             return Some(name.to_string());
         }
-        let public = |full: &str| self.structs.get(full).map(|decl| decl.public).or(self.enums.get(full).map(|decl| decl.public)) == Some(true);
+        let public = |full: &str| {
+            let alias = || self.aliases.get(full).map(|decl| decl.public);
+            self.structs.get(full).map(|decl| decl.public).or(self.enums.get(full).map(|decl| decl.public)).or_else(alias) == Some(true)
+        };
         file.uses.iter().map(|(used, _)| format!("{used}.{name}")).find(|full| public(full))
     }
 
     /// A type as it is written in a signature or a field.
     fn written(&self, ty: &TypeExpr) -> Res<Ty> {
         let unknown = || not_yet(ty.span, &format!("the type `{}`", self.text(ty.span)));
+        if ty.holder.is_some() {
+            return Err(not_yet(ty.span, "a `shared` or a `weak` value"));
+        }
         let mut found = match (Ty::from_name(&ty.name), ty.args.as_slice()) {
             (None, [ok, error]) if ty.name == "Result" => Ty::Result(Box::new(self.written(ok)?), Box::new(self.written(error)?)),
             (None, [item]) if ty.name == "List" => Ty::List(Box::new(self.written(item)?)),
@@ -2850,6 +2863,8 @@ impl<'a> Emitter<'a> {
             }
             (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter | Ty::Reader | Ty::Writer)), []) => base,
             (None, []) => match self.full(&ty.name, ty.span) {
+                // An alias is the type it names; the checker has seen that it ends.
+                Some(full) if self.aliases.contains_key(full.as_str()) => self.written(&self.aliases[full.as_str()].ty)?,
                 Some(full) if self.structs.contains_key(full.as_str()) => Ty::Struct(full),
                 Some(full) => Ty::Enum(full),
                 None => return Err(unknown()),
@@ -5154,6 +5169,9 @@ impl<'a> Emitter<'a> {
             ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::Constant { .. } => Effect::Reads,
             ExprKind::Field { recv: inner, .. }
             | ExprKind::New(inner)
+            | ExprKind::NewShared(inner)
+            | ExprKind::Share(inner)
+            | ExprKind::WeakOf(inner)
             | ExprKind::Load(inner)
             | ExprKind::Unbox(inner)
             | ExprKind::Widen(_, inner)
@@ -6225,6 +6243,7 @@ impl<'a> Emitter<'a> {
             ExprKind::Load(inner) => Ok(format!("(*{})", self.first(inner, head)?)),
             // A borrow of a `T*` used as a borrow of the `T`: one step along the pointer.
             ExprKind::Unbox(inner) => Ok(format!("(*{})", self.value(inner)?)),
+            ExprKind::NewShared(_) | ExprKind::Share(_) | ExprKind::WeakOf(_) => Err(not_yet(expr.span, "a `shared` or a `weak` value")),
             ExprKind::New(inner) => {
                 let Ty::Ptr(target) = &expr.ty else { return Err(not_yet(expr.span, "this `new`")) };
                 self.ctype(&expr.ty, expr.span)?;

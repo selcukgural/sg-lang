@@ -8,9 +8,12 @@ use crate::types::{FloatTy, IntTy, Ty};
 /// Words that are in the design but not in the interpreter yet. They get an explicit
 /// message instead of "unknown name".
 const NOT_YET: &[&str] = &[
-    "interface", "shared", "weak", "checked", "locked", "raw", "unsafe", "lock",
-    "spawn", "share", "using",
+    "interface", "checked", "locked", "raw", "unsafe", "lock", "spawn",
 ];
+
+/// Words of the language that are read where they stand, not names: `shared T`, `weak T`,
+/// `share x`, `weak x`, `using Name = T`.
+const WORDS: &[&str] = &["shared", "weak", "share", "using"];
 
 type Res<T> = Result<T, Diag>;
 
@@ -22,17 +25,18 @@ pub fn parse(src: &str) -> Res<Program> {
 /// belongs to. What a module defines gets its full name here: `Product` in the folder `stock`
 /// is `stock.Product`.
 pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> {
-    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), files: Vec::new() };
+    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new() };
     for (start, end, module) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
         let mut parser = Parser { src, toks, i: 0, struct_literals: true };
-        let (structs, enums, funcs) = (program.structs.len(), program.enums.len(), program.funcs.len());
+        let (structs, enums, funcs, aliases) = (program.structs.len(), program.enums.len(), program.funcs.len(), program.aliases.len());
         let uses = parser.file(&mut program)?;
         if !module.is_empty() {
             let full = |name: &mut String| *name = format!("{module}.{name}");
             program.structs[structs..].iter_mut().for_each(|decl| full(&mut decl.name));
             program.enums[enums..].iter_mut().for_each(|decl| full(&mut decl.name));
             program.funcs[funcs..].iter_mut().for_each(|func| full(&mut func.name));
+            program.aliases[aliases..].iter_mut().for_each(|alias| full(&mut alias.name));
         }
         program.files.push(FileScope { start: *start, end: *end, module: module.clone(), uses });
     }
@@ -97,8 +101,16 @@ impl<'a> Parser<'a> {
             Tok::Ident(name) if NOT_YET.contains(&name.as_str()) => {
                 diag.note(format!("`{name}` is not in the interpreter yet"))
             }
+            Tok::Ident(name) if WORDS.contains(&name.as_str()) => {
+                diag.note(format!("`{name}` is a word of the language, not a name"))
+            }
             _ => diag,
         }
+    }
+
+    /// Whether the next token is the word `word` (one of `WORDS`).
+    fn at_word(&self, word: &str) -> bool {
+        matches!(self.peek(), Tok::Ident(name) if name == word)
     }
 
     fn expect(&mut self, tok: Tok, wanted: &str) -> Res<Span> {
@@ -111,7 +123,7 @@ impl<'a> Parser<'a> {
 
     fn ident(&mut self, wanted: &str) -> Res<(String, Span)> {
         match self.peek() {
-            Tok::Ident(name) if !NOT_YET.contains(&name.as_str()) => {
+            Tok::Ident(name) if !NOT_YET.contains(&name.as_str()) && !WORDS.contains(&name.as_str()) => {
                 let name = name.clone();
                 Ok((name, self.bump().span))
             }
@@ -119,7 +131,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `[read | ref] Name [<Type, ...>] { * | ? }`
+    /// `[read | ref] [shared | weak] Name [<Type, ...>] { * | ? }`
     fn type_expr(&mut self) -> Res<TypeExpr> {
         let start = self.span();
         let mode = match self.peek() {
@@ -129,6 +141,19 @@ impl<'a> Parser<'a> {
         };
         if mode.is_some() {
             self.bump();
+        }
+        let holder = if self.at_word("shared") {
+            Some(Holder::Shared)
+        } else if self.at_word("weak") {
+            Some(Holder::Weak)
+        } else {
+            None
+        };
+        if holder.is_some() {
+            self.bump();
+            if self.at_word("shared") || self.at_word("weak") {
+                return Err(Diag::error(self.span(), "`shared` and `weak` are written once, in front of the type they hold"));
+            }
         }
         let (mut name, _) = self.ident("a type name")?;
         // `billing.Line`: the module is written in front.
@@ -177,7 +202,20 @@ impl<'a> Parser<'a> {
             }
             self.bump();
         }
-        Ok(TypeExpr { mode, name, args, suffixes, span: Span::new(start.start, self.prev_end()) })
+        Ok(TypeExpr { mode, holder, name, args, suffixes, span: Span::new(start.start, self.prev_end()) })
+    }
+
+    /// `using NodeRef = shared Node`
+    fn alias_decl(&mut self, public: bool) -> Res<AliasDecl> {
+        self.bump();
+        let (name, name_span) = self.ident("the new name of the type")?;
+        if *self.peek() == Tok::Lt {
+            return Err(Diag::error(self.span(), "an alias with type parameters is not in the interpreter yet")
+                .note("generics of your own are deferred: `using Link<T> = ...` comes with them"));
+        }
+        self.expect(Tok::Assign, "`=`").map_err(|d| d.note("an alias is written `using NodeRef = shared Node`"))?;
+        let ty = self.type_expr()?;
+        Ok(AliasDecl { public, name, name_span, ty })
     }
 
     /// `use stock` / `use shop.stock`, one on a line.
@@ -227,6 +265,15 @@ impl<'a> Parser<'a> {
                 let name_span = self.bump().span;
                 let body = self.block()?;
                 program.tests.push(TestDecl { name, name_span, body });
+            } else if self.at_word("using") {
+                let decl = self.alias_decl(public)?;
+                program.aliases.push(decl);
+                // A type can end in `>` or `*`, which at the end of a line would join it to
+                // the next one: the line ends where the text says it does.
+                if self.src[self.prev_end()..self.span().start].contains('\n') {
+                    self.skip_newlines();
+                    continue;
+                }
             } else if *self.peek() == Tok::Struct {
                 let mut decl = self.struct_decl()?;
                 decl.public = public;
@@ -491,10 +538,12 @@ impl<'a> Parser<'a> {
     /// How many tokens the type written `n` tokens ahead takes: a name, `<...>`, any `*` and
     /// `?`. `None` if no type is written there.
     fn type_len(&self, start: usize) -> Option<usize> {
-        if !matches!(self.peek_at(start), Tok::Ident(_)) {
+        let holder = matches!(self.peek_at(start), Tok::Ident(word) if word == "shared" || word == "weak");
+        let first = if holder { start + 1 } else { start };
+        if !matches!(self.peek_at(first), Tok::Ident(_)) {
             return None;
         }
-        let mut n = start + 1;
+        let mut n = first + 1;
         while *self.peek_at(n) == Tok::Dot && matches!(self.peek_at(n + 1), Tok::Ident(_)) {
             n += 2;
         }
@@ -1035,8 +1084,27 @@ impl<'a> Parser<'a> {
             }
             Tok::New => {
                 self.bump();
+                if self.at_word("shared") {
+                    self.bump();
+                    let operand = self.unary()?;
+                    return Ok(wrap(ExprKind::NewShared, operand));
+                }
+                if self.at_word("weak") {
+                    return Err(Diag::error(self.span(), "a `weak` value is not made with `new`: it looks at a `shared` one")
+                        .hint("make it `shared` and look at it with `weak`: `var owner = new shared Node { ... }`, then `weak owner`"));
+                }
                 let operand = self.unary()?;
                 Ok(wrap(ExprKind::New, operand))
+            }
+            Tok::Ident(word) if word == "share" => {
+                self.bump();
+                let operand = self.unary()?;
+                Ok(wrap(ExprKind::Share, operand))
+            }
+            Tok::Ident(word) if word == "weak" => {
+                self.bump();
+                let operand = self.unary()?;
+                Ok(wrap(ExprKind::WeakOf, operand))
             }
             // A prefix, like `await`: `try a().b()` tries the whole chain.
             Tok::Try => {

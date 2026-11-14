@@ -1,0 +1,5 @@
+error: `share` needs a `shared` value or a `weak` one, and this is `Node*`
+  a `Node*` has one owner; a value with several is made with `new shared`: `shared Node`
+  --> error_share_not_shared.sg:16:24
+ 16 |     var second = share node
+    |                        ^^^^

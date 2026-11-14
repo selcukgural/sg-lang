@@ -1,0 +1,31 @@
+// An alias of a `shared` type: `new NodeRef(1, null)` is `new shared Node(1, null)`.
+
+using NodeRef = shared Node
+
+struct Node : Formattable {
+    int value
+    NodeRef? next
+
+    public Node create(int value, NodeRef? next) {
+        return Node { value = value, next = next }
+    }
+}
+
+int length(read NodeRef? list) {
+    int count = 0
+    NodeRef? cur = share list
+    while cur is not null {
+        count += 1
+        cur = share cur.next
+    }
+    return count
+}
+
+void main() {
+    var last = new NodeRef(3, null)
+    var list = new NodeRef(1, new NodeRef(2, share last))
+    var other = new NodeRef { value = 0, next = share list }
+    print(length(read list))
+    print(length(read other))
+    print(other)
+}

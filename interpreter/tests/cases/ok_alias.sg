@@ -1,0 +1,38 @@
+// `using Name = Type`: another name for a type. It is the same type, and it builds the value
+// the type builds.
+
+using Points = List<Point>
+using Owned = Point*
+using P = Point
+using Again = P
+
+struct Point : Formattable {
+    int x
+    int y
+
+    public Point create(int x, int y) {
+        return Point { x = x, y = y }
+    }
+}
+
+int sum(read Points points) {
+    int total = 0
+    for p in points {
+        total += p.x + p.y
+    }
+    return total
+}
+
+void main() {
+    var a = P(1, 2)
+    var b = Again { x = 3, y = 4 }
+    Points all = List<Point>()
+    all.add(a)
+    all.add(b)
+    Owned o = new P(5, 6)
+    P? none = null
+    print(all)
+    print(sum(read all))
+    print(none ?? Point(0, 0))
+    print(o)
+}

@@ -9,6 +9,8 @@ pub struct Program {
     pub enums: Vec<EnumDecl>,
     pub funcs: Vec<Func>,
     pub tests: Vec<TestDecl>,
+    /// `using FolderRef = shared Folder`: another name for a type.
+    pub aliases: Vec<AliasDecl>,
     /// The files the program was read from, in the order of their text.
     pub files: Vec<FileScope>,
 }
@@ -43,6 +45,14 @@ pub struct TestDecl {
     pub name: String,
     pub name_span: Span,
     pub body: Block,
+}
+
+/// `using NodeRef = shared Node`: a second name for a type, not a new type.
+pub struct AliasDecl {
+    pub public: bool,
+    pub name: String,
+    pub name_span: Span,
+    pub ty: TypeExpr,
 }
 
 pub struct StructDecl {
@@ -218,8 +228,11 @@ pub enum StreamCall {
 }
 
 /// A type as written: `read Node*?`
+#[derive(Clone)]
 pub struct TypeExpr {
     pub mode: Option<Mode>,
+    /// `shared` or `weak` in front of the name.
+    pub holder: Option<Holder>,
     /// With its module when one is written: `billing.Line`.
     pub name: String,
     /// The types between `<` and `>`: `Result<int, ParseError>`.
@@ -232,6 +245,15 @@ pub struct TypeExpr {
 pub enum Mode {
     Read,
     Ref,
+}
+
+/// What holds a value that has several owners.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Holder {
+    /// `shared T`: an owner.
+    Shared,
+    /// `weak T`: looks without owning.
+    Weak,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -329,6 +351,13 @@ pub enum ExprKind {
     StructLit { name: String, name_span: Span, fields: Vec<FieldInit> },
     /// `new e`: puts the value on the heap, gives `T*`.
     New(Box<Expr>),
+    /// `new shared e`: puts the value on the heap with a count of its owners, gives `shared T`.
+    NewShared(Box<Expr>),
+    /// `share e`: one more owner of a `shared T`, or of what a `weak T` looks at (`null` once
+    /// it is gone). Does not move `e`.
+    Share(Box<Expr>),
+    /// `weak e`: looks at a `shared T` without owning it. Does not move `e`.
+    WeakOf(Box<Expr>),
     /// `read e` / `ref e`
     Borrow { mutable: bool, expr: Box<Expr> },
     /// `e is null` / `e is not null`
@@ -350,7 +379,8 @@ pub enum ExprKind {
     /// enum (`Result` for the last two), the variant's position and what it carries. `Ok` is
     /// 0 and `Error` is 1.
     Variant { owner: String, index: usize, args: Vec<Expr> },
-    /// Inserted by the checker: a borrow of a `T*` used as a borrow of the `T` it owns.
+    /// Inserted by the checker: a borrow of a `T*` (or of a `shared T`) used as a borrow of
+    /// the `T` it owns.
     Unbox(Box<Expr>),
 
     /// Built by the checker from `int.MaxValue`, `double.NaN`: a constant of a number type.

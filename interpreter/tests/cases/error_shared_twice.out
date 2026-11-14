@@ -1,0 +1,4 @@
+error: `shared` and `weak` are written once, in front of the type they hold
+  --> error_shared_twice.sg:6:12
+ 6 |     shared weak Node node = null
+   |            ^^^^

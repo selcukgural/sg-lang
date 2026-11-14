@@ -1,0 +1,5 @@
+error: expected `Node`, found `shared Node`
+  --> error_shared_as_value.sg:16:18
+ 16 |     Node plain = node
+    |                  ^^^^
+  hint: `shared Node` points to a value that others own too; lend it with `read`: `read node`

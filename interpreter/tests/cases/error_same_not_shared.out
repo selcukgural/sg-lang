@@ -1,0 +1,5 @@
+error: `same` tells whether two `shared` values point to one object, and this is `int`
+  --> error_same_not_shared.sg:3:19
+ 3 |     print(same(a, 1))
+   |                   ^
+  hint: `==` compares what two values hold

@@ -1,0 +1,7 @@
+struct Node {
+    int value
+}
+
+void main() {
+    var node = new shared (new Node { value = 1 })
+}

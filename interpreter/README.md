@@ -23,7 +23,8 @@ sh bench/run.sh                                 # compiled SG against C written 
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
-| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
+| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
+| Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
 | Methods | Written in the body of a struct or an enum with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`, and an enum looks at itself with `match this`. Called as `stack.push(1)`, `shape.area()`, also through pointers and borrows. A function without `this` is called on the type: `Stack.create()`, `Shape.unit()`. `Stack(args)` is short for `Stack.create(args)` |
@@ -40,6 +41,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | `is` | `if s is Circle(r) { ... }`, `if e is Add(Number(0), right) { ... }`, `if e is Add(l, _) or Mul(l, _) { ... }`, `while next() is not End { ... }`. The names reach along `&&`: `if int.parse(read text) is Ok(n) && n > 0 { ... }`, `return s is Circle(r) && r > 10`. The names of `is not` are seen where it fails: `if int.parse(read text) is not Ok(n) { return }` and `n` after it, `if r is not Ok(n) \|\| n < 0 { return }`, `else`, and after `while r is not Ok(n) { ... }` |
 | Errors | `Result<T, E>` is built in: `return Ok(value)`, `return Ok()` for `Result<void, E>`, `return Error(cause)`. `try x` gives the value or returns the error to the caller, and on a `T?` returns `null`; on a `read T?` it gives a `read T`. `x ?? fallback` drops the error; the right side can be `return ...` or `panic(...)`. `match` and `is` see the variants `Ok` and `Error`. `_ = f()` drops a value on purpose. `Result<void, E> main()` prints the error it ends with and exits with code 1 |
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
+| Several owners | `new shared x` gives a `shared T`, one of the owners of a value on the heap; `share x` makes one more without moving `x` (so does `x.clone()`), and a move hands one over. What it points to is read (`node.value`, a method that takes `read this`, `match`, `for item in read node.items`, `read node` where a `read T` goes) and never written or taken out. `weak x` gives a `weak T`, which looks without owning: `share w` gives a `shared T?`, `null` once the last owner is gone. `same(a, b)` tells whether two point to one object, `==` compares what they point to |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -51,7 +53,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Going over text | `for c in text.chars()` gives each `char`; `text.split(',')` (a `char` or a `read string`), `text.splitWhitespace()` and `text.lines()` give each part as a `read string`, nothing copied. Kept in a `var`, the iterator gives the next part with `parts.next()`, `null` at the end |
 | Characters | `char`: one Unicode character. `'+'`, `'é'`, `'\n'`, `'\u{e9}'` is a `char`, and a `byte` where an integer goes (`byte b = '+'`, `text[i] == ':'`). `(int)c` is its code, `(char)n` the character of a code, `n.tryToChar()` gives `null` where `(char)n` would panic. `==`, `<`, `match`, keys, `sort`, `print`. `isAsciiDigit()`, `isAsciiLetter()`, `isAsciiAlphanumeric()`, `isAsciiUpper()`, `isAsciiLower()`, `isAsciiWhitespace()`, `isAscii()`, `toAsciiUpper()`, `toAsciiLower()` on `char` and on `byte`; `isWhitespace()` and `utf8Length()` on `char` |
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
-| Built-ins | `print(x)`, `printError(x)` (the same, to the standard error), `panic("...")`, `assert(condition)`, `exit(code)` (ends the program with that code) |
+| Built-ins | `print(x)`, `printError(x)` (the same, to the standard error), `panic("...")`, `assert(condition)`, `exit(code)` (ends the program with that code), `same(a, b)` (two `shared` values point to one object) |
 | Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`, and `File.openAppend(path)` one that writes after what the file holds. A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left), `lines()` (each line as a `Result<string, IoError>`) and `readBytes(ref buffer)` (bytes into the buffer, as many as it holds unless the end comes first, and how many: a `Result<nint, IoError>`); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `writeBytes(bytes)` (a `read byte[]` as it is), `flush()` and `close()`, each with a `Result<void, IoError>`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `InvalidText(long position)` / `Other(int code) }` |
 | Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A normal run leaves the tests out |
 | Comparing by name | `a.compare(b)` on numbers, `char` and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
@@ -242,7 +244,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (190 of 746 programs for now; the others are programs the checker rejects, on purpose).
+memory behind (191 of 787 programs for now; the others are programs the checker rejects, on purpose).
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -314,7 +316,10 @@ compiled code alone: in a checked build an index or an end of a range written `a
 overflow with the place, one comparison where there were two, and the program stops as it did (309). So is
 the fifty-third: in a checked build a sum kept in a loop runs without its overflow test for as many rounds
 as it has room for, the loop written twice (315); on the way the variable of `for i in a..b` became a copy
-of the count in compiled code too, as it was in the interpreter (319). What is still missing is an error that names it (not silence): the few positions listed with the
+of the count in compiled code too, as it was in the interpreter (319). The fifty-fourth slice (`shared`,
+`weak` and `using`) is in the checker and the interpreter; compiled code takes an alias as the type it
+names, and refuses `shared` and `weak` with an error that names them, until the third part of that work
+(330). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -675,8 +680,8 @@ error comes after what it printed, and an exit code other than 0 and 1 is a last
 `.args` file next to a program gives its command line, one word on each line, where `{dir}` is an empty folder
 of its own to write files into (it is written back as `{dir}` in the output); a `.in` file gives its input.
 
-Programs with modules are in `tests/modules/`: the folders there (`stock`, `billing`, `shop/parts`, `leaky`) are
-modules, and each `.sg` file next to them is a program of one file that uses them. A folder with a `main.sg`
+Programs with modules are in `tests/modules/`: the folders there (`stock`, `billing`, `shop/parts`, `leaky`,
+`links`, `aliasleak`) are modules, and each `.sg` file next to them is a program of one file that uses them. A folder with a `main.sg`
 (`tests/modules/rootdir`, `examples/shop`) is a program run as a folder; its output is in `main.out` and what
 the test command prints for it in `tests.out`.
 
@@ -2696,6 +2701,78 @@ compiled code alone, since nothing a program can see changes, and a fix on the w
      one program for 319. To try the second copy everywhere, every loop of every program was written
      twice for a run of all the tests (three rounds in the first copy): they passed, under the sanitizers.
 
+Choices made in the fifty-fourth slice (`shared`, `weak` and type aliases, in the checker and the
+interpreter; the first of the four parts the work on several owners was split into: `checked` comes
+second, compiled code third, threads and `locked` fourth), approved on 14 November 2026:
+
+322. **`shared T` and `weak T` as the design wrote them** ("Shared ownership", "Weak reference", "`share`
+     and `null`", "Identity and equality", "Copy of `shared T`"): `new shared x` makes the value and its
+     first owner, `share x` one more owner without moving `x`, and a move hands an owner over. `weak x`
+     looks without owning, and `share w` gives a `shared T?`: an owner, or `null` once the last owner is
+     gone (and for a `null`). `same(a, b)` tells whether two point to one object, `==` compares what they
+     point to, and `.clone()` of a `shared` value is one more owner, not a copy. In the interpreter a
+     `shared` value is Rust's `Rc` and a `weak` value its `Weak`.
+323. **What a `shared` value points to is only read.** Each way of writing through it is a compile error
+     whose note says that a value changed through several owners is a `shared checked T` (the second
+     part): assigning a field, `ref node.value`, a method that takes `ref this`, a method that changes a
+     collection (`node.items.add(1)`), lending it as a `ref T`. So is each way of taking something out of
+     it: moving a field (`var name = node.name`, hint `read node.name`) and a method that takes `this`. A
+     `shared Node` lends what it points to where a `read Node` goes (`width(read node)`), as a `T*`
+     does; `for item in read node.items` borrows the items, and `for word in words` over a `shared
+     List<string>` hands that one owner to the loop and lends it the items. This is the design's error
+     "Write through `shared`".
+324. **Where the words stand in a type**: `shared` and `weak` in front of the name, after `read` or `ref`
+     (`read shared Node`). `shared Node?` is a `shared Node` that may be missing: the `?` goes outside, as
+     in the design's `shared checked DNode? next`. A `shared` cannot hold a `T*` (it is on the heap
+     already; hint `shared Node`), a `T?` (hint `shared Node?`), a `shared` or a `weak` value, a slice, or
+     a type that carries a borrow (it lives as long as its last owner, which may be longer than what it
+     borrows from). Any other value can be shared: `new shared 5`, `new shared List<string> { ... }`.
+325. **`same` looks at its arguments, as `print` does**: it does not move them, with or without `read`
+     (the design's cities example writes `same(read cur, goal)`; both forms work). Both are `shared`
+     values of one type; a `T?` gets the hint to test it first, a `weak` the hint `share w`, any other
+     value the hint `==` if it has one. `==` between two `shared` values whose type is not `Equatable`
+     gets the hint `same(a, b)`, as the design asked.
+326. **A `shared` value is never a key** of a `HashMap` or an item of a `HashSet`, whatever it points to;
+     the hint is a field that tells the values apart (`HashSet<int>`, `city.id`). The design refused
+     `HashSet<CityRef>` because `City` is not `Hashable`; this refuses it in every case, since what it
+     points to will be changeable through `checked` (the second part), and a key that changes breaks the
+     table. It counts for `==` (a struct with a `shared` field can be `Equatable`), not for `Hashable`,
+     as a collection does.
+327. **A `weak` value has nothing to show by itself**: it cannot be printed, compared or reached into
+     (`w.value`), and each of those errors has the hint `share w`. A struct with a `weak` field cannot be
+     `Formattable` or `Equatable` field by field (the design's "Identity and equality": the compiler cannot
+     make `equals` for `City.roads`); the hint is to write `format` by hand.
+328. **`shared`, `weak`, `share` and `using` are words of the language**, not names: `var weak = 1` is an
+     error that says so.
+329. **A type alias as the design wrote it** ("Type alias"): `using NodeRef = shared Node`, or `public
+     using`, at the top level of a file, one on a line. It is the same type: `NodeRef?` is `shared
+     Node?`, and a `NodeRef` goes where a `shared Node` goes. It builds what its type builds: `P(1, 2)` and
+     `P { ... }` for `using P = Point`, `new NodeRef(args)` and `new NodeRef { ... }` for a `shared` one
+     (the design's `new FolderRef(...)`); `NodeRef { ... }` without `new` is an error whose hint adds it.
+     It is `public` or not as a type is, and a `public` alias in a module cannot show a type that is not.
+330. **What an alias cannot be**: a borrow (`using Text = read string`; the hint writes `read Text` where it
+     is used), generic (`using Link<T> = ...`, deferred with generics), the name of another type, an alias
+     that comes back to itself ("the aliases `A` and `B` name each other"), or `shared` around an alias
+     that is `shared` already. A collection is built by its type, not by its alias (`Names()` gets the
+     hint `List<string>()`). Compiled code takes an alias as the type it names, so a program with `using
+     P = Point` is compiled; a `shared` or a `weak` value is refused there with an error that names it.
+331. **A moved value leaves its place empty in the interpreter**, as it does in compiled code. Until now
+     the interpreter kept a copy in the variable or the field a value was moved out of; no program could
+     see it, but it would have counted as one more owner of a `shared` value and kept a `weak` one alive.
+     Every program and test runs as before.
+332. **The leak report waits for the second part.** The design reports the `shared` values still alive when
+     a program ends ("`shared` cycle"). Here nothing can be changed through a `shared` value yet, so no two
+     values can point to each other and nothing can leak; the report comes with `checked`, where a test
+     can make a cycle.
+333. **The tests**: three programs (`ok_shared`: owners, `same`, `==`, `.clone()`, a parameter that owns,
+     a number and a list shared, an enum tree with one leaf in it twice, lists and maps of `shared`
+     values and `share map.get(key)`; `ok_weak`: a `weak` value whose last owner is assigned over, dropped
+     in a function, ends with its block, is taken off a list, cleared and taken out of a `T?`, a child
+     that looks at its parent, a list of `weak` values gone over with `share`; `ok_alias_shared`), one of
+     plain aliases that is compiled too (`ok_alias`), thirty-four tests of errors, and three programs with
+     modules (a `public` alias used from another module with and without the module's name, an alias that
+     is not `public`, a `public` alias that shows a type that is not).
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -2751,8 +2828,12 @@ check off.
   ones before it already take is not caught (256).
 - Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
-  in the design); threads, `shared` / `weak` / `checked` / `locked`.
-- Type aliases (`using`). Running the tests of one module only.
+  in the design), and so an alias with type parameters (`using Link<T> = ...`).
+- The other parts of the work on several owners: `checked T`, the `read x as n { }` and `ref x as n { }`
+  blocks and the report of `shared` values that leak (the second part); `shared` and `weak` in compiled
+  code (the third); threads and `locked` (the fourth). `List<shared T>.clone()`, since a list has no
+  `clone` yet.
+- An alias of a collection used to build it (`Names()`, 330). Running the tests of one module only.
 - A collection changed inside its own `for` through another `ref` to it is not caught (it is part of the
   borrow check); the direct forms are. Here a list is gone over by position and a map or a set as it was when
   the loop started.
@@ -2835,5 +2916,11 @@ return }` and then `n`), and so are those of an `is` after an `if` whose `else` 
 first; XXH64 written with them takes 1.03 times the time of C, and 1.23 times in a checked build, where it
 took 3.6.
 
-Candidates for what comes next: type aliases (`using`), threads, the places that are slower than C, a
-value that owns memory made after the first `&&` or `||` for an `is` with names in compiled code (268).
+A value can have several owners: `new shared x`, `share x` and `weak x`, with what it points to only
+read, and a type has a second name with `using`; in the checker and the interpreter.
+
+What comes next was chosen with the split of that work: its second part, `checked T` (borrowed on
+each access, a conflict a compile error where it is certain and a panic where it is not), the `read x as
+n { }` and `ref x as n { }` blocks, `this` with a type (`read FolderRef this`) and the leak report, after
+which the design's folder tree and its cities and roads run. Then compiled code for all of it, then
+threads and `locked`.

@@ -1,0 +1,8 @@
+error: `Count` exists in the `links` module but is not public
+  --> error_alias_not_public.sg:4:5
+ 4 |     Count n = 1
+   |     ^^^^^
+  it is defined here, without `public`:
+  --> links/node.sg:3:7
+ 3 | using Count = int
+   |       ^^^^^

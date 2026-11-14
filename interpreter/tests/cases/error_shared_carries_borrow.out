@@ -1,0 +1,5 @@
+error: a `shared` value cannot hold a `Token`, which carries a borrow
+  a `shared` value lives as long as its last owner, which can be longer than anything it borrows from
+  --> error_shared_carries_borrow.sg:6:28
+ 6 |     var token = new shared Token { text = source }
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^

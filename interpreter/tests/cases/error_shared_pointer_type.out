@@ -1,0 +1,5 @@
+error: `shared` cannot hold a `Node*`: a `shared` value is on the heap already
+  --> error_shared_pointer_type.sg:6:5
+ 6 |     shared Node* node = new shared Node { value = 1 }
+   |     ^^^^^^^^^^^^
+  hint: `shared Node`

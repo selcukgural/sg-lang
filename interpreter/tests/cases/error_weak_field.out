@@ -1,0 +1,5 @@
+error: this is `weak Node`: what it looks at may be gone, so `.value` cannot reach it
+  --> error_weak_field.sg:17:11
+ 17 |     print(looker.value)
+    |           ^^^^^^
+  hint: ask for an owner first: `var owner = share looker`, which is `null` if it is gone

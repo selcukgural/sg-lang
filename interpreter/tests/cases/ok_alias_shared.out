@@ -1,0 +1,3 @@
+3
+4
+Node { value = 0, next = Node { value = 1, next = Node { value = 2, next = Node { value = 3, next = null } } } }

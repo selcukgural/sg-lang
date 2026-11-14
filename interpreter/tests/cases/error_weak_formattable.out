@@ -1,0 +1,6 @@
+error: `Node` cannot be written as text field by field: `up` is a `weak Node?`, which is not `Formattable`
+  what a `weak` value looks at may be gone, and following it may come back to where it started
+  --> error_weak_formattable.sg:3:5
+ 3 |     weak Node? up
+   |     ^^^^^^^^^^
+  hint: write `format` yourself, with the fields that say what the value is

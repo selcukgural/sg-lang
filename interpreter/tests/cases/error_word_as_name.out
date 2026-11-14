@@ -1,0 +1,5 @@
+error: expected a variable name, found `weak`
+  `weak` is a word of the language, not a name
+  --> error_word_as_name.sg:2:9
+ 2 |     var weak = 1
+   |         ^^^^

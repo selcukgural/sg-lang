@@ -1,0 +1,4 @@
+using Many<T> = List<T>
+
+void main() {
+}

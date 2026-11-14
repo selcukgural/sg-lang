@@ -1,0 +1,21 @@
+struct Node {
+    int value
+    string name
+    List<int> items
+
+    public void bump(ref this) {
+        this.value += 1
+    }
+
+    public void finish(this) {
+    }
+}
+
+void rename(ref Node node) {
+    node.name = "b"
+}
+
+void main() {
+    var node = new shared Node { value = 1, name = "a", items = List<int>() }
+    rename(ref node)
+}
