@@ -1,0 +1,126 @@
+// `await` in the places a compiled async function comes back to: a loop, the condition of a
+// `while`, an `if`, the value of a `match`, an argument in place, an awaited call that awaits
+// another, two thousand tasks one after the other, a delay kept as a task, and `Task.run`.
+
+enum Shape {
+    Circle(int r)
+    Square(int side)
+}
+
+async int area(Shape s) {
+    await Task.delay(0)
+    return match s {
+        Circle(r) => 3 * r * r
+        Square(side) => side * side
+    }
+}
+
+async string label(read string name, int n) {
+    await Task.delay(1)
+    return $"{name}-{n}".toString()
+}
+
+async int depth(int n) {
+    if n == 0 {
+        await Task.delay(1)
+        return 0
+    }
+    return 1 + await leaf(n)
+}
+
+async int leaf(int n) {
+    await Task.delay(0)
+    return n * 10
+}
+
+async bool positive(int x) {
+    await Task.delay(0)
+    return x > 0
+}
+
+async Result<int, string> parse(string text) {
+    await Task.delay(0)
+    if text == "bad" {
+        return Error("bad input")
+    }
+    return Ok((int)text.length())
+}
+
+async Result<int, string> total(read List<string> words) {
+    var pending = Task.delay(2)
+    int sum = 0
+    for w in words {
+        sum += try await parse(w.clone())
+    }
+    await pending
+    return Ok(sum)
+}
+
+async int spin(int i) {
+    int acc = 0
+    for k in 0..3 {
+        await Task.delay(0)
+        acc += i + k
+    }
+    return acc
+}
+
+async void main() {
+    var shapes = List<Shape> { Shape.Circle(2), Shape.Square(3) }
+    int sum = 0
+    for s in shapes {
+        sum += await area(s)
+    }
+    print(sum)
+
+    var name = "item".clone()
+    var a = await label(read name, 1)
+    print(a)
+    print(await label(read name, 2))
+
+    print(await depth(3))
+    print(await depth(0))
+
+    int count = 0
+    while await positive(3 - count) {
+        count += 1
+    }
+    print(count)
+
+    if await positive(1) {
+        print("yes")
+    } else {
+        print("no")
+    }
+
+    var words = List<string> { "ab", "cde" }
+    match await total(read words) {
+        Ok(n) => print($"total {n}")
+        Error(e) => print($"error {e}")
+    }
+    var bad = List<string> { "ab", "bad", "x" }
+    match await total(read bad) {
+        Ok(n) => print($"total {n}")
+        Error(e) => print($"error {e}")
+    }
+
+    print("tasks")
+    int grand = 0
+    for i in 0..2000 {
+        var t = spin(i)
+        grand += await t
+    }
+    print(grand)
+
+    var d = Task.delay(3)
+    await d
+    var d2 = Task.delay(0)
+    await d2
+    print("delays")
+    var r = await Task.run(square, 12)
+    print(r)
+}
+
+int square(int x) {
+    return x * x
+}

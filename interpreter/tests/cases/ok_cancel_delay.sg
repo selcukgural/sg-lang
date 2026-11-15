@@ -15,9 +15,10 @@ async void waitThenCancel(int ms, shared CancellationSource source) {
 }
 
 async Result<void, IoError> main() {
-    // The clock cancels the source after 35 milliseconds: the ticker runs three times.
-    var timed = CancellationSource.after(35)
-    var first = ticker("timed", 10, timed.token())
+    // The clock cancels the source after 350 milliseconds: the ticker runs three times. The times
+    // are far apart, so that compiled code, on a real clock, prints the same lines.
+    var timed = CancellationSource.after(350)
+    var first = ticker("timed", 100, timed.token())
     if await first is Error(cause) {
         print($"timed stopped: {cause}")
     }
@@ -26,9 +27,9 @@ async Result<void, IoError> main() {
     // Two tickers on one source end together, in the order they were started. Another
     // task cancels it: the source is shared, and `cancel` only reads it.
     var source = new shared CancellationSource()
-    var a = ticker("a", 10, source.token())
-    var b = ticker("b", 15, source.token())
-    var stop = waitThenCancel(32, share source)
+    var a = ticker("a", 100, source.token())
+    var b = ticker("b", 170, source.token())
+    var stop = waitThenCancel(250, share source)
     await stop
     if await b is Error(_) { print("b stopped") }
     if await a is Error(_) { print("a stopped") }

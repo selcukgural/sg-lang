@@ -1,0 +1,33 @@
+// Async functions and the tasks they become. For each number below 1,000,000, `both` starts
+// a task for the Collatz length of the number and awaits the length of the next number in
+// place, then awaits the task. Nothing ever has to wait, so what is measured is what async
+// adds to a call: a frame inside the caller's for an `await` in place, and one allocation, a
+// start and a wait for a task. The C program calls the same function twice and puts one
+// result in a block it allocates and frees, for the task.
+async long steps(long start) {
+    var n = start
+    long count = 0
+    while n != 1 {
+        if n % 2 == 0 {
+            n = n / 2
+        } else {
+            n = 3 * n + 1
+        }
+        count += 1
+    }
+    return count
+}
+
+async long both(long n) {
+    var task = steps(n)
+    long next = await steps(n + 1)
+    return next + await task
+}
+
+async void main() {
+    long total = 0
+    for n in 1..1000000 {
+        total += await both(n)
+    }
+    print(total)
+}

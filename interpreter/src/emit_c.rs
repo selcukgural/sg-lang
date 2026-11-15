@@ -19,7 +19,8 @@
 //! read and written whole or piece by piece, as text or as bytes (`StreamReader`, `StreamWriter`,
 //! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`),
 //! `shared`, `weak` and `shared checked` values with the `as` blocks, `this` with a type and the leak
-//! report (see `SHARED_RUNTIME`), tasks, `locked` values and the `lock` block (see `TASK_RUNTIME`).
+//! report (see `SHARED_RUNTIME`), tasks, `locked` values and the `lock` block, async functions,
+//! `await`, `Task.delay` and cancellation (see `TASK_RUNTIME`).
 //! A type alias is the type it names. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
@@ -52,6 +53,10 @@
 //! whose drop line does it). Only a program with tasks or `locked` values has `SG_THREADS`, and
 //! with it a panic that holds the output, one print block for each thread, standard streams that
 //! several tasks can use, and a lock on the list of the leak report.
+//! An async function is a machine (`async_func`): its parameters, variables and temporaries live in a
+//! frame, its body comes back to where it stopped with a jump, and it gives `true` when it has ended
+//! and `false` when it has to wait. `await f()` runs `f` in a frame inside the caller's; a call
+//! without `await` is a task, one block with the frame inside, that the pool of `TASK_RUNTIME` runs.
 //! A `Result<T, E>` is such an enum with the variants `Ok(T value)` and `Error(E cause)`; `try`
 //! is one test on the tag and, on an error, a `return`. A `List<T>` is a pointer to its items,
 //! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index, and
@@ -136,10 +141,24 @@ const RUNTIME: &str = r#"#include <math.h>
    thread knows the task it runs, so that a panic names the line that started it; a panic holds
    the output from its first line to the end of the process, so that two panics do not mix and
    nothing is written after one. A line of `print` is one call of `printf`, which C writes
-   whole. */
+   whole.
+
+   A task is a thread of its own (`Task.run`), the machine of an async function that the pool
+   runs, or a delay. `waiter` is who waits for it: nobody yet, the async task that awaits it, a
+   thread asleep in `wait` (its lowest bit set), or `SG_ENDED`. */
 #if SG_THREADS
 #include <pthread.h>
-typedef struct sg_task { pthread_t thread; const char* name; const char* at; void (*run)(struct sg_task*); } sg_task;
+typedef struct sg_task {
+    pthread_t thread;
+    const char* name;
+    const char* at;
+    void (*run)(struct sg_task*);
+    bool (*poll)(struct sg_task*);
+    struct sg_task* next;
+    void* waiter;
+    int kind;
+    int state;
+} sg_task;
 static _Thread_local sg_task* sg_task_now = NULL;
 static void sg_panic_start(void) {
     flockfile(stdout);
@@ -148,7 +167,7 @@ static void sg_panic_start(void) {
 }
 #define SG_PANIC_START() sg_panic_start()
 static void sg_task_note(void) {
-    if (!sg_task_now) return;
+    if (!sg_task_now || !sg_task_now->name) return;
     fprintf(stderr, "  in the task `%s` started here:\n", sg_task_now->name);
     fputs(sg_task_now->at, stderr);
 }
@@ -1548,41 +1567,458 @@ static bool sg_leaks(const char* ended) {
 "#;
 
 /// What a program that starts tasks needs (the type `sg_task` is in `RUNTIME`, where a panic
-/// reads it). A task runs on a thread of its own, whose stack is 8 MB on every system, as
-/// `main`'s is; a system that refuses the thread is a panic at the line that starts the task.
-/// The thread knows its task (`sg_task_now`), so that a panic in it names that line, and has a
-/// block of its own to write printed values in (`sg_scratch`). `wait` joins the thread.
+/// reads it). A task of `Task.run` runs on a thread of its own, whose stack is 8 MB on every
+/// system, as `main`'s is; a system that refuses the thread is a panic at the line that starts
+/// the task. The thread knows its task (`sg_task_now`), so that a panic in it names that line,
+/// and has a block of its own to write printed values in (`sg_scratch`). `wait` joins the thread.
+///
+/// An async function is a machine (its frame and its `poll` function, see `Emitter::async_func`).
+/// Called without `await`, it becomes a task: one block, its frame inside, that runs on the
+/// caller's thread until it first has to wait. Whatever it waits for wakes it, and a pool of
+/// threads, one for each core and started as they are needed, runs it on from there. Delays are
+/// kept by one more thread, the clock, in a heap ordered by when they are over; a cancellation
+/// source is a count of owners, a flag, and the delays that look at it.
 const TASK_RUNTIME: &str = r#"
+#include <stddef.h>
+#include <time.h>
+#include <unistd.h>
 #define SG_TASK_STACK ((size_t)8 << 20)
+enum { SG_THREAD, SG_ASYNC, SG_DELAY };
+/* What an async task is doing (`sg_task.state`): waiting for something, waiting for a thread of
+   the pool, running, running and woken meanwhile (it runs once more), ended. */
+enum { SG_IDLE, SG_QUEUED, SG_RUNNING, SG_WOKEN, SG_FINISHED };
+#define SG_ENDED ((void*)(uintptr_t)2)
 /* Where a task is started: the name of its function (`NULL` for a function value, whose name is
    found by its address, see `sg_func_name`) and the line. */
 typedef struct { const char* name; const char* at; } sg_site;
+/* The async task whose machine this thread is running. */
+static _Thread_local sg_task* sg_job_now = NULL;
+static void sg_wake(sg_task* job);
+SG_COLD static _Noreturn void sg_refused(int code, const char* what, const char* at) {
+    SG_PANIC_START();
+    fprintf(stderr, "panic: the system refused a thread for %s: %s (os error %d)\n", what, strerror(code), code);
+    sg_die(at);
+}
+static int sg_thread_start(pthread_t* thread, void* (*body)(void*), void* arg, bool detached) {
+    pthread_attr_t attr;
+    int code = pthread_attr_init(&attr);
+    if (code == 0) {
+        code = pthread_attr_setstacksize(&attr, SG_TASK_STACK);
+        if (code == 0 && detached) code = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        if (code == 0) code = pthread_create(thread, &attr, body, arg);
+        pthread_attr_destroy(&attr);
+    }
+    return code;
+}
+
+/* A thread asleep until a task ends. */
+typedef struct { pthread_mutex_t m; pthread_cond_t c; bool ended; } sg_parked;
+/* The task has ended: whoever waits for it goes on. The task may be freed at once, so nothing
+   of it is touched after the exchange. */
+static void sg_task_ended(sg_task* t) {
+    void* w = __atomic_exchange_n(&t->waiter, SG_ENDED, __ATOMIC_ACQ_REL);
+    if (!w) return;
+    if ((uintptr_t)w & 1) {
+        sg_parked* p = (sg_parked*)((uintptr_t)w - 1);
+        pthread_mutex_lock(&p->m);
+        p->ended = true;
+        pthread_cond_signal(&p->c);
+        pthread_mutex_unlock(&p->m);
+    } else {
+        sg_wake((sg_task*)w);
+    }
+}
+/* Code that is not async waits for an async task or a delay: its thread sleeps until it ends. */
+static void sg_park(sg_task* t) {
+    if (__atomic_load_n(&t->waiter, __ATOMIC_ACQUIRE) == SG_ENDED) return;
+    sg_parked p;
+    pthread_mutex_init(&p.m, NULL);
+    pthread_cond_init(&p.c, NULL);
+    p.ended = false;
+    void* none = NULL;
+    if (__atomic_compare_exchange_n(&t->waiter, &none, (void*)((uintptr_t)&p + 1), false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        pthread_mutex_lock(&p.m);
+        while (!p.ended) pthread_cond_wait(&p.c, &p.m);
+        pthread_mutex_unlock(&p.m);
+    }
+    pthread_mutex_destroy(&p.m);
+    pthread_cond_destroy(&p.c);
+}
+/* `await t`: whether the task has ended. If not, the async task running now is woken when it
+   does; it is the only one that can wait for it, since a task is waited for once. */
+static bool sg_ready(sg_task* t) {
+    void* w = __atomic_load_n(&t->waiter, __ATOMIC_ACQUIRE);
+    if (w == SG_ENDED) return true;
+    if (w == (void*)sg_job_now) return false;
+    void* none = NULL;
+    return !__atomic_compare_exchange_n(&t->waiter, &none, (void*)sg_job_now, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
 static void* sg_task_main(void* p) {
     sg_task* task = p;
     sg_task_now = task;
     task->run(task);
     if (sg_scratch.cap > 0) free(sg_scratch.ptr);
+    sg_task_ended(task);
     return NULL;
 }
 static void sg_task_start(sg_task* task, void (*run)(sg_task*), const char* name, const char* at) {
     task->name = name;
     task->at = at;
     task->run = run;
-    pthread_attr_t attr;
-    int code = pthread_attr_init(&attr);
-    if (code == 0) {
-        code = pthread_attr_setstacksize(&attr, SG_TASK_STACK);
-        if (code == 0) code = pthread_create(&task->thread, &attr, sg_task_main, task);
-        pthread_attr_destroy(&attr);
+    task->kind = SG_THREAD;
+    task->waiter = NULL;
+    int code = sg_thread_start(&task->thread, sg_task_main, task, false);
+    if (code != 0) sg_refused(code, "this task", at);
+}
+/* `wait`, and the drop of a task on a way out with an error: a thread is joined; for the
+   others this thread sleeps until they end. After `await` it is quick: the task has ended. */
+static inline void sg_task_join(sg_task* task) {
+    if (task->kind != SG_THREAD) sg_park(task);
+    else if (pthread_join(task->thread, NULL) != 0) abort();
+}
+
+/* The pool: async tasks that can run, first in first out, and the threads that run them. */
+static pthread_mutex_t sg_pool_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t sg_pool_wait = PTHREAD_COND_INITIALIZER;
+static sg_task* sg_pool_first = NULL;
+static sg_task* sg_pool_last = NULL;
+static int sg_pool_threads = 0;
+static int sg_pool_idle = 0;
+static int sg_pool_most = 0;
+static void sg_job_run(sg_task* job);
+static void* sg_worker(void* unused) {
+    (void)unused;
+    pthread_mutex_lock(&sg_pool_lock);
+    for (;;) {
+        while (!sg_pool_first) {
+            sg_pool_idle++;
+            pthread_cond_wait(&sg_pool_wait, &sg_pool_lock);
+            sg_pool_idle--;
+        }
+        sg_task* job = sg_pool_first;
+        sg_pool_first = job->next;
+        if (!sg_pool_first) sg_pool_last = NULL;
+        pthread_mutex_unlock(&sg_pool_lock);
+        __atomic_store_n(&job->state, SG_RUNNING, __ATOMIC_SEQ_CST);
+        sg_job_run(job);
+        pthread_mutex_lock(&sg_pool_lock);
     }
-    if (code != 0) {
-        SG_PANIC_START();
-        fprintf(stderr, "panic: the system refused a thread for this task: %s (os error %d)\n", strerror(code), code);
-        sg_die(at);
+    return NULL;
+}
+static void sg_pool_put(sg_task* job) {
+    pthread_mutex_lock(&sg_pool_lock);
+    job->next = NULL;
+    if (sg_pool_last) sg_pool_last->next = job;
+    else sg_pool_first = job;
+    sg_pool_last = job;
+    if (sg_pool_most == 0) {
+        long cores = sysconf(_SC_NPROCESSORS_ONLN);
+        sg_pool_most = cores > 0 ? (int)cores : 1;
+    }
+    if (sg_pool_idle > 0) {
+        pthread_cond_signal(&sg_pool_wait);
+    } else if (sg_pool_threads < sg_pool_most) {
+        pthread_t thread;
+        int code = sg_thread_start(&thread, sg_worker, NULL, true);
+        if (code != 0) sg_refused(code, "the pool of async tasks", job->at ? job->at : "");
+        sg_pool_threads++;
+    }
+    pthread_mutex_unlock(&sg_pool_lock);
+}
+/* Whatever an async task waited for is there: it runs again, now if it is waiting, or once
+   more after the round it is in. */
+static void sg_wake(sg_task* job) {
+    int state = __atomic_load_n(&job->state, __ATOMIC_SEQ_CST);
+    for (;;) {
+        int next;
+        if (state == SG_IDLE) next = SG_QUEUED;
+        else if (state == SG_RUNNING) next = SG_WOKEN;
+        else return;
+        if (__atomic_compare_exchange_n(&job->state, &state, next, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+            if (next == SG_QUEUED) sg_pool_put(job);
+            return;
+        }
     }
 }
-static inline void sg_task_join(sg_task* task) {
-    if (pthread_join(task->thread, NULL) != 0) abort();
+/* Runs the machine of an async task until it ends or has to wait. */
+static void sg_job_run(sg_task* job) {
+    sg_task* outer_job = sg_job_now;
+    sg_task* outer_task = sg_task_now;
+    for (;;) {
+        sg_job_now = job;
+        sg_task_now = job;
+        bool ended = job->poll(job);
+        sg_job_now = outer_job;
+        sg_task_now = outer_task;
+        if (ended) {
+            __atomic_store_n(&job->state, SG_FINISHED, __ATOMIC_SEQ_CST);
+            sg_task_ended(job);
+            return;
+        }
+        int running = SG_RUNNING;
+        if (__atomic_compare_exchange_n(&job->state, &running, SG_IDLE, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) return;
+        __atomic_store_n(&job->state, SG_RUNNING, __ATOMIC_SEQ_CST);
+    }
+}
+/* An async function called without `await`: its task starts on the caller's thread and runs
+   until it first has to wait, as in C#. */
+static void sg_job_start(sg_task* job, bool (*poll)(sg_task*), const char* name, const char* at) {
+    job->name = name;
+    job->at = at;
+    job->poll = poll;
+    job->kind = SG_ASYNC;
+    job->waiter = NULL;
+    job->next = NULL;
+    job->state = SG_RUNNING;
+    sg_job_run(job);
+}
+
+/* A delay, in the frame of the async function that awaits it, in a task of its own
+   (`Task.delay(ms)` kept in a variable), or in a source that cancels itself. `over` is what is
+   done when it is over or cancelled; without it the async task that awaits it is woken. The
+   delays that look at a token are on a list in its source. */
+typedef struct sg_delay {
+    int64_t due;
+    int64_t order;
+    int64_t at;
+    int state;
+    sg_task* job;
+    void (*over)(struct sg_delay*);
+    struct sg_cancel* token;
+    struct sg_delay* prev;
+    struct sg_delay* next;
+} sg_delay;
+enum { SG_WAITING, SG_OVER, SG_CANCELLED };
+typedef struct sg_cancel {
+    int64_t refs;
+    int cancelled;
+    sg_delay* first;
+    sg_delay clock;
+} sg_cancel;
+
+static pthread_mutex_t sg_clock_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t sg_clock_wait;
+static bool sg_clock_started = false;
+static sg_delay** sg_heap = NULL;
+static int64_t sg_heap_len = 0;
+static int64_t sg_heap_cap = 0;
+static int64_t sg_clock_order = 0;
+static int64_t sg_now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+static inline bool sg_sooner(const sg_delay* a, const sg_delay* b) { return a->due < b->due || (a->due == b->due && a->order < b->order); }
+static inline void sg_heap_set(int64_t i, sg_delay* d) { sg_heap[i] = d; d->at = i; }
+static void sg_heap_up(int64_t i) {
+    sg_delay* d = sg_heap[i];
+    while (i > 0) {
+        int64_t parent = (i - 1) / 2;
+        if (!sg_sooner(d, sg_heap[parent])) break;
+        sg_heap_set(i, sg_heap[parent]);
+        i = parent;
+    }
+    sg_heap_set(i, d);
+}
+static void sg_heap_down(int64_t i) {
+    sg_delay* d = sg_heap[i];
+    for (;;) {
+        int64_t child = 2 * i + 1;
+        if (child >= sg_heap_len) break;
+        if (child + 1 < sg_heap_len && sg_sooner(sg_heap[child + 1], sg_heap[child])) child++;
+        if (!sg_sooner(sg_heap[child], d)) break;
+        sg_heap_set(i, sg_heap[child]);
+        i = child;
+    }
+    sg_heap_set(i, d);
+}
+static void sg_heap_remove(sg_delay* d) {
+    int64_t i = d->at;
+    d->at = -1;
+    sg_heap_len--;
+    if (i == sg_heap_len) return;
+    sg_delay* moved = sg_heap[sg_heap_len];
+    sg_heap_set(i, moved);
+    sg_heap_up(i);
+    sg_heap_down(moved->at);
+}
+/* The clock's lock is held. The delay may be freed by `over`. */
+static void sg_delay_end(sg_delay* d, int how) {
+    __atomic_store_n(&d->state, how, __ATOMIC_RELEASE);
+    if (d->token) {
+        if (d->prev) d->prev->next = d->next;
+        else d->token->first = d->next;
+        if (d->next) d->next->prev = d->prev;
+    }
+    if (d->over) d->over(d);
+    else sg_wake(d->job);
+}
+static void sg_clock_sleep(int64_t ns) {
+    struct timespec t;
+#if defined(__APPLE__)
+    t.tv_sec = (time_t)(ns / 1000000000);
+    t.tv_nsec = (long)(ns % 1000000000);
+    pthread_cond_timedwait_relative_np(&sg_clock_wait, &sg_clock_lock, &t);
+#else
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    int64_t at = (int64_t)t.tv_nsec + ns % 1000000000;
+    t.tv_sec += (time_t)(ns / 1000000000 + at / 1000000000);
+    t.tv_nsec = (long)(at % 1000000000);
+    pthread_cond_timedwait(&sg_clock_wait, &sg_clock_lock, &t);
+#endif
+}
+static void* sg_clock_main(void* unused) {
+    (void)unused;
+    pthread_mutex_lock(&sg_clock_lock);
+    for (;;) {
+        if (sg_heap_len == 0) {
+            pthread_cond_wait(&sg_clock_wait, &sg_clock_lock);
+            continue;
+        }
+        sg_delay* first = sg_heap[0];
+        int64_t now = sg_now();
+        if (first->due <= now) {
+            sg_heap_remove(first);
+            sg_delay_end(first, SG_OVER);
+        } else {
+            sg_clock_sleep(first->due - now);
+        }
+    }
+    return NULL;
+}
+/* Puts a delay of `ms` on the clock; the clock's lock is held. */
+static void sg_clock_put(sg_delay* d, int64_t ms, const char* loc) {
+    if (!sg_clock_started) {
+        pthread_condattr_t attr;
+        pthread_condattr_init(&attr);
+#if !defined(__APPLE__)
+        pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+#endif
+        pthread_cond_init(&sg_clock_wait, &attr);
+        pthread_condattr_destroy(&attr);
+        pthread_t thread;
+        int code = sg_thread_start(&thread, sg_clock_main, NULL, true);
+        if (code != 0) sg_refused(code, "the clock of delays", loc);
+        sg_clock_started = true;
+    }
+    d->due = sg_now() + ms * 1000000;
+    d->order = sg_clock_order++;
+    if (sg_heap_len == sg_heap_cap) sg_heap = sg_grow(sg_heap, &sg_heap_cap, sizeof *sg_heap);
+    sg_heap_set(sg_heap_len, d);
+    sg_heap_len++;
+    sg_heap_up(sg_heap_len - 1);
+    if (d->at == 0) pthread_cond_signal(&sg_clock_wait);
+}
+/* `await Task.delay(ms)` and `await Task.delay(ms, read token)`, in the frame of the async
+   function. A delay of 0, and one whose token is cancelled, is over at once and does not wait. */
+static void sg_delay_start(sg_delay* d, int32_t ms, bool told, sg_cancel* token, const char* loc) {
+    if (ms < 0) sg_panicf(loc, "`Task.delay(%d%s)`: a delay is not negative", (int)ms, told ? ", token" : "");
+    d->job = sg_job_now;
+    d->over = NULL;
+    d->token = NULL;
+    d->at = -1;
+    d->prev = d->next = NULL;
+    if (token && __atomic_load_n(&token->cancelled, __ATOMIC_ACQUIRE)) { d->state = SG_CANCELLED; return; }
+    if (ms == 0) { d->state = SG_OVER; return; }
+    d->state = SG_WAITING;
+    pthread_mutex_lock(&sg_clock_lock);
+    if (token && token->cancelled) {
+        d->state = SG_CANCELLED;
+    } else {
+        if (token) {
+            d->token = token;
+            d->next = token->first;
+            if (token->first) token->first->prev = d;
+            token->first = d;
+        }
+        sg_clock_put(d, ms, loc);
+    }
+    pthread_mutex_unlock(&sg_clock_lock);
+}
+static inline int sg_delay_state(sg_delay* d) { return __atomic_load_n(&d->state, __ATOMIC_ACQUIRE); }
+
+/* `Task.delay(ms)` kept as a task: it ends when the delay is over. */
+typedef struct { sg_task head; sg_delay delay; } sg_delay_task;
+static void sg_delay_task_over(sg_delay* d) { sg_task_ended(&((sg_delay_task*)((char*)d - offsetof(sg_delay_task, delay)))->head); }
+static sg_task* sg_delay_task_new(int32_t ms, const char* loc) {
+    if (ms < 0) sg_panicf(loc, "`Task.delay(%d)`: a delay is not negative", (int)ms);
+    sg_delay_task* t = malloc(sizeof *t);
+    if (!t) abort();
+    t->head.kind = SG_DELAY;
+    t->head.name = NULL;
+    t->head.at = NULL;
+    t->head.waiter = ms == 0 ? SG_ENDED : NULL;
+    if (ms > 0) {
+        t->delay.over = sg_delay_task_over;
+        t->delay.token = NULL;
+        t->delay.state = SG_WAITING;
+        pthread_mutex_lock(&sg_clock_lock);
+        sg_clock_put(&t->delay, ms, loc);
+        pthread_mutex_unlock(&sg_clock_lock);
+    }
+    return &t->head;
+}
+
+/* A `CancellationSource` and its tokens point at one block; `CancellationToken.None` is `NULL`. */
+static sg_cancel* sg_cancel_new(void) {
+    sg_cancel* c = calloc(1, sizeof *c);
+    if (!c) abort();
+    c->refs = 1;
+    c->clock.at = -1;
+    return c;
+}
+static inline sg_cancel* sg_cancel_more(sg_cancel* c) {
+    if (c) __atomic_fetch_add(&c->refs, 1, __ATOMIC_RELAXED);
+    return c;
+}
+static inline void sg_cancel_less(sg_cancel* c) {
+    if (c && __atomic_sub_fetch(&c->refs, 1, __ATOMIC_ACQ_REL) == 0) free(c);
+}
+static inline void sg_drop_source(sg_cancel** p) { sg_cancel_less(*p); *p = NULL; }
+static inline sg_cancel* sg_move_source(sg_cancel** p) { sg_cancel* c = *p; *p = NULL; return c; }
+#define sg_drop_token sg_drop_source
+#define sg_move_token sg_move_source
+static inline bool sg_cancelled(const sg_cancel* c) { return c && __atomic_load_n(&c->cancelled, __ATOMIC_ACQUIRE); }
+/* The clock's lock is held: every delay that looks at the source ends now, in the order they
+   were started. */
+static void sg_cancel_held(sg_cancel* c) {
+    if (c->cancelled) return;
+    __atomic_store_n(&c->cancelled, 1, __ATOMIC_RELEASE);
+    sg_delay* last = c->first;
+    while (last && last->next) last = last->next;
+    while (last) {
+        sg_delay* d = last;
+        last = d->prev;
+        sg_heap_remove(d);
+        sg_delay_end(d, SG_CANCELLED);
+    }
+}
+static void sg_cancel_now(sg_cancel* c) {
+    pthread_mutex_lock(&sg_clock_lock);
+    sg_cancel_held(c);
+    pthread_mutex_unlock(&sg_clock_lock);
+}
+static void sg_cancel_clock_over(sg_delay* d) {
+    sg_cancel* c = (sg_cancel*)((char*)d - offsetof(sg_cancel, clock));
+    sg_cancel_held(c);
+    sg_cancel_less(c);
+}
+/* `CancellationSource.after(ms)`: the clock holds the source until it cancels it. */
+static sg_cancel* sg_cancel_after(int32_t ms, const char* loc) {
+    if (ms < 0) sg_panicf(loc, "`CancellationSource.after(%d)`: a time is not negative", (int)ms);
+    sg_cancel* c = sg_cancel_new();
+    if (ms == 0) {
+        c->cancelled = 1;
+        return c;
+    }
+    c->refs = 2;
+    c->clock.over = sg_cancel_clock_over;
+    c->clock.state = SG_WAITING;
+    pthread_mutex_lock(&sg_clock_lock);
+    sg_clock_put(&c->clock, ms, loc);
+    pthread_mutex_unlock(&sg_clock_lock);
+    return c;
 }
 "#;
 
@@ -1985,9 +2421,6 @@ static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) 
 /// debug build, where `+`, `-`, `*` and unary `-` panic on overflow; without it, a release
 /// build, where they wrap. `tests`: the program that runs the `test` blocks instead of `main`.
 pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Res<String> {
-    if let Some(func) = prog.funcs.iter().find(|func| func.is_async) {
-        return Err(not_yet(func.name_span, "an `async` function"));
-    }
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let mut emitter = Emitter {
@@ -2023,7 +2456,11 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         guard_decls: Vec::new(),
         reserving: None,
         sites: Vec::new(),
-        funcs: prog.funcs.iter().map(|func| func.name.as_str()).collect(),
+        funcs: prog.funcs.iter().filter(|func| !func.is_async).map(|func| func.name.as_str()).collect(),
+        asyncs: prog.funcs.iter().filter(|func| func.is_async).map(|func| func.name.as_str()).collect(),
+        awaits: None,
+        exit_blocks: Vec::new(),
+        frames: Vec::new(),
     };
     // Every struct and enum is named first, so that a type can point at itself or at a later
     // one. Then the types themselves, each after the types it holds by value.
@@ -2041,10 +2478,19 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         emitter.enum_decl(decl, &mut done)?;
     }
 
-    // What each function takes: an argument is shaped for the parameter it goes to.
+    // What each function takes: an argument is shaped for the parameter it goes to. An async
+    // function is given its arguments by what puts them in its frame, or in the frame of a task.
     for func in &prog.funcs {
         let params = func.params.iter().map(|param| emitter.written(&param.ty)).collect::<Res<Vec<Ty>>>()?;
-        emitter.sigs.insert(format!("f_{}", cname(&func.name)), params);
+        let name = cname(&func.name);
+        if func.is_async {
+            let _ = writeln!(emitter.types, "typedef struct F_{name} F_{name};");
+            emitter.made.insert("tasks".to_string());
+            emitter.sigs.insert(format!("a_init_{name}"), params.clone());
+            emitter.sigs.insert(format!("a_start_{name}"), params);
+        } else {
+            emitter.sigs.insert(format!("f_{name}"), params);
+        }
     }
     let typed = || {
         let structs = prog.structs.iter().map(|decl| (&decl.name, &decl.methods));
@@ -2060,7 +2506,10 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     let mut protos = String::new();
     let mut bodies = String::new();
     for func in &prog.funcs {
-        emitter.func(func, None, &mut protos, &mut bodies)?;
+        match func.is_async {
+            true => emitter.async_func(func, &mut protos, &mut bodies)?,
+            false => emitter.func(func, None, &mut protos, &mut bodies)?,
+        }
     }
     for (owner, methods) in typed() {
         for method in methods {
@@ -2133,6 +2582,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     out.push('\n');
     out.push_str(&emitter.types);
     out.push_str(&emitter.late_types);
+    out.push_str(&emitter.frame_types());
     out.push('\n');
     out.push_str(&emitter.glue_protos);
     out.push('\n');
@@ -2160,7 +2610,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
 
 fn not_yet(span: Span, what: &str) -> Diag {
     Diag::error(span, format!("{what} is not in the C back end yet"))
-        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, the collections, arrays and slices, function values, `T*`, `T?`, `read` and `ref`, `shared` values, tasks, and `print`")
+        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, the collections, arrays and slices, function values, `T*`, `T?`, `read` and `ref`, `shared` values, tasks, async functions and cancellation, and `print`")
 }
 
 /// A C string literal for any text.
@@ -2280,6 +2730,8 @@ fn float_literal(text: &str, ty: FloatTy) -> String {
 /// fewest digits that give it back.
 fn constant(ty: &Ty, name: &str) -> String {
     match ty {
+        // `CancellationToken.None`: a token of no source.
+        Ty::Token => "((sg_cancel*)NULL)".to_string(),
         Ty::Int(ty) => int_literal(if name == "MinValue" { ty.min() } else { ty.max() }, *ty),
         Ty::Float(ty) => {
             let ctype = float_ctype(*ty);
@@ -2413,6 +2865,8 @@ fn mangle(ty: &Ty) -> Option<String> {
         Ty::Str => "string".to_string(),
         Ty::Reader => "reader".to_string(),
         Ty::Writer => "writer".to_string(),
+        Ty::Source => "source".to_string(),
+        Ty::Token => "token".to_string(),
         Ty::Struct(name) => format!("S_{}", cname(name)),
         Ty::Enum(name) => format!("E_{}", cname(name)),
         Ty::Ptr(inner) => format!("P_{}", mangle(inner)?),
@@ -2504,7 +2958,7 @@ fn may_leave(expr: &Expr) -> bool {
     let any = |list: &mut dyn Iterator<Item = &Expr>| list.filter(|inner| may_leave(inner)).count() > 0;
     match &expr.kind {
         ExprKind::Try { .. } | ExprKind::Return(_) | ExprKind::Match { .. } => true,
-        ExprKind::Await(_) => unreachable!("a program with `async` functions is not compiled yet"),
+        ExprKind::Await(inner) => may_leave(inner),
         ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::Constant { .. } => false,
         ExprKind::Array { args, items, .. } => any(&mut args.iter().chain(items.iter().flatten())),
         ExprKind::AsSlice(inner) => may_leave(inner),
@@ -2799,6 +3253,18 @@ struct Emitter<'a> {
     /// The functions of the program: a task started through a function value finds the name
     /// of its function by its address (`sg_func_name`).
     funcs: Vec<&'a str>,
+    /// The async functions of the program, by name.
+    asyncs: HashSet<&'a str>,
+    /// While an async function is written: where each `await` stands, found again by the number
+    /// in its `SG_RESUME` mark. The first is the function's name, for a task awaited on a way out
+    /// (see `drops`).
+    awaits: Option<Vec<Span>>,
+    /// The ways out of the async function being written that leave from inside an expression
+    /// (`try`): written after its body, where the tasks it still has to await can be awaited.
+    exit_blocks: Vec<String>,
+    /// The frames of the async functions: the name, the C struct, the frames it holds by value,
+    /// and the type of the task it becomes, written after every frame.
+    frames: Vec<(String, String, Vec<String>, String)>,
 }
 
 impl<'a> Emitter<'a> {
@@ -2896,6 +3362,11 @@ impl<'a> Emitter<'a> {
                 .to_string()
             }
             Ty::TextIter(_) => "sg_iter".to_string(),
+            // A source and its tokens point at one block (see `TASK_RUNTIME`).
+            Ty::Source | Ty::Token => {
+                self.made.insert("tasks".to_string());
+                "sg_cancel*".to_string()
+            }
             Ty::Void => "void".to_string(),
             // A `Formatter` is the text being written.
             Ty::Str | Ty::Formatter => "sg_string".to_string(),
@@ -3507,7 +3978,7 @@ impl<'a> Emitter<'a> {
                 let params = params.iter().map(|param| self.written(param)).collect::<Res<Vec<Ty>>>()?;
                 Ty::Func(params, Box::new(self.written(ret)?))
             }
-            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter | Ty::Reader | Ty::Writer)), []) => base,
+            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter | Ty::Reader | Ty::Writer | Ty::Source | Ty::Token)), []) => base,
             (None, []) => match self.full(&ty.name, ty.span) {
                 // An alias is the type it names; the checker has seen that it ends.
                 Some(full) if self.aliases.contains_key(full.as_str()) => self.written(&self.aliases[full.as_str()].ty)?,
@@ -3556,7 +4027,7 @@ impl<'a> Emitter<'a> {
     /// Whether a value of this type owns something that is freed when it ends.
     fn droppable(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader | Ty::Writer | Ty::Task(_) => true,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader | Ty::Writer | Ty::Task(_) | Ty::Source | Ty::Token => true,
             Ty::Entry(key, value) => self.droppable(key) || self.droppable(value),
             Ty::Nullable(inner) | Ty::Array(inner, _) => self.droppable(inner),
             Ty::Result(ok, error) => self.droppable(ok) || self.droppable(error),
@@ -4332,7 +4803,7 @@ impl<'a> Emitter<'a> {
         // `main(List<string> args)`: the words after the program's name, looked at where the
         // system keeps them (a text of capacity 0 owns nothing), each checked to be UTF-8.
         let (head, call) = match main.params.is_empty() {
-            true => ("int main(void) {\n".to_string(), "f_main()"),
+            true => ("int main(void) {\n".to_string(), "f_main()".to_string()),
             false => {
                 let list = self.ctype(&Ty::List(Box::new(Ty::Str)), main.name_span)?;
                 (
@@ -4343,9 +4814,22 @@ impl<'a> Emitter<'a> {
                          if (sg_utf8_bad((const uint8_t*)argv[i], n) >= 0) {{ fprintf(stderr, \"error: args[%d] is not valid UTF-8\\n\", i - 1); free(args.ptr); return 1; }}\n        \
                          args.ptr[i - 1] = SG_LIT(argv[i], n);\n    }}\n"
                     ),
-                    "f_main(args)",
+                    "f_main(args)".to_string(),
                 )
             }
+        };
+        // An async `main` is a task that starts on the main thread, which then waits for it.
+        let call = match main.is_async {
+            true => {
+                let task = Ty::Task(Box::new(self.written(&main.ret)?));
+                self.ctype(&task, main.name_span)?;
+                self.sites.push("{ NULL, NULL }".to_string());
+                let site = format!("&sg_site_{}", self.sites.len() - 1);
+                let args = call.strip_prefix("f_main(").expect("a call of `main`").trim_end_matches(')');
+                let args = if args.is_empty() { String::new() } else { format!(", {args}") };
+                format!("sg_wait_{}(a_start_main({site}{args}))", mangle(&task).expect("a task has a C name"))
+            }
+            false => call,
         };
         Ok(match self.written(&main.ret)? {
             ret @ Ty::Result(..) => {
@@ -4455,6 +4939,166 @@ impl<'a> Emitter<'a> {
         bodies.push_str(&body);
         bodies.push_str("}\n\n");
         Ok(())
+    }
+
+    /// An async function, written as a machine. Its parameters, its variables, its temporaries
+    /// and the frames of the async functions it awaits are kept in a frame (`F_f`), and
+    /// `a_poll_f` runs it from where it last stopped until it ends (`true`; what it returns is in
+    /// `sg_ret`) or has to wait (`false`). Each `await` is a numbered place to come back to (an
+    /// `SG_RESUME` mark, see `hoisted`), and the function starts with a jump to the place it
+    /// stopped at. `a_init_f` puts the arguments in a frame; `a_start_f` makes a task of a frame
+    /// and starts it (see `sg_job_start`).
+    fn async_func(&mut self, func: &'a Func, protos: &mut String, bodies: &mut String) -> Res<()> {
+        let ret = self.written(&func.ret)?;
+        let name = cname(&func.name);
+        let mut params = Vec::new();
+        let mut scope = streams();
+        for param in &func.params {
+            let ty = self.written(&param.ty)?;
+            params.push((self.ctype(&ty, param.ty.span)?, format!("v_{}", param.name)));
+            scope.push(Local { name: param.name.clone(), cname: format!("v_{}", param.name), ty, gone: false, drop: None });
+        }
+        self.ret = ret.clone();
+        self.temps = 0;
+        self.scopes = vec![scope];
+        self.awaits = Some(vec![func.name_span]);
+        self.exit_blocks.clear();
+        let mut body = String::new();
+        let written = self.stmts(&func.body, 1, &mut body);
+        if written.is_ok() && !ends_by_leaving(&func.body) {
+            for line in self.drops(0) {
+                let _ = writeln!(body, "    {line}");
+            }
+            if ret == Ty::Void {
+                body.push_str("    return true;\n");
+            }
+        }
+        for block in std::mem::take(&mut self.exit_blocks) {
+            body.push_str(&block);
+        }
+        self.scopes.clear();
+        let awaits = self.awaits.take().expect("set above");
+        written?;
+        // The borrows of `shared checked` values, one on each line.
+        let mut guards = String::new();
+        for guard in std::mem::take(&mut self.guard_decls) {
+            let _ = writeln!(guards, "    sg_guard {guard} = {{ 0 }};");
+        }
+        self.guards.clear();
+        let hoisted = hoisted(&format!("{guards}{body}")).map_err(|at| match awaits.get(at) {
+            Some(span) if at > 0 => not_yet(*span, "`await` in this part of a statement").hint("give the value a name first: `var x = await ...`"),
+            Some(_) => not_yet(func.name_span, "an async function that leaves from inside an expression while a task it started is not awaited").hint("await the task first"),
+            None => not_yet(func.name_span, "this async function"),
+        })?;
+
+        // The frame. The frames of awaited calls and the delays awaited in place are used one
+        // at a time, so they share their room.
+        let frame = format!("F_{name}");
+        let (mut fields, mut shared, mut deps) = (String::from("    int sg_state;\n"), String::new(), Vec::new());
+        if ret != Ty::Void {
+            let _ = writeln!(fields, "    {} sg_ret;", self.ctype(&ret, func.ret.span)?);
+        }
+        let (mut defines, mut undefines) = (String::new(), String::new());
+        for (ctype, cname) in &params {
+            let _ = writeln!(fields, "    {ctype} {cname};");
+            let _ = writeln!(defines, "#define {cname} (sg_f->{cname})");
+            let _ = writeln!(undefines, "#undef {cname}");
+        }
+        for field in &hoisted.fields {
+            let line = format!("{} {}{};", field.ty, field.name, field.array);
+            if field.ty.starts_with("F_") || field.ty == "sg_delay" {
+                if let Some(held) = field.ty.strip_prefix("F_") {
+                    deps.push(held.to_string());
+                }
+                let _ = write!(shared, " {line}");
+                let _ = writeln!(defines, "#define {0} (sg_f->sg_u.{0})", field.name);
+            } else {
+                let _ = writeln!(fields, "    {line}");
+                let _ = writeln!(defines, "#define {0} (sg_f->{0})", field.name);
+            }
+            let _ = writeln!(undefines, "#undef {}", field.name);
+        }
+        if !shared.is_empty() {
+            let _ = writeln!(fields, "    union {{{shared} }} sg_u;");
+        }
+
+        // The task it becomes when it is called without `await`: the task, then the frame.
+        let task_ty = Ty::Task(Box::new(ret.clone()));
+        let task = self.ctype(&task_ty, func.name_span)?;
+        let task_struct = task.trim_end_matches('*').to_string();
+        let job = format!("J_{name}");
+        let after = format!("typedef struct {{ {task_struct} base; {frame} frame; }} {job};\n");
+        self.frames.push((name.clone(), format!("struct {frame} {{\n{fields}}};\n"), deps, after));
+
+        let poll = format!("static bool a_poll_{name}({frame}* sg_f)");
+        let takes: String = params.iter().map(|(ctype, cname)| format!(", {ctype} {cname}")).collect();
+        let gives: String = params.iter().map(|(_, cname)| format!(", {cname}")).collect();
+        let sets: String = params.iter().map(|(_, cname)| format!(" f->{cname} = {cname};")).collect();
+        let init = format!("static inline void a_init_{name}({frame}* f{takes})");
+        let start = format!("static {task} a_start_{name}(const sg_site* site{takes})");
+        let _ = writeln!(protos, "{poll};\n{init};\n{start};");
+        let _ = writeln!(bodies, "{init} {{ f->sg_state = 0;{sets} }}");
+        let result = if ret == Ty::Void { "" } else { " j->base.result = j->frame.sg_ret;" };
+        let _ = writeln!(bodies, "static bool a_run_{name}(sg_task* t) {{ {job}* j = ({job}*)t; if (!a_poll_{name}(&j->frame)) return false;{result} return true; }}");
+        let _ = writeln!(
+            bodies,
+            "{start} {{\n    {job}* j = malloc(sizeof *j);\n    if (!j) abort();\n    a_init_{name}(&j->frame{gives});\n    sg_job_start(&j->base.head, a_run_{name}, site->name, site->at);\n    return &j->base;\n}}"
+        );
+        bodies.push_str(&defines);
+        let _ = writeln!(bodies, "{poll} {{");
+        if hoisted.resumes > 0 {
+            bodies.push_str("    switch (sg_f->sg_state) {\n    case 0: break;\n");
+            for n in 1..=hoisted.resumes {
+                let _ = writeln!(bodies, "    case {n}: goto sg_r{n};");
+            }
+            bodies.push_str("    }\n");
+        }
+        bodies.push_str(&hoisted.text);
+        bodies.push_str("}\n");
+        bodies.push_str(&undefines);
+        bodies.push('\n');
+        Ok(())
+    }
+
+    /// The frames of the async functions, each after the frames it holds, and the tasks they
+    /// become.
+    fn frame_types(&self) -> String {
+        let mut out = String::new();
+        let mut done: Vec<&str> = Vec::new();
+        while done.len() < self.frames.len() {
+            let before = done.len();
+            for (name, text, deps, _) in &self.frames {
+                if !done.contains(&name.as_str()) && deps.iter().all(|dep| done.contains(&dep.as_str())) {
+                    out.push_str(text);
+                    done.push(name);
+                }
+            }
+            assert!(done.len() > before, "an async function that awaits itself is rejected by the checker");
+        }
+        for (_, _, _, after) in &self.frames {
+            out.push_str(after);
+        }
+        out
+    }
+
+    /// A place an async function comes back to after it waited, written before the statement.
+    /// Its number is given when the function is whole (see `hoisted`).
+    fn resume_point(&mut self, span: Span) {
+        let awaits = self.awaits.as_mut().expect("`await` is only in async functions");
+        awaits.push(span);
+        let mark = awaits.len() - 1;
+        self.pre.push(format!("SG_RESUME({mark});"));
+    }
+
+    /// `return v` in the function being written: an async function puts the value in its frame
+    /// and says that it has ended.
+    fn return_line(&self, value: Option<&str>) -> String {
+        match (self.awaits.is_some(), value) {
+            (false, Some(value)) => format!("return {value};"),
+            (false, None) => "return;".to_string(),
+            (true, Some(value)) => format!("sg_f->sg_ret = {value}; return true;"),
+            (true, None) => "return true;".to_string(),
+        }
     }
 
     /// A call of a built-in method on a receiver that may have been lent in two steps
@@ -4576,6 +5220,11 @@ impl<'a> Emitter<'a> {
             for local in scope.iter().rev() {
                 match &local.drop {
                     Some(line) => lines.push(line.clone()),
+                    // A task is waited for on the way out; an async function awaits it.
+                    None if !local.gone && matches!(local.ty, Ty::Task(_)) && self.awaits.is_some() => {
+                        let task = &local.cname;
+                        lines.push(format!("SG_RESUME(0); if ({task} && !sg_ready(&{task}->head)) return false; {}", self.drop_of(&local.ty, task)));
+                    }
                     None if !local.gone && self.droppable(&local.ty) => lines.push(self.drop_of(&local.ty, &local.cname)),
                     None => {}
                 }
@@ -5856,14 +6505,14 @@ impl<'a> Emitter<'a> {
                 lines.extend(post);
                 lines.extend(pending.iter().cloned());
                 lines.extend(drops);
-                lines.push(format!("return {temp};"));
+                lines.push(self.return_line(Some(&temp)));
             }
-            Some(value) => lines.push(format!("return {value};")),
+            Some(value) => lines.push(self.return_line(Some(&value))),
             None => {
                 lines.extend(post);
                 lines.extend(pending.iter().cloned());
                 lines.extend(drops);
-                lines.push("return;".to_string());
+                lines.push(self.return_line(None));
             }
         }
         Ok(lines)
@@ -6113,7 +6762,8 @@ impl<'a> Emitter<'a> {
                 own.max(of(recv)).max(all(&mut args.iter()))
             }
             ExprKind::Try { .. } | ExprKind::Return(_) => Effect::Acts,
-            ExprKind::Await(_) => unreachable!("a program with `async` functions is not compiled yet"),
+            // Other tasks run while it waits.
+            ExprKind::Await(_) => Effect::Changes,
             ExprKind::Match { .. } | ExprKind::Collection { .. } => Effect::Changes,
             // An array is its items and nothing else: nothing is allocated for it.
             ExprKind::Array { args, items, .. } => all(&mut args.iter().chain(items.iter().flatten())),
@@ -6729,21 +7379,95 @@ impl<'a> Emitter<'a> {
             ExprKind::FuncRef(name) => c_string(short_name(name)),
             _ => "NULL".to_string(),
         };
-        let loc = self.loc(expr.span);
+        let site = self.site(name, expr.span);
+        let mut takes = vec![func];
+        takes.extend(params);
+        self.sigs.insert(starter.clone(), takes);
+        self.call(starter, Some(site), args, head, &expr.ty)
+    }
+
+    /// Where a task is started (`sg_site`), as the first value of the call that starts it: the
+    /// name of its function, in C, and the line.
+    fn site(&mut self, name: String, span: Span) -> Part {
+        let loc = self.loc(span);
         self.sites.push(format!("{{ {name}, {loc} }}"));
-        let site = Part {
+        Part {
             ctype: "const sg_site*".to_string(),
             value: format!("(&sg_site_{})", self.sites.len() - 1),
             effect: Effect::Reads,
             settled: true,
             pre: (self.pre.len(), self.pre.len()),
             leaves: false,
-            span: expr.span,
+            span,
+        }
+    }
+
+    /// `await e`, written before the statement: what it waits for is started, and the function
+    /// comes back to the next line after it waited (`resume_point`), until it is there. The
+    /// value is then kept in a temporary, since the room it is in is used by the next `await`.
+    /// An async function awaited in place runs in a frame inside this one; a delay awaited in
+    /// place is kept here too. Any other task is waited for as a task.
+    fn await_value(&mut self, inner: &'a Expr, head: bool, expr: &'a Expr) -> Res<String> {
+        let result = |this: &mut Self, value: String| -> Res<String> {
+            if matches!(expr.ty, Ty::Void | Ty::Never) {
+                if !value.is_empty() {
+                    this.pre.push(format!("{value};"));
+                }
+                return Ok("((void)0)".to_string());
+            }
+            let (ctype, temp) = (this.ctype(&expr.ty, expr.span)?, this.temp());
+            this.pre.push(format!("{ctype} {temp} = {value};"));
+            Ok(temp)
         };
-        let mut takes = vec![func];
-        takes.extend(params);
-        self.sigs.insert(starter.clone(), takes);
-        self.call(starter, Some(site), args, head, &expr.ty)
+        match &inner.kind {
+            ExprKind::Call { name, args, callee: Callee::Plain, .. } if self.asyncs.contains(name.as_str()) => {
+                let name = cname(name);
+                let frame = self.temp();
+                self.pre.push(format!("F_{name} {frame};"));
+                let receiver = Part {
+                    ctype: format!("F_{name}*"),
+                    value: format!("(&{frame})"),
+                    effect: Effect::Reads,
+                    settled: true,
+                    pre: (self.pre.len(), self.pre.len()),
+                    leaves: false,
+                    span: inner.span,
+                };
+                let init = self.call(format!("a_init_{name}"), Some(receiver), args, head, &Ty::Void)?;
+                self.pre.push(format!("{init};"));
+                self.resume_point(expr.span);
+                self.pre.push(format!("if (!a_poll_{name}(&{frame})) return false;"));
+                result(self, if matches!(expr.ty, Ty::Void | Ty::Never) { String::new() } else { format!("{frame}.sg_ret") })
+            }
+            ExprKind::Method { args, callee: Callee::Delay(told), .. } => {
+                let delay = self.temp();
+                let ms = self.value_as(&args[0], &Ty::Int(IntTy::Int))?;
+                let token = match told {
+                    true => format!("(*{})", self.value(&args[1])?),
+                    false => "NULL".to_string(),
+                };
+                let loc = self.loc(inner.span);
+                self.pre.push(format!("sg_delay {delay}; sg_delay_start(&{delay}, {ms}, {told}, {token}, {loc});"));
+                self.resume_point(expr.span);
+                self.pre.push(format!("if (sg_delay_state(&{delay}) == SG_WAITING) return false;"));
+                match told {
+                    true => {
+                        let ctype = self.ctype(&expr.ty, expr.span)?;
+                        result(self, format!("(sg_delay_state(&{delay}) == SG_CANCELLED ? ({ctype}){{ .tag = 1 }} : ({ctype}){{ .tag = 0 }})"))
+                    }
+                    false => result(self, String::new()),
+                }
+            }
+            ExprKind::Method { callee: Callee::IoAsync(_) | Callee::StreamAsync(_), .. } => Err(not_yet(inner.span, "async input and output")),
+            _ => {
+                let value = self.first(inner, head)?;
+                let (ctype, task) = (self.ctype(&inner.ty, inner.span)?, self.temp());
+                self.pre.push(format!("{ctype} {task} = {value};"));
+                self.resume_point(expr.span);
+                self.pre.push(format!("if (!sg_ready(&{task}->head)) return false;"));
+                result(self, format!("sg_wait_{}({task})", mangle(&inner.ty).expect("a task has a C name")))
+            }
+        }
     }
 
     /// The function that starts a task through a function of this type, written once: it
@@ -7385,8 +8109,21 @@ impl<'a> Emitter<'a> {
                 };
                 // What is returned is made of the opened value alone, so it can be written last.
                 let mut exit = self.post.clone();
-                exit.extend(self.drops(0));
-                exit.push(format!("return {returned};"));
+                if self.awaits.is_some() {
+                    // In an async function the rest of the way out is written after the body,
+                    // where a task it has to await on the way can be awaited.
+                    let label = format!("sg_x{}", self.exit_blocks.len());
+                    let mut block = format!("{label}:;\n");
+                    for line in self.drops(0) {
+                        let _ = writeln!(block, "    {line}");
+                    }
+                    block.push_str("    return true;\n");
+                    self.exit_blocks.push(block);
+                    exit.push(format!("sg_f->sg_ret = {returned}; goto {label};"));
+                } else {
+                    exit.extend(self.drops(0));
+                    exit.push(format!("return {returned};"));
+                }
                 self.open(&inner.ty, &temp, value, exit, inner.span)
             }
             ExprKind::Widen(ty, inner) => {
@@ -7757,6 +8494,12 @@ impl<'a> Emitter<'a> {
                 let made = self.handed_over(format!("((S_{}){{ {} }})", cname(name), inits.join(", ")), &expr.ty, &taking.handed, expr.span)?;
                 Ok(sequence(&names, made))
             }
+            ExprKind::Await(inner) => self.await_value(inner, head, expr),
+            // An async function called without `await`: a task, started at once.
+            ExprKind::Call { name, args, callee: Callee::Plain, .. } if self.asyncs.contains(name.as_str()) => {
+                let site = self.site(c_string(short_name(name)), expr.span);
+                self.call(format!("a_start_{}", cname(name)), Some(site), args, head, &expr.ty)
+            }
             ExprKind::Call { name, args, callee, .. } => match callee {
                 // `same(a, b)`: one object, whatever it holds.
                 Callee::Plain if name == "same" => {
@@ -7785,6 +8528,10 @@ impl<'a> Emitter<'a> {
                     Ok(if made.is_empty() { stop } else { format!("({{ {made}{stop}; }})") })
                 }
                 Callee::Plain if matches!(name.as_str(), "print" | "printError" | "assert") => Err(not_yet(expr.span, &format!("`{name}` used as a value"))),
+                Callee::Cancel(CancelCall::New) => {
+                    self.made.insert("tasks".to_string());
+                    Ok("sg_cancel_new()".to_string())
+                }
                 Callee::Plain => self.call(format!("f_{}", cname(name)), None, args, head, &expr.ty),
                 Callee::Static { owner, name } => self.call(format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
                 // A call through a function value kept in a variable.
@@ -7799,9 +8546,37 @@ impl<'a> Emitter<'a> {
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
                 Callee::TaskRun => self.task_run(args, head, expr),
-                Callee::Delay(_) => Err(not_yet(expr.span, "`Task.delay`")),
+                // `Task.delay(ms)` kept as a task (one with a token is awaited in place).
+                Callee::Delay(_) => {
+                    let ms = self.value_as(&args[0], &Ty::Int(IntTy::Int))?;
+                    let (ctype, loc) = (self.ctype(&expr.ty, expr.span)?, self.loc(expr.span));
+                    Ok(format!("(({ctype})sg_delay_task_new({ms}, {loc}))"))
+                }
                 Callee::IoAsync(_) | Callee::StreamAsync(_) => Err(not_yet(expr.span, "async input and output")),
-                Callee::Cancel(_) => Err(not_yet(expr.span, "cancellation")),
+                Callee::Cancel(CancelCall::After) => {
+                    self.made.insert("tasks".to_string());
+                    let ms = self.value_as(&args[0], &Ty::Int(IntTy::Int))?;
+                    Ok(format!("sg_cancel_after({ms}, {})", self.loc(expr.span)))
+                }
+                // A source and its tokens are one block; each method looks at it through a borrow.
+                Callee::Cancel(call) => {
+                    let mut source = self.value(recv)?;
+                    let mut ty = &recv.ty;
+                    while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Shared(inner, _) = ty {
+                        source = format!("(*{source})");
+                        ty = inner;
+                    }
+                    Ok(match call {
+                        CancelCall::Cancel => format!("sg_cancel_now({source})"),
+                        CancelCall::Token | CancelCall::Clone => format!("sg_cancel_more({source})"),
+                        CancelCall::IsCancelled => format!("sg_cancelled({source})"),
+                        CancelCall::Check => {
+                            let ctype = self.ctype(&expr.ty, expr.span)?;
+                            format!("(sg_cancelled({source}) ? ({ctype}){{ .tag = 1 }} : ({ctype}){{ .tag = 0 }})")
+                        }
+                        CancelCall::New | CancelCall::After => unreachable!("functions of the type, written above"),
+                    })
+                }
                 // `t.wait()`: the task is taken (the checker marked the move), joined and freed.
                 Callee::Wait => {
                     let task = self.first(recv, head)?;
@@ -8534,4 +9309,200 @@ fn assignment(line: &str, cname: &str, first: &str) -> String {
     let marker = format!(" {cname} = ");
     let at = line.find(&marker).expect("a name is declared with its value");
     format!("{first} = {}", &line[at + marker.len()..])
+}
+
+/// A variable that the body of an async function declared, moved into its frame.
+struct Field {
+    ty: String,
+    name: String,
+    /// `[4]` for an array, otherwise empty.
+    array: String,
+}
+
+/// The body of an async function as it runs from its frame: the text, what was moved into the
+/// frame, and how many places to come back to it has.
+struct Hoisted {
+    text: String,
+    fields: Vec<Field>,
+    resumes: usize,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum CTok {
+    Ident,
+    Number,
+    Quoted,
+    Punct(u8),
+}
+
+/// The tokens of the C the back end writes, each with where it starts and ends.
+fn c_tokens(text: &str) -> Vec<(CTok, usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        let (c, start) = (bytes[at], at);
+        if c.is_ascii_whitespace() {
+            at += 1;
+            continue;
+        }
+        if c == b'/' && bytes.get(at + 1) == Some(&b'*') {
+            at = text[at + 2..].find("*/").map_or(bytes.len(), |end| at + 2 + end + 2);
+            continue;
+        }
+        let kind = if c == b'_' || c.is_ascii_alphabetic() {
+            while at < bytes.len() && (bytes[at] == b'_' || bytes[at].is_ascii_alphanumeric()) {
+                at += 1;
+            }
+            CTok::Ident
+        } else if c.is_ascii_digit() {
+            while at < bytes.len() && (bytes[at] == b'_' || bytes[at] == b'.' || bytes[at].is_ascii_alphanumeric()) {
+                at += 1;
+            }
+            CTok::Number
+        } else if c == b'"' || c == b'\'' {
+            at += 1;
+            while at < bytes.len() && bytes[at] != c {
+                at += if bytes[at] == b'\\' { 2 } else { 1 };
+            }
+            at += 1;
+            CTok::Quoted
+        } else {
+            at += 1;
+            CTok::Punct(c)
+        };
+        out.push((kind, start, at.min(bytes.len())));
+    }
+    out
+}
+
+/// Words that start a statement that declares nothing.
+const NOT_TYPES: &[&str] = &["return", "if", "else", "while", "for", "do", "switch", "case", "default", "goto", "break", "continue", "sizeof"];
+
+/// The body of an async function, made to run from its frame. A variable declared on a
+/// statement of its own becomes a field of the frame, and its declaration an assignment; one
+/// declared inside an expression (`({ ... })`) stays where it is, since nothing waits there.
+/// Each `SG_RESUME(n)` mark becomes the next numbered place to come back to: it has to stand
+/// where a statement can, and not inside an expression, since C cannot jump into one; the
+/// error is the `n` of the first that does not (`usize::MAX`: a declaration that cannot be moved).
+fn hoisted(body: &str) -> Result<Hoisted, usize> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Ctx {
+        Block,
+        Expr,
+        Paren,
+    }
+    let toks = c_tokens(body);
+    let word = |index: usize| toks.get(index).map_or("", |tok| &body[tok.1..tok.2]);
+    let kind = |index: usize| toks.get(index).map(|tok| tok.0);
+    let mut stack: Vec<Ctx> = Vec::new();
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    let mut fields: Vec<Field> = Vec::new();
+    let mut resumes = 0;
+    let mut at_start = true;
+    let mut i = 0;
+    while i < toks.len() {
+        let (tok, start, end) = toks[i];
+        let statement = at_start && stack.iter().all(|ctx| *ctx == Ctx::Block);
+        at_start = false;
+        match tok {
+            CTok::Punct(b'{') => {
+                stack.push(if i > 0 && kind(i - 1) == Some(CTok::Punct(b'(')) { Ctx::Expr } else { Ctx::Block });
+                at_start = true;
+            }
+            CTok::Punct(b'}') => {
+                stack.pop();
+                at_start = true;
+            }
+            CTok::Punct(b'(' | b'[') => stack.push(Ctx::Paren),
+            CTok::Punct(b')' | b']') => {
+                stack.pop();
+            }
+            CTok::Punct(b';') => at_start = true,
+            // After a label or a `case`, a statement starts.
+            CTok::Punct(b':') => at_start = stack.iter().all(|ctx| *ctx == Ctx::Block),
+            CTok::Ident if word(i) == "SG_RESUME" => {
+                let mark: usize = word(i + 2).parse().expect("a mark has its number");
+                if !statement {
+                    return Err(mark);
+                }
+                resumes += 1;
+                edits.push((start, toks[i + 3].2, format!("sg_f->sg_state = {resumes}; sg_r{resumes}:")));
+                i += 4;
+                continue;
+            }
+            CTok::Ident if word(i) == "else" => at_start = true,
+            // A label: a statement starts after it.
+            CTok::Ident if statement && kind(i + 1) == Some(CTok::Punct(b':')) => {
+                at_start = true;
+                i += 2;
+                continue;
+            }
+            CTok::Ident if statement => {
+                // A type of one word or more, stars, and the name, followed by `=`, `;` or `[`.
+                let mut j = i;
+                let mut words = 0;
+                while let Some(next) = kind(j) {
+                    match next {
+                        CTok::Ident if !NOT_TYPES.contains(&word(j)) => words += 1,
+                        CTok::Punct(b'*') => {}
+                        _ => break,
+                    }
+                    j += 1;
+                }
+                let assigns = kind(j) == Some(CTok::Punct(b'=')) && kind(j + 1) != Some(CTok::Punct(b'='));
+                let declares = words >= 2 && kind(j - 1) == Some(CTok::Ident) && (assigns || matches!(kind(j), Some(CTok::Punct(b';' | b'[' | b','))));
+                if declares {
+                    let name = word(j - 1).to_string();
+                    let ty = body[start..toks[j - 1].1].trim().to_string();
+                    if ty.starts_with("__auto_type") || kind(j) == Some(CTok::Punct(b',')) {
+                        return Err(usize::MAX);
+                    }
+                    let mut array = String::new();
+                    let mut after = j;
+                    if kind(j) == Some(CTok::Punct(b'[')) {
+                        while kind(after) != Some(CTok::Punct(b']')) {
+                            after += 1;
+                        }
+                        array = body[toks[j].1..toks[after].2].to_string();
+                        after += 1;
+                        if kind(after) != Some(CTok::Punct(b';')) {
+                            return Err(usize::MAX);
+                        }
+                    }
+                    match fields.iter().find(|field| field.name == name) {
+                        Some(field) if field.ty != ty || field.array != array => return Err(usize::MAX),
+                        Some(_) => {}
+                        None => fields.push(Field { ty: ty.clone(), name, array }),
+                    }
+                    if assigns {
+                        // `T x = v;` becomes `x = v;`, and `T x = { ... };` becomes `x = (T){ ... };`.
+                        edits.push((start, toks[j - 1].1, String::new()));
+                        if kind(j + 1) == Some(CTok::Punct(b'{')) {
+                            edits.push((toks[j + 1].1, toks[j + 1].1, format!("({ty})")));
+                        }
+                        i = j;
+                    } else {
+                        // `T x;` goes away.
+                        edits.push((start, toks[after].2, String::new()));
+                        i = after + 1;
+                        at_start = true;
+                    }
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        let _ = end;
+        i += 1;
+    }
+    let mut text = String::with_capacity(body.len());
+    let mut from = 0;
+    for (start, end, put) in edits {
+        text.push_str(&body[from..start]);
+        text.push_str(&put);
+        from = end;
+    }
+    text.push_str(&body[from..]);
+    Ok(Hoisted { text, fields, resumes })
 }
