@@ -1,0 +1,40 @@
+// The variables of the environment, read with `Environment.get`. The test sets one through C, as no
+// SG program can.
+extern {
+    int setenv(read CString name, raw byte value, int overwrite)
+}
+
+void show(read string name) {
+    var shown = name.replaceAll("\u{0}", "\\0")
+    match Environment.get(name) {
+        Ok(value) => print($"{shown} = {value}")
+        Error(cause) => print($"[{shown}]: {cause}")
+    }
+}
+
+void main() {
+    print(Environment.get("PATH") is Ok(_))
+    show("SG_NO_SUCH_VARIABLE_2718")
+    show("")
+    show("A=B")
+    show("PA\u{0}TH")
+    var home = Environment.get("SG_NO_SUCH_VARIABLE_2718") ?? "/nowhere"
+    print(home)
+
+    var name = CString.from("SG_TEST_TEXT") ?? panic("zero byte")
+    var p = Memory.allocate<byte>(8)
+    unsafe {
+        p[0] = 0x63
+        p[1] = 0x61
+        p[2] = 0x66
+        p[3] = 0xc3
+        p[4] = 0xa9
+        setenv(read name, p, 1)
+        p[1] = 0xff
+        var bad = CString.from("SG_TEST_BYTES") ?? panic("zero byte")
+        setenv(read bad, p, 1)
+        Memory.free(p)
+    }
+    show("SG_TEST_TEXT")
+    show("SG_TEST_BYTES")
+}

@@ -1,0 +1,4 @@
+// What `Directory.list` gives is a `Result`, which is not left unread.
+void main() {
+    Directory.list(".")
+}

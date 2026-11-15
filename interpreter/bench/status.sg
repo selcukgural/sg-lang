@@ -1,0 +1,11 @@
+// A million questions to the system about one file with `File.info`: its kind, its size and the
+// time of its last write.
+Result<void, IoError> main() {
+    long size = 0
+    for i in 0..1000000 {
+        var info = try File.info("target/bench/listing/file-04242.txt")
+        size += info.size
+    }
+    print(size)
+    return Ok()
+}

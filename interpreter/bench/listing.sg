@@ -1,0 +1,17 @@
+// A folder of ten thousand files listed a hundred times with `Directory.list`: the names in the
+// order of their bytes, each with its kind. The folder is made by `run.sh`.
+Result<void, IoError> main() {
+    long bytes = 0
+    long files = 0
+    for i in 0..100 {
+        var entries = try Directory.list("target/bench/listing")
+        for entry in entries {
+            bytes += entry.name.length()
+            if entry.kind == FileKind.File {
+                files += 1
+            }
+        }
+    }
+    print($"{files} {bytes}")
+    return Ok()
+}

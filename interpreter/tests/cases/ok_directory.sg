@@ -1,0 +1,105 @@
+// Folders: made, listed, looked at and removed, with `Directory` and `File.info`. The folder is
+// the first word of the command line.
+extern {
+    int symlink(read CString target, read CString path)
+}
+
+void show(read string what, Result<void, IoError> done) {
+    match done {
+        Ok => print($"{what}: done")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+Result<void, IoError> list(read string path) {
+    var entries = try Directory.list(path)
+    for entry in entries {
+        print($"  {entry.name} {entry.kind}")
+    }
+    return Ok()
+}
+
+void link(read string target, read string path) {
+    var to = CString.from(target) ?? panic("zero byte")
+    var at = CString.from(path) ?? panic("zero byte")
+    if unsafe symlink(read to, read at) != 0 {
+        panic("no link")
+    }
+}
+
+Result<void, IoError> main(List<string> args) {
+    var dir = args[0].clone()
+    var tree = Path.join(read dir, "tree")
+    show("create", Directory.create(read tree))
+    show("create again", Directory.create(read tree))
+    var deep = Path.join(read dir, "x/y/z")
+    show("create without the folders on the way", Directory.create(read deep))
+    show("createAll", Directory.createAll(read deep))
+    show("createAll again", Directory.createAll(read deep))
+    print(Directory.exists(read deep))
+
+    // The order of the bytes, the same on every system: capitals first, then `.`, then the rest.
+    for name in "b.txt|a|B|a.txt|ä|a b".split('|') {
+        var path = Path.join(read tree, name)
+        try File.writeText(read path, name)
+    }
+    var sub = Path.join(read tree, "sub")
+    try Directory.create(read sub)
+    var outside = Path.join(read dir, "outside")
+    try Directory.create(read outside)
+    var kept = Path.join(read outside, "kept.txt")
+    try File.writeText(read kept, "still here")
+    var linked = Path.join(read tree, "link")
+    link(read outside, read linked)
+    print("tree:")
+    try list(read tree)
+
+    // A file on the way, or a file where a folder was to be.
+    var file = Path.join(read tree, "a.txt")
+    var under = Path.join(read file, "x")
+    show("createAll through a file", Directory.createAll(read under))
+    show("createAll of a file", Directory.createAll(read file))
+    show("list a file", list(read file))
+    var missing = Path.join(read dir, "missing")
+    show("list a missing folder", list(read missing))
+
+    // What the system knows: a link is followed.
+    var info = try File.info(read file)
+    print($"{info.kind} {info.size} {info.modified.year() >= 2026}")
+    var through = try File.info(read linked)
+    print(through.kind)
+    print(File.exists(read linked))
+    print(Directory.exists(read linked))
+    print(File.exists(read tree))
+    match File.info(read missing) {
+        Ok(found) => print(found)
+        Error(cause) => print($"info of a missing file: {cause}")
+    }
+
+    // A folder that holds something is not removed by `delete`; `deleteAll` removes it with all
+    // inside, and a link inside goes without what it points at.
+    show("delete", Directory.delete(read tree))
+    show("delete a file", Directory.delete(read file))
+    show("deleteAll of a link", Directory.deleteAll(read linked))
+    show("deleteAll of a file", Directory.deleteAll(read file))
+    show("deleteAll", Directory.deleteAll(read tree))
+    print(Directory.exists(read tree))
+    print(try File.readText(read kept))
+    show("deleteAll again", Directory.deleteAll(read tree))
+    var empty = Path.join(read dir, "x/y/z")
+    show("delete an empty folder", Directory.delete(read empty))
+
+    // The folder the program works in, and the one for files that do not stay.
+    var here = try Directory.current()
+    print(here.startsWith('/'))
+    print(Directory.temp().length() > 0)
+    var first = try Directory.createTemp()
+    var second = try Directory.createTemp()
+    print(first != second)
+    print(Directory.exists(read first))
+    print(Path.fileName(read first).startsWith("sg-"))
+    try Directory.deleteAll(read first)
+    try Directory.deleteAll(read second)
+    print(Directory.exists(read first))
+    return Ok()
+}

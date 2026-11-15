@@ -1,0 +1,5 @@
+error: expected `read string`, found `string`
+  --> error_file_info_borrow.sg:4:30
+ 4 |     var info = try File.info(path)
+   |                              ^^^^
+  hint: lend it with `read`: `read path`

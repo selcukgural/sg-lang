@@ -1,0 +1,5 @@
+error: a `Directory` is made by its functions, not field by field
+  --> error_directory_literal.sg:3:18
+ 3 |     var folder = Directory { }
+   |                  ^^^^^^^^^
+  hint: nothing is made: the functions are called on the type, `Directory.list(read path)`, `Directory.create(read path)`

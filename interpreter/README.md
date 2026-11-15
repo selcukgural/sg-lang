@@ -55,6 +55,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Network | `TcpListener.bind("127.0.0.1:8080")` (a number, `localhost`, or `":8080"` for every address of the machine; port 0 lets the system choose, `listener.port()` tells which), `listener.accept()`, `TcpStream.connect("example.com:80")` (the host looked up by name, each of its addresses tried in turn), `stream.receive(ref buffer)` (what has come, at most what the buffer holds; how many, 0 once the other side has let go) and `stream.send(bytes)` (all of them, through a `read` borrow): each gives a `Result` with an `IoError` (`ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong` are the network's). `stream.reader()` gives a `StreamReader` that borrows the stream and reads it through a block of its own (`readLine`, `lines()`, `readText`, `readBytes`, `readSome` and their async versions), while the stream goes on sending; a line or a text longer than 64 KB (`stream.reader(limit)` for another limit) is `LineTooLong`, and so is every read after it. A `receive` while the reader is used again is a compile error, and neither `send` nor `reader()` goes through a `shared` stream. `acceptAsync`, `connectAsync`, `receiveAsync` and `sendAsync` do the same work as a task, awaited where they are written, with a token that may come last; a cancel ends a wait at once and loses nothing that came. A socket sends without a buffer and is closed when it ends. In an async function the calls without `Async` are an error, as for files. In the interpreter a socket that is not ready gives the turn away, and the scheduler waits for the sockets with `poll` when no task can run. Compiled too: a call that has to wait waits with `poll`, and an async one on the loop of the network (epoll, kqueue), on a thread of its own |
 | Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. All three are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
+| Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into). `Path.join(a, b)` gives a new path; `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -67,7 +68,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Characters | `char`: one Unicode character. `'+'`, `'é'`, `'\n'`, `'\u{e9}'` is a `char`, and a `byte` where an integer goes (`byte b = '+'`, `text[i] == ':'`). `(int)c` is its code, `(char)n` the character of a code, `n.tryToChar()` gives `null` where `(char)n` would panic. `==`, `<`, `match`, keys, `sort`, `print`. `isAsciiDigit()`, `isAsciiLetter()`, `isAsciiAlphanumeric()`, `isAsciiUpper()`, `isAsciiLower()`, `isAsciiWhitespace()`, `isAscii()`, `toAsciiUpper()`, `toAsciiLower()` on `char` and on `byte`; `isWhitespace()` and `utf8Length()` on `char` |
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
 | Built-ins | `print(x)`, `printError(x)` (the same, to the standard error), `panic("...")`, `assert(condition)`, `exit(code)` (ends the program with that code), `same(a, b)` (two `shared` values point to one object) |
-| Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`, and `File.openAppend(path)` one that writes after what the file holds. A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left), `lines()` (each line as a `Result<string, IoError>`) `readBytes(ref buffer)` (bytes into the buffer, as many as it holds unless the end comes first, and how many: a `Result<nint, IoError>`) and `readSome(ref buffer)` (what the block holds, or what one read of the system gives when it is empty; how many, 0 at the end); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `writeBytes(bytes)` (a `read byte[]` as it is), `flush()` and `close()`, each with a `Result<void, IoError>`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `InvalidText(long position)` / `Other(int code) }` |
+| Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`, and `File.openAppend(path)` one that writes after what the file holds. A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left), `lines()` (each line as a `Result<string, IoError>`) `readBytes(ref buffer)` (bytes into the buffer, as many as it holds unless the end comes first, and how many: a `Result<nint, IoError>`) and `readSome(ref buffer)` (what the block holds, or what one read of the system gives when it is empty; how many, 0 at the end); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `writeBytes(bytes)` (a `read byte[]` as it is), `flush()` and `close()`, each with a `Result<void, IoError>`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `AlreadyExists` / `NotDirectory` / `DirectoryNotEmpty` / `InvalidText(long position)` / `Other(int code) }`, with the variants of the network and `Cancelled` |
 | Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A test that passes and leaves `shared` values alive fails with the leak report. A normal run leaves the tests out |
 | Comparing by name | `a.compare(b)` on numbers, `char` and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
 | Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic. `tryToInt()` and the others give `null` where a cast would panic, `wrappingToInt()` and the others keep the bits that fit; `min`, `max` |
@@ -265,7 +266,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (272 of 1153 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (276 of 1166 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -437,6 +438,8 @@ hand with no checks):
 | `dates`: ten million moments between 1900 and 2200 taken apart into year, month, day, hour, minute, second and the day of the week by the calendar of the language's own module, in SG (the C calls `gmtime_r`) | 0.121 s | 0.295 s | 0.413 s | 0.29 |
 | `rng`: a hundred million numbers from 0 up to 1000 of a `Random` with a fixed seed, added up: xoshiro256\*\* and Lemire's way to a range, in SG in the language's own module (the C is the same algorithm) | 0.112 s | 0.112 s | 0.112 s | 1.00 |
 | `secure`: a gigabyte of the system's random bytes, 64 KB at a time with `SecureRandom.fill` (the C calls `arc4random_buf` on macOS, `getrandom` on Linux) | 0.241 s | 0.242 s | 0.242 s | 1.00 |
+| `listing`: a folder of ten thousand files listed a hundred times with `Directory.list`, each name with its kind, in the order of the bytes (the C reads with `readdir`, copies each name and sorts with `qsort`) | 0.407 s | 0.436 s | 0.412 s | 0.99 |
+| `status`: a million `File.info` of one file, its kind, size and time of the last write (the C calls `stat`) | 0.618 s | 0.627 s | 0.619 s | 1.00 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -767,6 +770,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/source.rs` | The files of a program: which folders are modules and which of them are read. All files are kept as one text, so a position says which file it is in; the language's own module comes last, when a file names one of its types |
 | `src/std/time.sg` | The language's own module `std`, written in SG: `Duration`, `Instant`, `DateTime` and the calendar. Only it calls the two readings of the clock, `Clock.monotonic()` and `Clock.wall()` |
 | `src/std/random.sg` | The same module's random numbers: `Random` (xoshiro256\*\* seeded with SplitMix64) and `SecureRandom`. Only it calls `Entropy.fill`, the random bytes of the system. A program gets each file of `std` when it names one of its types |
+| `src/std/files.sg`, `src/std/path.sg`, `src/std/environment.sg` | The same module's folders (`Directory`, `DirectoryEntry`, `FileInfo`, `FileKind`, and the work of `File.info` and `File.exists`), paths (`Path`) and variables of the environment (`Environment`, `VariableError`). Only they call `System.list`, `System.status` and the other calls of the system; a file of `std` that names a type of another brings it along (a `FileInfo` holds a `DateTime`) |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
 
 It is a library with a thin command line on top, so that a language server can later reuse the parser and the
@@ -4250,6 +4254,109 @@ slice, and all were approved the same day:
      programs the errors of 556, 557 and 560. `cargo test` compiles 272 of 1153 programs, 43 of them under the
      thread sanitizer, and 14 of 18 programs of tests; on Linux too, in a container, with the same counts.
 
+Choices made in the seventy-fourth slice (folders, paths and the environment). 568 to 570 and 572 to 575
+were decided before it on 15 November 2026, with the parts marked as coming from the slice; 567, 571 and
+576 to 580 come from the slice, and all were approved the same day:
+
+567. **Folders, paths and the environment are written in SG**, in three more files of the module `std`
+     (`files.sg`, `path.sg`, `environment.sg`), over calls of the system that only that module makes
+     (`System.createDirectory`, `removeDirectory`, `removeAll`, `list`, `status`, `current`, `makeTemp`,
+     `variable`); elsewhere `System` is a name that is not there. `File.info(path)` and `File.exists(path)`
+     are done by two functions of `FileInfo` that are not `public`, so a program that names `File` and one of
+     the two gets the file of `FileInfo`. A file of the module that names a type of another file brings that
+     file along: a `FileInfo` holds a `DateTime`, and `Directory.temp` reads `TMPDIR`. A program cannot define
+     a type named `Directory`, `DirectoryEntry`, `FileInfo`, `FileKind`, `Path`, `Environment` or
+     `VariableError`; two tests that had a `struct Path` of their own now call it `Route`. `Directory`,
+     `Path` and `Environment` are structs without fields whose functions are called on the type; a value of
+     one built field by field is an error whose hint says so.
+568. **`File.delete`, `File.move`, `File.replace` and `File.copy`** are built into `File`, each a
+     `Result<void, IoError>`. `delete` is `unlink`: a missing file is `NotFound`, and a folder `IsDirectory`
+     on every system (macOS says `EPERM`; from the slice). `move` never takes the place of a file: the
+     target is tested in the same step of the system as the rename (`renameat2` with `RENAME_NOREPLACE` on
+     Linux, `renamex_np` with `RENAME_EXCL` on macOS), and a target that is there is `AlreadyExists`. From
+     the slice: a file moved onto itself, or onto another name of the same file, is `AlreadyExists` too,
+     tested first, since macOS called it done and Linux `EEXIST`. `replace` is `rename`, which takes the
+     place of the target in one step, for writing a file whole next to it and putting it in its place.
+     `copy` makes a new file (`AlreadyExists` when the target is there, `IsDirectory` for a folder), copies
+     what the file holds and its permissions without the bits of setuid, setgid and sticky, and removes the
+     target if it could not be written whole. A path with a zero byte in it is `NotFound`, as for the other
+     functions of `File`. They have no `Async` form: `File.deleteAsync` is an error whose note says that the
+     calls are made as they are, also in an async function.
+569. **`IoError` has three more variants**: `AlreadyExists` (`EEXIST`), `NotDirectory` (`ENOTDIR`) and
+     `DirectoryNotEmpty` (`ENOTEMPTY`), after the others, so the numbers of the variants before them stay.
+     A file on the way of a path (`notes.txt/inside`) was `NotFound` and is now `NotDirectory`, in every
+     function of `File`; `ok_file_text` shows the change. A `match` on an `IoError` that names each variant
+     needs the three new arms.
+570. **`Directory`**: `create` is `mkdir` (the folder it is in must be there, `NotFound` otherwise, and a
+     folder or a file already there is `AlreadyExists`); `createAll` makes the folders on the way, written in
+     SG over `create` as Rust's `create_dir_all` is: a folder already there is no error, a file in the way is
+     (`AlreadyExists`, or `NotDirectory` for a path through it). `delete` is `rmdir`, of an empty folder
+     (`DirectoryNotEmpty`; a file is `NotDirectory`). `deleteAll` removes the folder and all it holds
+     without following a link: each folder inside is opened through the one it is in with `O_NOFOLLOW`, so a
+     link that takes the place of a folder while it works is removed, not followed, which is the hole of
+     CVE-2022-21658 in Rust. A path that is itself a link, or a file, is `NotDirectory`; what another program
+     removed first is no error. The interpreter tests the path with `lstat` and then calls Rust's
+     `remove_dir_all`, which works the same way since Rust 1.58.1; compiled code has its own (`sg_fs_clear`).
+571. **`Directory.list(path)`** gives a `List<DirectoryEntry>`: `name` (the name alone, without `.` and
+     `..`) and `kind`, read from the listing where the system gives it (`d_type`) and with `lstat` where it
+     does not. The entries are sorted by the bytes of the names, so the order is the same on every system and
+     in both ways of running. A name that is not UTF-8 is an `InvalidText` at its first byte that is not, the
+     first such name in that order. From the slice: that case has no test, since macOS does not let a program
+     make such a name (APFS answers `EILSEQ`); Linux does.
+572. **`File.info(path)`** gives a `FileInfo` (`Copyable`, `Equatable`, `Formattable`) with three fields
+     that are read and not written: `kind`, `size` (a `long` of bytes) and `modified` (a `DateTime`, the time
+     of the last write). A link is followed, so `kind` is never `Link` there; `FileKind` is `File`,
+     `Directory`, `Link` or `Other`, and a listing tells a link. `File.exists(path)` is `true` for a file
+     and `Directory.exists(path)` for a folder, a link followed, and both are `false` when the path cannot be
+     looked at, as C#'s are; their comments and the documents say that what they tell can be different the
+     next moment, and that the way to use a file is to open it and look at the error.
+573. **The folder the program works in**: `Directory.current()` gives a `Result<string, IoError>`, and there
+     is no way to change it, since every thread would see it change. `Directory.temp()` is `TMPDIR` as it is
+     written, or `/tmp` when it is not set or empty. `Directory.createTemp()` makes a new folder with a name
+     nobody else has inside it, that only the user of the program can go into (`mkdtemp`, `sg-XXXXXX`), and
+     gives its path; removing it is the program's work.
+574. **`Path`** looks only at the `/` in a path and never asks the system. `Path.join(a, b)` gives a new
+     `string` with one `/` between the two (`logs/` and `today.txt` give `logs/today.txt`); a second path that
+     starts with `/` is put after the first, as C#'s `Path.Join` does and Rust's `join` does not, so a name
+     from outside cannot lead out of the folder it is joined to; an empty part gives the other. `fileName`,
+     `extension` and `parent` give a `read string` of the path, nothing copied (`from path`): `fileName` what
+     comes after the last `/` (empty for `logs/`), `extension` the end of the name from its last `.` with the
+     `.`, as C#'s, and none for a name with a `.` only at its start (`.profile`) or, from the slice, only at
+     its end (`file.`), and `parent` what comes before the last `/`: `/` for `/report.txt` and for `/`, and
+     the empty text for a name alone. Only `/` is a separator.
+575. **`Environment.get(name)`** gives a `Result<string, VariableError>`: `Missing`, or `InvalidText(long
+     position)` for a value that is not UTF-8, as Rust's `VarError`; `Environment.get("HOME") ?? "/"`
+     reads it in one line. A name that is empty or has `=` or a zero byte in it is `Missing`. There is no
+     way to set or remove a variable: setting one while another thread reads one is not safe in C, which is
+     why Rust 2024 made `set_var` unsafe, and `Environment.set` is an error whose note says so. A program that
+     starts another will give it an environment of its own. Reading all of them waits.
+576. **The interpreter asks the system the same questions as compiled code.** It calls Rust's `std::fs`
+     where that is one call of the system (`unlink`, `rename`, `mkdir`, `rmdir`, `stat`, `opendir` and
+     `readdir`, `getcwd`, `getenv`), and the C library directly for `renamex_np` or `renameat2` and
+     `mkdtemp`, so the answers are the system's in both; a copy goes through Rust's `io::copy`, which may use
+     `copy_file_range`, where compiled code reads and writes 64 KB at a time: what the file holds is the same.
+     A change from what was decided before the slice, which said the C library directly in both.
+577. **Compiled code** has the calls in a runtime of their own (`FILES_RUNTIME`), only in a program that
+     makes one; on Linux it asks glibc for the GNU names (`renameat2`, `d_type`, `mkdtemp` are not in strict
+     C11), as a program with the network does. The module `std` and the functions over the calls are compiled
+     like the program's own code. Found in the slice: the type `IoError` written in a module other than the
+     root was not found by the back end; it is now seen from every module, as `TextError` is.
+578. **Measured** (`listing`, a new program): a folder of ten thousand files listed a hundred times, each name
+     with its kind, take 0.407 s, 0.436 s in the overflow-checked build, against 0.412 s for `readdir`,
+     a copy of each name and `qsort` in C (0.99 times).
+579. **Measured** (`status`, a new program): a million `File.info` of one file take 0.618 s, 0.627 s in the
+     overflow-checked build, against 0.619 s for `stat` in C (1.00 times). From the slice: the first
+     measurement was 1.03 times, the path copied into a block of `malloc` on each call to end it with a zero
+     byte; a path shorter than 256 bytes is now ended on the stack.
+580. **The tests**: `ok_files` moves, replaces, copies and deletes files and goes through each error, the
+     permission a copy keeps among them (a script that runs, set and tested through C); `ok_directory` makes,
+     lists, looks at and removes folders, with a link inside a folder that `deleteAll` removes without what it
+     points at, and the folder the program works in and folders made by `createTemp`; `ok_path` takes paths
+     apart and joins them; `ok_environment` reads variables, two of them set through C, one of which is not
+     UTF-8. Their output is the same in the interpreter and in compiled code. Nine `error_` programs show the
+     errors of 567, 568, 572, 574 and 575. `cargo test` compiles 276 of 1166 programs, 43 of them under the
+     thread sanitizer, and 14 of 18 programs of tests; on Linux too, in a container, with the same counts.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -4385,10 +4492,15 @@ check off.
   items that are not `Copyable`, moving every item of one list into another, adding a range of a list to
   the same list (`extend_from_within`), a sort that does not allocate (choices 235, 236, 239).
 - A panic of `-x` and of a shift names no way out: there is no `tryNegate` or `tryShiftLeft` yet.
-- Folders, removing or renaming a file, asking whether one is there; the
-  variables of the environment; the command line as bytes (a word that is not UTF-8 stops the program).
-  `IoError` does not carry the path (choice 195). `PermissionDenied` and `NoSpace` are mapped but have no
-  test: the tests cannot make a file they may not read or fill a disk.
+- The command line as bytes (a word that is not UTF-8 stops the program). `IoError` does not carry the path
+  (choice 195). `PermissionDenied` and `NoSpace` are mapped but have no test: the tests cannot make a file
+  they may not read or fill a disk.
+- **Of folders and the environment**: making a link and reading where one points, changing permissions and
+  owners, watching a folder, patterns of names (`*.txt`), a listing of a whole tree, the names of a folder
+  or the variables of the environment as bytes, all the variables at once, the path of the program itself,
+  a temporary file (`createTemp` makes a folder), the `Async` forms (the calls are made as they are, also in
+  an async function). A name in a folder that is not UTF-8 is an `InvalidText`, but has no test: macOS does
+  not let a program make such a name (571).
 - **Of the clock**: time zones and local time, reading a date out of text, formats of your own
   (`yyyy-MM-dd`), minutes and hours in the text of a `Duration` (`1m30s`), `Task.delay` given a `Duration`,
   `abs` and `dividedBy` on a `Duration`, the number of a day of the week and an order of the days. A panic
@@ -4524,5 +4636,8 @@ for the calendar in UTC, written in SG in the language's own module; ten million
 take the time of `clock_gettime` in C, and taking ten million moments apart takes 0.29 times `gmtime_r`.
 Random numbers are there too: `Random`, xoshiro256\*\* with a seed, the same numbers everywhere, and
 `SecureRandom`, the system's bytes for keys and tokens; a hundred million numbers in a range, and a
-gigabyte of the system's bytes, take the time of the same code in C. The other places in "Slower than C"
-wait; next are folders and the environment, running another program, Unicode tables and UDP.
+gigabyte of the system's bytes, take the time of the same code in C. Folders, paths and the environment are there: `File.move` that never
+writes over a file, `Directory.list` sorted the same way everywhere, `deleteAll` that never follows a link,
+`Path`, and `Environment.get`; listing a folder of ten thousand files and asking about a file take the time
+of `readdir` and `stat` in C. The other places in "Slower than C" wait; next are running another program,
+Unicode tables and UDP.

@@ -1179,13 +1179,20 @@ fn io_cause(error: Option<&std::io::Error>, code: Option<i32>) -> Value {
     const REFUSED: i32 = if cfg!(target_os = "linux") { 111 } else { 61 };
     const RESET: [i32; 2] = if cfg!(target_os = "linux") { [104, 103] } else { [54, 53] };
     const IN_USE: i32 = if cfg!(target_os = "linux") { 98 } else { 48 };
+    const NOT_EMPTY: i32 = if cfg!(target_os = "linux") { 39 } else { 66 };
     let variant = |at: usize, fields: Vec<Value>| Value::Enum("IoError".into(), at, Rc::new(fields.into_iter().map(cell).collect()));
     match code {
         Some(code) if code == REFUSED => variant(7, Vec::new()),
         Some(code) if RESET.contains(&code) || code == 32 => variant(8, Vec::new()),
         Some(code) if code == IN_USE => variant(9, Vec::new()),
-        // ENOENT, ENOTDIR
-        Some(2 | 20) => variant(0, Vec::new()),
+        // ENOTEMPTY
+        Some(code) if code == NOT_EMPTY => variant(14, Vec::new()),
+        // ENOENT
+        Some(2) => variant(0, Vec::new()),
+        // EEXIST
+        Some(17) => variant(12, Vec::new()),
+        // ENOTDIR
+        Some(20) => variant(13, Vec::new()),
         // EPERM, EACCES, EROFS
         Some(1 | 13 | 30) => variant(1, Vec::new()),
         // EISDIR
@@ -1220,6 +1227,104 @@ fn text_read(bytes: Vec<u8>, at: u64) -> Value {
         Ok(text) => ok(Value::Str(Rc::new(text))),
         Err(error) => failed(io_cause(None, None).invalid_text(at + error.utf8_error().valid_up_to() as u64)),
     }
+}
+
+/// The kind of a file as `System.list` and `System.status` give it: 0 a file, 1 a folder, 2 a
+/// link, 3 anything else.
+fn kind_code(kind: &std::fs::FileType) -> u8 {
+    match () {
+        _ if kind.is_file() => 0,
+        _ if kind.is_dir() => 1,
+        _ if kind.is_symlink() => 2,
+        _ => 3,
+    }
+}
+
+/// The C string of a path that holds no zero byte.
+fn c_path(path: &str) -> std::ffi::CString {
+    std::ffi::CString::new(path).expect("a path without a zero byte")
+}
+
+/// `unlink`; a folder is `IsDirectory` on every system (macOS says `EPERM`).
+fn remove_file(path: &str) -> std::io::Result<()> {
+    std::fs::remove_file(path).map_err(|error| match std::fs::symlink_metadata(path) {
+        Ok(info) if info.is_dir() => std::io::Error::from_raw_os_error(21),
+        _ => error,
+    })
+}
+
+/// A rename that fails with `EEXIST` when the target is there, in one step of the system.
+/// A file onto itself (or onto another name of it) is no move, and some systems would say it was
+/// done: it is `EEXIST` too.
+fn rename_new(from: &str, to: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    if let (Ok(a), Ok(b)) = (std::fs::symlink_metadata(from), std::fs::symlink_metadata(to)) {
+        if a.dev() == b.dev() && a.ino() == b.ino() {
+            return Err(std::io::Error::from_raw_os_error(17));
+        }
+    }
+    let (from, to) = (c_path(from), c_path(to));
+    #[cfg(target_os = "macos")]
+    let failed = {
+        extern "C" {
+            fn renamex_np(from: *const std::ffi::c_char, to: *const std::ffi::c_char, flags: std::ffi::c_uint) -> std::ffi::c_int;
+        }
+        // RENAME_EXCL
+        unsafe { renamex_np(from.as_ptr(), to.as_ptr(), 4) != 0 }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let failed = {
+        extern "C" {
+            fn renameat2(from_dir: std::ffi::c_int, from: *const std::ffi::c_char, to_dir: std::ffi::c_int, to: *const std::ffi::c_char, flags: std::ffi::c_uint) -> std::ffi::c_int;
+        }
+        // AT_FDCWD, RENAME_NOREPLACE
+        unsafe { renameat2(-100, from.as_ptr(), -100, to.as_ptr(), 1) != 0 }
+    };
+    match failed {
+        true => Err(std::io::Error::last_os_error()),
+        false => Ok(()),
+    }
+}
+
+/// What the file holds into a new file, which gets its permissions (without the bits of
+/// `setuid`, `setgid` and `sticky`). A target that is there is `EEXIST`; a target that could not
+/// be written whole is removed.
+fn copy_new(from: &str, to: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut source = std::fs::File::open(from)?;
+    let info = source.metadata()?;
+    if info.is_dir() {
+        return Err(std::io::Error::from_raw_os_error(21));
+    }
+    let mut target = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(to)?;
+    let written = std::io::copy(&mut source, &mut target)
+        .and_then(|_| target.set_permissions(std::fs::Permissions::from_mode(info.permissions().mode() & 0o777)));
+    if written.is_err() {
+        drop(target);
+        let _ = std::fs::remove_file(to);
+    }
+    written
+}
+
+/// A folder and all it holds, links not followed: a path that is a link, or a file, is `ENOTDIR`.
+fn remove_all(path: &str) -> std::io::Result<()> {
+    if !std::fs::symlink_metadata(path)?.is_dir() {
+        return Err(std::io::Error::from_raw_os_error(20));
+    }
+    std::fs::remove_dir_all(path)
+}
+
+/// `mkdtemp`: a new folder that only the user can go into, its name made from the template.
+fn make_temp(template: &str) -> std::io::Result<String> {
+    extern "C" {
+        fn mkdtemp(template: *mut std::ffi::c_char) -> *mut std::ffi::c_char;
+    }
+    let mut name = c_path(template).into_bytes_with_nul();
+    if unsafe { mkdtemp(name.as_mut_ptr().cast()) }.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    name.pop();
+    Ok(String::from_utf8(name).expect("the template is text and the system puts letters in it"))
 }
 
 fn write_file(path: &str, bytes: &[u8], append: bool) -> std::io::Result<()> {
@@ -3092,6 +3197,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 _ => self.call_expr(expr, name, args, frame),
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
+                Callee::System(call) => self.system(*call, args, frame),
                 Callee::Extern | Callee::Pointer => unreachable!("a function of C is called by its name, and `pointer()` is read by its call"),
                 // `string.fromCString(p)`: the bytes up to the zero byte, copied and checked.
                 Callee::FromCString => {
@@ -4200,6 +4306,107 @@ impl<'a, 'e> Interp<'a, 'e> {
                     _ => std::fs::OpenOptions::new().append(true).create(true).open(&path),
                 };
                 done(opened.map(|file| Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None })))))
+            }
+        })
+    }
+
+    /// `File.delete(path)`, `File.move(from, to)` and the other calls of the file system and of
+    /// the environment beyond reading and writing a file. Each asks the system what compiled code
+    /// asks it, so the two give the same answers.
+    fn system(&mut self, call: SystemCall, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
+        let mut values = Vec::new();
+        for arg in args {
+            values.push(owned(self.expr(arg, frame)?));
+        }
+        let text = |at: usize| match &values[at] {
+            Value::Str(text) => text.to_string(),
+            _ => unreachable!("the checker makes it text"),
+        };
+        let done = |result: std::io::Result<Value>| match result {
+            Ok(value) => ok(value),
+            Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+        };
+        let not_found = || failed(io_cause(None, Some(2)));
+        // No file has a zero byte in its name: such a path is not found.
+        let paths = match call {
+            SystemCall::Current => 0,
+            SystemCall::Move | SystemCall::Replace | SystemCall::Copy => 2,
+            _ => 1,
+        };
+        if call != SystemCall::Variable && (0..paths).any(|at| text(at).contains('\0')) {
+            return Ok(not_found());
+        }
+        Ok(match call {
+            SystemCall::Delete => done(remove_file(&text(0)).map(|()| Value::Void)),
+            SystemCall::Move => done(rename_new(&text(0), &text(1)).map(|()| Value::Void)),
+            SystemCall::Replace => done(std::fs::rename(text(0), text(1)).map(|()| Value::Void)),
+            SystemCall::Copy => done(copy_new(&text(0), &text(1)).map(|()| Value::Void)),
+            SystemCall::CreateDirectory => done(std::fs::create_dir(text(0)).map(|()| Value::Void)),
+            SystemCall::RemoveDirectory => done(std::fs::remove_dir(text(0)).map(|()| Value::Void)),
+            SystemCall::RemoveAll => done(remove_all(&text(0)).map(|()| Value::Void)),
+            SystemCall::List => {
+                let mut found = Vec::new();
+                let listed = std::fs::read_dir(text(0)).and_then(|entries| {
+                    for entry in entries {
+                        let entry = entry?;
+                        let kind = entry.file_type().map(|kind| kind_code(&kind)).unwrap_or(3);
+                        found.push((std::os::unix::ffi::OsStrExt::as_bytes(entry.file_name().as_os_str()).to_vec(), kind));
+                    }
+                    Ok(())
+                });
+                if let Err(error) = listed {
+                    return Ok(done(Err(error)));
+                }
+                found.sort();
+                let mut names = Vec::new();
+                for (name, _) in &found {
+                    match std::str::from_utf8(name) {
+                        Ok(name) => names.push(cell(Value::Str(Rc::new(name.to_string())))),
+                        Err(error) => return Ok(failed(io_cause(None, None).invalid_text(error.valid_up_to() as u64))),
+                    }
+                }
+                let (Value::List(into), Value::List(kinds)) = (&values[1], &values[2]) else { unreachable!("the checker makes them lists") };
+                into.borrow_mut().extend(names);
+                kinds.borrow_mut().extend(found.iter().map(|(_, kind)| cell(Value::Int(IntTy::Byte, i128::from(*kind)))));
+                ok(Value::Void)
+            }
+            SystemCall::Status => match std::fs::metadata(text(0)) {
+                Ok(info) => {
+                    let modified = info.modified().map(|time| match time.duration_since(std::time::UNIX_EPOCH) {
+                        Ok(after) => i128::try_from(after.as_nanos()).unwrap_or(i128::MAX),
+                        Err(before) => -i128::try_from(before.duration().as_nanos()).unwrap_or(i128::MAX),
+                    });
+                    let modified = modified.unwrap_or(0).clamp(i128::from(i64::MIN), i128::from(i64::MAX));
+                    let fields = cells_of(&values[1]);
+                    let size = i128::from(info.len()).min(i128::from(i64::MAX));
+                    for (slot, value) in fields.iter().zip([i128::from(kind_code(&info.file_type())), size, modified]) {
+                        *slot.borrow_mut() = Value::Int(IntTy::Long, value);
+                    }
+                    ok(Value::Void)
+                }
+                Err(error) => done(Err(error)),
+            },
+            SystemCall::Current => match std::env::current_dir() {
+                Ok(folder) => text_read(std::os::unix::ffi::OsStrExt::as_bytes(folder.as_os_str()).to_vec(), 0),
+                Err(error) => done(Err(error)),
+            },
+            SystemCall::MakeTemp => done(make_temp(&text(0)).map(|folder| Value::Str(Rc::new(folder)))),
+            SystemCall::Variable => {
+                let name = text(0);
+                // A name with `=` or a zero byte in it is no variable's name.
+                let found = match name.is_empty() || name.contains(['=', '\0']) {
+                    true => None,
+                    false => std::env::var_os(&name),
+                };
+                match found {
+                    Some(value) => {
+                        let Value::List(into) = &values[1] else { unreachable!("the checker makes it a list") };
+                        let bytes = std::os::unix::ffi::OsStrExt::as_bytes(value.as_os_str());
+                        into.borrow_mut().extend(bytes.iter().map(|byte| cell(Value::Int(IntTy::Byte, i128::from(*byte)))));
+                        Value::Bool(true)
+                    }
+                    None => Value::Bool(false),
+                }
             }
         })
     }

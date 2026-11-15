@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the seventy-third slice.
+Last brought up to date: 15 November 2026, the seventy-fourth slice.
 
 ## Functions and variables
 
@@ -257,6 +257,20 @@ Last brought up to date: 15 November 2026, the seventy-third slice.
 | `writeln!(w, "{}", x)?` | `try w.writeLine(x)` | built | |
 | a `BufWriter` dropped (its error lost) | `try w.close()` | built | A writer not closed on every path is a compile error |
 | `io::stdin()`, `io::stdout()` | `Stdin`, `Stdout`, `Stderr` | built | |
+| `fs::remove_file(p)` | `File.delete(read p)` | built | A missing file is `NotFound`, as in Rust; a folder is `IsDirectory` on every system |
+| `fs::rename(a, b)` | `File.replace(read a, read b)` | built | Takes the place of `b` in one step |
+| `fs::rename(a, b)` after a test that `b` is missing | `File.move(read a, read b)` | built | `AlreadyExists` when `b` is there, told in the same step as the rename (`RENAME_NOREPLACE`, `RENAME_EXCL`); Rust's `rename` has no such form |
+| `fs::copy(a, b)` | `File.copy(read a, read b)` | built | Never takes the place of `b`: `AlreadyExists`, where Rust's `copy` writes over it. The permissions come along without setuid, setgid and sticky |
+| `fs::metadata(p)?.len()`, `.is_file()`, `.modified()` | `var info = try File.info(read p)`, `info.size`, `info.kind`, `info.modified` | built | `modified` is a `DateTime`; a link is followed, as `metadata` does |
+| `Path::new(p).is_file()`, `.is_dir()` | `File.exists(read p)`, `Directory.exists(read p)` | built | `false` when the path cannot be looked at, as in Rust |
+| `fs::create_dir(p)`, `fs::create_dir_all(p)` | `Directory.create(read p)`, `Directory.createAll(read p)` | built | |
+| `fs::remove_dir(p)`, `fs::remove_dir_all(p)` | `Directory.delete(read p)`, `Directory.deleteAll(read p)` | built | Neither follows a link inside; `deleteAll` of a path that is itself a link is `NotDirectory`, where Rust removes the link |
+| `fs::read_dir(p)`, `entry.file_name()`, `entry.file_type()` | `try Directory.list(read p)`, `entry.name`, `entry.kind` | built | A `List<DirectoryEntry>` in the order of the bytes of the names, where Rust gives the order of the system; a name that is not UTF-8 is an `InvalidText`, where Rust gives an `OsString` |
+| `env::current_dir()`, `env::temp_dir()` | `Directory.current()`, `Directory.temp()` | built | There is no `set_current_dir`: every thread would see it change |
+| `tempfile::tempdir()` | `Directory.createTemp()` | built | In the language, not a crate: `mkdtemp`, a folder only the user can go into; removing it is the program's work |
+| `path.join(name)`, `path.file_name()`, `path.extension()`, `path.parent()` | `Path.join(read path, name)`, `Path.fileName(read path)`, `Path.extension(read path)`, `Path.parent(read path)` | built | A path is a `string`. A second path that starts with `/` is put after the first, where Rust's `join` puts it in its place; the extension keeps its `.`, as in C# |
+| `env::var("HOME")` | `Environment.get("HOME")` | built | A `Result<string, VariableError>` with `Missing` and `InvalidText(position)`, as Rust's `VarError` |
+| `env::set_var`, `env::remove_var` | none | not in SG | Unsafe in Rust 2024 for the same reason: another thread may be reading. A program that starts another gives it an environment of its own |
 
 ## Network
 

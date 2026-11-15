@@ -1,0 +1,25 @@
+move onto b: AlreadyExists
+move onto itself: AlreadyExists
+move a missing file: NotFound
+move a to c: done
+false
+first
+replace b with c: done
+first
+false
+copy b to c: done
+copy b onto c: AlreadyExists
+copy a missing file: NotFound
+copy the folder: IsDirectory
+first
+0
+copy the script: done
+true
+false
+delete c: done
+delete c again: NotFound
+delete the folder: IsDirectory
+delete a zero byte: NotFound
+read through a file: NotDirectory
+false
+false

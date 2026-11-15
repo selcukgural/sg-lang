@@ -1,0 +1,7 @@
+// A path is lent to `File.info`, as to every function of `File`.
+Result<void, IoError> main() {
+    var path = "notes.txt"
+    var info = try File.info(path)
+    print(info.size)
+    return Ok()
+}

@@ -1,0 +1,155 @@
+// Folders, and what the system knows of a file: `Directory`, `DirectoryEntry`, `FileInfo` and
+// `FileKind`; `File.info(path)` and `File.exists(path)` are done here too. Written in SG and brought
+// along by the language; only the calls of the system (`System.list`, `System.status` and the
+// others) are the compiler's own, and only this module can call them.
+
+// What a name in a folder is. `File.info` follows a link to what it points at, so only a listing of a
+// folder tells a `Link`.
+public enum FileKind : Copyable, Equatable, Hashable, Formattable {
+    File
+    Directory
+    Link
+    Other
+}
+
+// The kind as the system call gives it.
+FileKind kindOf(long code) {
+    match code {
+        0 => return FileKind.File
+        1 => return FileKind.Directory
+        2 => return FileKind.Link
+        _ => return FileKind.Other
+    }
+}
+
+// What the system knows of a file or a folder: `File.info(path)`.
+public struct FileInfo : Copyable, Equatable, Formattable {
+    public readonly FileKind kind
+    // In bytes.
+    public readonly long size
+    // When what it holds was last written.
+    public readonly DateTime modified
+
+    // `File.info(path)`: a link is followed to what it points at.
+    Result<FileInfo, IoError> of(read string path) {
+        var fields = long[3]
+        try System.status(path, ref fields)
+        return Ok(FileInfo { kind = kindOf(fields[0]), size = fields[1], modified = DateTime { ns = fields[2] } })
+    }
+
+    // `File.exists(path)`: whether the path names a file, a link followed. A folder is not a file, and
+    // a path that cannot be looked at (the permission of a folder on the way) is not there either.
+    bool isFile(read string path) {
+        return isKind(path, 0)
+    }
+}
+
+bool isKind(read string path, long kind) {
+    var fields = long[3]
+    if System.status(path, ref fields) is Error(_) {
+        return false
+    }
+    return fields[0] == kind
+}
+
+// A name in a folder and what it is, as `Directory.list` gives it.
+public struct DirectoryEntry : Equatable, Formattable {
+    // The name alone, without the folder: `Path.join(folder, entry.name)` is the path.
+    public readonly string name
+    public readonly FileKind kind
+}
+
+// The folders of the system. Each function takes the path of a folder and asks the system, so what it
+// says can be different the next moment: to use a file, open it and look at the error, rather than
+// asking first whether it is there.
+public struct Directory {
+    // Makes the folder; the one it is in must be there. A folder or a file already there is
+    // `AlreadyExists`.
+    public Result<void, IoError> create(read string path) {
+        return System.createDirectory(path)
+    }
+
+    // Makes the folder and every folder on the way that is not there yet. A folder already there is no
+    // error; a file in the way is.
+    public Result<void, IoError> createAll(read string path) {
+        match System.createDirectory(path) {
+            Ok => return Ok()
+            Error(cause) => {
+                if cause == IoError.AlreadyExists && Directory.exists(path) {
+                    return Ok()
+                }
+                if cause != IoError.NotFound {
+                    return Error(cause)
+                }
+            }
+        }
+        var parent = Path.parent(path)
+        if parent.length() == 0 || parent == path {
+            return Error(IoError.NotFound)
+        }
+        try Directory.createAll(parent)
+        match System.createDirectory(path) {
+            Ok => return Ok()
+            Error(cause) => {
+                if cause == IoError.AlreadyExists && Directory.exists(path) {
+                    return Ok()
+                }
+                return Error(cause)
+            }
+        }
+    }
+
+    // Removes the folder, which must be empty (`DirectoryNotEmpty`).
+    public Result<void, IoError> delete(read string path) {
+        return System.removeDirectory(path)
+    }
+
+    // Removes the folder and all it holds. A link inside is removed, not followed, and so is a link that
+    // takes the place of a folder while this works; a path that is itself a link is `NotDirectory`.
+    public Result<void, IoError> deleteAll(read string path) {
+        return System.removeAll(path)
+    }
+
+    // The names in the folder, without `.` and `..`, in the order of their bytes: the same on every
+    // system. A name that is not UTF-8 is an `InvalidText` at its first byte that is not.
+    public Result<List<DirectoryEntry>, IoError> list(read string path) {
+        var names = List<string>()
+        var kinds = List<byte>()
+        try System.list(path, ref names, ref kinds)
+        var entries = List<DirectoryEntry>()
+        var at = 0
+        for name in names {
+            entries.add(DirectoryEntry { name = name, kind = kindOf((long)kinds[at]) })
+            at += 1
+        }
+        return Ok(entries)
+    }
+
+    // Whether the path names a folder, a link followed.
+    public bool exists(read string path) {
+        return isKind(path, 1)
+    }
+
+    // The folder the program works in. It is not changed from inside: every thread of the program would
+    // see it change.
+    public Result<string, IoError> current() {
+        return System.current()
+    }
+
+    // The folder for files that do not have to stay: `TMPDIR` as it is written, or `/tmp`.
+    public string temp() {
+        if Environment.get("TMPDIR") is Ok(folder) && folder.length() > 0 {
+            return folder.clone()
+        }
+        return "/tmp"
+    }
+
+    // Makes a new folder with a name nobody else has, inside `Directory.temp()`, that only the user of
+    // the program can go into, and gives its path. Removing it is the program's work
+    // (`Directory.deleteAll`).
+    public Result<string, IoError> createTemp() {
+        var folder = Directory.temp()
+        var template = Path.join(read folder, "sg-XXXXXX")
+        return System.makeTemp(read template)
+    }
+}

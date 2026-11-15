@@ -1,0 +1,4 @@
+// The variables of the environment are only read.
+void main() {
+    Environment.set("MODE", "fast")
+}

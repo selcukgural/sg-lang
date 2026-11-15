@@ -1,0 +1,26 @@
+// The variables of the environment the program was started with. They are read, never set: setting
+// one while another thread reads one is not safe in C, and a program that runs another gives it an
+// environment of its own. Written in SG and brought along by the language; only the reading of a
+// variable (`System.variable`) is the compiler's own, and only this module can call it.
+
+// Why `Environment.get` gave no text.
+public enum VariableError : Copyable, Equatable, Hashable, Formattable {
+    // The variable is not set.
+    Missing
+    // What it holds is not UTF-8: the first byte that is not, counted from its start.
+    InvalidText(long position)
+}
+
+public struct Environment {
+    // The text of the variable: `Environment.get("HOME") ?? "/"`.
+    public Result<string, VariableError> get(read string name) {
+        var bytes = List<byte>()
+        if !System.variable(name, ref bytes) {
+            return Error(VariableError.Missing)
+        }
+        match string.fromUtf8(read bytes) {
+            Ok(text) => return Ok(text.clone())
+            Error(cause) => return Error(VariableError.InvalidText((long)cause.position))
+        }
+    }
+}

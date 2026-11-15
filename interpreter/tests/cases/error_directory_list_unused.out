@@ -1,0 +1,5 @@
+error: this `Result` is not used, so an error would be lost silently
+  --> error_directory_list_unused.sg:3:5
+ 3 |     Directory.list(".")
+   |     ^^^^^^^^^^^^^^^^^^^
+  hint: pass the error on with `try Directory.list(".")`, or drop it on purpose with `_ = Directory.list(".")`

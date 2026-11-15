@@ -1,0 +1,6 @@
+// The calls of the system that `Directory` is built on are the language's own module's.
+void main() {
+    var names = List<string>()
+    var kinds = List<byte>()
+    System.list(".", ref names, ref kinds)
+}

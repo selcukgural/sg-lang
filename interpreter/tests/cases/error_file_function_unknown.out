@@ -1,5 +1,5 @@
 error: `File` has no function `readAll`
-  functions for now: readText, readBytes, writeText, writeBytes, appendText, openText, createText, openAppend
+  functions for now: readText, readBytes, writeText, writeBytes, appendText, openText, createText, openAppend, delete, move, replace, copy, info, exists
   --> error_file_function_unknown.sg:3:25
  3 |     var text = try File.readAll("notes.txt")
    |                         ^^^^^^^

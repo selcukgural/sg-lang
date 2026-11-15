@@ -34,7 +34,9 @@
 //! byte is not set (see `struct_decl`). The clock is the language's own module, written in SG and
 //! compiled as a module of the program is; only its two readings are C (see `CLOCK_RUNTIME`). So are
 //! random numbers; only the random bytes of the system are C (`sg_entropy`, which the key of a hash
-//! table is drawn with too). A type
+//! table is drawn with too). So are folders, paths and the environment (`Directory`, `FileInfo`,
+//! `Path`, `Environment`); the calls of the system under them, and `File.delete`, `File.move`,
+//! `File.replace` and `File.copy`, are C (see `FILES_RUNTIME`). A type
 //! alias is the type it names. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
@@ -2914,6 +2916,286 @@ static int sg_reader_net(sg_reader* r, int need, int64_t want, sg_wait* w, sg_ca
 /// What a program that reads or writes files, or reads its input, needs: the calls of the
 /// system (`open`, `read`, `write`) and the input in blocks of its own. Added only to such a
 /// program.
+/// The calls of the file system beyond reading and writing a file (`File.delete`, `File.move`,
+/// `Directory.list` and the others), and the variables of the environment. Added only to such a
+/// program, after `IO_RUNTIME`.
+const FILES_RUNTIME: &str = r#"
+#include <dirent.h>
+#include <stdio.h>
+#if defined(__linux__) && !defined(RENAME_NOREPLACE)
+#define RENAME_NOREPLACE 1
+#endif
+/* Whether the two paths name one file: a rename onto it is no move, and some systems would say
+   it was done. */
+static bool sg_fs_same(const char* a, const char* b) {
+    struct stat x, y;
+    return lstat(a, &x) == 0 && lstat(b, &y) == 0 && x.st_dev == y.st_dev && x.st_ino == y.st_ino;
+}
+/* `unlink`; a folder is EISDIR on every system (macOS says EPERM). */
+static int sg_fs_delete(sg_str path) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    if (unlink(name) != 0) {
+        code = errno;
+        struct stat info;
+        if ((code == EPERM || code == EISDIR) && lstat(name, &info) == 0 && S_ISDIR(info.st_mode)) code = EISDIR;
+    }
+    free(name);
+    return code;
+}
+/* A rename. Without `replace` a target that is there is EEXIST, told in the same step of the
+   system as the rename. */
+static int sg_fs_move(sg_str from, sg_str to, bool replace) {
+    int code = 0;
+    char* a = sg_path(from, &code);
+    if (!a) return code;
+    char* b = sg_path(to, &code);
+    if (!b) { free(a); return code; }
+    int failed;
+    if (replace) failed = rename(a, b);
+    else if (sg_fs_same(a, b)) { failed = -1; errno = EEXIST; }
+#ifdef __APPLE__
+    else failed = renamex_np(a, b, RENAME_EXCL);
+#else
+    else failed = renameat2(AT_FDCWD, a, AT_FDCWD, b, RENAME_NOREPLACE);
+#endif
+    code = failed ? errno : 0;
+    free(a);
+    free(b);
+    return code;
+}
+/* What the file holds into a new file, which gets its permissions without the bits of setuid,
+   setgid and sticky. A target that is there is EEXIST; one that could not be written whole is
+   removed. */
+static int sg_fs_copy(sg_str from, sg_str to) {
+    int code = 0;
+    char* a = sg_path(from, &code);
+    if (!a) return code;
+    char* b = sg_path(to, &code);
+    if (!b) { free(a); return code; }
+    int in = open(a, O_RDONLY | O_CLOEXEC);
+    struct stat info;
+    if (in < 0) code = errno;
+    else if (fstat(in, &info) != 0) code = errno;
+    else if (S_ISDIR(info.st_mode)) code = EISDIR;
+    int out = -1;
+    if (!code) {
+        out = open(b, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (out < 0) code = errno;
+    }
+    if (out >= 0) {
+        uint8_t* block = malloc(65536);
+        if (!block) abort();
+        for (;;) {
+            ssize_t got = read(in, block, 65536);
+            if (got < 0) { if (errno == EINTR) continue; code = errno; break; }
+            if (got == 0) break;
+            ssize_t done = 0;
+            while (done < got) {
+                ssize_t put = write(out, block + done, (size_t)(got - done));
+                if (put < 0) { if (errno == EINTR) continue; code = errno; break; }
+                done += put;
+            }
+            if (code) break;
+        }
+        free(block);
+        if (!code && fchmod(out, info.st_mode & 0777) != 0) code = errno;
+        if (close(out) != 0 && !code) code = errno;
+        if (code) unlink(b);
+    }
+    if (in >= 0) close(in);
+    free(a);
+    free(b);
+    return code;
+}
+static int sg_fs_mkdir(sg_str path) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    if (mkdir(name, 0777) != 0) code = errno;
+    free(name);
+    return code;
+}
+static int sg_fs_rmdir(sg_str path) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    if (rmdir(name) != 0) code = errno;
+    free(name);
+    return code;
+}
+/* Removes all that the folder `fd` holds, and closes it. Each folder inside is opened through the
+   one it is in, without following a link: a link is removed, also one that takes the place of a
+   folder while this works. What another program removed first is no error. */
+static int sg_fs_clear(int fd) {
+    DIR* folder = fdopendir(fd);
+    if (!folder) { int code = errno; close(fd); return code; }
+    int code = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent* entry = readdir(folder);
+        if (!entry) { code = errno; break; }
+        const char* name = entry->d_name;
+        if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) continue;
+        bool sub = entry->d_type == DT_DIR;
+        if (entry->d_type == DT_UNKNOWN) {
+            struct stat info;
+            sub = fstatat(dirfd(folder), name, &info, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(info.st_mode);
+        }
+        if (sub) {
+            int inner = openat(dirfd(folder), name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            if (inner >= 0) {
+                code = sg_fs_clear(inner);
+                if (code) break;
+                if (unlinkat(dirfd(folder), name, AT_REMOVEDIR) != 0 && errno != ENOENT) { code = errno; break; }
+                continue;
+            }
+            if (errno == ENOENT) continue;
+            if (errno != ENOTDIR && errno != ELOOP) { code = errno; break; }
+        }
+        if (unlinkat(dirfd(folder), name, 0) != 0 && errno != ENOENT) { code = errno; break; }
+    }
+    closedir(folder);
+    return code;
+}
+/* A folder and all it holds; a path that is a link, or a file, is ENOTDIR. */
+static int sg_fs_remove_all(sg_str path) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    int fd = open(name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) code = errno == ELOOP ? ENOTDIR : errno;
+    else {
+        code = sg_fs_clear(fd);
+        if (!code && rmdir(name) != 0) code = errno;
+    }
+    free(name);
+    return code;
+}
+/* A name in a folder: its bytes, ended by a zero, and its kind (0 a file, 1 a folder, 2 a link,
+   3 anything else). */
+typedef struct { char* name; int64_t len; uint8_t kind; } sg_fs_entry;
+static int sg_fs_kind(mode_t mode) {
+    return S_ISREG(mode) ? 0 : S_ISDIR(mode) ? 1 : S_ISLNK(mode) ? 2 : 3;
+}
+/* In the order of the bytes, a name before a longer one it starts. */
+static int sg_fs_order(const void* x, const void* y) {
+    const sg_fs_entry* a = x;
+    const sg_fs_entry* b = y;
+    int64_t n = a->len < b->len ? a->len : b->len;
+    int c = memcmp(a->name, b->name, (size_t)n);
+    return c ? c : (a->len > b->len) - (a->len < b->len);
+}
+/* The names in the folder, without `.` and `..`, in the order of their bytes. */
+static int sg_fs_list(sg_str path, sg_fs_entry** out, int64_t* count) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return code;
+    DIR* folder = opendir(name);
+    int error = errno;
+    free(name);
+    if (!folder) return error;
+    sg_fs_entry* entries = NULL;
+    int64_t n = 0, cap = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent* entry = readdir(folder);
+        if (!entry) { code = errno; break; }
+        const char* d = entry->d_name;
+        if (d[0] == '.' && (d[1] == 0 || (d[1] == '.' && d[2] == 0))) continue;
+        int kind = entry->d_type == DT_REG ? 0 : entry->d_type == DT_DIR ? 1 : entry->d_type == DT_LNK ? 2 : 3;
+        if (entry->d_type == DT_UNKNOWN) {
+            struct stat info;
+            kind = fstatat(dirfd(folder), d, &info, AT_SYMLINK_NOFOLLOW) == 0 ? sg_fs_kind(info.st_mode) : 3;
+        }
+        if (n == cap) entries = sg_grow(entries, &cap, sizeof *entries);
+        int64_t len = (int64_t)strlen(d);
+        char* copy = malloc((size_t)len + 1);
+        if (!copy) abort();
+        memcpy(copy, d, (size_t)len + 1);
+        entries[n++] = (sg_fs_entry){ copy, len, (uint8_t)kind };
+    }
+    closedir(folder);
+    if (code) {
+        for (int64_t i = 0; i < n; i++) free(entries[i].name);
+        free(entries);
+        return code;
+    }
+    if (n > 1) qsort(entries, (size_t)n, sizeof *entries, sg_fs_order);
+    *out = entries;
+    *count = n;
+    return 0;
+}
+/* The kind, the size and the time of the last write in nanoseconds since 1970, a link followed. */
+static int sg_fs_status(sg_str path, int64_t* fields) {
+    int code = 0;
+    /* A short path is ended by its zero byte on the stack: a question asked often allocates nothing. */
+    char local[256];
+    char* name = local;
+    if (path.len < (int64_t)sizeof local && !(path.len > 0 && memchr(path.ptr, 0, (size_t)path.len))) {
+        if (path.len > 0) memcpy(local, path.ptr, (size_t)path.len);
+        local[path.len] = 0;
+    } else {
+        name = sg_path(path, &code);
+        if (!name) return code;
+    }
+    struct stat info;
+    int failed = stat(name, &info);
+    int error = errno;
+    if (name != local) free(name);
+    if (failed) return error;
+#ifdef __APPLE__
+    int64_t seconds = (int64_t)info.st_mtimespec.tv_sec, ns = (int64_t)info.st_mtimespec.tv_nsec;
+#else
+    int64_t seconds = (int64_t)info.st_mtim.tv_sec, ns = (int64_t)info.st_mtim.tv_nsec;
+#endif
+    fields[0] = sg_fs_kind(info.st_mode);
+    fields[1] = (int64_t)info.st_size;
+    if (seconds >= INT64_MAX / 1000000000) fields[2] = INT64_MAX;
+    else if (seconds <= INT64_MIN / 1000000000) fields[2] = INT64_MIN;
+    else fields[2] = seconds * 1000000000 + ns;
+    return 0;
+}
+/* The folder the program works in, as bytes of its own. */
+static int sg_fs_current(uint8_t** bytes, int64_t* len) {
+    size_t cap = 256;
+    for (;;) {
+        char* block = malloc(cap);
+        if (!block) abort();
+        if (getcwd(block, cap)) { *bytes = (uint8_t*)block; *len = (int64_t)strlen(block); return 0; }
+        int code = errno;
+        free(block);
+        if (code != ERANGE) return code;
+        cap *= 2;
+    }
+}
+/* `mkdtemp`: a new folder that only the user can go into, named from the template. */
+static int sg_fs_make_temp(sg_str template, uint8_t** bytes, int64_t* len) {
+    int code = 0;
+    char* name = sg_path(template, &code);
+    if (!name) return code;
+    if (!mkdtemp(name)) { code = errno; free(name); return code; }
+    *bytes = (uint8_t*)name;
+    *len = (int64_t)strlen(name);
+    return 0;
+}
+/* The bytes of a variable of the environment, or NULL when it is not set. A name with `=` or a
+   zero byte in it is no variable's name. The program never sets one, so reading is safe on any
+   thread. */
+static const char* sg_env_variable(sg_str name, int64_t* len) {
+    if (name.len == 0 || memchr(name.ptr, 0, (size_t)name.len) || memchr(name.ptr, '=', (size_t)name.len)) return NULL;
+    char* key = malloc((size_t)name.len + 1);
+    if (!key) abort();
+    memcpy(key, name.ptr, (size_t)name.len);
+    key[name.len] = 0;
+    const char* value = getenv(key);
+    free(key);
+    if (value) *len = (int64_t)strlen(value);
+    return value;
+}
+"#;
+
 const IO_RUNTIME: &str = r#"
 #include <errno.h>
 #include <fcntl.h>
@@ -2924,7 +3206,7 @@ const IO_RUNTIME: &str = r#"
    2 IsDirectory, 3 NoSpace, 7 ConnectionRefused, 8 ConnectionReset, 9 AddressInUse; 5 is Other,
    which keeps the code. A host that could not be found, or an address that is not `host:port`,
    has a code of its own (10 HostNotFound), and so has a line longer than the limit of the reader
-   of a connection (11 LineTooLong). */
+   of a connection (11 LineTooLong). 12 AlreadyExists, 13 NotDirectory, 14 DirectoryNotEmpty. */
 #define SG_HOST_NOT_FOUND (-10)
 #define SG_LINE_TOO_LONG (-11)
 static int sg_io_kind(int code) {
@@ -2934,7 +3216,10 @@ static int sg_io_kind(int code) {
     case ECONNREFUSED: return 7;
     case ECONNRESET: case ECONNABORTED: case EPIPE: return 8;
     case EADDRINUSE: return 9;
-    case ENOENT: case ENOTDIR: return 0;
+    case ENOENT: return 0;
+    case EEXIST: return 12;
+    case ENOTDIR: return 13;
+    case ENOTEMPTY: return 14;
     case EPERM: case EACCES: case EROFS: return 1;
     case EISDIR: return 2;
     case ENOSPC:
@@ -4060,8 +4345,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         false => String::new(),
     };
     let _ = writeln!(out, "#define SG_THREADS {}", u8::from(threads));
-    // `accept4` and the flags of `socket` are GNU's on Linux.
-    if emitter.made.contains("net") {
+    // `accept4` and the flags of `socket` are GNU's on Linux, and so are `renameat2`, `d_type`
+    // and `mkdtemp` in strict C11.
+    if emitter.made.contains("net") || emitter.made.contains("files") {
         out.insert_str(0, "#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n");
     }
     // An async function that may drop a writer has it closed on a thread (`sg_closing_put`).
@@ -4096,6 +4382,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     if emitter.made.contains("io") {
         out.push_str(IO_RUNTIME);
+    }
+    if emitter.made.contains("files") {
+        out.push_str(FILES_RUNTIME);
     }
     if emitter.made.contains("net") {
         out.push_str(NET_RUNTIME);
@@ -5641,9 +5930,9 @@ impl<'a> Emitter<'a> {
         if known(&own) {
             return Some(own);
         }
-        // The built-in `TextError`, `NumberError` and `Cancelled` are seen from every module
-        // with nothing written.
-        if name == "TextError" || name == "NumberError" || name == "Cancelled" {
+        // The built-in `TextError`, `NumberError`, `IoError` and `Cancelled` are seen from every
+        // module with nothing written.
+        if name == "TextError" || name == "NumberError" || name == "IoError" || name == "Cancelled" {
             return Some(name.to_string());
         }
         // So are the types of the language's own module.
@@ -8991,6 +9280,75 @@ impl<'a> Emitter<'a> {
         self.call(fname.to_string(), None, args, head, &expr.ty)
     }
 
+    /// `File.delete(path)`, `Directory.list` through `System.list`, and the other calls of the
+    /// file system and of the environment: a function of the glue for each, written once.
+    fn system(&mut self, call: SystemCall, args: &'a [Expr], head: bool, expr: &'a Expr) -> Res<String> {
+        let span = expr.span;
+        self.made.insert("files".to_string());
+        self.io_error(span)?;
+        let gives = self.ctype(&expr.ty, span)?;
+        let failed = |cause: &str| format!("return ({gives}){{ .tag = 1, .u.v1 = {{ {cause} }} }};");
+        let text = || Ty::Read(Box::new(Ty::Str));
+        let bytes = || Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))));
+        // A call that gives `Ok()` or the error of a code.
+        let plain = |code: &str| format!("int code = {code}; if (code) {} return ({gives}){{ .tag = 0 }};", failed("sg_io_error(code)"));
+        // A text the system gave as bytes of their own: checked to be UTF-8.
+        let owned_text = |code: &str| {
+            format!(
+                "uint8_t* bytes = NULL; int64_t n = 0; int code = {code}; if (code) {} \
+                 int64_t bad = sg_utf8_bad(bytes, n); if (bad >= 0) {{ free(bytes); {} }} \
+                 return ({gives}){{ .tag = 0, .u.v0 = {{ (sg_string){{ bytes, n, n }} }} }};",
+                failed("sg_io_error(code)"),
+                failed("sg_io_bad_text(bad)")
+            )
+        };
+        let (fname, params, body) = match call {
+            SystemCall::Delete => ("sg_file_delete", vec![text()], plain("sg_fs_delete(a0)")),
+            SystemCall::Move => ("sg_file_move", vec![text(), text()], plain("sg_fs_move(a0, a1, false)")),
+            SystemCall::Replace => ("sg_file_replace", vec![text(), text()], plain("sg_fs_move(a0, a1, true)")),
+            SystemCall::Copy => ("sg_file_copy", vec![text(), text()], plain("sg_fs_copy(a0, a1)")),
+            SystemCall::CreateDirectory => ("sg_system_create_directory", vec![text()], plain("sg_fs_mkdir(a0)")),
+            SystemCall::RemoveDirectory => ("sg_system_remove_directory", vec![text()], plain("sg_fs_rmdir(a0)")),
+            SystemCall::RemoveAll => ("sg_system_remove_all", vec![text()], plain("sg_fs_remove_all(a0)")),
+            SystemCall::List => (
+                "sg_system_list",
+                vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Str)))), bytes()],
+                format!(
+                    "sg_fs_entry* e = NULL; int64_t n = 0; int code = sg_fs_list(a0, &e, &n); if (code) {} \
+                     for (int64_t i = 0; i < n; i++) {{ int64_t bad = sg_utf8_bad((const uint8_t*)e[i].name, e[i].len); \
+                     if (bad >= 0) {{ for (int64_t j = 0; j < n; j++) free(e[j].name); free(e); {} }} }} \
+                     if (n > 0) {{ if (a1->len + n > a1->cap) a1->ptr = sg_reserve(a1->ptr, &a1->cap, a1->len + n, sizeof *a1->ptr); \
+                     if (a2->len + n > a2->cap) a2->ptr = sg_reserve(a2->ptr, &a2->cap, a2->len + n, sizeof *a2->ptr); }} \
+                     for (int64_t i = 0; i < n; i++) {{ a1->ptr[a1->len++] = (sg_string){{ (uint8_t*)e[i].name, e[i].len, e[i].len + 1 }}; a2->ptr[a2->len++] = e[i].kind; }} \
+                     free(e); return ({gives}){{ .tag = 0 }};",
+                    failed("sg_io_error(code)"),
+                    failed("sg_io_bad_text(bad)")
+                ),
+            ),
+            SystemCall::Status => (
+                "sg_system_status",
+                vec![text(), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                format!(
+                    "int64_t f[3]; int code = sg_fs_status(a0, f); if (code) {} \
+                     for (int64_t i = 0; i < 3 && i < a1.len; i++) a1.ptr[i] = f[i]; return ({gives}){{ .tag = 0 }};",
+                    failed("sg_io_error(code)")
+                ),
+            ),
+            SystemCall::Current => ("sg_system_current", Vec::new(), owned_text("sg_fs_current(&bytes, &n)")),
+            SystemCall::MakeTemp => ("sg_system_make_temp", vec![text()], owned_text("sg_fs_make_temp(a0, &bytes, &n)")),
+            SystemCall::Variable => (
+                "sg_system_variable",
+                vec![text(), bytes()],
+                "int64_t n = 0; const char* v = sg_env_variable(a0, &n); if (!v) return false; \
+                 if (n > 0) { if (a1->len + n > a1->cap) a1->ptr = sg_reserve(a1->ptr, &a1->cap, a1->len + n, 1); memcpy(a1->ptr + a1->len, v, (size_t)n); a1->len += n; } \
+                 return true;"
+                    .to_string(),
+            ),
+        };
+        self.io_glue(fname, &params, &body, &gives, span)?;
+        self.call(fname.to_string(), None, args, head, &expr.ty)
+    }
+
     /// `sg_io_error(code)` and `sg_io_bad_text(at)`: the `IoError` for a code the system gave,
     /// and for a byte that is not UTF-8.
     fn io_error(&mut self, span: Span) -> Res<()> {
@@ -11179,6 +11537,7 @@ impl<'a> Emitter<'a> {
                 }
                 Callee::Extern => unreachable!("a function of C is called by its name"),
                 Callee::Io(call) => self.io(*call, args, head, expr),
+                Callee::System(call) => self.system(*call, args, head, expr),
                 // `Memory.free(p)` is C's `free`; `Memory.copy` is `memmove` behind a test of the count.
                 Callee::Memory(MemoryCall::Free) => Ok(format!("free({})", self.first(&args[0], head)?)),
                 Callee::Clock(wall) => {

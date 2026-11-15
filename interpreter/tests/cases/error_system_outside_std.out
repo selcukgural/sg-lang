@@ -1,0 +1,4 @@
+error: there is no variable or type named `System`
+  --> error_system_outside_std.sg:5:5
+ 5 |     System.list(".", ref names, ref kinds)
+   |     ^^^^^^

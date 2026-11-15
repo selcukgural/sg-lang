@@ -1,4 +1,4 @@
-struct Path : Equatable, Hashable {
+struct Route : Equatable, Hashable {
     List<int> steps
 }
 

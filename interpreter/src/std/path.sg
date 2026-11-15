@@ -1,0 +1,57 @@
+// Paths as text: joining two, and the parts of one. A path is a `string`, as `File` takes it; these
+// functions only look at the `/` in it and never ask the system. A part they give is a view of the
+// path, not a copy. Written in SG and brought along by the language.
+public struct Path {
+    // The two with one `/` between them: `Path.join("logs", "today.txt")` is `logs/today.txt`, and
+    // so is `Path.join("logs/", "today.txt")`. A second path that starts with `/` is still put after
+    // the first (`Path.join("logs", "/etc")` is `logs/etc`), so a name from outside cannot lead out
+    // of the folder it is joined to. An empty part gives the other one.
+    public string join(read string first, read string second) {
+        if first.length() == 0 {
+            return second.clone()
+        }
+        if second.length() == 0 {
+            return first.clone()
+        }
+        var head = first
+        if head.endsWith('/') {
+            head = head[..head.length() - 1]
+        }
+        var tail = second
+        if tail.startsWith('/') {
+            tail = tail[1..]
+        }
+        return $"{head}/{tail}".toString()
+    }
+
+    // What comes after the last `/`: `report.txt` in `logs/report.txt`, and the empty text in `logs/`.
+    public read string fileName(read string path) from path {
+        var slash = path.lastIndexOf('/') ?? -1
+        return path[slash + 1..]
+    }
+
+    // The end of the name from its last `.` on, the `.` with it: `.txt` in `logs/report.txt`. A name
+    // without a `.`, with one only at its start (`.profile`) or only at its end (`file.`), has none:
+    // the empty text.
+    public read string extension(read string path) from path {
+        var name = Path.fileName(path)
+        var dot = name.lastIndexOf('.') ?? 0
+        if dot == 0 || dot == name.length() - 1 {
+            return name[name.length()..]
+        }
+        return name[dot..]
+    }
+
+    // What comes before the last `/`: `logs` in `logs/report.txt`, `/` in `/report.txt`, and the
+    // empty text in `report.txt`, which names no folder.
+    public read string parent(read string path) from path {
+        var slash = path.lastIndexOf('/') ?? -1
+        if slash < 0 {
+            return path[..0]
+        }
+        if slash == 0 {
+            return path[..1]
+        }
+        return path[..slash]
+    }
+}

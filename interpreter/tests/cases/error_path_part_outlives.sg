@@ -1,0 +1,5 @@
+// A part of a path is a view of it: it cannot outlive the text it looks at.
+void main() {
+    var name = Path.fileName(read Path.join("logs", "today.txt"))
+    print(name)
+}

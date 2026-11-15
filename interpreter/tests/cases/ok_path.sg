@@ -1,0 +1,16 @@
+// Paths as text: `Path.join`, `fileName`, `extension` and `parent` look only at the `/` in them.
+void main() {
+    print(Path.join("logs", "today.txt"))
+    print(Path.join("logs/", "today.txt"))
+    print(Path.join("logs", "/etc/passwd"))
+    print(Path.join("", "today.txt"))
+    print(Path.join("logs", ""))
+    print(Path.join("/", "tmp"))
+    for path in "logs/report.txt|report.txt|logs/|/report.txt|/||a/b.tar.gz|a/.profile|a/file.|a.b/c".split('|') {
+        print($"[{path}] name [{Path.fileName(path)}] extension [{Path.extension(path)}] parent [{Path.parent(path)}]")
+    }
+    // A part is a view of the path: nothing is copied.
+    var path = "notes/2026/today.md"
+    var name = Path.fileName(read path)
+    print(name)
+}

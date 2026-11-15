@@ -1,0 +1,17 @@
+logs/today.txt
+logs/today.txt
+logs/etc/passwd
+today.txt
+logs
+/tmp
+[logs/report.txt] name [report.txt] extension [.txt] parent [logs]
+[report.txt] name [report.txt] extension [.txt] parent []
+[logs/] name [] extension [] parent [logs]
+[/report.txt] name [report.txt] extension [.txt] parent [/]
+[/] name [] extension [] parent [/]
+[] name [] extension [] parent []
+[a/b.tar.gz] name [b.tar.gz] extension [.gz] parent [a]
+[a/.profile] name [.profile] extension [] parent [a]
+[a/file.] name [file.] extension [] parent [a]
+[a.b/c] name [c] extension [] parent [a.b]
+today.md

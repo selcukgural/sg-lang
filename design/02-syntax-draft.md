@@ -1410,6 +1410,36 @@ seeded with SplitMix64; whoever sees some of its numbers can work out the rest, 
 `SecureRandom` does not return an error: if the system ever gave no bytes, the program stops with a panic rather
 than go on with bytes someone could guess. Shuffling a list and picking one of its items come later.
 
+### Folders, paths and the environment
+
+`File` deletes, moves and copies files; `Directory` makes, lists and removes folders; `Path` joins and takes
+apart paths, which are plain text; `Environment` reads the variables the program was started with. Each call
+of the system gives a `Result` with an `IoError`.
+
+```
+try File.move(read draft, read final)          // AlreadyExists if final is there: never written over
+try File.replace(read temp, read config)       // takes the place of config in one step
+try File.copy(read a, read b)                  // a new file; AlreadyExists if b is there
+try File.delete(read old)                      // NotFound if it is not there
+
+try Directory.createAll(read Path.join(read root, "logs/2026"))
+for entry in try Directory.list(read root) {   // sorted by the bytes of the names
+    print($"{entry.name} {entry.kind}")        // File, Directory, Link or Other
+}
+var info = try File.info(read final)           // info.kind, info.size, info.modified (a DateTime)
+try Directory.deleteAll(read scratch)          // a link inside is removed, not followed
+
+var work = try Directory.createTemp()          // a new folder only this user can go into
+var home = Environment.get("HOME") ?? "/"      // a Result<string, VariableError>
+```
+
+`File.move` never takes the place of a file: the system tells in the same step as the rename that the target
+is there. `Path.join` puts a second path that starts with `/` after the first, so a name from outside cannot
+lead out of the folder it is joined to. The variables of the environment are only read, and the folder the
+program works in is not changed: both would be state that every thread sees change. `File.exists` and
+`Directory.exists` are there, but what they say can be different the next moment; to use a file, open it and
+look at the error.
+
 ### Modules and visibility
 
 A folder is a module; there is no declaration in the file. A name without `public` stays inside the module; the rule

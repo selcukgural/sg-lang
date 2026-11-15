@@ -1,0 +1,6 @@
+error: this `match` does not handle `Link`, `Other`
+  every variant of `FileKind` needs an arm
+  --> error_file_kind_match.sg:4:11
+ 4 |     match info.kind {
+   |           ^^^^^^^^^
+  hint: add an arm for each, or `_ => ...` for everything else

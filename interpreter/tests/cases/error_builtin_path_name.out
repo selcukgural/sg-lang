@@ -1,0 +1,4 @@
+error: `Path` is a built-in type and cannot be redefined
+  --> error_builtin_path_name.sg:2:8
+ 2 | struct Path {
+   |        ^^^^

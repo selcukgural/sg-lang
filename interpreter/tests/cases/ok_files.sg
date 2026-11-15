@@ -1,0 +1,75 @@
+// Files deleted, moved, replaced and copied: `File.delete`, `File.move`, `File.replace` and
+// `File.copy`, each with the error the system gives. The folder is the first word of the command
+// line.
+extern {
+    int chmod(read CString path, ushort mode)
+    int access(read CString path, int mode)
+}
+
+void show(read string what, Result<void, IoError> done) {
+    match done {
+        Ok => print($"{what}: done")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+// Whether the system lets the file run: the permission `File.copy` copies.
+bool runs(read string path) {
+    var name = CString.from(path) ?? panic("zero byte")
+    // X_OK
+    return unsafe access(read name, 1) == 0
+}
+
+Result<void, IoError> main(List<string> args) {
+    var dir = args[0].clone()
+    var a = Path.join(read dir, "a.txt")
+    var b = Path.join(read dir, "b.txt")
+    var c = Path.join(read dir, "c.txt")
+    var missing = Path.join(read dir, "missing.txt")
+    try File.writeText(read a, "first")
+    try File.writeText(read b, "second")
+
+    // A move never takes the place of a file: the target is told in the same step as the rename.
+    show("move onto b", File.move(read a, read b))
+    show("move onto itself", File.move(read a, read a))
+    show("move a missing file", File.move(read missing, read c))
+    show("move a to c", File.move(read a, read c))
+    print(File.exists(read a))
+    print(try File.readText(read c))
+
+    // `replace` takes the place of the target, in one step: what is written whole goes there.
+    show("replace b with c", File.replace(read c, read b))
+    print(try File.readText(read b))
+    print(File.exists(read c))
+
+    // A copy is a new file: the target must not be there.
+    show("copy b to c", File.copy(read b, read c))
+    show("copy b onto c", File.copy(read b, read c))
+    show("copy a missing file", File.copy(read missing, read a))
+    show("copy the folder", File.copy(read dir, read a))
+    print(try File.readText(read c))
+    var script = Path.join(read dir, "run.sh")
+    try File.writeText(read script, "echo hi\n")
+    var name = CString.from(read script) ?? panic("zero byte")
+    print(unsafe chmod(read name, 0x1ed))
+    var copied = Path.join(read dir, "run-copy.sh")
+    show("copy the script", File.copy(read script, read copied))
+    print(runs(read copied))
+    print(runs(read c))
+
+    // A deleted file is gone; a folder is not a file.
+    show("delete c", File.delete(read c))
+    show("delete c again", File.delete(read c))
+    show("delete the folder", File.delete(read dir))
+    show("delete a zero byte", File.delete("a\u{0}b"))
+
+    // A file on the way of a path is no folder.
+    var inside = Path.join(read b, "x")
+    match File.readText(read inside) {
+        Ok(text) => print(text)
+        Error(cause) => print($"read through a file: {cause}")
+    }
+    print(File.exists(read dir))
+    print(File.exists(read missing))
+    return Ok()
+}

@@ -1,0 +1,9 @@
+// A `match` on a `FileKind` handles every kind, the link and the rest among them.
+Result<void, IoError> main() {
+    var info = try File.info("notes.txt")
+    match info.kind {
+        File => print("a file")
+        Directory => print("a folder")
+    }
+    return Ok()
+}

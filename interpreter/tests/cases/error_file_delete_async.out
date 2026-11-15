@@ -1,0 +1,5 @@
+error: `File.delete` has no async version
+  the calls of the file system are quick and are made as they are, also in an async function: `File.delete(...)`
+  --> error_file_delete_async.sg:3:20
+ 3 |     try await File.deleteAsync(read path)
+   |                    ^^^^^^^^^^^

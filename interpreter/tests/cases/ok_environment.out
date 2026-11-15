@@ -1,0 +1,8 @@
+true
+[SG_NO_SUCH_VARIABLE_2718]: Missing
+[]: Missing
+[A=B]: Missing
+[PA\0TH]: Missing
+/nowhere
+SG_TEST_TEXT = café
+[SG_TEST_BYTES]: InvalidText(1)

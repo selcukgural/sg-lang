@@ -1,0 +1,5 @@
+error: this borrows from `Path.join("logs", "today.txt")`, a value with no name: it is gone when the line ends, and `name` would still look at it
+  --> error_path_part_outlives.sg:3:16
+ 3 |     var name = Path.fileName(read Path.join("logs", "today.txt"))
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: give the value a name first: `var value = Path.join("logs", "today.txt")`

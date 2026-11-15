@@ -11,7 +11,7 @@ error: InvalidText(1)
 text: [5 €]
 error: NotFound
 error: IsDirectory
-error: NotFound
+error: NotDirectory
 error: NotFound
 write: NotFound
 true

@@ -237,6 +237,10 @@ pub enum Callee {
     /// `Entropy.fill(ref bytes)`: random bytes of the system into a `ref byte[]`. Only the
     /// language's own module calls it.
     Entropy,
+    /// The calls of the file system that `File` does not have a word for, and that only the
+    /// language's own module makes (`System.list`, `System.status`), with `File.delete`,
+    /// `File.move`, `File.replace` and `File.copy`.
+    System(SystemCall),
     /// `slot.take()`: gives the value and leaves `null`.
     Take,
     /// `slot.replace(value)`: gives the old value and leaves the new one.
@@ -332,6 +336,38 @@ pub enum IoCall {
     /// `File.openAppend(path)`: a `StreamWriter` that writes after what the file holds; a
     /// missing file is made.
     OpenAppend,
+}
+
+/// The calls of the file system and of the environment beyond reading and writing a file. Those
+/// of `File` are called by any program; the others only by the language's own module, which
+/// builds `Directory`, `FileInfo` and `Environment` on them.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum SystemCall {
+    /// `File.delete(path)`: `unlink`.
+    Delete,
+    /// `File.move(from, to)`: a rename that fails when the target is there.
+    Move,
+    /// `File.replace(from, to)`: a rename that takes the place of the target.
+    Replace,
+    /// `File.copy(from, to)`: what the file holds and its permissions, into a new file.
+    Copy,
+    /// `System.createDirectory(path)`: `mkdir`.
+    CreateDirectory,
+    /// `System.removeDirectory(path)`: `rmdir`, of an empty folder.
+    RemoveDirectory,
+    /// `System.removeAll(path)`: a folder with all it holds, links not followed.
+    RemoveAll,
+    /// `System.list(path, ref names, ref kinds)`: the names of a folder in the order of their
+    /// bytes, and the kind of each.
+    List,
+    /// `System.status(path, ref fields)`: the kind, the size and the time of the last write.
+    Status,
+    /// `System.current()`: the folder the program works in.
+    Current,
+    /// `System.makeTemp(template)`: `mkdtemp`.
+    MakeTemp,
+    /// `System.variable(name, ref bytes)`: a variable of the environment, `false` when it is not set.
+    Variable,
 }
 
 impl IoCall {

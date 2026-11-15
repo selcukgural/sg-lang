@@ -1,4 +1,4 @@
-struct Path : Copyable {
+struct Route : Copyable {
     List<int> steps
 }
 

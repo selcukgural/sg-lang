@@ -1,0 +1,7 @@
+// `Path` is a type of the language's own module.
+struct Path {
+    string text
+}
+
+void main() {
+}

@@ -54,6 +54,7 @@ Result<void, IoError> main(List<string> args) {
     // What the system says.
     show(File.readText(read $"{dir}/missing.txt".toString()))
     show(File.readText(read dir))
+    // A file on the way is no folder: `NotDirectory` (`NotFound` before the seventy-fourth slice).
     show(File.readText(read $"{dir}/notes.txt/inside".toString()))
     show(File.readText("a\0b"))
     match File.writeText(read $"{dir}/no/such/folder.txt".toString(), "x") {

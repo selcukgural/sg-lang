@@ -1,0 +1,4 @@
+// `Directory` holds nothing: its functions are called on the type.
+void main() {
+    var folder = Directory { }
+}

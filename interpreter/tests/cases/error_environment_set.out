@@ -1,0 +1,5 @@
+error: `Environment` has no function `set`
+  the variables of the environment are only read: setting one while another thread reads one is not safe in C
+  --> error_environment_set.sg:3:17
+ 3 |     Environment.set("MODE", "fast")
+   |                 ^^^

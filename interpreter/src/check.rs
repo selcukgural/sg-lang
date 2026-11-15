@@ -30,7 +30,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "CString", "Duration", "Instant", "DateTime", "DayOfWeek", "DateError", "Random", "SecureRandom"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "CString", "Duration", "Instant", "DateTime", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "Path", "Environment", "VariableError"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -198,6 +198,11 @@ fn std_makers(short: &str) -> &'static str {
         "Instant" => "`Instant.now()`",
         "Random" => "`Random.fromSeed(seed)` gives the same numbers for the same seed, `Random.fromSystem()` different ones on every run",
         "SecureRandom" => "nothing is made: the functions are called on the type, `SecureRandom.fill(ref bytes)`, `SecureRandom.hexString(32)`",
+        "Directory" => "nothing is made: the functions are called on the type, `Directory.list(read path)`, `Directory.create(read path)`",
+        "Path" => "nothing is made: the functions are called on the type, `Path.join(read folder, name)`",
+        "Environment" => "nothing is made: the functions are called on the type, `Environment.get(\"HOME\")`",
+        "FileInfo" => "`File.info(read path)`",
+        "DirectoryEntry" => "`Directory.list(read path)` gives one for each name in the folder",
         _ => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
     }
 }
@@ -414,6 +419,10 @@ const IO_ERROR: &str = "IoError";
 /// network's: nobody listens at the address, the other side broke the connection off, the
 /// address is taken, and the host could not be found (or the address is not `host:port`).
 /// `LineTooLong`: the reader of a connection met a line, or a text, longer than its limit.
+/// `AlreadyExists`: a file or a folder is where one was to be made (`File.move`, `File.copy`,
+/// `Directory.create`); `NotDirectory`: a part of the path, or the path of a folder, is a file
+/// (or a link where a folder was to be removed); `DirectoryNotEmpty`: a folder to be removed
+/// holds something.
 fn io_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
@@ -435,6 +444,9 @@ fn io_error() -> EnumDecl {
         variant("AddressInUse", Vec::new()),
         variant("HostNotFound", Vec::new()),
         variant("LineTooLong", Vec::new()),
+        variant("AlreadyExists", Vec::new()),
+        variant("NotDirectory", Vec::new()),
+        variant("DirectoryNotEmpty", Vec::new()),
     ];
     EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants, methods: Vec::new() }
 }
@@ -6997,6 +7009,9 @@ impl<'a> Checker<'a> {
         let methods = self.methods_of(owner);
         let Some(sig) = methods.get(name) else {
             let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
+            if owner == format!("{STD_MODULE}.Environment") && matches!(name, "set" | "remove" | "unset" | "add") {
+                return Err(diag.note("the variables of the environment are only read: setting one while another thread reads one is not safe in C"));
+            }
             return Err(match nearest(name, methods.keys().map(String::as_str)) {
                 Some(close) => diag.hint(format!("`{close}`")),
                 None => diag,
@@ -7427,10 +7442,34 @@ impl<'a> Checker<'a> {
             ("File", "openText") => (IoCall::OpenText, vec![text()], Ty::Reader(false)),
             ("File", "createText") => (IoCall::CreateText, vec![text()], Ty::Writer),
             ("File", "openAppend") => (IoCall::OpenAppend, vec![text()], Ty::Writer),
+            ("File", "delete" | "move" | "replace" | "copy") if !is_async => {
+                let (call, params) = match base {
+                    "delete" => (SystemCall::Delete, vec![text()]),
+                    "move" => (SystemCall::Move, vec![text(), text()]),
+                    "replace" => (SystemCall::Replace, vec![text(), text()]),
+                    _ => (SystemCall::Copy, vec![text(), text()]),
+                };
+                self.args(name, args, &params, span)?;
+                *callee = Callee::System(call);
+                return Ok(Ty::Result(Box::new(Ty::Void), Box::new(Ty::Enum(IO_ERROR.to_string()))));
+            }
+            // Done in the language's own module: `File.info(path)` is `FileInfo.of(path)`.
+            ("File", "info" | "exists") if !is_async => {
+                let owner = format!("{STD_MODULE}.FileInfo");
+                let inner = if base == "info" { "of" } else { "isFile" };
+                let Some(sig) = self.methods_of(&owner).get(inner) else { unreachable!("a program that names `File.{base}` gets the file of `FileInfo`") };
+                self.args(name, args, &sig.params, span)?;
+                *callee = Callee::Static { owner, name: inner.to_string() };
+                return Ok(sig.ret.clone());
+            }
+            ("File", "delete" | "move" | "replace" | "copy" | "info" | "exists") => {
+                return Err(Diag::error(name_span, format!("`File.{base}` has no async version"))
+                    .note(format!("the calls of the file system are quick and are made as they are, also in an async function: `File.{base}(...)`")));
+            }
             _ => {
                 let known: &[&str] = match is_async {
                     true => &["readTextAsync", "readBytesAsync", "writeTextAsync", "writeBytesAsync", "appendTextAsync", "openTextAsync", "createTextAsync", "openAppendAsync"],
-                    false => &["readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "createText", "openAppend"],
+                    false => &["readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "createText", "openAppend", "delete", "move", "replace", "copy", "info", "exists"],
                 };
                 let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
                 return Err(match nearest(name, known.iter().copied()) {
@@ -7449,6 +7488,31 @@ impl<'a> Checker<'a> {
         self.awaited_here(&format!("File.{name}"), awaited, args, span)?;
         *callee = Callee::IoAsync(call);
         Ok(Ty::Task(Box::new(result)))
+    }
+
+    /// `System.list(path, ref names, ref kinds)` and the other calls of the system that the
+    /// language's own module builds `Directory`, `FileInfo` and `Environment` on.
+    fn system_call(&mut self, name: &str, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+        let text = || Ty::Read(Box::new(Ty::Str));
+        let io = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
+        let (call, params, ret) = match name {
+            "createDirectory" => (SystemCall::CreateDirectory, vec![text()], io(Ty::Void)),
+            "removeDirectory" => (SystemCall::RemoveDirectory, vec![text()], io(Ty::Void)),
+            "removeAll" => (SystemCall::RemoveAll, vec![text()], io(Ty::Void)),
+            "list" => (
+                SystemCall::List,
+                vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Str)))), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))],
+                io(Ty::Void),
+            ),
+            "status" => (SystemCall::Status, vec![text(), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], io(Ty::Void)),
+            "current" => (SystemCall::Current, Vec::new(), io(Ty::Str)),
+            "makeTemp" => (SystemCall::MakeTemp, vec![text()], io(Ty::Str)),
+            "variable" => (SystemCall::Variable, vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))], Ty::Bool),
+            _ => return Err(Diag::error(span, format!("`System` has no function `{name}`"))),
+        };
+        self.args(name, args, &params, span)?;
+        *callee = Callee::System(call);
+        Ok(ret)
     }
 
     /// The arguments of a built-in async function: those of the function without `Async`,
@@ -7740,6 +7804,11 @@ impl<'a> Checker<'a> {
                     self.args(name, args, &[], span)?;
                     *callee = Callee::Clock(name == "wall");
                     return Ok(Ty::Int(IntTy::Long));
+                }
+                // The calls of the file system and of the environment that only the language's own
+                // module makes; `Directory`, `FileInfo` and `Environment` are built on them.
+                if owner == "System" && self.names.module(span) == STD_MODULE {
+                    return self.system_call(name, args, callee, span);
                 }
                 // The random bytes of the system, which only the language's own module reads.
                 if owner == "Entropy" && self.names.module(span) == STD_MODULE && name == "fill" {

@@ -20,11 +20,29 @@ pub const STD_MODULE: &str = "std";
 const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("time.sg", include_str!("std/time.sg"), &["Duration", "Instant", "DateTime", "DayOfWeek", "DateError"]),
     ("random.sg", include_str!("std/random.sg"), &["Random", "SecureRandom"]),
+    ("files.sg", include_str!("std/files.sg"), &["Directory", "DirectoryEntry", "FileInfo", "FileKind"]),
+    ("path.sg", include_str!("std/path.sg"), &["Path"]),
+    ("environment.sg", include_str!("std/environment.sg"), &["Environment", "VariableError"]),
 ];
+
+/// The functions of the built-in `File` that the language's own module does the work of
+/// (`File.info(path)` is `FileInfo`'s): a program that names `File` and one of them gets the file
+/// of `FileInfo`.
+pub const STD_FILE_CALLS: &[&str] = &["info", "exists"];
 
 /// Every type of the language's own module.
 pub fn std_types() -> impl Iterator<Item = &'static str> {
     STD_FILES.iter().flat_map(|(_, _, types)| types.iter().copied())
+}
+
+/// The names written in `text` from `start` on.
+fn names_in(text: &str, start: usize, named: &mut HashSet<String>) {
+    let Ok(toks) = lex(text, Span::new(start, text.len()), false) else { return };
+    for tok in toks {
+        if let Tok::Ident(name) = tok.tok {
+            named.insert(name);
+        }
+    }
 }
 
 pub struct SourceFile {
@@ -60,16 +78,27 @@ impl Sources {
     fn add_std(&mut self) {
         let mut named = HashSet::new();
         for file in &self.files {
-            let Ok(toks) = lex(&self.text, Span::new(file.start, file.end), false) else { continue };
-            for tok in toks {
-                if let Tok::Ident(name) = tok.tok {
-                    named.insert(name);
+            names_in(&self.text[..file.end], file.start, &mut named);
+        }
+        if named.contains("File") && STD_FILE_CALLS.iter().any(|name| named.contains(*name)) {
+            named.insert("FileInfo".to_string());
+        }
+        // A file of the module may name a type of another (a `FileInfo` holds a `DateTime`), so
+        // the names of each file brought are looked at too, until nothing more is named.
+        let mut added = vec![false; STD_FILES.len()];
+        loop {
+            let mut more = false;
+            for (at, (file, text, types)) in STD_FILES.iter().enumerate() {
+                if !added[at] && types.iter().any(|name| named.contains(*name)) {
+                    added[at] = true;
+                    more = true;
+                    let start = self.add(format!("<built-in>/std/{file}"), STD_MODULE, text, false);
+                    let file = &self.files[start];
+                    names_in(&self.text[..file.end], file.start, &mut named);
                 }
             }
-        }
-        for (file, text, types) in STD_FILES {
-            if types.iter().any(|name| named.contains(*name)) {
-                self.add(format!("<built-in>/std/{file}"), STD_MODULE, text, false);
+            if !more {
+                break;
             }
         }
     }
