@@ -7958,8 +7958,19 @@ impl<'a> Checker<'a> {
                 *callee = Callee::Wait;
                 return Ok(result);
             }
-            if recv_ty.is_borrow() || !is_place {
+            if recv_ty.is_borrow() {
                 return Err(Diag::error(recv.span, "`wait` takes the task and uses it up, and this one is only borrowed").note("whoever started the task waits for it"));
+            }
+            // `Task.delay(100).wait()`: the task a call gives has no other owner, so it is
+            // waited for where it is made.
+            if !is_place {
+                if !matches!(recv.kind, ExprKind::Call { .. } | ExprKind::Method { .. }) {
+                    let task = &self.src[recv.span.start..recv.span.end];
+                    return Err(Diag::error(recv.span, "`wait` takes the task it is called on, and this one is a part of a value that has no name")
+                        .hint(format!("give the task a name first: `var task = {task}`, then `task.wait()`")));
+                }
+                *callee = Callee::Wait;
+                return Ok(result);
             }
             self.move_out(recv, &recv_ty)?;
             recv.moved = true;

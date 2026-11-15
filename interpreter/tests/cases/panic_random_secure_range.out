@@ -1,4 +1,4 @@
 panic: `nextLong` is given no number to choose from: 3 up to -3, without -3
-  --> <built-in>/std/random.sg:150:13
- 150 |             panic($"`nextLong` is given no number to choose from: {low} up to {high}, without {high}")
-     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  --> panic_random_secure_range.sg:2:11
+ 2 |     print(SecureRandom.nextLong(3, -3))
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

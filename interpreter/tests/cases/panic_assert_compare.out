@@ -1,0 +1,7 @@
+true
+panic: assert failed: b <= a
+  left: 1.3
+  right: 1.2
+  --> panic_assert_compare.sg:29:5
+ 29 |     assert(b <= a)
+    |     ^^^^^^^^^^^^^^

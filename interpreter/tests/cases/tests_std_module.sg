@@ -1,0 +1,33 @@
+// Tests that use the language's own module: a panic inside it is shown at the line of the test
+// that called it, in the interpreter and in compiled tests alike.
+
+Result<List<int>, string> numbers() {
+    var xs = List<int>()
+    xs.add(3)
+    xs.add(4)
+    return Ok(xs)
+}
+
+test "a delay waited for in one line" {
+    var start = Instant.now()
+    Task.delay(1).wait()
+    assert(start.elapsed().milliseconds() >= 1)
+}
+
+test "a loop over what try opens" {
+    var total = 0
+    for n in try numbers() {
+        total += n
+    }
+    assert(total == 7)
+}
+
+test "a range with nothing in it" {
+    var r = Random.fromSeed(1)
+    assert(r.nextInt(2, 1) == 0)
+}
+
+test "a span too long" {
+    var span = Duration.fromSeconds(10000000000)
+    assert(span.seconds() > 0)
+}

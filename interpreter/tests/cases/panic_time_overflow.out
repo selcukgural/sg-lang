@@ -1,5 +1,4 @@
 panic: overflow: 10000000000 * 1000000000 does not fit in long
-  --> <built-in>/std/time.sg:25:32
- 25 |         return Duration { ns = count * 1000000000 }
-    |                                ^^^^^^^^^^^^^^^^^^
-  hint: `tryMultiply` gives `null` instead, and `wrappingMultiply` wraps around
+  --> panic_time_overflow.sg:2:16
+ 2 |     var span = Duration.fromSeconds(10000000000)
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

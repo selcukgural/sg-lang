@@ -769,7 +769,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/diag.rs` | Error and panic messages |
 | `src/source.rs` | The files of a program: which folders are modules and which of them are read. All files are kept as one text, so a position says which file it is in; the language's own module comes last, when a file names one of its types |
 | `src/std/time.sg` | The language's own module `std`, written in SG: `Duration`, `Instant`, `DateTime` and the calendar. Only it calls the two readings of the clock, `Clock.monotonic()` and `Clock.wall()` |
-| `src/std/random.sg` | The same module's random numbers: `Random` (xoshiro256\*\* seeded with SplitMix64) and `SecureRandom`. Only it calls `Entropy.fill`, the random bytes of the system. A program gets each file of `std` when it names one of its types |
+| `src/std/random.sg` | The same module's random numbers: `Random` (xoshiro256\*\* seeded with SplitMix64) and `SecureRandom`. Only it calls `Entropy.fill`, the random bytes of the system. A program gets each file of `std` when it names one of its types. A panic inside the module is shown at the program's call that led there (`Interp::call`; in compiled code `Emitter::tracked`) |
 | `src/std/files.sg`, `src/std/path.sg`, `src/std/environment.sg` | The same module's folders (`Directory`, `DirectoryEntry`, `FileInfo`, `FileKind`, and the work of `File.info` and `File.exists`), paths (`Path`) and variables of the environment (`Environment`, `VariableError`). Only they call `System.list`, `System.status` and the other calls of the system; a file of `std` that names a type of another brings it along (a `FileInfo` holds a `DateTime`) |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
 
@@ -4151,7 +4151,8 @@ come from the slice, and all were approved the same day:
 549. **A panic inside the language's own module points at its line there**: `Duration.fromSeconds` of a
      count too large stops at the multiplication in `<built-in>/std/time.sg`, as the same code would in a
      module of the program, and its hint names `tryMultiply`, which the caller cannot reach. Pointing at the
-     call is left for later (Not here yet).
+     call is left for later (Not here yet). *Done in the seventy-fifth slice (582): the panic is shown at the
+     call, without the hint.*
 550. **A delay waits its time in the interpreter too.** A delay was put on the clock of the run, which moves
      only when every task waits; after a program computed for a second, `Task.delay(100)` ended at once. Now
      the clock of the run still gives the order of the timers, so the output is the same on every run, and
@@ -4162,6 +4163,7 @@ come from the slice, and all were approved the same day:
      `sleep`: code that is not async waits for a delay kept in a variable (`var pause = Task.delay(100)`,
      `pause.wait()`). Found in the slice: `Task.delay(100).wait()` in one line is an error, since `wait`
      takes only a task kept in a variable, and its message says the task is borrowed; left in Not here yet.
+     *Done in the seventy-fifth slice (581).*
 552. **Compiled code** compiles the module like the program's own code; the two readings are `sg_clock`, one
      call of `clock_gettime`, in the runtime of a program that reads the clock, which asks glibc for POSIX
      as a program with threads does. The interpreter reads the same clocks with `clock_gettime`, declared to
@@ -4357,6 +4359,93 @@ were decided before it on 15 November 2026, with the parts marked as coming from
      errors of 567, 568, 572, 574 and 575. `cargo test` compiles 276 of 1166 programs, 43 of them under the
      thread sanitizer, and 14 of 18 programs of tests; on Linux too, in a container, with the same counts.
 
+Choices made in the seventy-fifth slice (three small leftovers of the slices before it, in the checker, the
+interpreter and compiled code, and a warning of the C compiler found on the way, which led to holding all
+compiled C to the C compiler's warnings), and all were approved the same day:
+
+581. **`wait` takes the task a call gives, in one line**: `Task.delay(100).wait()` and
+     `Task.run(f, x).wait()` are allowed, as `await Task.delay(100)` already was. The task has no other owner,
+     so it is waited for where it is made, and nothing is left to wait for at the end of the function. The
+     message that called such a task borrowed is gone: a borrowed task (`lent.wait()` through a `ref`) keeps
+     it, and a task that is a part of a value with no name (none can be written today, since a task is kept
+     only in a variable or a list) is told to take a name first. The rest of the rules stay: an async
+     function does not `wait`, a value the task gives is used or dropped with `_ =`, and `Task.run` still
+     takes no borrow.
+582. **A panic inside the language's own module is shown at the call of the program** that led there, as
+     `#[track_caller]` does in Rust for its standard library: `r.nextInt(5, 5)` stops with the line of the
+     program that called `nextInt`, not the line of `panic` in `<built-in>/std/random.sg`, and
+     `Duration.fromSeconds` of a count too large with the line that called it, not its multiplication. A
+     call from one function of the module to another keeps the place of the program's call, so the place is
+     always the program's. The message stays as it was (the overflow still says which numbers did not fit);
+     the hint is left out, because it named code the caller cannot see (`tryMultiply` on a multiplication
+     inside the module, 549). The functions of the program, and their modules, are shown where they panic,
+     as before; there is no way to ask for this in code of your own.
+583. **How the place reaches the panic**: the interpreter turns the place of a panic that comes out of the
+     module into the place of the call that went in, at that call, and drops the hint there; nothing is done
+     on a call that does not panic. In compiled code every function of the module takes the place of its call
+     as one more parameter, a pointer to the constant text of that place; every place inside such a function
+     is that parameter, and a call to another function of the module hands it on. The constant text of a
+     place has one byte more, after its terminating zero, that tells a call of the module from any other
+     place, and the three panics of the runtime that write a hint (overflow, a value that does not fit in a
+     type, a character code) look at it. The methods the runtime calls on its own, with no place to give
+     (`format` when a value is written, `equals`, `compare` and `hash` in a collection, `dispose` when a
+     value ends), take no such parameter and show their own line, as before; none of the module's can panic
+     today. The measured programs of the clock and of random numbers keep their times: `clock` 0.191 s
+     against 0.190 s for C (0.191 before), `dates` 0.121 s against 0.411 s, `rng` 0.114 s against 0.114 s,
+     `secure` 0.244 s against 0.242 s; the one more parameter costs nothing that shows.
+584. **`for` over what a `try` opens is compiled**: `for name in try names() { ... }`, and over a map, a
+     set, an array or a `T?` alike, with `try await` in an async function. The collection is computed once,
+     before the first round, so the `try` can leave the function there as it does at the start of any other
+     statement; what the function made before the loop is freed on that way out. The interpreter already ran
+     it. `??` in front of the body (`for n in xs ?? return`) stays a syntax error, as before: the parser reads
+     the `{` after a `for` as the body. The tests: `ok_for_try` (a list of strings, a map, a set, an array, a
+     `T?`, a loop inside a loop, and the way out of each with a list made before it) and `ok_for_try_await`;
+     `ok_task_wait_unnamed` and `error_wait_borrowed_task` for 581; the four `panic_random_` and
+     `panic_time_` programs now show the line of the program, the same in the interpreter and in compiled
+     code, and `tests_std_module` shows it under the test command, compiled too (the first program of tests
+     that uses the module: a slip that left the place of the module's functions on in the code after them
+     was found there, not by the programs that are run).
+585. **`assert` on `<` between values of a struct with its own `compare` compiles without a warning**: the
+     two sides are kept behind `const` pointers, so that they can be written when the test fails, and
+     were handed to `compare` as they were, while `compare` takes `read this`, a pointer that is not
+     `const` in C; the C compiler warned that the `const` was dropped. They are now cast, as the sort
+     already did; `compare` only reads them. The program worked before as well; no test had compiled this
+     path. `panic_assert_compare` does, with the four comparisons and one that fails.
+586. **The C of every program compiles without a warning, and the tests hold it to that.** `cargo test`
+     builds each compiled program, and each compiled program of tests, with `-Wall -Wextra -Werror`, with
+     clang on macOS and gcc on Linux (`warnings` in `tests/golden.rs`). One warning is left on as a warning:
+     a function nobody calls. The runtime is a library every program carries, the language's own module
+     comes whole, SG lets a program have a function it does not call, and the C compiler leaves out what is
+     not called. What turning them on found, and how each was fixed rather than silenced:
+     - A failed call of the system returned `errno` as its error, and an `errno` left at 0 would have read as
+       success, with the socket or the file it was to give unset (gcc: "may be used uninitialized"). Every
+       such place now goes through `sg_os_error`, which gives `EIO` for a 0, as one place already did; the
+       end of a folder, where `readdir` leaves 0 on purpose, keeps it.
+     - The port of an address was written with `"%ld"` into six bytes; it is known to be at most 65535 by
+       then, and is now written as the `uint16_t` it is.
+     - A fixed-size array made at its zero values was `{ 0 }`, not the shape of the struct that holds it
+       (`{ { 0 } }`, and `{ { { 0 } } }` for an array of `T?` kept as a flag and a value).
+     - An async function's way back after a wait was a one-line `if` with a statement after it on the same
+       line, which reads as if guarded; the `if` has braces now.
+     - A parameter of a list's drop that a list of numbers does not need, the names of a function value
+       when the program has none, the two sides of `==` on a struct with no fields, and the label after the
+       arms of a `match`, written even when no arm jumped to it (now only when one does).
+     - Three of gcc's analyses that follow values through the optimiser warn on code that is right: a
+       constant text's bytes behind the test that frees only text with a capacity, the guard of a borrow of a
+       `shared checked` value that is taken off its list before the block ends, and a read straight into the
+       buffer that the length of a 3-byte array never reaches. Each is listed with the one program it is
+       in, and is a warning only there (`GCC_SEES_WHAT_IS_NOT_THERE`); anywhere else it fails the test.
+     The programs the tests do not compile keep their warnings, which are true: those that recurse forever
+     or free raw memory twice on purpose (`panic_stack_overflow`, `panic_unsafe_`).
+587. **What SG lets a program leave unused is used in C too**: a parameter, the variable of a `for`, a name
+     of a `match` arm or of an `is`, and a variable given values that are never read (`var p =
+     rect.corner; p.x = 0`, which `ok_compiled_struct` and `ok_list` do to show that a `Copyable` struct is
+     copied) each get a `(void)` in the C, which makes no code. The last may be a mistake in a program, and
+     whether SG should refuse it with a hint is written down as an open question in the decisions file,
+     for a slice of its own. `cargo test` compiles 280 of 1171 programs, 45 of them under the thread
+     sanitizer, and 15 of 19 programs of tests, all without a warning; on Linux too, in a container, with gcc and the same counts. Taking the fix of 585 back out
+     makes the test fail on `panic_assert_compare`, as it should.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -4503,15 +4592,11 @@ check off.
   not let a program make such a name (571).
 - **Of the clock**: time zones and local time, reading a date out of text, formats of your own
   (`yyyy-MM-dd`), minutes and hours in the text of a `Duration` (`1m30s`), `Task.delay` given a `Duration`,
-  `abs` and `dividedBy` on a `Duration`, the number of a day of the week and an order of the days. A panic
-  inside the language's own module (`Duration.fromSeconds` of a count too large) points at its line there,
-  not at the call (549). `Task.delay(ms).wait()` in one line: `wait` takes only a task kept in a variable,
-  and the message says the task is borrowed (551).
+  `abs` and `dividedBy` on a `Duration`, the number of a day of the week and an order of the days.
 - **Of random numbers**: shuffling a list and picking one of its items (`xs.shuffle(ref r)`,
   `r.choose(xs)`) wait for generics or a built-in method; Fisher-Yates is four lines (`ok_random_seeded`
   has it). `nextFloat`, numbers of a normal distribution (`nextGaussian`), and `split` to give a task a
-  generator of its own that does not overlap. A panic of `nextInt` given an empty range points at its line
-  in the language's own module, not at the call, like the clock's (549).
+  generator of its own that does not overlap.
 - Freeing a long linked list recurses, the open stack-depth question from the design; here it runs on a 1 GB stack.
   Compiled code frees a chain of `T*` in a loop, but a chain of `shared` values recursively, one call for each.
 

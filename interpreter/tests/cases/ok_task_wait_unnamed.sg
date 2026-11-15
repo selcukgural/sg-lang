@@ -1,0 +1,18 @@
+// `wait` on the task a call gives, in one line: the task has no other owner, so it is waited
+// for where it is made.
+
+int twice(int n) {
+    return n * 2
+}
+
+string greet(string name) {
+    return $"hello {name}".toString()
+}
+
+void main() {
+    // Code that is not async waits for a delay without a variable for it.
+    Task.delay(10).wait()
+    print("slept")
+    print(Task.run(twice, 21).wait())
+    print(Task.run(greet, "ada").wait())
+}

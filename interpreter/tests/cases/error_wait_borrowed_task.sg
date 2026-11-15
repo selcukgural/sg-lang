@@ -1,0 +1,7 @@
+// A borrowed task is waited for by whoever started it, not through the borrow.
+
+void main() {
+    var task = Task.delay(1)
+    var lent = ref task
+    lent.wait()
+}

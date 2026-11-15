@@ -1,0 +1,13 @@
+ok    a delay waited for in one line
+ok    a loop over what try opens
+FAIL  a range with nothing in it
+panic: `nextInt` is given no number to choose from: 2 up to 1, without 1
+  --> tests_std_module.sg:27:12
+ 27 |     assert(r.nextInt(2, 1) == 0)
+    |            ^^^^^^^^^^^^^^^
+FAIL  a span too long
+panic: overflow: 10000000000 * 1000000000 does not fit in long
+  --> tests_std_module.sg:31:16
+ 31 |     var span = Duration.fromSeconds(10000000000)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2 of 4 test(s) failed

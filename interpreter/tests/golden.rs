@@ -29,6 +29,49 @@ fn given(path: &Path, work: &Path) -> Given {
 
 /// The exit code is part of what a program did when it is neither 0 nor 1 (1 is also what a
 /// panic and an error of `main` end with).
+/// The warnings of the C compiler that fail the build of a compiled program: every one of
+/// `-Wall -Wextra`, so that C the back end writes badly is seen here and not by a user. One is
+/// left on as a warning only: a function nobody calls (`-Wunused-function`). The runtime is a
+/// library every program carries, the language's own module comes whole, and SG lets a program
+/// have a function it does not call; the C compiler leaves out what is not called.
+///
+/// gcc's analyses that follow values through the optimiser also see paths that cannot happen.
+/// Each one found is listed in `GCC_SEES_WHAT_IS_NOT_THERE` with the program it is in, and is a
+/// warning only there: anywhere else it fails the test, as does any other warning there.
+fn warnings(stem: &str) -> Vec<String> {
+    let mut flags: Vec<String> = ["-Wall", "-Wextra", "-Werror", "-Wno-unused-function"].iter().map(|flag| flag.to_string()).collect();
+    if c_compiler_is_gcc() {
+        for (program, warning) in GCC_SEES_WHAT_IS_NOT_THERE {
+            if stem == program {
+                flags.push(format!("-Wno-error={warning}"));
+            }
+        }
+    }
+    flags
+}
+
+/// gcc's warnings that are not true of the program they are listed with, and why.
+const GCC_SEES_WHAT_IS_NOT_THERE: [(&str, &str); 3] = [
+    // `free` on the bytes of a constant text (`"y"`): a text is freed only when its capacity is
+    // above 0, and a constant's is 0 (`SG_LIT`); gcc warns on the `free` behind the test.
+    ("ok_disposable", "free-nonheap-object"),
+    // A borrow of a `shared checked` value puts its guard, on the stack, on the value's list,
+    // and takes it off again (`sg_unlend`) before the block ends; gcc does not follow it off.
+    ("ok_folders", "dangling-pointer"),
+    // A read of more than 64 KB straight into the buffer, never taken for the 3-byte array
+    // the program reads into: the length of the read is the buffer's.
+    ("ok_text_blocks", "stringop-overflow"),
+];
+
+/// Whether `cc` is gcc (clang says so in its version).
+fn c_compiler_is_gcc() -> bool {
+    static IS_GCC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *IS_GCC.get_or_init(|| {
+        let version = std::process::Command::new("cc").arg("--version").output().map(|out| String::from_utf8_lossy(&out.stdout).into_owned()).unwrap_or_default();
+        !version.contains("clang")
+    })
+}
+
 fn exit_line(code: Option<i32>) -> String {
     match code {
         Some(0 | 1) => String::new(),
@@ -321,7 +364,7 @@ fn compiled() {
         // A program with tasks or `locked` values runs on several threads.
         let threads = code.contains("#define SG_THREADS 1");
         std::fs::write(&c_file, &code).unwrap();
-        let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-ffp-contract=off", "-o"]).arg(&binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).arg("-lm").arg("-pthread").output().unwrap();
+        let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-ffp-contract=off"]).args(warnings(&stem)).arg("-o").arg(&binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).arg("-lm").arg("-pthread").output().unwrap();
         if !cc.status.success() {
             failures.push(format!("--- {name}: the C compiler rejected it\n{}", String::from_utf8_lossy(&cc.stderr)));
             continue;
@@ -528,7 +571,7 @@ async Result<void, IoError> main() {
     std::fs::create_dir_all(&work).unwrap();
     let (c_file, binary) = (work.join("input-waits-alone.c"), work.join("input-waits-alone"));
     std::fs::write(&c_file, sg::emit_c(PROGRAM, "input_waits_alone.sg", true).unwrap()).unwrap();
-    let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-o"]).arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+    let cc = std::process::Command::new("cc").args(["-std=c11", "-O1"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
     assert!(cc.status.success(), "the C compiler rejected it:\n{}", String::from_utf8_lossy(&cc.stderr));
     let mut child = std::process::Command::new(&binary)
         .stdin(std::process::Stdio::piped())
@@ -597,7 +640,7 @@ fn compiled_input_cancel() {
     std::fs::create_dir_all(&work).unwrap();
     let (c_file, binary) = (work.join("input-cancel.c"), work.join("input-cancel"));
     std::fs::write(&c_file, sg::emit_c(INPUT_CANCEL, "input_cancel.sg", true).unwrap()).unwrap();
-    let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-o"]).arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+    let cc = std::process::Command::new("cc").args(["-std=c11", "-O1"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
     assert!(cc.status.success(), "the C compiler rejected it:\n{}", String::from_utf8_lossy(&cc.stderr));
     let mut child = std::process::Command::new(&binary)
         .stdin(std::process::Stdio::piped())
@@ -689,13 +732,16 @@ fn compiled_tests() {
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         let (c_file, plain, checked) = (work.join(format!("{stem}.c")), work.join(&stem), work.join(format!("{stem}-san")));
         std::fs::write(&c_file, &code).unwrap();
-        let mut builds = vec![(&plain, &["-O1", "-g"][..])];
+        // The plain build is held to the warnings (see `warnings`); the one under the
+        // sanitizers is the same C.
+        let plain_flags: Vec<String> = ["-O1", "-g"].iter().map(|flag| flag.to_string()).chain(warnings(&stem)).collect();
+        let mut builds = vec![(&plain, plain_flags)];
         if sanitizers {
-            builds.push((&checked, &["-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"][..]));
+            builds.push((&checked, ["-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"].iter().map(|flag| flag.to_string()).collect()));
         }
         let mut rejected = false;
         for (binary, flags) in &builds {
-            let cc = std::process::Command::new("cc").args(["-std=c11", "-ffp-contract=off"]).args(*flags).arg("-o").arg(binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).arg("-lm").arg("-pthread").output().unwrap();
+            let cc = std::process::Command::new("cc").args(["-std=c11", "-ffp-contract=off"]).args(flags).arg("-o").arg(binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).arg("-lm").arg("-pthread").output().unwrap();
             if !cc.status.success() {
                 failures.push(format!("--- {name}: the C compiler rejected it ({})\n{}", flags.join(" "), String::from_utf8_lossy(&cc.stderr)));
                 rejected = true;

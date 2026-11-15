@@ -231,7 +231,8 @@ void main() {
 If an argument of `Task.run` carries a borrow or an unlocked `checked`, it is a compile error. Because the counter
 is always atomic, Rust's `Send` and `Sync` distinction comes down to this single rule. A `lock` block does not wait:
 another `lock`, a `wait`, or a call of a function that does one inside it is a compile error, and two values are locked
-together with `lock a as x, b as y { }`, so locks and waits cannot deadlock. The rules are in the decisions file
+together with `lock a as x, b as y { }`, so locks and waits cannot deadlock. The task a call gives can be waited for
+in the same line: `Task.delay(100).wait()` pauses code that is not async. The rules are in the decisions file
 (rows "Starting a task" to "Tasks in the interpreter"), and async is to come the same way ("Async, the direction").
 
 ### Generics and interfaces
@@ -1361,7 +1362,7 @@ write no `unsafe`: a `Disposable` type holds what C made and gives it back when 
 
 Three types come with the language: `Instant` for measuring, `Duration` for a span of time, `DateTime` for the
 calendar in UTC. They are written in SG, in the language's own module, and seen from every module with nothing
-written. The two clocks are two types, so the time between two readings is taken on one clock.
+written; a panic inside that module (a `Duration` too large) is shown at the line of the program that called it. The two clocks are two types, so the time between two readings is taken on one clock.
 
 ```
 var start = Instant.now()                        // the monotonic clock: never goes back

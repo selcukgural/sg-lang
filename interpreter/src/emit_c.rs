@@ -36,7 +36,9 @@
 //! random numbers; only the random bytes of the system are C (`sg_entropy`, which the key of a hash
 //! table is drawn with too). So are folders, paths and the environment (`Directory`, `FileInfo`,
 //! `Path`, `Environment`); the calls of the system under them, and `File.delete`, `File.move`,
-//! `File.replace` and `File.copy`, are C (see `FILES_RUNTIME`). A type
+//! `File.replace` and `File.copy`, are C (see `FILES_RUNTIME`). A function of the module takes the
+//! place of its call as one more parameter, so a panic inside it is shown at the program's line
+//! (see `Emitter::tracked`). A type
 //! alias is the type it names. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
@@ -145,10 +147,14 @@ const RUNTIME: &str = r#"#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if !(defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__))
 #include <errno.h>
+#if !(defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__))
 #include <sys/random.h>
 #endif
+
+/* The error of a call of the system that failed. A call that failed and left `errno` at 0
+   would otherwise read as success to the code that asked, with what it was to fill unset. */
+static inline int sg_os_error(void) { return errno ? errno : EIO; }
 
 /* The generated code puts every operation in parentheses. */
 #if defined(__clang__)
@@ -220,10 +226,16 @@ SG_COLD static void sg_err_int(__int128 v) {
     else fprintf(stderr, "%llu", (unsigned long long)v);
 }
 /* The way out that does not panic, written under the place as the interpreter writes it. */
+/* Every place ends with a byte after its terminating zero: 1 for the call of a function of the
+   language's own module, where a panic inside it is shown. A hint there would name code the
+   caller cannot see, so it is left out. */
+static bool sg_called(const char* loc) {
+    return loc[strlen(loc) + 1] == 1;
+}
 SG_COLD static _Noreturn void sg_die_hint(const char* loc, const char* hint) {
     fputs(loc, stderr);
     sg_task_note();
-    fprintf(stderr, "  hint: %s\n", hint);
+    if (!sg_called(loc)) fprintf(stderr, "  hint: %s\n", hint);
     exit(1);
 }
 SG_COLD static _Noreturn void sg_overflow(__int128 a, const char* op, __int128 b, const char* ty, const char* loc) {
@@ -268,8 +280,9 @@ SG_COLD static _Noreturn void sg_cast_fail(__int128 v, const char* ty, const cha
     fprintf(stderr, " does not fit in %s\n", ty);
     fputs(loc, stderr);
     sg_task_note();
-    fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit, and `wrappingTo%c%s()` cuts it to size\n",
-            ty[0] - 'a' + 'A', ty + 1, ty[0] - 'a' + 'A', ty + 1);
+    if (!sg_called(loc))
+        fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit, and `wrappingTo%c%s()` cuts it to size\n",
+                ty[0] - 'a' + 'A', ty + 1, ty[0] - 'a' + 'A', ty + 1);
     exit(1);
 }
 SG_COLD static _Noreturn void sg_panic(const char* text, const char* loc) {
@@ -363,7 +376,7 @@ SG_COLD static _Noreturn void sg_fcast_fail(double v, bool single, const char* t
     fprintf(stderr, " does not fit in %s\n", ty);
     fputs(loc, stderr);
     sg_task_note();
-    fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit\n", ty[0] - 'a' + 'A', ty + 1);
+    if (!sg_called(loc)) fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit\n", ty[0] - 'a' + 'A', ty + 1);
     exit(1);
 }
 SG_COLD static _Noreturn void sg_assert_fail_fd(const char* text, double l, double r, bool single, const char* loc) {
@@ -1489,7 +1502,7 @@ static sg_live sg_alive = { &sg_alive, &sg_alive, NULL, NULL, NULL };
 #if SG_THREADS
 /* The mutex of a `locked` value: taken by `lock`, in front of the counts. */
 typedef struct { pthread_mutex_t m; } __attribute__((aligned(16))) sg_mutex;
-static pthread_mutex_t sg_alive_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t sg_alive_lock __attribute__((unused)) = PTHREAD_MUTEX_INITIALIZER;
 #define SG_ALIVE_TAKE() pthread_mutex_lock(&sg_alive_lock)
 #define SG_ALIVE_GIVE() pthread_mutex_unlock(&sg_alive_lock)
 #else
@@ -2321,7 +2334,7 @@ static bool sg_net_split(sg_str a, char host[256], char port[6]) {
         value = value * 10 + (a.ptr[i] - '0');
     }
     if (value > 65535) return false;
-    snprintf(port, 6, "%ld", value);
+    snprintf(port, 6, "%u", (unsigned)(uint16_t)value);
     const uint8_t* h = a.ptr;
     int64_t n = colon;
     if (n > 0 && h[0] == '[') {
@@ -2362,11 +2375,11 @@ static int sg_net_bind(sg_str address, sg_listener* out) {
         return SG_HOST_NOT_FOUND;
     }
     int fd = sg_net_socket(at.ss_family, false);
-    if (fd < 0) return errno;
+    if (fd < 0) return sg_os_error();
     int one = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     if (bind(fd, (struct sockaddr*)&at, len) != 0 || listen(fd, SOMAXCONN) != 0) {
-        int code = errno;
+        int code = sg_os_error();
         close(fd);
         return code;
     }
@@ -2385,7 +2398,7 @@ static int sg_net_poll(int fd, bool write) {
     struct pollfd p = { fd, write ? POLLOUT : POLLIN, 0 };
     for (;;) {
         if (poll(&p, 1, -1) >= 0) return 0;
-        if (errno != EINTR) return errno;
+        if (errno != EINTR) return sg_os_error();
     }
 }
 /* One try of each call: 0, EAGAIN when the socket is not ready, or the code the system gave. */
@@ -2395,14 +2408,14 @@ static int sg_net_accept_now(int lfd, int* out, bool nb) {
 #else
     int fd = accept(lfd, NULL, NULL);
 #endif
-    if (fd < 0) return errno == EWOULDBLOCK ? EAGAIN : errno;
+    if (fd < 0) return errno == EWOULDBLOCK ? EAGAIN : sg_os_error();
     sg_net_setup(fd, nb);
     *out = fd;
     return 0;
 }
 static int sg_net_recv_now(int fd, uint8_t* to, int64_t len, int64_t* got) {
     ssize_t n = recv(fd, to, (size_t)len, 0);
-    if (n < 0) return errno == EWOULDBLOCK ? EAGAIN : errno;
+    if (n < 0) return errno == EWOULDBLOCK ? EAGAIN : sg_os_error();
     *got = n;
     return 0;
 }
@@ -2412,7 +2425,7 @@ static int sg_net_send_now(int fd, const uint8_t* from, int64_t len, int64_t* se
 #else
     ssize_t n = send(fd, from, (size_t)len, 0);
 #endif
-    if (n < 0) return errno == EWOULDBLOCK ? EAGAIN : errno;
+    if (n < 0) return errno == EWOULDBLOCK ? EAGAIN : sg_os_error();
     *sent = n;
     return 0;
 }
@@ -2459,16 +2472,16 @@ static int sg_net_lookup(const char* host, const char* port, bool numeric, struc
     if (numeric) hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
     int r = getaddrinfo(host, port, &hints, list);
     if (r == 0) return 0;
-    if (r == EAI_SYSTEM) return errno ? errno : EIO;
+    if (r == EAI_SYSTEM) return sg_os_error();
     return SG_HOST_NOT_FOUND;
 }
 /* A connect to one address is started: 0 when it is made at once, EINPROGRESS when it goes on
    (`*fd` is the socket), or the code the system gave. */
 static int sg_net_try(const struct addrinfo* a, int* fd, bool nb) {
     *fd = sg_net_socket(a->ai_family, nb);
-    if (*fd < 0) return errno;
+    if (*fd < 0) return sg_os_error();
     if (connect(*fd, a->ai_addr, a->ai_addrlen) == 0) return 0;
-    int code = errno;
+    int code = sg_os_error();
     if (code == EINPROGRESS || code == EINTR) return EINPROGRESS;
     close(*fd);
     *fd = -1;
@@ -2477,7 +2490,7 @@ static int sg_net_try(const struct addrinfo* a, int* fd, bool nb) {
 static int sg_net_made(int fd) {
     int code = 0;
     socklen_t len = sizeof code;
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &code, &len) != 0) return errno;
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &code, &len) != 0) return sg_os_error();
     return code;
 }
 /* `TcpStream.connect(address)`: each address of the host is tried in turn, until one takes
@@ -2635,16 +2648,16 @@ static int sg_loop_arm(sg_wait* w, bool* armed) {
     struct epoll_event e = { .events = (w->write ? EPOLLOUT : EPOLLIN) | EPOLLONESHOT, .data.ptr = w };
     if (armed && *armed) {
         if (epoll_ctl(sg_loop, EPOLL_CTL_MOD, w->on.fd, &e) == 0) return 0;
-        if (errno != ENOENT) return errno;
+        if (errno != ENOENT) return sg_os_error();
     }
-    if (epoll_ctl(sg_loop, EPOLL_CTL_ADD, w->on.fd, &e) != 0) return errno;
+    if (epoll_ctl(sg_loop, EPOLL_CTL_ADD, w->on.fd, &e) != 0) return sg_os_error();
     if (armed) *armed = true;
     return 0;
 #else
     (void)armed;
     struct kevent k;
     EV_SET(&k, w->on.fd, w->write ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, w);
-    return kevent(sg_loop, &k, 1, NULL, 0, NULL) == 0 ? 0 : errno;
+    return kevent(sg_loop, &k, 1, NULL, 0, NULL) == 0 ? 0 : sg_os_error();
 #endif
 }
 static void sg_loop_disarm(sg_wait* w) {
@@ -2678,7 +2691,7 @@ static int sg_wait_start(sg_wait* w, int fd, bool write, bool* armed, sg_cancel*
     w->told = token != NULL;
     if (sg_cancelled(token)) return SG_CANCELLED;
     sg_loop_open(loc);
-    if (w->dup && (fd = fcntl(fd, F_DUPFD_CLOEXEC, 0)) < 0) return errno;
+    if (w->dup && (fd = fcntl(fd, F_DUPFD_CLOEXEC, 0)) < 0) return sg_os_error();
     w->on.fd = fd;
     __atomic_store_n(&w->posted, 1, __ATOMIC_RELEASE);
     int code = 0;
@@ -2937,7 +2950,7 @@ static int sg_fs_delete(sg_str path) {
     char* name = sg_path(path, &code);
     if (!name) return code;
     if (unlink(name) != 0) {
-        code = errno;
+        code = sg_os_error();
         struct stat info;
         if ((code == EPERM || code == EISDIR) && lstat(name, &info) == 0 && S_ISDIR(info.st_mode)) code = EISDIR;
     }
@@ -2976,32 +2989,32 @@ static int sg_fs_copy(sg_str from, sg_str to) {
     if (!b) { free(a); return code; }
     int in = open(a, O_RDONLY | O_CLOEXEC);
     struct stat info;
-    if (in < 0) code = errno;
-    else if (fstat(in, &info) != 0) code = errno;
+    if (in < 0) code = sg_os_error();
+    else if (fstat(in, &info) != 0) code = sg_os_error();
     else if (S_ISDIR(info.st_mode)) code = EISDIR;
     int out = -1;
     if (!code) {
         out = open(b, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-        if (out < 0) code = errno;
+        if (out < 0) code = sg_os_error();
     }
     if (out >= 0) {
         uint8_t* block = malloc(65536);
         if (!block) abort();
         for (;;) {
             ssize_t got = read(in, block, 65536);
-            if (got < 0) { if (errno == EINTR) continue; code = errno; break; }
+            if (got < 0) { if (errno == EINTR) continue; code = sg_os_error(); break; }
             if (got == 0) break;
             ssize_t done = 0;
             while (done < got) {
                 ssize_t put = write(out, block + done, (size_t)(got - done));
-                if (put < 0) { if (errno == EINTR) continue; code = errno; break; }
+                if (put < 0) { if (errno == EINTR) continue; code = sg_os_error(); break; }
                 done += put;
             }
             if (code) break;
         }
         free(block);
-        if (!code && fchmod(out, info.st_mode & 0777) != 0) code = errno;
-        if (close(out) != 0 && !code) code = errno;
+        if (!code && fchmod(out, info.st_mode & 0777) != 0) code = sg_os_error();
+        if (close(out) != 0 && !code) code = sg_os_error();
         if (code) unlink(b);
     }
     if (in >= 0) close(in);
@@ -3013,7 +3026,7 @@ static int sg_fs_mkdir(sg_str path) {
     int code = 0;
     char* name = sg_path(path, &code);
     if (!name) return code;
-    if (mkdir(name, 0777) != 0) code = errno;
+    if (mkdir(name, 0777) != 0) code = sg_os_error();
     free(name);
     return code;
 }
@@ -3021,7 +3034,7 @@ static int sg_fs_rmdir(sg_str path) {
     int code = 0;
     char* name = sg_path(path, &code);
     if (!name) return code;
-    if (rmdir(name) != 0) code = errno;
+    if (rmdir(name) != 0) code = sg_os_error();
     free(name);
     return code;
 }
@@ -3030,7 +3043,7 @@ static int sg_fs_rmdir(sg_str path) {
    folder while this works. What another program removed first is no error. */
 static int sg_fs_clear(int fd) {
     DIR* folder = fdopendir(fd);
-    if (!folder) { int code = errno; close(fd); return code; }
+    if (!folder) { int code = sg_os_error(); close(fd); return code; }
     int code = 0;
     for (;;) {
         errno = 0;
@@ -3048,13 +3061,13 @@ static int sg_fs_clear(int fd) {
             if (inner >= 0) {
                 code = sg_fs_clear(inner);
                 if (code) break;
-                if (unlinkat(dirfd(folder), name, AT_REMOVEDIR) != 0 && errno != ENOENT) { code = errno; break; }
+                if (unlinkat(dirfd(folder), name, AT_REMOVEDIR) != 0 && errno != ENOENT) { code = sg_os_error(); break; }
                 continue;
             }
             if (errno == ENOENT) continue;
-            if (errno != ENOTDIR && errno != ELOOP) { code = errno; break; }
+            if (errno != ENOTDIR && errno != ELOOP) { code = sg_os_error(); break; }
         }
-        if (unlinkat(dirfd(folder), name, 0) != 0 && errno != ENOENT) { code = errno; break; }
+        if (unlinkat(dirfd(folder), name, 0) != 0 && errno != ENOENT) { code = sg_os_error(); break; }
     }
     closedir(folder);
     return code;
@@ -3065,10 +3078,10 @@ static int sg_fs_remove_all(sg_str path) {
     char* name = sg_path(path, &code);
     if (!name) return code;
     int fd = open(name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) code = errno == ELOOP ? ENOTDIR : errno;
+    if (fd < 0) code = errno == ELOOP ? ENOTDIR : sg_os_error();
     else {
         code = sg_fs_clear(fd);
-        if (!code && rmdir(name) != 0) code = errno;
+        if (!code && rmdir(name) != 0) code = sg_os_error();
     }
     free(name);
     return code;
@@ -3093,7 +3106,7 @@ static int sg_fs_list(sg_str path, sg_fs_entry** out, int64_t* count) {
     char* name = sg_path(path, &code);
     if (!name) return code;
     DIR* folder = opendir(name);
-    int error = errno;
+    int error = sg_os_error();
     free(name);
     if (!folder) return error;
     sg_fs_entry* entries = NULL;
@@ -3142,7 +3155,7 @@ static int sg_fs_status(sg_str path, int64_t* fields) {
     }
     struct stat info;
     int failed = stat(name, &info);
-    int error = errno;
+    int error = sg_os_error();
     if (name != local) free(name);
     if (failed) return error;
 #ifdef __APPLE__
@@ -3164,7 +3177,7 @@ static int sg_fs_current(uint8_t** bytes, int64_t* len) {
         char* block = malloc(cap);
         if (!block) abort();
         if (getcwd(block, cap)) { *bytes = (uint8_t*)block; *len = (int64_t)strlen(block); return 0; }
-        int code = errno;
+        int code = sg_os_error();
         free(block);
         if (code != ERANGE) return code;
         cap *= 2;
@@ -3175,7 +3188,7 @@ static int sg_fs_make_temp(sg_str template, uint8_t** bytes, int64_t* len) {
     int code = 0;
     char* name = sg_path(template, &code);
     if (!name) return code;
-    if (!mkdtemp(name)) { code = errno; free(name); return code; }
+    if (!mkdtemp(name)) { code = sg_os_error(); free(name); return code; }
     *bytes = (uint8_t*)name;
     *len = (int64_t)strlen(name);
     return 0;
@@ -3247,7 +3260,7 @@ static int sg_read_file(sg_str path, uint8_t** bytes, int64_t* len) {
     if (!name) return code;
     int fd = open(name, O_RDONLY);
     free(name);
-    if (fd < 0) return errno;
+    if (fd < 0) return sg_os_error();
     struct stat info;
     size_t cap = fstat(fd, &info) == 0 && S_ISREG(info.st_mode) && info.st_size > 0 ? (size_t)info.st_size + 1 : 4096;
     uint8_t* block = malloc(cap);
@@ -3256,7 +3269,7 @@ static int sg_read_file(sg_str path, uint8_t** bytes, int64_t* len) {
     for (;;) {
         if (n == cap) { cap *= 2; block = realloc(block, cap); if (!block) abort(); }
         ssize_t got = read(fd, block + n, cap - n);
-        if (got < 0) { if (errno == EINTR) continue; code = errno; break; }
+        if (got < 0) { if (errno == EINTR) continue; code = sg_os_error(); break; }
         if (got == 0) break;
         n += (size_t)got;
     }
@@ -3273,14 +3286,14 @@ static int sg_write_file(sg_str path, const uint8_t* bytes, int64_t len, bool ap
     if (!name) return code;
     int fd = open(name, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC), 0666);
     free(name);
-    if (fd < 0) return errno;
+    if (fd < 0) return sg_os_error();
     int64_t done = 0;
     while (done < len) {
         ssize_t put = write(fd, bytes + done, (size_t)(len - done));
-        if (put < 0) { if (errno == EINTR) continue; code = errno; break; }
+        if (put < 0) { if (errno == EINTR) continue; code = sg_os_error(); break; }
         done += put;
     }
-    if (close(fd) != 0 && !code) code = errno;
+    if (close(fd) != 0 && !code) code = sg_os_error();
     return code;
 }
 /* A file or the input, read in blocks of 64 KB that the reader keeps. `done` counts the bytes
@@ -3435,7 +3448,7 @@ static int sg_reader_fill(sg_reader* r) {
     }
     for (;;) {
         ssize_t got = read(r->fd, r->block, 65536);
-        if (got < 0) { if (errno == EINTR) continue; return errno; }
+        if (got < 0) { if (errno == EINTR) continue; return sg_os_error(); }
         r->at = 0;
         r->len = got;
         if (got == 0) r->ended = true;
@@ -3553,7 +3566,7 @@ static int sg_read_bytes(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
             if (sg_in_terminal) fflush(stdout);
         }
         ssize_t put = read(r->fd, to + n, (size_t)(len - n));
-        if (put < 0) { if (errno == EINTR) continue; code = errno; break; }
+        if (put < 0) { if (errno == EINTR) continue; code = sg_os_error(); break; }
         if (put == 0) { r->ended = true; break; }
         n += put;
     }
@@ -3596,7 +3609,7 @@ static int sg_open_reader(sg_str path, sg_reader* out) {
     if (!name) return code;
     int fd = open(name, O_RDONLY);
     free(name);
-    if (fd < 0) return errno;
+    if (fd < 0) return sg_os_error();
     struct stat info;
     if (fstat(fd, &info) == 0 && S_ISDIR(info.st_mode)) { close(fd); return EISDIR; }
     uint8_t* block = malloc(65536);
@@ -3619,12 +3632,12 @@ typedef struct { sg_reader* r; bool done; } sg_read_lines;
    `failed`: the first error, which every later call gives again. A writer that was moved or
    closed has `fd` -1. */
 typedef struct { int fd; int std; int failed; sg_string buf; } sg_writer;
-static sg_writer sg_stdout = { 1, 1, 0, { (uint8_t*)"", 0, 0 } };
-static sg_writer sg_stderr = { 2, 2, 0, { (uint8_t*)"", 0, 0 } };
+static sg_writer sg_stdout __attribute__((unused)) = { 1, 1, 0, { (uint8_t*)"", 0, 0 } };
+static sg_writer sg_stderr __attribute__((unused)) = { 2, 2, 0, { (uint8_t*)"", 0, 0 } };
 static int sg_write_all(int fd, const uint8_t* bytes, int64_t len) {
     while (len > 0) {
         ssize_t put = write(fd, bytes, (size_t)len);
-        if (put < 0) { if (errno == EINTR) continue; return errno; }
+        if (put < 0) { if (errno == EINTR) continue; return sg_os_error(); }
         bytes += put;
         len -= put;
     }
@@ -3644,7 +3657,7 @@ static int sg_writer_wrote(sg_writer* w) {
         if (w->std == 2) fflush(stdout);
         size_t len = (size_t)w->buf.len;
         w->buf.len = 0;
-        if (len > 0 && fwrite(w->buf.ptr, 1, len, w->std == 1 ? stdout : stderr) != len) return w->failed = errno ? errno : EIO;
+        if (len > 0 && fwrite(w->buf.ptr, 1, len, w->std == 1 ? stdout : stderr) != len) return w->failed = sg_os_error();
         return 0;
     }
     return w->buf.len >= 65536 ? sg_writer_out(w) : 0;
@@ -3661,20 +3674,20 @@ static int sg_std_put(sg_writer* w, sg_string* block) {
     if (!code) {
         if (w->std == 2) fflush(stdout);
         size_t len = (size_t)block->len;
-        if (len > 0 && fwrite(block->ptr, 1, len, w->std == 1 ? stdout : stderr) != len) code = sg_fail(w, errno ? errno : EIO);
+        if (len > 0 && fwrite(block->ptr, 1, len, w->std == 1 ? stdout : stderr) != len) code = sg_fail(w, sg_os_error());
     }
     sg_drop_string(block);
     return code;
 }
 static int sg_writer_flush(sg_writer* w) {
     if (sg_failed(w)) return sg_failed(w);
-    if (w->std) return fflush(w->std == 1 ? stdout : stderr) == 0 ? 0 : sg_fail(w, errno ? errno : EIO);
+    if (w->std) return fflush(w->std == 1 ? stdout : stderr) == 0 ? 0 : sg_fail(w, sg_os_error());
     return sg_writer_out(w);
 }
 /* The block goes out and the file is closed; the first error is given. */
 static int sg_writer_close(sg_writer* w) {
     int code = w->failed ? w->failed : sg_writer_out(w);
-    if (close(w->fd) != 0 && !code) code = errno;
+    if (close(w->fd) != 0 && !code) code = sg_os_error();
     w->fd = -1;
     sg_drop_string(&w->buf);
     w->buf = (sg_string){ (uint8_t*)"", 0, 0 };
@@ -3738,7 +3751,7 @@ static int sg_writer_bytes(sg_writer* w, const uint8_t* bytes, int64_t len) {
     if (len == 0) return 0;
     if (w->std) {
         if (w->std == 2) fflush(stdout);
-        if (fwrite(bytes, 1, (size_t)len, w->std == 1 ? stdout : stderr) != (size_t)len) return sg_fail(w, errno ? errno : EIO);
+        if (fwrite(bytes, 1, (size_t)len, w->std == 1 ? stdout : stderr) != (size_t)len) return sg_fail(w, sg_os_error());
         return 0;
     }
     if (len < 65536) {
@@ -3759,7 +3772,7 @@ static int sg_open_writer(sg_str path, bool append, sg_writer* out) {
     if (!name) return code;
     int fd = open(name, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC), 0666);
     free(name);
-    if (fd < 0) return errno;
+    if (fd < 0) return sg_os_error();
     *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 } };
     return 0;
 }
@@ -4228,6 +4241,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         exit_blocks: Vec::new(),
         frames: Vec::new(),
         closing: None,
+        tracked: HashSet::new(),
+        at: false,
+        site: None,
     };
     // Every struct and enum is named first, so that a type can point at itself or at a later
     // one. Then the types themselves, each after the types it holds by value.
@@ -4258,6 +4274,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
             emitter.sigs.insert(format!("a_init_{name}"), params.clone());
             emitter.sigs.insert(format!("a_start_{name}"), params);
         } else {
+            if tracks(&func.name, None) {
+                emitter.tracked.insert(format!("f_{name}"));
+            }
             emitter.sigs.insert(format!("f_{name}"), params);
         }
     }
@@ -4268,6 +4287,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     for (owner, methods) in typed() {
         for method in methods {
             let params = method.params.iter().map(|param| emitter.written(&param.ty)).collect::<Res<Vec<Ty>>>()?;
+            if tracks(&method.name, Some(owner)) {
+                emitter.tracked.insert(format!("f_{}_{}", cname(owner), method.name));
+            }
             emitter.sigs.insert(format!("f_{}_{}", cname(owner), method.name), params);
         }
     }
@@ -4335,7 +4357,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
             let _ = write!(tests, " if (f == (void (*)(void))f_{}) return {};", cname(name), c_string(short_name(name)));
         }
         let _ = writeln!(emitter.glue_protos, "static const char* sg_func_name(void (*f)(void));");
-        let _ = writeln!(emitter.glue, "static const char* sg_func_name(void (*f)(void)) {{{tests} return \"?\"; }}");
+        let _ = writeln!(emitter.glue, "static const char* sg_func_name(void (*f)(void)) {{ (void)f;{tests} return \"?\"; }}");
     }
     // A program with tasks or `locked` values runs on several threads.
     let threads = emitter.made.contains("tasks") || emitter.made.contains("threads");
@@ -4413,8 +4435,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     out.push_str(&protos);
     out.push('\n');
     out.push_str(&emitter.glue);
-    for (number, text) in emitter.locs.iter().enumerate() {
-        let _ = writeln!(out, "static const char sg_loc_{number}[] = {};", c_string(text));
+    // The byte after the terminating zero says whether the place is a call of the module (see `sg_called`).
+    for (number, (text, called)) in emitter.locs.iter().enumerate() {
+        let _ = writeln!(out, "static const char sg_loc_{number}[] = {} \"\\0\\{}\";", c_string(text), *called as u8);
     }
     for (number, sum) in emitter.sums.iter().enumerate() {
         let _ = writeln!(out, "static const sg_sum sg_sum_{number} = {sum};");
@@ -4477,6 +4500,37 @@ fn next_of(kind: TextIter) -> &'static str {
 }
 
 /// The methods of `char` (and the ASCII ones of `byte`) that the back end writes inline.
+/// Whether a function takes where it was called from (see `Emitter::tracked`): every function
+/// of the language's own module but the methods the runtime calls with no place to give
+/// (`format` when a value is written, `equals`, `compare` and `hash` in a collection,
+/// `dispose` when a value ends).
+fn tracks(name: &str, owner: Option<&str>) -> bool {
+    module_of(owner.unwrap_or(name)) == crate::source::STD_MODULE && !(owner.is_some() && RUNTIME_METHODS.contains(&name))
+}
+
+/// The methods the runtime calls on its own (see `tracks`); the interpreter shows a panic in
+/// one of the module's at its own line too.
+pub const RUNTIME_METHODS: [&str; 5] = ["format", "equals", "compare", "hash", "dispose"];
+
+/// The names an `is` gives a block, each marked used for C: the block may leave one unused,
+/// as SG allows.
+fn used(names: Names) -> Names {
+    names.into_iter().map(|(local, line)| {
+        let line = format!("{line} (void){};", local.cname);
+        (local, line)
+    }).collect()
+}
+
+/// Whether the C code names `name` as a whole word.
+fn mentions(code: &str, name: &str) -> bool {
+    let word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    code.match_indices(name).any(|(at, _)| {
+        let before = code.as_bytes()[..at].last().is_none_or(|&byte| !word(byte));
+        let after = code.as_bytes().get(at + name.len()).is_none_or(|&byte| !word(byte));
+        before && after
+    })
+}
+
 fn is_char_method(name: &str) -> bool {
     name.starts_with("isAscii") || matches!(name, "toAsciiUpper" | "toAsciiLower" | "isWhitespace" | "utf8Length" | "tryToChar")
 }
@@ -5047,7 +5101,8 @@ struct Emitter<'a> {
     /// A debug build: overflow panics. Otherwise it wraps.
     checked: bool,
     /// The place of each line that can panic, as it is printed under the message.
-    locs: Vec<String>,
+    /// The places panics are shown at, and whether each is a call of the language's own module.
+    locs: Vec<(String, bool)>,
     /// An index or an end of a range written `a + c` in a checked build: what the place's
     /// check needs to tell an overflow of the sum (see `sg_sum`), one `static` each.
     sums: Vec<String>,
@@ -5132,12 +5187,34 @@ struct Emitter<'a> {
     /// While an async function that may drop a writer is written: where it is, for the thread
     /// that closes the writers it drops (see `closing_line`).
     closing: Option<String>,
+    /// The functions of the language's own module that take where they were called from, as
+    /// a last parameter `sg_caller`: a panic in them is shown at the call of the program that led
+    /// there (see `tracks`).
+    tracked: HashSet<String>,
+    /// The function being written is one of them: every place in it is `sg_caller`.
+    at: bool,
+    /// Where the call being written is (see `call_at`).
+    site: Option<Span>,
 }
 
 impl<'a> Emitter<'a> {
     /// The name of the C constant that holds where `span` is in the source.
     fn loc(&mut self, span: Span) -> String {
-        self.locs.push(self.sources.snippet(span));
+        // In a function of the language's own module, the place is where the program called it.
+        if self.at {
+            return "sg_caller".to_string();
+        }
+        self.locs.push((self.sources.snippet(span), false));
+        format!("sg_loc_{}", self.locs.len() - 1)
+    }
+
+    /// The place given to a function of the language's own module that the program calls:
+    /// a panic inside it is shown there, without a hint (see `sg_called`).
+    fn called_loc(&mut self, span: Span) -> String {
+        if self.at {
+            return "sg_caller".to_string();
+        }
+        self.locs.push((self.sources.snippet(span), true));
         format!("sg_loc_{}", self.locs.len() - 1)
     }
 
@@ -5162,7 +5239,8 @@ impl<'a> Emitter<'a> {
 
     /// The parts of an index that `index_sum` writes as a wrapping sum, if it is one.
     fn sum_parts(&self, end: &'a Expr) -> Option<IndexSum<'a>> {
-        if !self.checked {
+        // The table of sums holds constant places, and a function of the module has `sg_caller`.
+        if !self.checked || self.at {
             return None;
         }
         let (sum, widened) = match &end.kind {
@@ -5667,7 +5745,11 @@ impl<'a> Emitter<'a> {
                     "static void sg_drop_from_{name}({list}* v, int64_t from);\nstatic inline void sg_drop_{name}({list}* v);\nstatic inline {list} sg_move_{name}({list}* v);"
                 );
                 // What a `for` that was handed the list leaves behind: the items from `from` on.
-                let _ = writeln!(self.glue, "static void sg_drop_from_{name}({list}* v, int64_t from) {{ {}free(v->ptr); }}", drop_items("from"));
+                let _ = writeln!(self.glue, "static void sg_drop_from_{name}({list}* v, int64_t from) {{ {}free(v->ptr); }}", match drop_item.is_empty() {
+                    // Items that own nothing: there is nothing to drop from `from` on.
+                    true => "(void)from; ".to_string(),
+                    false => drop_items("from"),
+                });
                 let _ = writeln!(self.glue, "static inline void sg_drop_{name}({list}* v) {{ sg_drop_from_{name}(v, 0); }}");
                 let _ = writeln!(self.glue, "static inline {list} sg_move_{name}({list}* v) {{ {list} out = *v; *v = ({list}){{ 0 }}; return out; }}");
                 let _ = writeln!(
@@ -6374,6 +6456,12 @@ impl<'a> Emitter<'a> {
             }
             other => return Err(not_yet(span, &format!("`==` on `{other}`"))),
         }
+        // A struct with no fields, or an enum whose variants hold nothing, compares nothing.
+        for side in ["b", "a"] {
+            if !mentions(&body, side) {
+                body.insert_str(0, &format!("(void){side}; "));
+            }
+        }
         let _ = writeln!(self.glue, "static bool {helper}({ctype} const* a, {ctype} const* b) {{ {body} }}");
         Ok(helper)
     }
@@ -6498,7 +6586,12 @@ impl<'a> Emitter<'a> {
         match (op, ty) {
             (BinOp::Eq, _) => Ok(format!("{}({l}, {r})", self.equaler(ty, span)?)),
             (BinOp::Ne, _) => Ok(format!("(!{}({l}, {r}))", self.equaler(ty, span)?)),
-            (_, Ty::Struct(owner) | Ty::Enum(owner)) if self.own_method(owner, "compare") => Ok(format!("(f_{}_compare({l}, {r}) {} 0)", cname(owner), op.symbol())),
+            // `compare` takes `read this`, a pointer that is not `const` in C; the sides may be
+            // (`assert` keeps them so), and the method only reads them.
+            (_, Ty::Struct(owner) | Ty::Enum(owner)) if self.own_method(owner, "compare") => {
+                let held = self.ctype(ty, span)?;
+                Ok(format!("(f_{}_compare(({held}*){l}, ({held}*){r}) {} 0)", cname(owner), op.symbol()))
+            }
             _ => Err(not_yet(span, &format!("`{}` on `{ty}`", op.symbol()))),
         }
     }
@@ -6997,6 +7090,12 @@ impl<'a> Emitter<'a> {
             params.push(format!("{} v_{}", self.ctype(&ty, param.ty.span)?, param.name));
             scope.push(Local { name: param.name.clone(), cname: format!("v_{}", param.name), ty, gone: false, drop: None });
         }
+        self.at = self.tracked.contains(&name);
+        if self.at {
+            params.push("const char* sg_caller".to_string());
+        }
+        // The C names of the parameters, to tell which the body never uses.
+        let params_c: Vec<String> = params.iter().filter_map(|param| param.rsplit(' ').next().map(str::to_string)).collect();
         let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
         let head = format!("static {} {name}({params})", self.ctype(&ret, func.ret.span)?);
         let _ = writeln!(protos, "{head};");
@@ -7013,6 +7112,10 @@ impl<'a> Emitter<'a> {
             }
         }
         self.scopes.clear();
+        // A parameter SG lets the function leave unused is used in C too, so C does not warn.
+        let unused: String = params_c.iter().filter(|param| !mentions(&body, param)).map(|param| format!("    (void){param};\n")).collect();
+        body.insert_str(0, &unused);
+        self.at = false;
         self.declare_guards(bodies);
         bodies.push_str(&body);
         bodies.push_str("}\n\n");
@@ -7322,12 +7425,12 @@ impl<'a> Emitter<'a> {
                     // A task is waited for on the way out; an async function awaits it.
                     None if !local.gone && matches!(local.ty, Ty::Task(_)) && self.awaits.is_some() => {
                         let task = &local.cname;
-                        lines.push(format!("SG_RESUME(0); if ({task} && !sg_ready(&{task}->head)) return false; {}", self.drop_of(&local.ty, task)));
+                        lines.push(format!("SG_RESUME(0); if ({task} && !sg_ready(&{task}->head)) {{ return false; }} {}", self.drop_of(&local.ty, task)));
                     }
                     // So is a list of tasks, all of them.
                     None if !local.gone && is_task_list(&local.ty) && self.awaits.is_some() => {
                         let list = &local.cname;
-                        lines.push(format!("SG_RESUME(0); if (!sg_group_all({list}.group, {list}.len)) return false; {}", self.drop_of(&local.ty, list)));
+                        lines.push(format!("SG_RESUME(0); if (!sg_group_all({list}.group, {list}.len)) {{ return false; }} {}", self.drop_of(&local.ty, list)));
                     }
                     None if !local.gone && self.droppable(&local.ty) => {
                         lines.push(self.drop_of(&local.ty, &local.cname));
@@ -7543,7 +7646,9 @@ impl<'a> Emitter<'a> {
                 let value = self.head_value(init, &ty)?;
                 self.flush_pre(&pad, out);
                 let cname = self.declare(name, ty);
-                let _ = writeln!(out, "{pad}{ctype} {cname} = {value};");
+                // SG lets a variable be given values that are never read (a write to a copy, to
+                // show it is one); C is told it is used, so it does not warn.
+                let _ = writeln!(out, "{pad}{ctype} {cname} = {value}; (void){cname};");
                 self.flush_post(&pad, out);
             }
             StmtKind::Assign { target, op, value, through } => {
@@ -7611,6 +7716,7 @@ impl<'a> Emitter<'a> {
             }
             StmtKind::If { cond, then, els, after } => {
                 let (mut cond, names, chained, decls) = self.condition(cond, !after.is_empty())?;
+                let names = used(names);
                 for line in decls {
                     let _ = writeln!(out, "{pad}{line}");
                 }
@@ -7652,6 +7758,7 @@ impl<'a> Emitter<'a> {
             StmtKind::While { cond, body, after } => {
                 self.nothing_gone();
                 let (cond, names, chained, decls) = self.condition(cond, !after.is_empty())?;
+                let names = used(names);
                 // Declared before the loop, so that the code after it sees the names that
                 // `after` lists.
                 for line in decls {
@@ -7727,12 +7834,12 @@ impl<'a> Emitter<'a> {
                         let _ = writeln!(out, "{inner}const {table_c}* {it} = {address}; int64_t {at} = 0;");
                         let ty = if *mode == Mode::Ref { Ty::Ref(Box::new(item)) } else { Ty::Read(Box::new(item)) };
                         let place = format!("{it}->entries[{at}]{at_item}");
-                        self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}->len"), var, body, depth + 1, |this| Ok(vec![this.borrowed_name(var, ty.clone(), &place, iter.span)?]))?;
+                        self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}->len"), var, body, depth + 1, |this| Ok(vec![this.loop_name(var, ty.clone(), &place, iter.span)?]))?;
                         self.release(kept, &inner, out);
                         let _ = writeln!(out, "{pad}}}");
                     }
                     None => {
-                        let value = self.value(iter)?;
+                        let value = self.first(iter, true)?;
                         self.flush_pre(&pad, out);
                         let _ = writeln!(out, "{pad}{{");
                         let _ = writeln!(out, "{inner}{table_c} {it} = {value}; int64_t {at} = 0;");
@@ -7743,7 +7850,7 @@ impl<'a> Emitter<'a> {
                         self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}.len"), var, body, depth + 1, |this| {
                             this.temps += 1;
                             let cname = format!("v_{var}_{}", this.temps);
-                            let line = format!("{item_c} {cname} = {it}.entries[{at}]{at_item};");
+                            let line = format!("{item_c} {cname} = {it}.entries[{at}]{at_item}; (void){cname};");
                             Ok(vec![(Local { name: var.clone(), cname, ty: item.clone(), gone: false, drop: None }, line)])
                         })?;
                         self.scopes.pop();
@@ -7769,7 +7876,7 @@ impl<'a> Emitter<'a> {
                         let _ = writeln!(out, "{inner}{window_c} {it} = {window}; int64_t {at} = 0;");
                         let ty = if *mode == Mode::Ref { Ty::Ref(item.clone()) } else { Ty::Read(item.clone()) };
                         let place = format!("{it}.ptr[{at}]");
-                        self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}.len"), var, body, depth + 1, |this| Ok(vec![this.borrowed_name(var, ty.clone(), &place, iter.span)?]))?;
+                        self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}.len"), var, body, depth + 1, |this| Ok(vec![this.loop_name(var, ty.clone(), &place, iter.span)?]))?;
                         self.release(kept, &inner, out);
                         let _ = writeln!(out, "{pad}}}");
                     }
@@ -7778,7 +7885,7 @@ impl<'a> Emitter<'a> {
                     None => {
                         let Ty::Array(_, length) = &iter.ty else { return Err(not_yet(iter.span, &format!("a `for` over a `{}`", iter.ty))) };
                         let (array_c, held, name) = (self.ctype(&iter.ty, iter.span)?, self.ctype(item, iter.span)?, mangle(&iter.ty).expect("it has a C type"));
-                        let value = self.value(iter)?;
+                        let value = self.first(iter, true)?;
                         self.flush_pre(&pad, out);
                         let _ = writeln!(out, "{pad}{{");
                         let _ = writeln!(out, "{inner}{array_c} {it} = {value}; int64_t {at} = 0;");
@@ -7788,7 +7895,7 @@ impl<'a> Emitter<'a> {
                         self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {length}"), var, body, depth + 1, |this| {
                             this.temps += 1;
                             let cname = format!("v_{var}_{}", this.temps);
-                            let line = format!("{held} {cname} = {it}.items[{at}];");
+                            let line = format!("{held} {cname} = {it}.items[{at}]; (void){cname};");
                             Ok(vec![(Local { name: var.clone(), cname, ty: (**item).clone(), gone: false, drop: None }, line)])
                         })?;
                         self.scopes.pop();
@@ -7810,7 +7917,7 @@ impl<'a> Emitter<'a> {
                 let (held, it, at) = (self.ctype(&item, iter.span)?, self.temp(), self.temp());
                 let inner = format!("{pad}    ");
                 self.nothing_gone();
-                let value = self.value(iter)?;
+                let value = self.first(iter, true)?;
                 self.flush_pre(&pad, out);
                 let _ = writeln!(out, "{pad}{{");
                 let _ = writeln!(out, "{inner}{iter_c} {it} = {value}; {held} {at};");
@@ -7818,7 +7925,7 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(out, "{inner}while ({}(&{it}, &{at})) {{", next_of(kind));
                 self.temps += 1;
                 let cname = format!("v_{var}_{}", self.temps);
-                let line = format!("{held} {cname} = {at};");
+                let line = format!("{held} {cname} = {at}; (void){cname};");
                 let local = Local { name: var.clone(), cname, ty: item, gone: false, drop: None };
                 self.loops.push(self.scopes.len());
                 self.block_with(body, depth + 2, out, vec![(local, line)])?;
@@ -7847,7 +7954,7 @@ impl<'a> Emitter<'a> {
                         let _ = writeln!(out, "{inner}const {list_c}* {it} = {address}; int64_t {at} = 0;");
                         let ty = if *mode == Mode::Ref { Ty::Ref(item.clone()) } else { Ty::Read(item.clone()) };
                         let place = format!("{it}->ptr[{at}]");
-                        self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}->len"), var, body, depth + 1, |this| Ok(vec![this.borrowed_name(var, ty.clone(), &place, iter.span)?]))?;
+                        self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}->len"), var, body, depth + 1, |this| Ok(vec![this.loop_name(var, ty.clone(), &place, iter.span)?]))?;
                         self.release(kept, &inner, out);
                         let _ = writeln!(out, "{pad}}}");
                     }
@@ -7855,7 +7962,7 @@ impl<'a> Emitter<'a> {
                     // is left of it when the loop ends, or is left early, is freed: the items
                     // after the one of this round, and the block.
                     None => {
-                        let value = self.value(iter)?;
+                        let value = self.first(iter, true)?;
                         self.flush_pre(&pad, out);
                         let _ = writeln!(out, "{pad}{{");
                         let _ = writeln!(out, "{inner}{list_c} {it} = {value}; int64_t {at} = 0;");
@@ -7865,7 +7972,7 @@ impl<'a> Emitter<'a> {
                         self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}.len"), var, body, depth + 1, |this| {
                             this.temps += 1;
                             let cname = format!("v_{var}_{}", this.temps);
-                            let line = format!("{held} {cname} = {it}.ptr[{at}];");
+                            let line = format!("{held} {cname} = {it}.ptr[{at}]; (void){cname};");
                             Ok(vec![(Local { name: var.clone(), cname, ty: (**item).clone(), gone: false, drop: None }, line)])
                         })?;
                         self.scopes.pop();
@@ -8335,6 +8442,13 @@ impl<'a> Emitter<'a> {
 
     /// A name that borrows what is at `at`, and the C line that declares it. The name is not
     /// in scope yet.
+    /// The variable of a `for` that borrows each item: a body may leave it unused, as SG allows.
+    fn loop_name(&mut self, name: &str, ty: Ty, at: &str, span: Span) -> Res<(Local, String)> {
+        let (local, line) = self.borrowed_name(name, ty, at, span)?;
+        let line = format!("{line} (void){};", local.cname);
+        Ok((local, line))
+    }
+
     fn borrowed_name(&mut self, name: &str, ty: Ty, at: &str, span: Span) -> Res<(Local, String)> {
         // What is there may be a borrow itself (a field `read string text`): the name is a
         // copy of it, not a borrow of a borrow.
@@ -8479,6 +8593,8 @@ impl<'a> Emitter<'a> {
 
         let guarded = arms.iter().any(|arm| arm.guard.is_some());
         let end = format!("{held}_end");
+        // The label after the arms is written only if an arm jumps to it.
+        let mut jumped = false;
         // On a `T?`, once an arm without a condition has taken `null`, a name below it takes
         // what is there (the checker gave it the type without `?`).
         let mut null_taken = false;
@@ -8506,16 +8622,17 @@ impl<'a> Emitter<'a> {
                     let (_, inner, inner_ty) = self.nullable_at(&held, &subject.ty).expect("`null` is taken only from a `T?`");
                     let inner_ctype = self.ctype(&inner_ty, subject.span)?;
                     let cname = self.declare(name, inner_ty);
-                    let _ = writeln!(out, "{body_pad}{inner_ctype} {cname} = {inner};");
+                    // An arm may leave its names unused, as SG allows; C is told they are used.
+                    let _ = writeln!(out, "{body_pad}{inner_ctype} {cname} = {inner}; (void){cname};");
                 }
                 PatternKind::Bind(name) => {
                     let cname = self.declare(name, subject.ty.clone());
-                    let _ = writeln!(out, "{body_pad}{ctype} {cname} = {held};");
+                    let _ = writeln!(out, "{body_pad}{ctype} {cname} = {held}; (void){cname};");
                 }
                 _ if has_choice(&arm.pattern) && !arm.pattern.names().is_empty() => {
                     let (names, drops) = self.take_apart_choices(&arm.pattern, &held, &subject.ty, mode, subject.span)?;
                     for (local, line) in names {
-                        let _ = writeln!(out, "{body_pad}{line}");
+                        let _ = writeln!(out, "{body_pad}{line} (void){};", local.cname);
                         self.scopes.last_mut().expect("an open scope").push(local);
                     }
                     chosen = drops;
@@ -8524,7 +8641,7 @@ impl<'a> Emitter<'a> {
                     let mut names = Vec::new();
                     self.take_apart(&arm.pattern, &held, &subject.ty, mode, &mut names, &mut chosen)?;
                     for (local, line) in names {
-                        let _ = writeln!(out, "{body_pad}{line}");
+                        let _ = writeln!(out, "{body_pad}{line} (void){};", local.cname);
                         self.scopes.last_mut().expect("an open scope").push(local);
                     }
                 }
@@ -8562,6 +8679,7 @@ impl<'a> Emitter<'a> {
                 }
                 if guarded {
                     let _ = writeln!(out, "{body_pad}goto {end};");
+                    jumped = true;
                 }
             }
             self.scopes.pop();
@@ -8574,7 +8692,9 @@ impl<'a> Emitter<'a> {
             }
         }
         if guarded {
-            let _ = writeln!(out, "{inner}{end}:;");
+            if jumped {
+                let _ = writeln!(out, "{inner}{end}:;");
+            }
         } else {
             let _ = writeln!(out, "{inner}}}");
         }
@@ -8742,7 +8862,14 @@ impl<'a> Emitter<'a> {
     }
 
     /// A function called with its arguments, each shaped for its parameter.
+    /// A call of a function of the program, written at `site`.
+    fn call_at(&mut self, site: Span, name: String, receiver: Option<Part>, args: &'a [Expr], head: bool, gives: &Ty) -> Res<String> {
+        self.site = Some(site);
+        self.call(name, receiver, args, head, gives)
+    }
+
     fn call(&mut self, name: String, receiver: Option<Part>, args: &'a [Expr], head: bool, gives: &Ty) -> Res<String> {
+        let site = self.site.take();
         // The receiver was lent to read while the arguments are computed (`Opening::Reserve`).
         let reserved = self.reserving.take();
         let params = self.sigs.get(&name).cloned().unwrap_or_default();
@@ -8766,6 +8893,11 @@ impl<'a> Emitter<'a> {
                 *value = temp;
             }
             let _ = write!(names, "sg_change_reserved(&{guard}); ");
+        }
+        // A function of the language's own module is told where it was called from.
+        if self.tracked.contains(&name) {
+            let site = site.expect("a function of the module is called through `call_at`");
+            values.push(self.called_loc(site));
         }
         let span = args.first().map_or(Span::new(0, 0), |arg| arg.span);
         let called = self.handed_over(format!("{name}({})", values.join(", ")), gives, &taking.handed, span)?;
@@ -9858,7 +9990,7 @@ impl<'a> Emitter<'a> {
                 };
                 self.pre.push(format!("sg_io_writer {w}i = sg_io_writer_close({value}); sg_io_start(&{w}i.io, sg_io_run_writer, {loc});"));
                 self.resume_point(span);
-                self.pre.push(format!("if (!sg_io_done(&{w}i.io)) return false; int {c} = {w}i.r;"));
+                self.pre.push(format!("if (!sg_io_done(&{w}i.io)) {{ return false; }} int {c} = {w}i.r;"));
                 return Ok(self.writer_result(&c, &gives));
             }
             StreamCall::Write | StreamCall::WriteLine => {
@@ -9907,7 +10039,7 @@ impl<'a> Emitter<'a> {
         let mark = awaits.len() - 1;
         self.pre.push(format!(
             "if ({c} == -1) {{ sg_io_writer {w}i = sg_io_writer_out({w}, {big}); sg_io_start(&{w}i.io, sg_io_run_writer, {loc}); \
-             SG_RESUME({mark}); if (!sg_io_done(&{w}i.io)) return false; {c} = {w}i.r; }}"
+             SG_RESUME({mark}); if (!sg_io_done(&{w}i.io)) {{ return false; }} {c} = {w}i.r; }}"
         ));
         Ok(self.writer_result(&c, &gives))
     }
@@ -10961,7 +11093,12 @@ impl<'a> Emitter<'a> {
                         let value = self.first_as(value, item, head)?;
                         Ok(format!("({{ {ctype} {temp}; {held} {temp}v = {value}; for (int64_t {temp}i = 0; {temp}i < {length}; {temp}i++) {temp}.items[{temp}i] = {temp}v; {temp}; }})"))
                     }
-                    (None, _) => Ok(format!("(({ctype}){{ 0 }})")),
+                    // Every item at its zero value, written in the shape of the struct that holds
+                    // the array: a `T?` kept as a flag and a value is a struct of its own.
+                    (None, _) => {
+                        let zero = if is_option(item) { "{ 0 }" } else { "0" };
+                        Ok(format!("(({ctype}){{ {{ {zero} }} }})"))
+                    }
                 }
             }
             // A new list: the items are added one after the other.
@@ -11136,10 +11273,10 @@ impl<'a> Emitter<'a> {
                     self.made.insert("tasks".to_string());
                     Ok("sg_cancel_new()".to_string())
                 }
-                Callee::Plain => self.call(format!("f_{}", cname(name)), None, args, head, &expr.ty),
+                Callee::Plain => self.call_at(expr.span, format!("f_{}", cname(name)), None, args, head, &expr.ty),
                 // A function of C, through the adapter `foreign_func` wrote.
                 Callee::Extern => self.call(format!("sg_x_{}", cname(name)), None, args, head, &expr.ty),
-                Callee::Static { owner, name } => self.call(format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
+                Callee::Static { owner, name } => self.call_at(expr.span, format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
                 // A call through a function value kept in a variable.
                 Callee::Value => {
                     let local = self.local(name);
@@ -11205,7 +11342,7 @@ impl<'a> Emitter<'a> {
                     let task = self.first(recv, head)?;
                     Ok(format!("sg_wait_{}({task})", mangle(recv.ty.strip_borrow()).expect("a task has a C name")))
                 }
-                Callee::Static { owner, name } => self.call(format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
+                Callee::Static { owner, name } => self.call_at(expr.span, format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
                 // `read FolderRef this`: the method borrows the owner, not what it holds (it is not
                 // opened); `FolderRef this` takes an owner of its own.
                 Callee::Method { whole: true, owner, this } => {
@@ -11217,7 +11354,7 @@ impl<'a> Emitter<'a> {
                         _ => (self.address(recv)?, Ty::Read(Box::new(holder.clone()))),
                     };
                     let receiver = self.part(recv, &this_ty, receiver, before);
-                    self.call(format!("f_{}_{name}", cname(owner)), Some(receiver), args, false, &expr.ty)
+                    self.call_at(expr.span, format!("f_{}_{name}", cname(owner)), Some(receiver), args, false, &expr.ty)
                 }
                 Callee::Method { owner, this, .. } => {
                     let held = recv.ty.strip_borrow().clone();
@@ -11273,7 +11410,7 @@ impl<'a> Emitter<'a> {
                         This::Ref => Ty::Ref(Box::new(Ty::Struct(owner.clone()))),
                     };
                     let receiver = self.part(recv, &this_ty, receiver, before);
-                    self.call(format!("f_{}_{name}", cname(owner)), Some(receiver), args, false, &expr.ty)
+                    self.call_at(expr.span, format!("f_{}_{name}", cname(owner)), Some(receiver), args, false, &expr.ty)
                 }
                 // A call through a function value kept in a field.
                 Callee::FieldValue(_) => {

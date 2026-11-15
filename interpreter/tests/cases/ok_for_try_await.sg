@@ -1,0 +1,19 @@
+async Result<List<int>, string> items(bool ok) {
+    await Task.delay(1)
+    if !ok {
+        return Error("none")
+    }
+    var xs = List<int>()
+    xs.add(4)
+    return Ok(xs)
+}
+async Result<void, string> run(bool ok) {
+    for x in try await items(ok) {
+        print(x)
+    }
+    return Ok()
+}
+async void main() {
+    if await run(true) is Error(e) { print(e) }
+    if await run(false) is Error(e) { print(e) }
+}

@@ -1,0 +1,83 @@
+// `for` over what a `try` opens: the collection is computed once, before the
+// first round, so leaving the function there leaves nothing half made.
+
+Result<List<string>, string> names(bool ok) {
+    if !ok {
+        return Error("no names")
+    }
+    var xs = List<string>()
+    xs.add("ada")
+    xs.add("grace")
+    return Ok(xs)
+}
+
+Result<HashMap<string, int>, string> ages(bool ok) {
+    if !ok {
+        return Error("no ages")
+    }
+    var m = HashMap<string, int>()
+    m.add("ada", 36)
+    return Ok(m)
+}
+
+Result<HashSet<int>, string> picks() {
+    var s = HashSet<int>()
+    s.add(7)
+    return Ok(s)
+}
+
+Result<int[3], string> three() {
+    return Ok(int[3] { 1, 2, 3 })
+}
+
+List<int>? maybe(bool ok) {
+    if !ok {
+        return null
+    }
+    var xs = List<int>()
+    xs.add(5)
+    return xs
+}
+
+Result<void, string> walk(bool ok) {
+    // Owned and made before the loop: freed when the `try` leaves.
+    var kept = List<string>()
+    kept.add("walk")
+    for name in try names(ok) {
+        print($"{kept[0]}: {name}")
+    }
+    for entry in try ages(ok) {
+        print($"{entry.key} is {entry.value}")
+    }
+    for n in try picks() {
+        print(n)
+    }
+    for n in try three() {
+        print(n)
+    }
+    for word in try names(true) {
+        for again in try names(ok) {
+            print($"{word} {again}")
+        }
+    }
+    return Ok()
+}
+
+int? sum(bool ok) {
+    var total = 0
+    for n in try maybe(ok) {
+        total += n
+    }
+    return total
+}
+
+void main() {
+    if walk(true) is Error(cause) {
+        print(cause)
+    }
+    if walk(false) is Error(cause) {
+        print($"stopped: {cause}")
+    }
+    print(sum(true) ?? 0)
+    print(sum(false) ?? -1)
+}

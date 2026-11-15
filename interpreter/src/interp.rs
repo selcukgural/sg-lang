@@ -1759,7 +1759,7 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
     let ffi = crate::ffi::Library::open(prog, false).map_err(Stop::Diag)?;
     let io = shared(out, world, ffi);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog) };
         let result = run_main(&mut interp);
         interp.end_fibers();
         result
@@ -1820,7 +1820,7 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let ffi = crate::ffi::Library::open(prog, true).map_err(Stop::Diag)?;
     let io = shared(out, world, ffi);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog) };
         run_each_test(&mut interp, prog, sources)
     })
 }
@@ -1942,6 +1942,14 @@ struct Interp<'a, 'e> {
     plain: &'a HashMap<String, Vec<Ty>>,
     /// What each function of C takes and gives (see `Program::foreign`).
     foreign: &'a HashMap<String, (Vec<Ty>, Ty)>,
+    /// Where the files of the language's own module start in the text: they come after the
+    /// program's. A panic in them is shown at the call that came from outside (see `call`).
+    std_from: usize,
+}
+
+/// Where the first file of the language's own module starts; the end of the text if none was read in.
+fn std_from(prog: &Program) -> usize {
+    prog.files.iter().filter(|file| file.module == crate::source::STD_MODULE).map(|file| file.start).min().unwrap_or(usize::MAX)
 }
 
 impl<'a, 'e> Interp<'a, 'e> {
@@ -2380,6 +2388,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             started: Vec::new(),
             plain: self.plain,
             foreign: self.foreign,
+            std_from: self.std_from,
         };
         let weak = Rc::downgrade(task);
         let name: Rc<str> = func.name.as_str().into();
@@ -2492,6 +2501,20 @@ impl<'a, 'e> Interp<'a, 'e> {
         match result {
             Ok(Flow::Return(value)) | Err(Unwind::Return(value)) => Ok(value),
             Ok(_) => Ok(Value::Void),
+            // A panic inside the language's own module is shown at the call of the program that
+            // led there, as `#[track_caller]` does in Rust: the line in the module says nothing
+            // to the one who called it.
+            Err(Unwind::Stop(Stop::Diag(mut diag)))
+                if diag.kind == crate::diag::Kind::Panic
+                    && diag.span.start >= self.std_from
+                    && call_span.start < self.std_from
+                    && !(func.this.is_some() && crate::emit_c::RUNTIME_METHODS.contains(&func.name.as_str())) =>
+            {
+                // A hint there would name code the caller cannot see.
+                diag.span = call_span;
+                diag.hint = None;
+                Err(Unwind::Stop(Stop::Diag(diag)))
+            }
             Err(other) => Err(other),
         }
     }

@@ -1,0 +1,30 @@
+// `assert` on `<`, `<=`, `>` and `>=` between values of a struct that wrote its own `compare`:
+// compiled code keeps the two sides behind pointers it does not change, and hands them to
+// `compare`, which only reads them.
+
+struct Version : Comparable, Equatable, Formattable {
+    int major
+    int minor
+
+    public int compare(read this, read Version other) {
+        if this.major != other.major {
+            return this.major - other.major
+        }
+        return this.minor - other.minor
+    }
+
+    public void format(read this, ref Formatter f) {
+        f.write($"{this.major}.{this.minor}")
+    }
+}
+
+void main() {
+    var a = Version { major = 1, minor = 2 }
+    var b = Version { major = 1, minor = 3 }
+    assert(a < b)
+    assert(a <= b)
+    assert(b > a)
+    assert(b >= a)
+    print(a < b)
+    assert(b <= a)
+}

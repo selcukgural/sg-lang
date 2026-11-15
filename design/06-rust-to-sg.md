@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the seventy-fourth slice.
+Last brought up to date: 15 November 2026, the seventy-fifth slice.
 
 ## Functions and variables
 
@@ -31,6 +31,7 @@ Last brought up to date: 15 November 2026, the seventy-fourth slice.
 | `type Id = u64;` | `using Id = ulong` | built | `public using` from a module |
 | `std::process::exit(2)` | `exit(2)` | built | Takes a `byte`, so `exit(256)` is a compile error |
 | `panic!("...")` | `panic("...")` | built | |
+| `#[track_caller]` on the standard library | nothing to write | built | A panic inside the language's own module (`r.nextInt(5, 5)`, `Duration.fromSeconds` of a count too large) is shown at the call of the program, without the hint about the module's code; a function of your own cannot ask for it |
 | `assert!(a == b)`, `assert_eq!(a, b)` | `assert(a == b)` | built | The message shows the expression and both sides |
 | `println!("{}", x)` | `print(x)` | built | |
 | `eprintln!("{}", x)` | `printError(x)` | built | |
@@ -102,6 +103,7 @@ Last brought up to date: 15 November 2026, the seventy-fourth slice.
 | `m.contains_key(&k)`, `m.remove(&k)` | `map.contains(k)`, `map.remove(k)` | built | |
 | `HashSet<T>`, `s.insert(x)` | `HashSet<T>`, `set.add(x)` | built | `add` gives `true` if the item was not there |
 | `for x in v` / `&v` / `&mut v` | `for x in xs` / `read xs` / `ref xs` | built | |
+| `for x in f()? { }` | `for x in try f() { }` | built | |
 | `for (k, v) in &m` | `for e in read map` with `e.key`, `e.value` | built | |
 | `v.iter().map(...).filter(...)` | a `for` loop | not in SG | There are no closures |
 
@@ -298,7 +300,7 @@ Last brought up to date: 15 November 2026, the seventy-fourth slice.
 | `a + b`, `a - b`, `d * 3`, `a.checked_add(b)` | `a.plus(b)`, `a.minus(b)`, `d.times(3)` | built | Methods; an overflow follows the rule of the numbers, so there is no `checked_` form yet |
 | `SystemTime::now()`, `.duration_since(UNIX_EPOCH)` | `DateTime.now()`, `t.unixSeconds()`, `t.unixMilliseconds()` | built | UTC, nanoseconds in a `long`: the years 1677 to 2262 |
 | `chrono::Utc.with_ymd_and_hms(...)`, `t.year()`, `t.weekday()`, `t.to_rfc3339()` | `DateTime.utc(...)` (a `Result<DateTime, DateError>`), `t.year()`, `t.dayOfWeek()`, `print(t)` | built | In the language, not a crate; `2026-11-15T09:30:05Z` |
-| `std::thread::sleep(d)` | `var pause = Task.delay(ms)`, `pause.wait()`; `await Task.delay(ms)` in async code | built | Milliseconds as an `int` |
+| `std::thread::sleep(d)` | `Task.delay(ms).wait()`; `await Task.delay(ms)` in async code | built | Milliseconds as an `int` |
 | `chrono::Local`, `chrono-tz`, `NaiveDate::parse_from_str` | none yet | designed | Time zones and reading a date out of text come later |
 
 ## Random numbers

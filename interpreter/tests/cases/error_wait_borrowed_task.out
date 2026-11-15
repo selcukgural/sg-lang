@@ -1,0 +1,5 @@
+error: `wait` takes the task and uses it up, and this one is only borrowed
+  whoever started the task waits for it
+  --> error_wait_borrowed_task.sg:6:5
+ 6 |     lent.wait()
+   |     ^^^^
