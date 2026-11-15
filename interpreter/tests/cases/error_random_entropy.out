@@ -1,0 +1,4 @@
+error: there is no variable or type named `Entropy`
+  --> error_random_entropy.sg:3:5
+ 3 |     Entropy.fill(ref bytes)
+   |     ^^^^^^^

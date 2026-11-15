@@ -1,0 +1,5 @@
+error: a `Random` is made by its functions, not with `Random(...)`
+  --> error_random_new.sg:2:13
+ 2 |     var r = Random()
+   |             ^^^^^^
+  hint: `Random.fromSeed(seed)` gives the same numbers for the same seed, `Random.fromSystem()` different ones on every run

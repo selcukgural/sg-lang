@@ -24,7 +24,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
-| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `CString`, `Duration`, `Instant`, `DateTime`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, types of C seen only behind a raw pointer (`struct sqlite3` in an `extern` block), `read T` and `ref T` in signatures |
+| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `CString`, `Duration`, `Instant`, `DateTime`, `Random`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, types of C seen only behind a raw pointer (`struct sqlite3` in an `extern` block), `read T` and `ref T` in signatures |
 | Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
@@ -54,6 +54,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`, on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`, `readSomeAsync(ref buffer)`, and on a writer (`Stdout` and `Stderr` too) `writeAsync(x)`, `writeLineAsync(x)`, `writeBytesAsync(bytes)`, `flushAsync()` and `closeAsync()`: the work of the function without `Async`, as a task, with a token that may come last (`read token`; not for `closeAsync`). A call given a borrow, and `closeAsync`, is awaited where it is written. A writer an async function drops without `closeAsync` is written and closed the async way, awaited where it is dropped. In the interpreter the work is done when it is called; the token is looked at first. Compiled too: the work is done on a thread of input and output while the task waits, and what the block of a reader or a writer can do is done in place. A read of an input that can make the program wait (a pipe, a terminal) waits on a thread in both, and a cancel ends the wait; what comes later stays for the next read |
 | Network | `TcpListener.bind("127.0.0.1:8080")` (a number, `localhost`, or `":8080"` for every address of the machine; port 0 lets the system choose, `listener.port()` tells which), `listener.accept()`, `TcpStream.connect("example.com:80")` (the host looked up by name, each of its addresses tried in turn), `stream.receive(ref buffer)` (what has come, at most what the buffer holds; how many, 0 once the other side has let go) and `stream.send(bytes)` (all of them, through a `read` borrow): each gives a `Result` with an `IoError` (`ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong` are the network's). `stream.reader()` gives a `StreamReader` that borrows the stream and reads it through a block of its own (`readLine`, `lines()`, `readText`, `readBytes`, `readSome` and their async versions), while the stream goes on sending; a line or a text longer than 64 KB (`stream.reader(limit)` for another limit) is `LineTooLong`, and so is every read after it. A `receive` while the reader is used again is a compile error, and neither `send` nor `reader()` goes through a `shared` stream. `acceptAsync`, `connectAsync`, `receiveAsync` and `sendAsync` do the same work as a task, awaited where they are written, with a token that may come last; a cancel ends a wait at once and loses nothing that came. A socket sends without a buffer and is closed when it ends. In an async function the calls without `Async` are an error, as for files. In the interpreter a socket that is not ready gives the turn away, and the scheduler waits for the sockets with `poll` when no task can run. Compiled too: a call that has to wait waits with `poll`, and an async one on the loop of the network (epoll, kqueue), on a thread of its own |
 | Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. All three are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
+| Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -264,7 +265,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (267 of 1140 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (272 of 1153 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -434,6 +435,8 @@ hand with no checks):
 | `deflate`: a gigabyte at level 1 through zlib's stream, 64 KB at a time, behind the safe `Deflater` of `examples/zlib` (the C calls zlib through its header) | 1.001 s | 1.001 s | 0.962 s | 1.04 |
 | `clock`: ten million times `start.elapsed()` on the monotonic clock, each compared with the one before (the C calls `clock_gettime`) | 0.191 s | 0.180 s | 0.189 s | 1.01 |
 | `dates`: ten million moments between 1900 and 2200 taken apart into year, month, day, hour, minute, second and the day of the week by the calendar of the language's own module, in SG (the C calls `gmtime_r`) | 0.121 s | 0.295 s | 0.413 s | 0.29 |
+| `rng`: a hundred million numbers from 0 up to 1000 of a `Random` with a fixed seed, added up: xoshiro256\*\* and Lemire's way to a range, in SG in the language's own module (the C is the same algorithm) | 0.112 s | 0.112 s | 0.112 s | 1.00 |
+| `secure`: a gigabyte of the system's random bytes, 64 KB at a time with `SecureRandom.fill` (the C calls `arc4random_buf` on macOS, `getrandom` on Linux) | 0.241 s | 0.242 s | 0.242 s | 1.00 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -763,6 +766,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/diag.rs` | Error and panic messages |
 | `src/source.rs` | The files of a program: which folders are modules and which of them are read. All files are kept as one text, so a position says which file it is in; the language's own module comes last, when a file names one of its types |
 | `src/std/time.sg` | The language's own module `std`, written in SG: `Duration`, `Instant`, `DateTime` and the calendar. Only it calls the two readings of the clock, `Clock.monotonic()` and `Clock.wall()` |
+| `src/std/random.sg` | The same module's random numbers: `Random` (xoshiro256\*\* seeded with SplitMix64) and `SecureRandom`. Only it calls `Entropy.fill`, the random bytes of the system. A program gets each file of `std` when it names one of its types |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
 
 It is a library with a thin command line on top, so that a language server can later reuse the parser and the
@@ -4175,6 +4179,77 @@ come from the slice, and all were approved the same day:
      `cargo test` compiles 267 of 1140 programs, 42 of them under the thread sanitizer, and 14 of 18
      programs of tests; on Linux too, in a container, with the same counts.
 
+Choices made in the seventy-third slice (random numbers). 557, 558 and 561 to 563 were decided before it on
+15 November 2026, with the parts marked as coming from the slice; 556, 559, 560 and 564 to 566 come from the
+slice, and all were approved the same day:
+
+556. **Random numbers are written in SG**, in the language's own module `std`, in a second file
+     (`src/std/random.sg`): a program gets each file of the module when one of its files names a type of
+     that file, `Random` or `SecureRandom` for this one, so a program that measures time does not carry the
+     generator. The random bytes of the system, `Entropy.fill(ref bytes)`, are the compiler's, and only this
+     module can call it; elsewhere `Entropy` is a name that is not there. A program cannot define a type
+     named `Random` or `SecureRandom`. A value of either built field by field or with `Random(...)` is an
+     error whose hint names the functions that make one.
+557. **`Random`** is xoshiro256\*\*, its state of four `ulong`s set from the seed with SplitMix64 (the
+     generator of C#'s `System.Random` since .NET 6). The same seed gives the same numbers in the
+     interpreter, in compiled code and on every system; the algorithm is named in the documents, and a
+     change of it would be a change of the language, written down with the version. Whoever sees some of its
+     numbers can work out the rest, so its comment and the documents send keys and tokens to `SecureRandom`.
+     It is not `Copyable`: a copy would give the same numbers again, without a word. Using a generator after
+     it was moved is an error whose note says so and whose hint is `ref r`. It is not `Formattable`, its
+     fields are its own, and it goes to a task like any value that owns what it holds.
+558. **No generator the program does not make.** The language has no globals, so there is no `Random.Shared`
+     as in C# and no `thread_rng()` as in Rust: `Random.fromSeed(long seed)` gives the numbers of that seed,
+     `Random.fromSystem()` takes 256 bits of the system (drawn again in the case, once in 2^256, of all
+     zeros, where the generator would stand still), and the program lends the generator with `ref`.
+559. **The methods**, all `ref this`: `nextInt(int low, int high)` and `nextLong(long low, long high)` give a
+     number from `low` up to `high`, without `high`, as C#'s `Next` and Rust's `gen_range(low..high)` do,
+     every number as likely as the others. `nextInt` takes Lemire's way: one multiplication of 32 random bits
+     by the size of the range, and a second draw only when the first would favour some numbers. `nextLong`
+     takes the bits of a draw that the range needs and draws again until they fall inside it, since the
+     language has no multiplication of 128 bits; on average fewer than two draws. Neither overflows, also
+     from `long.MinValue` to `long.MaxValue`. `low >= high` is a panic in every build, with both numbers.
+     `nextDouble()` gives one of the 2^53 evenly spaced numbers from 0 up to 1, `nextBool()` the highest bit
+     of a draw, `fill(ref bytes)` eight bytes from each draw, the lowest first (a last part takes a whole
+     draw).
+560. **A change from what was decided before the slice: `nextUlong()`, not `nextLong()`.** The language has
+     no overloads, so `nextLong()` for 64 random bits and `nextLong(low, high)` for a range cannot both be
+     there. The range keeps the name, as `nextInt` has it, and the 64 bits are `nextUlong()`, unsigned like
+     the bits they are (`r.nextUlong().wrappingToLong()` for a `long`). `nextLong()` with nothing is an error
+     whose hint names both. `SecureRandom` has the same names.
+561. **`SecureRandom`**: `SecureRandom.fill(ref bytes)`, `nextUlong()`, `nextInt(low, high)`,
+     `nextLong(low, high)` (the same ways to a range) and, added before the slice,
+     `hexString(int length)`: that many hex digits, each of four random bits (`32` is 128 bits), as .NET 8's
+     `GetHexString`; from the slice, in lower case, an odd length allowed, a length below 0 a panic. The
+     bytes are `arc4random_buf` on macOS and the BSDs and `getrandom` on Linux, which waits only until the
+     system has gathered enough at boot; the interpreter calls the same functions. It never gives an error:
+     if the system ever gave no bytes, the program stops with the panic "the system gave no random bytes",
+     as Go's `crypto/rand` since 1.24 and Rust's `OsRng` do, rather than hand a `Result` that invites
+     `?? 0`. It is a struct without fields that is never made: its functions are called on the type.
+562. **The key of a hash table is drawn the same way** (`sg_entropy`, from the slice), in place of reading
+     `/dev/urandom` on Linux; a system without random bytes now stops with the same panic instead of
+     `abort()`.
+563. **Shuffling and picking wait** (`xs.shuffle(ref r)`, `r.choose(xs)`): without generics of your own they
+     cannot be written in SG, and a built-in method is a case in the checker, the interpreter and compiled
+     code. Fisher-Yates is four lines, and `ok_random_seeded` has it. `nextFloat`, a normal distribution and
+     `split` are left out (Not here yet).
+564. **Measured** (`rng`, a new program): a hundred million numbers from 0 up to 1000 of a generator with a
+     fixed seed, added up, take 0.112 s, 0.112 s in the overflow-checked build, against 0.112 s for the same
+     algorithm written in C (1.00 times); both print the same sum, so the way to a range is the reference's
+     too.
+565. **Measured** (`secure`, a new program): a gigabyte of the system's bytes, 64 KB at a time, takes
+     0.241 s, 0.242 s in the overflow-checked build, against 0.242 s for `arc4random_buf` in C on macOS
+     (1.00 times).
+566. **The tests**: `ok_random_seeded` prints the first numbers of three seeds, which are those of the
+     reference C code of xoshiro256\*\* with SplitMix64, rolls a die sixty thousand times and tests the counts
+     (chi-square), goes to the ends of the ranges (`nextInt(-5, -4)`, `long.MinValue` to `long.MaxValue`),
+     fills an array and a range of a list, shuffles a list, lends the generator with `ref` and moves one into
+     a task; `ok_random_secure` tests what is true of every run (the lengths and digits of `hexString`, two
+     draws that differ, numbers inside their range). Their output is the same in the interpreter and in
+     compiled code. Three `panic_random_` programs show the panics of 559 and 561, and eight `error_random_`
+     programs the errors of 556, 557 and 560. `cargo test` compiles 272 of 1153 programs, 43 of them under the
+     thread sanitizer, and 14 of 18 programs of tests; on Linux too, in a container, with the same counts.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -4320,6 +4395,11 @@ check off.
   inside the language's own module (`Duration.fromSeconds` of a count too large) points at its line there,
   not at the call (549). `Task.delay(ms).wait()` in one line: `wait` takes only a task kept in a variable,
   and the message says the task is borrowed (551).
+- **Of random numbers**: shuffling a list and picking one of its items (`xs.shuffle(ref r)`,
+  `r.choose(xs)`) wait for generics or a built-in method; Fisher-Yates is four lines (`ok_random_seeded`
+  has it). `nextFloat`, numbers of a normal distribution (`nextGaussian`), and `split` to give a task a
+  generator of its own that does not overlap. A panic of `nextInt` given an empty range points at its line
+  in the language's own module, not at the call, like the clock's (549).
 - Freeing a long linked list recurses, the open stack-depth question from the design; here it runs on a 1 GB stack.
   Compiled code frees a chain of `T*` in a loop, but a chain of `shared` values recursively, one call for each.
 
@@ -4442,5 +4522,7 @@ to C by value; zlib's stream, wrapped in a `Deflater`, compresses a gigabyte in 
 same calls in C. The clock is there: `Instant` for measuring, `Duration` for a span of time and `DateTime`
 for the calendar in UTC, written in SG in the language's own module; ten million readings of the clock
 take the time of `clock_gettime` in C, and taking ten million moments apart takes 0.29 times `gmtime_r`.
-The other places in "Slower than C" wait; next are random numbers, folders and the environment, running
-another program, Unicode tables and UDP.
+Random numbers are there too: `Random`, xoshiro256\*\* with a seed, the same numbers everywhere, and
+`SecureRandom`, the system's bytes for keys and tokens; a hundred million numbers in a range, and a
+gigabyte of the system's bytes, take the time of the same code in C. The other places in "Slower than C"
+wait; next are folders and the environment, running another program, Unicode tables and UDP.

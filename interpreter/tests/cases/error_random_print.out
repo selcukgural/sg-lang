@@ -1,0 +1,5 @@
+error: `Random` cannot be written as text: it is not `Formattable`
+  `Random` is a built-in type, and it is not `Formattable`
+  --> error_random_print.sg:3:11
+ 3 |     print(r)
+   |           ^

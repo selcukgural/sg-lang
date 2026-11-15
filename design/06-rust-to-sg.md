@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the seventy-second slice.
+Last brought up to date: 15 November 2026, the seventy-third slice.
 
 ## Functions and variables
 
@@ -286,6 +286,18 @@ Last brought up to date: 15 November 2026, the seventy-second slice.
 | `chrono::Utc.with_ymd_and_hms(...)`, `t.year()`, `t.weekday()`, `t.to_rfc3339()` | `DateTime.utc(...)` (a `Result<DateTime, DateError>`), `t.year()`, `t.dayOfWeek()`, `print(t)` | built | In the language, not a crate; `2026-11-15T09:30:05Z` |
 | `std::thread::sleep(d)` | `var pause = Task.delay(ms)`, `pause.wait()`; `await Task.delay(ms)` in async code | built | Milliseconds as an `int` |
 | `chrono::Local`, `chrono-tz`, `NaiveDate::parse_from_str` | none yet | designed | Time zones and reading a date out of text come later |
+
+## Random numbers
+
+| Rust | SG | Status | Note |
+|---|---|---|---|
+| `rand::rngs::SmallRng::seed_from_u64(42)`, `rand_xoshiro::Xoshiro256StarStar` | `Random.fromSeed(42)` | built | In the language, not a crate: xoshiro256\*\* seeded with SplitMix64, the same numbers for the same seed in the interpreter, in compiled code and on every system |
+| `SmallRng::from_entropy()`, `rand::thread_rng()` | `Random.fromSystem()` | built | No generator kept for the thread: the program makes one and lends it with `ref r` |
+| `rng.gen_range(1..7)`, `rng.gen::<f64>()`, `rng.gen::<bool>()`, `rng.gen::<u64>()`, `rng.fill_bytes(&mut buf)` | `r.nextInt(1, 7)`, `r.nextLong(low, high)`, `r.nextDouble()`, `r.nextBool()`, `r.nextUlong()`, `r.fill(ref buf)` | built | An empty range is a panic, as in Rust. A `Random` is not `Copyable`, where Rust's `SmallRng` is `Clone` |
+| `rand::rngs::OsRng`, `getrandom::getrandom(&mut buf)` | `SecureRandom.fill(ref buf)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextUlong()` | built | Never an error: if the system gave no bytes, a panic, as `OsRng` panics |
+| `hex::encode(bytes)` of random bytes | `SecureRandom.hexString(32)` | built | Lower-case hex digits, four random bits each |
+| `slice.shuffle(&mut rng)`, `slice.choose(&mut rng)` | none yet | designed | Waits for generics or a built-in method; Fisher-Yates is four lines |
+| `rand_distr::Normal` | none yet | designed | |
 
 ## Tests and the tools
 

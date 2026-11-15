@@ -1,0 +1,8 @@
+int pick(read Random r) {
+    return r.nextInt(0, 10)
+}
+
+void main() {
+    var r = Random.fromSeed(1)
+    print(pick(read r))
+}

@@ -1,0 +1,50 @@
+// `SecureRandom`: the random bytes of the system, different on every run, so only what is true of
+// every run is printed. `Random.fromSystem()` is seeded with them.
+
+bool isHex(read string text) {
+    for c in text.chars() {
+        if !(c.isAsciiDigit() || (c >= 'a' && c <= 'f')) {
+            return false
+        }
+    }
+    return true
+}
+
+void main() {
+    for length in 0..5 {
+        var token = SecureRandom.hexString(length)
+        print($"{token.length()} {isHex(read token)}")
+    }
+    var token = SecureRandom.hexString(32)
+    print($"{token.length()} {isHex(read token)}")
+    var long = SecureRandom.hexString(1001)
+    print($"{long.length()} {isHex(read long)}")
+    // 128 bits: two tokens are never the same.
+    print(SecureRandom.hexString(32) != SecureRandom.hexString(32))
+
+    var first = byte[64]
+    var second = byte[64]
+    SecureRandom.fill(ref first)
+    SecureRandom.fill(ref second)
+    print(first != second)
+    var none = List<byte>()
+    SecureRandom.fill(ref none)
+    print(none.length())
+
+    print(SecureRandom.nextUlong() != SecureRandom.nextUlong())
+    var inRange = true
+    var seen = bool[6]
+    for i in 0..1000 {
+        var n = SecureRandom.nextInt(1, 7)
+        inRange = inRange && n >= 1 && n < 7
+        seen[n - 1] = true
+        var m = SecureRandom.nextLong(-3, 3)
+        inRange = inRange && m >= -3 && m < 3
+    }
+    print(inRange)
+    print(seen)
+
+    var a = Random.fromSystem()
+    var b = Random.fromSystem()
+    print(a.nextUlong() != b.nextUlong())
+}

@@ -15,7 +15,7 @@ use std::rc::Rc;
 use crate::ast::*;
 use crate::diag::{nearest, Diag, Span};
 use crate::exhaust;
-use crate::source::{STD_MODULE, STD_TYPES};
+use crate::source::{std_types, STD_MODULE};
 use crate::types::{FloatTy, IntTy, TextIter, Ty};
 
 type Res<T> = Result<T, Diag>;
@@ -30,7 +30,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "CString", "Duration", "Instant", "DateTime", "DayOfWeek", "DateError"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "CString", "Duration", "Instant", "DateTime", "DayOfWeek", "DateError", "Random", "SecureRandom"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -134,7 +134,7 @@ impl Names {
             return Ok(Some(written.to_string()));
         }
         // The types of the language's own module are seen from every module.
-        if STD_TYPES.contains(&written) {
+        if std_types().any(|name| name == written) {
             let full = format!("{STD_MODULE}.{written}");
             if self.known(&full) {
                 return Ok(Some(full));
@@ -188,6 +188,17 @@ fn lacks(diag: Diag, name: &str, interface: &str) -> Diag {
             .note("an `Instant` means something only next to another one")
             .hint("the time between two is a `Duration`, which is written: `start.elapsed()`, `later.since(earlier)`"),
         (short, _) => diag.note(format!("`{short}` is a built-in type, and it is not `{interface}`")),
+    }
+}
+
+/// How a value of a type of the language's own module is made.
+fn std_makers(short: &str) -> &'static str {
+    match short {
+        "Duration" => "`Duration.fromMilliseconds(n)`, `Duration.fromSeconds(n)`",
+        "Instant" => "`Instant.now()`",
+        "Random" => "`Random.fromSeed(seed)` gives the same numbers for the same seed, `Random.fromSystem()` different ones on every run",
+        "SecureRandom" => "nothing is made: the functions are called on the type, `SecureRandom.fill(ref bytes)`, `SecureRandom.hexString(32)`",
+        _ => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
     }
 }
 
@@ -2725,7 +2736,14 @@ impl<'a> Checker<'a> {
                     .related(moved, "after this loop its tasks count as waited for, and the list as used up")
                     .hint(format!("for more tasks, give it a new list first: `{name} = List<...>()`")));
             }
-            return Err(Diag::error(span, format!("`{name}` was moved and can no longer be used")).related(moved, "it was moved here"));
+            let diag = Diag::error(span, format!("`{name}` was moved and can no longer be used")).related(moved, "it was moved here");
+            // A generator is not copied, so that two never give the same numbers.
+            if matches!(peel(&var.declared), Ty::Struct(ty) if ty == &format!("{STD_MODULE}.Random")) {
+                return Err(diag
+                    .note("a `Random` is not `Copyable`: a copy would give the same numbers again")
+                    .hint(format!("lend it where it is needed: `ref {name}`; for numbers of their own, another `Random.fromSeed(seed)` or `Random.fromSystem()`")));
+            }
+            return Err(diag);
         }
         var.unopened = None;
         let id = var.id;
@@ -5300,12 +5318,7 @@ impl<'a> Checker<'a> {
                 if !self.inside(name) {
                     if module_of(name) == STD_MODULE {
                         let short = short_name(name);
-                        let make = match short {
-                            "Duration" => "`Duration.fromMilliseconds(n)`, `Duration.fromSeconds(n)`",
-                            "Instant" => "`Instant.now()`",
-                            _ => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
-                        };
-                        return Err(Diag::error(*name_span, format!("a `{short}` is made by its functions, not field by field")).hint(make));
+                        return Err(Diag::error(*name_span, format!("a `{short}` is made by its functions, not field by field")).hint(std_makers(short)));
                     }
                     if let Some(position) = info.open.iter().position(|open| !open) {
                         let (short, field) = (short_name(name), &info.fields[position].0);
@@ -6810,6 +6823,10 @@ impl<'a> Checker<'a> {
             }
             // `T(args)` is short for `T.create(args)`.
             _ if self.structs.contains_key(name) => {
+                if !self.structs[name].methods.contains_key("create") && module_of(name) == STD_MODULE {
+                    let short = short_name(name);
+                    return Err(Diag::error(name_span, format!("a `{short}` is made by its functions, not with `{short}(...)`")).hint(std_makers(short)));
+                }
                 if !self.structs[name].methods.contains_key("create") {
                     return Err(Diag::error(name_span, format!("`{name}` has no `create` function, so `{name}(...)` cannot build it"))
                         .hint(format!("write the fields: `{name} {{ ... }}`, or add a `create` function to the struct")));
@@ -6992,7 +7009,11 @@ impl<'a> Checker<'a> {
             return Err(Diag::error(name_span, format!("`{name}` works on a value, not on the type `{owner}`"))
                 .hint(format!("call it on a `{owner}` value: `value.{name}(...)`")));
         }
-        self.args(name, args, &sig.params, span)?;
+        let bits = owner == format!("{STD_MODULE}.SecureRandom") && name == "nextLong" && args.is_empty();
+        self.args(name, args, &sig.params, span).map_err(|diag| match bits {
+            true => diag.hint("`SecureRandom.nextUlong()` gives 64 random bits; `nextLong(low, high)` a number in a range"),
+            false => diag,
+        })?;
         *callee = Callee::Static { owner: owner.to_string(), name: name.to_string() };
         Ok(sig.ret.clone())
     }
@@ -7720,6 +7741,12 @@ impl<'a> Checker<'a> {
                     *callee = Callee::Clock(name == "wall");
                     return Ok(Ty::Int(IntTy::Long));
                 }
+                // The random bytes of the system, which only the language's own module reads.
+                if owner == "Entropy" && self.names.module(span) == STD_MODULE && name == "fill" {
+                    self.args(name, args, &[Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))))], span)?;
+                    *callee = Callee::Entropy;
+                    return Ok(Ty::Void);
+                }
                 if owner == "Task" {
                     return self.task_run(name, name_span, args, callee, span, awaited);
                 }
@@ -7983,7 +8010,11 @@ impl<'a> Checker<'a> {
                     }
                     This::Value => {}
                 }
-                self.args(name, args, &sig.params, span)?;
+                let bits = owner == &format!("{STD_MODULE}.Random") && name == "nextLong" && args.is_empty();
+                self.args(name, args, &sig.params, span).map_err(|diag| match bits {
+                    true => diag.hint("`nextUlong()` gives 64 random bits; `nextLong(low, high)` a number in a range"),
+                    false => diag,
+                })?;
                 if is_place && this != This::Value {
                     self.lent_twice(Some((recv, this == This::Ref)), args)?;
                 }

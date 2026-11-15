@@ -1,0 +1,10 @@
+// A hundred million numbers from 0 up to 1000 of a generator with a fixed seed, added up:
+// xoshiro256** and Lemire's way to a range, written in SG in the language's own module.
+void main() {
+    var r = Random.fromSeed(2026)
+    long total = 0
+    for i in 0..100000000 {
+        total += r.nextInt(0, 1000)
+    }
+    print(total)
+}

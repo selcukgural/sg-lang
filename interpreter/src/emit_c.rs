@@ -32,7 +32,9 @@
 //! structs of plain data by value, and types of C declared and never defined, only pointed at. A
 //! `Disposable` struct has a byte that a move sets, and its drop calls its `dispose` first when the
 //! byte is not set (see `struct_decl`). The clock is the language's own module, written in SG and
-//! compiled as a module of the program is; only its two readings are C (see `CLOCK_RUNTIME`). A type
+//! compiled as a module of the program is; only its two readings are C (see `CLOCK_RUNTIME`). So are
+//! random numbers; only the random bytes of the system are C (`sg_entropy`, which the key of a hash
+//! table is drawn with too). A type
 //! alias is the type it names. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
@@ -141,6 +143,10 @@ const RUNTIME: &str = r#"#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !(defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__))
+#include <errno.h>
+#include <sys/random.h>
+#endif
 
 /* The generated code puts every operation in parentheses. */
 #if defined(__clang__)
@@ -730,17 +736,36 @@ SG_COLD static _Noreturn void sg_panicf(const char* loc, const char* format, ...
     fputc('\n', stderr);
     sg_die(loc);
 }
+/* The random bytes of the system: `arc4random_buf` on macOS and the BSDs, `getrandom` on Linux,
+   which waits only until the system has gathered enough at boot and then never fails short of a
+   broken system. If it ever did, the program ends rather than go on with bytes someone could
+   guess. */
+SG_COLD static _Noreturn void sg_no_entropy(const char* loc) {
+    SG_PANIC_START();
+    fputs("panic: the system gave no random bytes\n", stderr);
+    sg_die(loc);
+}
+static void sg_entropy(uint8_t* p, int64_t n, const char* loc) {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+    (void)loc;
+    arc4random_buf(p, (size_t)n);
+#else
+    while (n > 0) {
+        ssize_t got = getrandom(p, (size_t)n, 0);
+        if (got > 0) {
+            p += got;
+            n -= got;
+        } else if (!(got < 0 && errno == EINTR)) {
+            sg_no_entropy(loc);
+        }
+    }
+#endif
+}
 /* Hash tables. The hash is SipHash-1-3 with a key drawn when the program starts, so that
    nobody who chooses the keys can make them all land in one place. */
 static uint64_t sg_seed[2];
 static void sg_seed_init(void) {
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
-    arc4random_buf(sg_seed, sizeof sg_seed);
-#else
-    FILE* source = fopen("/dev/urandom", "rb");
-    if (!source || fread(sg_seed, sizeof sg_seed, 1, source) != 1) abort();
-    fclose(source);
-#endif
+    sg_entropy((uint8_t*)sg_seed, sizeof sg_seed, "  when the program started\n");
 }
 #define SG_ROTL(x, b) (((x) << (b)) | ((x) >> (64 - (b))))
 #define SG_SIPROUND \
@@ -5622,7 +5647,7 @@ impl<'a> Emitter<'a> {
             return Some(name.to_string());
         }
         // So are the types of the language's own module.
-        if crate::source::STD_TYPES.contains(&name) {
+        if crate::source::std_types().any(|std| std == name) {
             let full = format!("{}.{name}", crate::source::STD_MODULE);
             if known(&full) {
                 return Some(full);
@@ -11159,6 +11184,17 @@ impl<'a> Emitter<'a> {
                 Callee::Clock(wall) => {
                     self.made.insert("clock".to_string());
                     Ok(format!("sg_clock({})", if *wall { "CLOCK_REALTIME" } else { "CLOCK_MONOTONIC" }))
+                }
+                // `Entropy.fill(ref bytes)`: the system's random bytes into the slice.
+                Callee::Entropy => {
+                    let want = Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+                    let before = self.mark();
+                    let value = self.first_as(&args[0], &want, head)?;
+                    let part = self.part(&args[0], &want, value, before);
+                    let (values, names) = self.in_order(vec![part])?;
+                    let loc = self.loc(expr.span);
+                    let temp = self.temp();
+                    Ok(sequence(&names, format!("({{ __auto_type {temp} = {}; sg_entropy({temp}.ptr, {temp}.len, {loc}); }})", values[0])))
                 }
                 Callee::Memory(MemoryCall::Copy) => {
                     let Ty::Raw(item) = args[0].ty.strip_borrow() else { unreachable!("the checker gives `Memory.copy` raw pointers") };

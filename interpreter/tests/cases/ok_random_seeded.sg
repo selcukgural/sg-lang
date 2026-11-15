@@ -1,0 +1,118 @@
+// `Random`: a generator that a seed sets gives the same numbers for that seed, in the interpreter,
+// in compiled code and on every system. The first numbers of three seeds are those of the
+// reference code of xoshiro256** seeded with SplitMix64.
+
+void firsts(long seed) {
+    var r = Random.fromSeed(seed)
+    print($"{seed}: {r.nextUlong()} {r.nextUlong()} {r.nextUlong()}")
+}
+
+// Lent with `ref`: the numbers it gives move the caller's generator on.
+int roll(ref Random r) {
+    return r.nextInt(1, 7)
+}
+
+// Fisher-Yates: each order of the items as likely as the others.
+void shuffle(ref List<string> items, ref Random r) {
+    var i = items.length() - 1
+    while i > 0 {
+        var j = r.nextLong(0, (long)i + 1)
+        var kept = items[i].clone()
+        items[i] = items[(nint)j].clone()
+        items[(nint)j] = kept
+        i -= 1
+    }
+}
+
+int draw(Random r) {
+    var total = 0
+    for i in 0..1000 {
+        total += r.nextInt(0, 10)
+    }
+    return total
+}
+
+void main() {
+    firsts(42)
+    firsts(-1)
+    firsts(0)
+
+    // A number in a range, each as likely as the others: sixty thousand rolls of a die.
+    var r = Random.fromSeed(7)
+    var counts = int[6]
+    for i in 0..60000 {
+        counts[roll(ref r) - 1] += 1
+    }
+    print(counts)
+    var chi = 0.0
+    for count in counts {
+        var off = (double)(count - 10000)
+        chi += off * off / 10000.0
+    }
+    // Five degrees of freedom: above 20.5 once in a thousand runs.
+    print(chi < 20.5)
+
+    // The ends of the ranges.
+    var lowest = true
+    for i in 0..100 {
+        lowest = lowest && r.nextInt(-5, -4) == -5
+    }
+    print(lowest)
+    var whole = r.nextInt(int.MinValue, int.MaxValue)
+    print(whole >= int.MinValue && whole < int.MaxValue)
+    var wide = r.nextLong(long.MinValue, long.MaxValue)
+    print(wide < long.MaxValue)
+    var top = true
+    for i in 0..100 {
+        top = top && r.nextLong(long.MaxValue - 1, long.MaxValue) == long.MaxValue - 1
+    }
+    print(top)
+    var small = r.nextLong(long.MinValue, long.MinValue + 3)
+    print(small >= long.MinValue && small < long.MinValue + 3)
+
+    // Fractions from 0 up to 1, and a coin.
+    var inside = true
+    var sum = 0.0
+    var heads = 0
+    for i in 0..100000 {
+        var x = r.nextDouble()
+        inside = inside && x >= 0.0 && x < 1.0
+        sum += x
+        if r.nextBool() {
+            heads += 1
+        }
+    }
+    print(inside)
+    print(sum / 100000.0 > 0.49 && sum / 100000.0 < 0.51)
+    print(heads > 49000 && heads < 51000)
+
+    // Bytes, eight from each draw, the lowest first.
+    var seeded = Random.fromSeed(42)
+    var bytes = byte[10]
+    seeded.fill(ref bytes)
+    print(bytes)
+    var again = Random.fromSeed(42)
+    print(again.nextUlong().toLittleEndian())
+    var part = List<byte>()
+    for i in 0..4 {
+        part.add(0)
+    }
+    seeded.fill(ref part[1..3])
+    print(part)
+
+    var names = List<string>()
+    names.add("ada")
+    names.add("bea")
+    names.add("cem")
+    names.add("dua")
+    names.add("eda")
+    var mixer = Random.fromSeed(2026)
+    shuffle(ref names, ref mixer)
+    print(names)
+
+    // A generator moved into a task gives there what it would have given here.
+    var one = Random.fromSeed(5)
+    var two = Random.fromSeed(5)
+    var task = Task.run(draw, one)
+    print(task.wait() == draw(two))
+}

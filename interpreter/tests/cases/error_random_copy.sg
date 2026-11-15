@@ -1,0 +1,6 @@
+void main() {
+    var r = Random.fromSeed(1)
+    var copy = r
+    print(r.nextInt(0, 10))
+    print(copy.nextInt(0, 10))
+}

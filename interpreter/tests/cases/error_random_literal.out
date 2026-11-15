@@ -1,0 +1,5 @@
+error: a `Random` is made by its functions, not field by field
+  --> error_random_literal.sg:2:13
+ 2 |     var r = Random { s0 = 1, s1 = 2, s2 = 3, s3 = 4 }
+   |             ^^^^^^
+  hint: `Random.fromSeed(seed)` gives the same numbers for the same seed, `Random.fromSystem()` different ones on every run

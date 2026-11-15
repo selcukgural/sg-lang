@@ -1,0 +1,211 @@
+// Random numbers: `Random`, a fast generator that a seed sets, which gives the same numbers for the
+// same seed everywhere, and `SecureRandom`, the random bytes of the system, for keys and tokens.
+// Written in SG and brought along by the language like the clock; only the reading of the
+// system's random bytes (`Entropy.fill`) is the compiler's own, and only this module can call it.
+
+// A generator of numbers that look random: xoshiro256**, its state set from the seed with
+// SplitMix64, as C#'s `System.Random` does. The same seed gives the same numbers in the
+// interpreter, in compiled code and on every system. Whoever can see some of them can work out
+// the rest, so it is not for a password, a key or a token: that is what `SecureRandom` is for.
+// It is not `Copyable`, because a copy would give the same numbers again; it is lent with `ref`.
+public struct Random {
+    ulong s0
+    ulong s1
+    ulong s2
+    ulong s3
+
+    // A generator whose numbers the seed decides.
+    public Random fromSeed(long seed) {
+        var state = seed.wrappingToUlong()
+        var a = splitMix(ref state)
+        var b = splitMix(ref state)
+        var c = splitMix(ref state)
+        var d = splitMix(ref state)
+        return Random { s0 = a, s1 = b, s2 = c, s3 = d }
+    }
+
+    // A generator seeded with 256 random bits of the system: different on every run.
+    public Random fromSystem() {
+        var bytes = byte[32]
+        // The generator stands still on a state of zeros; the system gives one once in 2^256.
+        while true {
+            Entropy.fill(ref bytes)
+            var a = ulong.fromLittleEndian(bytes[0..8])
+            var b = ulong.fromLittleEndian(bytes[8..16])
+            var c = ulong.fromLittleEndian(bytes[16..24])
+            var d = ulong.fromLittleEndian(bytes[24..32])
+            if (a | b | c | d) != 0 {
+                return Random { s0 = a, s1 = b, s2 = c, s3 = d }
+            }
+        }
+    }
+
+    // 64 random bits.
+    public ulong nextUlong(ref this) {
+        var result = rotate(this.s1.wrappingMultiply(5), 7).wrappingMultiply(9)
+        var t = this.s1 << 17
+        this.s2 = this.s2 ^ this.s0
+        this.s3 = this.s3 ^ this.s1
+        this.s1 = this.s1 ^ this.s2
+        this.s0 = this.s0 ^ this.s3
+        this.s2 = this.s2 ^ t
+        this.s3 = rotate(this.s3, 45)
+        return result
+    }
+
+    // A number from `low` up to `high`, without `high`, every one as likely as the others
+    // (Lemire's way: one multiplication, and a second draw only when the first would favour
+    // some numbers). A panic when there is no number between them.
+    public int nextInt(ref this, int low, int high) {
+        if low >= high {
+            panic($"`nextInt` is given no number to choose from: {low} up to {high}, without {high}")
+        }
+        ulong range = ((long)high - (long)low).wrappingToUlong()
+        var m = (this.nextUlong() >> 32) * range
+        if (m & 0xffff_ffff) < range {
+            var floor = (0x1_0000_0000 - range) % range
+            while (m & 0xffff_ffff) < floor {
+                m = (this.nextUlong() >> 32) * range
+            }
+        }
+        return (int)((long)low + (long)(m >> 32))
+    }
+
+    // The same for a `long`: the bits of a draw that the range needs, drawn again until they fall
+    // inside it, so every number is as likely as the others.
+    public long nextLong(ref this, long low, long high) {
+        if low >= high {
+            panic($"`nextLong` is given no number to choose from: {low} up to {high}, without {high}")
+        }
+        var range = high.wrappingSubtract(low).wrappingToUlong()
+        var mask = spread(range - 1)
+        var x = this.nextUlong() & mask
+        while x >= range {
+            x = this.nextUlong() & mask
+        }
+        return low.wrappingAdd(x.wrappingToLong())
+    }
+
+    // A number from 0 up to 1, without 1: one of the 2^53 evenly spaced `double`s there.
+    public double nextDouble(ref this) {
+        return (double)(this.nextUlong() >> 11) * (1.0 / 9007199254740992.0)
+    }
+
+    public bool nextBool(ref this) {
+        return this.nextUlong() >> 63 == 1
+    }
+
+    // Every byte of `target`, eight from each draw, the lowest first.
+    public void fill(ref this, ref byte[] target) {
+        nint at = 0
+        var count = target.length()
+        while at < count {
+            var bytes = this.nextUlong().toLittleEndian()
+            nint i = 0
+            while i < 8 && at < count {
+                target[at] = bytes[i]
+                at += 1
+                i += 1
+            }
+        }
+    }
+}
+
+// The random bytes of the system (`arc4random_buf` on macOS and the BSDs, `getrandom` on Linux):
+// nobody can work them out from the ones before, so they are what a key, a token or a password is
+// made of. The system does not fail to give them; if it ever did, the program would end with a
+// panic rather than go on with numbers someone could guess.
+public struct SecureRandom {
+    // Every byte of `target`.
+    public void fill(ref byte[] target) {
+        Entropy.fill(ref target)
+    }
+
+    // 64 random bits.
+    public ulong nextUlong() {
+        var bytes = byte[8]
+        Entropy.fill(ref bytes)
+        return ulong.fromLittleEndian(bytes[..])
+    }
+
+    // A number from `low` up to `high`, without `high`, every one as likely as the others; a
+    // panic when there is no number between them.
+    public int nextInt(int low, int high) {
+        if low >= high {
+            panic($"`nextInt` is given no number to choose from: {low} up to {high}, without {high}")
+        }
+        ulong range = ((long)high - (long)low).wrappingToUlong()
+        var m = (SecureRandom.nextUlong() >> 32) * range
+        if (m & 0xffff_ffff) < range {
+            var floor = (0x1_0000_0000 - range) % range
+            while (m & 0xffff_ffff) < floor {
+                m = (SecureRandom.nextUlong() >> 32) * range
+            }
+        }
+        return (int)((long)low + (long)(m >> 32))
+    }
+
+    public long nextLong(long low, long high) {
+        if low >= high {
+            panic($"`nextLong` is given no number to choose from: {low} up to {high}, without {high}")
+        }
+        var range = high.wrappingSubtract(low).wrappingToUlong()
+        var mask = spread(range - 1)
+        var x = SecureRandom.nextUlong() & mask
+        while x >= range {
+            x = SecureRandom.nextUlong() & mask
+        }
+        return low.wrappingAdd(x.wrappingToLong())
+    }
+
+    // `length` hex digits (`0`-`9`, `a`-`f`), each of four random bits: a token that can go in a
+    // link or a file name. 32 digits are 128 bits.
+    public string hexString(int length) {
+        if length < 0 {
+            panic($"`hexString` is given a length below 0: {length}")
+        }
+        var text = string.withCapacity((nint)length)
+        var bytes = byte[32]
+        var digits = "0123456789abcdef"
+        var left = length
+        while left > 0 {
+            Entropy.fill(ref bytes)
+            nint i = 0
+            while i < 32 && left > 0 {
+                text.write((char)digits[(nint)(bytes[i] >> 4)])
+                left -= 1
+                if left > 0 {
+                    text.write((char)digits[(nint)(bytes[i] & 15)])
+                    left -= 1
+                }
+                i += 1
+            }
+        }
+        return text
+    }
+}
+
+// The next number of SplitMix64, which spreads a seed over the state of the generator.
+ulong splitMix(ref ulong state) {
+    state = state.wrappingAdd(0x9e37_79b9_7f4a_7c15)
+    var z = state
+    z = (z ^ (z >> 30)).wrappingMultiply(0xbf58_476d_1ce4_e5b9)
+    z = (z ^ (z >> 27)).wrappingMultiply(0x94d0_49bb_1331_11eb)
+    return z ^ (z >> 31)
+}
+
+ulong rotate(ulong x, int k) {
+    return (x << k) | (x >> (64 - k))
+}
+
+// Every bit below the highest one that is set: the smallest mask that holds the number.
+ulong spread(ulong x) {
+    var m = x
+    m = m | (m >> 1)
+    m = m | (m >> 2)
+    m = m | (m >> 4)
+    m = m | (m >> 8)
+    m = m | (m >> 16)
+    m = m | (m >> 32)
+    return m
+}

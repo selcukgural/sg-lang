@@ -1,0 +1,10 @@
+error: `r` was moved and can no longer be used
+  a `Random` is not `Copyable`: a copy would give the same numbers again
+  --> error_random_copy.sg:4:11
+ 4 |     print(r.nextInt(0, 10))
+   |           ^
+  it was moved here:
+  --> error_random_copy.sg:3:16
+ 3 |     var copy = r
+   |                ^
+  hint: lend it where it is needed: `ref r`; for numbers of their own, another `Random.fromSeed(seed)` or `Random.fromSystem()`

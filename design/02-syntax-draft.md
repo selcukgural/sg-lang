@@ -1385,6 +1385,31 @@ A `Duration` is a `long` of nanoseconds and may be negative; its arithmetic foll
 panic in a debug build, wrapping in a release build). A `DateTime` holds the years 1677 to 2262. Time zones,
 reading a date out of text and formats of your own come later; `Task.delay` takes its milliseconds as an `int`.
 
+### Random numbers
+
+Two types, written in SG in the same module as the clock. `Random` is fast and set by a seed: the same seed gives
+the same numbers in the interpreter, in compiled code and on every system, which is what a test or a simulation
+needs. `SecureRandom` reads the random bytes of the system, which nobody can work out, for a key or a token.
+
+```
+var r = Random.fromSeed(42)                      // or Random.fromSystem(): different on every run
+var die = r.nextInt(1, 7)                        // 1 to 6: the upper end is not included
+var x = r.nextDouble()                           // from 0 up to 1
+var coin = r.nextBool()
+roll(ref r)                                      // lent with ref: there is no global generator
+var none = r.nextInt(5, 5)                       // panic: no number to choose from
+var other = r                                    // a move, not a copy: r cannot be used after it
+
+var token = SecureRandom.hexString(32)           // 32 hex digits, 128 bits
+var key = byte[32]
+SecureRandom.fill(ref key)
+```
+
+A `Random` is not `Copyable`, because a copy would give the same numbers again. Its algorithm is xoshiro256\*\*,
+seeded with SplitMix64; whoever sees some of its numbers can work out the rest, so it is never for a secret.
+`SecureRandom` does not return an error: if the system ever gave no bytes, the program stops with a panic rather
+than go on with bytes someone could guess. Shuffling a list and picking one of its items come later.
+
 ### Modules and visibility
 
 A folder is a module; there is no declaration in the file. A name without `public` stays inside the module; the rule

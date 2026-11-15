@@ -1,0 +1,4 @@
+void main() {
+    var r = Random.fromSeed(1)
+    print(r.nextLong())
+}

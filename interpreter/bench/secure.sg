@@ -1,0 +1,13 @@
+// A gigabyte of the system's random bytes, read 64 KB at a time with `SecureRandom.fill`.
+void main() {
+    var block = List<byte>()
+    for i in 0..65536 {
+        block.add(0)
+    }
+    long filled = 0
+    for i in 0..16384 {
+        SecureRandom.fill(ref block)
+        filled += (long)block.length()
+    }
+    print(filled)
+}

@@ -1,0 +1,4 @@
+error: `Random` keeps `s0` to itself: its methods give what it holds
+  --> error_random_field.sg:3:13
+ 3 |     print(r.s0)
+   |             ^^

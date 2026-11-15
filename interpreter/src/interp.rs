@@ -125,6 +125,39 @@ enum Timer {
     Cancel(std::rc::Weak<RefCell<Cancel>>),
 }
 
+/// `Entropy.fill(ref bytes)`: the random bytes of the system, as compiled code reads them
+/// (`arc4random_buf` on macOS and the BSDs, `getrandom` on Linux). `false` if the system gave none.
+fn entropy(bytes: &mut [u8]) -> bool {
+    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
+    {
+        extern "C" {
+            fn arc4random_buf(buf: *mut std::ffi::c_void, len: usize);
+        }
+        // SAFETY: the buffer holds `len` bytes.
+        unsafe { arc4random_buf(bytes.as_mut_ptr().cast(), bytes.len()) };
+        true
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd")))]
+    {
+        extern "C" {
+            fn getrandom(buf: *mut std::ffi::c_void, len: usize, flags: std::ffi::c_uint) -> isize;
+        }
+        let mut got = 0;
+        while got < bytes.len() {
+            // SAFETY: the rest of the buffer holds `len - got` bytes.
+            let n = unsafe { getrandom(bytes[got..].as_mut_ptr().cast(), bytes.len() - got, 0) };
+            if n > 0 {
+                got += n as usize;
+            } else if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 /// `Clock.monotonic()` and `Clock.wall()`: the real clocks, not the clock of the run, so that
 /// what a program measures is the time it took. Read with `clock_gettime`, as compiled code reads
 /// them, so that the monotonic clock is the same one (Rust's own stops while macOS sleeps).
@@ -3206,6 +3239,17 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 Callee::Io(call) => self.io(*call, args, frame),
                 Callee::Clock(wall) => Ok(Value::Int(IntTy::Long, clock(*wall))),
+                Callee::Entropy => {
+                    let cells = cells_of(&owned(self.expr(&args[0], frame)?));
+                    let mut bytes = vec![0u8; cells.len()];
+                    if !entropy(&mut bytes) {
+                        return Err(Diag::panic(expr.span, "the system gave no random bytes").into());
+                    }
+                    for (slot, byte) in cells.iter().zip(&bytes) {
+                        *slot.borrow_mut() = Value::Int(IntTy::Byte, i128::from(*byte));
+                    }
+                    Ok(Value::Void)
+                }
                 Callee::Memory(call) => self.memory(*call, args, expr.span, frame),
                 Callee::Stream(call) => self.stream(*call, recv, args, None, frame),
                 Callee::Net(call) => self.net(*call, recv, args, None, expr.span, frame),

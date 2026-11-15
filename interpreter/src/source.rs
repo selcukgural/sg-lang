@@ -15,11 +15,17 @@ use crate::lexer::{lex, Tok};
 /// `DateTime`): seen from every module with nothing written. No folder of a program has this name.
 pub const STD_MODULE: &str = "std";
 
-/// The types of the language's own modules, each with the module's text: a program that names
-/// one gets the module.
-pub const STD_TYPES: &[&str] = &["Duration", "Instant", "DateTime", "DayOfWeek", "DateError"];
+/// The files of the language's own module, each with the types it brings: a program that names
+/// one of them gets the file.
+const STD_FILES: &[(&str, &str, &[&str])] = &[
+    ("time.sg", include_str!("std/time.sg"), &["Duration", "Instant", "DateTime", "DayOfWeek", "DateError"]),
+    ("random.sg", include_str!("std/random.sg"), &["Random", "SecureRandom"]),
+];
 
-const STD_TIME: &str = include_str!("std/time.sg");
+/// Every type of the language's own module.
+pub fn std_types() -> impl Iterator<Item = &'static str> {
+    STD_FILES.iter().flat_map(|(_, _, types)| types.iter().copied())
+}
 
 pub struct SourceFile {
     /// As it is written in messages.
@@ -49,15 +55,22 @@ impl Sources {
         sources
     }
 
-    /// The language's own module, after the files of the program, when one of them names a type
-    /// of it.
+    /// The files of the language's own module, after the files of the program, each when one of
+    /// them names a type of it.
     fn add_std(&mut self) {
-        let named = self.files.iter().any(|file| {
-            let Ok(toks) = lex(&self.text, Span::new(file.start, file.end), false) else { return false };
-            toks.iter().any(|tok| matches!(&tok.tok, Tok::Ident(name) if STD_TYPES.contains(&name.as_str())))
-        });
-        if named {
-            self.add("<built-in>/std/time.sg".to_string(), STD_MODULE, STD_TIME, false);
+        let mut named = HashSet::new();
+        for file in &self.files {
+            let Ok(toks) = lex(&self.text, Span::new(file.start, file.end), false) else { continue };
+            for tok in toks {
+                if let Tok::Ident(name) = tok.tok {
+                    named.insert(name);
+                }
+            }
+        }
+        for (file, text, types) in STD_FILES {
+            if types.iter().any(|name| named.contains(*name)) {
+                self.add(format!("<built-in>/std/{file}"), STD_MODULE, text, false);
+            }
         }
     }
 

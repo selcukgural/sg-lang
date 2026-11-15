@@ -234,6 +234,9 @@ pub enum Callee {
     /// monotonic clock and of the clock of the system since 1970, as a `long`. Only the
     /// language's own module calls them.
     Clock(bool),
+    /// `Entropy.fill(ref bytes)`: random bytes of the system into a `ref byte[]`. Only the
+    /// language's own module calls it.
+    Entropy,
     /// `slot.take()`: gives the value and leaves `null`.
     Take,
     /// `slot.replace(value)`: gives the old value and leaves the new one.

@@ -1,0 +1,4 @@
+panic: `hexString` is given a length below 0: -1
+  --> <built-in>/std/random.sg:165:13
+ 165 |             panic($"`hexString` is given a length below 0: {length}")
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,4 @@
+void main() {
+    var r = Random { s0 = 1, s1 = 2, s2 = 3, s3 = 4 }
+    print(r.nextInt(0, 10))
+}

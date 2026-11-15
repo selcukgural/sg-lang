@@ -1,0 +1,4 @@
+panic: `nextInt` is given no number to choose from: 5 up to 5, without 5
+  --> <built-in>/std/random.sg:61:13
+ 61 |             panic($"`nextInt` is given no number to choose from: {low} up to {high}, without {high}")
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

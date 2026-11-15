@@ -1,0 +1,4 @@
+void main() {
+    var bytes = byte[8]
+    Entropy.fill(ref bytes)
+}

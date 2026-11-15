@@ -1,0 +1,5 @@
+error: `nextInt` takes `ref this`, but this value is reached through a `read` borrow
+  --> error_random_read.sg:2:12
+ 2 |     return r.nextInt(0, 10)
+   |            ^
+  hint: take the value as `ref` instead of `read`
