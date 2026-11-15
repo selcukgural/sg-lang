@@ -4,6 +4,6 @@ panic: division by zero: 10 / 0
  2 |     return 10 / x
    |            ^^^^^^
   in the task `divide` started here:
-  --> panic_task.sg:7:15
- 7 |     var bad = Task.run(divide, 0)
+  --> panic_task.sg:8:15
+ 8 |     var bad = Task.run(divide, 0)
    |               ^^^^^^^^^^^^^^^^^^^

@@ -134,6 +134,27 @@ fn leak_check_sees_a_leak(work: &Path) {
     );
 }
 
+/// The thread sanitizer tried on a C program that races on purpose: a check that does not see
+/// that race, or cannot be built, must not let the programs on several threads pass.
+fn race_check_sees_a_race(work: &Path) {
+    let stem = format!("races-on-purpose-{:?}", std::thread::current().id()).replace(['(', ')'], "");
+    let (racy_c, racy) = (work.join(format!("{stem}.c")), work.join(&stem));
+    std::fs::write(
+        &racy_c,
+        "#include <pthread.h>\n#include <stdio.h>\nstatic long count = 0;\nstatic void* add(void* p) { (void)p; for (int i = 0; i < 1000; i++) count++; return NULL; }\n\
+         int main(void) { pthread_t a, b; pthread_create(&a, NULL, add, NULL); pthread_create(&b, NULL, add, NULL); pthread_join(a, NULL); pthread_join(b, NULL); printf(\"%ld\\n\", count); return 0; }\n",
+    )
+    .unwrap();
+    let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-g", "-fsanitize=thread", "-o"]).arg(&racy).arg(&racy_c).arg("-pthread").output().unwrap();
+    assert!(cc.status.success(), "the C compiler cannot build a program under the thread sanitizer:\n{}", String::from_utf8_lossy(&cc.stderr));
+    let run = std::process::Command::new(&racy).output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&run.stderr).contains("ThreadSanitizer: data race"),
+        "the thread sanitizer does not see a race that is there, so it cannot be trusted:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 /// Programs with modules. `tests/modules` holds a few modules (folders) and, next to them,
 /// programs of one file that use them. A folder with a `main.sg` is a program of its own: it
 /// is run as a folder, and so are its tests.
@@ -251,7 +272,9 @@ fn compiled() {
     // `SG_NO_SANITIZERS=1` skips the second, slower build of every program.
     let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
     let mut sanitized = 0;
+    let mut raced = 0;
     let mut compiled = 0;
+    let mut ended_in_panic = 0;
     let mut failures = Vec::new();
     // The programs to look at for leaks: the name, the program, the program under the sanitizers.
     // The programs to look at for leaks: the name, the program, the program under the
@@ -282,8 +305,10 @@ fn compiled() {
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         let stem = if with_modules { format!("modules-{stem}") } else { stem };
         let (c_file, binary) = (work.join(format!("{stem}.c")), work.join(&stem));
+        // A program with tasks or `locked` values runs on several threads.
+        let threads = code.contains("#define SG_THREADS 1");
         std::fs::write(&c_file, code).unwrap();
-        let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-ffp-contract=off", "-o"]).arg(&binary).arg(&c_file).arg("-lm").output().unwrap();
+        let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-ffp-contract=off", "-o"]).arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
         if !cc.status.success() {
             failures.push(format!("--- {name}: the C compiler rejected it\n{}", String::from_utf8_lossy(&cc.stderr)));
             continue;
@@ -293,8 +318,11 @@ fn compiled() {
         let run_given = |binary: &Path| {
             let _ = std::fs::remove_dir_all(&given.dir);
             std::fs::create_dir_all(&given.dir).unwrap();
+            // Leaks are looked at on their own below (Linux's address sanitizer would look at
+            // the end of every run and add its report to the output).
             let mut child = std::process::Command::new(binary)
                 .args(&given.args)
+                .env("ASAN_OPTIONS", "detect_leaks=0")
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -321,7 +349,21 @@ fn compiled() {
             std::fs::write(&golden, &actual).unwrap();
         }
         let expected = std::fs::read_to_string(&golden).unwrap_or_default();
-        if actual != expected {
+        // Tasks that print in compiled code do so in an order of their own: where the program
+        // says so in its `.unordered` file, the lines are compared in any order.
+        let unordered = path.with_extension("unordered").exists();
+        let same = |actual: &str| match unordered {
+            true => {
+                let lines = |text: &str| {
+                    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+                    lines.sort();
+                    lines
+                };
+                lines(actual) == lines(&expected)
+            }
+            false => actual == expected,
+        };
+        if !same(&actual) {
             failures.push(format!("--- {name}\nexpected:\n{expected}\nactual:\n{actual}"));
         }
         compiled += 1;
@@ -334,19 +376,54 @@ fn compiled() {
                 .args(["-std=c11", "-O1", "-g", "-ffp-contract=off", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-o"])
                 .arg(&checked_binary)
                 .arg(&c_file)
-                .arg("-lm")
+                .arg("-lm").arg("-pthread")
                 .output()
                 .unwrap();
             if cc.status.success() {
                 let run = run_given(&checked_binary);
                 let actual = shown(&run);
-                if actual != expected {
+                if !same(&actual) {
                     failures.push(format!("--- {name}, under the sanitizers\nexpected:\n{expected}\nactual:\n{actual}"));
                 }
                 sanitized += 1;
-                built.push((name.clone(), binary.clone(), checked_binary, given.args.clone(), path.with_extension("in")));
+                // A panic does not unwind (the row "Copy and cleanup"): what the program owned
+                // is given back by the system, not freed, so it is not looked at for leaks.
+                // Whether a pointer to it is still in a register when the process ends is up to
+                // the C compiler, and a leak tool would judge that.
+                if String::from_utf8_lossy(&run.stderr).lines().any(|line| line.starts_with("panic: ")) {
+                    ended_in_panic += 1;
+                } else {
+                    built.push((name.clone(), binary.clone(), checked_binary, given.args.clone(), path.with_extension("in")));
+                }
             } else {
                 failures.push(format!("--- {name}: the C compiler rejected it under the sanitizers\n{}", String::from_utf8_lossy(&cc.stderr)));
+            }
+        }
+
+        // A program on several threads once more under the thread sanitizer: two threads that
+        // reach the same memory without a lock between them would stop it here.
+        if sanitizers && threads {
+            if raced == 0 {
+                race_check_sees_a_race(&work);
+            }
+            let raced_binary = work.join(format!("{stem}-tsan"));
+            let cc = std::process::Command::new("cc")
+                .args(["-std=c11", "-O1", "-g", "-ffp-contract=off", "-fsanitize=thread", "-o"])
+                .arg(&raced_binary)
+                .arg(&c_file)
+                .arg("-lm")
+                .arg("-pthread")
+                .output()
+                .unwrap();
+            if cc.status.success() {
+                let run = run_given(&raced_binary);
+                let actual = shown(&run);
+                if !same(&actual) {
+                    failures.push(format!("--- {name}, under the thread sanitizer\nexpected:\n{expected}\nactual:\n{actual}"));
+                }
+                raced += 1;
+            } else {
+                failures.push(format!("--- {name}: the C compiler rejected it under the thread sanitizer\n{}", String::from_utf8_lossy(&cc.stderr)));
             }
         }
     }
@@ -381,8 +458,11 @@ fn compiled() {
     }
     assert!(failures.is_empty(), "{} compiled program(s) differ:\n{}", failures.len(), failures.join("\n"));
     assert!(compiled >= 10, "only {compiled} programs were compiled: the back end skips too much");
-    assert!(!sanitizers || leak_free == compiled, "only {leak_free} of {compiled} compiled programs were looked at for leaks");
-    eprintln!("{compiled} of {total} programs compiled through C and gave the same output; {sanitized} also ran clean under the sanitizers; {leak_free} left no memory behind");
+    assert!(!sanitizers || leak_free + ended_in_panic == compiled, "only {leak_free} of {compiled} compiled programs were looked at for leaks ({ended_in_panic} ended in a panic)");
+    assert!(!sanitizers || raced > 0, "no program on several threads ran under the thread sanitizer");
+    eprintln!(
+        "{compiled} of {total} programs compiled through C and gave the same output; {sanitized} also ran clean under the sanitizers, {raced} on several threads under the thread sanitizer; {leak_free} of those that did not end in a panic left no memory behind ({ended_in_panic} ended in one)"
+    );
 }
 
 /// The test command on compiled code. Every program of tests is built into the program that
@@ -447,7 +527,7 @@ fn compiled_tests() {
         }
         let mut rejected = false;
         for (binary, flags) in &builds {
-            let cc = std::process::Command::new("cc").args(["-std=c11", "-ffp-contract=off"]).args(*flags).arg("-o").arg(binary).arg(&c_file).arg("-lm").output().unwrap();
+            let cc = std::process::Command::new("cc").args(["-std=c11", "-ffp-contract=off"]).args(*flags).arg("-o").arg(binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
             if !cc.status.success() {
                 failures.push(format!("--- {name}: the C compiler rejected it ({})\n{}", flags.join(" "), String::from_utf8_lossy(&cc.stderr)));
                 rejected = true;

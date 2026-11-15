@@ -1,0 +1,65 @@
+// A `lock` block left by `return`, `break` and `continue` gives the value back: the next
+// `lock` of it would wait forever otherwise. Three values locked together, and a
+// `shared locked T?` locked after a test.
+int firstBig(shared locked List<int> xs, int limit) {
+    lock xs as items {
+        for x in read items {
+            if x > limit {
+                return x
+            }
+        }
+    }
+    return -1
+}
+
+void three(shared locked int a, shared locked int b, shared locked int c) {
+    lock c as z, a as x, b as y {
+        x += 1
+        y += 2
+        z += 3
+    }
+}
+
+void main() {
+    var xs = new shared locked List<int>()
+    lock xs as items {
+        items.add(1)
+        items.add(5)
+        items.add(9)
+    }
+    print(firstBig(share xs, 4))
+    print(firstBig(share xs, 6))
+    for i in 0..4 {
+        lock xs as items {
+            if i == 1 {
+                continue
+            }
+            if i == 3 {
+                break
+            }
+            items.add(i)
+        }
+    }
+    lock xs as items {
+        print(items)
+    }
+
+    var a = new shared locked 0
+    var b = new shared locked 0
+    var c = new shared locked 0
+    var one = Task.run(three, share a, share b, share c)
+    var two = Task.run(three, share c, share a, share b)
+    one.wait()
+    two.wait()
+    lock a as x, b as y, c as z {
+        print($"{x} {y} {z}")
+    }
+
+    shared locked int? maybe = new shared locked 5
+    if maybe is not null {
+        lock maybe as m {
+            m += 1
+            print(m)
+        }
+    }
+}

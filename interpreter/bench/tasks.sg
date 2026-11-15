@@ -1,0 +1,52 @@
+// Tasks and a total they share under a lock. Each round starts four tasks over a quarter of
+// the numbers below 400,000 each; a task adds up the Collatz lengths of its numbers and adds
+// what it has to the shared total, under its lock, once every 100 numbers. What is measured:
+// starting a task and waiting for it (a thread with a stack of 8 MB), and `lock` with four
+// tasks that want it, against the same in C with pthreads and a mutex.
+long steps(long start) {
+    var n = start
+    long count = 0
+    while n != 1 {
+        if n % 2 == 0 {
+            n = n / 2
+        } else {
+            n = 3 * n + 1
+        }
+        count += 1
+    }
+    return count
+}
+
+void work(shared locked long total, long from, long to) {
+    long part = 0
+    for n in from..to {
+        part += steps(n)
+        if n % 100 == 99 {
+            lock total as t {
+                t += part
+            }
+            part = 0
+        }
+    }
+    lock total as t {
+        t += part
+    }
+}
+
+void main() {
+    long zero = 0
+    var total = new shared locked zero
+    for round in 0..10 {
+        var a = Task.run(work, share total, 1, 100000)
+        var b = Task.run(work, share total, 100000, 200000)
+        var c = Task.run(work, share total, 200000, 300000)
+        var d = Task.run(work, share total, 300000, 400000)
+        a.wait()
+        b.wait()
+        c.wait()
+        d.wait()
+    }
+    lock total as t {
+        print(t)
+    }
+}

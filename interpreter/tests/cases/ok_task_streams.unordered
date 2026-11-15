@@ -1,0 +1,1 @@
+The tasks print in an order of their own in compiled code: the lines are compared in any order there.

@@ -165,7 +165,8 @@ modules (`use`, `public`, `readonly`); `test` blocks.
 Programs read and write files whole or piece by piece, as text or as bytes, and append to them (a writer left open is a compile error), read
 their input line by line and see their command line. Tasks (`Task.run`, `t.wait()`, every task waited for) and
 values that several tasks change (`shared locked T`, a `lock` block that cannot deadlock) run in the
-interpreter; compiled code is next, and after them async in the way of C#. Generics of your
+interpreter and in compiled code, where a task is a thread of the system; async in the way of C# comes
+after them. Generics of your
 own are put off. There is nothing for the network yet, no standard library, no package manager and no
 editor support.
 

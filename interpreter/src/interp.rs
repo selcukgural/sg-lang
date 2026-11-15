@@ -1162,8 +1162,10 @@ impl<'a> Interp<'a> {
         };
         thread.put();
         self.test_err.push_str(&written);
+        // A panic that already shows a second place keeps it: the line of a task started
+        // inside this one, or the borrow it met.
         result.map_err(|unwind| match unwind {
-            Unwind::Stop(Stop::Diag(diag)) if diag.kind == crate::diag::Kind::Panic => {
+            Unwind::Stop(Stop::Diag(diag)) if diag.kind == crate::diag::Kind::Panic && diag.related.is_none() => {
                 Unwind::Stop(Stop::Diag(diag.related(started, format!("in the task `{}` started here", short_name(&name)))))
             }
             other => other,

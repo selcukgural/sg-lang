@@ -1,0 +1,8 @@
+panic: division by zero: 10 / 0
+  --> panic_task_inner.sg:3:12
+ 3 |     return 10 / x
+   |            ^^^^^^
+  in the task `divide` started here:
+  --> panic_task_inner.sg:7:17
+ 7 |     var inner = Task.run(divide, x)
+   |                 ^^^^^^^^^^^^^^^^^^^

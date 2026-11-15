@@ -19,8 +19,8 @@
 //! read and written whole or piece by piece, as text or as bytes (`StreamReader`, `StreamWriter`,
 //! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`),
 //! `shared`, `weak` and `shared checked` values with the `as` blocks, `this` with a type and the leak
-//! report (see `SHARED_RUNTIME`). A type alias is the type it names. Tasks, `locked` values and
-//! the `lock` block are not compiled yet. Anything else is an error
+//! report (see `SHARED_RUNTIME`), tasks, `locked` values and the `lock` block (see `TASK_RUNTIME`).
+//! A type alias is the type it names. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
 //! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`), and
@@ -44,6 +44,14 @@
 //! ends (`Within`, the end of the statement) and on every way out (it is a `Local` with a drop
 //! line). The receiver of a method that changes it is lent in two steps: the receiver and the
 //! arguments are computed into variables, then it is lent to change (`reserved`).
+//! A task is a thread of the system: `Task.run` calls the starter of the function's type
+//! (`task_starter`), which puts the function and its arguments into one block with the thread and
+//! the place for what it returns, and a `Task<R>` points to that block; `wait` joins the thread. A
+//! `shared locked T` is a `shared T` with a mutex in front of its counts; `lock` takes the values
+//! in the order of their addresses and gives them back on every way out of the block (a `Local`
+//! whose drop line does it). Only a program with tasks or `locked` values has `SG_THREADS`, and
+//! with it a panic that holds the output, one print block for each thread, standard streams that
+//! several tasks can use, and a lock on the list of the leak report.
 //! A `Result<T, E>` is such an enum with the variants `Ok(T value)` and `Error(E cause)`; `try`
 //! is one test on the tag and, on an error, a `return`. A `List<T>` is a pointer to its items,
 //! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index, and
@@ -124,8 +132,34 @@ const RUNTIME: &str = r#"#include <math.h>
 /* A panic is never the usual path: its code is kept out of the way of the code that runs. */
 #define SG_COLD __attribute__((cold, noinline))
 
+/* A program with tasks or `locked` values runs on several threads (see `TASK_RUNTIME`). Each
+   thread knows the task it runs, so that a panic names the line that started it; a panic holds
+   the output from its first line to the end of the process, so that two panics do not mix and
+   nothing is written after one. A line of `print` is one call of `printf`, which C writes
+   whole. */
+#if SG_THREADS
+#include <pthread.h>
+typedef struct sg_task { pthread_t thread; const char* name; const char* at; void (*run)(struct sg_task*); } sg_task;
+static _Thread_local sg_task* sg_task_now = NULL;
+static void sg_panic_start(void) {
+    flockfile(stdout);
+    flockfile(stderr);
+    fflush(stdout);
+}
+#define SG_PANIC_START() sg_panic_start()
+static void sg_task_note(void) {
+    if (!sg_task_now) return;
+    fprintf(stderr, "  in the task `%s` started here:\n", sg_task_now->name);
+    fputs(sg_task_now->at, stderr);
+}
+#else
+#define SG_PANIC_START() fflush(stdout)
+#define sg_task_note() ((void)0)
+#endif
+
 SG_COLD static _Noreturn void sg_die(const char* loc) {
     fputs(loc, stderr);
+    sg_task_note();
     exit(1);
 }
 /* A failing operation hands its numbers over as `__int128`, which holds a value of every
@@ -137,11 +171,12 @@ SG_COLD static void sg_err_int(__int128 v) {
 /* The way out that does not panic, written under the place as the interpreter writes it. */
 SG_COLD static _Noreturn void sg_die_hint(const char* loc, const char* hint) {
     fputs(loc, stderr);
+    sg_task_note();
     fprintf(stderr, "  hint: %s\n", hint);
     exit(1);
 }
 SG_COLD static _Noreturn void sg_overflow(__int128 a, const char* op, __int128 b, const char* ty, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fputs("panic: overflow: ", stderr);
     sg_err_int(a);
     fprintf(stderr, " %s ", op);
@@ -155,48 +190,49 @@ SG_COLD static _Noreturn void sg_overflow(__int128 a, const char* op, __int128 b
     }
 }
 SG_COLD static _Noreturn void sg_neg_overflow(__int128 a, const char* ty, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fputs("panic: overflow: -(", stderr);
     sg_err_int(a);
     fprintf(stderr, ") does not fit in %s\n", ty);
     sg_die(loc);
 }
 SG_COLD static _Noreturn void sg_shift_fail(__int128 n, const char* ty, int bits, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fputs("panic: shift by ", stderr);
     sg_err_int(n);
     fprintf(stderr, " is out of range: %s has %d bits\n", ty, bits);
     sg_die(loc);
 }
 SG_COLD static _Noreturn void sg_div_zero(__int128 a, const char* op, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fputs("panic: division by zero: ", stderr);
     sg_err_int(a);
     fprintf(stderr, " %s 0\n", op);
     sg_die(loc);
 }
 SG_COLD static _Noreturn void sg_cast_fail(__int128 v, const char* ty, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fputs("panic: value ", stderr);
     sg_err_int(v);
     fprintf(stderr, " does not fit in %s\n", ty);
     fputs(loc, stderr);
+    sg_task_note();
     fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit, and `wrappingTo%c%s()` cuts it to size\n",
             ty[0] - 'a' + 'A', ty + 1, ty[0] - 'a' + 'A', ty + 1);
     exit(1);
 }
 SG_COLD static _Noreturn void sg_panic(const char* text, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fprintf(stderr, "panic: %s\n", text);
     sg_die(loc);
 }
 SG_COLD static _Noreturn void sg_assert_fail(const char* text, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fprintf(stderr, "panic: assert failed: %s\n", text);
     sg_die(loc);
 }
 SG_COLD static _Noreturn void sg_assert_fail_i(const char* text, __int128 l, __int128 r, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fprintf(stderr, "panic: assert failed: %s\n  left: ", text);
     sg_err_int(l);
     fputs("\n  right: ", stderr);
@@ -205,7 +241,7 @@ SG_COLD static _Noreturn void sg_assert_fail_i(const char* text, __int128 l, __i
     sg_die(loc);
 }
 SG_COLD static _Noreturn void sg_assert_fail_b(const char* text, bool l, bool r, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fprintf(stderr, "panic: assert failed: %s\n  left: %s\n  right: %s\n", text, l ? "true" : "false", r ? "true" : "false");
     sg_die(loc);
 }
@@ -255,16 +291,17 @@ SG_COLD static void sg_err_float(double v, bool single) {
     fwrite(text, 1, (size_t)n, stderr);
 }
 SG_COLD static _Noreturn void sg_fcast_fail(double v, bool single, const char* ty, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fputs("panic: value ", stderr);
     sg_err_float(v, single);
     fprintf(stderr, " does not fit in %s\n", ty);
     fputs(loc, stderr);
+    sg_task_note();
     fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit\n", ty[0] - 'a' + 'A', ty + 1);
     exit(1);
 }
 SG_COLD static _Noreturn void sg_assert_fail_fd(const char* text, double l, double r, bool single, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fprintf(stderr, "panic: assert failed: %s\n  left: ", text);
     sg_err_float(l, single);
     fputs("\n  right: ", stderr);
@@ -456,12 +493,12 @@ static inline int sg_cmp(sg_str a, sg_str b) {
     return c ? c : (a.len > b.len) - (a.len < b.len);
 }
 SG_COLD static _Noreturn void sg_index_fail(long long at, long long len, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fprintf(stderr, "panic: index %lld is out of range: the length is %lld\n", at, len);
     sg_die(loc);
 }
 SG_COLD static _Noreturn void sg_range_fail(sg_str s, long long from, long long to, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     if (from < 0 || from > s.len || to < 0 || to > s.len) {
         fprintf(stderr, "panic: range %lld..%lld is out of range: the length is %lld\n", from, to, (long long)s.len);
     } else if (from > to) {
@@ -491,7 +528,7 @@ static inline sg_str sg_slice(sg_str s, int64_t from, int64_t to, const char* lo
 }
 /* A range of items: its ends are checked in every build, like an index. */
 SG_COLD static _Noreturn void sg_span_fail(long long from, long long to, long long len, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     if (from < 0 || from > len || to < 0 || to > len) fprintf(stderr, "panic: range %lld..%lld is out of range: the length is %lld\n", from, to, len);
     else fprintf(stderr, "panic: range %lld..%lld ends before it starts\n", from, to);
     sg_die(loc);
@@ -552,7 +589,7 @@ static inline sg_str sg_slices(sg_str s, int64_t from, int64_t to, const sg_sum*
 #define SG_BE64(v) __builtin_bswap64(v)
 #endif
 SG_COLD static _Noreturn void sg_bytes_fail(const char* what, int64_t want, int64_t len, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fprintf(stderr, "panic: `%s` reads %lld bytes, and it was given %lld\n", what, (long long)want, (long long)len);
     sg_die(loc);
 }
@@ -613,7 +650,7 @@ static _Noreturn void sg_exit(uint8_t code, const char* loc) {
 SG_COLD static _Noreturn void sg_panicf(const char* loc, const char* format, ...) {
     va_list args;
     va_start(args, format);
-    fflush(stdout);
+    SG_PANIC_START();
     fputs("panic: ", stderr);
     vfprintf(stderr, format, args);
     va_end(args);
@@ -718,7 +755,7 @@ static void sg_put(sg_string* out, const void* bytes, int64_t count) {
 }
 /* `string.withCapacity(n)`: an empty text with room for `n` bytes; none is taken for 0. */
 SG_COLD static _Noreturn void sg_capacity_bad(int64_t n, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     if (n < 0) fprintf(stderr, "panic: the capacity of a text cannot be negative: %lld\n", (long long)n);
     else fprintf(stderr, "panic: there is no memory for a text of %lld bytes\n", (long long)n);
     sg_die(loc);
@@ -842,11 +879,16 @@ static void sg_put_float(sg_string* out, float value) {
     sg_put(out, text, sg_shortest(text, value, true));
 }
 /* Where a struct, an enum or a collection is written before it is printed. One block for the
-   whole program: a statement writes above what is there and gives the room back when it is
-   done, so printing allocates only when a line is longer than every line before it. A block
-   that one long line made larger than SG_SCRATCH_KEPT is freed as soon as nothing is written
-   in it, so the program does not hold that memory until it ends. */
+   whole program, or for each thread where several run (a task gives its block back when it
+   ends, see `sg_task_main`): a statement writes above what is there and gives the room back
+   when it is done, so printing allocates only when a line is longer than every line before
+   it. A block that one long line made larger than SG_SCRATCH_KEPT is freed as soon as nothing
+   is written in it, so the program does not hold that memory until it ends. */
+#if SG_THREADS
+static _Thread_local sg_string sg_scratch = { (uint8_t*)"", 0, 0 };
+#else
 static sg_string sg_scratch = { (uint8_t*)"", 0, 0 };
+#endif
 #define SG_SCRATCH_KEPT 65536
 static inline void sg_scratch_back(int64_t to) {
     if (sg_scratch.len > to) sg_scratch.len = to;
@@ -899,19 +941,19 @@ static void sg_put_quoted_char(sg_string* out, uint32_t c) { char b[16]; sg_put(
 SG_COLD static _Noreturn void sg_assert_fail_c(const char* text, uint32_t l, uint32_t r, const char* loc) {
     char a[16], b[16];
     int an = sg_quote_char(a, l), bn = sg_quote_char(b, r);
-    fflush(stdout);
+    SG_PANIC_START();
     fprintf(stderr, "panic: assert failed: %s\n  left: %.*s\n  right: %.*s\n", text, an, a, bn, b);
     sg_die(loc);
 }
 SG_COLD static _Noreturn void sg_char_fail(__int128 v, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fputs("panic: ", stderr);
     sg_err_int(v);
     fputs(" is not the code of a character\n", stderr);
     sg_die_hint(loc, "`tryToChar()` gives `null` when no character has the code");
 }
 SG_COLD static _Noreturn void sg_code_fail(uint32_t c, const char* ty, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fprintf(stderr, "panic: value %u does not fit in %s\n", (unsigned)c, ty);
     sg_die_hint(loc, "`(int)c` holds the code of every character");
 }
@@ -990,7 +1032,7 @@ static inline sg_str sg_trim(sg_str s) { return sg_trim_end(sg_trim_start(s)); }
 typedef struct { sg_str s; int64_t at; sg_str sep; uint8_t mark[4]; bool done; } sg_iter;
 static inline sg_iter sg_iter_of(sg_str s) { return (sg_iter){ s, 0, { NULL, 0 }, { 0 }, false }; }
 SG_COLD static _Noreturn void sg_split_empty(const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fputs("panic: the separator of `split` is empty\n", stderr);
     sg_die_hint(loc, "the characters, one after the other: `text.chars()`");
 }
@@ -1001,7 +1043,7 @@ static inline sg_iter sg_split_str(sg_str s, sg_str sep, const char* loc) {
 /* `text.replaceAll(old, new)`: a new text, put together from the pieces between the places
    where `old` lies and a copy of `new` in each of them. */
 SG_COLD static _Noreturn void sg_replace_empty(const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fputs("panic: the text that `replaceAll` looks for is empty\n", stderr);
     sg_die(loc);
 }
@@ -1022,7 +1064,7 @@ static sg_string sg_replace_all(sg_str s, sg_str old, sg_str put, const char* lo
 /* `text.repeat(n)`: one block of the whole size; the bytes written so far are copied after
    themselves, so a text repeated n times takes about log2(n) copies. */
 SG_COLD static _Noreturn void sg_repeat_bad(int64_t len, int64_t n, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     if (n < 0) fprintf(stderr, "panic: a text cannot be repeated %lld times\n", (long long)n);
     else fprintf(stderr, "panic: there is no memory for a text of %lld bytes repeated %lld times\n", (long long)len, (long long)n);
     sg_die(loc);
@@ -1096,7 +1138,7 @@ static inline bool sg_ascii_alnum(uint32_t c) { return sg_ascii_digit(c) || sg_a
 static inline uint32_t sg_ascii_upper(uint32_t c) { return c >= 'a' && c <= 'z' ? c - 32 : c; }
 static inline uint32_t sg_ascii_lower(uint32_t c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 SG_COLD static _Noreturn void sg_assert_fail_t(const char* text, sg_str l, sg_str r, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fprintf(stderr, "panic: assert failed: %s\n  left: %.*s\n  right: %.*s\n", text, (int)l.len, (const char*)l.ptr, (int)r.len, (const char*)r.ptr);
     sg_die(loc);
 }
@@ -1137,7 +1179,7 @@ static void sg_quoted(sg_str s) {
     fputc('"', stderr);
 }
 SG_COLD static _Noreturn void sg_assert_fail_s(const char* text, sg_str l, sg_str r, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     fprintf(stderr, "panic: assert failed: %s\n  left: ", text);
     sg_quoted(l);
     fputs("\n  right: ", stderr);
@@ -1273,11 +1315,13 @@ static void sg_test_failed(sg_str text) {
 /// What a program with `shared` values needs. The value lies on the heap, and in front of it
 /// the count of its owners and the count of its `weak` lookers (the owners together count as
 /// one of those, as in Rust's `Arc`); a `shared checked` value has the borrows of it in
-/// progress in front of the counts, and a debug build (`SG_TRACK`) keeps every value that is
-/// alive in a list, in the order they were made, for the leak report. A `shared T` and a
-/// `weak T` are pointers to the value, so what a `shared T` holds is reached as through a `T*`.
-/// The counts are atomic, as the design asks ("Shared ownership"); the list of the values that
-/// are alive and the borrows are not, since a program has one thread so far.
+/// progress in front of the counts, a `shared locked` value its mutex, and a debug build
+/// (`SG_TRACK`) keeps every value that is alive in a list, in the order they were made, for the
+/// leak report. A `shared T` and a `weak T` are pointers to the value, so what a `shared T`
+/// holds is reached as through a `T*`. What is in front is told by `how`: 0 for a plain value,
+/// 1 for a `checked` one, 2 for a `locked` one. The counts are atomic, as the design asks
+/// ("Shared ownership"), and so is the list where several threads run (`SG_THREADS`); the
+/// borrows of a `checked` value are not, since such a value stays in one task (the thread rule).
 const SHARED_RUNTIME: &str = r#"
 typedef struct { int64_t strong; int64_t weak; } __attribute__((aligned(16))) sg_rc;
 /* A borrow of a `shared checked` value in progress: it lives in the frame of the function that
@@ -1290,22 +1334,39 @@ typedef struct { sg_guard* reads; sg_guard* write; } __attribute__((aligned(16))
 typedef struct { const char* name; int (*through)(const void* value); const char* const* fields; const char* const* hints; } sg_kind;
 typedef struct sg_live { struct sg_live* prev; struct sg_live* next; const char* made; const sg_kind* kind; void* value; } __attribute__((aligned(16))) sg_live;
 static sg_live sg_alive = { &sg_alive, &sg_alive, NULL, NULL, NULL };
+#if SG_THREADS
+/* The mutex of a `locked` value: taken by `lock`, in front of the counts. */
+typedef struct { pthread_mutex_t m; } __attribute__((aligned(16))) sg_mutex;
+static pthread_mutex_t sg_alive_lock = PTHREAD_MUTEX_INITIALIZER;
+#define SG_ALIVE_TAKE() pthread_mutex_lock(&sg_alive_lock)
+#define SG_ALIVE_GIVE() pthread_mutex_unlock(&sg_alive_lock)
+#else
+typedef struct { char none; } __attribute__((aligned(16))) sg_mutex;
+#define SG_ALIVE_TAKE() ((void)0)
+#define SG_ALIVE_GIVE() ((void)0)
+#endif
 
 static inline sg_rc* sg_rc_of(void* p) { return (sg_rc*)p - 1; }
 static inline sg_lock* sg_lock_of(void* p) { return (sg_lock*)sg_rc_of(p) - 1; }
-static inline size_t sg_front(bool checked) { return sizeof(sg_rc) + (checked ? sizeof(sg_lock) : 0) + (SG_TRACK ? sizeof(sg_live) : 0); }
-static void* sg_rc_new(size_t size, bool checked, const sg_kind* kind, const char* made) {
-    size_t front = sg_front(checked);
+static inline sg_mutex* sg_mutex_of(void* p) { return (sg_mutex*)sg_rc_of(p) - 1; }
+static inline size_t sg_front(int how) { return sizeof(sg_rc) + (how == 1 ? sizeof(sg_lock) : how == 2 ? sizeof(sg_mutex) : 0) + (SG_TRACK ? sizeof(sg_live) : 0); }
+static void* sg_rc_new(size_t size, int how, const sg_kind* kind, const char* made) {
+    size_t front = sg_front(how);
     char* block = malloc(front + size);
     if (!block) abort();
     void* p = block + front;
     *sg_rc_of(p) = (sg_rc){ 1, 1 };
-    if (checked) *sg_lock_of(p) = (sg_lock){ NULL, NULL };
+    if (how == 1) *sg_lock_of(p) = (sg_lock){ NULL, NULL };
+#if SG_THREADS
+    if (how == 2 && pthread_mutex_init(&sg_mutex_of(p)->m, NULL) != 0) abort();
+#endif
 #if SG_TRACK
     sg_live* live = (sg_live*)block;
+    SG_ALIVE_TAKE();
     *live = (sg_live){ sg_alive.prev, &sg_alive, made, kind, p };
     sg_alive.prev->next = live;
     sg_alive.prev = live;
+    SG_ALIVE_GIVE();
 #else
     (void)kind; (void)made;
 #endif
@@ -1316,23 +1377,28 @@ static inline void* sg_rc_share(void* p) { if (p) __atomic_fetch_add(&sg_rc_of(p
 /* `weak x`: one more looker. */
 static inline void* sg_rc_weaken(void* p) { if (p) __atomic_fetch_add(&sg_rc_of(p)->weak, 1, __ATOMIC_RELAXED); return p; }
 /* An owner lets go: true if it was the last, and the value is to be dropped. */
-static inline bool sg_rc_last(void* p, bool checked) {
+static inline bool sg_rc_last(void* p, int how) {
     if (__atomic_fetch_sub(&sg_rc_of(p)->strong, 1, __ATOMIC_RELEASE) != 1) return false;
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
 #if SG_TRACK
-    sg_live* live = (sg_live*)((char*)p - sg_front(checked));
+    sg_live* live = (sg_live*)((char*)p - sg_front(how));
+    SG_ALIVE_TAKE();
     live->prev->next = live->next;
     live->next->prev = live->prev;
+    SG_ALIVE_GIVE();
 #else
-    (void)checked;
+    (void)how;
 #endif
     return true;
 }
 /* A looker lets go (or the owners, together, once the value is dropped): the last frees the block. */
-static inline void sg_rc_unweak(void* p, bool checked) {
+static inline void sg_rc_unweak(void* p, int how) {
     if (__atomic_fetch_sub(&sg_rc_of(p)->weak, 1, __ATOMIC_RELEASE) != 1) return;
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    free((char*)p - sg_front(checked));
+#if SG_THREADS
+    if (how == 2) pthread_mutex_destroy(&sg_mutex_of(p)->m);
+#endif
+    free((char*)p - sg_front(how));
 }
 /* `share w`: an owner while one is left, otherwise `null`. */
 static inline void* sg_rc_upgrade(void* p) {
@@ -1346,13 +1412,15 @@ static inline void* sg_rc_upgrade(void* p) {
 
 /* An access to a `shared checked` value that a borrow in progress does not allow. */
 SG_COLD static _Noreturn void sg_conflict(const char* what, bool changing, const sg_guard* other, const char* loc) {
-    fflush(stdout);
+    SG_PANIC_START();
     const char* doing = other->write ? "changed" : "read";
     fprintf(stderr, "panic: this `%s` is being %s, so it cannot be %s here\n", what, doing, changing ? "changed" : "read");
     fputs("  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once\n", stderr);
     fputs(loc, stderr);
     fprintf(stderr, "  it is being %s from here:\n", doing);
-    sg_die(other->at);
+    /* This message already shows a second place, which it keeps over the task's. */
+    fputs(other->at, stderr);
+    exit(1);
 }
 static inline void sg_look(void* p, const char* what, const char* loc) {
     sg_lock* lock = sg_lock_of(p);
@@ -1398,6 +1466,30 @@ static void sg_change_reserved(sg_guard* g) {
     g->write = true;
     g->reserved = false;
 }
+
+#if SG_THREADS
+/* `lock`: a value is taken by its mutex. Two or more are taken in the order of their addresses,
+   so two tasks that lock the same values never wait for each other in a circle. */
+static inline void sg_take(void* p) { pthread_mutex_lock(&sg_mutex_of(p)->m); }
+static inline void sg_give(void* p) { pthread_mutex_unlock(&sg_mutex_of(p)->m); }
+static inline void sg_take_two(void* a, void* b) {
+    if ((uintptr_t)a < (uintptr_t)b) { sg_take(a); sg_take(b); }
+    else { sg_take(b); sg_take(a); }
+}
+static void sg_take_all(void** values, int count) {
+    for (int i = 1; i < count; i++) {
+        for (int j = i; j > 0 && (uintptr_t)values[j] < (uintptr_t)values[j - 1]; j--) {
+            void* v = values[j]; values[j] = values[j - 1]; values[j - 1] = v;
+        }
+    }
+    for (int i = 0; i < count; i++) sg_take(values[i]);
+}
+SG_COLD static _Noreturn void sg_lock_twice(const char* first, const char* second, const char* loc) {
+    SG_PANIC_START();
+    fprintf(stderr, "panic: `%s` and `%s` are one value, which a `lock` takes once\n", first, second);
+    sg_die(loc);
+}
+#endif
 
 #if SG_TRACK
 #define SG_LEAKS 1
@@ -1453,6 +1545,45 @@ static bool sg_leaks(const char* ended) {
     return true;
 }
 #endif
+"#;
+
+/// What a program that starts tasks needs (the type `sg_task` is in `RUNTIME`, where a panic
+/// reads it). A task runs on a thread of its own, whose stack is 8 MB on every system, as
+/// `main`'s is; a system that refuses the thread is a panic at the line that starts the task.
+/// The thread knows its task (`sg_task_now`), so that a panic in it names that line, and has a
+/// block of its own to write printed values in (`sg_scratch`). `wait` joins the thread.
+const TASK_RUNTIME: &str = r#"
+#define SG_TASK_STACK ((size_t)8 << 20)
+/* Where a task is started: the name of its function (`NULL` for a function value, whose name is
+   found by its address, see `sg_func_name`) and the line. */
+typedef struct { const char* name; const char* at; } sg_site;
+static void* sg_task_main(void* p) {
+    sg_task* task = p;
+    sg_task_now = task;
+    task->run(task);
+    if (sg_scratch.cap > 0) free(sg_scratch.ptr);
+    return NULL;
+}
+static void sg_task_start(sg_task* task, void (*run)(sg_task*), const char* name, const char* at) {
+    task->name = name;
+    task->at = at;
+    task->run = run;
+    pthread_attr_t attr;
+    int code = pthread_attr_init(&attr);
+    if (code == 0) {
+        code = pthread_attr_setstacksize(&attr, SG_TASK_STACK);
+        if (code == 0) code = pthread_create(&task->thread, &attr, sg_task_main, task);
+        pthread_attr_destroy(&attr);
+    }
+    if (code != 0) {
+        SG_PANIC_START();
+        fprintf(stderr, "panic: the system refused a thread for this task: %s (os error %d)\n", strerror(code), code);
+        sg_die(at);
+    }
+}
+static inline void sg_task_join(sg_task* task) {
+    if (pthread_join(task->thread, NULL) != 0) abort();
+}
 "#;
 
 /// What a program that reads or writes files, or reads its input, needs: the calls of the
@@ -1539,6 +1670,15 @@ typedef struct { int fd; uint8_t* block; int64_t at, len, done; bool ended; } sg
 static uint8_t sg_in_block[65536];
 static sg_reader sg_stdin = { 0, sg_in_block, 0, 0, 0, false };
 static int sg_in_terminal = -1;
+/* Where several tasks run, one of them at a time reads the input. */
+#if SG_THREADS
+static pthread_mutex_t sg_in_lock = PTHREAD_MUTEX_INITIALIZER;
+#define SG_IN_TAKE(r) do { if ((r) == &sg_stdin) pthread_mutex_lock(&sg_in_lock); } while (0)
+#define SG_IN_GIVE(r) do { if ((r) == &sg_stdin) pthread_mutex_unlock(&sg_in_lock); } while (0)
+#else
+#define SG_IN_TAKE(r) ((void)0)
+#define SG_IN_GIVE(r) ((void)0)
+#endif
 static int sg_reader_fill(sg_reader* r) {
     if (r == &sg_stdin) {
         if (sg_in_terminal < 0) sg_in_terminal = isatty(0);
@@ -1691,9 +1831,26 @@ static int sg_writer_wrote(sg_writer* w) {
     }
     return w->buf.len >= 65536 ? sg_writer_out(w) : 0;
 }
+/* `Stdout` and `Stderr` may be written by several tasks at once: their first error is read and
+   kept atomically. */
+static inline int sg_failed(sg_writer* w) { return __atomic_load_n(&w->failed, __ATOMIC_RELAXED); }
+static inline int sg_fail(sg_writer* w, int code) { __atomic_store_n(&w->failed, code, __ATOMIC_RELAXED); return code; }
+/* What one call writes to a standard stream where several tasks run: put together in a block of
+   its own (not the writer's, which the tasks share) and written with one call of C, which writes
+   it whole. */
+static int sg_std_put(sg_writer* w, sg_string* block) {
+    int code = sg_failed(w);
+    if (!code) {
+        if (w->std == 2) fflush(stdout);
+        size_t len = (size_t)block->len;
+        if (len > 0 && fwrite(block->ptr, 1, len, w->std == 1 ? stdout : stderr) != len) code = sg_fail(w, errno ? errno : EIO);
+    }
+    sg_drop_string(block);
+    return code;
+}
 static int sg_writer_flush(sg_writer* w) {
-    if (w->failed) return w->failed;
-    if (w->std) return fflush(w->std == 1 ? stdout : stderr) == 0 ? 0 : (w->failed = errno ? errno : EIO);
+    if (sg_failed(w)) return sg_failed(w);
+    if (w->std) return fflush(w->std == 1 ? stdout : stderr) == 0 ? 0 : sg_fail(w, errno ? errno : EIO);
     return sg_writer_out(w);
 }
 /* The block goes out and the file is closed; the first error is given. */
@@ -1723,11 +1880,11 @@ static inline sg_writer sg_move_writer(sg_writer* w) {
 /* The bytes as they are: a standard stream writes them at once, a file puts them into its block,
    or, when they are 64 KB or more, writes the block and then them straight. */
 static int sg_writer_bytes(sg_writer* w, const uint8_t* bytes, int64_t len) {
-    if (w->failed) return w->failed;
+    if (sg_failed(w)) return sg_failed(w);
     if (len == 0) return 0;
     if (w->std) {
         if (w->std == 2) fflush(stdout);
-        if (fwrite(bytes, 1, (size_t)len, w->std == 1 ? stdout : stderr) != (size_t)len) return w->failed = errno ? errno : EIO;
+        if (fwrite(bytes, 1, (size_t)len, w->std == 1 ? stdout : stderr) != (size_t)len) return sg_fail(w, errno ? errno : EIO);
         return 0;
     }
     if (len < 65536) {
@@ -1862,6 +2019,8 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         guards: Vec::new(),
         guard_decls: Vec::new(),
         reserving: None,
+        sites: Vec::new(),
+        funcs: prog.funcs.iter().map(|func| func.name.as_str()).collect(),
     };
     // Every struct and enum is named first, so that a type can point at itself or at a later
     // one. Then the types themselves, each after the types it holds by value.
@@ -1938,7 +2097,26 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         false => start,
     };
 
-    let mut out = String::from(RUNTIME);
+    // A task started through a function value is named by the function's address.
+    if emitter.made.contains("tasks") {
+        let mut tests = String::new();
+        for name in &emitter.funcs {
+            let _ = write!(tests, " if (f == (void (*)(void))f_{}) return {};", cname(name), c_string(short_name(name)));
+        }
+        let _ = writeln!(emitter.glue_protos, "static const char* sg_func_name(void (*f)(void));");
+        let _ = writeln!(emitter.glue, "static const char* sg_func_name(void (*f)(void)) {{{tests} return \"?\"; }}");
+    }
+    // A program with tasks or `locked` values runs on several threads.
+    let threads = emitter.made.contains("tasks") || emitter.made.contains("threads");
+    // glibc keeps `flockfile` out of strict C11 unless POSIX is asked for.
+    let mut out = match threads {
+        true => "#if defined(__linux__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n#define SG_THREADS 1\n".to_string(),
+        false => "#define SG_THREADS 0\n".to_string(),
+    };
+    out.push_str(RUNTIME);
+    if emitter.made.contains("tasks") {
+        out.push_str(TASK_RUNTIME);
+    }
     if emitter.made.contains("io") {
         out.push_str(IO_RUNTIME);
     }
@@ -1965,6 +2143,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     for (number, sum) in emitter.sums.iter().enumerate() {
         let _ = writeln!(out, "static const sg_sum sg_sum_{number} = {sum};");
     }
+    for (number, site) in emitter.sites.iter().enumerate() {
+        let _ = writeln!(out, "static const sg_site sg_site_{number} = {site};");
+    }
     out.push('\n');
     out.push_str(&bodies);
     if tests {
@@ -1976,7 +2157,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
 
 fn not_yet(span: Span, what: &str) -> Diag {
     Diag::error(span, format!("{what} is not in the C back end yet"))
-        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, the collections, arrays and slices, function values, `T*`, `T?`, `read` and `ref`, and `print`")
+        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, the collections, arrays and slices, function values, `T*`, `T?`, `read` and `ref`, `shared` values, tasks, and `print`")
 }
 
 /// A C string literal for any text.
@@ -2234,6 +2415,10 @@ fn mangle(ty: &Ty) -> Option<String> {
         Ty::Ptr(inner) => format!("P_{}", mangle(inner)?),
         Ty::Shared(inner, checked) => format!("{}_{}", if *checked { "SC" } else { "SH" }, mangle(inner)?),
         Ty::Weak(inner, checked) => format!("{}_{}", if *checked { "WC" } else { "WK" }, mangle(inner)?),
+        Ty::Locked(inner) => format!("LK_{}", mangle(inner)?),
+        // A task is named after what it gives.
+        Ty::Task(result) if **result == Ty::Void => "TK_void".to_string(),
+        Ty::Task(result) => format!("TK_{}", mangle(result)?),
         Ty::Nullable(inner) => match &**inner {
             // A pointer that may be `null` is the same pointer.
             Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) => mangle(inner)?,
@@ -2281,6 +2466,19 @@ fn mangle(ty: &Ty) -> Option<String> {
         }
         _ => return None,
     })
+}
+
+/// What a `shared` or `weak` value holds, and what is in front of it (`how` in
+/// `SHARED_RUNTIME`): `true` / `false` for a `checked` value or a plain one, `2` for a `locked`
+/// one, whose mutex needs the threads of the runtime.
+fn held_how<'t>(inner: &'t Ty, checked: bool, made: &mut HashSet<String>) -> (&'t Ty, String) {
+    match inner {
+        Ty::Locked(held) => {
+            made.insert("threads".to_string());
+            (held, "2".to_string())
+        }
+        _ => (inner, checked.to_string()),
+    }
 }
 
 /// A full name inside a C name. A name of the root is written as it is. A name of a module has
@@ -2591,6 +2789,12 @@ struct Emitter<'a> {
     /// The receiver of a method that changes it, lent to read while the arguments are computed
     /// (`Opening::Reserve`): the call lends it to change once they are (see `reserved_call`).
     reserving: Option<String>,
+    /// Where each `Task.run` starts its task (`sg_site`): the name of the function, or `NULL`,
+    /// and the line; one `static` each.
+    sites: Vec<String>,
+    /// The functions of the program: a task started through a function value finds the name
+    /// of its function by its address (`sg_func_name`).
+    funcs: Vec<&'a str>,
 }
 
 impl<'a> Emitter<'a> {
@@ -2710,6 +2914,14 @@ impl<'a> Emitter<'a> {
                 if **held == Ty::Str { "sg_str".to_string() } else { format!("{}*", self.ctype(held, span)?) }
             }
             Ty::Read(inner) | Ty::Ref(inner) => format!("{}*", self.ctype(inner, span)?),
+            // What a `locked` value holds is the value; its mutex is in front of it (`sg_mutex`).
+            Ty::Locked(inner) => self.ctype(inner, span)?,
+            // A task is a pointer to what its thread fills in (see `need`).
+            Ty::Task(_) => {
+                let Some(name) = mangle(ty) else { return Err(not_yet(span, &format!("the type `{ty}`"))) };
+                self.need(ty, span)?;
+                format!("sg_{name}*")
+            }
             Ty::Ptr(inner) | Ty::Shared(inner, _) | Ty::Weak(inner, _) | Ty::Nullable(inner) => {
                 let Some(name) = mangle(ty) else { return Err(not_yet(span, &format!("the type `{ty}`"))) };
                 self.need(ty, span)?;
@@ -2808,12 +3020,14 @@ impl<'a> Emitter<'a> {
                 };
             }
             // A `shared T`: made with its counts in front (`sg_rc_new`), dropped by the last owner.
-            // A `shared checked T` has the place of its borrows there too.
+            // A `shared checked T` has the place of its borrows there too, a `shared locked T`
+            // its mutex (`how`, see `SHARED_RUNTIME`).
             Ty::Shared(inner, checked) => {
                 if !self.made.insert(name.clone()) {
                     return Ok(());
                 }
                 self.made.insert("shared".to_string());
+                let (inner, checked) = held_how(inner, *checked, &mut self.made);
                 let target = self.ctype(inner, span)?;
                 let drop_inner = match self.droppable(inner) {
                     true => format!("sg_drop_{}(p); ", mangle(inner).expect("it has a C type")),
@@ -2836,6 +3050,7 @@ impl<'a> Emitter<'a> {
                     return Ok(());
                 }
                 self.made.insert("shared".to_string());
+                let (inner, checked) = held_how(inner, *checked, &mut self.made);
                 let target = self.ctype(inner, span)?;
                 let _ = writeln!(self.glue_protos, "static inline {target}* sg_move_{name}({target}** v);");
                 let _ = writeln!(self.glue_protos, "static inline void sg_drop_{name}({target}** v);");
@@ -2940,6 +3155,32 @@ impl<'a> Emitter<'a> {
                     "static void sg_drop_from_{name}(sg_{name}* m, int64_t from);\nstatic inline void sg_drop_{name}(sg_{name}* m);\nstatic inline sg_{name} sg_move_{name}(sg_{name}* m);"
                 );
                 self.glue.push_str(&code);
+            }
+            // A task: what its thread fills in, the thread first (`sg_task`) and then what the
+            // function gives. Each `Task.run` makes a larger block that starts with it (see
+            // `task_starter`). `wait` joins the thread, takes what it gave and frees the block; a
+            // task let go on an exit with an error is waited for there, and what it gave dropped.
+            Ty::Task(result) => {
+                if !self.made.insert(name.clone()) {
+                    return Ok(());
+                }
+                self.made.insert("tasks".to_string());
+                let task = format!("sg_{name}");
+                let _ = writeln!(self.types, "typedef struct {task} {task};");
+                let (field, gives, take, drop_result) = match **result {
+                    Ty::Void => (String::new(), "void".to_string(), String::new(), String::new()),
+                    _ => {
+                        let gives = self.ctype(result, span)?;
+                        let drop_result = if self.droppable(result) { self.drop_of(result, "t->result") + " " } else { String::new() };
+                        (format!(" {gives} result;"), gives.clone(), format!("{gives} v = t->result; "), drop_result)
+                    }
+                };
+                let _ = writeln!(self.late_types, "struct {task} {{ sg_task head;{field} }};");
+                let back = if take.is_empty() { "" } else { " return v;" };
+                let _ = writeln!(self.glue_protos, "static inline {task}* sg_move_{name}({task}** v);\nstatic void sg_drop_{name}({task}** v);\nstatic inline {gives} sg_wait_{name}({task}* t);");
+                let _ = writeln!(self.glue, "static inline {task}* sg_move_{name}({task}** v) {{ {task}* out = *v; *v = NULL; return out; }}");
+                let _ = writeln!(self.glue, "static void sg_drop_{name}({task}** v) {{ {task}* t = *v; if (!t) return; *v = NULL; sg_task_join(&t->head); {drop_result}free(t); }}");
+                let _ = writeln!(self.glue, "static inline {gives} sg_wait_{name}({task}* t) {{ sg_task_join(&t->head); {take}free(t);{back} }}");
             }
             // A function value is the address of a function: one pointer.
             Ty::Func(params, ret) => {
@@ -3255,6 +3496,7 @@ impl<'a> Emitter<'a> {
         let mut found = match (Ty::from_name(&ty.name), ty.args.as_slice()) {
             (None, [ok, error]) if ty.name == "Result" => Ty::Result(Box::new(self.written(ok)?), Box::new(self.written(error)?)),
             (None, [item]) if ty.name == "List" => Ty::List(Box::new(self.written(item)?)),
+            (None, [result]) if ty.name == "Task" => Ty::Task(Box::new(self.written(result)?)),
             (None, [item]) if ty.name == "HashSet" => Ty::Set(Box::new(self.written(item)?)),
             (None, [key, value]) if ty.name == "HashMap" => Ty::Map(Box::new(self.written(key)?), Box::new(self.written(value)?)),
             (None, [params @ .., ret]) if ty.name == "Func" => {
@@ -3271,10 +3513,14 @@ impl<'a> Emitter<'a> {
             },
             _ => return Err(unknown()),
         };
-        // `shared Node?`: the holder goes around the type before `?` does, as in the checker.
-        let held = |holder: Holder, inner: Ty| match holder {
-            Holder::Shared => Ty::Shared(Box::new(inner), ty.checked),
-            Holder::Weak => Ty::Weak(Box::new(inner), ty.checked),
+        // `shared Node?`: the holder goes around the type before `?` does, as in the checker;
+        // `shared locked T` is a `shared` value around a `locked T`.
+        let held = |holder: Holder, inner: Ty| {
+            let inner = if ty.locked { Ty::Locked(Box::new(inner)) } else { inner };
+            match holder {
+                Holder::Shared => Ty::Shared(Box::new(inner), ty.checked),
+                Holder::Weak => Ty::Weak(Box::new(inner), ty.checked),
+            }
         };
         let mut holder = ty.holder;
         for suffix in &ty.suffixes {
@@ -3306,7 +3552,7 @@ impl<'a> Emitter<'a> {
     /// Whether a value of this type owns something that is freed when it ends.
     fn droppable(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader | Ty::Writer => true,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader | Ty::Writer | Ty::Task(_) => true,
             Ty::Entry(key, value) => self.droppable(key) || self.droppable(value),
             Ty::Nullable(inner) | Ty::Array(inner, _) => self.droppable(inner),
             Ty::Result(ok, error) => self.droppable(ok) || self.droppable(error),
@@ -4436,7 +4682,53 @@ impl<'a> Emitter<'a> {
         match &stmt.kind {
             // `read x as n { }`: what the `shared` value holds, lent for the block (the borrow is
             // let go after it, with the statement), under a name.
-            StmtKind::Lock { .. } => return Err(not_yet(stmt.span, "a `lock` block")),
+            // `lock a as x, b as y { }`: each value is taken by its mutex for the block, two or
+            // more in the order of their addresses, and given back after the block and on every
+            // way out of it (a `Local` whose drop line gives them back). The same value twice
+            // is a panic at the second.
+            StmtKind::Lock { items, body } => {
+                let mut pointers = Vec::new();
+                let mut names = Vec::new();
+                for item in items {
+                    let Ty::Shared(held, _) = item.value.ty.strip_borrow() else { unreachable!("the checker locks only a `shared locked` value") };
+                    let Ty::Locked(held) = &**held else { unreachable!("the checker locks only a `shared locked` value") };
+                    let held = (**held).clone();
+                    let place = self.look(&item.value)?;
+                    let temp = self.temp();
+                    let ctype = self.ctype(&held, item.value.span)?;
+                    self.pre.push(format!("{ctype}* {temp} = {place};"));
+                    names.push(self.borrowed_name(&item.name, Ty::Ref(Box::new(held)), &format!("(*{temp})"), item.name_span)?);
+                    pointers.push(temp);
+                }
+                for second in 1..items.len() {
+                    for first in 0..second {
+                        let loc = self.loc(items[second].value.span);
+                        let (a, b) = (c_string(&items[first].name), c_string(&items[second].name));
+                        self.pre.push(format!("if ((void*){} == (void*){}) sg_lock_twice({a}, {b}, {loc});", pointers[first], pointers[second]));
+                    }
+                }
+                let take = match pointers.as_slice() {
+                    [one] => format!("sg_take({one});"),
+                    [a, b] => format!("sg_take_two({a}, {b});"),
+                    _ => {
+                        let temp = self.temp();
+                        format!("void* {temp}[] = {{ {} }}; sg_take_all({temp}, {});", pointers.join(", "), pointers.len())
+                    }
+                };
+                self.pre.push(take);
+                self.flush_pre(&pad, out);
+                let kept = self.hold();
+                let give = pointers.iter().map(|pointer| format!("sg_give({pointer});")).collect::<Vec<_>>().join(" ");
+                self.scopes.push(vec![Local { name: String::new(), cname: String::new(), ty: Ty::Void, gone: false, drop: Some(give.clone()) }]);
+                let _ = writeln!(out, "{pad}{{");
+                self.block_with(body, depth + 1, out, names)?;
+                self.scopes.pop();
+                if !ends_by_leaving(body) {
+                    let _ = writeln!(out, "{pad}    {give}");
+                }
+                self.release(kept, &format!("{pad}    "), out);
+                let _ = writeln!(out, "{pad}}}");
+            }
             StmtKind::As { mutable, value, name, name_span, body } => {
                 let Ty::Shared(held, _) = value.ty.strip_borrow() else { unreachable!("the checker opens only a `shared` value") };
                 let held = (**held).clone();
@@ -6328,12 +6620,19 @@ impl<'a> Emitter<'a> {
             }
             StreamCall::Lines => Ok(format!("((sg_read_lines){{ {}, false }})", self.list_address(recv)?)),
             StreamCall::Flush => Ok(done(&format!("sg_writer_flush({})", self.list_address(recv)?))),
+            // Where several tasks run, a standard stream is written through a block of the call's
+            // own (`sg_std_put`); `SG_THREADS` is a constant, so elsewhere the test is gone.
             StreamCall::Write | StreamCall::WriteLine => {
                 let temp = self.temp();
                 let out = self.list_address(recv)?;
-                let written = self.write_into(&format!("(&{temp}->buf)"), &args[0])?;
-                let end = if call == StreamCall::WriteLine { format!(" sg_put(&{temp}->buf, \"\\n\", 1);") } else { String::new() };
-                Ok(format!("({{ sg_writer* {temp} = {out}; {written};{end} {}; }})", done(&format!("sg_writer_wrote({temp})"))))
+                let written = self.write_into(&format!("{temp}p"), &args[0])?;
+                let end = if call == StreamCall::WriteLine { format!(" sg_put({temp}p, \"\\n\", 1);") } else { String::new() };
+                let put = format!("({temp}p == &{temp}->buf ? sg_writer_wrote({temp}) : sg_std_put({temp}, {temp}p))");
+                Ok(format!(
+                    "({{ sg_writer* {temp} = {out}; sg_string {temp}b = SG_LIT(\"\", 0); sg_string* {temp}p = SG_THREADS && {temp}->std ? &{temp}b : &{temp}->buf; \
+                     {written};{end} {}; }})",
+                    done(&put)
+                ))
             }
             StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::WriteBytes => {
                 let reader = match call {
@@ -6348,7 +6647,7 @@ impl<'a> Emitter<'a> {
                         "sg_reader_bytes_r",
                         vec![reader, bytes(Ty::Ref)],
                         format!(
-                            "int64_t got = 0; int code = sg_read_bytes(a0, a1.ptr, a1.len, &got); if (code) {} \
+                            "int64_t got = 0; SG_IN_TAKE(a0); int code = sg_read_bytes(a0, a1.ptr, a1.len, &got); SG_IN_GIVE(a0); if (code) {} \
                              return ({gives}){{ .tag = 0, .u.v0 = {{ got }} }};",
                             failed("sg_io_error(code)")
                         ),
@@ -6362,7 +6661,7 @@ impl<'a> Emitter<'a> {
                         "sg_reader_line_r",
                         vec![reader, Ty::Ref(Box::new(Ty::Str))],
                         format!(
-                            "bool more = false; int64_t bad = 0; int code = sg_read_line(a0, a1, &more, &bad); \
+                            "bool more = false; int64_t bad = 0; SG_IN_TAKE(a0); int code = sg_read_line(a0, a1, &more, &bad); SG_IN_GIVE(a0); \
                              if (code == -1) {} if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ more }} }};",
                             failed("sg_io_bad_text(bad)"),
                             failed("sg_io_error(code)")
@@ -6372,7 +6671,7 @@ impl<'a> Emitter<'a> {
                         "sg_reader_text_r",
                         vec![reader],
                         format!(
-                            "int64_t start = a0->done; sg_string text; int code = sg_read_rest(a0, &text); if (code) {} \
+                            "SG_IN_TAKE(a0); int64_t start = a0->done; sg_string text; int code = sg_read_rest(a0, &text); SG_IN_GIVE(a0); if (code) {} \
                              int64_t bad = sg_utf8_bad(text.ptr, text.len); \
                              if (bad >= 0) {{ sg_drop_string(&text); {} }} return ({gives}){{ .tag = 0, .u.v0 = {{ text }} }};",
                             failed("sg_io_error(code)"),
@@ -6400,12 +6699,78 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(
             self.glue,
             "static bool sg_read_lines_next(sg_read_lines* it, {item}* out) {{ if (it->done) return false; \
-             sg_string line = SG_LIT(\"\", 0); bool more = false; int64_t bad = 0; int code = sg_read_line(it->r, &line, &more, &bad); \
+             sg_string line = SG_LIT(\"\", 0); bool more = false; int64_t bad = 0; SG_IN_TAKE(it->r); int code = sg_read_line(it->r, &line, &more, &bad); SG_IN_GIVE(it->r); \
              if (code == 0 && more) {{ *out = ({item}){{ .tag = 0, .u.v0 = {{ line }} }}; return true; }} \
              sg_drop_string(&line); it->done = true; if (code == 0) return false; \
              *out = ({item}){{ .tag = 1, .u.v1 = {{ code == -1 ? sg_io_bad_text(bad) : sg_io_error(code) }} }}; return true; }}"
         );
         Ok(())
+    }
+
+    /// `Task.run(work, a, b)`: a call of the starter of the function's type (`task_starter`),
+    /// which is given where the task starts, the function and its arguments, as a call takes
+    /// them: they go to the task, which owns them.
+    fn task_run(&mut self, args: &'a [Expr], head: bool, expr: &'a Expr) -> Res<String> {
+        let Ty::Func(params, ret) = args[0].ty.strip_borrow().clone() else { unreachable!("the checker lets `Task.run` start only a function") };
+        let func = Ty::Func(params.clone(), ret);
+        let starter = self.task_starter(&func, expr.span)?;
+        let name = match &args[0].kind {
+            ExprKind::FuncRef(name) => c_string(short_name(name)),
+            _ => "NULL".to_string(),
+        };
+        let loc = self.loc(expr.span);
+        self.sites.push(format!("{{ {name}, {loc} }}"));
+        let site = Part {
+            ctype: "const sg_site*".to_string(),
+            value: format!("(&sg_site_{})", self.sites.len() - 1),
+            effect: Effect::Reads,
+            settled: true,
+            pre: (self.pre.len(), self.pre.len()),
+            leaves: false,
+            span: expr.span,
+        };
+        let mut takes = vec![func];
+        takes.extend(params);
+        self.sigs.insert(starter.clone(), takes);
+        self.call(starter, Some(site), args, head, &expr.ty)
+    }
+
+    /// The function that starts a task through a function of this type, written once: it
+    /// puts the function and its arguments into a block that starts with the task, and starts
+    /// the thread, which calls the function with them and puts what it returns in the task.
+    fn task_starter(&mut self, func: &Ty, span: Span) -> Res<String> {
+        let Ty::Func(params, ret) = func else { unreachable!("a task starts a function") };
+        let name = mangle(func).expect("a function type has a C name");
+        let starter = format!("sg_start_{name}");
+        if !self.made.insert(starter.clone()) {
+            return Ok(starter);
+        }
+        let task_ty = Ty::Task(ret.clone());
+        let task = self.ctype(&task_ty, span)?;
+        let task = task.trim_end_matches('*').to_string();
+        let fctype = self.ctype(func, span)?;
+        let mut fields = String::new();
+        let (mut takes, mut puts, mut gives) = (Vec::new(), String::new(), Vec::new());
+        for (position, param) in params.iter().enumerate() {
+            let ctype = self.ctype(param, span)?;
+            let _ = write!(fields, " {ctype} a{position};");
+            takes.push(format!(", {ctype} a{position}"));
+            let _ = write!(puts, " r->a{position} = a{position};");
+            gives.push(format!("r->a{position}"));
+        }
+        let run = format!("sg_run_{name}");
+        let _ = writeln!(self.late_types, "typedef struct {{ {task} base; {fctype} f;{fields} }} {run};");
+        let called = format!("r->f({})", gives.join(", "));
+        let body = if **ret == Ty::Void { format!("{called};") } else { format!("r->base.result = {called};") };
+        let takes = takes.concat();
+        let _ = writeln!(self.glue_protos, "static {task}* {starter}(const sg_site* site, {fctype} f{takes});");
+        let _ = writeln!(self.glue, "static void sg_go_{name}(sg_task* task) {{ {run}* r = ({run}*)task; {body} }}");
+        let _ = writeln!(
+            self.glue,
+            "static {task}* {starter}(const sg_site* site, {fctype} f{takes}) {{\n    {run}* r = malloc(sizeof *r);\n    if (!r) abort();\n    r->f = f;{puts}\n    \
+             sg_task_start(&r->base.head, sg_go_{name}, site->name ? site->name : sg_func_name((void (*)(void))f), site->at);\n    return &r->base;\n}}"
+        );
+        Ok(starter)
     }
 
     /// `exit(code)`: what was printed goes out and the program ends. In a test it fails the
@@ -6844,6 +7209,7 @@ impl<'a> Emitter<'a> {
             // leak report.
             ExprKind::NewShared { value: inner, .. } => {
                 let Ty::Shared(target, _) = &expr.ty else { return Err(not_yet(expr.span, "this `new`")) };
+                let target = if let Ty::Locked(held) = &**target { held } else { target };
                 self.ctype(&expr.ty, expr.span)?;
                 let value = self.first_as(inner, target, head)?;
                 let made = if self.checked { self.loc(expr.span) } else { "NULL".to_string() };
@@ -7421,6 +7787,12 @@ impl<'a> Emitter<'a> {
                 _ => Err(not_yet(expr.span, "this call")),
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
+                Callee::TaskRun => self.task_run(args, head, expr),
+                // `t.wait()`: the task is taken (the checker marked the move), joined and freed.
+                Callee::Wait => {
+                    let task = self.first(recv, head)?;
+                    Ok(format!("sg_wait_{}({task})", mangle(recv.ty.strip_borrow()).expect("a task has a C name")))
+                }
                 Callee::Static { owner, name } => self.call(format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
                 // `read FolderRef this`: the method borrows the owner, not what it holds (it is not
                 // opened); `FolderRef this` takes an owner of its own.

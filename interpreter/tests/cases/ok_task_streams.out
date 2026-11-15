@@ -1,0 +1,11 @@
+Pair { left = 1, right = "printed by a task" }
+line 1 from a task
+and its end 1
+bytes
+Pair { left = 2, right = "printed by a task" }
+line 2 from a task
+and its end 2
+bytes
+32 bytes in the lines
+error line 1
+error line 2

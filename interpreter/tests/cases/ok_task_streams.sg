@@ -1,0 +1,38 @@
+// Tasks that write to `Stdout` and `Stderr` and read the input at the same time. Each write
+// and each line read is whole; which task reads which line is theirs, so they add up what
+// they read; a struct printed by two tasks at once is written whole by each. The input is
+// `ok_task_streams.in`.
+struct Pair : Formattable {
+    int left
+    string right
+}
+
+Result<void, IoError> say(int n) {
+    print(Pair { left = n, right = "printed by a task" })
+    try Stdout.writeLine($"line {n} from a task")
+    try Stdout.write($"and its end {n}\n")
+    try Stderr.writeLine($"error line {n}")
+    try Stdout.writeBytes("bytes\n".asBytes())
+    return Ok()
+}
+
+Result<nint, IoError> add() {
+    nint total = 0
+    string line = ""
+    while try Stdin.readLine(ref line) {
+        total += line.length()
+    }
+    return Ok(total)
+}
+
+Result<void, IoError> main() {
+    var a = Task.run(say, 1)
+    var b = Task.run(say, 2)
+    var left = Task.run(add)
+    var right = Task.run(add)
+    try a.wait()
+    try b.wait()
+    var total = try left.wait() + try right.wait()
+    print($"{total} bytes in the lines")
+    return Ok()
+}

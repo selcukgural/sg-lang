@@ -35,7 +35,9 @@ void main() {
     var right = Task.run(fill, share xs, 10)
     left.wait()
     right.wait()
+    // The two tasks add in an order of their own; sorted, the list is the same on every run.
     lock xs as items {
+        items.sort()
         print(items)
     }
 

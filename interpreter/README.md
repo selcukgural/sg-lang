@@ -17,7 +17,7 @@ cargo run -- build examples/primes.sg --release # the same as a release build: o
 sh bench/run.sh                                 # compiled SG against C written by hand
 ```
 
-## What runs today (14 November 2026)
+## What runs today (15 November 2026)
 
 | Area | Supported |
 |---|---|
@@ -43,7 +43,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Ownership | `new x` gives `T*`; `read x` and `ref x` lend; passing or assigning a non-copyable value moves it. `slot.take()` on a `T?` gives the value and leaves `null`; `slot.replace(value)` gives the old value and leaves the new one |
 | Several owners | `new shared x` gives a `shared T`, one of the owners of a value on the heap; `share x` makes one more without moving `x` (so does `x.clone()`), and a move hands one over. What a `shared T` points to is read (`node.value`, a method that takes `read this`, `match`, `for item in read node.items`, `read node` where a `read T` goes) and never written or taken out; what a `shared checked T` points to is changed too (the next row). `weak x` gives a `weak T`, which looks without owning: `share w` gives a `shared T?`, `null` once the last owner is gone. `same(a, b)` tells whether two point to one object, `==` compares what they point to |
 | Changed through several owners | `new shared checked x` gives a `shared checked T`: what it points to is changed through any of its owners (`a.count += 1`, `a.items.add(x)`, a method that takes `ref this`, `ref a` where a `ref T` goes), and each access is checked against the borrows of it in progress, one that changes it or any number that read it. A read or a write borrows nothing after it; a value lent to a call is borrowed until the call returns, the head of a `for` for the loop, a `match` and an `is` with names for the statement. `read x as n { ... }` and `ref x as n { ... }` lend it for a block. A conflict through the same variable is a compile error, one through another variable a panic that shows both lines. A method can take the owner itself, `read FolderRef this`, so that it can write `share this` and `weak this`. The `shared` values still alive when a program or a test ends hold each other up and are reported (`leak: ...`; in compiled code by a debug build) |
-| Tasks | `Task.run(work, x, share total)` starts `work(x, share total)` as a task and gives a `Task<R>`, `R` being what `work` returns; a `Func` can be started too. `t.wait()` waits for it and gives that value (`try t.wait()` passes its error on). A task that is not waited for on every path is a compile error, and so is `Task.run(...)` alone or dropped with `_ =`. What a task is given and gives back owns all it holds: no borrow, no `shared checked` value, no `Task` (the thread rule, also inside fields). In the interpreter a task runs on a thread of its own when it is waited for, so the output is the same on every run; a panic inside one names the line that started it |
+| Tasks | `Task.run(work, x, share total)` starts `work(x, share total)` as a task and gives a `Task<R>`, `R` being what `work` returns; a `Func` can be started too. `t.wait()` waits for it and gives that value (`try t.wait()` passes its error on). A task that is not waited for on every path is a compile error, and so is `Task.run(...)` alone or dropped with `_ =`. What a task is given and gives back owns all it holds: no borrow, no `shared checked` value, no `Task` (the thread rule, also inside fields). In the interpreter a task runs on a thread of its own when it is waited for, so the output is the same on every run; compiled code starts a thread of the system for it at once. A panic inside one names the line that started it |
 | Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
@@ -253,7 +253,12 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (206 of 880 programs for now; the others are programs the checker rejects, on purpose, and those with tasks, which the back end takes in the fifty-eighth slice).
+memory behind (217 of 884 programs for now; the others are programs the checker rejects, on purpose). A
+program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
+what the program owned (382). A
+program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
+threads reach the same memory without a lock between them; before the first of them, the thread sanitizer
+is tried on a C program that races on purpose, and a check that does not see that race fails the test.
 
 What is compiled so far: every integer type (`sbyte` to `nuint`), `bool`; text (`string`, `read string`, `ref string`:
 constants, `text[i]`, ranges, `==` and `<`, `.length()`, `.clone()`, `$"..."` and `.toString()`); functions and
@@ -331,8 +336,10 @@ report) were written in the checker and the interpreter; since the fifty-sixth t
 `shared` value is a pointer with the counts of its owners and of its `weak` lookers in front of it, a
 `shared checked` one has the borrows of it in progress there as well, and a debug build keeps the values
 that are alive in a list for the leak report (347-355). The fifty-seventh slice (tasks, `locked` and
-`lock`) is in the checker and the interpreter; compiled code says it is not there yet, and the
-fifty-eighth slice brings it. What is still missing is an error that names it (not silence): the few positions listed with the
+`lock`) was written in the checker and the interpreter, and since the fifty-eighth it is compiled: a task
+is a thread of the system with a stack of 8 MB, a `locked` value has a mutex in front of its counts, and a
+`lock` block takes its values in the order of their addresses and gives them back on every way out
+(371-383). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -377,6 +384,7 @@ hand with no checks):
 | `classes`: ten million bytes sorted twenty times into the classes of a lexer by a `match` of ranges and `or` (`'a'..='z' or 'A'..='Z' or '_'`) | 0.239 s | 0.299 s | 0.274 s | 0.87 |
 | `rewrite`: two hundred thousand lines gone over twenty times, the tabs replaced by four spaces and a word by another with `replaceAll`, and an indent made with `repeat` | 0.588 s | 0.597 s | 0.625 s | 0.94 |
 | `tree`: the design's folder tree, 111,111 `shared checked` folders that look at their parent with `weak`, each adding a size to every folder above it, built and freed twenty times | 0.095 s | 0.102 s | 0.062 s | 1.53 |
+| `tasks`: four tasks at a time over the numbers below 400,000, ten times; each adds up Collatz lengths and adds them to a `shared locked` total every 100 numbers | 0.115 s | 0.188 s | 0.115 s | 1.00 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -688,7 +696,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/types.rs` | Types as the checker sees them |
 | `src/check.rs` | Static checks: names, types, `null` safety, use after move (per variable and per field), `match` covering every variant, `return` on every path, unused `Result`, what `try` may pass on, what `Copyable` and `Formattable` promise. Writes resolved details (literal types, field indexes, implicit conversions, what each call runs) into the tree |
 | `src/interp.rs` | Runs the checked tree; only data-dependent failures (panics) are left to it |
-| `src/emit_c.rs` | The back end: writes the checked tree as C, with the same panics |
+| `src/emit_c.rs` | The back end: writes the checked tree as C, with the same panics; tasks are threads of the system |
 | `src/opening.rs` | After the checker: where a `shared checked` value is reached and for how long it is borrowed (the `Open` and `Within` nodes the interpreter follows), the conflicts through the same variable that are certain before the program runs, and the borrows that would outlive their line |
 | `src/waits.rs` | After the checker, on the whole program: which functions wait (take a lock or wait for a task, themselves or through the functions they call), and what waits inside a `lock` block |
 | `src/sums.rs` | For the back end: the sums in a loop that cannot overflow for a number of rounds, so that a checked build runs those rounds without their test |
@@ -1175,8 +1183,8 @@ Choices made in the twenty-fifth slice (printing without an allocation, values t
     the file each time. Measured on `show` on 13 November, with the generated C changed by hand: 0.465 s
     straight into the output against 0.170 s through the block (C's `printf`: 0.358 s). Cost at run time:
     one copy of the line, and one test after it for the size of the block (it does not show in the
-    measurement). To remember: the block is one for the program; with threads it has to be one for each
-    thread. Approved on 13 November, with the 64 KB limit added that day.
+    measurement). The block is one for the program, and one for each thread where tasks run (376).
+    Approved on 13 November, with the 64 KB limit added that day.
 55. **`f.write(...)` writes a struct straight into the text it is adding to**, as a piece between the
     others, with no text of its own, always. What makes that possible is a rule of the language, decided
     on 13 November: **the values of a line (`$"..."`) are computed first, from left to right, and written
@@ -1315,7 +1323,7 @@ name), approved on 13 November 2026:
     does not see that leak or cannot be run: a check that checks nothing does not pass. A program the C
     compiler rejects under the sanitizers is a failure too, where it was skipped before. With
     `SG_NO_SANITIZERS=1` both are left out and the test says so. Cost: about half a minute more for
-    `cargo test`. The path on Linux has not been run yet.
+    `cargo test`. The path on Linux was first run in the fifty-eighth slice (382, 383).
 
 Choices made in the twenty-ninth slice (the test command on compiled code), approved on 13 November 2026:
 
@@ -2992,8 +3000,80 @@ approved on 14 November 2026:
      task given to a function and one given back, a `Func`, a task in a loop, a `Task<void>`),
      `ok_task_order`, `ok_lock_together` (two accounts locked together from two tasks, a list filled by two
      tasks, a `weak locked` look), `panic_task`, `panic_lock_same_value`, `leak_locked_cycle`, a test file
-     (`tests_tasks`) and fifty-two tests of errors. Compiled code refuses each with "is not in the C back
-     end yet".
+     (`tests_tasks`) and fifty-two tests of errors. Compiled code refused each with "is not in the C back
+     end yet" until the fifty-eighth slice.
+
+Choices made in the fifty-eighth slice (tasks, `locked` and `lock` in compiled code), approved on 15 November 2026:
+
+371. **A task is a thread of the system**, started by `Task.run` at once, with a stack of 8 MB on every
+     system, as `main` has (the design's "The stack of a task"). `Task.run` takes one allocation: a block
+     that holds the thread, what the function will return, the function and its arguments, which the
+     task owns from then on. A `Task<R>` is a pointer to that block; `wait` joins the thread, takes what
+     the function returned and frees the block. An exit with an error that lets a task go (357) joins it
+     there and drops what it returned. For each type of function that is started there is one starter,
+     so a named function and a `Func` go the same way. A system that refuses the thread is a panic at the
+     line of `Task.run`, with the system's words, as in the interpreter.
+372. **A panic names the task it happened in, the innermost one**: in a task started by a task, the line
+     that started the inner one, where the line that stopped is. A panic that already shows a second place
+     (a conflict of a `shared checked` value names the borrow in progress) keeps it, as the message has room
+     for one. The interpreter named the outermost task and replaced such a place; it now does the same as
+     compiled code (`panic_task_inner`).
+373. **A panic holds the output to the end of the process**: from its first line it holds the standard
+     output and the standard error, so a second panic at the same time waits behind it and never mixes into
+     it, and no task writes a line after it (the design's "A panic in a task"). A line of `print` is one call
+     of `printf` and `printError` one of `fprintf`, which C writes whole, so two tasks never mix their lines
+     (the design's "`print` from several tasks"); nothing else was needed for it.
+374. **A `locked` value has a mutex of the system in front of its counts** (`pthread_mutex_t`: 64 bytes on
+     macOS, 48 on Linux, with the alignment). `lock x as c` takes it and gives it back after the block and
+     on every way out of it (`return`, `break`, `continue`, `try`). Two values are taken in the order of
+     their addresses, three or more sorted first, so tasks that lock the same values never wait for each
+     other in a circle; the same value through two names is tested for each pair before anything is taken,
+     and is the interpreter's panic at the second.
+375. **The standard streams are safe from several tasks**: a write to `Stdout` or `Stderr` is put together
+     in a block of the call's own and written with one call of C, so it comes out whole, and the first
+     error is kept atomically; the input is read by one task at a time (a mutex around each `readLine`,
+     `readText`, `readBytes` and each line of `lines()`), so each line goes whole to one task. Only in a
+     program with tasks or `locked` values: elsewhere `Stdout` writes through its own block as before.
+376. **The block where printed values are written (54) is one for each thread** in a program with tasks,
+     and a task gives it back when it ends; two tasks that print a struct at once each write it whole.
+377. **The list of `shared` values that are alive** (the leak report of a debug build) is changed under a
+     lock where several threads run; the counts were atomic already (348). The borrows of a `shared
+     checked` value are not locked, since such a value stays in one task (the thread rule).
+378. **A program pays for threads only when it has tasks or `locked` values**: then the C has `SG_THREADS`,
+     includes the threads of the system and is linked with `-pthread` (which `sg build` passes always); a
+     program without them has no lock, no value of its own for each thread and no test of a stream.
+379. **A task started through a `Func` finds the name of its function by its address**, among the
+     functions of the program, so its panic says `in the task `twice``, as the interpreter does; a named
+     function has its name written at the line that starts it.
+380. **The tests**: where tasks print in an order of their own, a `.unordered` file next to the program says
+     so and the compiled output is compared line by line in any order (`ok_task_order`, `ok_task_streams`);
+     the interpreter's output is still compared as it is. `panic_task` waits for the first task before it
+     starts the second, so the 5 is printed on every run (the output is the same, a line lower), and
+     `ok_lock_together` sorts the list two tasks filled. New: `ok_lock_ways_out` (a `lock` left by
+     `return`, `break` and `continue`, three values locked together, a `shared locked T?`),
+     `ok_task_streams` (two tasks writing to `Stdout` and `Stderr` and printing a struct, two reading the
+     input) and `panic_task_inner`. Every program with tasks compiles, gives the interpreter's output, and
+     runs clean under the address, undefined-behaviour and thread sanitizers, and the leak check where it
+     does not end in a panic (382).
+381. **Measured** (`tasks`): four tasks at a time, ten times, over the numbers below 400,000, adding Collatz
+     lengths to a `shared locked` total every 100 numbers: 0.115 s, the time of the same program in C with
+     threads of the system and a mutex (1.00). A checked build takes 0.188 s, which is the overflow test of
+     `3 * n + 1`, as in `collatz`. On Linux (383) 0.168 s against 0.166 s for C (1.01).
+382. **A program that ends in a panic is not looked at for leaks.** A panic does not unwind (the row "Copy
+     and cleanup"): what the program owned is given back by the system when the process ends, not freed.
+     Whether a leak tool still finds a pointer to it is up to the C compiler: on macOS the pointer of
+     `panic_fallback_panics` happened to be kept in a register, so `leaks` passed, while gcc on Linux let
+     it go and the sanitizer reported a leak (this was so before the slice too). Such a program still
+     runs under the sanitizers and must give the interpreter's output; `cargo test` counts it and says
+     how many there were (67 of 217), and every other program must leave nothing behind. This is the
+     rule the compiled tests already had (89): a test that fails is not looked at. The runs whose output
+     is compared now tell Linux's address sanitizer not to look for leaks at the end, since the leak
+     check is a run of its own and its report would be added to the output.
+383. **Linux tried** in a container (Debian, gcc 14, aarch64, eight cores): `cargo test --release` passes,
+     with the same counts as on macOS (217 of 884 compiled, 11 under the thread sanitizer, 150 left no
+     memory behind, compiled tests 12 of 15), the leak check through the sanitizer and its self-test
+     included. `-pthread` and `_POSIX_C_SOURCE` (for `flockfile` under glibc) are enough. There is no
+     CI; this was run by hand.
 
 ## Slower than C, and could be better
 
@@ -3027,8 +3107,9 @@ check off.
   the C compiler keeps the arithmetic. Rust pays the same. No candidate yet.
 - **Several owners** (`tree`, 1.53 times C with plain pointers, choice 354): of the 0.033 s, the atomic
   counts are about 0.010 s and the checks of the borrows about 0.003 s; the rest is the larger blocks and
-  the owner taken and let go at each step up the tree. Candidates: counts that are not atomic while a
-  program has one thread (the design keeps them atomic, 348), and fewer owners taken on a walk (an owner
+  the owner taken and let go at each step up the tree. Candidates: counts that are not atomic in a
+  program with no tasks, which the compiler now knows (`SG_THREADS`, 378; the design keeps them atomic,
+  348), and fewer owners taken on a walk (an owner
   of the parent is needed only because a `weak` look gives one).
 - **Checking that a line is UTF-8** (`lines`, 1.08 times `getline`, which checks nothing; without the
   check the SG program takes 0.058 s against 0.090 s): the check looks at eight bytes at a time while they
@@ -3056,8 +3137,7 @@ check off.
 - Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
   in the design), and so an alias with type parameters (`using Link<T> = ...`).
-- Tasks, `locked` and `lock` in compiled code (the fifty-eighth slice). A list of tasks and waiting for
-  several at once (`Task.whenAll`, `Task.whenAny`), async, channels; a method or a function of a struct
+- A list of tasks and waiting for several at once (`Task.whenAll`, `Task.whenAny`), async, channels; a method or a function of a struct
   started as a task (a `Func` is a function written at the top level). `checked` on its own, in a value with one
   owner (`checked int hits` in a plain struct, the design's `RefCell` outside `Rc`). `List<shared T>.clone()`,
   since a list has no `clone` yet, so the design's hint "loop over a copy" is not given. A conflict through two
@@ -3163,5 +3243,7 @@ deadlock. In the interpreter a task runs on a thread of its own when it is waite
 same on every run; the counter of the syntax draft and the two files of the examples run as the design wrote
 them.
 
-What comes next was chosen with the split of that work: tasks, `locked` and `lock` in compiled code, with
-threads of the system, a stack of 8 MB for each task, and a lock for each `locked` value.
+All of it is compiled too: a task is a thread of the system with a stack of 8 MB, a `locked` value has a
+mutex in front of its counts, the output stays whole and a panic names its task as in the interpreter, and
+every program with tasks runs clean under the thread sanitizer. Four tasks adding to a locked total take the
+time of the same program in C with threads and a mutex.

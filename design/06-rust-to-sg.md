@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 14 November 2026, the fifty-seventh slice.
+Last brought up to date: 15 November 2026, the fifty-eighth slice.
 
 ## Functions and variables
 
@@ -181,17 +181,17 @@ Last brought up to date: 14 November 2026, the fifty-seventh slice.
 
 | Rust | SG | Status | Note |
 |---|---|---|---|
-| `Arc::new(Mutex::new(v))` on a value you already have | `new shared locked v` | interpreter | `v` is moved in; a value is locked from where it is made, never later in place |
-| `thread::spawn(move \|\| work(x))` | `Task.run(work, x)` | interpreter | The function and what it is given are written apart |
-| `JoinHandle<R>` | `Task<R>` | interpreter | |
-| `h.join().unwrap()` | `t.wait()` | interpreter | A panic stops the process, so there is nothing to unwrap |
-| dropping a `JoinHandle` (the thread goes on) | a compile error | interpreter | Every task is waited for on every path |
-| `Send`, `Sync` | the thread rule | interpreter | No borrow, no `shared checked`, no `Task` crosses, also inside fields |
-| `Arc<Mutex<T>>` | `shared locked T` | interpreter | |
-| `let mut c = m.lock().unwrap(); *c += 1;` | `lock m as c { c += 1 }` | interpreter | What it holds is reached only inside the block |
-| two locks, one after the other | `lock a as x, b as y { }` | interpreter | Taken in a fixed order; a lock inside a lock is an error |
-| a lock held across a wait | a compile error | interpreter | Nothing in a `lock` block waits, so locks and waits cannot deadlock |
-| lock poisoning | none | interpreter | A panic stops the process |
+| `Arc::new(Mutex::new(v))` on a value you already have | `new shared locked v` | built | `v` is moved in; a value is locked from where it is made, never later in place |
+| `thread::spawn(move \|\| work(x))` | `Task.run(work, x)` | built | The function and what it is given are written apart |
+| `JoinHandle<R>` | `Task<R>` | built | |
+| `h.join().unwrap()` | `t.wait()` | built | A panic stops the process, so there is nothing to unwrap |
+| dropping a `JoinHandle` (the thread goes on) | a compile error | built | Every task is waited for on every path |
+| `Send`, `Sync` | the thread rule | built | No borrow, no `shared checked`, no `Task` crosses, also inside fields |
+| `Arc<Mutex<T>>` | `shared locked T` | built | |
+| `let mut c = m.lock().unwrap(); *c += 1;` | `lock m as c { c += 1 }` | built | What it holds is reached only inside the block |
+| two locks, one after the other | `lock a as x, b as y { }` | built | Taken in a fixed order; a lock inside a lock is an error |
+| a lock held across a wait | a compile error | built | Nothing in a `lock` block waits, so locks and waits cannot deadlock |
+| lock poisoning | none | built | A panic stops the process |
 | `static`, `thread_local!` | none | not in SG | No global variables: what tasks share is in the arguments of `Task.run` |
 | `async fn`, `.await`, tokio | `async`, `await t`, one built-in runtime | designed | C#'s behaviour, compiled as Rust compiles it ("Async, the direction") |
 

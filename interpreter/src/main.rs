@@ -34,8 +34,8 @@ fn build(path: &str, out: Option<String>, release: bool, tests: bool) -> ExitCod
     }
     let level = if release { "-O2" } else { "-O0" };
     // No fused multiply-add: a fractional result is the same as in the interpreter. `-lm`
-    // for the math functions (`sqrt`, `fmod`).
-    let status = std::process::Command::new("cc").args(["-std=c11", level, "-ffp-contract=off", "-o", &out]).arg(&c_file).arg("-lm").status();
+    // for the math functions (`sqrt`, `fmod`), `-pthread` for the threads of tasks.
+    let status = std::process::Command::new("cc").args(["-std=c11", level, "-ffp-contract=off", "-o", &out]).arg(&c_file).arg("-lm").arg("-pthread").status();
     let _ = std::fs::remove_file(&c_file);
     match status {
         Ok(status) if status.success() => ExitCode::SUCCESS,

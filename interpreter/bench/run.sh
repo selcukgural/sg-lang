@@ -36,12 +36,12 @@ PY
 }
 
 printf "%-10s %12s %12s %10s %14s\n" program "release (s)" "checked (s)" "C (s)" "release / C"
-for name in fib primes collatz words list expr parse vector counts show lookup buffer bits hash nbody numbers fields lines copy bytes table blocks keywords classes rewrite tree; do
+for name in fib primes collatz words list expr parse vector counts show lookup buffer bits hash nbody numbers fields lines copy bytes table blocks keywords classes rewrite tree tasks; do
     ./target/release/sg build "bench/$name.sg" --release -o "$out/$name-release"
     # The checked build, optimised like the others, to see what the check alone costs.
     ./target/release/sg emit-c "bench/$name.sg" > "$out/$name-checked.c"
-    cc -std=c11 -O2 -ffp-contract=off -o "$out/$name-checked" "$out/$name-checked.c" -lm
-    cc -std=c11 -O2 -ffp-contract=off -o "$out/$name-c" "bench/$name.c" -lm
+    cc -std=c11 -O2 -ffp-contract=off -o "$out/$name-checked" "$out/$name-checked.c" -lm -pthread
+    cc -std=c11 -O2 -ffp-contract=off -o "$out/$name-c" "bench/$name.c" -lm -pthread
     input="$out/$name.in"
     [ -e "$input" ] || input=/dev/null
     [ "$("$out/$name-release" < "$input")" = "$("$out/$name-c" < "$input")" ] || { echo "$name: the two programs print different things"; exit 1; }

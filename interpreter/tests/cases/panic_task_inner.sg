@@ -1,0 +1,14 @@
+// A panic in a task started by a task names the inner task, where the line that stopped is.
+int divide(int x) {
+    return 10 / x
+}
+
+int outer(int x) {
+    var inner = Task.run(divide, x)
+    return inner.wait()
+}
+
+void main() {
+    var t = Task.run(outer, 0)
+    print(t.wait())
+}
