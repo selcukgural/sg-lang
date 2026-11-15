@@ -22,9 +22,9 @@ type Res<T> = Result<T, Diag>;
 /// The types of what goes over a text: they have names in messages, not yet in a program.
 const TEXT_ITERATORS: &[&str] = &["Chars", "Split", "SplitWhitespace", "Lines"];
 
-const INTERFACES_NOT_YET: &[&str] = &["Clonable", "Disposable", "Closable", "Iterator"];
+const INTERFACES_NOT_YET: &[&str] = &["Clonable", "Iterator"];
 
-const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable", "Comparable"];
+const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable", "Comparable", "Disposable", "Closable"];
 
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error"];
 
@@ -39,6 +39,12 @@ struct StructInfo {
     readonly: Vec<bool>,
     /// Functions written in the struct body, with or without `this`.
     methods: HashMap<String, FuncSig>,
+    /// Written with `: Disposable`: its `dispose` runs when its last owner ends.
+    disposable: bool,
+    /// Written with `: Closable`: a local that holds one is closed before it ends.
+    closable: bool,
+    /// A type of C declared in an `extern` block, seen only behind a raw pointer.
+    opaque: bool,
 }
 
 struct EnumInfo {
@@ -76,6 +82,9 @@ struct Names {
     spans: HashMap<String, Span>,
     /// What each alias names, by full name: `using NodeRef = shared Node`.
     aliases: HashMap<String, TypeExpr>,
+    /// The types of C declared in `extern` blocks (`struct sqlite3`), by full name: they are
+    /// written only behind a raw pointer.
+    opaque: HashSet<String>,
 }
 
 thread_local! {
@@ -327,7 +336,7 @@ fn text_error() -> StructDecl {
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
     let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, raw: 0, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
     let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere };
-    StructDecl { public: true, name: TEXT_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: vec![position], methods: Vec::new() }
+    StructDecl { public: true, name: TEXT_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: vec![position], methods: Vec::new(), opaque: false }
 }
 
 /// What `int.parse` and the other `parse` functions give when the text is not a number.
@@ -356,7 +365,7 @@ const CANCELLED: &str = "Cancelled";
 fn cancelled() -> StructDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
-    StructDecl { public: true, name: CANCELLED.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: Vec::new(), methods: Vec::new() }
+    StructDecl { public: true, name: CANCELLED.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: Vec::new(), methods: Vec::new(), opaque: false }
 }
 
 /// What reading or writing a file, or the input of the program, gives when it fails.
@@ -611,6 +620,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             return Err(Diag::error(span, format!("type `{name}` is defined twice")));
         }
     }
+    names.opaque = prog.structs.iter().filter(|decl| decl.opaque).map(|decl| decl.name.clone()).collect();
     for alias in &prog.aliases {
         if let Some(mode) = alias.ty.mode {
             let word = if mode == Mode::Read { "read" } else { "ref" };
@@ -672,15 +682,20 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 "Equatable" => equatable.insert(name.clone()),
                 "Hashable" => names.keys.insert(name.clone()),
                 "Comparable" => comparable.insert(name.clone()),
+                "Disposable" | "Closable" if prog.enums.iter().any(|decl| decl.name == *name) => {
+                    return Err(Diag::error(*span, format!("an enum cannot be `{interface}` for now: a struct can"))
+                        .note("a struct that holds the enum can be, and its `dispose` sees the enum whole"));
+                }
+                "Disposable" | "Closable" => false,
                 _ if INTERFACES_NOT_YET.contains(&interface.as_str()) => {
                     return Err(Diag::error(*span, format!("`{interface}` is not in the interpreter yet"))
-                        .note("interfaces for now: `Copyable`, `Formattable`, `Equatable`, `Hashable` and `Comparable`"));
+                        .note("interfaces for now: `Copyable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable` and `Closable`"));
                 }
                 _ => {
                     let diag = Diag::error(*span, format!("there is no interface named `{interface}`"));
                     return Err(match nearest(interface, INTERFACES.iter().copied()) {
                         Some(close) => diag.hint(format!("`{close}`")),
-                        None => diag.note("interfaces for now: `Copyable`, `Formattable`, `Equatable`, `Hashable` and `Comparable`; your own are not in the interpreter yet"),
+                        None => diag.note("interfaces for now: `Copyable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable` and `Closable`; your own are not in the interpreter yet"),
                     });
                 }
             };
@@ -708,7 +723,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         let methods = type_methods(&decl.name, &decl.methods, taken, "a field", &names, &formattable)?;
         let open = decl.fields.iter().map(|field| field.public).collect();
         let readonly = decl.fields.iter().map(|field| field.readonly).collect();
-        structs.insert(decl.name.clone(), StructInfo { fields, open, readonly, methods });
+        let said = |interface: &str| decl.interfaces.iter().any(|(name, _)| name == interface);
+        let (disposable, closable, opaque) = (said("Disposable"), said("Closable"), decl.opaque);
+        structs.insert(decl.name.clone(), StructInfo { fields, open, readonly, methods, disposable, closable, opaque });
     }
 
     let mut enums: HashMap<String, EnumInfo> = HashMap::new();
@@ -801,6 +818,8 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         };
         promises(&decl.name, decl.name_span, Ty::Enum(decl.name.clone()), &decl.methods, &info.methods, fields, &sets)?;
     }
+
+    disposal_rules(prog, &structs, &copyable)?;
 
     let mut sigs: HashMap<String, FuncSig> = HashMap::new();
     for func in &prog.funcs {
@@ -1026,6 +1045,70 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     crate::waits::check(prog)
 }
 
+/// Whether this is a raw pointer to a type of C declared in an `extern` block.
+fn points_at_opaque(ty: &Ty, structs: &HashMap<String, StructInfo>) -> bool {
+    matches!(ty.strip_borrow(), Ty::Raw(item) if matches!(&**item, Ty::Struct(name) if structs.get(name).is_some_and(|info| info.opaque)))
+}
+
+/// Whether a local of this type is closed before it ends: `None` for a `StreamWriter`, the
+/// short name of a struct written with `: Closable`.
+fn closable<'s>(ty: &'s Ty, structs: &HashMap<String, StructInfo>) -> Option<Option<&'s str>> {
+    match ty {
+        Ty::Writer => Some(None),
+        Ty::Struct(name) if structs.get(name).is_some_and(|info| info.closable) => Some(Some(short_name(name))),
+        _ => None,
+    }
+}
+
+/// `: Disposable` and `: Closable` on a struct of the program: `dispose` is the one method that
+/// runs when the last owner ends, written as `void dispose(ref this)`, and only there; `close`
+/// takes the value and says how closing went.
+fn disposal_rules(prog: &Program, structs: &HashMap<String, StructInfo>, copyable: &HashSet<String>) -> Res<()> {
+    for decl in &prog.structs {
+        let info = &structs[&decl.name];
+        let short = short_name(&decl.name);
+        let said = |interface: &str| decl.interfaces.iter().find(|(name, _)| name == interface).map(|(_, span)| *span);
+        let dispose = decl.methods.iter().find(|method| method.name == "dispose");
+        match (said("Disposable"), dispose) {
+            (Some(span), None) => {
+                return Err(Diag::error(span, format!("`{short}` is `Disposable`, so it says what is done when it ends"))
+                    .hint("a method `void dispose(ref this) { ... }`"));
+            }
+            (None, Some(method)) => {
+                return Err(Diag::error(method.name_span, "`dispose` runs by itself only on a `Disposable` type, and it is called by nothing else")
+                    .hint(format!("`struct {short} : Disposable`, or another name for the method")));
+            }
+            (Some(_), Some(method)) => {
+                let sig = &info.methods["dispose"];
+                let shaped = sig.this == Some(This::Ref) && sig.holder.is_none() && sig.params.is_empty() && sig.ret == Ty::Void && !sig.is_async;
+                if !shaped {
+                    let diag = Diag::error(method.name_span, "`dispose` is written `void dispose(ref this)`: it takes the value it ends and nothing else, and gives nothing");
+                    return Err(match (sig.is_async, sig.ret == Ty::Void) {
+                        (true, _) => diag.note("it runs where the value ends, which may be in code that is not async, so it does not await"),
+                        (false, false) => diag.note("nobody calls it, so there is nobody to give a value or an error to; a `close(this)` that gives a `Result` can, with `: Closable`"),
+                        _ => diag,
+                    });
+                }
+                if copyable.contains(&decl.name) {
+                    let span = said("Copyable").expect("it is copyable");
+                    return Err(Diag::error(span, format!("`{short}` cannot be both `Copyable` and `Disposable`: each copy would be disposed of"))
+                        .note("a copy of a value that gives something back when it ends would give it back twice"));
+                }
+            }
+            (None, None) => {}
+        }
+        if let Some(span) = said("Closable") {
+            let close = info.methods.get("close");
+            let shaped = close.is_some_and(|sig| sig.this == Some(This::Value) && sig.holder.is_none() && matches!(sig.ret, Ty::Result(..)) && !sig.is_async);
+            if !shaped {
+                let diag = Diag::error(span, format!("`{short}` is `Closable`, so it has a `close` that takes the value and says how closing went"));
+                return Err(diag.hint(format!("`Result<void, E> close(this) {{ ... }}`, with the error type `{short}` gives")));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// What each `shared locked T` holds follows the thread rule: several tasks reach it.
 fn thread_rule_of_locked(structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, names: &Names) -> Res<()> {
     for (inner, span) in LOCKED.with(|found| std::mem::take(&mut *found.borrow_mut())) {
@@ -1179,6 +1262,11 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
         }
         Some(base) => base,
         None => match names.full(&ty.name, ty.span)?.and_then(|full| names.kinds.get(&full).map(|kind| (full, *kind))) {
+            Some((full, TypeKind::Struct)) if names.opaque.contains(&full) && (ty.raw == 0 || !ty.suffixes.is_empty() || ty.holder.is_some()) => {
+                let short = short_name(&full);
+                return Err(Diag::error(ty.span, format!("`{short}` is a type of C whose insides SG does not see, so it is only pointed at"))
+                    .hint(format!("`raw {short}`, as C writes `{short}*`")));
+            }
             Some((full, TypeKind::Struct)) => Ty::Struct(full),
             Some((full, TypeKind::Enum)) => Ty::Enum(full),
             Some((full, TypeKind::Alias)) => {
@@ -2336,24 +2424,31 @@ impl<'a> Checker<'a> {
             if keeps_tasks(&var.declared) {
                 return Err(self.unwaited(var, exit));
             }
-            if var.declared != Ty::Writer {
+            let Some(own) = closable(&var.declared, self.structs) else { continue };
+            // The type's own methods are what closes it.
+            if var.name == "this" {
                 continue;
             }
             let name = &var.name;
-            let hint = match self.is_async {
-                true => format!("`try await {name}.closeAsync()`; to drop the error on purpose, `_ = await {name}.closeAsync()`"),
-                false => format!("`try {name}.close()`; to drop the error on purpose, `_ = {name}.close()`"),
+            let hint = match (self.is_async, own) {
+                (true, None) => format!("`try await {name}.closeAsync()`; to drop the error on purpose, `_ = await {name}.closeAsync()`"),
+                _ => format!("`try {name}.close()`; to drop the error on purpose, `_ = {name}.close()`"),
             };
             let ends = if var.param { "the function ends" } else { "its block ends" };
-            let diag = match (exit, var.moved.whole.is_some()) {
-                (_, true) => Diag::error(var.at, format!("`{name}` is closed on some paths but not on all of them, so an error writing its buffer could be lost"))
-                    .note("close it on every path, or once where the paths meet"),
-                (Some((span, word)), false) => Diag::error(span, format!("`{name}` is not closed at this `{word}`, so an error writing its buffer would be lost"))
-                    .related(var.at, "it is opened here"),
-                (None, false) => Diag::error(var.at, format!("`{name}` is not closed before {ends}, so an error writing its buffer would be lost")),
+            let lost = match own {
+                None => "an error writing its buffer",
+                Some(_) => "the error its `close` gives",
             };
-            let diag = match exit {
-                Some((_, "exit")) => diag.note("`exit` ends the program at once: a writer that is not closed loses what its buffer holds"),
+            let diag = match (exit, var.moved.whole.is_some()) {
+                (_, true) => Diag::error(var.at, format!("`{name}` is closed on some paths but not on all of them, so {lost} could be lost"))
+                    .note("close it on every path, or once where the paths meet"),
+                (Some((span, word)), false) => Diag::error(span, format!("`{name}` is not closed at this `{word}`, so {lost} would be lost"))
+                    .related(var.at, if own.is_none() { "it is opened here" } else { "it is made here" }),
+                (None, false) => Diag::error(var.at, format!("`{name}` is not closed before {ends}, so {lost} would be lost")),
+            };
+            let diag = match (exit, own) {
+                (Some((_, "exit")), None) => diag.note("`exit` ends the program at once: a writer that is not closed loses what its buffer holds"),
+                (Some((_, "exit")), Some(_)) => diag.note("`exit` ends the program at once, and nothing is closed or disposed of"),
                 _ => diag,
             };
             return Err(diag.hint(hint));
@@ -3421,15 +3516,18 @@ impl<'a> Checker<'a> {
                                 .related(var.at, "it is declared here")
                                 .hint(format!("wait for it first: `{name}.wait()`")));
                         }
+                        let structs = self.structs;
                         let var = self.var(name, target.span)?;
-                        if var.declared == Ty::Writer && (var.moved.whole.is_none() || var.moved.partly) {
-                            let hint = match is_async {
-                                true => format!("close it first: `try await {name}.closeAsync()`; to drop the error on purpose, `_ = await {name}.closeAsync()`"),
-                                false => format!("close it first: `try {name}.close()`; to drop the error on purpose, `_ = {name}.close()`"),
+                        if let Some(own) = closable(&var.declared, structs).filter(|_| var.moved.whole.is_none() || var.moved.partly) {
+                            let hint = match (is_async, own) {
+                                (true, None) => format!("close it first: `try await {name}.closeAsync()`; to drop the error on purpose, `_ = await {name}.closeAsync()`"),
+                                _ => format!("close it first: `try {name}.close()`; to drop the error on purpose, `_ = {name}.close()`"),
                             };
-                            return Err(Diag::error(target.span, format!("`{name}` is given another writer while the one it holds is still open, so an error writing its buffer would be lost"))
-                                .related(var.at, "it is declared here")
-                                .hint(hint));
+                            let msg = match own {
+                                None => format!("`{name}` is given another writer while the one it holds is still open, so an error writing its buffer would be lost"),
+                                Some(short) => format!("`{name}` is given another `{short}` while the one it holds is not closed, so the error its `close` gives would be lost"),
+                            };
+                            return Err(Diag::error(target.span, msg).related(var.at, "it is declared here").hint(hint));
                         }
                         let var = self.var(name, target.span)?;
                         var.moved = Moved::default();
@@ -4426,6 +4524,9 @@ impl<'a> Checker<'a> {
                             return Err(Diag::error(recv.span, format!("this is `{ty}`: what it looks at may be gone, so `.{name}` cannot reach it"))
                                 .hint(format!("ask for an owner first: `var owner = share {text}`, which is `null` if it is gone")));
                         }
+                        Ty::Raw(_) if points_at_opaque(&ty, self.structs) => {
+                            return Err(Diag::error(*name_span, format!("a `{ty}` points at a type of C whose insides SG does not see")));
+                        }
                         Ty::Raw(_) => {
                             let text = &self.src[recv.span.start..recv.span.end];
                             return Err(Diag::error(*name_span, format!("a `{ty}` has no fields: it is an address, and its items have them"))
@@ -4521,6 +4622,10 @@ impl<'a> Checker<'a> {
                         Err(Diag::error(span, "a `raw void` points at memory of no known type, so it has no items")
                             .hint(format!("say what lies there with a cast: `unsafe ((raw byte){text})[0]`")))
                     }
+                    Ty::Raw(item) if matches!(&**item, Ty::Struct(name) if self.structs[name].opaque) => {
+                        Err(Diag::error(span, format!("a `{ty}` points at a type of C whose insides and size SG does not know, so it has no items"))
+                            .note("it is handed to the functions of C that know it"))
+                    }
                     // Whatever reached the pointer, what it points at is not borrowed from it.
                     Ty::Raw(item) => {
                         let item = (**item).clone();
@@ -4587,6 +4692,24 @@ impl<'a> Checker<'a> {
                 _ => format!("borrow it: `read {text}`, or swap it with `{text}.replace(value)`"),
             };
             return Err(Diag::error(span, format!("a `{ty}` cannot be moved out of an item of a collection")).hint(hint));
+        }
+        // A `Disposable` value is whole when its `dispose` runs.
+        let mut part = expr;
+        while let ExprKind::Field { recv, .. } = &part.kind {
+            let mut holder = recv.ty.strip_borrow();
+            while let Ty::Ptr(inner) = holder {
+                holder = inner;
+            }
+            if let Ty::Struct(owner) = holder {
+                if self.structs.get(owner).is_some_and(|info| info.disposable) {
+                    let hint = match ty {
+                        Ty::Nullable(_) => format!("take it with `{text}.take()`, which leaves `null` there, or borrow it: `read {text}`"),
+                        _ => format!("swap it with `{text}.replace(value)`, or borrow it: `read {text}`"),
+                    };
+                    return Err(Diag::error(span, format!("a `{ty}` field cannot be moved out of a `{}`: it is `Disposable`, and its `dispose` sees it whole", short_name(owner))).hint(hint));
+                }
+            }
+            part = recv;
         }
         if let ExprKind::Field { recv, .. } = &expr.kind {
             if through_shared(recv) {
@@ -4848,6 +4971,11 @@ impl<'a> Checker<'a> {
             }
             // `Memory.allocate<int>(n)`: room for `n` items, all zero.
             ExprKind::Allocate { item, args } => {
+                if let Some(full) = self.names.full(&item.name, item.span)?.filter(|full| self.names.opaque.contains(full) && item.raw == 0 && item.suffixes.is_empty()) {
+                    let short = short_name(&full);
+                    return Err(Diag::error(item.span, format!("`{short}` is a type of C whose size SG does not know, so only C makes one"))
+                        .note(format!("a function of C gives a `raw {short}`, and another gives it back")));
+                }
                 let item_ty = resolve_type(item, self.names, false)?;
                 RAW.with(|found| found.borrow_mut().push((item_ty.clone(), item.span)));
                 if item.mode.is_some() {
@@ -5130,6 +5258,10 @@ impl<'a> Checker<'a> {
                         None => diag,
                     });
                 };
+                if info.opaque {
+                    return Err(Diag::error(*name_span, format!("`{}` is a type of C whose insides SG does not see, so only C makes one", short_name(name)))
+                        .note("a function of C gives a `raw` pointer to it"));
+                }
                 // A field that cannot be seen cannot be given a value.
                 if !self.inside(name) {
                     if let Some(position) = info.open.iter().position(|open| !open) {
@@ -6406,6 +6538,9 @@ impl<'a> Checker<'a> {
                     }
                 }
                 Ok(Ty::Bool)
+            }
+            (Ty::Raw(item), Ty::Int(_)) if matches!(op, BinOp::Add | BinOp::Sub) && matches!(&**item, Ty::Struct(name) if self.structs[name].opaque) => {
+                Err(Diag::error(span, format!("a `{}` points at a type of C whose size SG does not know, so it does not move by items", left_ty.strip_borrow())))
             }
             (Ty::Raw(item), Ty::Int(_)) if matches!(op, BinOp::Add | BinOp::Sub) && **item != Ty::Void => {
                 let raw = left_ty.strip_borrow().clone();
@@ -7705,6 +7840,14 @@ impl<'a> Checker<'a> {
 
         let structs = self.structs;
         if let Ty::Struct(owner) | Ty::Enum(owner) = target {
+            if name == "dispose" && structs.get(owner).is_some_and(|info| info.disposable) {
+                let diag = Diag::error(name_span, "`dispose` is not called by the program: it runs by itself, once, when the last owner of the value ends");
+                let text = &self.src[recv.span.start..recv.span.end];
+                return Err(match structs[owner].closable {
+                    true => diag.hint(format!("to end it here and see how closing went, `try {text}.close()`")),
+                    false => diag.hint("to end it sooner, hand it to a function or a method that takes it by value; it ends where that one does"),
+                });
+            }
             if let Some(sig) = self.methods_of(owner).get(name) {
                 if !sig.public && !self.inside(owner) {
                     return Err(self.not_public(name, owner, name_span));
@@ -8984,7 +9127,8 @@ fn foreign_sig(func: &Func, sig: &FuncSig, structs: &HashMap<String, StructInfo>
         let fine = match ty {
             Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Raw(_) => true,
             Ty::Read(inner) if **inner == Ty::CString => true,
-            Ty::Read(inner) | Ty::Ref(inner) => not_plain(inner, structs).is_none() && !matches!(**inner, Ty::Raw(_) | Ty::Array(..)),
+            Ty::Read(inner) | Ty::Ref(inner) => not_plain(inner, structs).is_none() && !matches!(**inner, Ty::Array(..)),
+            Ty::Struct(_) => not_plain(ty, structs).is_none(),
             _ => false,
         };
         if fine {
@@ -8999,18 +9143,27 @@ fn foreign_sig(func: &Func, sig: &FuncSig, structs: &HashMap<String, StructInfo>
                 Ty::Array(item, _) | Ty::Slice(item) | Ty::List(item) => item.to_string(),
                 _ => unreachable!("matched above"),
             }, param.name)),
-            Ty::Struct(_) if !ty.is_borrow() => diag.note("a struct is lent to C for the time of the call, `ref T` or `read T`; one given by value is not in the interpreter yet"),
-            _ => diag.note("C takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data, and `read CString`"),
+            Ty::Struct(_) => match not_plain(ty.strip_borrow(), structs) {
+                Some(part) if part == *ty.strip_borrow() => diag.note(format!("`{part}` is not plain data: C gets numbers, `bool`, raw pointers, and arrays and structs of them")),
+                Some(part) => diag.note(format!("it holds a `{part}`, which is not plain data: C gets numbers, `bool`, raw pointers, and arrays and structs of them")),
+                None => diag,
+            },
+            _ => diag.note("C takes integers, `float`, `double`, `bool`, `raw T`, plain structs, `ref T` and `read T` of plain data, and `read CString`"),
         };
         return Err(diag);
     }
-    let fine = matches!(sig.ret, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Void | Ty::Raw(_));
+    let fine = matches!(sig.ret, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Void | Ty::Raw(_)) || (matches!(sig.ret, Ty::Struct(_)) && not_plain(&sig.ret, structs).is_none());
     if !fine {
         let diag = Diag::error(func.ret.span, format!("the C function `{c_name}` cannot give a `{}`", sig.ret));
         return Err(match &sig.ret {
             Ty::Char => char_hint(diag),
             Ty::Str | Ty::CString => diag.hint("C gives a text as `raw byte`; `unsafe string.fromCString(p)` copies it"),
-            _ => diag.note("C gives an integer, `float`, `double`, `bool`, `raw T` or nothing (`void`)"),
+            Ty::Struct(_) => match not_plain(&sig.ret, structs) {
+                Some(part) if part == sig.ret => diag.note(format!("`{part}` is not plain data: C gives numbers, `bool`, raw pointers, and arrays and structs of them")),
+                Some(part) => diag.note(format!("it holds a `{part}`, which is not plain data: C gives numbers, `bool`, raw pointers, and arrays and structs of them")),
+                None => diag,
+            },
+            _ => diag.note("C gives an integer, `float`, `double`, `bool`, `raw T`, a plain struct or nothing (`void`)"),
         });
     }
     Ok(())
@@ -9022,6 +9175,7 @@ fn not_plain(ty: &Ty, structs: &HashMap<String, StructInfo>) -> Option<Ty> {
     match ty {
         Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Raw(_) => None,
         Ty::Array(item, _) => not_plain(item, structs),
+        Ty::Struct(name) if structs.get(name).is_some_and(|info| info.disposable || info.opaque) => Some(ty.clone()),
         Ty::Struct(name) => structs.get(name).and_then(|info| info.fields.iter().find_map(|(_, field)| not_plain(field, structs))),
         other => Some(other.clone()),
     }
@@ -9030,7 +9184,7 @@ fn not_plain(ty: &Ty, structs: &HashMap<String, StructInfo>) -> Option<Ty> {
 /// Every `raw T` resolved since the last call points at plain data or at `void`.
 fn raw_rule(structs: &HashMap<String, StructInfo>) -> Res<()> {
     for (inner, span) in RAW.with(|found| std::mem::take(&mut *found.borrow_mut())) {
-        if inner == Ty::Void {
+        if inner == Ty::Void || matches!(&inner, Ty::Struct(name) if structs[name].opaque) {
             continue;
         }
         if let Some(part) = not_plain(&inner, structs) {
@@ -9039,6 +9193,9 @@ fn raw_rule(structs: &HashMap<String, StructInfo>) -> Res<()> {
                 true => diag,
                 false => diag.note(format!("it holds a `{part}`")),
             };
+            if matches!(&part, Ty::Struct(name) if structs[name].disposable) {
+                return Err(diag.note("a `Disposable` value is disposed of when it ends, and nothing in raw memory ends"));
+            }
             return Err(diag.note("plain data is numbers, `bool`, `char`, raw pointers, and arrays and structs of them: what owns nothing and can be copied byte by byte"));
         }
     }

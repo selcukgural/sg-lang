@@ -1,0 +1,5 @@
+error: a `string` field cannot be moved out of a `Named`: it is `Disposable`, and its `dispose` sees it whole
+  --> error_disposable_field_moved_nested.sg:16:16
+ 16 |     var name = pair.first.name
+    |                ^^^^^^^^^^^^^^^
+  hint: swap it with `pair.first.name.replace(value)`, or borrow it: `read pair.first.name`

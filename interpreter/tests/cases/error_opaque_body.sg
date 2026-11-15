@@ -1,0 +1,8 @@
+extern {
+    struct FILE {
+        int flags
+    }
+}
+
+void main() {
+}

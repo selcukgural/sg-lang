@@ -1,0 +1,65 @@
+// A `Closable` type of the program: a local one is closed, and `close` says how it went;
+// `dispose` still runs after it, and on every way out that leaves it unclosed.
+struct Sink : Disposable, Closable {
+    int id
+    bool closed
+    List<string> lines
+
+    void dispose(ref this) {
+        match this.closed {
+            true => print($"sink {this.id} disposed after close")
+            false => print($"sink {this.id} disposed without close, {this.lines.length()} line(s) lost")
+        }
+    }
+
+    void write(ref this, string line) {
+        this.lines.add(line)
+    }
+
+    Result<void, string> close(this) {
+        if this.lines.length() > 2 {
+            return Error($"sink {this.id} is full".toString())
+        }
+        this.closed = true
+        print($"sink {this.id} closed with {this.lines.length()} line(s)")
+        return Ok()
+    }
+}
+
+Sink open(int id) {
+    return Sink { id = id, closed = false, lines = List<string>() }
+}
+
+Result<void, string> run(int count) {
+    var sink = open(count)
+    for i in 0..count {
+        sink.write($"line {i}".toString())
+    }
+    try sink.close()
+    return Ok()
+}
+
+// An exit through `try` leaves the sink unclosed: it is disposed of on the way out.
+Result<void, string> stopped() {
+    var sink = open(9)
+    sink.write("one")
+    try run(5)
+    try sink.close()
+    return Ok()
+}
+
+void show(Result<void, string> result) {
+    match result {
+        Ok => print("ok")
+        Error(why) => print($"error: {why}")
+    }
+}
+
+void main() {
+    show(run(2))
+    show(run(3))
+    show(stopped())
+    var kept = List<Sink>()
+    kept.add(open(7))
+    print("end of main")
+}

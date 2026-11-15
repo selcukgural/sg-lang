@@ -1,0 +1,16 @@
+struct Handle : Disposable, Closable {
+    int handle
+
+    void dispose(ref this) {
+        print("closed")
+    }
+
+    Result<void, string> close(this) {
+        return Ok()
+    }
+}
+
+void main() {
+    var handle = Handle { handle = 3 }
+    handle.dispose()
+}

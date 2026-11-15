@@ -1,0 +1,7 @@
+extern {
+    struct FILE
+    int fclose(FILE stream)
+}
+
+void main() {
+}

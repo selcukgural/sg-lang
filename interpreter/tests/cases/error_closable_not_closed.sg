@@ -1,0 +1,16 @@
+struct Sink : Disposable, Closable {
+    int handle
+
+    void dispose(ref this) {
+        print("disposed")
+    }
+
+    Result<void, string> close(this) {
+        return Ok()
+    }
+}
+
+void main() {
+    var sink = Sink { handle = 1 }
+    print(sink.handle)
+}

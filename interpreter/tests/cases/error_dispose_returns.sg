@@ -1,0 +1,10 @@
+struct Handle : Disposable {
+    int handle
+
+    Result<void, string> dispose(ref this) {
+        return Ok()
+    }
+}
+
+void main() {
+}

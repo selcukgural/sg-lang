@@ -1,0 +1,11 @@
+struct Handle : Disposable {
+    int handle
+
+    void dispose(ref this) {
+        print("closed")
+    }
+}
+
+void main() {
+    var files = Memory.allocate<Handle>(2)
+}

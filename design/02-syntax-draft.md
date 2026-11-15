@@ -339,18 +339,46 @@ public struct Config : Clonable {                // config.clone() is a deep cop
     string name
 }
 
-public struct File : Disposable {                // Rust: Drop
-    int handle
+public struct Connection : Disposable {          // Rust: Drop
+    raw sqlite3 db
 
-    public void dispose(ref this) {              // called automatically when the owner dies
-        close(this.handle)
+    void dispose(ref this) {                     // runs by itself when the last owner ends
+        _ = unsafe sqlite3_close(this.db)
     }
 }
 ```
 
 All fields of a `Copyable` type must be `Copyable`, and it cannot be combined with `Disposable`. On a generic type,
 `: Copyable` is valid if the type parameters are also `Copyable`. Because a panic does not unwind, `dispose` does not
-run during a panic.
+run during a panic, nor after `exit`.
+
+`dispose` is written `void dispose(ref this)` and is never called by the program (`x.dispose()` is an error): it runs
+once, where the last owner of the value ends, and then what the value holds ends, field by field. A method that takes
+`this` ends the value where it ends, so its `dispose` runs there too; a type that frees something in such a method
+keeps a field that says so. A field is never moved out of a `Disposable` value (`take` and `replace` leave it whole).
+A type that can fail while it ends is also `Closable`: it has a `close(this)` that gives a `Result`, and a local of
+it that is not closed is an error, as for a `StreamWriter`:
+
+```
+public struct Deflater : Disposable, Closable {
+    raw ZStream stream
+    bool ended
+
+    public Result<List<byte>, ZlibError> close(this) { ... this.ended = true ... }
+    void dispose(ref this) {
+        unsafe {
+            if !this.ended {
+                _ = deflateEnd(this.stream)
+            }
+            Memory.free(this.stream)
+        }
+    }
+}
+
+var deflater = try Deflater(6)
+try deflater.write(data)
+var packed = try deflater.close()                // without it: an error, the end of the stream would be lost
+```
 
 A `readonly` field is set only at construction and cannot be assigned afterwards. It differs from `read`: `read` looks
 at someone else's data, a `readonly` field owns its own data.
@@ -1308,8 +1336,26 @@ unsafe {
 }
 ```
 
+A struct of plain data is laid out as C lays it out, and goes to C and comes back by value. A type of C whose
+insides SG does not see is declared in the `extern` block without a body, and is only pointed at:
+
+```
+extern "sqlite3" {
+    struct sqlite3                               // C's `sqlite3`, seen only as `raw sqlite3`
+    int sqlite3_open(read CString path, ref raw sqlite3 db)   // sqlite3**
+    int sqlite3_close(raw sqlite3 db)
+}
+extern {
+    Div div(int numer, int denom)                // a struct given back by value
+}
+struct Div {                                     // the fields of C's div_t, in its order
+    int quot
+    int rem
+}
+```
+
 A module that declares the functions of a library without `public` can give its users a safe interface, and they
-write no `unsafe`.
+write no `unsafe`: a `Disposable` type holds what C made and gives it back when it ends.
 
 ### Modules and visibility
 

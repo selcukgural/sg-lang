@@ -1,0 +1,6 @@
+struct Handle : Disposable {
+    int handle
+}
+
+void main() {
+}

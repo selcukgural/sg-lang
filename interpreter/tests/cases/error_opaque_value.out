@@ -1,0 +1,5 @@
+error: `FILE` is a type of C whose insides SG does not see, so it is only pointed at
+  --> error_opaque_value.sg:3:16
+ 3 |     int fclose(FILE stream)
+   |                ^^^^
+  hint: `raw FILE`, as C writes `FILE*`

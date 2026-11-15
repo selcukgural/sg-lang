@@ -1,0 +1,58 @@
+// Structs of plain data given to C and given back by value, and a type of C seen only behind
+// a raw pointer.
+extern {
+    struct FILE
+    Div div(int numer, int denom)
+    LongDiv ldiv(nint numer, nint denom)
+    raw byte inet_ntoa(Address address)
+    raw FILE tmpfile()
+    int fputs(read CString text, raw FILE stream)
+    void rewind(raw FILE stream)
+    raw byte fgets(raw byte line, int size, raw FILE stream)
+    int fclose(raw FILE stream)
+    nint strtol(read CString text, ref raw byte end, int base)
+}
+
+struct Div {
+    int quot
+    int rem
+}
+
+struct LongDiv {
+    nint quot
+    nint rem
+}
+
+// `struct in_addr`: an IPv4 address, in the order of the network.
+struct Address {
+    uint bytes
+}
+
+void main() {
+    var d = unsafe div(17, 5)
+    print($"{d.quot} {d.rem}")
+    var l = unsafe ldiv(-17, 5)
+    print($"{l.quot} {l.rem}")
+    var home = Address { bytes = 0x0100007f }
+    print(unsafe string.fromCString(inet_ntoa(home)) ?? "not text")
+
+    var file = unsafe tmpfile()
+    if file == null {
+        print("no file")
+        return
+    }
+    var text = CString.from("written by C, read by C\n") ?? panic("zero byte")
+    _ = unsafe fputs(read text, file)
+    unsafe rewind(file)
+    var line = byte[64]
+    var got = unsafe fgets(line.pointer(), 64, file)
+    print(got != null)
+    _ = unsafe fclose(file)
+    var zero = line.indexOf(0) ?? 64
+    print((string.fromUtf8(line[..zero]) ?? "not text").trimEnd())
+
+    var number = CString.from("123abc") ?? panic("zero byte")
+    raw byte end = null
+    var value = unsafe strtol(read number, ref end, 10)
+    print($"{value}, then {unsafe string.fromCString(end) ?? "not text"}")
+}

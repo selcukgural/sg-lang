@@ -1,0 +1,11 @@
+struct Named {
+    string name
+    int age
+}
+
+extern {
+    int take(Named person)
+}
+
+void main() {
+}

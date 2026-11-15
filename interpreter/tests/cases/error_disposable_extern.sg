@@ -1,0 +1,14 @@
+struct Handle : Disposable {
+    int handle
+
+    void dispose(ref this) {
+        print("closed")
+    }
+}
+
+extern {
+    int fileno(ref Handle file)
+}
+
+void main() {
+}

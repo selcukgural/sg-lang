@@ -1,0 +1,5 @@
+error: `dispose` runs by itself only on a `Disposable` type, and it is called by nothing else
+  --> error_dispose_not_disposable.sg:4:10
+ 4 |     void dispose(ref this) {
+   |          ^^^^^^^
+  hint: `struct Handle : Disposable`, or another name for the method

@@ -1,0 +1,10 @@
+struct Named {
+    string name
+}
+
+extern {
+    Named make()
+}
+
+void main() {
+}

@@ -1,0 +1,5 @@
+error: `dispose` is written `void dispose(ref this)`: it takes the value it ends and nothing else, and gives nothing
+  nobody calls it, so there is nobody to give a value or an error to; a `close(this)` that gives a `Result` can, with `: Closable`
+  --> error_dispose_returns.sg:4:26
+ 4 |     Result<void, string> dispose(ref this) {
+   |                          ^^^^^^^

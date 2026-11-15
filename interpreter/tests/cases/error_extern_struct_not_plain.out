@@ -1,0 +1,5 @@
+error: the C function `take` cannot take a `Named`
+  it holds a `string`, which is not plain data: C gets numbers, `bool`, raw pointers, and arrays and structs of them
+  --> error_extern_struct_not_plain.sg:7:14
+ 7 |     int take(Named person)
+   |              ^^^^^

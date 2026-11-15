@@ -1,0 +1,5 @@
+error: `dispose` is not called by the program: it runs by itself, once, when the last owner of the value ends
+  --> error_dispose_called_closable.sg:15:12
+ 15 |     handle.dispose()
+    |            ^^^^^^^
+  hint: to end it here and see how closing went, `try handle.close()`

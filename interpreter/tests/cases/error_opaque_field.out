@@ -1,0 +1,4 @@
+error: a `raw FILE` points at a type of C whose insides SG does not see
+  --> error_opaque_field.sg:8:16
+ 8 |     print(file.flags)
+   |                ^^^^^

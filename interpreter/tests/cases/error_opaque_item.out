@@ -1,0 +1,5 @@
+error: a `raw FILE` points at a type of C whose insides and size SG does not know, so it has no items
+  it is handed to the functions of C that know it
+  --> error_opaque_item.sg:8:23
+ 8 |     var copy = unsafe file[0]
+   |                       ^^^^^^^

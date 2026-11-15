@@ -1,0 +1,7 @@
+enum Handle : Disposable {
+    Open(int number)
+    Closed
+}
+
+void main() {
+}

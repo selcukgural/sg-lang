@@ -28,8 +28,10 @@
 //! (see `sg_reader` in `IO_RUNTIME`), and raw memory: a `raw T` is a `T*`, an item of it is reached
 //! where it is with nothing checked, and `Memory.allocate` is `calloc` behind the tests of its count
 //! (see `RAW_RUNTIME`), and the functions of C an `extern` block declares, called directly through an
-//! inline adapter, with `CString` and `buffer.pointer()` (see `FFI_RUNTIME` and `foreign_func`).
-//! A type alias is the type it names. Anything else is an error
+//! inline adapter, with `CString` and `buffer.pointer()` (see `FFI_RUNTIME` and `foreign_func`), and
+//! structs of plain data by value, and types of C declared and never defined, only pointed at. A
+//! `Disposable` struct has a byte that a move sets, and its drop calls its `dispose` first when the
+//! byte is not set (see `struct_decl`). A type alias is the type it names. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
 //! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`), and
@@ -4893,7 +4895,7 @@ impl<'a> Emitter<'a> {
         for (position, param) in params.iter().enumerate() {
             let c_type = match param {
                 Ty::Read(inner) if **inner == Ty::CString => "const char*".to_string(),
-                Ty::Read(inner) => format!("const {}*", self.ctype(inner, func.name_span)?),
+                Ty::Read(inner) => format!("{} const*", self.ctype(inner, func.name_span)?),
                 _ => self.ctype(param, func.name_span)?,
             };
             sg_types.push(format!("{} a{position}", self.ctype(param, func.name_span)?));
@@ -5679,7 +5681,10 @@ impl<'a> Emitter<'a> {
             Ty::Entry(key, value) => self.droppable(key) || self.droppable(value),
             Ty::Nullable(inner) | Ty::Array(inner, _) => self.droppable(inner),
             Ty::Result(ok, error) => self.droppable(ok) || self.droppable(error),
-            Ty::Struct(name) => self.structs[name.as_str()].fields.iter().any(|field| self.written(&field.ty).is_ok_and(|ty| self.droppable(&ty))),
+            Ty::Struct(name) => {
+                let decl = self.structs[name.as_str()];
+                decl.disposable() || decl.fields.iter().any(|field| self.written(&field.ty).is_ok_and(|ty| self.droppable(&ty)))
+            }
             Ty::Enum(name) => {
                 let mut fields = self.enums[name.as_str()].variants.iter().flat_map(|variant| &variant.fields);
                 fields.any(|field| self.written(&field.ty).is_ok_and(|ty| self.droppable(&ty)))
@@ -6435,6 +6440,10 @@ impl<'a> Emitter<'a> {
             return Ok(());
         }
         done.push(&decl.name);
+        // A type of C is only pointed at: its struct stays incomplete.
+        if decl.opaque {
+            return Ok(());
+        }
         let name = &cname(&decl.name);
         let (mut fields, mut drops, mut forgets) = (String::new(), String::new(), String::new());
         // A field that borrows is a pointer (or, for text, a pointer and a length) to what
@@ -6453,6 +6462,14 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(drops, "    {}", self.drop_of(&ty, &place));
                 let _ = writeln!(forgets, "    (void){};", self.move_of(&ty, &place));
             }
+        }
+        // A `Disposable` value knows whether it was moved out of its place, which then holds
+        // nothing to dispose of: a value is made with the byte at 0, so every way of making one
+        // gives a live value.
+        if decl.disposable() {
+            let _ = writeln!(fields, "    uint8_t sg_gone;");
+            drops.insert_str(0, &format!("    if (v->sg_gone) return;\n    v->sg_gone = 1;\n    f_{name}_dispose(v);\n"));
+            let _ = writeln!(forgets, "    v->sg_gone = 1;");
         }
         let _ = writeln!(self.types, "struct S_{name} {{\n{fields}}};");
         // What frees the struct, and what takes it out of a place and leaves that place empty.

@@ -1,0 +1,5 @@
+error: `sink` is not closed before its block ends, so the error its `close` gives would be lost
+  --> error_closable_not_closed.sg:14:9
+ 14 |     var sink = Sink { handle = 1 }
+    |         ^^^^
+  hint: `try sink.close()`; to drop the error on purpose, `_ = sink.close()`

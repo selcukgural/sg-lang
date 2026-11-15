@@ -1,0 +1,5 @@
+error: `FILE` is a type of C whose insides SG does not see, so it is only pointed at
+  --> error_opaque_in_list.sg:6:22
+ 6 |     var files = List<FILE>()
+   |                      ^^^^
+  hint: `raw FILE`, as C writes `FILE*`

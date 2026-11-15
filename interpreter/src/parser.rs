@@ -370,6 +370,26 @@ impl<'a> Parser<'a> {
                 return Err(self.unexpected("`}`"));
             }
             let public = self.eat(&Tok::Public);
+            // `struct sqlite3`: a type of C seen only behind a raw pointer.
+            if *self.peek() == Tok::Struct {
+                self.bump();
+                let (name, name_span) = self.ident("the name of a type of C")?;
+                if matches!(self.peek(), Tok::Colon | Tok::Lt) {
+                    return Err(Diag::error(self.span(), "a type of C declared in an `extern` block is only a name: SG does not see what it holds")
+                        .note("a struct that SG lays out as C does is written outside the `extern` block"));
+                }
+                if *self.peek() == Tok::LBrace {
+                    return Err(Diag::error(self.span(), "a type of C declared in an `extern` block has no body: SG does not see what it holds")
+                        .hint(format!("a struct whose fields SG reads is written outside the `extern` block: `struct {name} {{ ... }}`")));
+                }
+                let decl = StructDecl { public, name, name_span, sources: Vec::new(), interfaces: Vec::new(), fields: Vec::new(), methods: Vec::new(), opaque: true };
+                program.structs.push(decl);
+                if *self.peek() != Tok::RBrace {
+                    self.expect(Tok::Newline, "end of line")?;
+                }
+                self.skip_newlines();
+                continue;
+            }
             if self.at_word("async") {
                 return Err(Diag::error(self.span(), "a C function is not async").hint("a long call is awaited as a task of its own: `await Task.run(work, x)`"));
             }
@@ -446,7 +466,7 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         }
         self.bump();
-        Ok(StructDecl { public: false, name, name_span, sources, interfaces, fields, methods })
+        Ok(StructDecl { public: false, name, name_span, sources, interfaces, fields, methods, opaque: false })
     }
 
     /// `<from source>` after the name of a struct or an enum that carries a borrow.

@@ -1,0 +1,5 @@
+error: `FILE` is a type of C whose size SG does not know, so only C makes one
+  a function of C gives a `raw FILE`, and another gives it back
+  --> error_opaque_allocate.sg:6:32
+ 6 |     var file = Memory.allocate<FILE>(1)
+   |                                ^^^^

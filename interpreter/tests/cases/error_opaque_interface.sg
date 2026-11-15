@@ -1,0 +1,6 @@
+extern {
+    struct FILE : Disposable
+}
+
+void main() {
+}

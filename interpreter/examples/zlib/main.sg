@@ -1,6 +1,6 @@
-// A library of C behind a safe module: `zlib/zlib.sg` declares the functions of zlib and calls
-// them inside `unsafe`; this file does not. Run it with `sg examples/zlib/main.sg`, its tests
-// with `sg test examples/zlib`.
+// A library of C behind a safe module: `zlib/zlib.sg` and `zlib/stream.sg` declare the
+// functions of zlib and call them inside `unsafe`; this file does not. Run it with
+// `sg examples/zlib/main.sg`, its tests with `sg test examples/zlib`.
 use zlib
 
 Result<void, ZlibError> main() {
@@ -10,6 +10,21 @@ Result<void, ZlibError> main() {
     var back = try decompress(read packed, text.length())
     print((string.fromUtf8(read back) ?? "not text") == text)
     print($"crc32 {checksum(text.asBytes()):x8}")
+
+    // The same text ten times, compressed as it comes; zlib's stream is given back when
+    // the deflater ends.
+    var deflater = try Deflater(6)
+    var stream = List<byte>()
+    for i in 0..10 {
+        try deflater.write(text.asBytes())
+        stream.addAll(read deflater.take())
+    }
+    var rest = try deflater.close()
+    stream.addAll(read rest)
+    print($"{text.length() * 10} bytes stream to {stream.length()}")
+    var whole = try decompress(read stream, text.length() * 10)
+    print((string.fromUtf8(read whole) ?? "not text") == text.repeat(10))
+
     var broken = try decompress(packed[..10], text.length())    // BadData: the stream is cut short, exit code 1
     print(broken.length())
     return Ok()

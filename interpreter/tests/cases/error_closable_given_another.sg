@@ -1,0 +1,18 @@
+struct Sink : Closable {
+    int handle
+
+    Result<void, string> close(this) {
+        return Ok()
+    }
+}
+
+Result<void, string> run() {
+    var sink = Sink { handle = 1 }
+    sink = Sink { handle = 2 }
+    try sink.close()
+    return Ok()
+}
+
+void main() {
+    _ = run()
+}

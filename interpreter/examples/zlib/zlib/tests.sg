@@ -21,3 +21,35 @@ test "the checksum is the one zlib computes" {
     assert(checksum("hello".asBytes()) == 0x3610a686)
     assert(checksum("".asBytes()) == 0)
 }
+
+test "a stream given in pieces comes back whole" {
+    var text = "piece by piece, ".repeat(20000)
+    var bytes = text.asBytes()
+    var deflater = try Deflater(9)
+    var stream = List<byte>()
+    nint at = 0
+    while at < bytes.length() {
+        var end = (at + 7777).min(bytes.length())
+        try deflater.write(bytes[at..end])
+        stream.addAll(read deflater.take())
+        at = end
+    }
+    var rest = try deflater.close()
+    stream.addAll(read rest)
+    assert(stream.length() < 2000)
+    var back = try decompress(read stream, bytes.length())
+    var same = try string.fromUtf8(read back)
+    assert(same == text)
+}
+
+test "a level outside 0 to 9 is an error" {
+    assert(Deflater(10) is Error(BadLevel))
+    assert(Deflater(-1) is Error(BadLevel))
+}
+
+test "a deflater that is not closed gives back what zlib holds" {
+    var kept = List<Deflater>()
+    var deflater = try Deflater(1)
+    kept.add(deflater)
+    try kept[0].write("never closed".asBytes())
+}

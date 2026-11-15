@@ -1,0 +1,136 @@
+// `Disposable`: `dispose` runs once, where the last owner of a value ends, before what the
+// value holds ends; in the same order in the interpreter and in compiled code.
+struct Res : Disposable {
+    string name
+
+    void dispose(ref this) {
+        print($"{this.name} ends")
+    }
+}
+
+struct Outer : Disposable {
+    string name
+    Res first
+    Res second
+
+    void dispose(ref this) {
+        print($"{this.name} ends, {this.first.name} still here")
+    }
+}
+
+// Not `Disposable` itself: what it holds ends with it.
+struct Holder {
+    Res res
+    int count
+}
+
+enum Kind {
+    One(Res res)
+    Two
+}
+
+void consume(Res r) {
+    print($"take {r.name}")
+}
+
+Res make(string name) {
+    return Res { name = name }
+}
+
+Result<Res, string> pick(bool good) {
+    var r = Res { name = "picked" }
+    if !good {
+        return Error("bad")
+    }
+    return Ok(r)
+}
+
+// An exit through `try` disposes of what the function holds.
+Result<int, string> early() {
+    var a = Res { name = "early a" }
+    var b = try pick(false)
+    print("not here")
+    return Ok(1)
+}
+
+int work(Res r) {
+    print($"work on {r.name}")
+    return 7
+}
+
+async int later(Res r) {
+    await Task.delay(1)
+    print($"async {r.name}")
+    return 1
+}
+
+async int inAsync() {
+    var r = Res { name = "in async" }
+    var t = later(Res { name = "given" })
+    return await t
+}
+
+void main() {
+    var a = Res { name = "a" }
+    var b = Res { name = "b" }
+    consume(b)
+    print("after consume")
+    if true {
+        var o = Outer { name = "o", first = Res { name = "o1" }, second = Res { name = "o2" } }
+        print("in block")
+    }
+    print("after block")
+    var list = List<Res>()
+    list.add(Res { name = "l1" })
+    list.add(Res { name = "l2" })
+    list.removeLast()
+    print("after removeLast")
+    a = make("a2")
+    print("after assign")
+    Res? maybe = Res { name = "m" }
+    maybe = null
+    print("after null")
+    var s = new shared Res { name = "s" }
+    var s2 = share s
+    print("shared twice")
+
+    // Moved on one path only.
+    var x = Res { name = "x" }
+    var y = Res { name = "y" }
+    var c = 3
+    if c > 2 {
+        consume(x)
+    }
+    print("after if")
+    var h = Holder { res = y, count = 1 }
+    var k = Kind.One(Res { name = "k" })
+    if k is One(r) {
+        print($"is {r.name}")
+    }
+    match k {
+        One(r) => consume(r)
+        Two => print("two")
+    }
+    print("after match")
+    _ = early()
+    print("after early")
+
+    // A loop handed a list owns its items one by one.
+    var items = List<Res>()
+    items.add(Res { name = "f1" })
+    items.add(Res { name = "f2" })
+    for item in items {
+        print($"loop {item.name}")
+    }
+    print("after for")
+    var map = HashMap<string, Res>()
+    map.add("a", Res { name = "m1" })
+    map["a"] = Res { name = "m2" }
+    print("after map set")
+    var t = Task.run(work, Res { name = "task" })
+    print($"waited {t.wait()}")
+    var p = pick(true) ?? Res { name = "none" }
+    var made = inAsync()
+    print($"async gave {made.wait()}")
+    print("end of main")
+}

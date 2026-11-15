@@ -1,0 +1,7 @@
+extern {
+    struct FILE
+}
+
+void main() {
+    var files = List<FILE>()
+}

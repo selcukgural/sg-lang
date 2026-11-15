@@ -1,0 +1,5 @@
+error: a type of C declared in an `extern` block has no body: SG does not see what it holds
+  --> error_opaque_body.sg:2:17
+ 2 |     struct FILE {
+   |                 ^
+  hint: a struct whose fields SG reads is written outside the `extern` block: `struct FILE { ... }`

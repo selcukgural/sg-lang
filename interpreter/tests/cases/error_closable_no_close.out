@@ -1,0 +1,5 @@
+error: `Sink` is `Closable`, so it has a `close` that takes the value and says how closing went
+  --> error_closable_no_close.sg:1:27
+ 1 | struct Sink : Disposable, Closable {
+   |                           ^^^^^^^^
+  hint: `Result<void, E> close(this) { ... }`, with the error type `Sink` gives

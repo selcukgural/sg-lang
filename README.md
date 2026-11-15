@@ -178,8 +178,9 @@ while it goes on sending, and a line longer than 64 KB is an error, not memory w
 there for what the checker cannot follow (`raw T`, `Memory.allocate<T>(n)`, `p[i]` inside `unsafe { }`):
 the interpreter checks every item against the block it came from, and compiled code checks nothing. C is
 called through `extern` blocks, each call inside `unsafe`, with C text (`CString`) and the items of a buffer
-handed over for the call; a module can keep a library of C behind a safe interface, as `examples/zlib` does
-for zlib. The promise of memory safety holds outside `unsafe`, as in Rust. Generics of your own are put off. There is no UDP yet, no standard library,
+handed over for the call, structs of plain data by value and types of C seen only behind a pointer; a
+module can keep a library of C behind a safe interface, as `examples/zlib` does for zlib, and a
+`Disposable` type gives back what C made when its last owner ends. The promise of memory safety holds outside `unsafe`, as in Rust. Generics of your own are put off. There is no UDP yet, no standard library,
 no package manager and no editor support.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in

@@ -1,0 +1,9 @@
+error: `sink` is given another `Sink` while the one it holds is not closed, so the error its `close` gives would be lost
+  --> error_closable_given_another.sg:11:5
+ 11 |     sink = Sink { handle = 2 }
+    |     ^^^^
+  it is declared here:
+  --> error_closable_given_another.sg:10:9
+ 10 |     var sink = Sink { handle = 1 }
+    |         ^^^^
+  hint: close it first: `try sink.close()`; to drop the error on purpose, `_ = sink.close()`

@@ -1,0 +1,5 @@
+error: `dispose` is not called by the program: it runs by itself, once, when the last owner of the value ends
+  --> error_dispose_called.sg:11:12
+ 11 |     handle.dispose()
+    |            ^^^^^^^
+  hint: to end it sooner, hand it to a function or a method that takes it by value; it ends where that one does

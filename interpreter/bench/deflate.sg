@@ -1,0 +1,160 @@
+// A gigabyte compressed at level 1 through zlib's stream, 64 KB at a time, behind the safe
+// `Deflater` of examples/zlib (copied here, as a benchmark is one file), next to the same
+// calls written in C.
+enum ZlibError : Formattable {
+    NoMemory
+    BadData
+    BadLevel
+}
+
+ZlibError errorOf(int code) {
+    return match code {
+        -4 => ZlibError.NoMemory
+        _ => ZlibError.BadData
+    }
+}
+
+// zlib's stream, as zlib lays it out on a 64-bit system (`z_stream` in zlib.h). zlib keeps
+// its address, so it lies in raw memory, where it stays; a value of SG moves.
+struct ZStream {
+    raw byte nextIn
+    uint availIn
+    nuint totalIn
+    raw byte nextOut
+    uint availOut
+    nuint totalOut
+    raw byte msg
+    raw void state
+    raw void zalloc
+    raw void zfree
+    raw void opaque
+    int dataType
+    nuint adler
+    nuint reserved
+}
+
+extern "z" {
+    raw byte zlibVersion()
+    int deflateInit_(raw ZStream strm, int level, raw byte version, int streamSize)
+    int deflate(raw ZStream strm, int flush)
+    int deflateEnd(raw ZStream strm)
+}
+
+// Compresses the bytes it is given, a piece at a time: `take` hands over what is compressed
+// so far, and `close` ends the stream and gives the rest. A deflater that ends without
+// `close` gives back what zlib holds and loses what it had not handed over, so a local one
+// is closed (`Closable`).
+public struct Deflater : Disposable, Closable {
+    raw ZStream stream
+    raw byte input      // what zlib reads, 64 KB at a time
+    raw byte output     // what zlib writes into, 64 KB at a time
+    List<byte> packed   // compressed, not yet taken
+    bool ended
+
+    // A stream compressed at a level from 0 (stored as it is) to 9 (smallest); zlib's own
+    // default is 6.
+    public Result<Deflater, ZlibError> create(int level) {
+        if level < 0 || level > 9 {
+            return Error(ZlibError.BadLevel)
+        }
+        var stream = Memory.allocate<ZStream>(1)
+        // 112: the size of `z_stream` on a 64-bit system, which zlib checks.
+        var code = unsafe deflateInit_(stream, level, zlibVersion(), 112)
+        if code != 0 {
+            unsafe Memory.free(stream)
+            return Error(errorOf(code))
+        }
+        return Ok(Deflater {
+            stream = stream,
+            input = Memory.allocate<byte>(65536),
+            output = Memory.allocate<byte>(65536),
+            packed = List<byte>(),
+            ended = false
+        })
+    }
+
+    // Compresses `data`; what comes out waits for `take`.
+    public Result<void, ZlibError> write(ref this, read byte[] data) {
+        nint at = 0
+        while at < data.length() {
+            var count = (data.length() - at).min(65536)
+            unsafe {
+                for i in 0..count {
+                    this.input[i] = data[at + i]
+                }
+                this.stream[0].nextIn = this.input
+                this.stream[0].availIn = (uint)count
+            }
+            try this.run(0)
+            at += count
+        }
+        return Ok()
+    }
+
+    // What is compressed so far, handed over.
+    public List<byte> take(ref this) {
+        return this.packed.replace(List<byte>())
+    }
+
+    // Ends the stream: what zlib still holds is compressed and given with what was not taken.
+    public Result<List<byte>, ZlibError> close(this) {
+        try this.run(4)
+        this.ended = true
+        _ = unsafe deflateEnd(this.stream)
+        return Ok(this.packed.replace(List<byte>()))
+    }
+
+    // Runs zlib until it has read all it was given (`flush` 0, Z_NO_FLUSH) or has ended the
+    // stream (4, Z_FINISH).
+    Result<void, ZlibError> run(ref this, int flush) {
+        while true {
+            unsafe {
+                this.stream[0].nextOut = this.output
+                this.stream[0].availOut = 65536
+            }
+            var code = unsafe deflate(this.stream, flush)
+            // -5, Z_BUF_ERROR: nothing more could be done this time, which is no error.
+            if code < 0 && code != -5 {
+                return Error(errorOf(code))
+            }
+            var made = 65536 - (nint)(unsafe this.stream[0].availOut)
+            for i in 0..made {
+                this.packed.add(unsafe this.output[i])
+            }
+            var room = unsafe this.stream[0].availOut
+            if (flush == 4 && code == 1) || (flush == 0 && room != 0) {
+                return Ok()
+            }
+        }
+        return Ok()
+    }
+
+    void dispose(ref this) {
+        unsafe {
+            if !this.ended {
+                _ = deflateEnd(this.stream)
+            }
+            Memory.free(this.input)
+            Memory.free(this.output)
+            Memory.free(this.stream)
+        }
+    }
+}
+
+Result<void, ZlibError> main() {
+    var block = byte[65536]
+    for i in 0..65536 {
+        var n = (nint)i
+        block[i] = (byte)(97 + (n * n + n / 7) % 23)
+    }
+    var deflater = try Deflater(1)
+    nint total = 0
+    for round in 0..16384 {
+        try deflater.write(read block)
+        total += deflater.take().length()
+    }
+    var rest = try deflater.close()
+    total += rest.length()
+    print(total)
+    return Ok()
+}

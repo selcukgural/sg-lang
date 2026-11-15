@@ -1,0 +1,10 @@
+struct Handle : Disposable {
+    int handle
+
+    void dispose(this) {
+        print("closed")
+    }
+}
+
+void main() {
+}

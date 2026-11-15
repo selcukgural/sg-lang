@@ -1,0 +1,4 @@
+error: a `raw FILE` points at a type of C whose size SG does not know, so it does not move by items
+  --> error_opaque_moved.sg:8:23
+ 8 |     var next = unsafe (file + 1)
+   |                       ^^^^^^^^^^

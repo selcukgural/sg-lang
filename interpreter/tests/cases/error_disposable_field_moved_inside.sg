@@ -1,0 +1,12 @@
+struct Named : Disposable {
+    string? name
+
+    void dispose(ref this) {
+        var gone = this.name
+        print("ends")
+    }
+}
+
+void main() {
+    var named = Named { name = "a" }
+}

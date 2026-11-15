@@ -1,0 +1,5 @@
+error: a type of C declared in an `extern` block is only a name: SG does not see what it holds
+  a struct that SG lays out as C does is written outside the `extern` block
+  --> error_opaque_interface.sg:2:17
+ 2 |     struct FILE : Disposable
+   |                 ^

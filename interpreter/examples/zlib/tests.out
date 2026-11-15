@@ -2,4 +2,7 @@ ok    zlib: what is compressed comes back
 ok    zlib: a size that is too small is an error
 ok    zlib: bytes zlib did not make are an error
 ok    zlib: the checksum is the one zlib computes
-4 test(s) passed
+ok    zlib: a stream given in pieces comes back whole
+ok    zlib: a level outside 0 to 9 is an error
+ok    zlib: a deflater that is not closed gives back what zlib holds
+7 test(s) passed

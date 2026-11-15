@@ -73,6 +73,16 @@ pub struct StructDecl {
     pub fields: Vec<FieldDecl>,
     /// Functions written in the struct body, with or without `this`.
     pub methods: Vec<Func>,
+    /// Declared without a body in an `extern` block: a type of C whose insides SG does not
+    /// see, used only behind a raw pointer (`raw sqlite3`).
+    pub opaque: bool,
+}
+
+impl StructDecl {
+    /// Written with `: Disposable`: its `dispose` runs when its last owner ends.
+    pub fn disposable(&self) -> bool {
+        self.interfaces.iter().any(|(name, _)| name == "Disposable")
+    }
 }
 
 pub struct EnumDecl {

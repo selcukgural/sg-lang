@@ -1,0 +1,5 @@
+error: a `string` field cannot be moved out of a `Named`: it is `Disposable`, and its `dispose` sees it whole
+  --> error_disposable_field_moved.sg:11:16
+ 11 |     var name = named.name
+    |                ^^^^^^^^^^
+  hint: swap it with `named.name.replace(value)`, or borrow it: `read named.name`

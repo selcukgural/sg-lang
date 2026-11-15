@@ -1,0 +1,10 @@
+struct Sink : Disposable, Closable {
+    int handle
+
+    void dispose(ref this) {
+        print("disposed")
+    }
+}
+
+void main() {
+}

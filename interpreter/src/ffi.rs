@@ -55,6 +55,8 @@ impl Library {
         let funcs: HashMap<&str, &Func> = prog.funcs.iter().map(|func| (func.name.as_str(), func)).collect();
         let mut text = String::from("#include <stdint.h>\n");
         let mut libs: BTreeSet<&str> = BTreeSet::new();
+        // The structs C is given or gives by value, each defined once.
+        let mut structs: BTreeSet<String> = BTreeSet::new();
         // A C function declared in two modules is one function of C.
         let mut declared: BTreeSet<&str> = BTreeSet::new();
         for (number, name) in called.iter().enumerate() {
@@ -64,15 +66,29 @@ impl Library {
             }
             let (params, ret) = &prog.foreign[name.as_str()];
             let c_name = short_name(name);
-            let types: Vec<&str> = params.iter().map(c_type).collect();
+            for ty in params.iter().chain([ret]) {
+                struct_text(ty, &prog.plain, &mut structs, &mut text);
+            }
+            let types: Vec<String> = params.iter().map(c_type).collect();
             if declared.insert(c_name) {
                 let list = if types.is_empty() { "void".to_string() } else { types.join(", ") };
                 text.push_str(&format!("{} {c_name}({list});\n", c_type(ret)));
             }
-            let args: Vec<String> = types.iter().enumerate().map(|(at, ty)| format!("*({ty}*)a[{at}]")).collect();
+            // A struct given by value lies elsewhere, and its slot holds its address; so does
+            // the room for one given back, in the slot after the arguments.
+            let args: Vec<String> = types
+                .iter()
+                .zip(params)
+                .enumerate()
+                .map(|(at, (ty, param))| match param {
+                    Ty::Struct(_) => format!("**({ty}**)a[{at}]"),
+                    _ => format!("*({ty}*)a[{at}]"),
+                })
+                .collect();
             let call = format!("{c_name}({})", args.join(", "));
             let body = match ret {
                 Ty::Void => format!("(void)r; {call};"),
+                Ty::Struct(_) => format!("(void)r; **({}**)a[{}] = {call};", c_type(ret), params.len()),
                 _ => format!("*({}*)r = {call};", c_type(ret)),
             };
             text.push_str(&format!("void sg_w{number}(void **a, void *r) {{ (void)a; {body} }}\n"));
@@ -153,8 +169,47 @@ pub fn called(prog: &Program, tests: bool) -> Vec<String> {
     found.into_iter().collect()
 }
 
-/// The C type of a value as the wrapper reads it: a pointer is a pointer, whatever it points at.
-fn c_type(ty: &Ty) -> &'static str {
+/// The C type of a value as the wrapper reads it: a pointer is a pointer, whatever it points
+/// at, and a struct is the one `struct_text` writes.
+fn c_type(ty: &Ty) -> String {
+    match ty {
+        Ty::Struct(name) => format!("struct sg_s_{}", c_struct_name(name)),
+        Ty::Char => "uint32_t".to_string(),
+        other => scalar_type(other).to_string(),
+    }
+}
+
+/// A full name as a C name: `shop.Point` is `shop_Point`.
+fn c_struct_name(name: &str) -> String {
+    name.replace('.', "_")
+}
+
+/// Defines the struct `ty` is, if it is one, after those it holds, as C lays out a struct of
+/// plain data: the fields in their order, each of its C type.
+fn struct_text(ty: &Ty, plain: &HashMap<String, Vec<Ty>>, done: &mut BTreeSet<String>, text: &mut String) {
+    let item = match ty {
+        Ty::Array(item, _) => item,
+        other => other,
+    };
+    let Ty::Struct(name) = item else { return };
+    if !done.insert(name.clone()) {
+        return;
+    }
+    let fields = &plain[name];
+    for field in fields {
+        struct_text(field, plain, done, text);
+    }
+    let mut members = String::new();
+    for (at, field) in fields.iter().enumerate() {
+        match field {
+            Ty::Array(item, length) => members.push_str(&format!(" {} m{at}[{length}];", c_type(item))),
+            other => members.push_str(&format!(" {} m{at};", c_type(other))),
+        }
+    }
+    text.push_str(&format!("struct sg_s_{} {{{members} }};\n", c_struct_name(name)));
+}
+
+fn scalar_type(ty: &Ty) -> &'static str {
     match ty {
         Ty::Int(int) => match int {
             IntTy::Sbyte => "int8_t",

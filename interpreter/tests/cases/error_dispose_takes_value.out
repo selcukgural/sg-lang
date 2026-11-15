@@ -1,0 +1,4 @@
+error: `dispose` is written `void dispose(ref this)`: it takes the value it ends and nothing else, and gives nothing
+  --> error_dispose_takes_value.sg:4:10
+ 4 |     void dispose(this) {
+   |          ^^^^^^^

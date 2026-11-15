@@ -1,0 +1,10 @@
+sink 2 closed with 2 line(s)
+sink 2 disposed after close
+ok
+sink 3 disposed without close, 3 line(s) lost
+error: sink 3 is full
+sink 5 disposed without close, 5 line(s) lost
+sink 9 disposed without close, 1 line(s) lost
+error: sink 5 is full
+end of main
+sink 7 disposed without close, 0 line(s) lost

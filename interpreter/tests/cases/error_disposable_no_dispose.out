@@ -1,0 +1,5 @@
+error: `Handle` is `Disposable`, so it says what is done when it ends
+  --> error_disposable_no_dispose.sg:1:17
+ 1 | struct Handle : Disposable {
+   |                 ^^^^^^^^^^
+  hint: a method `void dispose(ref this) { ... }`

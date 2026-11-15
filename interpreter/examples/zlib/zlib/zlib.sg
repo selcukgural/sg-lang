@@ -14,6 +14,7 @@ public enum ZlibError : Formattable, Equatable {
     BufferTooSmall    // Z_BUF_ERROR: the data is longer than it was said to be
     BadData           // Z_DATA_ERROR: not what zlib makes
     TooLarge          // more bytes than zlib counts in one call
+    BadLevel          // a level of compression outside 0 to 9
 }
 
 ZlibError errorOf(int code) {

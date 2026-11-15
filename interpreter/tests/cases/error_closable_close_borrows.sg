@@ -1,0 +1,10 @@
+struct Sink : Closable {
+    int handle
+
+    Result<void, string> close(ref this) {
+        return Ok()
+    }
+}
+
+void main() {
+}

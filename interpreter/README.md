@@ -24,14 +24,14 @@ sh bench/run.sh                                 # compiled SG against C written 
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
-| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `CString`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, `read T` and `ref T` in signatures |
+| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `CString`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, types of C seen only behind a raw pointer (`struct sqlite3` in an `extern` block), `read T` and `ref T` in signatures |
 | Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
 | Methods | Written in the body of a struct or an enum with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`, and an enum looks at itself with `match this`. Called as `stack.push(1)`, `shape.area()`, also through pointers and borrows. With a type in front of `this` (`read FolderRef this`, `FolderRef this`) a method is called on the `shared` value that holds the struct. A function without `this` is called on the type: `Stack.create()`, `Shape.unit()`. `Stack(args)` is short for `Stack.create(args)` |
 | Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line, and methods after or between them. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)` |
 | `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a pattern for each value it carries (a name, `_`, or a pattern inside: `Add(Number(0), right)`, `Word("let")`, `Paint(Red)`), `_`, `var other`; a condition with `when`. On an integer the patterns are numbers and characters, on a `char` characters (`match c { '+' => ... _ => ... }`), on a text texts (`match word { "if" => ... _ => ... }`), on a `bool` `true` and `false`. Patterns are joined with `or` (`Add(l, _) or Mul(l, _)`, `'+' or '-'`), and each names the same values; numbers and characters come in ranges that take both ends (`'a'..='z'`, `0..=9`). On a `T?` the patterns are `null` and those of the `T`, also inside a variant (`Node(null, _)`); a name below an arm `null` takes a value that is not `null`. A value no arm takes, or an arm that can never run, is a compile error that names the value: `does not handle Add(Name(_), _)`, `no arm takes 128..=255`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
-| Interfaces | Five built-in ones, written after the name: `struct Point : Copyable`, `enum AppError : Formattable`. A `Copyable` value is copied where another would be moved. A `Formattable` value is accepted by `print`, `$"..."` and `f.write`; a struct or an enum can write its own `void format(read this, ref Formatter f)`, otherwise the text is made from the fields. `Equatable` gives `==` and `!=` (field by field, or the type's own `bool equals(read this, read T other)`), `Hashable` lets the type be a key of a `HashMap` or an item of a `HashSet`, `Comparable` gives `<` `<=` `>` `>=` and `sort` through the type's `int compare(read this, read T other)` |
+| Interfaces | Seven built-in ones, written after the name: `struct Point : Copyable`, `enum AppError : Formattable`. A `Copyable` value is copied where another would be moved. A `Formattable` value is accepted by `print`, `$"..."` and `f.write`; a struct or an enum can write its own `void format(read this, ref Formatter f)`, otherwise the text is made from the fields. `Equatable` gives `==` and `!=` (field by field, or the type's own `bool equals(read this, read T other)`), `Hashable` lets the type be a key of a `HashMap` or an item of a `HashSet`, `Comparable` gives `<` `<=` `>` `>=` and `sort` through the type's `int compare(read this, read T other)`. A `Disposable` struct has a `void dispose(ref this)` that runs by itself, once, where the last owner of the value ends, before its fields end (not on a panic or `exit`; `x.dispose()` is an error, and no field is moved out of it). A `Closable` struct has a `close(this)` that gives a `Result`, and a local of it is closed before it ends, as a `StreamWriter` is |
 | `List<T>` | Built in. `List<int>()`, `List<int> { 1, 2 }`; `xs.add(v)`, `xs.length()`, `xs[i]` to read and to write (`xs[i] = v`, `xs[i] += 1`, `xs[i].name = ...`, `ref xs[i]`), `xs.get(i)` gives `null` where `xs[i]` would panic, `xs.removeLast()`, `xs.reverse()`, `xs.clear()`, `xs.addAll(items)` copies the items of a slice to the end (`buffer.addAll(text.asBytes())`, `xs.addAll(read ys)`, `xs.addAll(ys[2..])`) when they are `Copyable`. `xs.indexOf(v)` and `xs.contains(v)` on `Equatable` items, `xs.sort()` on `Comparable` ones (numbers and text are both). `string.join(", ", read names)` |
 | `HashMap<K, V>` | Built in; a key is an integer, a `bool`, a `string` or a type written `: Equatable, Hashable`. `HashMap<string, int>()`, `HashMap<string, int> { {"x", 10} }`; `map.add(key, value)`, `map[key]` to read and to write what is under a key that is there, `map.get(key)` gives `null` for a missing key, `map.getOrAdd(key, initial)` gives a `ref V`, `map.contains(key)`, `map.remove(key)`, `map.length()`, `map.clear()` |
 | Text of a collection | `print(xs)`, `$"{xs}"`: `[1, 2, 3]`, `{"ada": 36}`, `{1, 2, 3}`, when the items can be written as text |
@@ -47,7 +47,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Tasks | `Task.run(work, x, share total)` starts `work(x, share total)` as a task and gives a `Task<R>`, `R` being what `work` returns; a `Func` can be started too. `t.wait()` waits for it and gives that value (`try t.wait()` passes its error on). A task that is not waited for on every path is a compile error, and so is `Task.run(...)` alone or dropped with `_ =`. What a task is given and gives back owns all it holds: no borrow, no `shared checked` value, no `Task` (the thread rule, also inside fields). In the interpreter a task runs on a thread of its own when it is waited for, so the output is the same on every run; compiled code starts a thread of the system for it at once. A panic inside one names the line that started it |
 | Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
 | Raw memory | `raw T` is an address that owns nothing and may be `null`; it points at plain data (numbers, `bool`, `char`, raw pointers, and arrays and structs of them), laid out as C lays it, or is a `raw void`. `Memory.allocate<T>(n)` gives room for `n` items, all zero (C's `calloc`, in the interpreter too). `p[i]` reads and writes an item (`p[i] = v`, `p[i].x += 1`), `p + n` and `p - n` move by items, `(raw byte)p` reads the memory as another type, `Memory.copy(source, target, count)` copies items (also over itself) and `Memory.free(p)` gives the block back, or memory C gave with `malloc`; each of them is written inside `unsafe { ... }`, or with `unsafe` in front of a value (`var first = unsafe p[0]`), and an `unsafe` that nothing needs is an error. `p == q` and `p == null` need no `unsafe`. The interpreter checks every item against the block it came from and panics outside it, after `Memory.free` and through `null`; compiled code checks nothing, and a `raw T` is a `T*`. A raw pointer does not go to another task |
-| Calling C | `extern "z" { int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen) }` declares functions of C, a block for each library (linked as `-lz`; `extern { }` is the C library itself), each called inside `unsafe`. A C function takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data (C's `T*` and `const T*`, for the time of the call) and `read CString`, and gives one of the first four or nothing. `CString.from(text)` gives a `Result<CString, TextError>`, an error for a zero byte inside; `unsafe string.fromCString(p)` copies what C ended with a zero byte and checks that it is UTF-8. `buffer.pointer()` on a list, an array or a slice of plain data is written only as an argument of a C function. The functions are private to their module unless `public` is written on one, so a module can hide a library behind a safe interface (`examples/zlib`). The interpreter builds a small library of wrappers with `cc` and opens it with `dlopen`; compiled code calls C directly |
+| Calling C | `extern "z" { int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen) }` declares functions of C, a block for each library (linked as `-lz`; `extern { }` is the C library itself), each called inside `unsafe`. A C function takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data (C's `T*` and `const T*`, for the time of the call; `ref raw T` is `T**`), a struct of plain data by value, laid out as C lays it out, and `read CString`, and gives a number, a `bool`, a `raw T`, a struct of plain data or nothing. `struct sqlite3` without a body in an `extern` block is a type of C that SG only points at (`raw sqlite3`). `CString.from(text)` gives a `Result<CString, TextError>`, an error for a zero byte inside; `unsafe string.fromCString(p)` copies what C ended with a zero byte and checks that it is UTF-8. `buffer.pointer()` on a list, an array or a slice of plain data is written only as an argument of a C function. The functions are private to their module unless `public` is written on one, so a module can hide a library behind a safe interface, and a `Disposable` type gives back what C made when it ends (`examples/zlib`, whose `Deflater` holds zlib's stream). The interpreter builds a small library of wrappers with `cc` and opens it with `dlopen`; compiled code calls C directly |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
@@ -371,7 +371,10 @@ faster (491-495), and the sixty-eighth prints a fractional number with Dragonbox
 together: a `raw T` is a `T*`, `p[i]` is `p[i]`, and nothing is checked, while the interpreter checks every
 item against its block (501-516). The seventieth (calling C: `extern` blocks, `CString`, `buffer.pointer()`)
 was written in all three too: a call of C in compiled code is a call of C, through an inline adapter, while
-the interpreter calls it through a library of wrappers it builds with `cc` (517-530). What is still missing is an error that names it (not silence): the few positions listed with the
+the interpreter calls it through a library of wrappers it builds with `cc` (517-530). So was the seventy-first
+(`Disposable` and `Closable` on types of your own, opaque C types, C structs by value): a `Disposable` struct
+has a byte that a move sets, and its drop runs `dispose` before the fields when the byte is not set (531-544).
+What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -427,6 +430,7 @@ hand with no checks):
 | `netlines`: the two million lines of `lines` sent over the loopback by one task and read line by line by another with `await reader.readLineAsync(ref line)` (the C blocks, with `getline` from a `FILE` over the socket, which checks nothing) | 0.092 s | 0.089 s | 0.081 s | 1.14 |
 | `ring`: a ring buffer of its own over raw memory (`raw long`, `unsafe`), four hundred million numbers in at one end and out at the other through 4096 items (the C is the same over `calloc`) | 0.328 s | 0.326 s | 0.328 s | 1.00 |
 | `crc`: sixteen gigabytes through zlib's `crc32`, 64 KB of an array at a time, handed over with `block.pointer()` (the C calls zlib through its header) | 0.418 s | 0.417 s | 0.421 s | 0.99 |
+| `deflate`: a gigabyte at level 1 through zlib's stream, 64 KB at a time, behind the safe `Deflater` of `examples/zlib` (the C calls zlib through its header) | 1.001 s | 1.001 s | 0.962 s | 1.04 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -746,7 +750,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/parser.rs` | Hand-written recursive descent parser |
 | `src/types.rs` | Types as the checker sees them |
 | `src/check.rs` | Static checks: names, types, `null` safety, use after move (per variable and per field), `match` covering every variant, `return` on every path, unused `Result`, what `try` may pass on, what `Copyable` and `Formattable` promise. Writes resolved details (literal types, field indexes, implicit conversions, what each call runs) into the tree |
-| `src/interp.rs` | Runs the checked tree; only data-dependent failures (panics) are left to it. Every task that runs code is a fiber, a thread of its own of which one runs at a time |
+| `src/interp.rs` | Runs the checked tree; only data-dependent failures (panics) are left to it. Every task that runs code is a fiber, a thread of its own of which one runs at a time. The fields of a value of a `Disposable` type wait in a list when their last owner lets them go, and `dispose` runs on them between statements |
 | `src/emit_c.rs` | The back end: writes the checked tree as C, with the same panics; tasks are threads of the system |
 | `src/opening.rs` | After the checker: where a `shared checked` value is reached and for how long it is borrowed (the `Open` and `Within` nodes the interpreter follows), the conflicts through the same variable that are certain before the program runs, and the borrows that would outlive their line |
 | `src/waits.rs` | After the checker, on the whole program: which functions wait (take a lock, wait for a task or await one, themselves or through the functions they call), and what waits inside a `lock` block; which functions hold the thread, and what does in an async function; an async function that awaits itself |
@@ -3998,6 +4002,95 @@ direction in "Calling C, the direction"); 529 and 530 come from the slice, and a
      its tests. `cargo test` compiles 258 of 1093 programs, 40 of them under the thread sanitizer, and 14 of
      18 programs of tests; on Linux too, in a container that has zlib, with the same counts.
 
+Choices made in the seventy-first slice (`Disposable` and `Closable` on types of your own, opaque C types
+and C structs by value), the last of the three slices of calling C. 531 to 540 were decided before it on 15
+November 2026 (with the direction in "Calling C, the direction"); 538 was built another way, and 541 to 546
+come from the slice, and all were approved the same day:
+
+531. **`Disposable` on a struct of the program**, decided before the slice: `struct T : Disposable` has one
+     method `void dispose(ref this)`. Without it, `: Disposable` is an error whose hint is the method; a
+     `dispose` on a type that is not `Disposable` is an error (it would never run); one that takes `this`
+     or `read this`, takes arguments, gives a value or is `async` is an error that says how it is written.
+     An enum cannot be `Disposable` for now: a struct that holds it can.
+532. **When `dispose` runs**, decided before the slice: once, where the last owner of the value ends (the
+     end of a block or of a function, a value written over, an item taken out of a list, a `T?` set to
+     `null`, the last owner of a `shared` value, a way out through `try`), and then what the value holds
+     ends, field by field in the order of the fields. Several values that end together end in the reverse
+     order of their names, and the items of a list in their order. A panic and `exit` dispose of nothing.
+533. **`dispose` is not called by the program**, decided before the slice: `x.dispose()` is an error, whose
+     hint is `try x.close()` on a `Closable` type, and otherwise to hand the value to a function that
+     takes it by value.
+534. **A method that takes `this` ends the value**, decided before the slice: its `dispose` runs where the
+     method ends, also after `close`; a type that frees something in such a method keeps a field that says
+     so (`ended`), as in C#'s `Dispose` pattern. In the interpreter a receiver handed over now leaves its
+     place empty, as an argument does, so it ends where compiled code ends it.
+535. **No field is moved out of a `Disposable` value**, decided before the slice (row "`Disposable` and
+     moving a field"): an error everywhere, inside its own methods and `dispose` too, and through a field of
+     a field (`pair.first.name`); the hint is `take` or `replace`, which leave the value whole.
+536. **What a `Disposable` type is not**, decided before the slice: not `Copyable` (both are an error: each
+     copy would be disposed of) and not plain data, so it is not in raw memory (`Memory.allocate<T>`, a
+     `raw T`) or in a signature of C. It is in a `List`, a `HashMap`, a `T?` and a `shared` value, and goes
+     to another task, unless it holds a `raw T` (row "C and tasks"), so a type that wraps a C library does
+     not go to another task for now.
+537. **`Closable` on a struct of the program**, decided before the slice: it asks for a `close(this)` that
+     gives a `Result`, and a local of the type, a parameter it takes by value, a name of a pattern and the
+     item of a `for` are closed before they end, or before they are given another value, as a `StreamWriter`
+     is (choice 210): the error says that the error its `close` gives would be lost, and the hint is `try
+     x.close()`. `this` is exempt inside the type's own methods, which are what close it. A `Closable` type
+     need not be `Disposable`.
+538. **Compiled `dispose`**, decided before the slice as a C function with a flag only on a local whose
+     move depends on a condition; **built another way**: a `Disposable` struct has one byte more
+     (`sg_gone`), which a move sets and its drop looks at before `dispose` runs. The back end already
+     empties every place a value is moved out of and tests it where it is dropped (a text leaves `NULL`, an
+     enum a tag that is no variant); the byte is that rule for a struct with nothing else to empty, and
+     costs a byte, a store on a move and a test on a drop. A value is made with its byte at 0, so every way
+     of making one gives a live value.
+539. **How the interpreter runs `dispose`**: the fields of a value of a `Disposable` type name it, and when
+     the last place that holds them lets them go, they wait in a list; the interpreter runs `dispose` on
+     them before and after each statement, at the end of each block and of each call, and runs what a value
+     held before the next value. That is the order of compiled code, which drops a value field by field. A
+     value read from a place (a copy) shares the fields of a `Disposable` one, so it is disposed of once. A
+     `for` handed a collection takes each item out as its turn comes, so an item ends at the end of its
+     turn, as in compiled code, and not with the collection.
+540. **Types of C seen only behind a pointer**, decided before the slice: `extern "sqlite3" { struct sqlite3
+     }` declares a type of C without a body, written only as `raw sqlite3`; `ref raw sqlite3` is C's
+     `sqlite3**`. An item of it, `p + n`, a field, `Memory.allocate<sqlite3>`, a value, a list of it and a
+     struct built of it are errors, and so are `:` and a body after its name. Private to its module unless
+     `public`. Compiled, it is a C struct that is declared and never defined.
+541. **Structs of C by value**, decided before the slice: a struct of plain data goes to C and comes back by
+     value (`Div div(int numer, int denom)`); a struct that holds something else is an error that names
+     what it holds. Its fields have names of SG, and only their order and types count. `ref raw T` and
+     `read raw T` are now in a signature (`strtol`'s `char**`). The interpreter writes the struct into the
+     C file of its wrappers, those it holds first, and hands its address in a slot (a struct C gives back is
+     written into room after the arguments); compiled code passes the struct itself, and writes `read T` as
+     `T const*`, so that a `read raw T` is a pointer to a pointer that C does not change.
+542. **zlib's stream behind a safe type** (`examples/zlib`, decided before the slice): `Deflater : Disposable,
+     Closable` holds a `z_stream` in raw memory, because zlib keeps its address and a value of SG moves.
+     `Deflater(level)` gives a `Result` (a level outside 0 to 9 is the new `ZlibError.BadLevel`), `write`
+     compresses a piece, `take` hands over what is compressed so far, `close` ends the stream and gives the
+     rest, and `dispose` gives back what zlib holds and the two blocks of 64 KB, closed or not. What is
+     written is copied into raw memory a byte at a time: `buffer.pointer()` lasts only for a call (523),
+     and zlib reads its input across calls.
+543. **Measured** (`deflate`, a new program): a gigabyte at level 1 through the `Deflater`, 64 KB at a time,
+     takes 1.001 s, 1.001 s in the overflow-checked build, against 0.962 s for the same calls in C through
+     zlib's header (1.04 times). The difference is the copy of each piece into raw memory (542), noted in
+     "Slower than C".
+544. **The tests**: `ok_disposable` goes through the ways a value ends (a block, a call, a value written
+     over, `removeLast`, `null`, a `shared` value with two owners, a move on one path, an enum, a `match`,
+     a way out through `try`, a `for` handed a list, a map, a task, an async function), and
+     `ok_disposable_closable` a `Closable` type whose `close` fails; their output is the same in the
+     interpreter and in compiled code. `ok_extern_struct` gets `div_t` and `ldiv_t` back from C, gives
+     `inet_ntoa` a `struct in_addr`, writes and reads a `FILE` that `tmpfile` makes, and lets `strtol` write
+     a `char*` (`ref raw byte`). 18 `error_dispos` and `error_closable_` programs show the errors of 531 to 537,
+     9 `error_opaque_` programs those of 540, and 2 `error_extern_struct_` programs those of 541;
+     `error_extern_struct_value` is gone, since a struct by value is no longer an error. `examples/zlib` has
+     three new tests (a stream given in pieces comes back whole, a level outside 0 to 9, a deflater that is
+     never closed gives back what zlib holds, which the leak check of the sanitizers sees). A struct that
+     holds a struct and an array, given by value and given back, was checked by hand against a small C
+     library in both; the tests have only the C library and zlib to call. `cargo test` compiles 261 of 1124
+     programs, 41 of them under the thread sanitizer, and 14 of 18 programs of tests; on Linux too, in a container, with the
+     same counts.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -4055,6 +4148,11 @@ check off.
   again each time. Candidates: the threads of the pool wait for the loop themselves when they have nothing
   to do, so the one the system wakes runs the task (as Tokio's workers do), and a socket that stays on the
   loop, woken by its edges, instead of being put on again for each wait.
+- **Handing a buffer to C across calls** (`deflate`, 1.04 times C, choice 543): zlib reads its input
+  between calls, and `buffer.pointer()` lasts only for one (523), so the `Deflater` copies each piece into
+  raw memory a byte at a time, and copies what zlib wrote back the same way. Candidates: `Memory.copy`
+  between a slice and raw memory, which compiles to `memcpy`, and a buffer lent to a value for as long as
+  the value lives (a `raw` view that carries a borrow).
 - **Checking that a line is UTF-8** (`netlines`, 1.14 times `getline`, which checks nothing, 0.89 without
   the check, choice 493; `lines` takes 0.82 times with it): the reader checks its block at once (491), with
   sixteen bytes at a time while they are ASCII and one byte at a time inside a character (492), about
@@ -4067,8 +4165,7 @@ check off.
 - **Of raw memory**: a place in it lent (`read p[i]`, `ref p[i]`, a method called on `p[i]`, 511); items that
   own memory (the design's `put`, `take` and `moveItems`); `Memory.resize`; the difference and the order of
   two pointers (`p - q`, `p < q`); the address of a variable.
-- **Of calling C**: a struct given to C or given back by value, a C struct whose layout C decides (opaque
-  types), `Disposable` on a type that wraps a library (the next slice); calls from C back into SG
+- **Of calling C**: unions, bit fields, `packed` structs and alignment; calls from C back into SG
   (callbacks), `errno`, functions with a varying count of arguments (`printf`), the address of a `CString`
   kept by C, `sg build -L path` for a library the C compiler does not find by itself, `pkg-config`,
   frameworks of macOS, Windows. A C function whose name the C library gives another symbol (`stat` on
@@ -4088,7 +4185,8 @@ check off.
   for how it starts (choices 243, 248), a constant as an end of a range (`int.MaxValue`), a range open at
   one end (`5..=`), `..=` outside a pattern (254, 255). A pattern of an `or` inside the parentheses that the
   ones before it already take is not caught (256).
-- Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
+- Interfaces of your own (`interface`, `where`) and the other built-in one (`Clonable`). `Disposable` and
+  `Closable` on an enum. A `Disposable` value that holds a `raw T` going to another task. `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
   in the design), and so an alias with type parameters (`using Link<T> = ...`).
 - Channels; the task of `Task.whenAll` kept in a variable to be awaited later (`var all =
@@ -4128,7 +4226,7 @@ check off.
   items that are not `Copyable`, moving every item of one list into another, adding a range of a list to
   the same list (`extend_from_within`), a sort that does not allocate (choices 235, 236, 239).
 - A panic of `-x` and of a shift names no way out: there is no `tryNegate` or `tryShiftLeft` yet.
-- `Closable` and `Disposable` on a type of your own. Folders, removing or renaming a file, asking whether one is there; the
+- Folders, removing or renaming a file, asking whether one is there; the
   variables of the environment; the command line as bytes (a word that is not UTF-8 stops the program).
   `IoError` does not carry the path (choice 195). `PermissionDenied` and `NoSpace` are mapped but have no
   test: the tests cannot make a file they may not read or fill a disk.
@@ -4248,7 +4346,8 @@ with Dragonbox, in a third of the time of `printf("%.17g")` in C. Raw memory is 
 ring buffer over it takes the time of C. C is called through `extern` blocks, linked with the libraries
 they name, with C text (`CString`) and the items of a buffer (`buffer.pointer()`), and zlib wrapped in a
 module of its own needs no `unsafe` where it is used; sixteen gigabytes through zlib's `crc32` take the time
-of the same calls in C. The other places in "Slower than C" wait; next is the last slice of calling C:
-`Disposable` on types of your own, opaque C types and C structs, and a library that keeps state wrapped in
-a safe type; after that the clock, random numbers, folders and the environment, running another program,
-Unicode tables and UDP.
+of the same calls in C. A type of your own is `Disposable` (its `dispose` runs where its last owner ends)
+and `Closable` (a local of it is closed), a type of C is only pointed at, and a struct of plain data goes
+to C by value; zlib's stream, wrapped in a `Deflater`, compresses a gigabyte in 1.04 times the time of the
+same calls in C. The other places in "Slower than C" wait; next are the clock, random numbers, folders and
+the environment, running another program, Unicode tables and UDP.

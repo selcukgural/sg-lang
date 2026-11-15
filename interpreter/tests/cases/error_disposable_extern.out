@@ -1,0 +1,5 @@
+error: the C function `fileno` cannot take a `ref Handle`
+  `Handle` is not plain data: C gets numbers, `bool`, raw pointers, and arrays and structs of them
+  --> error_disposable_extern.sg:10:16
+ 10 |     int fileno(ref Handle file)
+    |                ^^^^^^^^^^

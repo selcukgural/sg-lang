@@ -1,0 +1,9 @@
+extern {
+    struct FILE
+    raw FILE tmpfile()
+}
+
+void main() {
+    var file = unsafe tmpfile()
+    var next = unsafe (file + 1)
+}

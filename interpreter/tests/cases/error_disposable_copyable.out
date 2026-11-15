@@ -1,0 +1,5 @@
+error: `Handle` cannot be both `Copyable` and `Disposable`: each copy would be disposed of
+  a copy of a value that gives something back when it ends would give it back twice
+  --> error_disposable_copyable.sg:1:17
+ 1 | struct Handle : Copyable, Disposable {
+   |                 ^^^^^^^^

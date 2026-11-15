@@ -40,7 +40,7 @@ pub enum Value {
     Void,
     Null,
     /// The struct's name and its fields in declaration order.
-    Struct(Rc<str>, Rc<Vec<Cell>>),
+    Struct(Rc<str>, Rc<Fields>),
     /// The enum's name (`Result` for the built-in one), the variant's position and what it
     /// carries.
     Enum(Rc<str>, usize, Rc<Vec<Cell>>),
@@ -127,7 +127,7 @@ enum Timer {
 
 /// The `Cancelled { }` that a cancelled wait gives.
 fn cancelled() -> Value {
-    Value::Struct("Cancelled".into(), Rc::new(Vec::new()))
+    Value::Struct("Cancelled".into(), Fields::plain(Vec::new()))
 }
 
 /// A task. Every task that runs code is a fiber: a thread of its own, of which one runs at a
@@ -514,6 +514,7 @@ fn open_streams() {
     let stdin = cell(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: None, done: 0 }))));
     STREAMS.with(|streams| *streams.borrow_mut() = Some([stdin, writer(Sink::Stdout), writer(Sink::Stderr)]));
     ENDING.with(|ending| ending.set(false));
+    PENDING.with(|pending| pending.borrow_mut().clear());
 }
 
 /// What `Stdin`, `Stdout` or `Stderr` names: a `ref` to the stream.
@@ -524,6 +525,48 @@ fn stream_slot(name: &str) -> Option<Cell> {
 
 fn ending() {
     ENDING.with(|ending| ending.set(true));
+}
+
+/// The fields of a struct value, in declaration order. Those of a `Disposable` type name it,
+/// and are handed to `PENDING` when the last place that holds them lets them go: the
+/// interpreter then runs `dispose` on them (see `Interp::disposals`), as compiled code does
+/// where it drops the value.
+#[derive(Debug)]
+pub struct Fields {
+    cells: Vec<Cell>,
+    /// The `Disposable` type the value is of, until it is disposed of.
+    disposed_as: Option<Rc<str>>,
+}
+
+impl Fields {
+    fn plain(cells: Vec<Cell>) -> Rc<Fields> {
+        Rc::new(Fields { cells, disposed_as: None })
+    }
+}
+
+impl std::ops::Deref for Fields {
+    type Target = Vec<Cell>;
+    fn deref(&self) -> &Vec<Cell> {
+        &self.cells
+    }
+}
+
+impl Drop for Fields {
+    fn drop(&mut self) {
+        // A panic and `exit` dispose of nothing, as in compiled code.
+        if let Some(name) = self.disposed_as.take() {
+            if !ENDING.try_with(Flag::get).unwrap_or(true) {
+                let cells = std::mem::take(&mut self.cells);
+                let _ = PENDING.try_with(|pending| pending.borrow_mut().push((name, cells)));
+            }
+        }
+    }
+}
+
+thread_local! {
+    /// The values of `Disposable` types that their last owner let go, in the order it did,
+    /// waiting for their `dispose`.
+    static PENDING: RefCell<Vec<(Rc<str>, Vec<Cell>)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// What a `shared` value points to.
@@ -615,7 +658,8 @@ fn kind_name(value: &Value) -> String {
 fn owns_any(value: &Value, ids: &[usize]) -> bool {
     match value {
         Value::Shared(held) => ids.contains(&held.id),
-        Value::Struct(_, cells) | Value::Enum(_, _, cells) | Value::Array(cells) => cells.iter().any(|item| owns_any(&item.borrow(), ids)),
+        Value::Struct(_, fields) => fields.iter().any(|item| owns_any(&item.borrow(), ids)),
+        Value::Enum(_, _, cells) | Value::Array(cells) => cells.iter().any(|item| owns_any(&item.borrow(), ids)),
         Value::List(items) => items.borrow().iter().any(|item| owns_any(&item.borrow(), ids)),
         Value::Map(entries) => entries.borrow().values().any(|(_, item)| owns_any(&item.borrow(), ids)),
         Value::Set(items) => items.borrow().values().any(|item| owns_any(item, ids)),
@@ -1168,7 +1212,7 @@ fn load(addr: usize, ty: &Ty, plain: &HashMap<String, Vec<Ty>>, span: Span) -> R
             }
             Ty::Struct(name) => {
                 let fields = plain[name].iter().zip(raw::offsets(name, plain)).map(|(field, at)| load(addr + at, field, plain, span).map(cell)).collect::<Result<Vec<Cell>, Diag>>()?;
-                Value::Struct(name.as_str().into(), Rc::new(fields))
+                Value::Struct(name.as_str().into(), Fields::plain(fields))
             }
             other => unreachable!("raw memory holds plain data, not `{other}`"),
         })
@@ -1230,7 +1274,10 @@ fn owned(mut value: Value) -> Value {
 fn fresh(value: &Value) -> Value {
     let cells = |fields: &Rc<Vec<Cell>>| Rc::new(fields.iter().map(|field| cell(fresh(&field.borrow()))).collect());
     match value {
-        Value::Struct(name, fields) => Value::Struct(name.clone(), cells(fields)),
+        // There is one value of a `Disposable` type, however often it is read: it is disposed
+        // of once, when the last place that holds it lets it go.
+        Value::Struct(_, fields) if fields.disposed_as.is_some() => value.clone(),
+        Value::Struct(name, fields) => Value::Struct(name.clone(), Fields::plain(fields.iter().map(|field| cell(fresh(&field.borrow()))).collect())),
         Value::Enum(name, index, fields) => Value::Enum(name.clone(), *index, cells(fields)),
         Value::Array(items) => Value::Array(cells(items)),
         other => other.clone(),
@@ -2269,6 +2316,9 @@ impl<'a, 'e> Interp<'a, 'e> {
         if !self.started.is_empty() && !stops {
             self.unwaited()?;
         }
+        if !stops {
+            self.disposals()?;
+        }
         match result {
             Ok(Flow::Return(value)) | Err(Unwind::Return(value)) => Ok(value),
             Ok(_) => Ok(Value::Void),
@@ -2286,15 +2336,40 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
         }
         frame.scopes.pop();
+        self.disposals()?;
         Ok(flow)
     }
 
     /// A statement. What it lent of `shared checked` values ends with it.
     fn stmt(&mut self, stmt: &'a Stmt, frame: &mut Frame) -> Res<Flow> {
+        // What the test of an `if` or a `while` made and let go ends before the block runs.
+        self.disposals()?;
         let mark = self.guards.len();
         let flow = self.stmt_in(stmt, frame);
         self.guards.truncate(mark);
+        if flow.is_ok() {
+            self.disposals()?;
+        }
         flow
+    }
+
+    /// Runs `dispose` on the values of `Disposable` types that their last owner let go, in
+    /// the order it did. What one of them holds ends after its `dispose`, before the next
+    /// value: the order of compiled code, which drops a value field by field.
+    fn disposals(&mut self) -> Res<()> {
+        loop {
+            let batch = PENDING.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
+            if batch.is_empty() {
+                return Ok(());
+            }
+            for (name, cells) in batch {
+                let func = self.methods[&*name]["dispose"];
+                let value = cell(Value::Struct(name, Fields::plain(cells)));
+                self.call(func, Some(Value::Borrow(value.clone())), Vec::new(), func.name_span)?;
+                drop(value);
+                self.disposals()?;
+            }
+        }
     }
 
     fn stmt_in(&mut self, stmt: &'a Stmt, frame: &mut Frame) -> Res<Flow> {
@@ -2384,9 +2459,13 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             StmtKind::ForEach { var, iter, body, by, .. } => {
                 let collection = owned(self.expr(iter, frame)?);
+                // A loop handed the collection owns its items one by one: each ends with its
+                // turn, as in compiled code, and not with the collection.
+                let owns = by.is_none() && (iter.moved || !iter.is_place());
                 // A map or a set is gone over as it was when the loop started.
                 let entry = |(key, value): &(Value, Cell)| {
-                    cell(Value::Struct("entry".into(), Rc::new(vec![cell(key.clone()), value.clone()])))
+                    let value = if owns { cell(value.replace(Value::Null)) } else { value.clone() };
+                    cell(Value::Struct("entry".into(), Fields::plain(vec![cell(key.clone()), value])))
                 };
                 let snapshot: Option<Vec<Cell>> = match &collection {
                     Value::Map(entries) => Some(entries.borrow().values().map(entry).collect()),
@@ -2406,7 +2485,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                     };
                     let Some(item) = item else { break };
                     next += 1;
-                    let bound = if by.is_some() { Value::Borrow(item) } else { item.borrow().clone() };
+                    let bound = match (by, owns) {
+                        (Some(_), _) => Value::Borrow(item),
+                        (None, true) => item.replace(Value::Null),
+                        (None, false) => item.borrow().clone(),
+                    };
                     frame.scopes.push(Scope::default());
                     frame.declare(var, bound);
                     let flow = loop_flow(self.block(body, frame))?;
@@ -2776,7 +2859,9 @@ impl<'a, 'e> Interp<'a, 'e> {
                     cells[init.index] = Some(cell(self.expr(&init.value, frame)?));
                 }
                 let cells = cells.into_iter().map(|field| field.expect("the checker requires every field")).collect();
-                Ok(Value::Struct(name.as_str().into(), Rc::new(cells)))
+                // One of a `Disposable` type is disposed of when its last owner lets it go.
+                let disposed_as = self.structs[name.as_str()].disposable().then(|| name.as_str().into());
+                Ok(Value::Struct(name.as_str().into(), Rc::new(Fields { cells, disposed_as })))
             }
             ExprKind::New(inner) => Ok(Value::Ptr(cell(self.expr(inner, frame)?))),
             ExprKind::NewShared { value, checked, .. } => Ok(Value::Shared(Held::new(self.expr(value, frame)?, *checked, expr.span))),
@@ -2960,7 +3045,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
                         Err(error) => {
                             let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
-                            let cause = Value::Struct("TextError".into(), Rc::new(vec![position]));
+                            let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
                             Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
                         }
                     })
@@ -2972,7 +3057,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         Ok(made) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::CStr(Rc::new(made)))])),
                         Err(error) => {
                             let position = cell(Value::Int(IntTy::Nint, error.nul_position() as i128));
-                            let cause = Value::Struct("TextError".into(), Rc::new(vec![position]));
+                            let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
                             Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
                         }
                     })
@@ -2998,6 +3083,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                     }
                     let lent = self.guards.len();
                     let this = match this {
+                        // A receiver handed over leaves its place empty, as an argument does.
+                        This::Value if recv.moved && matches!(&*target.borrow(), Value::Struct(..)) => target.replace(Value::Null),
                         This::Value => fresh(&target.borrow()),
                         This::Read | This::Ref => Value::Borrow(target),
                     };
@@ -3048,7 +3135,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
                         Err(error) => {
                             let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
-                            let cause = Value::Struct("TextError".into(), Rc::new(vec![position]));
+                            let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
                             Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
                         }
                     })
@@ -3458,7 +3545,12 @@ impl<'a, 'e> Interp<'a, 'e> {
     fn call_extern(&mut self, name: &str, args: &'a [Expr], expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
         let (params, ret) = &self.foreign[name];
         let (params, ret) = (params.clone(), ret.clone());
-        let mut slots: Vec<crate::ffi::Slot> = vec![0; args.len()];
+        // A struct C gives back is written into room whose address follows the arguments.
+        let returned_struct = matches!(ret, Ty::Struct(_)).then(|| raw::Scratch::new(raw::layout(&ret, self.plain).0));
+        let mut slots: Vec<crate::ffi::Slot> = vec![0; args.len() + usize::from(returned_struct.is_some())];
+        if let Some(room) = &returned_struct {
+            slots[args.len()] = room.addr() as crate::ffi::Slot;
+        }
         // Memory lent for the call: where it is, what lies there, and the cells to write back.
         let mut lent: Vec<(raw::Scratch, Ty, Vec<Cell>)> = Vec::new();
         for ((arg, param), slot) in args.iter().zip(&params).zip(slots.iter_mut()) {
@@ -3495,6 +3587,14 @@ impl<'a, 'e> Interp<'a, 'e> {
                         _ => unreachable!("the checker gives an integer"),
                     }),
                     Ty::Float(_) | Ty::Bool | Ty::Raw(_) => store(at as usize, param, &value, self.plain),
+                    // A struct given by value is copied out for C, which may change its copy.
+                    Ty::Struct(_) => {
+                        let (size, _) = raw::layout(param, self.plain);
+                        let scratch = raw::Scratch::new(size);
+                        store(scratch.addr(), param, &strip(value), self.plain);
+                        at.cast::<usize>().write(scratch.addr());
+                        lent.push((scratch, param.clone(), Vec::new()));
+                    }
                     Ty::Read(inner) | Ty::Ref(inner) => {
                         let Value::Borrow(target) = value else { unreachable!("the checker gives a borrow") };
                         let target = behind_borrows(target);
@@ -3526,6 +3626,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         let at = (&returned as *const crate::ffi::Slot).cast::<u8>() as usize;
         Ok(match &ret {
             Ty::Void => Value::Void,
+            Ty::Struct(_) => load(returned_struct.as_ref().expect("room for the struct").addr(), &ret, self.plain, expr.span)?,
             Ty::Int(int) => Value::Int(*int, unsafe { raw::read_int(at, *int) }),
             other => load(at, other, self.plain, expr.span)?,
         })
@@ -3880,8 +3981,8 @@ impl<'a, 'e> Interp<'a, 'e> {
             return Ok(true);
         }
         let (left_fields, right_fields) = match (&left, &right) {
-            (Value::Struct(_, a), Value::Struct(_, b)) => (a, b),
-            (Value::Enum(_, a_index, a), Value::Enum(_, b_index, b)) if a_index == b_index => (a, b),
+            (Value::Struct(_, a), Value::Struct(_, b)) => (&a.cells, &b.cells),
+            (Value::Enum(_, a_index, a), Value::Enum(_, b_index, b)) if a_index == b_index => (&**a, &**b),
             (Value::Enum(..), Value::Enum(..)) => return Ok(false),
             // A `T?` that holds a value on one side only: the value may be one that is no key.
             (Value::Null, Value::Null) => return Ok(true),

@@ -1,0 +1,5 @@
+error: a raw pointer points at plain data, and `Handle` is not
+  a `Disposable` value is disposed of when it ends, and nothing in raw memory ends
+  --> error_disposable_raw.sg:10:33
+ 10 |     var files = Memory.allocate<Handle>(2)
+    |                                 ^^^^^^

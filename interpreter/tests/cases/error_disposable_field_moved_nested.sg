@@ -1,0 +1,18 @@
+struct Named : Disposable {
+    string name
+
+    void dispose(ref this) {
+        print($"{this.name} ends")
+    }
+}
+
+struct Pair {
+    Named first
+    int count
+}
+
+void main() {
+    var pair = Pair { first = Named { name = "a" }, count = 1 }
+    var name = pair.first.name
+    print(name)
+}

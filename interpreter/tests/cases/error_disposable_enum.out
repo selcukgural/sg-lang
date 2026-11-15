@@ -1,0 +1,5 @@
+error: an enum cannot be `Disposable` for now: a struct can
+  a struct that holds the enum can be, and its `dispose` sees the enum whole
+  --> error_disposable_enum.sg:1:15
+ 1 | enum Handle : Disposable {
+   |               ^^^^^^^^^^

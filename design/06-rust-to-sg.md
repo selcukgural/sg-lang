@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the seventieth slice.
+Last brought up to date: 15 November 2026, the seventy-first slice.
 
 ## Functions and variables
 
@@ -121,9 +121,12 @@ Last brought up to date: 15 November 2026, the seventieth slice.
 | `#[derive(Hash)]` | `: Hashable` | built | Can be a key of a `HashMap` |
 | `impl Ord` | `: Comparable` with `int compare(read this, read P other)` | built | Gives `<` and `sort` |
 | `#[derive(Debug)]` | `: Formattable` | built | Written from the fields |
-| `trait`, `impl Trait for T` | `interface` | designed | Interfaces of your own are put off; the five built-in ones are there |
+| `trait`, `impl Trait for T` | `interface` | designed | Interfaces of your own are put off; the seven built-in ones are there |
 | generics of your own (`struct Stack<T>`) | none | designed | Put off; `List`, `HashMap`, `HashSet`, `Result`, `Func`, `Task` are generic |
-| `impl Drop` | `Disposable` | designed | |
+| `impl Drop for T { fn drop(&mut self) }` | `struct T : Disposable` with `void dispose(ref this)` | built | Runs once where the last owner ends, then the fields end; not on a panic or `exit`. Only on a struct for now |
+| `drop(x)`, `x.drop()` | none: hand it to a function that takes it by value | built | `x.dispose()` is an error; it runs by itself |
+| moving a field out of a `Drop` type (E0509) | an error too | built | `take` and `replace` work, as `mem::take` and `mem::replace` do |
+| a `close(self) -> Result` that Rust lets you forget | `struct T : Closable` with `Result<void, E> close(this)` | built | A local that is not closed is a compile error, as for a `StreamWriter` |
 
 ## `match`, `if let` and `Option`
 
@@ -182,7 +185,9 @@ Last brought up to date: 15 November 2026, the seventieth slice.
 | `alloc_zeroed(Layout::array::<T>(n))`, `dealloc` | `Memory.allocate<T>(n)`, `Memory.free(p)` | built | Zeroed memory; `free` inside `unsafe`. The interpreter catches an item outside its block, after `free`, and a block freed twice, as Miri does |
 | `ptr::copy(src, dst, n)` | `Memory.copy(source, target, count)` | built | Inside `unsafe`; the two may overlap |
 | `extern "C" { fn ... }`, `#[link(name = "z")]` | `extern "z" { ... }` | built | Every call inside `unsafe`; `extern { }` is the C library itself. C names as C writes them; private to the module unless `public` is written on a function |
-| `c_int`, `size_t`, `*const T`, `*mut T` in a signature | `int`, `nuint`, `read T` or `raw T`, `ref T` or `raw T` | built | `ref` and `read` last for the call; `raw T` when C keeps the address. No `char` (a byte is `byte`), no struct by value yet, no `...` |
+| `c_int`, `size_t`, `*const T`, `*mut T` in a signature | `int`, `nuint`, `read T` or `raw T`, `ref T` or `raw T` | built | `ref` and `read` last for the call; `raw T` when C keeps the address. No `char` (a byte is `byte`), no `...` |
+| `#[repr(C)] struct`, given and returned by value | a struct of plain data, given and returned by value | built | Every struct of plain data is laid out as C lays it out; no mark is written. No unions, bit fields or `packed` |
+| `extern { type sqlite3; }`, an opaque `#[repr(C)] struct` | `extern "sqlite3" { struct sqlite3 }` | built | Only as `raw sqlite3`; `ref raw sqlite3` is C's `sqlite3**` |
 | `CString::new(s)?`, `c.as_ptr()` | `try CString.from(s)`, `read c` as an argument | built | A zero byte inside is a `TextError` at its position |
 | `CStr::from_ptr(p).to_str()?.to_owned()` | `try unsafe string.fromCString(p)` | built | Copies and checks the UTF-8 |
 | `v.as_mut_ptr()`, `v.as_ptr()` | `v.pointer()` | built | Only as an argument of a C function, on a list, an array or a slice of plain data; it counts as a `ref` of `v` for the call |

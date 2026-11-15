@@ -1,0 +1,5 @@
+error: `FILE` is a type of C whose insides SG does not see, so only C makes one
+  a function of C gives a `raw` pointer to it
+  --> error_opaque_built.sg:6:16
+ 6 |     var file = FILE { }
+   |                ^^^^

@@ -1,0 +1,5 @@
+error: the C function `make` cannot give a `Named`
+  it holds a `string`, which is not plain data: C gives numbers, `bool`, raw pointers, and arrays and structs of them
+  --> error_extern_struct_gives_text.sg:6:5
+ 6 |     Named make()
+   |     ^^^^^

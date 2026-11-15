@@ -1,0 +1,5 @@
+error: a `string?` field cannot be moved out of a `Named`: it is `Disposable`, and its `dispose` sees it whole
+  --> error_disposable_field_moved_inside.sg:5:20
+ 5 |         var gone = this.name
+   |                    ^^^^^^^^^
+  hint: take it with `this.name.take()`, which leaves `null` there, or borrow it: `read this.name`

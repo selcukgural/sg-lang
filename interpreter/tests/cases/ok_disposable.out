@@ -1,0 +1,46 @@
+take b
+b ends
+after consume
+in block
+o ends, o1 still here
+o1 ends
+o2 ends
+after block
+l2 ends
+after removeLast
+a ends
+after assign
+m ends
+after null
+shared twice
+take x
+x ends
+after if
+is k
+take k
+k ends
+after match
+picked ends
+early a ends
+after early
+loop f1
+f1 ends
+loop f2
+f2 ends
+after for
+m1 ends
+after map set
+work on task
+task ends
+waited 7
+async given
+given ends
+in async ends
+async gave 1
+end of main
+picked ends
+m2 ends
+y ends
+s ends
+l1 ends
+a2 ends
