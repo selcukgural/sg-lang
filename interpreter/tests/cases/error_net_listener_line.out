@@ -1,0 +1,5 @@
+error: `TcpStream` has no method `readLine`
+  a `TcpStream` receives and sends bytes: `receive(ref buffer)`, `send(text.asBytes())`; `string.fromUtf8(bytes)` looks at bytes as text
+  --> error_net_listener_line.sg:4:18
+ 4 |     _ = try conn.readLine(ref line)
+   |                  ^^^^^^^^

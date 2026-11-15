@@ -1,0 +1,8 @@
+async Result<void, IoError> serve(TcpListener listener) {
+    var next = listener.acceptAsync()
+    var conn = try await next
+    return Ok()
+}
+
+void main() {
+}

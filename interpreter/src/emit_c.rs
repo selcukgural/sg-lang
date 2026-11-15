@@ -21,8 +21,9 @@
 //! `shared`, `weak` and `shared checked` values with the `as` blocks, `this` with a type and the leak
 //! report (see `SHARED_RUNTIME`), tasks, `locked` values and the `lock` block, async functions,
 //! `await`, `Task.delay`, cancellation and lists of tasks with `Task.whenAll` and `Task.whenAny` (see
-//! `TASK_RUNTIME`), and input and output the async way
-//! (see `ASYNC_IO_RUNTIME`).
+//! `TASK_RUNTIME`), input and output the async way (see `ASYNC_IO_RUNTIME`), and the network,
+//! `TcpListener` and `TcpStream`, without async (see `NET_RUNTIME`) and with it, on a loop of epoll or
+//! kqueue (see `NET_ASYNC_RUNTIME`).
 //! A type alias is the type it names. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
@@ -2105,7 +2106,8 @@ static void sg_cancel_held(sg_cancel* c) {
     while (last) {
         sg_delay* d = last;
         last = d->prev;
-        sg_heap_remove(d);
+        /* A wait for a socket or for a thread is not on the clock. */
+        if (d->at >= 0) sg_heap_remove(d);
         sg_delay_end(d, SG_CANCELLED);
     }
 }
@@ -2137,6 +2139,614 @@ static sg_cancel* sg_cancel_after(int32_t ms, const char* loc) {
 }
 "#;
 
+/// What a program that uses the network needs: the sockets of the system, which never block,
+/// and the calls of `TcpListener` and `TcpStream` for code that is not async, which wait for a
+/// socket with `poll`. Added only to such a program, after `IO_RUNTIME`.
+const NET_RUNTIME: &str = r#"
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <poll.h>
+/* A listener and a connection are a socket of the system, -1 once moved or closed. A socket
+   blocks until an async call first uses it (`nb`), so a call of code that is not async is one
+   call of the system; every call still waits with `poll` when the socket is not ready, so the
+   two kinds of call can share a socket. `armed`: the socket is on the loop of the network (see
+   `NET_ASYNC_RUNTIME`). Several tasks may hold one listener (`shared`), so its `nb` is atomic. */
+typedef struct { int fd; int nb; } sg_listener;
+typedef struct { int fd; bool armed; bool nb; } sg_socket;
+static inline void sg_drop_listener(sg_listener* l) { if (l->fd >= 0) close(l->fd); l->fd = -1; }
+static inline sg_listener sg_move_listener(sg_listener* l) { sg_listener out = *l; l->fd = -1; return out; }
+static inline void sg_drop_socket(sg_socket* s) { if (s->fd >= 0) close(s->fd); s->fd = -1; }
+static inline sg_socket sg_move_socket(sg_socket* s) { sg_socket out = *s; s->fd = -1; return out; }
+/* A socket that is not handed to programs this one starts, gives an error instead of a signal
+   when the other side has gone, and does not block if `nb`. */
+static void sg_net_setup(int fd, bool nb) {
+#if !defined(__linux__)
+    if (nb) fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+#else
+    (void)fd;
+    (void)nb;
+#endif
+#ifdef SO_NOSIGPIPE
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+}
+static int sg_net_socket(int family, bool nb) {
+#if defined(__linux__)
+    int fd = socket(family, SOCK_STREAM | SOCK_CLOEXEC | (nb ? SOCK_NONBLOCK : 0), 0);
+#else
+    int fd = socket(family, SOCK_STREAM, 0);
+#endif
+    if (fd >= 0) sg_net_setup(fd, nb);
+    return fd;
+}
+static inline void sg_net_nonblock(int fd) { fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK); }
+/* `host:port`: the host, without the brackets of a v6 address and ended by a zero byte, and the
+   port as digits. False when the address is not `host:port`. */
+static bool sg_net_split(sg_str a, char host[256], char port[6]) {
+    int64_t colon = -1;
+    for (int64_t i = a.len - 1; i >= 0; i--) if (a.ptr[i] == ':') { colon = i; break; }
+    if (colon < 0) return false;
+    int64_t digits = a.len - colon - 1;
+    if (digits < 1 || digits > 5) return false;
+    long value = 0;
+    for (int64_t i = colon + 1; i < a.len; i++) {
+        if (a.ptr[i] < '0' || a.ptr[i] > '9') return false;
+        value = value * 10 + (a.ptr[i] - '0');
+    }
+    if (value > 65535) return false;
+    snprintf(port, 6, "%ld", value);
+    const uint8_t* h = a.ptr;
+    int64_t n = colon;
+    if (n > 0 && h[0] == '[') {
+        if (n < 2 || h[n - 1] != ']') return false;
+        h++;
+        n -= 2;
+    } else if (n > 0 && memchr(h, ':', (size_t)n)) {
+        return false;
+    }
+    if (n > 255 || (n > 0 && memchr(h, 0, (size_t)n))) return false;
+    if (n > 0) memcpy(host, h, (size_t)n);
+    host[n] = 0;
+    return true;
+}
+/* `TcpListener.bind(address)`: the host is a number, `localhost`, or nothing for every address
+   of the machine (v4); it is not looked up, so binding never waits. */
+static int sg_net_bind(sg_str address, sg_listener* out) {
+    char host[256], port[6];
+    if (!sg_net_split(address, host, port)) return SG_HOST_NOT_FOUND;
+    struct sockaddr_storage at;
+    memset(&at, 0, sizeof at);
+    struct sockaddr_in* v4 = (struct sockaddr_in*)&at;
+    struct sockaddr_in6* v6 = (struct sockaddr_in6*)&at;
+    socklen_t len = sizeof *v4;
+    uint16_t number = (uint16_t)atoi(port);
+    if (host[0] == 0 || strcmp(host, "localhost") == 0) {
+        v4->sin_family = AF_INET;
+        v4->sin_addr.s_addr = htonl(host[0] == 0 ? INADDR_ANY : INADDR_LOOPBACK);
+        v4->sin_port = htons(number);
+    } else if (inet_pton(AF_INET, host, &v4->sin_addr) == 1) {
+        v4->sin_family = AF_INET;
+        v4->sin_port = htons(number);
+    } else if (inet_pton(AF_INET6, host, &v6->sin6_addr) == 1) {
+        v6->sin6_family = AF_INET6;
+        v6->sin6_port = htons(number);
+        len = sizeof *v6;
+    } else {
+        return SG_HOST_NOT_FOUND;
+    }
+    int fd = sg_net_socket(at.ss_family, false);
+    if (fd < 0) return errno;
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    if (bind(fd, (struct sockaddr*)&at, len) != 0 || listen(fd, SOMAXCONN) != 0) {
+        int code = errno;
+        close(fd);
+        return code;
+    }
+    *out = (sg_listener){ fd, 0 };
+    return 0;
+}
+static int32_t sg_net_port(const sg_listener* l) {
+    struct sockaddr_storage at;
+    socklen_t len = sizeof at;
+    if (getsockname(l->fd, (struct sockaddr*)&at, &len) != 0) return 0;
+    if (at.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6*)&at)->sin6_port);
+    return ntohs(((struct sockaddr_in*)&at)->sin_port);
+}
+/* Waits until the socket is ready, for code that is not async. */
+static int sg_net_poll(int fd, bool write) {
+    struct pollfd p = { fd, write ? POLLOUT : POLLIN, 0 };
+    for (;;) {
+        if (poll(&p, 1, -1) >= 0) return 0;
+        if (errno != EINTR) return errno;
+    }
+}
+/* One try of each call: 0, EAGAIN when the socket is not ready, or the code the system gave. */
+static int sg_net_accept_now(int lfd, int* out, bool nb) {
+#if defined(__linux__)
+    int fd = accept4(lfd, NULL, NULL, SOCK_CLOEXEC | (nb ? SOCK_NONBLOCK : 0));
+#else
+    int fd = accept(lfd, NULL, NULL);
+#endif
+    if (fd < 0) return errno == EWOULDBLOCK ? EAGAIN : errno;
+    sg_net_setup(fd, nb);
+    *out = fd;
+    return 0;
+}
+static int sg_net_recv_now(int fd, uint8_t* to, int64_t len, int64_t* got) {
+    ssize_t n = recv(fd, to, (size_t)len, 0);
+    if (n < 0) return errno == EWOULDBLOCK ? EAGAIN : errno;
+    *got = n;
+    return 0;
+}
+static int sg_net_send_now(int fd, const uint8_t* from, int64_t len, int64_t* sent) {
+#ifdef MSG_NOSIGNAL
+    ssize_t n = send(fd, from, (size_t)len, MSG_NOSIGNAL);
+#else
+    ssize_t n = send(fd, from, (size_t)len, 0);
+#endif
+    if (n < 0) return errno == EWOULDBLOCK ? EAGAIN : errno;
+    *sent = n;
+    return 0;
+}
+/* A connection that was refused before it was taken is not an error of the listener. */
+static inline bool sg_net_again(int code, bool accepting) { return code == EINTR || (accepting && code == ECONNABORTED); }
+static int sg_net_accept(const sg_listener* l, sg_socket* out) {
+    for (;;) {
+        int fd;
+        int code = sg_net_accept_now(l->fd, &fd, false);
+        if (!code) { *out = (sg_socket){ fd, false, false }; return 0; }
+        if (sg_net_again(code, true)) continue;
+        if (code != EAGAIN) return code;
+        if ((code = sg_net_poll(l->fd, false))) return code;
+    }
+}
+static int sg_net_recv(sg_socket* s, uint8_t* to, int64_t len, int64_t* got) {
+    for (;;) {
+        int code = sg_net_recv_now(s->fd, to, len, got);
+        if (!code) return 0;
+        if (sg_net_again(code, false)) continue;
+        if (code != EAGAIN) return code;
+        if ((code = sg_net_poll(s->fd, false))) return code;
+    }
+}
+static int sg_net_send(sg_socket* s, const uint8_t* from, int64_t len) {
+    int64_t done = 0;
+    while (done < len) {
+        int64_t sent = 0;
+        int code = sg_net_send_now(s->fd, from + done, len - done, &sent);
+        if (!code) { done += sent; continue; }
+        if (sg_net_again(code, false)) continue;
+        if (code != EAGAIN) return code;
+        if ((code = sg_net_poll(s->fd, true))) return code;
+    }
+    return 0;
+}
+/* The addresses of `host:port`, looked up by name (`numeric`: only if the host is a number,
+   which never waits). */
+static int sg_net_lookup(const char* host, const char* port, bool numeric, struct addrinfo** list) {
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (numeric) hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
+    int r = getaddrinfo(host, port, &hints, list);
+    if (r == 0) return 0;
+    if (r == EAI_SYSTEM) return errno ? errno : EIO;
+    return SG_HOST_NOT_FOUND;
+}
+/* A connect to one address is started: 0 when it is made at once, EINPROGRESS when it goes on
+   (`*fd` is the socket), or the code the system gave. */
+static int sg_net_try(const struct addrinfo* a, int* fd, bool nb) {
+    *fd = sg_net_socket(a->ai_family, nb);
+    if (*fd < 0) return errno;
+    if (connect(*fd, a->ai_addr, a->ai_addrlen) == 0) return 0;
+    int code = errno;
+    if (code == EINPROGRESS || code == EINTR) return EINPROGRESS;
+    close(*fd);
+    *fd = -1;
+    return code;
+}
+static int sg_net_made(int fd) {
+    int code = 0;
+    socklen_t len = sizeof code;
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &code, &len) != 0) return errno;
+    return code;
+}
+/* `TcpStream.connect(address)`: each address of the host is tried in turn, until one takes
+   the connection; the error is the last one met. */
+static int sg_net_connect(sg_str address, sg_socket* out) {
+    char host[256], port[6];
+    if (!sg_net_split(address, host, port) || host[0] == 0) return SG_HOST_NOT_FOUND;
+    struct addrinfo* list = NULL;
+    int code = sg_net_lookup(host, port, false, &list);
+    if (code) return code;
+    code = ECONNREFUSED;
+    for (struct addrinfo* a = list; a; a = a->ai_next) {
+        int fd = -1;
+        code = sg_net_try(a, &fd, false);
+        if (code == EINPROGRESS) {
+            code = sg_net_poll(fd, true);
+            if (!code) code = sg_net_made(fd);
+        }
+        if (!code) {
+            freeaddrinfo(list);
+            *out = (sg_socket){ fd, false, false };
+            return 0;
+        }
+        if (fd >= 0) close(fd);
+    }
+    freeaddrinfo(list);
+    return code;
+}
+"#;
+
+/// The network for async tasks: one thread waits for every socket a task waits for, with epoll
+/// (Linux) or kqueue, and wakes the task when it is ready; a cancel takes the socket off and
+/// wakes the task through the loop, once the loop is done with the events it holds. A name is
+/// looked up on a thread of input and output, which a cancel leaves. After `ASYNC_IO_RUNTIME`.
+const NET_ASYNC_RUNTIME: &str = r#"
+#if defined(__linux__)
+#include <sys/epoll.h>
+#else
+#include <sys/event.h>
+#endif
+static pthread_mutex_t sg_loop_lock = PTHREAD_MUTEX_INITIALIZER;
+static int sg_loop_open_now = 0;
+static int sg_loop = -1;
+static int sg_loop_pipe[2];
+static sg_wait* sg_loop_cut = NULL;
+/* The socket is ready: the task goes on, unless a cancel ended the wait first. */
+static void sg_wait_ready(sg_wait* w) {
+    (void)__atomic_load_n(&w->posted, __ATOMIC_ACQUIRE);
+    sg_task* job = w->d.job;
+    if (w->told) {
+        pthread_mutex_lock(&sg_clock_lock);
+        bool mine = w->d.state == SG_WAITING;
+        if (mine) {
+            sg_wait_unlink(w);
+            __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
+            __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        }
+        pthread_mutex_unlock(&sg_clock_lock);
+        if (mine) sg_wake(job);
+        return;
+    }
+    __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
+    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    sg_wake(job);
+}
+static void* sg_loop_main(void* unused) {
+    (void)unused;
+#if defined(__linux__)
+    struct epoll_event events[64];
+#else
+    struct kevent events[64];
+#endif
+    for (;;) {
+#if defined(__linux__)
+        int n = epoll_wait(sg_loop, events, 64, -1);
+#else
+        int n = kevent(sg_loop, NULL, 0, events, 64, NULL);
+#endif
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            abort();
+        }
+        for (int i = 0; i < n; i++) {
+#if defined(__linux__)
+            void* p = events[i].data.ptr;
+#else
+            void* p = events[i].udata;
+#endif
+            if (!p) {
+                char drained[64];
+                while (read(sg_loop_pipe[0], drained, sizeof drained) > 0) {}
+                continue;
+            }
+            sg_wait_ready((sg_wait*)p);
+        }
+        /* The waits a cancel ended: the events above were the last that could name them. */
+        pthread_mutex_lock(&sg_loop_lock);
+        sg_wait* w = sg_loop_cut;
+        sg_loop_cut = NULL;
+        pthread_mutex_unlock(&sg_loop_lock);
+        while (w) {
+            sg_wait* next = w->cut;
+            sg_task* job = w->d.job;
+            __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+            sg_wake(job);
+            w = next;
+        }
+    }
+    return NULL;
+}
+static void sg_loop_open(const char* loc) {
+    if (__atomic_load_n(&sg_loop_open_now, __ATOMIC_ACQUIRE)) return;
+    pthread_mutex_lock(&sg_loop_lock);
+    if (!sg_loop_open_now) {
+#if defined(__linux__)
+        sg_loop = epoll_create1(EPOLL_CLOEXEC);
+#else
+        sg_loop = kqueue();
+#endif
+        if (sg_loop < 0 || pipe(sg_loop_pipe) != 0) sg_refused(errno, "the loop of the network", loc);
+        for (int i = 0; i < 2; i++) {
+            fcntl(sg_loop_pipe[i], F_SETFL, fcntl(sg_loop_pipe[i], F_GETFL) | O_NONBLOCK);
+            fcntl(sg_loop_pipe[i], F_SETFD, FD_CLOEXEC);
+        }
+#if defined(__linux__)
+        struct epoll_event e = { .events = EPOLLIN, .data.ptr = NULL };
+        epoll_ctl(sg_loop, EPOLL_CTL_ADD, sg_loop_pipe[0], &e);
+#else
+        fcntl(sg_loop, F_SETFD, FD_CLOEXEC);
+        struct kevent k;
+        EV_SET(&k, sg_loop_pipe[0], EVFILT_READ, EV_ADD, 0, 0, NULL);
+        kevent(sg_loop, &k, 1, NULL, 0, NULL);
+#endif
+        pthread_t thread;
+        int code = sg_thread_start(&thread, sg_loop_main, NULL, true);
+        if (code != 0) sg_refused(code, "the loop of the network", loc);
+        __atomic_store_n(&sg_loop_open_now, 1, __ATOMIC_RELEASE);
+    }
+    pthread_mutex_unlock(&sg_loop_lock);
+}
+/* The socket goes on the loop until it is ready, once. */
+static int sg_loop_arm(sg_wait* w, bool* armed) {
+#if defined(__linux__)
+    struct epoll_event e = { .events = (w->write ? EPOLLOUT : EPOLLIN) | EPOLLONESHOT, .data.ptr = w };
+    if (armed && *armed) {
+        if (epoll_ctl(sg_loop, EPOLL_CTL_MOD, w->on.fd, &e) == 0) return 0;
+        if (errno != ENOENT) return errno;
+    }
+    if (epoll_ctl(sg_loop, EPOLL_CTL_ADD, w->on.fd, &e) != 0) return errno;
+    if (armed) *armed = true;
+    return 0;
+#else
+    (void)armed;
+    struct kevent k;
+    EV_SET(&k, w->on.fd, w->write ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, w);
+    return kevent(sg_loop, &k, 1, NULL, 0, NULL) == 0 ? 0 : errno;
+#endif
+}
+static void sg_loop_disarm(sg_wait* w) {
+#if defined(__linux__)
+    epoll_ctl(sg_loop, EPOLL_CTL_DEL, w->on.fd, NULL);
+#else
+    struct kevent k;
+    EV_SET(&k, w->on.fd, w->write ? EVFILT_WRITE : EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    kevent(sg_loop, &k, 1, NULL, 0, NULL);
+#endif
+}
+/* A cancel, under the clock's lock: the socket comes off the loop, and the loop wakes the task. */
+static void sg_wait_cut(sg_delay* d) {
+    sg_wait* w = (sg_wait*)d;
+    sg_loop_disarm(w);
+    pthread_mutex_lock(&sg_loop_lock);
+    w->cut = sg_loop_cut;
+    sg_loop_cut = w;
+    pthread_mutex_unlock(&sg_loop_lock);
+    char one = 1;
+    while (write(sg_loop_pipe[1], &one, 1) < 0 && errno == EINTR) {}
+}
+/* The task running now waits for the socket to be ready (`write`: to take bytes): SG_WAITING,
+   SG_CANCELLED, or the code the system gave. A socket that others may wait for at the same time
+   (`armed` NULL: a listener, which `shared` lets several tasks hold) is waited for through a
+   copy of its own. */
+static int sg_wait_start(sg_wait* w, int fd, bool write, bool* armed, sg_cancel* token, const char* loc) {
+    sg_wait_init(w, sg_wait_cut);
+    w->write = write;
+    w->dup = armed == NULL;
+    w->told = token != NULL;
+    if (sg_cancelled(token)) return SG_CANCELLED;
+    sg_loop_open(loc);
+    if (w->dup && (fd = fcntl(fd, F_DUPFD_CLOEXEC, 0)) < 0) return errno;
+    w->on.fd = fd;
+    __atomic_store_n(&w->posted, 1, __ATOMIC_RELEASE);
+    int code = 0;
+    if (token) {
+        pthread_mutex_lock(&sg_clock_lock);
+        if (token->cancelled) {
+            code = -1;
+        } else {
+            sg_wait_link(w, token);
+            code = sg_loop_arm(w, armed);
+            if (code) sg_wait_unlink(w);
+        }
+        pthread_mutex_unlock(&sg_clock_lock);
+    } else {
+        code = sg_loop_arm(w, armed);
+    }
+    if (code) {
+        if (w->dup) close(fd);
+        return code < 0 ? SG_CANCELLED : code;
+    }
+    return SG_WAITING;
+}
+/* The wait is settled: SG_OVER or SG_CANCELLED. The copy of a listener is let go of. */
+static int sg_wait_end(sg_wait* w, bool* armed) {
+    int state = sg_wait_state(w);
+    if (w->dup) {
+#if defined(__linux__)
+        epoll_ctl(sg_loop, EPOLL_CTL_DEL, w->on.fd, NULL);
+#endif
+        close(w->on.fd);
+    } else if (state == SG_CANCELLED && armed) {
+        *armed = false;
+    }
+    return state;
+}
+
+/* A name looked up on a thread of input and output. */
+typedef struct { sg_far far; char host[256]; char port[6]; struct addrinfo* list; int code; } sg_lookup;
+static void sg_lookup_run(sg_far* f) {
+    sg_lookup* x = (sg_lookup*)f;
+    x->code = sg_net_lookup(x->host, x->port, false, &x->list);
+}
+static void sg_lookup_lost(sg_far* f) {
+    sg_lookup* x = (sg_lookup*)f;
+    if (!x->code) freeaddrinfo(x->list);
+}
+
+/* An async call of the network, in the frame of the task: what it is, where it is, and what it
+   gives (`code`: 0, the code of the system, SG_HOST_NOT_FOUND, or SG_CUT for a cancel; `out`:
+   the socket that `acceptAsync` and `connectAsync` give, `done`: the bytes of `receiveAsync`). */
+enum { SG_ACCEPT, SG_RECEIVE, SG_SEND, SG_CONNECT };
+enum { SG_NET_TRY, SG_NET_WAIT, SG_NET_LOOKUP, SG_NET_CONNECT, SG_NET_DONE };
+#define SG_CUT (-6)
+typedef struct {
+    sg_wait w;
+    int kind;
+    int phase;
+    int fd;
+    bool* armed;
+    bool own_armed;
+    sg_cancel* token;
+    const char* loc;
+    uint8_t* to;
+    const uint8_t* from;
+    int64_t len;
+    int64_t done;
+    int code;
+    int out;
+    struct addrinfo* list;
+    struct addrinfo* next;
+    char host[256];
+    char port[6];
+} sg_net_op;
+/* An async call makes the socket stop blocking, once. */
+static inline sg_net_op sg_net_accept_op(sg_listener* l, sg_cancel* token, const char* loc) {
+    if (!__atomic_load_n(&l->nb, __ATOMIC_ACQUIRE)) {
+        sg_net_nonblock(l->fd);
+        __atomic_store_n(&l->nb, 1, __ATOMIC_RELEASE);
+    }
+    return (sg_net_op){ .kind = SG_ACCEPT, .fd = l->fd, .armed = NULL, .token = token, .loc = loc, .out = -1 };
+}
+static inline void sg_socket_nonblock(sg_socket* s) {
+    if (!s->nb) {
+        sg_net_nonblock(s->fd);
+        s->nb = true;
+    }
+}
+static inline sg_net_op sg_net_receive_op(sg_socket* s, uint8_t* to, int64_t len, sg_cancel* token, const char* loc) {
+    sg_socket_nonblock(s);
+    return (sg_net_op){ .kind = SG_RECEIVE, .fd = s->fd, .armed = &s->armed, .token = token, .loc = loc, .to = to, .len = len, .out = -1 };
+}
+static inline sg_net_op sg_net_send_op(sg_socket* s, const uint8_t* from, int64_t len, sg_cancel* token, const char* loc) {
+    sg_socket_nonblock(s);
+    return (sg_net_op){ .kind = SG_SEND, .fd = s->fd, .armed = &s->armed, .token = token, .loc = loc, .from = from, .len = len, .out = -1 };
+}
+static sg_net_op sg_net_connect_op(sg_str address, sg_cancel* token, const char* loc) {
+    sg_net_op op = { .kind = SG_CONNECT, .fd = -1, .token = token, .loc = loc, .out = -1 };
+    if (!sg_net_split(address, op.host, op.port) || op.host[0] == 0) op.code = SG_HOST_NOT_FOUND;
+    return op;
+}
+static bool sg_net_finish(sg_net_op* op, int code) {
+    if (op->list) freeaddrinfo(op->list);
+    op->list = NULL;
+    op->code = code;
+    op->phase = SG_NET_DONE;
+    return true;
+}
+/* The next address of the host is tried, until one takes the connection. */
+static bool sg_net_connect_next(sg_net_op* op) {
+    while (op->next) {
+        const struct addrinfo* a = op->next;
+        op->next = a->ai_next;
+        int code = sg_net_try(a, &op->fd, true);
+        if (!code) { op->out = op->fd; return sg_net_finish(op, 0); }
+        if (code == EINPROGRESS) {
+            op->own_armed = false;
+            int st = sg_wait_start(&op->w, op->fd, true, &op->own_armed, op->token, op->loc);
+            if (st == SG_WAITING) { op->phase = SG_NET_CONNECT; return false; }
+            close(op->fd);
+            if (st == SG_CANCELLED) return sg_net_finish(op, SG_CUT);
+            code = st;
+        }
+        op->code = code;
+    }
+    return sg_net_finish(op, op->code ? op->code : ECONNREFUSED);
+}
+/* Goes on with the call until it is done (true) or waits (false): it waits for the socket on the
+   loop, or for the name on a thread. */
+static bool sg_net_go(sg_net_op* op) {
+    if (op->phase == SG_NET_TRY) {
+        if (sg_cancelled(op->token)) return sg_net_finish(op, SG_CUT);
+        if (op->kind == SG_CONNECT) {
+            if (op->code) return sg_net_finish(op, op->code);
+            if (sg_net_lookup(op->host, op->port, true, &op->list) == 0) {
+                op->next = op->list;
+                return sg_net_connect_next(op);
+            }
+            op->list = NULL;
+            sg_lookup* f = calloc(1, sizeof *f);
+            if (!f) abort();
+            f->far.run = sg_lookup_run;
+            f->far.lost = sg_lookup_lost;
+            f->far.keep = true;
+            memcpy(f->host, op->host, sizeof f->host);
+            memcpy(f->port, op->port, sizeof f->port);
+            if (sg_far_start(&f->far, &op->w, op->token, op->loc) == SG_CANCELLED) return sg_net_finish(op, SG_CUT);
+            op->phase = SG_NET_LOOKUP;
+            return false;
+        }
+        op->phase = SG_NET_WAIT;
+    }
+    for (;;) {
+        int code = 0;
+        if (op->kind == SG_ACCEPT) {
+            code = sg_net_accept_now(op->fd, &op->out, true);
+        } else if (op->kind == SG_RECEIVE) {
+            code = sg_net_recv_now(op->fd, op->to, op->len, &op->done);
+        } else {
+            while (op->done < op->len) {
+                int64_t sent = 0;
+                if ((code = sg_net_send_now(op->fd, op->from + op->done, op->len - op->done, &sent))) break;
+                op->done += sent;
+            }
+        }
+        if (!code) return sg_net_finish(op, 0);
+        if (sg_net_again(code, op->kind == SG_ACCEPT)) continue;
+        if (code != EAGAIN) return sg_net_finish(op, code);
+        int st = sg_wait_start(&op->w, op->fd, op->kind == SG_SEND, op->armed, op->token, op->loc);
+        if (st == SG_WAITING) return false;
+        return sg_net_finish(op, st == SG_CANCELLED ? SG_CUT : st);
+    }
+}
+/* After the task is woken: whether the call is done. */
+static bool sg_net_more(sg_net_op* op) {
+    if (op->phase == SG_NET_DONE) return true;
+    if (!sg_wait_settled(&op->w)) return false;
+    int state = sg_wait_state(&op->w);
+    if (op->phase == SG_NET_LOOKUP) {
+        if (state == SG_CANCELLED) return sg_net_finish(op, SG_CUT);
+        sg_lookup* f = (sg_lookup*)op->w.on.far;
+        int code = f->code;
+        op->list = code ? NULL : f->list;
+        free(f);
+        if (code) return sg_net_finish(op, code);
+        op->next = op->list;
+        return sg_net_connect_next(op);
+    }
+    if (op->phase == SG_NET_CONNECT) {
+        sg_wait_end(&op->w, &op->own_armed);
+        if (state == SG_CANCELLED) { close(op->fd); return sg_net_finish(op, SG_CUT); }
+        int code = sg_net_made(op->fd);
+        if (!code) { op->out = op->fd; return sg_net_finish(op, 0); }
+        close(op->fd);
+        op->code = code;
+        return sg_net_connect_next(op);
+    }
+    sg_wait_end(&op->w, op->armed);
+    if (state == SG_CANCELLED) return sg_net_finish(op, SG_CUT);
+    return sg_net_go(op);
+}
+"#;
+
 /// What a program that reads or writes files, or reads its input, needs: the calls of the
 /// system (`open`, `read`, `write`) and the input in blocks of its own. Added only to such a
 /// program.
@@ -2147,9 +2757,16 @@ const IO_RUNTIME: &str = r#"
 #include <unistd.h>
 
 /* The variant of `IoError` for a code the system gave: 0 NotFound, 1 PermissionDenied,
-   2 IsDirectory, 3 NoSpace; 5 is Other, which keeps the code. */
+   2 IsDirectory, 3 NoSpace, 7 ConnectionRefused, 8 ConnectionReset, 9 AddressInUse; 5 is Other,
+   which keeps the code. A host that could not be found, or an address that is not `host:port`,
+   has a code of its own (10 HostNotFound). */
+#define SG_HOST_NOT_FOUND (-10)
 static int sg_io_kind(int code) {
     switch (code) {
+    case SG_HOST_NOT_FOUND: return 10;
+    case ECONNREFUSED: return 7;
+    case ECONNRESET: case ECONNABORTED: case EPIPE: return 8;
+    case EADDRINUSE: return 9;
     case ENOENT: case ENOTDIR: return 0;
     case EPERM: case EACCES: case EROFS: return 1;
     case EISDIR: return 2;
@@ -2226,11 +2843,23 @@ static int sg_in_terminal = -1;
 static pthread_mutex_t sg_in_lock = PTHREAD_MUTEX_INITIALIZER;
 #define SG_IN_TAKE(r) do { if ((r) == &sg_stdin) pthread_mutex_lock(&sg_in_lock); } while (0)
 #define SG_IN_GIVE(r) do { if ((r) == &sg_stdin) pthread_mutex_unlock(&sg_in_lock); } while (0)
+/* A thread of input and output that reads the input into its block for an async read (see
+   `sg_in_wait`): while it is out, a read that would read the input waits for it, so what it
+   reads comes first. Under `sg_in_lock`. */
+static void* sg_in_filling = NULL;
+static pthread_cond_t sg_in_filled = PTHREAD_COND_INITIALIZER;
+static inline bool sg_in_after_fill(sg_reader* r) {
+    if (r != &sg_stdin || !sg_in_filling) return false;
+    while (sg_in_filling) pthread_cond_wait(&sg_in_filled, &sg_in_lock);
+    return r->at < r->len || r->ended;
+}
 #else
 #define SG_IN_TAKE(r) ((void)0)
 #define SG_IN_GIVE(r) ((void)0)
+#define sg_in_after_fill(r) false
 #endif
 static int sg_reader_fill(sg_reader* r) {
+    if (sg_in_after_fill(r)) return 0;
     if (r == &sg_stdin) {
         if (sg_in_terminal < 0) sg_in_terminal = isatty(0);
         if (sg_in_terminal) fflush(stdout);
@@ -2309,7 +2938,7 @@ static int sg_read_bytes(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
             continue;
         }
         if (r->ended) break;
-        if (len - n < 65536) {
+        if (len - n < 65536 || sg_in_after_fill(r)) {
             code = sg_reader_fill(r);
             if (code) break;
             continue;
@@ -2565,8 +3194,11 @@ static void* sg_io_main(void* unused) {
            read first. */
         sg_task* job = io->job;
         io->work(io);
-        __atomic_store_n(&io->done, 1, __ATOMIC_RELEASE);
-        sg_wake(job);
+        /* Work without a task (`sg_far`) has told whoever waits, and may be gone. */
+        if (job) {
+            __atomic_store_n(&io->done, 1, __ATOMIC_RELEASE);
+            sg_wake(job);
+        }
         pthread_mutex_lock(&sg_io_lock);
     }
     sg_io_threads--;
@@ -2576,8 +3208,8 @@ static void* sg_io_main(void* unused) {
 /* The async task running now hands the work over and then waits until it is done. A thread is
    started when the work queued is more than the threads that have nothing to do; a system that
    refuses one is a panic only when there is no thread at all, otherwise the work waits for one. */
-static void sg_io_start(sg_io* io, void (*work)(sg_io*), const char* loc) {
-    io->job = sg_job_now;
+static void sg_io_put(sg_io* io, void (*work)(sg_io*), sg_task* job, const char* loc) {
+    io->job = job;
     io->work = work;
     io->next = NULL;
     io->done = 0;
@@ -2605,7 +3237,181 @@ static void sg_io_start(sg_io* io, void (*work)(sg_io*), const char* loc) {
     if (sg_io_idle > 0) pthread_cond_signal(&sg_io_wait);
     pthread_mutex_unlock(&sg_io_lock);
 }
+static inline void sg_io_start(sg_io* io, void (*work)(sg_io*), const char* loc) { sg_io_put(io, work, sg_job_now, loc); }
 static inline bool sg_io_done(sg_io* io) { return __atomic_load_n(&io->done, __ATOMIC_ACQUIRE); }
+
+/* A wait of an async task, in its frame: for a socket (`fd`, on the loop of the network) or for
+   work on a thread that the task may leave (`far`). The delay is what a cancel ends, on the list
+   of its token, and what holds the task to wake. Whoever ends the wait sets `settled` last, and
+   only then does the task go on: until then the wait may still be looked at. */
+typedef struct sg_wait {
+    sg_delay d;
+    union { int fd; struct sg_far* far; } on;
+    bool write;
+    bool dup;
+    bool told;
+    int settled;
+    /* Set last before the socket goes on the loop, and read first by the loop: what was written
+       of the wait before is seen there (the sanitizer does not see it through the system). */
+    int posted;
+    struct sg_wait* cut;
+} sg_wait;
+static inline bool sg_wait_settled(sg_wait* w) { return __atomic_load_n(&w->settled, __ATOMIC_ACQUIRE); }
+static inline int sg_wait_state(sg_wait* w) { return __atomic_load_n(&w->d.state, __ATOMIC_ACQUIRE); }
+static void sg_wait_init(sg_wait* w, void (*over)(sg_delay*)) {
+    w->d.job = sg_job_now;
+    w->d.over = over;
+    w->d.token = NULL;
+    w->d.at = -1;
+    w->d.prev = w->d.next = NULL;
+    w->d.state = SG_WAITING;
+    w->settled = 0;
+    w->cut = NULL;
+}
+/* The clock's lock is held: the wait is put on the list of its token. */
+static void sg_wait_link(sg_wait* w, sg_cancel* token) {
+    w->d.token = token;
+    w->d.next = token->first;
+    if (token->first) token->first->prev = &w->d;
+    token->first = &w->d;
+}
+static void sg_wait_unlink(sg_wait* w) {
+    sg_delay* d = &w->d;
+    if (!d->token) return;
+    if (d->prev) d->prev->next = d->next;
+    else d->token->first = d->next;
+    if (d->next) d->next->prev = d->prev;
+    d->token = NULL;
+}
+
+/* Work on a thread of input and output that the async task waiting for it may leave: a cancel
+   wakes the task at once, and the work goes on to its end and is then let go of (`lost`). One
+   that is waited for to its end is the task's if `keep`, which frees it; otherwise the thread
+   frees it once it has woken the task. */
+typedef struct sg_far {
+    sg_io io;
+    sg_wait* waiter;
+    void (*run)(struct sg_far*);
+    void (*lost)(struct sg_far*);
+    bool keep;
+} sg_far;
+static void sg_far_main(sg_io* io) {
+    sg_far* f = (sg_far*)io;
+    /* A task woken below may free the work at once: nothing of it is read after. */
+    bool keep = f->keep;
+    f->run(f);
+    pthread_mutex_lock(&sg_clock_lock);
+    sg_wait* w = f->waiter;
+    f->waiter = NULL;
+    sg_task* job = NULL;
+    if (w) {
+        sg_wait_unlink(w);
+        __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
+        job = w->d.job;
+        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    }
+    pthread_mutex_unlock(&sg_clock_lock);
+    if (w && keep) {
+        sg_wake(job);
+        return;
+    }
+    if (!w && f->lost) f->lost(f);
+    free(f);
+    if (job) sg_wake(job);
+}
+/* A cancel, under the clock's lock: the work is left to its thread, and the task goes on. */
+static void sg_far_cut(sg_delay* d) {
+    sg_wait* w = (sg_wait*)d;
+    w->on.far->waiter = NULL;
+    sg_task* job = d->job;
+    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    sg_wake(job);
+}
+/* The task running now waits for `f`, which then starts: SG_WAITING, or SG_CANCELLED when the
+   token is cancelled (the work does not start, and is freed). */
+static int sg_far_start(sg_far* f, sg_wait* w, sg_cancel* token, const char* loc) {
+    sg_wait_init(w, sg_far_cut);
+    w->on.far = f;
+    pthread_mutex_lock(&sg_clock_lock);
+    if (token && token->cancelled) {
+        pthread_mutex_unlock(&sg_clock_lock);
+        free(f);
+        return SG_CANCELLED;
+    }
+    if (token) sg_wait_link(w, token);
+    f->waiter = w;
+    pthread_mutex_unlock(&sg_clock_lock);
+    sg_io_put(&f->io, sg_far_main, NULL, loc);
+    return SG_WAITING;
+}
+
+/* The input, when it can make the program wait (a pipe, a terminal): an async read that its
+   block cannot answer has a thread read once into the free end of the block, and waits for it.
+   A cancel ends the wait; what the thread reads stays in the block for the next read. One
+   thread is out at a time, and one task waits for it; another task reads on a thread of its own,
+   as a read of a file does. */
+typedef struct { sg_far far; uint8_t* into; int64_t room; } sg_in_fill;
+static int sg_in_waits_now = -1;
+static bool sg_in_failed = false;
+static inline bool sg_in_waits(void) {
+    if (sg_in_waits_now < 0) {
+        struct stat info;
+        sg_in_waits_now = !(fstat(0, &info) == 0 && S_ISREG(info.st_mode));
+    }
+    return sg_in_waits_now;
+}
+static void sg_in_fill_run(sg_far* f) {
+    sg_in_fill* x = (sg_in_fill*)f;
+    if (sg_in_terminal < 0) sg_in_terminal = isatty(0);
+    ssize_t got;
+    do got = read(0, x->into, (size_t)x->room); while (got < 0 && errno == EINTR);
+    pthread_mutex_lock(&sg_in_lock);
+    if (got > 0) sg_stdin.len += got;
+    else if (got == 0) sg_stdin.ended = true;
+    else sg_in_failed = true;
+    sg_in_filling = NULL;
+    pthread_cond_broadcast(&sg_in_filled);
+    pthread_mutex_unlock(&sg_in_lock);
+}
+/* `sg_in_lock` is held, and the block cannot answer the read: SG_WAITING when the task waits for
+   the thread that fills it, SG_CANCELLED, SG_OVER when it can be looked at again, or -1 when the
+   read is to be done on a thread (the block is full, another task waits, or an error came). */
+static int sg_in_wait(sg_wait* w, sg_cancel* token, const char* loc) {
+    if (sg_cancelled(token)) return SG_CANCELLED;
+    sg_in_fill* f = sg_in_filling;
+    bool start = false;
+    if (!f) {
+        if (sg_in_failed) { sg_in_failed = false; return -1; }
+        if (sg_stdin.ended) return SG_OVER;
+        if (sg_stdin.at > 0) {
+            memmove(sg_stdin.block, sg_stdin.block + sg_stdin.at, (size_t)(sg_stdin.len - sg_stdin.at));
+            sg_stdin.len -= sg_stdin.at;
+            sg_stdin.at = 0;
+        }
+        if (sg_stdin.len == 65536) return -1;
+        f = calloc(1, sizeof *f);
+        if (!f) abort();
+        f->far.run = sg_in_fill_run;
+        f->into = sg_stdin.block + sg_stdin.len;
+        f->room = 65536 - sg_stdin.len;
+        sg_in_filling = f;
+        start = true;
+        if (sg_in_terminal < 0) sg_in_terminal = isatty(0);
+        if (sg_in_terminal) fflush(stdout);
+    }
+    sg_wait_init(w, sg_far_cut);
+    w->on.far = &f->far;
+    pthread_mutex_lock(&sg_clock_lock);
+    bool join = !f->far.waiter && !(token && token->cancelled);
+    if (join) {
+        if (token) sg_wait_link(w, token);
+        f->far.waiter = w;
+    }
+    pthread_mutex_unlock(&sg_clock_lock);
+    if (start) sg_io_put(&f->far.io, sg_far_main, NULL, loc);
+    if (join) return SG_WAITING;
+    return sg_cancelled(token) ? SG_CANCELLED : -1;
+}
 /* What a writer's async methods cannot do in place: write the block out, then `bytes` straight
    (a `writeBytesAsync` of 64 KB or more); with `w` NULL, close the writer `held`, moved here
    (`closeAsync`). `r`: the error code, or 0. */
@@ -2884,6 +3690,10 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         true => "#if defined(__linux__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n#define SG_THREADS 1\n".to_string(),
         false => "#define SG_THREADS 0\n".to_string(),
     };
+    // `accept4` and the flags of `socket` are GNU's on Linux.
+    if emitter.made.contains("net") {
+        out.insert_str(0, "#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n");
+    }
     // An async function that may drop a writer has it closed on a thread (`sg_closing_put`).
     let _ = writeln!(out, "#define SG_CLOSING {}", u8::from(emitter.made.contains("closing")));
     out.push_str(RUNTIME);
@@ -2893,8 +3703,14 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     if emitter.made.contains("io") {
         out.push_str(IO_RUNTIME);
     }
+    if emitter.made.contains("net") {
+        out.push_str(NET_RUNTIME);
+    }
     if emitter.made.contains("async io") {
         out.push_str(ASYNC_IO_RUNTIME);
+    }
+    if emitter.made.contains("net async") {
+        out.push_str(NET_ASYNC_RUNTIME);
     }
     if tests {
         out.push_str(TEST_SUPPORT);
@@ -2934,7 +3750,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
 
 fn not_yet(span: Span, what: &str) -> Diag {
     Diag::error(span, format!("{what} is not in the C back end yet"))
-        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, the collections, arrays and slices, function values, `T*`, `T?`, `read` and `ref`, `shared` values, tasks, async functions and cancellation, and `print`")
+        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, the collections, arrays and slices, function values, `T*`, `T?`, `read` and `ref`, `shared` values, tasks, async functions and cancellation, the network, and `print`")
 }
 
 /// A C string literal for any text.
@@ -3206,6 +4022,8 @@ fn mangle(ty: &Ty) -> Option<String> {
         Ty::Writer => "writer".to_string(),
         Ty::Source => "source".to_string(),
         Ty::Token => "token".to_string(),
+        Ty::Listener => "listener".to_string(),
+        Ty::Socket => "socket".to_string(),
         Ty::Struct(name) => format!("S_{}", cname(name)),
         Ty::Enum(name) => format!("E_{}", cname(name)),
         Ty::Ptr(inner) => format!("P_{}", mangle(inner)?),
@@ -3717,6 +4535,12 @@ impl<'a> Emitter<'a> {
                 .to_string()
             }
             Ty::TextIter(_) => "sg_iter".to_string(),
+            // A listener and a connection are a socket of the system (see `NET_RUNTIME`).
+            Ty::Listener | Ty::Socket => {
+                self.made.insert("io".to_string());
+                self.made.insert("net".to_string());
+                if *ty == Ty::Listener { "sg_listener" } else { "sg_socket" }.to_string()
+            }
             // A source and its tokens point at one block (see `TASK_RUNTIME`).
             Ty::Source | Ty::Token => {
                 self.made.insert("tasks".to_string());
@@ -4394,7 +5218,7 @@ impl<'a> Emitter<'a> {
                 let params = params.iter().map(|param| self.written(param)).collect::<Res<Vec<Ty>>>()?;
                 Ty::Func(params, Box::new(self.written(ret)?))
             }
-            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter | Ty::Reader | Ty::Writer | Ty::Source | Ty::Token)), []) => base,
+            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter | Ty::Reader | Ty::Writer | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket)), []) => base,
             (None, []) => match self.full(&ty.name, ty.span) {
                 // An alias is the type it names; the checker has seen that it ends.
                 Some(full) if self.aliases.contains_key(full.as_str()) => self.written(&self.aliases[full.as_str()].ty)?,
@@ -4443,7 +5267,7 @@ impl<'a> Emitter<'a> {
     /// Whether a value of this type owns something that is freed when it ends.
     fn droppable(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader | Ty::Writer | Ty::Task(_) | Ty::Source | Ty::Token => true,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader | Ty::Writer | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket => true,
             Ty::Entry(key, value) => self.droppable(key) || self.droppable(value),
             Ty::Nullable(inner) | Ty::Array(inner, _) => self.droppable(inner),
             Ty::Result(ok, error) => self.droppable(ok) || self.droppable(error),
@@ -8010,6 +8834,10 @@ impl<'a> Emitter<'a> {
                 let value = self.await_io(fname, &params, None, args, head, expr)?;
                 result(self, value)
             }
+            ExprKind::Method { recv, args, callee: Callee::NetAsync(call), .. } => {
+                let value = self.await_net(*call, recv, args, expr)?;
+                result(self, value)
+            }
             ExprKind::Method { recv, args, callee: Callee::StreamAsync(call), .. } if !matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes) => {
                 let value = self.await_writer(*call, recv, args, expr)?;
                 result(self, value)
@@ -8053,6 +8881,92 @@ impl<'a> Emitter<'a> {
                 result(self, format!("sg_wait_{}({task})", mangle(&inner.ty).expect("a task has a C name")))
             }
         }
+    }
+
+    /// The calls of the network in code that is not async: a function of the glue for each
+    /// that can fail, which waits for the socket with `poll` (see `NET_RUNTIME`).
+    fn net(&mut self, call: NetCall, recv: &'a Expr, args: &'a [Expr], head: bool, expr: &'a Expr) -> Res<String> {
+        let span = expr.span;
+        self.io_error(span)?;
+        self.made.insert("net".to_string());
+        if call == NetCall::Port {
+            return Ok(format!("sg_net_port({})", self.list_address(recv)?));
+        }
+        let gives = self.ctype(&expr.ty, span)?;
+        let failed = format!("if (code) return ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_error(code) }} }};");
+        let bytes = |mode: fn(Box<Ty>) -> Ty| mode(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+        let text = Ty::Read(Box::new(Ty::Str));
+        let (fname, params, body) = match call {
+            NetCall::Bind => ("sg_net_bind_r", vec![text], format!("sg_listener l; int code = sg_net_bind(a0, &l); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ l }} }};")),
+            NetCall::Connect => ("sg_net_connect_r", vec![text], format!("sg_socket c; int code = sg_net_connect(a0, &c); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ c }} }};")),
+            NetCall::Accept => ("sg_net_accept_r", vec![Ty::Read(Box::new(Ty::Listener))], format!("sg_socket c; int code = sg_net_accept(a0, &c); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ c }} }};")),
+            NetCall::Receive => (
+                "sg_net_receive_r",
+                vec![Ty::Ref(Box::new(Ty::Socket)), bytes(Ty::Ref)],
+                format!("int64_t got = 0; int code = sg_net_recv(a0, a1.ptr, a1.len, &got); {failed} return ({gives}){{ .tag = 0, .u.v0 = {{ got }} }};"),
+            ),
+            NetCall::Send => (
+                "sg_net_send_r",
+                vec![Ty::Ref(Box::new(Ty::Socket)), bytes(Ty::Read)],
+                format!("int code = sg_net_send(a0, a1.ptr, a1.len); {failed} return ({gives}){{ .tag = 0 }};"),
+            ),
+            NetCall::Port => unreachable!("given above"),
+        };
+        self.io_glue(fname, &params, &body, &gives, span)?;
+        if matches!(call, NetCall::Bind | NetCall::Connect) {
+            return self.call(fname.to_string(), None, args, head, &expr.ty);
+        }
+        // The receiver is not one of the arguments the signature lists.
+        self.sigs.insert(fname.to_string(), params[1..].to_vec());
+        let before = self.mark();
+        let receiver = self.list_address(recv)?;
+        let receiver = self.part(recv, &params[0], receiver, before);
+        self.call(fname.to_string(), Some(receiver), args, head, &expr.ty)
+    }
+
+    /// `await listener.acceptAsync()`, `await stream.receiveAsync(ref buffer)` and the other
+    /// async calls of the network: a call in the frame (`sg_net_op`) that goes on while the
+    /// socket is ready, and otherwise waits for it on the loop of the network, until it is done
+    /// (see `NET_ASYNC_RUNTIME`). A token is looked at before the work, and a cancel ends a wait.
+    fn await_net(&mut self, call: NetCall, recv: &'a Expr, args: &'a [Expr], expr: &'a Expr) -> Res<String> {
+        let span = expr.span;
+        self.io_error(span)?;
+        for part in ["net", "net async", "async io", "tasks"] {
+            self.made.insert(part.to_string());
+        }
+        let gives = self.ctype(&expr.ty, span)?;
+        let given = usize::from(matches!(call, NetCall::Receive | NetCall::Send | NetCall::Connect));
+        let (op, loc) = (self.temp(), self.loc(span));
+        let token = match args.get(given) {
+            Some(arg) => format!("(*{})", self.value(arg)?),
+            None => "NULL".to_string(),
+        };
+        let made = match call {
+            NetCall::Accept => format!("sg_net_accept_op({}, {token}, {loc})", self.list_address(recv)?),
+            NetCall::Receive | NetCall::Send => {
+                let stream = self.list_address(recv)?;
+                let buffer = self.value(&args[0])?;
+                let slice = self.ctype(&args[0].ty, args[0].span)?;
+                self.pre.push(format!("{slice} {op}b = {buffer};"));
+                match call {
+                    NetCall::Receive => format!("sg_net_receive_op({stream}, {op}b.ptr, {op}b.len, {token}, {loc})"),
+                    _ => format!("sg_net_send_op({stream}, {op}b.ptr, {op}b.len, {token}, {loc})"),
+                }
+            }
+            NetCall::Connect => format!("sg_net_connect_op({}, {token}, {loc})", self.value(&args[0])?),
+            NetCall::Bind | NetCall::Port => unreachable!("not async"),
+        };
+        self.pre.push(format!("sg_net_op {op} = {made}; sg_net_go(&{op});"));
+        self.resume_point(span);
+        self.pre.push(format!("if (!sg_net_more(&{op})) return false;"));
+        let failed = format!("({gives}){{ .tag = 1, .u.v1 = {{ {op}.code == SG_CUT ? sg_io_cancelled() : sg_io_error({op}.code) }} }}");
+        let ok = match call {
+            NetCall::Accept => format!("({gives}){{ .tag = 0, .u.v0 = {{ (sg_socket){{ {op}.out, false, true }} }} }}"),
+            NetCall::Connect => format!("({gives}){{ .tag = 0, .u.v0 = {{ (sg_socket){{ {op}.out, {op}.own_armed, true }} }} }}"),
+            NetCall::Receive => format!("({gives}){{ .tag = 0, .u.v0 = {{ {op}.done }} }}"),
+            _ => format!("({gives}){{ .tag = 0 }}"),
+        };
+        Ok(format!("({op}.code ? {failed} : {ok})"))
     }
 
     /// `await writer.writeLineAsync(x)` and the other async methods of a writer. What the block
@@ -8167,7 +9081,7 @@ impl<'a> Emitter<'a> {
                 let _ = write!(sets, " .a{index} = a{index},");
                 gets.push(format!("x->a{index}"));
             }
-            let _ = writeln!(self.late_types, "typedef struct {{ sg_io io;{fields} bool cancelled; {gives} r; }} sg_io_{fname};");
+            let _ = writeln!(self.late_types, "typedef struct {{ sg_io io;{fields} bool cancelled; sg_cancel* tk; int mode; sg_wait w; {gives} r; }} sg_io_{fname};");
             let gets = gets.join(", ");
             let takes = takes.join(", ");
             let token = self.ctype(&Ty::Read(Box::new(Ty::Token)), span)?;
@@ -8175,19 +9089,31 @@ impl<'a> Emitter<'a> {
             let _ = writeln!(
                 self.glue,
                 "static void sg_io_run_{fname}(sg_io* io) {{ sg_io_{fname}* x = (sg_io_{fname}*)io; x->r = {fname}({gets}); }}\n\
-                 static inline sg_io_{fname} sg_io_of_{fname}({}) {{ return (sg_io_{fname}){{{sets} .cancelled = false }}; }}\n\
-                 static inline sg_io_{fname} sg_io_of_{fname}_t({takes}{comma}{token} tk) {{ return (sg_io_{fname}){{{sets} .cancelled = sg_cancelled(*tk) }}; }}",
+                 static inline sg_io_{fname} sg_io_of_{fname}({}) {{ return (sg_io_{fname}){{{sets} .cancelled = false, .tk = NULL }}; }}\n\
+                 static inline sg_io_{fname} sg_io_of_{fname}_t({takes}{comma}{token} tk) {{ return (sg_io_{fname}){{{sets} .cancelled = sg_cancelled(*tk), .tk = *tk }}; }}",
                 if takes.is_empty() { "void" } else { &takes }
             );
+            // A read its block can answer is done in place; the input that can make the program
+            // wait has a thread fill its block while the task waits, which a cancel ends
+            // (`sg_in_wait`); anything else is read on a thread.
+            let cancelled = format!("x->r = ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }}; x->io.done = 1; return;");
             let now = match &reader {
-                Some(_) => format!(" if (sg_reader_try(x->a0)) {{ bool now = {fname}_n({gets}, &x->r); SG_IN_GIVE(x->a0); if (now) {{ x->io.done = 1; return; }} }}"),
+                Some(_) => format!(
+                    " for (;;) {{ if (!sg_reader_try(x->a0)) break; if ({fname}_n({gets}, &x->r)) {{ SG_IN_GIVE(x->a0); x->io.done = 1; return; }} \
+                     int st = x->a0 == &sg_stdin && sg_in_waits() ? sg_in_wait(&x->w, x->tk, loc) : -1; SG_IN_GIVE(x->a0); \
+                     if (st == SG_WAITING) {{ x->mode = 1; return; }} if (st == SG_CANCELLED) {{ {cancelled} }} if (st != SG_OVER) break; }}"
+                ),
                 None => String::new(),
             };
             let _ = writeln!(
                 self.glue,
-                "static void sg_io_go_{fname}(sg_io_{fname}* x, const char* loc) {{ \
-                 if (x->cancelled) {{ x->r = ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }}; x->io.done = 1; return; }}{now} \
-                 sg_io_start(&x->io, sg_io_run_{fname}, loc); }}"
+                "static void sg_io_go_{fname}(sg_io_{fname}* x, const char* loc) {{ x->mode = 0; \
+                 if (x->cancelled) {{ {cancelled} }}{now} \
+                 sg_io_start(&x->io, sg_io_run_{fname}, loc); }}\n\
+                 static bool sg_io_ready_{fname}(sg_io_{fname}* x, const char* loc) {{ if (x->mode == 0) return sg_io_done(&x->io); \
+                 if (!sg_wait_settled(&x->w)) return false; \
+                 if (sg_wait_state(&x->w) == SG_CANCELLED) {{ x->mode = 0; x->r = ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }}; x->io.done = 1; return true; }} \
+                 x->cancelled = sg_cancelled(x->tk); sg_io_go_{fname}(x, loc); return x->mode == 0 && sg_io_done(&x->io); }}"
             );
         }
         let skip = usize::from(reader.is_some());
@@ -8201,7 +9127,7 @@ impl<'a> Emitter<'a> {
         self.pre.push(format!("sg_io_{fname} {io} = {value};"));
         self.pre.push(format!("sg_io_go_{fname}(&{io}, {loc});"));
         self.resume_point(span);
-        self.pre.push(format!("if (!sg_io_done(&{io}.io)) return false;"));
+        self.pre.push(format!("if (!sg_io_ready_{fname}(&{io}, {loc})) return false;"));
         Ok(format!("{io}.r"))
     }
 
@@ -9310,7 +10236,7 @@ impl<'a> Emitter<'a> {
                     let (ctype, loc) = (self.ctype(&expr.ty, expr.span)?, self.loc(expr.span));
                     Ok(format!("(({ctype})sg_delay_task_new({ms}, {loc}))"))
                 }
-                Callee::IoAsync(_) | Callee::StreamAsync(_) => unreachable!("the checker has async input and output awaited where it is written"),
+                Callee::IoAsync(_) | Callee::StreamAsync(_) | Callee::NetAsync(_) => unreachable!("the checker has async input and output awaited where it is written"),
                 Callee::Cancel(CancelCall::After) => {
                     self.made.insert("tasks".to_string());
                     let ms = self.value_as(&args[0], &Ty::Int(IntTy::Int))?;
@@ -9638,6 +10564,7 @@ impl<'a> Emitter<'a> {
                 }
                 Callee::Io(call) => self.io(*call, args, head, expr),
                 Callee::Stream(call) => self.stream(*call, recv, args, head, expr),
+                Callee::Net(call) => self.net(*call, recv, args, head, expr),
                 // `ulong.fromLittleEndian(bytes)`: the count is checked, then the bytes are one
                 // load. Where the window was cut with a constant width just before, the C
                 // compiler sees that the check never fails.

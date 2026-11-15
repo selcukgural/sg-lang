@@ -1,0 +1,46 @@
+// The network without async: the server runs on a thread of its own (`Task.run`), and each call
+// waits until its socket is ready. `receive` gives what has come, at most what the buffer holds,
+// and 0 once the other side has let the connection go.
+Result<nint, IoError> serve(TcpListener listener) {
+    var conn = try listener.accept()
+    var buffer = byte[4](0)
+    nint total = 0
+    while true {
+        var n = try conn.receive(ref buffer)
+        if n == 0 {
+            break
+        }
+        total += n
+        try conn.send(buffer[0..n])
+    }
+    return Ok(total)
+}
+
+Result<void, IoError> ask(read string address, read string message) {
+    var conn = try TcpStream.connect(address)
+    try conn.send(message.asBytes())
+    var buffer = byte[64](0)
+    nint got = 0
+    while got < message.length() {
+        got += try conn.receive(ref buffer[got..])
+    }
+    print(string.fromUtf8(buffer[0..got]) ?? "not text")
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = Task.run(serve, listener)
+    try ask(read address, "hello, world")
+    var total = try server.wait()
+    print($"{total} bytes")
+    // `localhost` is looked up by name when connecting, and is the loopback when binding.
+    var local = try TcpListener.bind("localhost:0")
+    var named = $"localhost:{local.port()}".toString()
+    var other = Task.run(serve, local)
+    try ask(read named, "by name")
+    var named_total = try other.wait()
+    print($"{named_total} bytes")
+    return Ok()
+}

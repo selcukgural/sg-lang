@@ -1,0 +1,5 @@
+error: `receive` goes on from where the connection is, but it is reached through a `read` borrow
+  --> error_net_receive_read_borrow.sg:3:12
+ 3 |     return conn.receive(ref buffer)
+   |            ^^^^
+  hint: take it as `ref TcpStream` instead of `read TcpStream`

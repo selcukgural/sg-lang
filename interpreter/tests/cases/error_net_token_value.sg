@@ -1,0 +1,6 @@
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var source = CancellationSource()
+    var conn = try await listener.acceptAsync(source.token())
+    return Ok()
+}

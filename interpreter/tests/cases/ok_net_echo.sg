@@ -1,0 +1,62 @@
+// A server that sends back what each connection sends, the async way: each connection is a task
+// of its own, kept in a list until it ends. The clients run at the same time, and each reads its
+// echo back before it lets its connection go, which ends the task that serves it. The last one
+// connects by name, which is looked up on a thread while the task waits.
+async Result<nint, IoError> echo(TcpStream conn) {
+    var buffer = byte[8](0)
+    nint total = 0
+    while true {
+        var n = try await conn.receiveAsync(ref buffer)
+        if n == 0 {
+            break
+        }
+        total += n
+        try await conn.sendAsync(buffer[0..n])
+    }
+    return Ok(total)
+}
+
+async Result<nint, IoError> serve(TcpListener listener, int count) {
+    var tasks = List<Task<Result<nint, IoError>>>()
+    for _ in 0..count {
+        var conn = try await listener.acceptAsync()
+        tasks.add(echo(conn))
+    }
+    nint total = 0
+    while tasks.length() > 0 {
+        total += try await Task.whenAny(ref tasks)
+    }
+    return Ok(total)
+}
+
+async Result<string, IoError> ask(string address, string message) {
+    var conn = try await TcpStream.connectAsync(read address)
+    try await conn.sendAsync(message.asBytes())
+    var buffer = byte[64](0)
+    nint got = 0
+    while got < message.length() {
+        var n = try await conn.receiveAsync(ref buffer[got..])
+        if n == 0 {
+            break
+        }
+        got += n
+    }
+    return Ok((string.fromUtf8(buffer[0..got]) ?? "not text").clone())
+}
+
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var named = $"localhost:{listener.port()}".toString()
+    var server = serve(listener, 3)
+    var first = ask(address.clone(), "hello")
+    var second = ask(address.clone(), "a longer line than the buffer")
+    var third = ask(named, "")
+    print(try await first)
+    print(try await second)
+    var empty = try await third
+    print($"[{empty}]")
+    var total = try await server
+    print($"{total} bytes")
+    return Ok()
+}

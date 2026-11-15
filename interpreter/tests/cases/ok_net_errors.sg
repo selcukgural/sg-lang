@@ -1,0 +1,48 @@
+// The errors of the network: an address that is taken, one that is not `host:port`, a host
+// that is not a number where nothing is looked up, and a port where nobody listens.
+void tell(read string what, Result<TcpStream, IoError> result) {
+    match result {
+        Ok(_) => print($"{what}: connected")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+void told(read string what, Result<TcpListener, IoError> result) {
+    match result {
+        Ok(_) => print($"{what}: bound")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+void close(TcpListener listener) {
+}
+
+async Result<void, IoError> late(string address) {
+    match await TcpStream.connectAsync(read address) {
+        Ok(_) => print("async: connected")
+        Error(cause) => print($"async: {cause}")
+    }
+    match await TcpStream.connectAsync("no port") {
+        Ok(_) => print("async: connected")
+        Error(cause) => print($"async: {cause}")
+    }
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var taken = $"127.0.0.1:{listener.port()}".toString()
+    told("taken", TcpListener.bind(read taken))
+    told("no port", TcpListener.bind("127.0.0.1"))
+    told("port too big", TcpListener.bind("127.0.0.1:65536"))
+    told("a name", TcpListener.bind("example.com:80"))
+    told("v6 without brackets", TcpListener.bind("::1:80"))
+    tell("no port", TcpStream.connect("localhost"))
+    tell("no host", TcpStream.connect(":80"))
+    tell("brackets left open", TcpStream.connect("[::1:80"))
+    close(listener)
+    tell("nobody listens", TcpStream.connect(read taken))
+    var task = late(taken.clone())
+    try task.wait()
+    return Ok()
+}

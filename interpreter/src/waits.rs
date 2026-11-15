@@ -220,6 +220,12 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
             Some("Stdin") => Some((*name_span, format!("`Stdin.{name}`"))),
             _ => Some((*name_span, format!("`{name}` on a file"))),
         },
+        // Binding and asking for the port do not wait for the network.
+        ExprKind::Call { callee: Callee::Net(NetCall::Connect), name_span, .. } | ExprKind::Method { callee: Callee::Net(NetCall::Connect), name_span, .. } => {
+            Some((*name_span, "`TcpStream.connect`".to_string()))
+        }
+        ExprKind::Method { name, name_span, callee: Callee::Net(NetCall::Accept), .. } => Some((*name_span, format!("`{name}` on a listener"))),
+        ExprKind::Method { name, name_span, callee: Callee::Net(NetCall::Receive | NetCall::Send), .. } => Some((*name_span, format!("`{name}` on a connection"))),
         _ => None,
     }
 }
@@ -230,6 +236,8 @@ fn async_version(expr: &Expr) -> Option<String> {
     let (written, args) = match &expr.kind {
         ExprKind::Call { callee: Callee::Io(call), args, .. } | ExprKind::Method { callee: Callee::Io(call), args, .. } => (format!("File.{}Async", call.name()), args),
         ExprKind::Method { callee: Callee::Stream(StreamCall::Lines), .. } => return None,
+        ExprKind::Call { callee: Callee::Net(NetCall::Connect), args, .. } | ExprKind::Method { callee: Callee::Net(NetCall::Connect), args, .. } => ("TcpStream.connectAsync".to_string(), args),
+        ExprKind::Method { recv, name, callee: Callee::Net(NetCall::Accept | NetCall::Receive | NetCall::Send), args, .. } => (format!("{}.{name}Async", short_reader(recv)?), args),
         ExprKind::Method { recv, name, callee: Callee::Stream(_), args, .. } => {
             let reader = match stream_name(recv) {
                 Some(name) => name.to_string(),

@@ -1,0 +1,5 @@
+error: `TcpStream` has no method `close`
+  a `TcpStream` has nothing to lose: it is closed when it ends
+  --> error_net_close.sg:3:10
+ 3 |     conn.close()
+   |          ^^^^^

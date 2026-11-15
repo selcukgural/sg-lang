@@ -1,0 +1,7 @@
+Result<nint, IoError> fill(ref TcpStream conn) {
+    var buffer = byte[16](0)
+    return conn.receive(read buffer)
+}
+
+void main() {
+}

@@ -29,7 +29,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -252,6 +252,7 @@ fn gives_only(name: &str, callee: &Callee) -> bool {
     match callee {
         Callee::Join | Callee::WithCapacity | Callee::FromBytes { .. } => true,
         Callee::Cancel(call) => *call != CancelCall::Cancel && *call != CancelCall::Check,
+        Callee::Net(NetCall::Port) => true,
         Callee::Plain => !matches!(name, "removeLast" | "add" | "remove" | "getOrAdd" | "next"),
         _ => false,
     }
@@ -363,10 +364,13 @@ const IO_ERROR: &str = "IoError";
 
 /// The built-in `enum IoError : Copyable, Formattable, Equatable { NotFound, PermissionDenied,
 /// IsDirectory, NoSpace, InvalidText(long position), Other(int code), Cancelled(Cancelled
-/// cancelled) }`. The first four are what a program most often tells apart; `InvalidText` is a
-/// byte that is not UTF-8 where text was read, counted from the start of the file or of the
-/// input; `Other` keeps the code the system gave; `Cancelled` is async input or output whose
-/// token was cancelled, and lets `try` turn the error of `token.check()` into an `IoError`.
+/// cancelled), ConnectionRefused, ConnectionReset, AddressInUse, HostNotFound }`. The first
+/// four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
+/// where text was read, counted from the start of the file or of the input; `Other` keeps the
+/// code the system gave; `Cancelled` is async input or output whose token was cancelled, and
+/// lets `try` turn the error of `token.check()` into an `IoError`. The last four are the
+/// network's: nobody listens at the address, the other side broke the connection off, the
+/// address is taken, and the host could not be found (or the address is not `host:port`).
 fn io_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
@@ -383,6 +387,10 @@ fn io_error() -> EnumDecl {
         variant("InvalidText", vec![field("long", "position")]),
         variant("Other", vec![field("int", "code")]),
         variant("Cancelled", vec![field(CANCELLED, "cancelled")]),
+        variant("ConnectionRefused", Vec::new()),
+        variant("ConnectionReset", Vec::new()),
+        variant("AddressInUse", Vec::new()),
+        variant("HostNotFound", Vec::new()),
     ];
     EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants, methods: Vec::new() }
 }
@@ -6897,6 +6905,153 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// `TcpListener.bind(address)`, `TcpStream.connect(address)` and `connectAsync`: the
+    /// functions of the network types. An address is a `read string`, `host:port`.
+    #[allow(clippy::too_many_arguments)]
+    fn net_static(&mut self, owner: &str, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span, awaited: bool) -> Res<Ty> {
+        let text = Ty::Read(Box::new(Ty::Str));
+        let io = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
+        match (owner, name) {
+            ("TcpListener", "bind") => {
+                self.args(name, args, &[text], span).map_err(|diag| diag.note("an address is `host:port`: `\"127.0.0.1:8080\"`, `\"[::1]:8080\"`, `\":8080\"` for every address of the machine"))?;
+                *callee = Callee::Net(NetCall::Bind);
+                Ok(io(Ty::Listener))
+            }
+            ("TcpListener", "bindAsync") => Err(Diag::error(name_span, "`TcpListener` has no `bindAsync`: binding does not wait")
+                .note("the address is not looked up by name, so `bind` never waits for the network")
+                .hint("`TcpListener.bind(address)`, in an async function too")),
+            ("TcpStream", "connect") => {
+                self.args(name, args, &[text], span).map_err(|diag| diag.note("an address is `host:port`: `\"example.com:80\"`, `\"127.0.0.1:8080\"`, `\"[::1]:8080\"`"))?;
+                *callee = Callee::Net(NetCall::Connect);
+                Ok(io(Ty::Socket))
+            }
+            ("TcpStream", "connectAsync") => {
+                self.async_args(name, args, &[text], span)?;
+                self.awaited_here(&format!("TcpStream.{name}"), awaited, args, span)?;
+                *callee = Callee::NetAsync(NetCall::Connect);
+                Ok(Ty::Task(Box::new(io(Ty::Socket))))
+            }
+            _ => {
+                let known: &[&str] = match owner {
+                    "TcpListener" => &["bind"],
+                    _ => &["connect", "connectAsync"],
+                };
+                let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
+                Err(match (owner, name) {
+                    ("TcpListener", "listen" | "create" | "new" | "open") => diag.hint("`TcpListener.bind(address)` listens on `host:port`"),
+                    ("TcpStream", "open" | "create" | "new") => diag.hint("`TcpStream.connect(address)` connects to `host:port`"),
+                    ("TcpStream", "bind") => diag.note("a `TcpListener` listens: `TcpListener.bind(address)`"),
+                    ("TcpListener", "connect" | "connectAsync") => diag.note(format!("a `TcpStream` connects: `TcpStream.{name}(address)`")),
+                    _ => match nearest(name, known.iter().copied()) {
+                        Some(close) => diag.hint(format!("`{close}`")),
+                        None => diag.note(format!("functions: {}", known.join(", "))),
+                    },
+                })
+            }
+        }
+    }
+
+    /// The methods of a `TcpListener` (`accept`, `acceptAsync`, `port`) and of a `TcpStream`
+    /// (`receive`, `send` and their async versions). A listener takes connections through a
+    /// `read` borrow; a stream goes on from where it is, so it is read and written through a
+    /// `ref`. An async method lends what it is called on, so it is awaited where it is written.
+    #[allow(clippy::too_many_arguments)]
+    fn net_method(
+        &mut self,
+        recv: &mut Expr,
+        target: &Ty,
+        writable: bool,
+        name: &str,
+        name_span: Span,
+        args: &mut [Expr],
+        callee: &mut Callee,
+        span: Span,
+        awaited: bool,
+    ) -> Res<Ty> {
+        let io = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
+        let (base, is_async) = match name.strip_suffix("Async") {
+            Some(base) => (base, true),
+            None => (name, false),
+        };
+        let bytes = |mode: fn(Box<Ty>) -> Ty| mode(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+        let (call, params, ty) = match (target, base) {
+            (Ty::Listener, "accept") => (NetCall::Accept, Vec::new(), io(Ty::Socket)),
+            (Ty::Listener, "port") if !is_async => (NetCall::Port, Vec::new(), Ty::Int(IntTy::Int)),
+            (Ty::Socket, "receive") => (NetCall::Receive, vec![bytes(Ty::Ref)], io(Ty::Int(IntTy::Nint))),
+            (Ty::Socket, "send") => (NetCall::Send, vec![bytes(Ty::Read)], io(Ty::Void)),
+            _ => {
+                let known: &[&str] = match target {
+                    Ty::Listener => &["accept", "acceptAsync", "port"],
+                    _ => &["receive", "receiveAsync", "send", "sendAsync"],
+                };
+                let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
+                let other = match (target, base) {
+                    (Ty::Socket, "recv" | "readBytes" | "readSome") => Some(if is_async { "receiveAsync" } else { "receive" }),
+                    (Ty::Socket, "write" | "writeBytes" | "writeAll" | "sendAll") => Some(if is_async { "sendAsync" } else { "send" }),
+                    _ => None,
+                };
+                return Err(match (target, base) {
+                    (_, "close" | "shutdown" | "dispose") => diag.note(format!("a `{target}` has nothing to lose: it is closed when it ends")),
+                    (Ty::Listener, "receive" | "send") => diag.note("a `TcpListener` takes connections: `listener.accept()` gives a `TcpStream`, which receives and sends"),
+                    (Ty::Socket, "accept") => diag.note("a `TcpListener` takes connections: `TcpListener.bind(address)`, then `listener.accept()`"),
+                    (Ty::Socket, "readLine" | "readText" | "writeLine") => diag.note("a `TcpStream` receives and sends bytes: `receive(ref buffer)`, `send(text.asBytes())`; `string.fromUtf8(bytes)` looks at bytes as text"),
+                    (Ty::Listener, "port") => diag.hint("`port()` does not wait: `listener.port()`"),
+                    _ => match other.or_else(|| nearest(name, known.iter().copied())) {
+                        Some(close) => diag.hint(format!("`{close}`")),
+                        None => diag.note(format!("methods: {}", known.join(", "))),
+                    },
+                });
+            }
+        };
+        let count = params.len();
+        if is_async {
+            if args.len() != count && args.len() != count + 1 {
+                return Err(Diag::error(span, format!("`{name}` takes {count} argument(s), or {} with a token last; {} given", count + 1, args.len())));
+            }
+        } else if args.len() != count {
+            return Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len())));
+        }
+        let (given, token) = args.split_at_mut(count);
+        if call == NetCall::Receive {
+            let lent_read = given.first().is_some_and(|arg| self.src[arg.span.start..arg.span.end].starts_with("read "));
+            self.args(name, given, &params, span).map_err(|diag| match lent_read {
+                true => diag.hint(format!("`{name}` writes into the buffer, so it is lent with `ref`")),
+                false => diag,
+            })?;
+        } else {
+            self.args(name, given, &params, span)?;
+        }
+        if let Some(token) = token.first_mut() {
+            self.token_arg(token)?;
+        }
+        // A stream goes on from where it is: reading or writing changes it.
+        if matches!(call, NetCall::Receive | NetCall::Send) {
+            if !writable {
+                if let Some(diag) = self.readonly(recv) {
+                    return Err(diag.note(format!("`{name}` goes on from where the connection is")));
+                }
+                return Err(self.read_only(recv, Diag::error(recv.span, format!("`{name}` goes on from where the connection is, but it is reached through a `read` borrow"))
+                    .hint("take it as `ref TcpStream` instead of `read TcpStream`")));
+            }
+            self.not_locked(recv, Access::Write)?;
+        }
+        if !is_async {
+            *callee = Callee::Net(call);
+            return Ok(ty);
+        }
+        if !awaited {
+            let text = &self.src[span.start..span.end];
+            let what = if *target == Ty::Listener { "listener" } else { "connection" };
+            let diag = Diag::error(span, format!("`{name}` lends the {what}, and a call without `await` starts it as a task of its own, which a borrow cannot go to"));
+            return Err(match self.is_async {
+                true => diag.hint(format!("`await {text}` runs it as part of this task, where it can borrow")),
+                false => diag.note("the network is awaited in an async function; elsewhere the methods without `Async` do the same work"),
+            });
+        }
+        *callee = Callee::NetAsync(call);
+        Ok(Ty::Task(Box::new(ty)))
+    }
+
     fn method(
         &mut self,
         recv: &mut Expr,
@@ -6954,6 +7109,9 @@ impl<'a> Checker<'a> {
                 }
                 if owner == "CancellationSource" || owner == "CancellationToken" {
                     return self.cancel_static(owner, name, name_span, args, callee, span);
+                }
+                if owner == "TcpListener" || owner == "TcpStream" {
+                    return self.net_static(owner, name, name_span, args, callee, span, awaited);
                 }
                 // `string.join(", ", read names)`
                 // `string.fromUtf8(bytes)`: the bytes looked at as text, if they are text.
@@ -7214,6 +7372,10 @@ impl<'a> Checker<'a> {
         if matches!(target, Ty::Source | Ty::Token) {
             let target = target.clone();
             return self.cancel_method(recv, &target, name, name_span, args, callee, span);
+        }
+        if matches!(target, Ty::Listener | Ty::Socket) {
+            let target = target.clone();
+            return self.net_method(recv, &target, writable, name, name_span, args, callee, span, awaited);
         }
         // An array and a slice have the methods of a list that only look, and the two that
         // change the order of the items without changing how many there are.

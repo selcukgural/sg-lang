@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the sixty-fourth slice.
+Last brought up to date: 15 November 2026, the sixty-fifth slice.
 
 ## Functions and variables
 
@@ -204,7 +204,7 @@ Last brought up to date: 15 November 2026, the sixty-fourth slice.
 | `token.cancel()` | `source.cancel()` | built | Through a `read` borrow, as `cancel(&self)` |
 | `token.is_cancelled()` | `token.isCancelled()`, `try token.check()` | built | `check` gives `Error(Cancelled { })`, which `try` turns into `IoError.Cancelled(...)` |
 | `select! { _ = token.cancelled() => ..., _ = sleep(d) => ... }` | `await Task.delay(ms, read token)` | built | Gives `Error(Cancelled { })` when the token is cancelled first |
-| dropping a future to cancel it | none | not in SG | A task stops only where it looks at its token |
+| dropping a future to cancel it | none | not in SG | A task stops only where it looks at its token; a cancel ends a wait for the network or for a line of the input at once |
 | `Vec<JoinHandle<T>>`, `JoinSet<T>` | `List<Task<T>>` | built | Kept only where a task is kept; its methods are `add` and `length`, and its tasks are taken out only by `Task.whenAll` and `Task.whenAny` |
 | `join_all(handles).await` | `await Task.whenAll(tasks)` | built | What each gave, in the order of the list; an error is an item of the list, none is lost. `Task.whenAll(tasks).wait()` in code that is not async |
 | `set.join_next().await` | `await Task.whenAny(ref tasks)` | built | What the first task to end gave, taken out of the list; nothing is cancelled. A `while tasks.length() > 0` loop around it empties the list, as the compiler sees |
@@ -215,7 +215,7 @@ Last brought up to date: 15 November 2026, the sixty-fourth slice.
 | `writer.write_all(b).await`, `writer.flush().await` | `await writer.writeLineAsync(x)`, `writeAsync`, `writeBytesAsync`, `flushAsync()` | built | What the block of 64 KB can take is written in place, as tokio's `BufWriter` does; a full block goes out on a thread of input and output. On `Stdout` and `Stderr` too, in order with `print` |
 | `writer.shutdown().await` | `try await writer.closeAsync()` | built | Takes the writer; a local writer left open is a compile error (`Closable`), as without async |
 | a `BufWriter` dropped without `flush` (what it holds is lost) | a writer dropped in an async function | built | Written and closed on a thread of input and output, awaited where it is dropped: Rust has no async drop |
-| tokio, async-std, smol | one built-in runtime | built | A pool of threads, one for each core, and a clock for delays; only a program with tasks carries them. Input and output the async way runs on threads of their own, started as they are needed (up to 512, as tokio's blocking threads) |
+| tokio, async-std, smol | one built-in runtime | built | A pool of threads, one for each core, and a clock for delays; only a program with tasks carries them. Input and output the async way runs on threads of their own, started as they are needed (up to 512, as tokio's blocking threads), and the network on one thread that waits with epoll or kqueue, as tokio's driver |
 
 ## Modules
 
@@ -240,6 +240,20 @@ Last brought up to date: 15 November 2026, the sixty-fourth slice.
 | `writeln!(w, "{}", x)?` | `try w.writeLine(x)` | built | |
 | a `BufWriter` dropped (its error lost) | `try w.close()` | built | A writer not closed on every path is a compile error |
 | `io::stdin()`, `io::stdout()` | `Stdin`, `Stdout`, `Stderr` | built | |
+
+## Network
+
+| Rust | SG | Status | Note |
+|---|---|---|---|
+| `TcpListener::bind("127.0.0.1:8080")?` | `try TcpListener.bind("127.0.0.1:8080")` | built | A number, `localhost` or `":8080"` (every v4 address); no name is looked up, so it never waits. Port 0 lets the system choose: `listener.port()` |
+| `listener.accept()?` | `try listener.accept()` | built | Through a `read` borrow, as `accept(&self)`; gives the `TcpStream` alone, not the address of the other side |
+| `TcpStream::connect("example.com:80")?` | `try TcpStream.connect("example.com:80")` | built | The host looked up by name, each address tried in turn |
+| `stream.read(&mut buf)?` | `try stream.receive(ref buffer)` | built | What has come, how many, 0 at the end; `read` is a word of SG, and `receive` is C#'s name |
+| `stream.write_all(&bytes)?` | `try stream.send(bytes)` | built | All of them; writing after the other side has gone is `ConnectionReset`, never `SIGPIPE` |
+| `drop(stream)`, `stream.shutdown(Both)` | the stream ends | built | Closed where it ends; no `close` |
+| `tokio::net::TcpListener`, `TcpStream`, `.await` | `await listener.acceptAsync()`, `connectAsync`, `receiveAsync`, `sendAsync` | built | A token may come last, and a cancel ends a wait at once; what came stays in the socket |
+| `stream.into_split()`, `stream.shutdown(Write)`, `peer_addr()`, `set_nodelay` | none yet | designed | Later slices of the network |
+| `UdpSocket` | none yet | designed | |
 
 ## Tests and the tools
 

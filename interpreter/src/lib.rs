@@ -8,7 +8,9 @@ pub mod diag;
 pub mod emit_c;
 pub mod exhaust;
 pub mod interp;
+pub mod input;
 pub mod lexer;
+pub mod net;
 pub mod parser;
 pub mod source;
 pub mod opening;
@@ -74,8 +76,8 @@ pub fn run(src: &str, out: &mut (dyn Write + Send)) -> Result<(), Stop> {
 /// Parses, checks and runs the program, with no words on its command line, an empty input,
 /// and the standard error of this process.
 pub fn run_sources(sources: &Sources, out: &mut (dyn Write + Send)) -> Result<(), Stop> {
-    let (mut input, mut err) = (std::io::empty(), std::io::stderr());
-    run_sources_in(sources, out, World { args: Vec::new(), input: &mut input, input_is_terminal: false, err: &mut err })
+    let mut err = std::io::stderr();
+    run_sources_in(sources, out, World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err: &mut err })
 }
 
 /// Parses, checks and runs the program in the world it is given: its command line, its input
@@ -97,8 +99,8 @@ pub fn run_tests(src: &str, path: &str, out: &mut (dyn Write + Send)) -> Result<
 pub fn test_sources(sources: &Sources, out: &mut (dyn Write + Send)) -> Result<bool, Stop> {
     on_large_stack(|| {
         let prog = check_all(sources, true)?;
-        let (mut input, mut err) = (std::io::empty(), std::io::stderr());
-        let world = World { args: Vec::new(), input: &mut input, input_is_terminal: false, err: &mut err };
+        let mut err = std::io::stderr();
+        let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err: &mut err };
         let (_, failed) = interp::run_tests(&prog, sources, out, world)?;
         Ok(failed == 0)
     })

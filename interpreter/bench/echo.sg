@@ -1,0 +1,60 @@
+// The network the async way: an echo server and eight clients in one program, over the
+// loopback. Each client sends 64 bytes and waits for them to come back, 20,000 times; each
+// connection is a task of the server, kept in a list. A socket that is not ready is waited for
+// on the loop of the network (kqueue or epoll), and the task is woken on a thread of the pool.
+// The C is the classic way: blocking sockets and a thread for each connection and each client.
+async Result<void, IoError> echo(TcpStream conn) {
+    var buffer = byte[64](0)
+    while true {
+        var n = try await conn.receiveAsync(ref buffer)
+        if n == 0 {
+            return Ok()
+        }
+        try await conn.sendAsync(buffer[0..n])
+    }
+}
+
+async Result<void, IoError> serve(TcpListener listener, int count) {
+    var tasks = List<Task<Result<void, IoError>>>()
+    for _ in 0..count {
+        var conn = try await listener.acceptAsync()
+        tasks.add(echo(conn))
+    }
+    while tasks.length() > 0 {
+        try await Task.whenAny(ref tasks)
+    }
+    return Ok()
+}
+
+async Result<long, IoError> client(string address, int rounds) {
+    var conn = try await TcpStream.connectAsync(read address)
+    var message = byte[64](7)
+    var buffer = byte[64](0)
+    long sum = 0
+    for _ in 0..rounds {
+        try await conn.sendAsync(message[0..64])
+        nint got = 0
+        while got < 64 {
+            got += try await conn.receiveAsync(ref buffer[got..])
+        }
+        sum += buffer[63]
+    }
+    return Ok(sum)
+}
+
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = serve(listener, 8)
+    var clients = List<Task<Result<long, IoError>>>()
+    for _ in 0..8 {
+        clients.add(client(address.clone(), 20000))
+    }
+    long sum = 0
+    while clients.length() > 0 {
+        sum += try await Task.whenAny(ref clients)
+    }
+    try await server
+    print($"{sum} bytes came back")
+    return Ok()
+}

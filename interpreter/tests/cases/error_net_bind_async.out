@@ -1,0 +1,6 @@
+error: `TcpListener` has no `bindAsync`: binding does not wait
+  the address is not looked up by name, so `bind` never waits for the network
+  --> error_net_bind_async.sg:2:42
+ 2 |     var listener = try await TcpListener.bindAsync("127.0.0.1:0")
+   |                                          ^^^^^^^^^
+  hint: `TcpListener.bind(address)`, in an async function too

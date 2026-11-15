@@ -1,0 +1,6 @@
+error: expected `read CancellationToken`, found `CancellationToken`
+  a token is lent: `read token`, or `read source.token()`
+  --> error_net_token_value.sg:4:47
+ 4 |     var conn = try await listener.acceptAsync(source.token())
+   |                                               ^^^^^^^^^^^^^^
+  hint: lend it with `read`: `read source.token()`

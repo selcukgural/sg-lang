@@ -1,0 +1,5 @@
+Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var task = listener.acceptAsync()
+    return Ok()
+}

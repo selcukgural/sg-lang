@@ -1,0 +1,37 @@
+// A token ends a wait for the network at once: what had come stays in the socket for the next
+// call. A token that is cancelled already is looked at before the work, so nothing is taken.
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var soon = CancellationSource.after(30)
+    match await listener.acceptAsync(read soon.token()) {
+        Ok(_) => print("accepted")
+        Error(cause) => print($"accept: {cause}")
+    }
+    var client = try await TcpStream.connectAsync(read address)
+    var conn = try await listener.acceptAsync()
+    var buffer = byte[16](0)
+    var waiting = CancellationSource.after(30)
+    match await conn.receiveAsync(ref buffer, read waiting.token()) {
+        Ok(n) => print($"received {n}")
+        Error(cause) => print($"receive: {cause}")
+    }
+    try await client.sendAsync("kept".asBytes())
+    var gone = CancellationSource()
+    gone.cancel()
+    match await conn.receiveAsync(ref buffer, read gone.token()) {
+        Ok(n) => print($"received {n}")
+        Error(cause) => print($"receive: {cause}")
+    }
+    match await client.sendAsync("never".asBytes(), read gone.token()) {
+        Ok => print("sent")
+        Error(cause) => print($"send: {cause}")
+    }
+    match await TcpStream.connectAsync(read address, read gone.token()) {
+        Ok(_) => print("connected")
+        Error(cause) => print($"connect: {cause}")
+    }
+    var n = try await conn.receiveAsync(ref buffer, read CancellationToken.None)
+    print(string.fromUtf8(buffer[0..n]) ?? "not text")
+    return Ok()
+}

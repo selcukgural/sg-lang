@@ -43,13 +43,13 @@ fn run_file(path: &Path) -> String {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let given = given(path, &root.join("target").join("io").join("interpreted"));
     let mut out = Vec::new();
-    let (mut input, mut err) = (std::io::Cursor::new(given.input), Vec::new());
+    let mut err = Vec::new();
     // A file named `tests_...` is run by the test command.
     let result = match name.starts_with("tests_") {
         true => sg::run_tests(&src, &name, &mut out).map(|_| ()),
         false => {
             let args = given.args.iter().map(|arg| arg.clone().into_bytes()).collect();
-            let world = sg::World { args, input: &mut input, input_is_terminal: false, err: &mut err };
+            let world = sg::World { args, input: Box::new(std::io::Cursor::new(given.input)), input_is_terminal: false, input_waits: false, err: &mut err };
             sg::run_sources_in(&sg::Sources::single(&src, ""), &mut out, world)
         }
     };
@@ -537,6 +537,84 @@ async Result<void, IoError> main() {
     assert_eq!(first.as_deref(), Ok("tick"), "the task that waits for a delay did not run while the others waited for the input");
     assert_eq!(String::from_utf8_lossy(&run.stdout), "128\n");
     assert!(run.status.success());
+}
+
+/// A token ends a wait for a line of the input at once, and the line that comes later is not
+/// lost: the next read gets it. The input is a pipe that is written only once the cancel has
+/// been seen on the standard error, in compiled code and in the interpreter alike.
+const INPUT_CANCEL: &str = r#"
+async Result<void, IoError> main() {
+    var line = ""
+    var soon = CancellationSource.after(50)
+    match await Stdin.readLineAsync(ref line, read soon.token()) {
+        Ok(more) => printError($"early: {more} {line}")
+        Error(cause) => printError($"first: {cause}")
+    }
+    var more = try await Stdin.readLineAsync(ref line)
+    print($"then: {more} {line}")
+    return Ok()
+}
+"#;
+
+/// Waits for the first line on `errors`, then writes `late\n` into `input` and lets it go.
+fn feed_after_cancel(errors: impl std::io::Read + Send + 'static, mut input: impl std::io::Write) -> Result<String, std::sync::mpsc::RecvTimeoutError> {
+    use std::io::BufRead;
+    let (send, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(errors).lines() {
+            let Ok(line) = line else { break };
+            let _ = send.send(line);
+        }
+    });
+    let first = lines.recv_timeout(std::time::Duration::from_secs(10));
+    let _ = input.write_all(b"late\n");
+    first
+}
+
+#[test]
+fn compiled_input_cancel() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if std::process::Command::new("cc").arg("--version").output().is_err() {
+        eprintln!("no C compiler (`cc`) found: the back end is not tested");
+        return;
+    }
+    let work = root.join("target").join("compiled");
+    std::fs::create_dir_all(&work).unwrap();
+    let (c_file, binary) = (work.join("input-cancel.c"), work.join("input-cancel"));
+    std::fs::write(&c_file, sg::emit_c(INPUT_CANCEL, "input_cancel.sg", true).unwrap()).unwrap();
+    let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-o"]).arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+    assert!(cc.status.success(), "the C compiler rejected it:\n{}", String::from_utf8_lossy(&cc.stderr));
+    let mut child = std::process::Command::new(&binary)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let errors = child.stderr.take().unwrap();
+    let stdin = child.stdin.take().unwrap();
+    let first = feed_after_cancel(errors, stdin);
+    let run = child.wait_with_output().unwrap();
+    assert_eq!(first.as_deref(), Ok("first: Cancelled(Cancelled)"));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "then: true late\n");
+    assert!(run.status.success());
+}
+
+#[test]
+fn interpreted_input_cancel() {
+    use std::os::unix::net::UnixStream;
+    let (input, feeder) = UnixStream::pair().unwrap();
+    let (mut err, errors) = UnixStream::pair().unwrap();
+    let running = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let world = sg::World { args: Vec::new(), input: Box::new(input), input_is_terminal: false, input_waits: true, err: &mut err };
+        let result = sg::run_sources_in(&sg::Sources::single(INPUT_CANCEL, ""), &mut out, world);
+        (result.is_ok(), String::from_utf8(out).unwrap())
+    });
+    let first = feed_after_cancel(errors, &feeder);
+    let (ok, out) = running.join().unwrap();
+    assert_eq!(first.as_deref(), Ok("first: Cancelled(Cancelled)"));
+    assert_eq!(out, "then: true late\n");
+    assert!(ok);
 }
 
 /// The test command on compiled code. Every program of tests is built into the program that

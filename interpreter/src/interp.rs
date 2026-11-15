@@ -84,6 +84,11 @@ pub enum Value {
     /// `Task<R>`: a task started with `Task.run`, by the call of an async function, or by
     /// `Task.delay`.
     Task(Rc<RefCell<Task>>),
+    /// `TcpListener`, which does not block. Closed when the last place that holds it lets it
+    /// go: a moved value leaves its place empty, so that is where compiled code closes it.
+    Listener(Rc<std::net::TcpListener>),
+    /// `TcpStream`, which does not block.
+    Socket(Rc<std::net::TcpStream>),
 }
 
 /// What a `CancellationSource` and its tokens look at: whether it is cancelled, and the
@@ -93,6 +98,16 @@ pub struct Cancel {
     cancelled: bool,
     /// The keys of the timers, in `State::timers`, of the delays given a token of it.
     delays: Vec<(u64, u64)>,
+    /// The fibers that wait for the network or for a thread, given a token of it.
+    waits: Vec<usize>,
+}
+
+/// What a fiber waits for outside the run: a socket to be ready to read (or, `true`, to
+/// write), or a piece of work on a thread of its own to end.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Outside {
+    Socket(std::os::unix::io::RawFd, bool),
+    Work(u64),
 }
 
 /// What the clock of a run ends when its time comes.
@@ -176,6 +191,16 @@ struct State {
     crashed: Option<Box<dyn std::any::Any + Send>>,
     /// Fiber 0 is ending the other fibers after a stop: one that gets the turn unwinds.
     ending: bool,
+    /// The fibers that wait for a socket or for work on a thread, by fiber.
+    outside: BTreeMap<usize, Outside>,
+    /// The fibers whose wait outside a cancel ended.
+    cut: BTreeSet<usize>,
+    /// What the threads of work tell the scheduler through, made when the first is started.
+    wake: Option<crate::net::Wake>,
+    works: u64,
+    /// The tasks of `Task.run` started in this run, which run when they are waited for, or
+    /// when a fiber is about to wait outside the run.
+    lazy: Vec<std::rc::Weak<RefCell<Task>>>,
 }
 
 // SAFETY: as for `Baton`: what `State` holds of the program is touched only by the fiber that
@@ -198,6 +223,11 @@ impl Sched {
             stop: None,
             crashed: None,
             ending: false,
+            outside: BTreeMap::new(),
+            cut: BTreeSet::new(),
+            wake: None,
+            works: 0,
+            lazy: Vec::new(),
         };
         Sched { state: Mutex::new(state) }
     }
@@ -265,6 +295,14 @@ impl Sched {
             if let Some(fiber) = state.ready.pop_front() {
                 return fiber;
             }
+            // Sockets and threads are waited for until the first timer is due.
+            if !state.outside.is_empty() {
+                let limit = state.timers.keys().next().map(|key| (state.clock + Duration::from_millis(key.0)).saturating_duration_since(Instant::now()));
+                if limit != Some(Duration::ZERO) {
+                    Self::wait_outside(state, limit);
+                    continue;
+                }
+            }
             let Some((&key, _)) = state.timers.iter().next() else {
                 state.stop = Some(Stop::Diag(Diag::panic(at, "every task waits, and nothing is left that could end a wait")));
                 return 0;
@@ -306,6 +344,48 @@ impl Sched {
         }
     }
 
+    /// Waits for the sockets and the threads that fibers wait for, at most `limit`. Those
+    /// that are ready are made ready, in the order of their fibers; the clock of the run goes
+    /// on to the time that has gone by, since a wait outside is not the clock's to choose.
+    fn wait_outside(state: &mut State, limit: Option<Duration>) {
+        let mut sockets = Vec::new();
+        let mut owners = Vec::new();
+        for (&fiber, what) in &state.outside {
+            if let Outside::Socket(fd, write) = *what {
+                sockets.push((fd, write));
+                owners.push(fiber);
+            }
+        }
+        let hear = state.wake.as_ref().map(|wake| crate::net::fd_of(&wake.hear));
+        if let Some(fd) = hear {
+            sockets.push((fd, false));
+        }
+        let ready = crate::net::wait(&sockets, limit);
+        let mut woken = false;
+        for (fiber, ready) in owners.iter().zip(&ready) {
+            if *ready {
+                state.outside.remove(fiber);
+                state.ready.push_back(*fiber);
+                woken = true;
+            }
+        }
+        if hear.is_some() && ready[sockets.len() - 1] {
+            let ended = state.wake.as_ref().expect("heard").ended();
+            for id in ended {
+                let fiber = state.outside.iter().find(|(_, what)| **what == Outside::Work(id)).map(|(fiber, _)| *fiber);
+                // Work whose fiber a cancel woke has no one waiting for it.
+                if let Some(fiber) = fiber {
+                    state.outside.remove(&fiber);
+                    state.ready.push_back(fiber);
+                    woken = true;
+                }
+            }
+        }
+        if woken {
+            state.now = state.now.max(state.clock.elapsed().as_millis() as u64);
+        }
+    }
+
     /// A task that runs no code ends with `value`: those that wait for it are ready.
     fn end_timer(state: &mut State, task: &Rc<RefCell<Task>>, value: Value) {
         let mut task = task.borrow_mut();
@@ -317,14 +397,22 @@ impl Sched {
     /// `source.cancel()`: the delays given a token of it end now, with `Error(Cancelled { })`,
     /// in the order they were started. Cancelling again does nothing.
     fn cancel(state: &mut State, source: &Rc<RefCell<Cancel>>) {
-        let keys = {
+        let (keys, waits) = {
             let mut source = source.borrow_mut();
             if source.cancelled {
                 return;
             }
             source.cancelled = true;
-            std::mem::take(&mut source.delays)
+            (std::mem::take(&mut source.delays), std::mem::take(&mut source.waits))
         };
+        // A wait for a socket or a thread ends at once; what the thread does goes on, and
+        // what it gives is not lost where it can be kept (the input).
+        for fiber in waits {
+            if state.outside.remove(&fiber).is_some() {
+                state.cut.insert(fiber);
+                state.ready.push_back(fiber);
+            }
+        }
         for key in keys {
             if let Some(Timer::Delay { task, .. }) = state.timers.remove(&key) {
                 if let Some(task) = task.upgrade() {
@@ -368,6 +456,7 @@ impl Sched {
 struct Shared<'e> {
     out: RefCell<&'e mut dyn Write>,
     world: RefCell<World<'e>>,
+    input: RefCell<crate::input::Input>,
     test_err: RefCell<String>,
     sched: Sched,
 }
@@ -877,6 +966,11 @@ fn map_add(entries: &mut Entries, key: Value, value: Value, shown: String, span:
 }
 
 /// `IoError.Cancelled(Cancelled { })`
+/// `IoError.HostNotFound`: the host could not be found, or the address is not `host:port`.
+fn io_host_not_found() -> Value {
+    Value::Enum("IoError".into(), 10, Rc::new(Vec::new()))
+}
+
 fn io_cancelled() -> Value {
     Value::Enum("IoError".into(), 6, Rc::new(vec![cell(cancelled())]))
 }
@@ -893,8 +987,15 @@ fn failed(cause: Value) -> Value {
 /// for a full quota.
 fn io_cause(error: Option<&std::io::Error>, code: Option<i32>) -> Value {
     const QUOTA: i32 = if cfg!(target_os = "linux") { 122 } else { 69 };
+    // ECONNREFUSED; ECONNRESET, ECONNABORTED, EPIPE; EADDRINUSE: their numbers differ.
+    const REFUSED: i32 = if cfg!(target_os = "linux") { 111 } else { 61 };
+    const RESET: [i32; 2] = if cfg!(target_os = "linux") { [104, 103] } else { [54, 53] };
+    const IN_USE: i32 = if cfg!(target_os = "linux") { 98 } else { 48 };
     let variant = |at: usize, fields: Vec<Value>| Value::Enum("IoError".into(), at, Rc::new(fields.into_iter().map(cell).collect()));
     match code {
+        Some(code) if code == REFUSED => variant(7, Vec::new()),
+        Some(code) if RESET.contains(&code) || code == 32 => variant(8, Vec::new()),
+        Some(code) if code == IN_USE => variant(9, Vec::new()),
         // ENOENT, ENOTDIR
         Some(2 | 20) => variant(0, Vec::new()),
         // EPERM, EACCES, EROFS
@@ -1072,9 +1173,13 @@ pub struct World<'w> {
     /// The words after the program's name, as the system gave them: they are checked to be
     /// UTF-8 when `main` takes them.
     pub args: Vec<Vec<u8>>,
-    pub input: &'w mut (dyn BufRead + Send + 'static),
+    pub input: Box<dyn Read + Send + 'static>,
     /// The input is a terminal: what was printed goes out before the program waits for a line.
     pub input_is_terminal: bool,
+    /// The input can make the program wait (a pipe, a terminal): an async read of it waits on
+    /// a thread of its own, and a cancel can end the wait. Input in memory or in a file is
+    /// read where it is asked for.
+    pub input_waits: bool,
     pub err: &'w mut (dyn Write + Send + 'static),
 }
 
@@ -1254,6 +1359,13 @@ impl Frame {
     }
 }
 
+/// What the fibers of a run share. The input is taken out of the world into a block of its own.
+fn shared<'a>(out: &'a mut dyn Write, mut world: World<'a>) -> Shared<'a> {
+    let source = std::mem::replace(&mut world.input, Box::new(std::io::empty()));
+    let input = crate::input::Input::new(source, world.input_waits);
+    Shared { out: RefCell::new(out), world: RefCell::new(world), input: RefCell::new(input), test_err: RefCell::new(String::new()), sched: Sched::new() }
+}
+
 pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, world: World<'a>) -> Result<(), Stop> {
     let funcs = prog.funcs.iter().map(|func| (func.name.as_str(), func)).collect();
     let mut methods: HashMap<&str, HashMap<&str, &Func>> = HashMap::new();
@@ -1266,7 +1378,7 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
-    let io = Shared { out: RefCell::new(out), world: RefCell::new(world), test_err: RefCell::new(String::new()), sched: Sched::new() };
+    let io = shared(out, world);
     std::thread::scope(|scope| {
         let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new() };
         let result = run_main(&mut interp);
@@ -1326,7 +1438,7 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
-    let io = Shared { out: RefCell::new(out), world: RefCell::new(world), test_err: RefCell::new(String::new()), sched: Sched::new() };
+    let io = shared(out, world);
     std::thread::scope(|scope| {
         let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new() };
         run_each_test(&mut interp, prog, sources)
@@ -1607,6 +1719,238 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
     }
 
+    /// Fiber `me` waits outside the run for `what`, until it is ready or the token, if one is
+    /// given, is cancelled. Gives whether the wait was cut short by a cancel.
+    fn wait_for(&mut self, what: Outside, source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<bool> {
+        if let Some(source) = source {
+            if source.borrow().cancelled {
+                return Ok(true);
+            }
+        }
+        // What the network waits for may be another task of this run: a task of `Task.run`
+        // that has not run starts now, as it would on a thread of its own in compiled code,
+        // and runs until it waits.
+        loop {
+            let lazy = std::mem::take(&mut self.io.sched.lock().lazy);
+            if lazy.is_empty() {
+                break;
+            }
+            for task in lazy.iter().filter_map(std::rc::Weak::upgrade) {
+                if !matches!(task.borrow().state, TaskState::Lazy(..)) {
+                    continue;
+                }
+                let TaskState::Lazy(name, args) = std::mem::replace(&mut task.borrow_mut().state, TaskState::Running) else { unreachable!("just seen") };
+                let func = self.funcs[&*name];
+                self.start_fiber(&task, func, args, true)?;
+            }
+        }
+        if let Some(source) = source {
+            if source.borrow().cancelled {
+                return Ok(true);
+            }
+            source.borrow_mut().waits.push(self.me);
+        }
+        self.io.sched.lock().outside.insert(self.me, what);
+        let waited = self.io.sched.block(self.me, at);
+        if let Some(source) = source {
+            source.borrow_mut().waits.retain(|fiber| *fiber != self.me);
+        }
+        let cut = self.io.sched.lock().cut.remove(&self.me);
+        waited?;
+        Ok(cut)
+    }
+
+    /// An async read of an input that can make the program wait: until what the read needs
+    /// is in the block of the input, a thread reads into it and this fiber waits. A cancel
+    /// ends the wait, and gives `Some(Error(Cancelled))`; what the thread reads stays in the
+    /// block. `None` when the read can be done now.
+    fn input_wait(&mut self, call: StreamCall, args: &'a [Expr], token: Option<&'a Expr>, at: Span, frame: &mut Frame) -> Res<Option<Value>> {
+        let need = match call {
+            StreamCall::ReadLine => crate::input::Need::Line,
+            StreamCall::ReadText => crate::input::Need::End,
+            StreamCall::ReadBytes => crate::input::Need::Bytes(cells_of(&owned(self.expr(&args[0], frame)?)).len()),
+            _ => unreachable!("only reads wait for the input"),
+        };
+        let source = match token {
+            Some(token) => self.token(token, frame)?,
+            None => None,
+        };
+        loop {
+            if source.as_ref().is_some_and(|source| source.borrow().cancelled) {
+                return Ok(Some(failed(io_cancelled())));
+            }
+            if self.io.input.borrow_mut().ready(need) {
+                return Ok(None);
+            }
+            if self.io.world.borrow().input_is_terminal {
+                self.flush_out()?;
+            }
+            let (id, done) = self.work(at)?;
+            let Some((id, work)) = self.io.input.borrow_mut().fill(id) else { continue };
+            if let Some(work) = work {
+                std::thread::spawn(move || {
+                    work();
+                    done.tell(id);
+                });
+            }
+            if self.wait_for(Outside::Work(id), source.as_ref(), at)? {
+                return Ok(Some(failed(io_cancelled())));
+            }
+        }
+    }
+
+    /// A number for a piece of work on a thread of its own, and what the thread tells the
+    /// scheduler through when it has ended.
+    fn work(&mut self, at: Span) -> Res<(u64, std::sync::Arc<crate::net::Done>)> {
+        let mut state = self.io.sched.lock();
+        if state.wake.is_none() {
+            let wake = crate::net::Wake::new().map_err(|error| Diag::panic(at, format!("the system refused a socket for the scheduler: {error}")))?;
+            state.wake = Some(wake);
+        }
+        state.works += 1;
+        let done = state.wake.as_ref().expect("made above").done.clone();
+        Ok((state.works, done))
+    }
+
+    /// The functions of the network. A socket that is not ready gives the turn away until it
+    /// is; a token is looked at before the work, and a wait it cuts short leaves the socket as
+    /// it was, so nothing that came is lost.
+    fn net(&mut self, call: NetCall, recv: &'a Expr, args: &'a [Expr], token: Option<&'a Expr>, at: Span, frame: &mut Frame) -> Res<Value> {
+        let io_failed = |error: std::io::Error| failed(io_cause(Some(&error), error.raw_os_error()));
+        match call {
+            NetCall::Bind => {
+                let Value::Str(address) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the address text") };
+                Ok(match crate::net::bind_address(&address) {
+                    None => failed(io_host_not_found()),
+                    Some(address) => match crate::net::bind(address) {
+                        Ok(listener) => ok(Value::Listener(Rc::new(listener))),
+                        Err(error) => io_failed(error),
+                    },
+                })
+            }
+            NetCall::Connect => {
+                let Value::Str(address) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the address text") };
+                let address = address.to_string();
+                let source = match token {
+                    Some(token) => self.token(token, frame)?,
+                    None => None,
+                };
+                if source.as_ref().is_some_and(|source| source.borrow().cancelled) {
+                    return Ok(failed(io_cancelled()));
+                }
+                let (id, done) = self.work(at)?;
+                let slot = std::sync::Arc::new(Mutex::new(None));
+                let kept = slot.clone();
+                std::thread::spawn(move || {
+                    let connected = crate::net::connect(&address);
+                    *kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(connected);
+                    done.tell(id);
+                });
+                if self.wait_for(Outside::Work(id), source.as_ref(), at)? {
+                    return Ok(failed(io_cancelled()));
+                }
+                let connected = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take().expect("the work has ended");
+                Ok(match connected {
+                    Ok(stream) => ok(Value::Socket(Rc::new(stream))),
+                    Err(None) => failed(io_host_not_found()),
+                    Err(Some(error)) => io_failed(error),
+                })
+            }
+            NetCall::Port => {
+                let Value::Listener(listener) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `port` on a listener") };
+                Ok(Value::Int(IntTy::Int, listener.local_addr().map_or(0, |address| address.port()) as i128))
+            }
+            NetCall::Accept => {
+                let Value::Listener(listener) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `accept` on a listener") };
+                let source = match token {
+                    Some(token) => self.token(token, frame)?,
+                    None => None,
+                };
+                let fd = crate::net::fd_of(&*listener);
+                if source.as_ref().is_some_and(|source| source.borrow().cancelled) {
+                    return Ok(failed(io_cancelled()));
+                }
+                loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            return Ok(match stream.set_nonblocking(true) {
+                                Ok(()) => ok(Value::Socket(Rc::new(stream))),
+                                Err(error) => io_failed(error),
+                            });
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if self.wait_for(Outside::Socket(fd, false), source.as_ref(), at)? {
+                                return Ok(failed(io_cancelled()));
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(error) => return Ok(io_failed(error)),
+                    }
+                }
+            }
+            NetCall::Receive => {
+                let Value::Socket(stream) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `receive` on a stream") };
+                let cells = cells_of(&owned(self.expr(&args[0], frame)?));
+                let source = match token {
+                    Some(token) => self.token(token, frame)?,
+                    None => None,
+                };
+                let fd = crate::net::fd_of(&*stream);
+                let mut bytes = vec![0u8; cells.len()];
+                if source.as_ref().is_some_and(|source| source.borrow().cancelled) {
+                    return Ok(failed(io_cancelled()));
+                }
+                loop {
+                    match (&*stream).read(&mut bytes) {
+                        Ok(got) => {
+                            for (slot, byte) in cells.iter().zip(&bytes[..got]) {
+                                *slot.borrow_mut() = Value::Int(IntTy::Byte, *byte as i128);
+                            }
+                            return Ok(ok(Value::Int(IntTy::Nint, got as i128)));
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if self.wait_for(Outside::Socket(fd, false), source.as_ref(), at)? {
+                                return Ok(failed(io_cancelled()));
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(error) => return Ok(io_failed(error)),
+                    }
+                }
+            }
+            NetCall::Send => {
+                let Value::Socket(stream) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `send` on a stream") };
+                let bytes: Vec<u8> = cells_of(&owned(self.expr(&args[0], frame)?)).iter().map(|item| match &*item.borrow() {
+                    Value::Int(_, byte) => *byte as u8,
+                    _ => unreachable!("the checker makes the items bytes"),
+                }).collect();
+                let source = match token {
+                    Some(token) => self.token(token, frame)?,
+                    None => None,
+                };
+                let fd = crate::net::fd_of(&*stream);
+                if source.as_ref().is_some_and(|source| source.borrow().cancelled) {
+                    return Ok(failed(io_cancelled()));
+                }
+                // A cancel cuts a wait short; what went out before it has gone out.
+                let mut sent = 0;
+                while sent < bytes.len() {
+                    match (&*stream).write(&bytes[sent..]) {
+                        Ok(n) => sent += n,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if self.wait_for(Outside::Socket(fd, true), source.as_ref(), at)? {
+                                return Ok(failed(io_cancelled()));
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(error) => return Ok(io_failed(error)),
+                    }
+                }
+                Ok(ok(Value::Void))
+            }
+        }
+    }
+
     /// Runs `func(args)` for `task` on a fiber of its own, which gets the turn now. With
     /// `caller_ready` this fiber is next once the new one waits; otherwise this one waits for
     /// the task and goes on when it ends.
@@ -1694,6 +2038,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         state.ending = true;
         state.ready.clear();
         state.timers.clear();
+        state.outside.clear();
         while let Some(&fiber) = state.fibers.iter().next() {
             state.thread = Some(Thread::take());
             Sched::give(&mut state, fiber);
@@ -2464,12 +2809,30 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 Callee::Io(call) => self.io(*call, args, frame),
                 Callee::Stream(call) => self.stream(*call, recv, args, None, frame),
+                Callee::Net(call) => self.net(*call, recv, args, None, expr.span, frame),
+                // Awaited where it is written: the wait is done here, and the task given has
+                // ended.
+                Callee::NetAsync(call) => {
+                    let given = match call {
+                        NetCall::Connect | NetCall::Receive | NetCall::Send => 1,
+                        NetCall::Accept | NetCall::Bind | NetCall::Port => 0,
+                    };
+                    let value = self.net(*call, recv, &args[..given], args.get(given), expr.span, frame)?;
+                    Ok(self.ended_task(value, expr.span))
+                }
                 // `Task.run(work, x)`: the task runs when it is waited for.
                 Callee::TaskRun => {
                     let Value::Func(name) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker lets `Task.run` start only a function") };
                     let values = self.values(&args[1..], frame)?;
                     let task = Rc::new(RefCell::new(Task { state: TaskState::Lazy(name, values), started: expr.span, waiters: Vec::new() }));
                     self.started.push(task.clone());
+                    let mut state = self.io.sched.lock();
+                    // Those that have run, or are gone, are let go of now and then.
+                    if state.lazy.len() >= 64 {
+                        state.lazy.retain(|task| task.upgrade().is_some_and(|task| matches!(task.borrow().state, TaskState::Lazy(..))));
+                    }
+                    state.lazy.push(Rc::downgrade(&task));
+                    drop(state);
                     Ok(Value::Task(task))
                 }
                 Callee::Delay(told) => {
@@ -2531,6 +2894,15 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Callee::StreamAsync(call) => {
                     let given = if matches!(call, StreamCall::ReadText | StreamCall::Flush | StreamCall::Close) { 0 } else { 1 };
                     let token = args.get(given);
+                    // The input that can make the program wait is waited for outside the run.
+                    if matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes) && self.io.input.borrow().waits {
+                        let stdin = matches!(owned(self.expr(recv, frame)?), Value::Reader(reader) if reader.borrow().file.is_none());
+                        if stdin {
+                            if let Some(cancelled) = self.input_wait(*call, &args[..given], token, expr.span, frame)? {
+                                return Ok(self.ended_task(cancelled, expr.span));
+                            }
+                        }
+                    }
                     let value = self.stream(*call, recv, &args[..given], token, frame)?;
                     Ok(self.ended_task(value, expr.span))
                 }
@@ -3232,7 +3604,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         if self.io.world.borrow().input_is_terminal {
                             self.flush_out()?;
                         }
-                        self.io.world.borrow_mut().input.read_to_end(&mut bytes)
+                        self.io.input.borrow_mut().read_to_end(&mut bytes)
                     }
                 };
                 reader.borrow_mut().done += bytes.len() as u64;
@@ -3260,7 +3632,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                             if self.io.world.borrow().input_is_terminal {
                                 self.flush_out()?;
                             }
-                            self.io.world.borrow_mut().input.read(&mut bytes[got..])
+                            self.io.input.borrow_mut().read(&mut bytes[got..])
                         }
                     };
                     match step {
@@ -3330,7 +3702,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 if self.io.world.borrow().input_is_terminal {
                     self.flush_out()?;
                 }
-                self.io.world.borrow_mut().input.read_until(b'\n', &mut bytes)
+                self.io.input.borrow_mut().read_until(b'\n', &mut bytes)
             }
         };
         let start = reader.borrow().done;

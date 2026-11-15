@@ -1,0 +1,4 @@
+async Result<void, IoError> main() {
+    var listener = try await TcpListener.bindAsync("127.0.0.1:0")
+    return Ok()
+}

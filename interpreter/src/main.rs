@@ -138,10 +138,12 @@ fn main() -> ExitCode {
     let result = match tests {
         false => {
             use std::io::IsTerminal;
-            let (mut input, mut err) = (std::io::BufReader::new(std::io::stdin()), std::io::stderr());
+            let mut err = std::io::stderr();
             let input_is_terminal = std::io::stdin().is_terminal();
+            let input_waits = input_waits();
             let program_args = words.into_iter().skip(1).map(bytes).collect();
-            sg::run_sources_in(&sources, &mut out, sg::World { args: program_args, input: &mut input, input_is_terminal, err: &mut err })
+            let world = sg::World { args: program_args, input: Box::new(std::io::stdin()), input_is_terminal, input_waits, err: &mut err };
+            sg::run_sources_in(&sources, &mut out, world)
         }
         true => sg::test_sources(&sources, &mut out).and_then(|passed| match passed {
             true => Ok(()),
@@ -183,4 +185,12 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Whether the input of this process can make it wait: anything but a file (a pipe, a
+/// terminal, a socket). A file is always ready.
+fn input_waits() -> bool {
+    use std::os::fd::AsFd;
+    let Ok(fd) = std::io::stdin().as_fd().try_clone_to_owned() else { return true };
+    !std::fs::File::from(fd).metadata().is_ok_and(|meta| meta.is_file())
 }

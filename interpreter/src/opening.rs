@@ -486,6 +486,8 @@ impl Opener<'_> {
                     }
                     Callee::Plain => (Use::Lend, true),
                     Callee::Take | Callee::Replace | Callee::Stream(_) => (Use::LendChange, true),
+                    Callee::Net(NetCall::Receive | NetCall::Send) | Callee::NetAsync(NetCall::Receive | NetCall::Send) => (Use::LendChange, true),
+                    Callee::Net(NetCall::Accept | NetCall::Port) | Callee::NetAsync(NetCall::Accept) => (Use::Lend, true),
                     _ => (Use::Value, false),
                 };
                 let first = self.borrowed.len();

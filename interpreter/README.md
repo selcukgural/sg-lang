@@ -23,7 +23,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
-| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
+| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
 | Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
@@ -48,7 +48,8 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
-| Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`, on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`, and on a writer (`Stdout` and `Stderr` too) `writeAsync(x)`, `writeLineAsync(x)`, `writeBytesAsync(bytes)`, `flushAsync()` and `closeAsync()`: the work of the function without `Async`, as a task, with a token that may come last (`read token`; not for `closeAsync`). A call given a borrow, and `closeAsync`, is awaited where it is written. A writer an async function drops without `closeAsync` is written and closed the async way, awaited where it is dropped. In the interpreter the work is done when it is called; the token is looked at first. Compiled too: the work is done on a thread of input and output while the task waits, and what the block of a reader or a writer can do is done in place |
+| Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`, on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`, and on a writer (`Stdout` and `Stderr` too) `writeAsync(x)`, `writeLineAsync(x)`, `writeBytesAsync(bytes)`, `flushAsync()` and `closeAsync()`: the work of the function without `Async`, as a task, with a token that may come last (`read token`; not for `closeAsync`). A call given a borrow, and `closeAsync`, is awaited where it is written. A writer an async function drops without `closeAsync` is written and closed the async way, awaited where it is dropped. In the interpreter the work is done when it is called; the token is looked at first. Compiled too: the work is done on a thread of input and output while the task waits, and what the block of a reader or a writer can do is done in place. A read of an input that can make the program wait (a pipe, a terminal) waits on a thread in both, and a cancel ends the wait; what comes later stays for the next read |
+| Network | `TcpListener.bind("127.0.0.1:8080")` (a number, `localhost`, or `":8080"` for every address of the machine; port 0 lets the system choose, `listener.port()` tells which), `listener.accept()`, `TcpStream.connect("example.com:80")` (the host looked up by name, each of its addresses tried in turn), `stream.receive(ref buffer)` (what has come, at most what the buffer holds; how many, 0 once the other side has let go) and `stream.send(bytes)` (all of them): each gives a `Result` with an `IoError` (`ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound` are the network's). `acceptAsync`, `connectAsync`, `receiveAsync` and `sendAsync` do the same work as a task, awaited where they are written, with a token that may come last; a cancel ends a wait at once and loses nothing that came. A socket has no buffer and is closed when it ends. In an async function the calls without `Async` are an error, as for files. In the interpreter a socket that is not ready gives the turn away, and the scheduler waits for the sockets with `poll` when no task can run. Compiled too: a call that has to wait waits with `poll`, and an async one on the loop of the network (epoll, kqueue), on a thread of its own |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -259,7 +260,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (237 of 970 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (243 of 996 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -355,7 +356,9 @@ and a read the block of a reader can answer is done in place (432-440). The sixt
 tasks, `Task.whenAll` and `Task.whenAny`) was written in the checker, the interpreter and compiled code
 together: a list of tasks has a group that its tasks tell as they end (441-452). So was the sixty-fourth
 (streams opened, written and closed the async way): a writer an async task drops is put on the task's
-list and closed on a thread of input and output where the task awaits it (453-465). What is still missing is an error that names it (not silence): the few positions listed with the
+list and closed on a thread of input and output where the task awaits it (453-465). So was the
+sixty-fifth (the network: `TcpListener` and `TcpStream`, and a cancel that ends a wait for a socket or for
+the input): one thread waits for every socket a task waits for, with epoll or kqueue (466-479). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -405,6 +408,8 @@ hand with no checks):
 | `asynclines`: `lines` the async way, the two million lines read with `await Stdin.readLineAsync` in an async `main` (the C is that of `lines`) | 0.125 s | 0.125 s | 0.090 s | 1.37 |
 | `tasklist`: in each of 200,000 rounds, eight async tasks for Collatz lengths taken with `Task.whenAll` and eight with `Task.whenAny`; none has to wait (the C keeps each result in a block it allocates, in an array for the list) | 0.476 s | 0.689 s | 0.384 s | 1.24 |
 | `asynccopy`: `copy` the async way, the log read with `await reader.readLineAsync` and written with `await writer.writeLineAsync` in an async `main` (the C is that of `copy`) | 0.301 s | 0.299 s | 0.275 s | 1.09 |
+| `echo`: an echo server and eight clients in one async program over the loopback, each client sending 64 bytes and waiting for them to come back 20,000 times (the C blocks, with a thread for each connection and each client) | 2.083 s | 2.082 s | 1.119 s | 1.86 |
+| `echosync`: `echo` without async, the server's connections and the clients on threads of `Task.run` (the C is that of `echo`) | 1.108 s | 1.118 s | 1.115 s | 0.99 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -3540,6 +3545,103 @@ async way), in the checker, the interpreter and compiled code together, approved
      left half written. `cargo test` compiles 239 of 980 programs, 32 of them under the thread sanitizer,
      and 13 of 17 programs of tests; on Linux too, in a container, with the same counts.
 
+Choices made in the sixty-fifth slice (the network: `TcpListener`, `TcpStream`, and a cancel that ends a
+wait for a socket or for the input), in the checker, the interpreter and compiled code together, approved
+on 15 November 2026:
+
+466. **TCP first, in two types**, decided before the slice: `TcpListener` (`bind`, `port`, `accept`) and
+     `TcpStream` (`connect`, `receive`, `send`), each call without async and with it (`acceptAsync`,
+     `connectAsync`, `receiveAsync`, `sendAsync`, a token that may come last), in the checker, the
+     interpreter and compiled code at once. An async call lends what it is called on, so it is awaited
+     where it is written (409). A call without `Async` in an async function is an error, followed through
+     the calls, with the async version in the hint, as for files; `bind` and `port` do not wait and are
+     allowed there. Lines over a socket, a stream read by one task and written by another, and UDP come
+     later.
+467. **`receive` and `send`, not `read` and `write`**: `read` is a word of the language (a borrow), so
+     `stream.read(...)` cannot be written. The names are those of C#'s `Socket`, and they keep the call
+     apart from a reader's `readBytes`, which fills the buffer: `receive` gives what has come, at most
+     what the buffer holds, and how many; 0 is the end, once the other side has let the connection go. That
+     is the read the design left open for the network (04, "A read that gives what is there"). `send`
+     sends all the bytes (Rust's `write_all`; C#'s `Send` may send part).
+468. **An address is one text, `host:port`**, decided before the slice: `"127.0.0.1:8080"`,
+     `"[::1]:8080"`, `"example.com:80"`; port 0 lets the system choose, and `listener.port()` tells which.
+     `bind` takes a number, `localhost` (the v4 loopback) or no host (`":8080"`, every v4 address of the
+     machine) and looks nothing up, so it never waits; there is no `bindAsync`. `connect` looks the host
+     up by name and tries its addresses in turn; the error is the last one met. A listener lets its
+     address be taken again at once (`SO_REUSEADDR`, as Rust does).
+469. **Four variants of `IoError` for the network**, decided before the slice: `ConnectionRefused`
+     (nobody listens), `ConnectionReset` (the other side broke the connection off, a write after it had
+     gone included), `AddressInUse` and `HostNotFound` (the lookup found nothing, a name was given to
+     `bind`, or the address is not `host:port`). A `match` that names every variant of `IoError` needs four
+     more arms (`error_io_error_cancelled_arm` says so now). Writing to a connection the other side closed
+     gives `ConnectionReset`, never the signal C would get.
+470. **A socket has no buffer and no `close`**: `send` hands its bytes to the system, so nothing is left
+     to lose, and a listener or a stream is closed where it ends, as a reader is; it is not `Closable`,
+     and `close()` is an error whose note says so. A listener is reached through `read` (several tasks may
+     take connections from one `shared` listener); a stream goes on from where it is, so it is received
+     from and sent to through `ref`.
+471. **A cancel ends a wait for the network at once**, decided before the slice: a token cancelled
+     before the call gives `Cancelled` and nothing is done (412); one cancelled while the call waits for its
+     socket takes it off and the call gives `Cancelled` at once. Nothing that came is lost: it stays in
+     the socket for the next `receive`. A `send` that was cut short may have sent part of its bytes. A
+     name being looked up is left to its thread.
+472. **A wait for a line of the input ends with a cancel too**, decided before the slice: until the block
+     of `Stdin` holds what the read needs, a thread reads once into it while the task waits, and a cancel
+     ends the wait; what the thread reads stays in the block for the next read. This is for an input that
+     can make the program wait (a pipe, a terminal); a file is always ready and is read as before. macOS
+     cannot wait for a terminal with kqueue or `poll`, so the input is not put on the loop. One such
+     thread is out at a time and one task waits for it; another task that reads at the same time, and a
+     read that needs more than the block holds (a line longer than 64 KB), reads on a thread of its own and
+     is not cut short. It closes what 412 and 433 left open for the input, in the interpreter and in
+     compiled code.
+473. **The network in the interpreter**: a socket does not block; a task whose socket is not ready gives
+     the turn away, and when no task can run the scheduler waits for the sockets with `poll` until the
+     first timer is due. `poll` is declared to the C library directly, so the interpreter still has no
+     dependency. After such a wait the clock of the run goes on to the time that has gone by, since a
+     wait outside the run is not the clock's to choose; a run with the network is as ordered as the
+     network is. A connect, with its lookup, runs on a thread of its own, which tells the scheduler
+     through a pair of sockets; so does the thread that reads the input. The input is read through a block
+     of the interpreter's own, so the world of a run now owns its input (`World::input`, with
+     `input_waits`).
+474. **A task of `Task.run` starts when a task is about to wait outside the run** (in the interpreter):
+     otherwise a server started with `Task.run` would never run while `main` waits for its answer, and
+     compiled code starts it on a thread at once. The rule that such a task runs when it is waited for (14
+     November) still holds for every program that does not wait for the network or the input.
+475. **One thread waits for the sockets, in compiled code**, decided before the slice: epoll on Linux,
+     kqueue on macOS, each wait put on once (one-shot) when the socket is not ready, and the task woken
+     through the pool when it is. A cancel takes the socket off, and the thread of the loop wakes the task
+     once it is done with the events it holds, so a wait is never looked at after its task went on: who
+     ends a wait sets `settled` last. A listener is waited for through a copy of its socket (`dup`), since
+     several tasks may wait on one `shared` listener. The thread starts when the first async call has to
+     wait. A host written as a number is not looked up; any other is looked up on a thread of input and
+     output, which a cancel leaves (the thread frees what it found).
+476. **A socket blocks until an async call uses it**: a call without `Async` is then one call of the
+     system, and an async call makes the socket non-blocking once; every call still waits with `poll` when
+     its socket is not ready, so the two kinds of call can share a socket. Sockets that never blocked took
+     three calls for each `receive` that had to wait, and the threaded echo 1.5 times C; now 0.99.
+477. **What it is in C**: `NET_RUNTIME` (`sg_listener` and `sg_socket`, a socket and its flags; the calls
+     without async, `sg_net_bind`, `sg_net_accept`, `sg_net_connect`, `sg_net_recv`, `sg_net_send`) and
+     `NET_ASYNC_RUNTIME` (`sg_loop_main`, `sg_wait_start`, `sg_wait_cut`, and `sg_net_op` with
+     `sg_net_go` and `sg_net_more`, the call that goes on until it is done); in `ASYNC_IO_RUNTIME`, `sg_wait`
+     and `sg_far` (work on a thread that its task may leave), and `sg_in_wait`, which fills the block of
+     the input. A program that uses the network defines `_GNU_SOURCE` on Linux (`accept4`).
+478. **Measured** (`bench/echo`): an echo server and eight clients in one async program over the
+     loopback, each client sending 64 bytes and waiting for them to come back 20,000 times: 2.083 s against
+     1.119 s for C, whose sockets block, with a thread for each connection and each client: 1.86 times. A
+     wait wakes two threads where C wakes one: the system wakes the thread of the loop, which wakes a
+     thread of the pool. In "Slower than C". The same program without async (`bench/echosync`, threads of
+     `Task.run`) takes 1.108 s, 0.99 times C.
+479. **The tests**: `ok_net_echo` (an async server with a task for each connection in a list, three clients
+     at once, one of them connecting by name), `ok_net_sync` (the server on a thread of `Task.run`, a
+     buffer smaller than the message, `localhost` bound and connected to), `ok_net_errors` (every new
+     variant of `IoError`, addresses that are not `host:port`, without async and with it), `ok_net_cancel`
+     (a cancel that ends a wait to accept and one to receive, a token cancelled before the call for each
+     async call, and the bytes that came kept for the next `receive`) and twelve programs the checker
+     refuses (`error_net_*`). Two tests in `golden.rs`, `compiled_input_cancel` and
+     `interpreted_input_cancel`, give the input through a pipe only once the cancel has been seen. The four
+     programs run under the thread sanitizer too. `cargo test` compiles 243 of 996 programs, 36 of them
+     under the thread sanitizer, and 13 of 17 programs of tests; on Linux too, in a container, with the same counts.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -3596,6 +3698,12 @@ check off.
   it ends and once when it is taken. Candidates: no group for a list whose tasks had all ended when they
   were added (a count is enough), a group kept from a list that ended for the next one, and room for the
   tasks reserved at once when the list is filled in a loop.
+- **Waiting for the network the async way** (`echo`, 1.86 times C, choice 478; 0.99 without async): a
+  task whose socket is not ready is woken by the thread of the loop, which the system woke, through the
+  pool: two threads woken for each wait where C's blocking call wakes one, and the socket put on the loop
+  again each time. Candidates: the threads of the pool wait for the loop themselves when they have nothing
+  to do, so the one the system wakes runs the task (as Tokio's workers do), and a socket that stays on the
+  loop, woken by its edges, instead of being put on again for each wait.
 - **Checking that a line is UTF-8** (`lines`, 1.08 times `getline`, which checks nothing; without the
   check the SG program takes 0.058 s against 0.090 s): the check looks at eight bytes at a time while they
   are ASCII and at one byte at a time from the first that is not (choice 202). Candidates: a check with
@@ -3625,9 +3733,12 @@ check off.
 - Channels; the task of `Task.whenAll` kept in a variable to be awaited later (`var all =
   Task.whenAll(tasks)`), and a `for` over a list of tasks (a `break` would leave tasks); a method or a function of a struct
   started as a task (a `Func` is a function written at the top level). Of async: `linesAsync` (a `for`
-  that awaits), an `async` method, an async function kept as a `Func`. In the interpreter, async input and output is done when it is called, so a
-  read of `Stdin` that waits for a line holds every task (412); compiled code does not. A token cancelled
-  while the work is under way does not stop it, in either (433). `checked` on its own, in a value with one
+  that awaits), an `async` method, an async function kept as a `Func`. A token cancelled while a file is
+  read or written does not stop the work (433); one cancelled while a task waits for the network or for a
+  line of the input that can make the program wait does (471, 472). Of the network: lines over a socket,
+  a stream received from by one task and sent to by another, closing one direction (`shutdown`), the
+  address of the other side, the options of a socket (`TCP_NODELAY`), looking a name up alone, UDP, a
+  listener on every v6 address. `checked` on its own, in a value with one
   owner (`checked int hits` in a plain struct, the design's `RefCell` outside `Rc`). `List<shared T>.clone()`,
   since a list has no `clone` yet, so the design's hint "loop over a copy" is not given. A conflict through two
   items of one list (`xs[i]` and `xs[j]`) is left to run time even when `i` and `j` are the same name.
@@ -3760,5 +3871,10 @@ waited for is a compile error; compiled, each list has a group that its tasks te
 are opened, written and closed the async way (`File.createTextAsync`, `await writer.writeLineAsync(x)`,
 `await writer.closeAsync()`), and a writer an async function drops on its way out is written and closed
 the async way too, awaited where it is dropped, so a thread of the pool never writes a file; copying the
-log line by line the async way takes 1.09 times the same program in C. Next is the network, which
-brings the loop of epoll and kqueue.
+log line by line the async way takes 1.09 times the same program in C. The network is there too: a
+`TcpListener` takes connections and a `TcpStream` receives and sends bytes, without async and with it;
+compiled, one thread waits for every socket a task waits for, with epoll or kqueue, and a cancel ends a
+wait for a socket, or for a line of the input, at once. An echo server with eight clients takes 1.86 times
+the same program in C with blocking threads the async way, and the time of C without async. Next is open:
+lines over a socket and a stream shared by a reading and a writing task, the threads of the pool waiting
+for the loop themselves, `linesAsync`, and an `async` method.

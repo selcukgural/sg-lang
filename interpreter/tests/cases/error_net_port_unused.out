@@ -1,0 +1,5 @@
+error: the value that `port` gives is not used
+  --> error_net_port_unused.sg:3:5
+ 3 |     listener.port()
+   |     ^^^^^^^^^^^^^^^
+  hint: keep it in a variable: `var value = listener.port()`

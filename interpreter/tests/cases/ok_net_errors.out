@@ -1,0 +1,11 @@
+taken: AddressInUse
+no port: HostNotFound
+port too big: HostNotFound
+a name: HostNotFound
+v6 without brackets: HostNotFound
+no port: HostNotFound
+no host: HostNotFound
+brackets left open: HostNotFound
+nobody listens: ConnectionRefused
+async: ConnectionRefused
+async: HostNotFound

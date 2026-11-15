@@ -1,0 +1,7 @@
+Result<nint, IoError> peek(read TcpStream conn) {
+    var buffer = byte[16](0)
+    return conn.receive(ref buffer)
+}
+
+void main() {
+}

@@ -1,0 +1,5 @@
+error: `TcpStream` has no method `write`
+  --> error_net_write_name.sg:2:17
+ 2 |     return conn.write("hello".asBytes())
+   |                 ^^^^^
+  hint: `send`

@@ -1,0 +1,5 @@
+error: `acceptAsync` lends the listener, and a call without `await` starts it as a task of its own, which a borrow cannot go to
+  --> error_net_accept_unawaited.sg:2:16
+ 2 |     var next = listener.acceptAsync()
+   |                ^^^^^^^^^^^^^^^^^^^^^^
+  hint: `await listener.acceptAsync()` runs it as part of this task, where it can borrow

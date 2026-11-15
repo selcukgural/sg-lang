@@ -170,9 +170,11 @@ C# (`async`, `await`, `Task.delay`, waiting the wrong way a compile error), canc
 task looks at where it chooses, lists of tasks waited for all at once or as they end (`Task.whenAll`,
 `Task.whenAny`), and async reading and writing of files and the input, streams included, run in the
 interpreter and in compiled code, where an async function becomes a machine whose variables live in a
-frame, run by a pool of threads, and input and output the async way runs on threads of its own. Generics of your
-own are put off. There is nothing for the network yet, no standard library, no package manager and no
-editor support.
+frame, run by a pool of threads, and input and output the async way runs on threads of its own. TCP
+connections (`TcpListener`, `TcpStream`, with and without async) run in both too: compiled, one thread
+waits for every socket a task waits for, with epoll or kqueue, and a cancel ends a wait for a socket or for
+a line of the input at once. Generics of your own are put off. There is no UDP yet, no standard library,
+no package manager and no editor support.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is

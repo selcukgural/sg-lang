@@ -1,0 +1,5 @@
+error: expected `ref byte[]`, found `read byte[16]`
+  --> error_net_receive_read_buffer.sg:3:25
+ 3 |     return conn.receive(read buffer)
+   |                         ^^^^^^^^^^^
+  hint: `receive` writes into the buffer, so it is lent with `ref`

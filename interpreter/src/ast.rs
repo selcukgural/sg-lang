@@ -168,6 +168,12 @@ pub enum Callee {
     StreamAsync(StreamCall),
     /// What makes, cancels and looks at a `CancellationSource` or a `CancellationToken`.
     Cancel(CancelCall),
+    /// `TcpListener.bind(address)`, `listener.accept()`, `TcpStream.connect(address)`,
+    /// `stream.receive(ref buffer)` and the other functions of the network.
+    Net(NetCall),
+    /// `listener.acceptAsync()`, `TcpStream.connectAsync(address)`, `stream.receiveAsync(ref
+    /// buffer)`, `stream.sendAsync(bytes)`: the same work as a task. A token may come last.
+    NetAsync(NetCall),
     /// A call through a function value kept in a variable: `test(order)`.
     Value,
     /// A call through a function value kept in a field: `this.test(order)`; the field's position.
@@ -210,6 +216,39 @@ pub enum CancelCall {
     Check,
     /// `token.clone()`: one more token of the same source.
     Clone,
+}
+
+/// The functions of the network: a `TcpListener` and a `TcpStream`. Each that can fail gives a
+/// `Result` whose error is `IoError`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum NetCall {
+    /// `TcpListener.bind(address)`: a listener on `host:port`, without a name lookup.
+    Bind,
+    /// `listener.port()`: the port it listens on, the one the system chose for port 0.
+    Port,
+    /// `listener.accept()`: the next connection that comes, as a `TcpStream`.
+    Accept,
+    /// `TcpStream.connect(address)`: a connection to `host:port`, the host looked up by name.
+    Connect,
+    /// `stream.receive(ref buffer)`: what has come, as many bytes as the buffer holds at
+    /// most; gives how many, `0` at the end.
+    Receive,
+    /// `stream.send(bytes)`: all the bytes go out.
+    Send,
+}
+
+impl NetCall {
+    /// The name as it is written after the dot.
+    pub fn name(self) -> &'static str {
+        match self {
+            NetCall::Bind => "bind",
+            NetCall::Port => "port",
+            NetCall::Accept => "accept",
+            NetCall::Connect => "connect",
+            NetCall::Receive => "read",
+            NetCall::Send => "write",
+        }
+    }
 }
 
 /// The functions that read and write files and the input of the program. Each gives a

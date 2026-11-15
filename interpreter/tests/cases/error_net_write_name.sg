@@ -1,0 +1,6 @@
+Result<void, IoError> greet(ref TcpStream conn) {
+    return conn.write("hello".asBytes())
+}
+
+void main() {
+}

@@ -1,0 +1,8 @@
+Result<TcpStream, IoError> open(read string address) {
+    return TcpStream.connect(address)
+}
+
+async Result<void, IoError> main() {
+    var conn = try open("127.0.0.1:80")
+    return Ok()
+}

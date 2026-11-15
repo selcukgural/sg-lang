@@ -1069,6 +1069,10 @@ public enum IoError : Copyable, Formattable, Equatable {   // built in
     InvalidText(long position)                   // a byte that is not UTF-8, from the start of the file
     Other(int code)                              // the code the system gave
     Cancelled(Cancelled cancelled)               // async input and output whose token was cancelled
+    ConnectionRefused                            // the network: nobody listens at the address
+    ConnectionReset                              // the other side broke the connection off
+    AddressInUse                                 // the address is taken
+    HostNotFound                                 // the host could not be found, or it is not `host:port`
 }
 
 Result<void, IoError> main(List<string> args) {  // the words after the program's name

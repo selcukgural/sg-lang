@@ -1,0 +1,59 @@
+// `echo` without async: the server accepts on a thread of its own, each connection is served on
+// a thread (`Task.run`), and each client runs on one. A call whose socket is not ready waits
+// for it with `poll`, since the sockets of SG never block. The C is that of `echo`, whose
+// sockets block.
+Result<void, IoError> echo(TcpStream conn) {
+    var buffer = byte[64](0)
+    while true {
+        var n = try conn.receive(ref buffer)
+        if n == 0 {
+            return Ok()
+        }
+        try conn.send(buffer[0..n])
+    }
+}
+
+Result<void, IoError> serve(TcpListener listener, int count) {
+    var tasks = List<Task<Result<void, IoError>>>()
+    for _ in 0..count {
+        var conn = try listener.accept()
+        tasks.add(Task.run(echo, conn))
+    }
+    while tasks.length() > 0 {
+        try Task.whenAny(ref tasks).wait()
+    }
+    return Ok()
+}
+
+Result<long, IoError> client(string address, int rounds) {
+    var conn = try TcpStream.connect(read address)
+    var message = byte[64](7)
+    var buffer = byte[64](0)
+    long sum = 0
+    for _ in 0..rounds {
+        try conn.send(message[0..64])
+        nint got = 0
+        while got < 64 {
+            got += try conn.receive(ref buffer[got..])
+        }
+        sum += buffer[63]
+    }
+    return Ok(sum)
+}
+
+Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = Task.run(serve, listener, 8)
+    var clients = List<Task<Result<long, IoError>>>()
+    for _ in 0..8 {
+        clients.add(Task.run(client, address.clone(), 20000))
+    }
+    long sum = 0
+    while clients.length() > 0 {
+        sum += try Task.whenAny(ref clients).wait()
+    }
+    try server.wait()
+    print($"{sum} bytes came back")
+    return Ok()
+}

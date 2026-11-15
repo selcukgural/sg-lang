@@ -1,0 +1,5 @@
+Result<void, IoError> main() {
+    var conn = try TcpStream.connect("127.0.0.1:80")
+    conn.close()
+    return Ok()
+}
