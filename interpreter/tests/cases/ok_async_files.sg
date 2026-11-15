@@ -1,0 +1,37 @@
+// The async functions of `File` do the work of those without `Async`, as tasks.
+async Result<void, IoError> main(List<string> args) {
+    var path = $"{args[0]}/notes.txt".toString()
+    try await File.writeTextAsync(read path, "one\n")
+    try await File.appendTextAsync(read path, "two\n")
+    var text = try await File.readTextAsync(read path)
+    print(text.length())
+    for line in text.lines() {
+        print(line)
+    }
+    var data = $"{args[0]}/data.bin".toString()
+    var bytes = List<byte>()
+    bytes.add(1)
+    bytes.add(255)
+    try await File.writeBytesAsync(read data, read bytes)
+    var back = try await File.readBytesAsync(read data)
+    print(back)
+
+    // A missing file is an error, as it is without `Async`.
+    var missing = $"{args[0]}/missing.txt".toString()
+    if await File.readTextAsync(read missing) is Error(cause) {
+        print(cause)
+    }
+
+    // With a cancelled token, nothing is read or written.
+    var source = CancellationSource()
+    source.cancel()
+    var token = source.token()
+    var other = $"{args[0]}/other.txt".toString()
+    if await File.writeTextAsync(read other, "never", read token) is Error(cause) {
+        print(cause)
+    }
+    if await File.readTextAsync(read other) is Error(cause) {
+        print($"other: {cause}")
+    }
+    return Ok()
+}

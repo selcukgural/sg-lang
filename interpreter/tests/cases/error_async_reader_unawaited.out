@@ -1,0 +1,5 @@
+error: `readLineAsync` lends the reader, and a call without `await` starts it as a task of its own, which a borrow cannot go to
+  --> error_async_reader_unawaited.sg:3:16
+ 3 |     var task = Stdin.readLineAsync(ref line)
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `await Stdin.readLineAsync(ref line)` runs it as part of this task, where it can borrow

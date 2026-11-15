@@ -1,0 +1,6 @@
+async Result<void, IoError> main() {
+    var line = ""
+    var task = Stdin.readLineAsync(ref line)
+    print(try await task)
+    return Ok()
+}

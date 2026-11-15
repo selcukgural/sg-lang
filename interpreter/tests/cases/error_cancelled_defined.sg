@@ -1,0 +1,6 @@
+struct Cancelled {
+    int reason
+}
+
+void main() {
+}

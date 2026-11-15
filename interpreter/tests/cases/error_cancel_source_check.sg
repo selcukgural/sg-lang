@@ -1,0 +1,5 @@
+Result<void, Cancelled> main() {
+    var source = CancellationSource()
+    try source.check()
+    return Ok()
+}

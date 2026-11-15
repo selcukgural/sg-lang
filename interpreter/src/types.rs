@@ -289,6 +289,12 @@ pub enum Ty {
     Locked(Box<Ty>),
     /// `Task<R>`: a function started with `Task.run`, to be waited for; `R` is what it returns.
     Task(Box<Ty>),
+    /// `CancellationSource`: what cancels the tasks that were given its tokens. One owner;
+    /// `cancel` works through a `read` borrow, since cancelling twice is cancelling once.
+    Source,
+    /// `CancellationToken`: what a task looks at to know whether it is to stop. Several tokens
+    /// look at one source; `clone` gives one more.
+    Token,
     /// `read T`: read-only borrow.
     Read(Box<Ty>),
     /// `ref T`: writable borrow.
@@ -310,6 +316,8 @@ impl Ty {
             "Formatter" => Some(Ty::Formatter),
             "StreamReader" => Some(Ty::Reader),
             "StreamWriter" => Some(Ty::Writer),
+            "CancellationSource" => Some(Ty::Source),
+            "CancellationToken" => Some(Ty::Token),
             _ => IntTy::from_name(name).map(Ty::Int).or_else(|| FloatTy::from_name(name).map(Ty::Float)),
         }
     }
@@ -323,7 +331,7 @@ impl Ty {
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader | Ty::Writer | Ty::Locked(_) | Ty::Task(_) => false,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader | Ty::Writer | Ty::Locked(_) | Ty::Task(_) | Ty::Source | Ty::Token => false,
         }
     }
 
@@ -377,6 +385,8 @@ impl fmt::Display for Ty {
             Ty::Writer => f.write_str("StreamWriter"),
             Ty::Locked(inner) => write!(f, "locked {inner}"),
             Ty::Task(result) => write!(f, "Task<{result}>"),
+            Ty::Source => f.write_str("CancellationSource"),
+            Ty::Token => f.write_str("CancellationToken"),
             Ty::Read(inner) => write!(f, "read {inner}"),
             Ty::Ref(inner) => write!(f, "ref {inner}"),
         }

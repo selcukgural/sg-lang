@@ -1,0 +1,6 @@
+// A delay with a token is not negative either.
+async void main() {
+    var source = CancellationSource()
+    var token = source.token()
+    _ = await Task.delay(-1, read token)
+}

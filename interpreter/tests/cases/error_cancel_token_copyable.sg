@@ -1,0 +1,6 @@
+struct Job : Copyable {
+    CancellationToken token
+}
+
+void main() {
+}

@@ -1,0 +1,3 @@
+void main() {
+    var source = CancellationSource.after(1.5)
+}

@@ -3482,9 +3482,9 @@ impl<'a> Emitter<'a> {
         if known(&own) {
             return Some(own);
         }
-        // The built-in `TextError` and `NumberError` are seen from every module with nothing
-        // written.
-        if name == "TextError" || name == "NumberError" {
+        // The built-in `TextError`, `NumberError` and `Cancelled` are seen from every module
+        // with nothing written.
+        if name == "TextError" || name == "NumberError" || name == "Cancelled" {
             return Some(name.to_string());
         }
         let public = |full: &str| {
@@ -3648,13 +3648,19 @@ impl<'a> Emitter<'a> {
             }
             Ty::Struct(owner) => {
                 let decl: &'a StructDecl = self.structs[owner.as_str()];
-                body.push_str(&put_text(&format!("{} {{ ", short_name(owner))));
-                for (position, field) in decl.fields.iter().enumerate() {
-                    let field_ty = self.written(&field.ty)?;
-                    let text = format!("{}{} = ", if position == 0 { "" } else { ", " }, field.name);
-                    let _ = write!(body, " {} {}", put_text(&text), self.show_at(&field_ty, &format!("v->m_{}", field.name), span)?);
+                // A struct without fields is written by its name alone, as in Rust.
+                if decl.fields.is_empty() {
+                    body.push_str(&put_text(short_name(owner)));
+                    body.push_str(" (void)v;");
+                } else {
+                    body.push_str(&put_text(&format!("{} {{ ", short_name(owner))));
+                    for (position, field) in decl.fields.iter().enumerate() {
+                        let field_ty = self.written(&field.ty)?;
+                        let text = format!("{}{} = ", if position == 0 { "" } else { ", " }, field.name);
+                        let _ = write!(body, " {} {}", put_text(&text), self.show_at(&field_ty, &format!("v->m_{}", field.name), span)?);
+                    }
+                    body.push_str(" sg_put(out, \" }\", 2);");
                 }
-                body.push_str(" sg_put(out, \" }\", 2);");
             }
             Ty::Enum(_) | Ty::Result(..) => {
                 let variants = self.variants(ty, span)?.expect("an enum or a `Result`");
@@ -7793,7 +7799,9 @@ impl<'a> Emitter<'a> {
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
                 Callee::TaskRun => self.task_run(args, head, expr),
-                Callee::Delay => Err(not_yet(expr.span, "`Task.delay`")),
+                Callee::Delay(_) => Err(not_yet(expr.span, "`Task.delay`")),
+                Callee::IoAsync(_) | Callee::StreamAsync(_) => Err(not_yet(expr.span, "async input and output")),
+                Callee::Cancel(_) => Err(not_yet(expr.span, "cancellation")),
                 // `t.wait()`: the task is taken (the checker marked the move), joined and freed.
                 Callee::Wait => {
                     let task = self.first(recv, head)?;

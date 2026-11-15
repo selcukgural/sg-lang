@@ -1,0 +1,6 @@
+Result<void, IoError> main() {
+    var path = "a.txt"
+    var text = try File.readTextAsync(read path).wait()
+    print(text)
+    return Ok()
+}

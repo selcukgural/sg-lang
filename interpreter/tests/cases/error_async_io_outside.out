@@ -1,0 +1,5 @@
+error: `File.readTextAsync` is given a `read string` here, and a call without `await` starts it as a task of its own, which a borrow cannot go to
+  async input and output is awaited in an async function; elsewhere the functions without `Async` do the same work
+  --> error_async_io_outside.sg:3:39
+ 3 |     var text = try File.readTextAsync(read path).wait()
+   |                                       ^^^^^^^^^

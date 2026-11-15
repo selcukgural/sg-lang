@@ -1,0 +1,4 @@
+error: `Job` cannot be `Copyable`: `token` is a `CancellationToken`, which is not
+  --> error_cancel_token_copyable.sg:2:5
+ 2 |     CancellationToken token
+   |     ^^^^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: expected `read CancellationToken`, found `read CancellationSource`
+  a token is lent: `read token`, or `read source.token()`
+  --> error_async_reader_token_type.sg:4:49
+ 4 |     _ = try await Stdin.readLineAsync(ref line, read source)
+   |                                                 ^^^^^^^^^^^

@@ -1,0 +1,10 @@
+void look(CancellationToken token) {
+    print(token.isCancelled())
+}
+
+void main() {
+    var source = CancellationSource()
+    var token = source.token()
+    look(token)
+    look(token)
+}

@@ -1,0 +1,5 @@
+error: the value that `token` gives is not used
+  --> error_cancel_token_unused.sg:3:5
+ 3 |     source.token()
+   |     ^^^^^^^^^^^^^^
+  hint: keep it in a variable: `var token = source.token()`

@@ -1,0 +1,6 @@
+error: `Stdin.readLine` holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_async_stdin_hint.sg:3:21
+ 3 |     while try Stdin.readLine(ref line) {
+   |                     ^^^^^^^^
+  hint: `await Stdin.readLineAsync(ref line)` does the same work without holding the thread

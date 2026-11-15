@@ -1,0 +1,5 @@
+error: `File.readTextAsync` is given a `read string` here, and a call without `await` starts it as a task of its own, which a borrow cannot go to
+  --> error_async_io_unawaited.sg:3:35
+ 3 |     var task = File.readTextAsync(read path)
+   |                                   ^^^^^^^^^
+  hint: `await File.readTextAsync(read path)` runs it as part of this task, where it can borrow

@@ -1,0 +1,7 @@
+async Result<void, IoError> main() {
+    var line = ""
+    while try Stdin.readLine(ref line) {
+        print(line)
+    }
+    return Ok()
+}

@@ -1,0 +1,6 @@
+async Result<void, IoError> main() {
+    for line in Stdin.linesAsync() {
+        print(line)
+    }
+    return Ok()
+}

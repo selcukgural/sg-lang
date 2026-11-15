@@ -1,0 +1,8 @@
+error: `token` was moved and can no longer be used
+  --> error_cancel_token_moved.sg:9:10
+ 9 |     look(token)
+   |          ^^^^^
+  it was moved here:
+  --> error_cancel_token_moved.sg:8:10
+ 8 |     look(token)
+   |          ^^^^^

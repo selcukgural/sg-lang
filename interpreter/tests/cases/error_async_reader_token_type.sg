@@ -1,0 +1,6 @@
+async Result<void, IoError> main() {
+    var line = ""
+    var source = CancellationSource()
+    _ = try await Stdin.readLineAsync(ref line, read source)
+    return Ok()
+}

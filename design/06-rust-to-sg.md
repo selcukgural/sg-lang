@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the fifty-ninth slice.
+Last brought up to date: 15 November 2026, the sixtieth slice.
 
 ## Functions and variables
 
@@ -199,6 +199,14 @@ Last brought up to date: 15 November 2026, the fifty-ninth slice.
 | `block_on(f())` | `f().wait()` in code that is not async | interpreter | `wait` in an async function is an error |
 | `spawn_blocking(work)` | `await Task.run(work, x)` | interpreter | A call that holds the thread in an async function is an error, followed through the calls |
 | `Box::pin(f(n - 1)).await` | `var t = f(n - 1)`, then `await t` | interpreter | An async function that awaits itself is an error |
+| `CancellationToken::new()` (tokio-util) | `CancellationSource()` | interpreter | The source cancels, its tokens look; `CancellationSource.after(ms)` cancels itself |
+| `token.child_token()`, `token.clone()` | `source.token()`, `token.clone()` | interpreter | A token cannot cancel; a source has one owner, or is `shared` to be cancelled from another task |
+| `token.cancel()` | `source.cancel()` | interpreter | Through a `read` borrow, as `cancel(&self)` |
+| `token.is_cancelled()` | `token.isCancelled()`, `try token.check()` | interpreter | `check` gives `Error(Cancelled { })`, which `try` turns into `IoError.Cancelled(...)` |
+| `select! { _ = token.cancelled() => ..., _ = sleep(d) => ... }` | `await Task.delay(ms, read token)` | interpreter | Gives `Error(Cancelled { })` when the token is cancelled first |
+| dropping a future to cancel it | none | not in SG | A task stops only where it looks at its token |
+| `tokio::fs::read_to_string(p).await` | `await File.readTextAsync(read path)` | interpreter | Each function of `File` that reads or writes a whole file has an `Async` version; a token may come last |
+| `reader.read_line(&mut line).await` | `await reader.readLineAsync(ref line)` | interpreter | Also `readTextAsync`, `readBytesAsync`, on `Stdin` too; streams opened and written the async way come later |
 | tokio, async-std, smol | one built-in runtime | designed | |
 
 ## Modules

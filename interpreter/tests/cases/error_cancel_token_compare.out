@@ -1,0 +1,4 @@
+error: operator `==` is not defined for `CancellationToken` and `CancellationToken`
+  --> error_cancel_token_compare.sg:4:11
+ 4 |     print(a == b)
+   |           ^^^^^^

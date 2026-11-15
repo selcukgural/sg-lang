@@ -1,0 +1,5 @@
+error: a `StreamReader` has no `linesAsync`: a `for` does not await
+  --> error_async_lines.sg:2:23
+ 2 |     for line in Stdin.linesAsync() {
+   |                       ^^^^^^^^^^
+  hint: read line by line: `while try await Stdin.readLineAsync(ref line) { ... }`

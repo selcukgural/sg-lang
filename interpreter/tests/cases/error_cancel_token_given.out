@@ -1,0 +1,6 @@
+error: expected `read CancellationToken`, found `CancellationToken`
+  a token is lent: `read token`, or `read source.token()`
+  --> error_cancel_token_given.sg:2:48
+ 2 |     return await File.readTextAsync(read path, token)
+   |                                                ^^^^^
+  hint: lend it with `read`: `read token`

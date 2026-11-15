@@ -1,0 +1,6 @@
+error: expected `int`, found `double`
+  `CancellationSource.after(ms)` takes the milliseconds as an `int`
+  --> error_cancel_after_type.sg:2:43
+ 2 |     var source = CancellationSource.after(1.5)
+   |                                           ^^^
+  hint: convert with `(int)`; it drops the fraction, and panics if the value does not fit

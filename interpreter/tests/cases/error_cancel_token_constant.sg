@@ -1,0 +1,3 @@
+void main() {
+    var token = CancellationToken.Empty
+}

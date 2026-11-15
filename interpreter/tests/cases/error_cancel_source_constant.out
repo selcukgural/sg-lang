@@ -1,0 +1,5 @@
+error: `CancellationSource` has no constant `None`
+  --> error_cancel_source_constant.sg:2:37
+ 2 |     var source = CancellationSource.None
+   |                                     ^^^^
+  hint: `CancellationSource()` makes a source; `CancellationSource.after(ms)` one that cancels itself

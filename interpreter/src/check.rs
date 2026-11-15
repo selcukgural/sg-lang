@@ -29,7 +29,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "File", "Stdin", "Stdout", "Stderr", "Task"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -120,7 +120,7 @@ impl Names {
         if self.known(&own) {
             return Ok(Some(own));
         }
-        if written == TEXT_ERROR || written == NUMBER_ERROR || written == IO_ERROR {
+        if written == TEXT_ERROR || written == NUMBER_ERROR || written == IO_ERROR || written == CANCELLED {
             return Ok(Some(written.to_string()));
         }
         let mut found: Vec<String> = Vec::new();
@@ -251,6 +251,7 @@ fn is_text_value(ty: &Ty) -> bool {
 fn gives_only(name: &str, callee: &Callee) -> bool {
     match callee {
         Callee::Join | Callee::WithCapacity | Callee::FromBytes { .. } => true,
+        Callee::Cancel(call) => *call != CancelCall::Cancel && *call != CancelCall::Check,
         Callee::Plain => !matches!(name, "removeLast" | "add" | "remove" | "getOrAdd" | "next"),
         _ => false,
     }
@@ -346,14 +347,26 @@ fn number_error() -> EnumDecl {
     EnumDecl { public: true, name: NUMBER_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants, methods: Vec::new() }
 }
 
+/// What a cancelled wait gives: `token.check()`, `Task.delay(ms, read token)`.
+const CANCELLED: &str = "Cancelled";
+
+/// The built-in `struct Cancelled : Copyable, Formattable, Equatable { }`: the token of the
+/// work was cancelled. It carries nothing; `Cancelled { }` makes one.
+fn cancelled() -> StructDecl {
+    let nowhere = Span::new(0, 0);
+    let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
+    StructDecl { public: true, name: CANCELLED.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: Vec::new(), methods: Vec::new() }
+}
+
 /// What reading or writing a file, or the input of the program, gives when it fails.
 const IO_ERROR: &str = "IoError";
 
 /// The built-in `enum IoError : Copyable, Formattable, Equatable { NotFound, PermissionDenied,
-/// IsDirectory, NoSpace, InvalidText(long position), Other(int code) }`. The first four are
-/// what a program most often tells apart; `InvalidText` is a byte that is not UTF-8 where text
-/// was read, counted from the start of the file or of the input; `Other` keeps the code the
-/// system gave.
+/// IsDirectory, NoSpace, InvalidText(long position), Other(int code), Cancelled(Cancelled
+/// cancelled) }`. The first four are what a program most often tells apart; `InvalidText` is a
+/// byte that is not UTF-8 where text was read, counted from the start of the file or of the
+/// input; `Other` keeps the code the system gave; `Cancelled` is async input or output whose
+/// token was cancelled, and lets `try` turn the error of `token.check()` into an `IoError`.
 fn io_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
@@ -369,6 +382,7 @@ fn io_error() -> EnumDecl {
         variant("NoSpace", Vec::new()),
         variant("InvalidText", vec![field("long", "position")]),
         variant("Other", vec![field("int", "code")]),
+        variant("Cancelled", vec![field(CANCELLED, "cancelled")]),
     ];
     EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants, methods: Vec::new() }
 }
@@ -595,6 +609,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     names.kinds.insert(TEXT_ERROR.to_string(), TypeKind::Struct);
     names.public.insert(TEXT_ERROR.to_string());
     prog.structs.push(text_error());
+    names.kinds.insert(CANCELLED.to_string(), TypeKind::Struct);
+    names.public.insert(CANCELLED.to_string());
+    prog.structs.push(cancelled());
     names.kinds.insert(NUMBER_ERROR.to_string(), TypeKind::Enum);
     names.public.insert(NUMBER_ERROR.to_string());
     prog.enums.push(number_error());
@@ -3649,7 +3666,11 @@ impl<'a> Checker<'a> {
         let place = matches!(recv.kind, ExprKind::Var(_) | ExprKind::Field { .. }) && !matches!(recv.kind, ExprKind::Var(ref var) if var == "string");
         // `x.abs()` and `line.replaceAll(...)` are a new `x` and a new `line`; `xs.length()` is not.
         let changed = place && name != "clone" && given == recv.ty.strip_borrow();
-        let keep = if *given == Ty::Str { "text" } else { "value" };
+        let keep = match given {
+            Ty::Str => "text",
+            Ty::Token => "token",
+            _ => "value",
+        };
         match changed {
             // Only a value of its own type that is not a borrow can be assigned back to it.
             true if !matches!(ty, Ty::Read(_)) => Diag::error(span, format!("{what} is not used: it leaves `{text}` as it was"))
@@ -4051,7 +4072,7 @@ impl<'a> Checker<'a> {
         }
         // `Shape.Empty` and `int.MaxValue` are values, not fields.
         if let ExprKind::Field { recv, .. } = &expr.kind {
-            if self.enum_named(recv).is_some() || self.number_type_named(recv).is_some() {
+            if self.enum_named(recv).is_some() || self.number_type_named(recv).is_some() || self.cancel_type_named(recv).is_some() {
                 return Ok(None);
             }
         }
@@ -4442,6 +4463,18 @@ impl<'a> Checker<'a> {
 
         // `Shape.Empty` and `Shape.Circle(2)` build a value of the enum.
         match &mut expr.kind {
+            ExprKind::Field { recv, name, name_span, .. } if self.cancel_type_named(recv).is_some() => {
+                let ty = self.cancel_type_named(recv).expect("tested above");
+                if ty != Ty::Token || name != "None" {
+                    let diag = Diag::error(*name_span, format!("`{ty}` has no constant `{name}`"));
+                    return Err(match ty {
+                        Ty::Token => diag.hint("`CancellationToken.None` is the token that is never cancelled"),
+                        _ => diag.hint("`CancellationSource()` makes a source; `CancellationSource.after(ms)` one that cancels itself"),
+                    });
+                }
+                expr.kind = ExprKind::Constant { ty: ty.clone(), name: std::mem::take(name) };
+                return Ok(ty);
+            }
             ExprKind::Field { recv, name, name_span, .. } if self.number_type_named(recv).is_some() => {
                 let ty = self.number_type_named(recv).expect("tested above");
                 constant(&ty, name, *name_span)?;
@@ -4457,6 +4490,8 @@ impl<'a> Checker<'a> {
             ExprKind::Method { recv, name, name_span, args, .. } => {
                 // `Shape.unit()`: a function of the enum, not a variant.
                 if let Some(owner) = self.enum_named(recv).filter(|owner| !self.methods_of(owner).contains_key(name.as_str())) {
+                    // `await Shape.Circle(f())` awaits no call in it.
+                    self.awaiting = false;
                     let (index, ty) = self.variant(owner, name, *name_span, Some(args), span)?;
                     let args = std::mem::take(args);
                     expr.kind = ExprKind::Variant { owner: owner.to_string(), index, args };
@@ -4464,6 +4499,7 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Call { name, args, .. } if name == "Ok" || name == "Error" => {
+                self.awaiting = false;
                 let (index, ty) = self.result_value(name == "Ok", args, expected, span)?;
                 let args = std::mem::take(args);
                 expr.kind = ExprKind::Variant { owner: "Result".to_string(), index, args };
@@ -5054,6 +5090,16 @@ impl<'a> Checker<'a> {
             return None;
         }
         Ty::from_name(name).filter(Ty::is_number)
+    }
+
+    /// `CancellationSource` or `CancellationToken` written in front of a dot. A variable of
+    /// that name wins.
+    fn cancel_type_named(&mut self, expr: &Expr) -> Option<Ty> {
+        let ExprKind::Var(name) = &expr.kind else { return None };
+        if self.find(name).is_some() {
+            return None;
+        }
+        Ty::from_name(name).filter(|ty| matches!(ty, Ty::Source | Ty::Token))
     }
 
     fn enum_named(&mut self, expr: &Expr) -> Option<&'a str> {
@@ -6118,6 +6164,14 @@ impl<'a> Checker<'a> {
                 self.typed(&mut args[0], &Ty::Bool)?;
                 Ok(Ty::Void)
             }
+            // `CancellationSource()`: a source that nothing has cancelled yet.
+            "CancellationSource" => {
+                arity(0).map_err(|diag| diag.hint("`CancellationSource.after(ms)` cancels itself after that many milliseconds"))?;
+                *callee = Callee::Cancel(CancelCall::New);
+                Ok(Ty::Source)
+            }
+            "CancellationToken" => Err(Diag::error(name_span, "a token is not made by itself: it comes from its source")
+                .hint("`source.token()` gives a token of `source`; `CancellationToken.None` is never cancelled")),
             // `same(a, b)`: whether two `shared` values point to one object. It only looks at
             // them, as `print` does.
             "same" => {
@@ -6238,7 +6292,7 @@ impl<'a> Checker<'a> {
         let (ty, is_place) = match self.place(inner)? {
             Some((ty, _)) => (ty, true),
             None => {
-                if matches!(inner.kind, ExprKind::Call { .. }) {
+                if matches!(inner.kind, ExprKind::Call { .. } | ExprKind::Method { .. }) {
                     self.awaiting = true;
                 }
                 let ty = self.expr(inner, None);
@@ -6347,15 +6401,23 @@ impl<'a> Checker<'a> {
 
     /// `Task.run(work, a, b)`: starts `work(a, b)` as a task of its own. The arguments are
     /// checked as in a call; what the function takes and gives follows the thread rule.
-    fn task_run(&mut self, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
-        // `Task.delay(ms)`: a task that only lets time go by.
+    fn task_run(&mut self, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span, awaited: bool) -> Res<Ty> {
+        // `Task.delay(ms)`: a task that only lets time go by. `Task.delay(ms, read token)`
+        // ends early when the token is cancelled, and says which way it ended.
         if name == "delay" {
-            if args.len() != 1 {
-                return Err(Diag::error(span, format!("`Task.delay` takes 1 argument(s), {} given", args.len())).hint("`Task.delay(100)` ends after 100 milliseconds"));
+            if args.is_empty() || args.len() > 2 {
+                return Err(Diag::error(span, format!("`Task.delay` takes 1 or 2 argument(s), {} given", args.len()))
+                    .hint("`Task.delay(100)` ends after 100 milliseconds; `Task.delay(100, read token)` ends early when the token is cancelled"));
             }
             self.typed(&mut args[0], &Ty::Int(IntTy::Int)).map_err(|diag| diag.note("`Task.delay(ms)` takes the milliseconds as an `int`"))?;
-            *callee = Callee::Delay;
-            return Ok(Ty::Task(Box::new(Ty::Void)));
+            if args.len() == 1 {
+                *callee = Callee::Delay(false);
+                return Ok(Ty::Task(Box::new(Ty::Void)));
+            }
+            self.token_arg(&mut args[1])?;
+            self.awaited_here("Task.delay", awaited, &args[1..], span)?;
+            *callee = Callee::Delay(true);
+            return Ok(Ty::Task(Box::new(Ty::Result(Box::new(Ty::Void), Box::new(Ty::Struct(CANCELLED.to_string()))))));
         }
         if name != "run" {
             return Err(Diag::error(name_span, format!("`Task` has the functions `run` and `delay`, not `{name}`")).hint("`Task.run(work, x)` starts `work(x)` as a task"));
@@ -6398,12 +6460,144 @@ impl<'a> Checker<'a> {
         Ok(Ty::Task(ret))
     }
 
+    /// `CancellationSource.after(ms)`: a function of the source type. The token type has only
+    /// its constant, `CancellationToken.None`.
+    fn cancel_static(&mut self, owner: &str, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+        if owner == "CancellationToken" {
+            return Err(Diag::error(name_span, format!("`CancellationToken` has no function `{name}`"))
+                .hint("a token comes from its source: `source.token()`; `CancellationToken.None` is never cancelled"));
+        }
+        if name != "after" {
+            let diag = Diag::error(name_span, format!("`CancellationSource` has the function `after`, not `{name}`"));
+            return Err(match name {
+                "create" | "new" => diag.hint("`CancellationSource()` makes a source"),
+                _ => diag.hint("`CancellationSource.after(ms)` cancels itself after that many milliseconds"),
+            });
+        }
+        if args.len() != 1 {
+            return Err(Diag::error(span, format!("`CancellationSource.after` takes 1 argument(s), {} given", args.len())));
+        }
+        self.typed(&mut args[0], &Ty::Int(IntTy::Int)).map_err(|diag| diag.note("`CancellationSource.after(ms)` takes the milliseconds as an `int`"))?;
+        *callee = Callee::Cancel(CancelCall::After);
+        Ok(Ty::Source)
+    }
+
+    /// `source.cancel()`, `source.token()`, `token.check()` and the other methods of a source
+    /// and a token. All of them work through a `read` borrow: a token only looks, and
+    /// cancelling twice is cancelling once.
+    #[allow(clippy::too_many_arguments)]
+    fn cancel_method(&mut self, recv: &Expr, target: &Ty, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+        let call = match (target, name) {
+            (Ty::Source, "cancel") => CancelCall::Cancel,
+            (Ty::Source, "token") => CancelCall::Token,
+            (_, "isCancelled") => CancelCall::IsCancelled,
+            (Ty::Token, "check") => CancelCall::Check,
+            (Ty::Token, "clone") => CancelCall::Clone,
+            _ => {
+                let known: &[&str] = match target {
+                    Ty::Source => &["cancel", "token", "isCancelled"],
+                    _ => &["isCancelled", "check", "clone"],
+                };
+                let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
+                let diag = match nearest(name, known.iter().copied()) {
+                    Some(close) => diag.hint(format!("`{close}`")),
+                    None => diag.note(format!("methods: {}", known.join(", "))),
+                };
+                let text = &self.src[recv.span.start..recv.span.end];
+                return Err(match (target, name) {
+                    (Ty::Token, "cancel") => diag.note("a token only looks; its source cancels it: `source.cancel()`"),
+                    (Ty::Source, "check") => diag.hint(format!("a token looks: `{text}.token().check()`, or `{text}.isCancelled()`")),
+                    (Ty::Source, "clone") => diag.note("a source has one owner; `token()` gives as many tokens of it as are needed"),
+                    _ => diag,
+                });
+            }
+        };
+        if !args.is_empty() {
+            return Err(Diag::error(span, format!("`{name}` takes 0 argument(s), {} given", args.len())));
+        }
+        *callee = Callee::Cancel(call);
+        Ok(match call {
+            CancelCall::Cancel => Ty::Void,
+            CancelCall::Token | CancelCall::Clone => Ty::Token,
+            CancelCall::IsCancelled => Ty::Bool,
+            CancelCall::Check => Ty::Result(Box::new(Ty::Void), Box::new(Ty::Struct(CANCELLED.to_string()))),
+            CancelCall::New | CancelCall::After => unreachable!("functions of the type, not methods"),
+        })
+    }
+
+    /// `reader.readLineAsync(ref line)`, `Stdin.readTextAsync()`: the methods of a reader as a
+    /// task, with a token that may come last. The task lends the reader, so the call is
+    /// awaited where it is written.
+    #[allow(clippy::too_many_arguments)]
+    fn stream_async(
+        &mut self,
+        recv: &mut Expr,
+        target: &Ty,
+        writable: bool,
+        borrowed: bool,
+        base: &str,
+        name: &str,
+        name_span: Span,
+        args: &mut [Expr],
+        callee: &mut Callee,
+        span: Span,
+        awaited: bool,
+    ) -> Res<Ty> {
+        let count = match (target, base) {
+            (Ty::Reader, "readText") => 0,
+            (Ty::Reader, "readLine" | "readBytes") => 1,
+            (Ty::Reader, "lines") => {
+                let reader = &self.src[recv.span.start..recv.span.end];
+                return Err(Diag::error(name_span, "a `StreamReader` has no `linesAsync`: a `for` does not await")
+                    .hint(format!("read line by line: `while try await {reader}.readLineAsync(ref line) {{ ... }}`")));
+            }
+            (Ty::Writer, "write" | "writeLine" | "writeBytes" | "flush" | "close") => {
+                return Err(Diag::error(name_span, format!("`{name}` is not here yet"))
+                    .note("streams are opened, written and closed the async way in a later part; `Stdout` and `Stderr` are written without waiting")
+                    .hint("a function that writes a file runs on a thread of its own with `await Task.run(work, x)`"));
+            }
+            _ => {
+                let known = ["readLineAsync", "readTextAsync", "readBytesAsync"];
+                let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
+                return Err(match nearest(name, known.into_iter()) {
+                    Some(close) => diag.hint(format!("`{close}`")),
+                    None => diag.note(format!("async methods for now: {}", known.join(", "))),
+                });
+            }
+        };
+        let (given, token) = match args.len() == count + 1 {
+            true => args.split_at_mut(count),
+            false => (args, &mut [][..]),
+        };
+        let ty = self.stream_method(recv, target, writable, borrowed, base, name_span, given, callee, span)?;
+        if let Some(token) = token.first_mut() {
+            self.token_arg(token)?;
+        }
+        let Callee::Stream(call) = *callee else { unreachable!("a method of a reader") };
+        if !awaited {
+            let text = &self.src[span.start..span.end];
+            let diag = Diag::error(span, format!("`{name}` lends the reader, and a call without `await` starts it as a task of its own, which a borrow cannot go to"));
+            return Err(match self.is_async {
+                true => diag.hint(format!("`await {text}` runs it as part of this task, where it can borrow")),
+                false => diag.note("async input is awaited in an async function; elsewhere the methods without `Async` do the same work"),
+            });
+        }
+        *callee = Callee::StreamAsync(call);
+        Ok(Ty::Task(Box::new(ty)))
+    }
+
     /// `File.readText(path)`, `Stdin.readLine(ref line)`: what reads and writes files and
     /// the input. A path is a `read string`; each gives a `Result` with an `IoError`.
-    fn io_call(&mut self, owner: &str, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+    #[allow(clippy::too_many_arguments)]
+    fn io_call(&mut self, owner: &str, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span, awaited: bool) -> Res<Ty> {
         let text = || Ty::Read(Box::new(Ty::Str));
         let bytes = Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
-        let (call, params, ok) = match (owner, name) {
+        // `File.readTextAsync(path)`: the same work as a task, with a token that may come last.
+        let (base, is_async) = match name.strip_suffix("Async") {
+            Some(base) => (base, true),
+            None => (name, false),
+        };
+        let (call, params, ok) = match (owner, base) {
             ("File", "readText") => (IoCall::ReadText, vec![text()], Ty::Str),
             ("File", "readBytes") => (IoCall::ReadBytes, vec![text()], Ty::List(Box::new(Ty::Int(IntTy::Byte)))),
             ("File", "writeText") => (IoCall::WriteText, vec![text(), text()], Ty::Void),
@@ -6413,7 +6607,10 @@ impl<'a> Checker<'a> {
             ("File", "createText") => (IoCall::CreateText, vec![text()], Ty::Writer),
             ("File", "openAppend") => (IoCall::OpenAppend, vec![text()], Ty::Writer),
             _ => {
-                let known = ["readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "createText", "openAppend"];
+                let known: &[&str] = match is_async {
+                    true => &["readTextAsync", "readBytesAsync", "writeTextAsync", "writeBytesAsync", "appendTextAsync"],
+                    false => &["readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "createText", "openAppend"],
+                };
                 let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
                 return Err(match nearest(name, known.iter().copied()) {
                     Some(close) => diag.hint(format!("`{close}`")),
@@ -6421,9 +6618,57 @@ impl<'a> Checker<'a> {
                 });
             }
         };
-        self.args(name, args, &params, span)?;
-        *callee = Callee::Io(call);
-        Ok(Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string()))))
+        let result = Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
+        if !is_async {
+            self.args(name, args, &params, span)?;
+            *callee = Callee::Io(call);
+            return Ok(result);
+        }
+        if matches!(call, IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend) {
+            return Err(Diag::error(name_span, format!("`File.{base}` has no async version yet"))
+                .note("streams are opened, written and closed the async way in a later part")
+                .hint("a function that does it runs on a thread of its own with `await Task.run(work, x)`"));
+        }
+        self.async_args(name, args, &params, span)?;
+        self.awaited_here(&format!("File.{name}"), awaited, args, span)?;
+        *callee = Callee::IoAsync(call);
+        Ok(Ty::Task(Box::new(result)))
+    }
+
+    /// The arguments of a built-in async function: those of the function without `Async`,
+    /// then a token that may be left out.
+    fn async_args(&mut self, name: &str, args: &mut [Expr], params: &[Ty], span: Span) -> Res<()> {
+        if args.len() == params.len() + 1 {
+            let (given, token) = args.split_at_mut(params.len());
+            self.args(name, given, params, span)?;
+            return self.token_arg(&mut token[0]);
+        }
+        if args.len() != params.len() {
+            return Err(Diag::error(span, format!("`{name}` takes {} argument(s), or {} with a token last; {} given", params.len(), params.len() + 1, args.len())));
+        }
+        self.args(name, args, params, span)
+    }
+
+    /// The token a built-in function looks at: `read token`. The function keeps a token of
+    /// its own for as long as it needs one, so the borrow ends with the call.
+    fn token_arg(&mut self, arg: &mut Expr) -> Res<()> {
+        self.typed(arg, &Ty::Read(Box::new(Ty::Token))).map_err(|diag| diag.note("a token is lent: `read token`, or `read source.token()`"))?;
+        Ok(())
+    }
+
+    /// A built-in async function given a borrow is awaited where it is called: the borrow
+    /// could not go to a task of its own.
+    fn awaited_here(&self, name: &str, awaited: bool, args: &[Expr], span: Span) -> Res<()> {
+        if awaited {
+            return Ok(());
+        }
+        let Some(arg) = args.iter().find(|arg| arg.ty.is_borrow()) else { return Ok(()) };
+        let text = &self.src[span.start..span.end];
+        let diag = Diag::error(arg.span, format!("`{name}` is given a `{}` here, and a call without `await` starts it as a task of its own, which a borrow cannot go to", arg.ty));
+        Err(match self.is_async {
+            true => diag.hint(format!("`await {text}` runs it as part of this task, where it can borrow")),
+            false => diag.note("async input and output is awaited in an async function; elsewhere the functions without `Async` do the same work"),
+        })
     }
 
     fn method(
@@ -6435,6 +6680,8 @@ impl<'a> Checker<'a> {
         callee: &mut Callee,
         span: Span,
     ) -> Res<Ty> {
+        // `await reader.readLineAsync(ref line)`: what `await` is written in front of.
+        let awaited = std::mem::take(&mut self.awaiting);
         // `int.parse(text)`: the number the text writes, or where it stops being one.
         // `int.parseHex(text)`: the same in hex digits.
         if let Some(ty) = self.number_type_named(recv) {
@@ -6474,10 +6721,13 @@ impl<'a> Checker<'a> {
                     return self.static_call(owner, name, name_span, args, callee, span);
                 }
                 if owner == "File" {
-                    return self.io_call(owner, name, name_span, args, callee, span);
+                    return self.io_call(owner, name, name_span, args, callee, span, awaited);
                 }
                 if owner == "Task" {
-                    return self.task_run(name, name_span, args, callee, span);
+                    return self.task_run(name, name_span, args, callee, span, awaited);
+                }
+                if owner == "CancellationSource" || owner == "CancellationToken" {
+                    return self.cancel_static(owner, name, name_span, args, callee, span);
                 }
                 // `string.join(", ", read names)`
                 // `string.fromUtf8(bytes)`: the bytes looked at as text, if they are text.
@@ -6698,7 +6948,14 @@ impl<'a> Checker<'a> {
         }
         if matches!(target, Ty::Reader | Ty::Writer) {
             let target = target.clone();
+            if let Some(base) = name.strip_suffix("Async") {
+                return self.stream_async(recv, &target, writable, borrowed, base, name, name_span, args, callee, span, awaited);
+            }
             return self.stream_method(recv, &target, writable, borrowed, name, name_span, args, callee, span);
+        }
+        if matches!(target, Ty::Source | Ty::Token) {
+            let target = target.clone();
+            return self.cancel_method(recv, &target, name, name_span, args, callee, span);
         }
         // An array and a slice have the methods of a list that only look, and the two that
         // change the order of the items without changing how many there are.

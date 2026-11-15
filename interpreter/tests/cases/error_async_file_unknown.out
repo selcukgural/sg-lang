@@ -1,0 +1,5 @@
+error: `File` has no function `readAllAsync`
+  --> error_async_file_unknown.sg:2:31
+ 2 |     var text = try await File.readAllAsync("a.txt")
+   |                               ^^^^^^^^^^^^
+  hint: `readTextAsync`

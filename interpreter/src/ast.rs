@@ -157,9 +157,17 @@ pub enum Callee {
     FromBytes { ty: IntTy, big: bool },
     /// `File.readText(path)`, `File.openText(path)` and the other functions of `File`.
     Io(IoCall),
+    /// `File.readTextAsync(path)` and the other async functions of `File`: a task that gives
+    /// what the function without `Async` gives. A token may come last.
+    IoAsync(IoCall),
     /// `reader.readLine(ref line)`, `writer.write(x)` and the other methods of a
     /// `StreamReader` or a `StreamWriter`, `Stdin` and `Stdout` among them.
     Stream(StreamCall),
+    /// `reader.readLineAsync(ref line)` and the other async methods of a `StreamReader`. A
+    /// token may come last.
+    StreamAsync(StreamCall),
+    /// What makes, cancels and looks at a `CancellationSource` or a `CancellationToken`.
+    Cancel(CancelCall),
     /// A call through a function value kept in a variable: `test(order)`.
     Value,
     /// A call through a function value kept in a field: `this.test(order)`; the field's position.
@@ -168,12 +176,34 @@ pub enum Callee {
     TaskRun,
     /// `t.wait()`: waits for the task and gives what its function returned; takes the task.
     Wait,
-    /// `Task.delay(ms)`: a task that ends when that many milliseconds have gone by.
-    Delay,
+    /// `Task.delay(ms)`: a task that ends when that many milliseconds have gone by. With a
+    /// token (`Task.delay(ms, read token)`, the `bool`), it ends early when the token is
+    /// cancelled, and gives a `Result<void, Cancelled>`.
+    Delay(bool),
     /// `slot.take()`: gives the value and leaves `null`.
     Take,
     /// `slot.replace(value)`: gives the old value and leaves the new one.
     Replace,
+}
+
+/// The functions of a `CancellationSource` and a `CancellationToken`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum CancelCall {
+    /// `CancellationSource()`
+    New,
+    /// `CancellationSource.after(ms)`: a source that cancels itself when that many
+    /// milliseconds have gone by.
+    After,
+    /// `source.cancel()`
+    Cancel,
+    /// `source.token()`: one more token of the source.
+    Token,
+    /// `source.isCancelled()`, `token.isCancelled()`
+    IsCancelled,
+    /// `token.check()`: `Error(Cancelled { })` once the token is cancelled, `Ok()` before.
+    Check,
+    /// `token.clone()`: one more token of the same source.
+    Clone,
 }
 
 /// The functions that read and write files and the input of the program. Each gives a

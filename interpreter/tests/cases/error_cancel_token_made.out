@@ -1,0 +1,5 @@
+error: a token is not made by itself: it comes from its source
+  --> error_cancel_token_made.sg:2:17
+ 2 |     var token = CancellationToken()
+   |                 ^^^^^^^^^^^^^^^^^
+  hint: `source.token()` gives a token of `source`; `CancellationToken.None` is never cancelled

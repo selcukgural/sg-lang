@@ -1,0 +1,5 @@
+void main() {
+    var a = CancellationToken.None
+    var b = CancellationToken.None
+    print(a == b)
+}

@@ -23,7 +23,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
-| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
+| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
 | Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
@@ -46,6 +46,8 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Tasks | `Task.run(work, x, share total)` starts `work(x, share total)` as a task and gives a `Task<R>`, `R` being what `work` returns; a `Func` can be started too. `t.wait()` waits for it and gives that value (`try t.wait()` passes its error on). A task that is not waited for on every path is a compile error, and so is `Task.run(...)` alone or dropped with `_ =`. What a task is given and gives back owns all it holds: no borrow, no `shared checked` value, no `Task` (the thread rule, also inside fields). In the interpreter a task runs on a thread of its own when it is waited for, so the output is the same on every run; compiled code starts a thread of the system for it at once. A panic inside one names the line that started it |
 | Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Not in compiled code yet |
+| Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Not in compiled code yet |
+| Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, and on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`: the work of the function without `Async`, as a task, with a token that may come last (`read token`). A call given a borrow is awaited where it is written. In the interpreter the work is done when it is called; the token is looked at first. Not in compiled code yet |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -256,7 +258,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (218 of 912 programs for now; the others are programs the checker rejects, on purpose, or that use what it does not compile yet, such as async). A
+memory behind (219 of 947 programs for now; the others are programs the checker rejects, on purpose, or that use what it does not compile yet, such as async). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -343,7 +345,8 @@ that are alive in a list for the leak report (347-355). The fifty-seventh slice 
 is a thread of the system with a stack of 8 MB, a `locked` value has a mutex in front of its counts, and a
 `lock` block takes its values in the order of their addresses and gives them back on every way out
 (371-383). The fifty-ninth slice (async functions, `await` and `Task.delay`) is in the checker and the
-interpreter; compiled code refuses an async function with "is not in the C back end yet" (384-402). What is still missing is an error that names it (not silence): the few positions listed with the
+interpreter; compiled code refuses an async function with "is not in the C back end yet" (384-402). So is
+the sixtieth (cancellation and async input and output, 403-416). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -3160,6 +3163,77 @@ the checker and the interpreter), approved on 15 November 2026:
      with `use`) and twenty tests of errors. Compiled code refuses an async function and `Task.delay` with
      "is not in the C back end yet"; `cargo test` compiles 218 of 912 programs.
 
+Choices made in the sixtieth slice (async, the second part: cancellation and async input and output, in the
+checker and the interpreter), approved on 15 November 2026:
+
+403. **A cancellation is an error of its own type, `Cancelled`**, chosen before the slice: a built-in struct
+     with no fields (`Copyable`, `Formattable`, `Equatable`), made with `Cancelled { }`. `token.check()` gives
+     a `Result<void, Cancelled>`, and `IoError` has one more variant, `Cancelled(Cancelled cancelled)`, so
+     async input and output still gives an `IoError`, and `try token.check()` in a function that returns an
+     `IoError` turns one into the other by the rule of error conversion (no `From` written). The cost: a
+     `match` on `IoError` that names every variant needs one more arm (`error_io_error_cancelled_arm`); no
+     test had one.
+404. **The names take C#'s way, with `Async` at the end, and a token that may come last**, also chosen before
+     the slice: `File.readTextAsync(read path)` or `File.readTextAsync(read path, read token)`,
+     `Stdin.readLineAsync(ref line)`. Only a built-in function leaves an argument out; a function of the
+     program takes what it declares.
+405. **Methods, not properties**: `source.token()`, `source.isCancelled()`, `token.isCancelled()`. SG has no
+     properties (`text.length()`, `xs.length()`), so the design's `source.token` is written with parentheses
+     now, in its example too. The token that is never cancelled is a constant, `CancellationToken.None`, as
+     `int.MaxValue` is (the names of constants start with a capital), and as C# names it.
+406. **A source**: `CancellationSource()`, `CancellationSource.after(ms)` (a negative time is a panic),
+     `cancel()`, `token()` and `isCancelled()`. It has one owner and no `clone`; another task that is to
+     cancel it is given it, or the source is shared (`new shared CancellationSource()`, then `share source`).
+     `cancel` works through a `read` borrow, and so through a `shared` value, which is only read (323):
+     cancelling twice is cancelling once, as Rust's `CancellationToken::cancel(&self)` takes no `&mut`.
+407. **A token**: not `Copyable`; `token.clone()` gives one more that looks at the same source (Rust's token is
+     `Clone` too). It has `isCancelled()` and `check()`; it is not `Formattable` or `Equatable`, it cannot be
+     a key, and it goes to other tasks (the thread rule lets it). A token or a source dropped without a word
+     cancels nothing, as the design says. What `token()`, `clone()` and `isCancelled()` give is used (282).
+408. **A built-in function takes the token as `read CancellationToken`**, as it takes a path as `read
+     string`: `File.readTextAsync(read path, read token)`. The function keeps a token of its own for as long
+     as it needs one, so the borrow ends with the call; a token given without `read` is an error whose note
+     says so. A function of the program takes a token however it declares it (`CancellationToken token` to
+     own one, which a task started without `await` needs).
+409. **A built-in async call that is given a borrow is awaited where it is written**, by the rule of 388 for
+     an async function of the program: `var task = File.readTextAsync(read path)` is an error whose hint is
+     `await File.readTextAsync(read path)`. Paths and tokens are borrows, and the async methods of a reader
+     lend the reader, so in practice every one of them is awaited in place; two reads at once are two async
+     functions of the program that own their paths. Outside an async function the note says that the
+     functions without `Async` do the same work.
+410. **`Task.delay(ms, read token)` gives a `Task<Result<void, Cancelled>>`**: `Ok()` when the time comes,
+     `Error(Cancelled { })` as soon as the token is cancelled, and at once when it already is. Without a
+     token it stays a `Task<void>`. A negative time is a panic either way.
+411. **A cancel ends the delays that wait on it in the order they were started**: they become ready in that
+     order and run when the task that cancelled waits (`ok_cancel_delay`). `CancellationSource.after(ms)` is
+     a timer on the clock of the run, as a delay is (397); a source that is gone when its time comes is not
+     waited for, and the run does not sleep for it.
+412. **Async input and output in the interpreter is done when it is called**: the task has ended when it is
+     given, and `await` goes on without giving the turn away. The token is looked at after the arguments,
+     before the work, so with a cancelled token nothing is read or written (`ok_async_files`). The cost:
+     a read of `Stdin` that waits for a line holds every task until the line comes, and a token cancelled
+     meanwhile does not stop it; compiled code, with its loop that waits for input and output, is to. The
+     tests give the input from a file, where it makes no difference.
+413. **Streams the async way come later**: `File.openTextAsync`, `createTextAsync`, `openAppendAsync` and the
+     async methods of a writer are errors that say so, with the hint `await Task.run(work, x)`. A reader has
+     no `linesAsync`, since a `for` does not await; the hint reads line by line with `readLineAsync`.
+     `Stdout` and `Stderr` are written without waiting, as before (391).
+414. **The hint of 391 names the async version where there is one**: `File.readText(read path)` in an async
+     function gets `await File.readTextAsync(read path)`, `Stdin.readLine(ref line)` gets `await
+     Stdin.readLineAsync(ref line)`; the others keep `await Task.run(work, x)`.
+415. **A struct with no fields is written by its name alone**, as Rust writes it: `Marker`, and
+     `Cancelled(Cancelled)` for the error. It was `Marker {  }`. Compiled code writes it the same way
+     (`ok_struct_empty`, compiled).
+416. **The tests**: `ok_cancel_delay` (a source cancelled by the clock, two tasks on one shared source
+     cancelled by a third, a token already cancelled, `CancellationToken.None`), `ok_cancel_check`
+     (`check`, `try` into `IoError`, `clone`, cancelling twice, a `match` on `Cancelled(_)`),
+     `ok_async_files` (each async function of `File`, a missing file, a cancelled token),
+     `ok_async_stdin` (lines and the rest of the input, a cancelled token), `ok_struct_empty`,
+     `panic_cancel_after_negative`, `panic_cancel_delay_negative` and twenty-eight tests of errors;
+     `error_async_file` has the new hint. The design's example of "Async, the direction" runs as it is
+     written now. Compiled code refuses cancellation and async input and output with
+     "is not in the C back end yet"; `cargo test` compiles 219 of 947 programs.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -3223,9 +3297,11 @@ check off.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
   in the design), and so an alias with type parameters (`using Link<T> = ...`).
 - A list of tasks and waiting for several at once (`Task.whenAll`, `Task.whenAny`), channels; a method or a function of a struct
-  started as a task (a `Func` is a function written at the top level). Of async: cancellation
-  (`CancellationSource`, a token), input and output that is async, an `async` method, an async function
-  kept as a `Func`, and all of it in compiled code. `checked` on its own, in a value with one
+  started as a task (a `Func` is a function written at the top level). Of async: streams opened,
+  written and closed the async way (`File.openTextAsync`, `writer.writeLineAsync`), an `async` method, an
+  async function kept as a `Func`, and all of it in compiled code. In the interpreter, async input and
+  output is done when it is called, so a read of `Stdin` that waits for a line holds every task, and a token
+  cancelled meanwhile does not stop it (412). `checked` on its own, in a value with one
   owner (`checked int hits` in a plain struct, the design's `RefCell` outside `Rc`). `List<shared T>.clone()`,
   since a list has no `clone` yet, so the design's hint "loop over a copy" is not given. A conflict through two
   items of one list (`xs[i]` and `xs[j]`) is left to run time even when `i` and `j` are the same name.
@@ -3340,4 +3416,7 @@ started, `await` waits without holding the thread, and `Task.delay(ms)` lets tim
 way is a compile error: `wait`, input and output that holds the thread and a function that does either, in
 an async function; `await` in a `lock` block; an async function that awaits itself. Every task is a fiber
 that gets the turn where another waits, and the clock moves only when all wait, so the output is the same
-on every run. Next come cancellation and input and output that is async, then all of it in compiled code.
+on every run. A task is cancelled only where it looks at its token, with `token.check()` or a delay given
+the token, and a cancellation is an error of its own, `Cancelled`, which `try` turns into an `IoError`; files
+and the input are read and written the async way, with a token that may come last. Next comes all of it in
+compiled code.

@@ -1,0 +1,4 @@
+async Result<void, IoError> main() {
+    var text = try await File.readAllAsync("a.txt")
+    return Ok()
+}

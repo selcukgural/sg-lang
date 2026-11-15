@@ -1,0 +1,5 @@
+error: `CancellationSource` takes 0 argument(s), 1 given
+  --> error_cancel_source_args.sg:2:18
+ 2 |     var source = CancellationSource(100)
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `CancellationSource.after(ms)` cancels itself after that many milliseconds

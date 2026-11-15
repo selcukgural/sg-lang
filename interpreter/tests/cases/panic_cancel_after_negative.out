@@ -1,0 +1,4 @@
+panic: `CancellationSource.after(-5)`: a time is not negative
+  --> panic_cancel_after_negative.sg:3:18
+ 3 |     var source = CancellationSource.after(-5)
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

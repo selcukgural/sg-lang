@@ -1,0 +1,48 @@
+// A task looks at its token where it chooses; `try` turns `Cancelled` into an `IoError`.
+Result<int, IoError> sum(read List<int> xs, read CancellationToken token) {
+    int total = 0
+    for x in xs {
+        try token.check()
+        total += x
+    }
+    return Ok(total)
+}
+
+void report(Result<int, IoError> result) {
+    match result {
+        Ok(total) => print($"total {total}")
+        Error(Cancelled(_)) => print("stopped")
+        Error(cause) => print($"failed: {cause}")
+    }
+}
+
+Result<void, Cancelled> look(read CancellationToken token) {
+    try token.check()
+    return Ok()
+}
+
+void main() {
+    var source = CancellationSource()
+    var token = source.token()
+    var copy = token.clone()
+    var xs = List<int>()
+    xs.add(1)
+    xs.add(2)
+    xs.add(3)
+    report(sum(read xs, read token))
+    print(source.isCancelled())
+    print(copy.isCancelled())
+    source.cancel()
+    source.cancel()
+    report(sum(read xs, read token))
+    print(source.isCancelled())
+    print(copy.isCancelled())
+    print(look(read copy) is Error(_))
+    Result<void, Cancelled> written = Error(Cancelled { })
+    if written is Error(cause) {
+        print(cause)
+        print(cause == Cancelled { })
+    }
+    var none = CancellationToken.None
+    print(look(read none) is Ok)
+}

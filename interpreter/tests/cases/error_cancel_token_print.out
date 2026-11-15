@@ -1,0 +1,4 @@
+error: a `CancellationToken` value cannot be written as text
+  --> error_cancel_token_print.sg:3:11
+ 3 |     print(token)
+   |           ^^^^^

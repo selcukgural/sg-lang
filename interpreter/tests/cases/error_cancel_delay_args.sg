@@ -1,0 +1,4 @@
+async void main() {
+    var token = CancellationToken.None
+    _ = await Task.delay(10, read token, 3)
+}

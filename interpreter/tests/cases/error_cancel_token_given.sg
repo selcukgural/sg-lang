@@ -1,0 +1,7 @@
+async Result<string, IoError> load(string path, CancellationToken token) {
+    return await File.readTextAsync(read path, token)
+}
+
+async void main() {
+    _ = await load("a.txt", CancellationToken.None)
+}

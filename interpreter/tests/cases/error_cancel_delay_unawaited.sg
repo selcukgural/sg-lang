@@ -1,0 +1,6 @@
+async void main() {
+    var source = CancellationSource()
+    var token = source.token()
+    var delay = Task.delay(10, read token)
+    _ = await delay
+}

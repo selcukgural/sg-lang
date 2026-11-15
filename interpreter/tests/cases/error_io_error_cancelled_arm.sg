@@ -1,0 +1,14 @@
+void tell(IoError cause) {
+    match cause {
+        NotFound => print("missing")
+        PermissionDenied => print("not allowed")
+        IsDirectory => print("a folder")
+        NoSpace => print("full")
+        InvalidText(at) => print($"bad text at {at}")
+        Other(code) => print($"code {code}")
+    }
+}
+
+void main() {
+    tell(IoError.NotFound)
+}

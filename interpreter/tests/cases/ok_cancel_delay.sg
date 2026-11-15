@@ -1,0 +1,48 @@
+// Delays that end early when their token is cancelled, by hand and by the clock.
+async Result<void, Cancelled> ticker(string name, int every, CancellationToken token) {
+    int count = 0
+    while true {
+        try await Task.delay(every, read token)
+        count += 1
+        print($"{name} {count}")
+    }
+}
+
+async void waitThenCancel(int ms, shared CancellationSource source) {
+    await Task.delay(ms)
+    print("cancelling")
+    source.cancel()
+}
+
+async Result<void, IoError> main() {
+    // The clock cancels the source after 35 milliseconds: the ticker runs three times.
+    var timed = CancellationSource.after(35)
+    var first = ticker("timed", 10, timed.token())
+    if await first is Error(cause) {
+        print($"timed stopped: {cause}")
+    }
+    print(timed.isCancelled())
+
+    // Two tickers on one source end together, in the order they were started. Another
+    // task cancels it: the source is shared, and `cancel` only reads it.
+    var source = new shared CancellationSource()
+    var a = ticker("a", 10, source.token())
+    var b = ticker("b", 15, source.token())
+    var stop = waitThenCancel(32, share source)
+    await stop
+    if await b is Error(_) { print("b stopped") }
+    if await a is Error(_) { print("a stopped") }
+
+    // A token already cancelled ends a delay at once; cancelling again changes nothing.
+    var late = source.token()
+    source.cancel()
+    var quick = await Task.delay(1000000, read late)
+    print(quick is Error(_))
+
+    // A token that is never cancelled lets the delay end on time.
+    var none = CancellationToken.None
+    var slow = await Task.delay(5, read none)
+    print(slow is Ok)
+    print(none.isCancelled())
+    return Ok()
+}

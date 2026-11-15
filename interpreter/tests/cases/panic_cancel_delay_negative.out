@@ -1,0 +1,4 @@
+panic: `Task.delay(-1, token)`: a delay is not negative
+  --> panic_cancel_delay_negative.sg:5:15
+ 5 |     _ = await Task.delay(-1, read token)
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^

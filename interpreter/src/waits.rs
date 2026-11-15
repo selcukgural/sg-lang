@@ -181,7 +181,11 @@ fn held_in(body: &Block, holds: &HashMap<String, Why>, taken: &[(String, usize, 
                 ExprKind::Method { callee: Callee::Wait, .. } => None,
                 _ if holding(expr).is_some() => {
                     let (span, what) = holding(expr).expect("just seen");
-                    Some(Diag::error(span, format!("{what} holds the thread until it is done, and an async function does not hold its thread")).note(NO_HOLD).hint(RUN_APART))
+                    let diag = Diag::error(span, format!("{what} holds the thread until it is done, and an async function does not hold its thread")).note(NO_HOLD);
+                    Some(match async_version(expr) {
+                        Some(version) => diag.hint(format!("`await {version}` does the same work without holding the thread")),
+                        None => diag.hint(RUN_APART),
+                    })
                 }
                 ExprKind::Method { name, name_span, callee: Callee::Method { owner, .. }, .. } => call(&format!("{owner}.{name}"), *name_span),
                 ExprKind::Call { callee: Callee::Static { owner, name }, name_span, .. } => call(&format!("{owner}.{name}"), *name_span),
@@ -217,6 +221,50 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
             _ => Some((*name_span, format!("`{name}` on a file"))),
         },
         _ => None,
+    }
+}
+
+/// The async call that does what a call of input or output that holds the thread does:
+/// `File.readTextAsync(read path)` for `File.readText(read path)`.
+fn async_version(expr: &Expr) -> Option<String> {
+    let (written, args) = match &expr.kind {
+        ExprKind::Call { callee: Callee::Io(call), args, .. } | ExprKind::Method { callee: Callee::Io(call), args, .. } => match call {
+            IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend => return None,
+            _ => (format!("File.{}Async", call.name()), args),
+        },
+        ExprKind::Method { recv, name, callee: Callee::Stream(StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes), args, .. } => {
+            let reader = match stream_name(recv) {
+                Some(name) => name.to_string(),
+                None => short_reader(recv)?,
+            };
+            (format!("{reader}.{name}Async"), args)
+        }
+        _ => return None,
+    };
+    let shown: Vec<String> = args.iter().map(written_arg).collect();
+    Some(format!("{written}({})", shown.join(", ")))
+}
+
+/// The reader as the program names it, when it is a variable: `reader` in `reader.readLine(ref line)`.
+fn short_reader(expr: &Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Var(name) => Some(name.clone()),
+        ExprKind::Borrow { expr: inner, .. } | ExprKind::Load(inner) | ExprKind::Unbox(inner) => short_reader(inner),
+        _ => None,
+    }
+}
+
+/// An argument as the hint writes it: a variable with the borrow in front of it, anything
+/// else as `...`.
+fn written_arg(arg: &Expr) -> String {
+    match &arg.kind {
+        ExprKind::Borrow { expr: inner, mutable } => match &inner.kind {
+            ExprKind::Var(name) => format!("{} {name}", if *mutable { "ref" } else { "read" }),
+            _ => "...".to_string(),
+        },
+        ExprKind::Var(name) => name.clone(),
+        ExprKind::Str(text) => format!("{text:?}"),
+        _ => "...".to_string(),
     }
 }
 

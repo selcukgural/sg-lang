@@ -1,0 +1,5 @@
+// A source cannot be cancelled before it is made.
+void main() {
+    var source = CancellationSource.after(-5)
+    print(source.isCancelled())
+}

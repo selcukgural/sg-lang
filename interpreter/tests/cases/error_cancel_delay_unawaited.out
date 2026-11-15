@@ -1,0 +1,5 @@
+error: `Task.delay` is given a `read CancellationToken` here, and a call without `await` starts it as a task of its own, which a borrow cannot go to
+  --> error_cancel_delay_unawaited.sg:4:32
+ 4 |     var delay = Task.delay(10, read token)
+   |                                ^^^^^^^^^^
+  hint: `await Task.delay(10, read token)` runs it as part of this task, where it can borrow

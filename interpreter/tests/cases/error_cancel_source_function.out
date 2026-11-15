@@ -1,0 +1,5 @@
+error: `CancellationSource` has the function `after`, not `create`
+  --> error_cancel_source_function.sg:2:37
+ 2 |     var source = CancellationSource.create()
+   |                                     ^^^^^^
+  hint: `CancellationSource()` makes a source

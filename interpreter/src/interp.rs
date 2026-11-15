@@ -77,9 +77,36 @@ pub enum Value {
     Writer(Rc<RefCell<Writer>>),
     /// `reader.lines()`.
     Lines(Rc<RefCell<Lines>>),
+    /// `CancellationSource`
+    Source(Rc<RefCell<Cancel>>),
+    /// `CancellationToken`; `CancellationToken.None` looks at no source.
+    Token(Option<Rc<RefCell<Cancel>>>),
     /// `Task<R>`: a task started with `Task.run`, by the call of an async function, or by
     /// `Task.delay`.
     Task(Rc<RefCell<Task>>),
+}
+
+/// What a `CancellationSource` and its tokens look at: whether it is cancelled, and the
+/// `Task.delay` timers that end early when it is.
+#[derive(Debug, Default)]
+pub struct Cancel {
+    cancelled: bool,
+    /// The keys of the timers, in `State::timers`, of the delays given a token of it.
+    delays: Vec<(u64, u64)>,
+}
+
+/// What the clock of a run ends when its time comes.
+enum Timer {
+    /// `Task.delay(ms)`, and with a token, `Task.delay(ms, read token)`: the task then gives
+    /// `Ok()`, and the source no longer has to end it.
+    Delay { task: std::rc::Weak<RefCell<Task>>, token: Option<std::rc::Weak<RefCell<Cancel>>> },
+    /// `CancellationSource.after(ms)`: the source is cancelled, if it is still there.
+    Cancel(std::rc::Weak<RefCell<Cancel>>),
+}
+
+/// The `Cancelled { }` that a cancelled wait gives.
+fn cancelled() -> Value {
+    Value::Struct("Cancelled".into(), Rc::new(Vec::new()))
 }
 
 /// A task. Every task that runs code is a fiber: a thread of its own, of which one runs at a
@@ -126,9 +153,9 @@ struct State {
     next_fiber: usize,
     /// The fibers whose wait is over, in the order they get the turn.
     ready: VecDeque<usize>,
-    /// The `Task.delay` tasks, by when they end on the clock of the run, then in the order
-    /// they were made.
-    timers: BTreeMap<(u64, u64), std::rc::Weak<RefCell<Task>>>,
+    /// The `Task.delay` tasks and the `CancellationSource.after` sources, by when they end on
+    /// the clock of the run, then in the order they were made.
+    timers: BTreeMap<(u64, u64), Timer>,
     made: u64,
     /// The clock of the run, in milliseconds. It moves only when every fiber waits and a
     /// timer is next, so which timer ends first never depends on the speed of the machine;
@@ -242,18 +269,67 @@ impl Sched {
                 state.stop = Some(Stop::Diag(Diag::panic(at, "every task waits, and nothing is left that could end a wait")));
                 return 0;
             };
-            let task = state.timers.remove(&key).expect("just seen");
+            let timer = state.timers.remove(&key).expect("just seen");
+            // A source that is gone cancels nothing, and is not waited for.
+            if let Timer::Cancel(source) = &timer {
+                if source.strong_count() == 0 {
+                    continue;
+                }
+            }
             let due = state.clock + Duration::from_millis(key.0);
             let now = Instant::now();
             if due > now {
                 std::thread::sleep(due - now);
             }
             state.now = key.0;
-            if let Some(task) = task.upgrade() {
-                let mut task = task.borrow_mut();
-                task.state = TaskState::Done(Some(Value::Void));
-                let waiters = std::mem::take(&mut task.waiters);
-                state.ready.extend(waiters);
+            match timer {
+                Timer::Delay { task, token } => {
+                    let value = match &token {
+                        Some(source) => {
+                            if let Some(source) = source.upgrade() {
+                                source.borrow_mut().delays.retain(|other| *other != key);
+                            }
+                            ok(Value::Void)
+                        }
+                        None => Value::Void,
+                    };
+                    if let Some(task) = task.upgrade() {
+                        Self::end_timer(state, &task, value);
+                    }
+                }
+                Timer::Cancel(source) => {
+                    if let Some(source) = source.upgrade() {
+                        Self::cancel(state, &source);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A task that runs no code ends with `value`: those that wait for it are ready.
+    fn end_timer(state: &mut State, task: &Rc<RefCell<Task>>, value: Value) {
+        let mut task = task.borrow_mut();
+        task.state = TaskState::Done(Some(value));
+        let waiters = std::mem::take(&mut task.waiters);
+        state.ready.extend(waiters);
+    }
+
+    /// `source.cancel()`: the delays given a token of it end now, with `Error(Cancelled { })`,
+    /// in the order they were started. Cancelling again does nothing.
+    fn cancel(state: &mut State, source: &Rc<RefCell<Cancel>>) {
+        let keys = {
+            let mut source = source.borrow_mut();
+            if source.cancelled {
+                return;
+            }
+            source.cancelled = true;
+            std::mem::take(&mut source.delays)
+        };
+        for key in keys {
+            if let Some(Timer::Delay { task, .. }) = state.timers.remove(&key) {
+                if let Some(task) = task.upgrade() {
+                    Self::end_timer(state, &task, failed(cancelled()));
+                }
             }
         }
     }
@@ -798,6 +874,11 @@ fn map_add(entries: &mut Entries, key: Value, value: Value, shown: String, span:
     }
     entries.insert(under, (key, cell(value)));
     Ok(())
+}
+
+/// `IoError.Cancelled(Cancelled { })`
+fn io_cancelled() -> Value {
+    Value::Enum("IoError".into(), 6, Rc::new(vec![cell(cancelled())]))
 }
 
 fn ok(value: Value) -> Value {
@@ -1376,19 +1457,58 @@ impl<'a, 'e> Interp<'a, 'e> {
         Ok(Value::Task(task))
     }
 
-    /// `Task.delay(ms)`: a task that ends when the clock of the run has gone that far.
-    fn delay(&mut self, ms: i128, at: Span) -> Res<Value> {
+    /// `Task.delay(ms)`: a task that ends when the clock of the run has gone that far. With
+    /// a token (`told`), it ends early when the token is cancelled, at once when it already
+    /// is, and says which way it ended.
+    fn delay(&mut self, ms: i128, told: Option<Option<Rc<RefCell<Cancel>>>>, at: Span) -> Res<Value> {
         if ms < 0 {
-            return Err(Diag::panic(at, format!("`Task.delay({ms})`: a delay is not negative")).into());
+            let token = if told.is_some() { ", token" } else { "" };
+            return Err(Diag::panic(at, format!("`Task.delay({ms}{token})`: a delay is not negative")).into());
         }
         let task = Rc::new(RefCell::new(Task { state: TaskState::Running, started: at, waiters: Vec::new() }));
+        self.started.push(task.clone());
+        let source = told.clone().flatten();
+        if source.as_ref().is_some_and(|source| source.borrow().cancelled) {
+            task.borrow_mut().state = TaskState::Done(Some(failed(cancelled())));
+            return Ok(Value::Task(task));
+        }
         let mut state = self.io.sched.lock();
         let key = (state.now + ms as u64, state.made);
         state.made += 1;
-        state.timers.insert(key, Rc::downgrade(&task));
+        let token = told.map(|_| source.as_ref().map_or_else(std::rc::Weak::new, Rc::downgrade));
+        state.timers.insert(key, Timer::Delay { task: Rc::downgrade(&task), token });
         drop(state);
-        self.started.push(task.clone());
+        if let Some(source) = source {
+            source.borrow_mut().delays.push(key);
+        }
         Ok(Value::Task(task))
+    }
+
+    /// `CancellationSource.after(ms)`: a source that the clock of the run cancels.
+    fn source_after(&mut self, ms: i128, at: Span) -> Res<Value> {
+        if ms < 0 {
+            return Err(Diag::panic(at, format!("`CancellationSource.after({ms})`: a time is not negative")).into());
+        }
+        let source = Rc::new(RefCell::new(Cancel::default()));
+        let mut state = self.io.sched.lock();
+        let key = (state.now + ms as u64, state.made);
+        state.made += 1;
+        state.timers.insert(key, Timer::Cancel(Rc::downgrade(&source)));
+        Ok(Value::Source(source))
+    }
+
+    /// Whether the token given to an async method, if one was, is cancelled.
+    fn cancelled(&mut self, token: Option<&'a Expr>, frame: &mut Frame) -> Res<bool> {
+        let Some(token) = token else { return Ok(false) };
+        Ok(self.token(token, frame)?.is_some_and(|source| source.borrow().cancelled))
+    }
+
+    /// The source a token argument looks at; `None` for `CancellationToken.None`.
+    fn token(&mut self, arg: &'a Expr, frame: &mut Frame) -> Res<Option<Rc<RefCell<Cancel>>>> {
+        match owned(self.expr(arg, frame)?) {
+            Value::Token(source) => Ok(source),
+            _ => unreachable!("the checker makes it a token"),
+        }
     }
 
     /// Runs `func(args)` for `task` on a fiber of its own, which gets the turn now. With
@@ -2109,6 +2229,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 self.await_task(&task, expr.span)
             }
             ExprKind::Call { name, args, callee, .. } => match callee {
+                Callee::Cancel(CancelCall::New) => Ok(Value::Source(Rc::new(RefCell::new(Cancel::default())))),
                 Callee::Static { owner, name } => {
                     let func = self.methods[owner.as_str()][name.as_str()];
                     let values = self.values(args, frame)?;
@@ -2234,7 +2355,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     })
                 }
                 Callee::Io(call) => self.io(*call, args, frame),
-                Callee::Stream(call) => self.stream(*call, recv, args, frame),
+                Callee::Stream(call) => self.stream(*call, recv, args, None, frame),
                 // `Task.run(work, x)`: the task runs when it is waited for.
                 Callee::TaskRun => {
                     let Value::Func(name) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker lets `Task.run` start only a function") };
@@ -2243,9 +2364,62 @@ impl<'a, 'e> Interp<'a, 'e> {
                     self.started.push(task.clone());
                     Ok(Value::Task(task))
                 }
-                Callee::Delay => {
+                Callee::Delay(told) => {
                     let Value::Int(_, ms) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker lets `Task.delay` take an `int`") };
-                    self.delay(ms, expr.span)
+                    let token = match told {
+                        true => Some(self.token(&args[1], frame)?),
+                        false => None,
+                    };
+                    self.delay(ms, token, expr.span)
+                }
+                Callee::Cancel(CancelCall::After) => {
+                    let Value::Int(_, ms) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the time an `int`") };
+                    self.source_after(ms, expr.span)
+                }
+                Callee::Cancel(call) => {
+                    let source = match owned(self.expr(recv, frame)?) {
+                        Value::Source(source) => Some(source),
+                        Value::Token(source) => source,
+                        _ => unreachable!("the checker calls these on a source or a token"),
+                    };
+                    let is_cancelled = source.as_ref().is_some_and(|source| source.borrow().cancelled);
+                    Ok(match call {
+                        CancelCall::Cancel => {
+                            let source = source.expect("a source");
+                            let mut state = self.io.sched.lock();
+                            Sched::cancel(&mut state, &source);
+                            Value::Void
+                        }
+                        CancelCall::Token | CancelCall::Clone => Value::Token(source),
+                        CancelCall::IsCancelled => Value::Bool(is_cancelled),
+                        CancelCall::Check if is_cancelled => failed(cancelled()),
+                        CancelCall::Check => ok(Value::Void),
+                        CancelCall::New | CancelCall::After => unreachable!("handled above"),
+                    })
+                }
+                // Input and output in the interpreter is done when it is called, so the task
+                // has ended when it is given; a token is looked at before the work.
+                Callee::IoAsync(call) => {
+                    let mut values = self.values(args, frame)?;
+                    let params = if matches!(call, IoCall::ReadText | IoCall::ReadBytes) { 1 } else { 2 };
+                    let source = match values.len() > params {
+                        true => match owned(values.pop().expect("a token")) {
+                            Value::Token(source) => source,
+                            _ => unreachable!("the checker makes it a token"),
+                        },
+                        false => None,
+                    };
+                    let value = match source.is_some_and(|source| source.borrow().cancelled) {
+                        true => failed(io_cancelled()),
+                        false => self.io_values(*call, values)?,
+                    };
+                    Ok(self.ended_task(value, expr.span))
+                }
+                Callee::StreamAsync(call) => {
+                    let given = if *call == StreamCall::ReadText { 0 } else { 1 };
+                    let token = args.get(given);
+                    let value = self.stream(*call, recv, &args[..given], token, frame)?;
+                    Ok(self.ended_task(value, expr.span))
                 }
                 Callee::Wait => {
                     let Value::Task(task) = strip(self.expr(recv, frame)?) else { unreachable!("the checker lets only a task be waited for") };
@@ -2637,7 +2811,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let decl = self.structs[&**name];
                 let parts = list(self, fields)?;
                 let named: Vec<String> = decl.fields.iter().zip(parts).map(|(field, text)| format!("{} = {text}", field.name)).collect();
-                Ok(format!("{} {{ {} }}", short_name(name), named.join(", ")))
+                // A struct without fields is written by its name alone, as in Rust.
+                Ok(match named.is_empty() {
+                    true => short_name(name).to_string(),
+                    false => format!("{} {{ {} }}", short_name(name), named.join(", ")),
+                })
             }
             Value::Enum(name, index, fields) => {
                 if let Some(text) = self.own_format(name, value, span)? {
@@ -2848,7 +3026,19 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// `File.readText(path)` and the others: each gives `Ok` with what it read, or `Error`
     /// with an `IoError`.
     fn io(&mut self, call: IoCall, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
-        let mut values = self.values(args, frame)?.into_iter().map(strip);
+        let values = self.values(args, frame)?;
+        self.io_values(call, values)
+    }
+
+    /// A task that has ended with `value`, to be awaited.
+    fn ended_task(&mut self, value: Value, at: Span) -> Value {
+        let task = Rc::new(RefCell::new(Task { state: TaskState::Done(Some(value)), started: at, waiters: Vec::new() }));
+        self.started.push(task.clone());
+        Value::Task(task)
+    }
+
+    fn io_values(&mut self, call: IoCall, values: Vec<Value>) -> Res<Value> {
+        let mut values = values.into_iter().map(strip);
         let Some(Value::Str(path)) = values.next() else { unreachable!("the checker makes a path text") };
         let path = path.to_string();
         // No file has a name with a zero byte in it; the system would see the name end there.
@@ -2894,14 +3084,22 @@ impl<'a, 'e> Interp<'a, 'e> {
     }
 
     /// The methods of a `StreamReader` and a `StreamWriter`.
-    fn stream(&mut self, call: StreamCall, recv: &'a Expr, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
+    /// A method of a reader or a writer. `token`: the async method was given one, which is
+    /// looked at after the arguments, before the work.
+    fn stream(&mut self, call: StreamCall, recv: &'a Expr, args: &'a [Expr], token: Option<&'a Expr>, frame: &mut Frame) -> Res<Value> {
         let stream = owned(self.expr(recv, frame)?);
         match (call, stream) {
             (StreamCall::ReadLine, Value::Reader(reader)) => {
                 let Value::Borrow(slot) = self.expr(&args[0], frame)? else { unreachable!("the checker makes the line a `ref string`") };
+                if self.cancelled(token, frame)? {
+                    return Ok(failed(io_cancelled()));
+                }
                 self.read_line(&reader, &behind_borrows(slot))
             }
             (StreamCall::ReadText, Value::Reader(reader)) => {
+                if self.cancelled(token, frame)? {
+                    return Ok(failed(io_cancelled()));
+                }
                 let mut bytes = Vec::new();
                 let start = reader.borrow().done;
                 let read = match reader.borrow_mut().file.as_mut() {
@@ -2922,6 +3120,9 @@ impl<'a, 'e> Interp<'a, 'e> {
             (StreamCall::Lines, Value::Reader(reader)) => Ok(Value::Lines(Rc::new(RefCell::new(Lines { reader, done: false })))),
             (StreamCall::ReadBytes, Value::Reader(reader)) => {
                 let cells = cells_of(&owned(self.expr(&args[0], frame)?));
+                if self.cancelled(token, frame)? {
+                    return Ok(failed(io_cancelled()));
+                }
                 let mut bytes = vec![0u8; cells.len()];
                 let mut got = 0;
                 // As many as the buffer holds: fewer only at the end.
@@ -3331,7 +3532,8 @@ fn constant(ty: &Ty, name: &str) -> Value {
                 _ => std::f32::consts::E,
             }),
         ),
-        _ => unreachable!("the checker gives constants to number types only"),
+        Ty::Token => Value::Token(None),
+        _ => unreachable!("the checker gives constants to number types and the token type only"),
     }
 }
 

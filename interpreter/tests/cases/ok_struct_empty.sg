@@ -1,0 +1,14 @@
+// A struct without fields is written by its name alone.
+struct Marker : Copyable, Formattable, Equatable { }
+
+struct Holder : Formattable {
+    Marker marker
+    int count
+}
+
+void main() {
+    var marker = Marker { }
+    print(marker)
+    print(Holder { marker = marker, count = 2 })
+    print(marker == Marker { })
+}

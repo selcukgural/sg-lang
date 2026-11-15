@@ -1,0 +1,18 @@
+// The input read the async way, a line at a time and then the rest.
+async Result<void, IoError> main() {
+    var line = ""
+    int count = 0
+    while count < 2 && try await Stdin.readLineAsync(ref line) {
+        count += 1
+        print($"{count}: {line}")
+    }
+    var source = CancellationSource()
+    var token = source.token()
+    source.cancel()
+    if await Stdin.readLineAsync(ref line, read token) is Error(cause) {
+        print(cause)
+    }
+    var rest = try await Stdin.readTextAsync()
+    print(rest.length())
+    return Ok()
+}

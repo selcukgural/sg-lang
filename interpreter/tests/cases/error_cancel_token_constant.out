@@ -1,0 +1,5 @@
+error: `CancellationToken` has no constant `Empty`
+  --> error_cancel_token_constant.sg:2:35
+ 2 |     var token = CancellationToken.Empty
+   |                                   ^^^^^
+  hint: `CancellationToken.None` is the token that is never cancelled
