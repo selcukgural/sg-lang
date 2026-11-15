@@ -1,0 +1,8 @@
+extern {
+    raw void memcpy(raw byte target, raw byte source, nuint count)
+}
+
+void main() {
+    var bytes = List<byte> { 1, 2, 3, 4 }
+    _ = unsafe memcpy(bytes.pointer(), bytes.pointer(), 2)
+}

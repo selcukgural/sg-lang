@@ -1,0 +1,5 @@
+error: a parameter of a C function has a name too, as in any function
+  --> error_extern_param_name.sg:2:13
+ 2 |     int abs(int)
+   |             ^^^
+  hint: `int name`

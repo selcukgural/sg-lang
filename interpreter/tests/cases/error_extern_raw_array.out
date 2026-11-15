@@ -1,0 +1,5 @@
+error: the C function `fill` cannot take a `ref byte[16]`
+  --> error_extern_raw_array.sg:2:15
+ 2 |     void fill(ref byte[16] bytes)
+   |               ^^^^^^^^^^^^
+  hint: C takes the address of the items and their count apart: `raw byte bytes` and `nuint count`, given `buffer.pointer()`

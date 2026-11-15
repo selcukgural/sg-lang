@@ -1,0 +1,8 @@
+extern {
+    raw void memset(raw void target, int value, nuint count)
+}
+
+void main() {
+    var names = List<string> { "a" }
+    _ = unsafe memset((raw void)names.pointer(), 0, 1)
+}

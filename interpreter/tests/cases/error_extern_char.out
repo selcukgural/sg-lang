@@ -1,0 +1,6 @@
+error: the C function `putchar` cannot take a `char`
+  a `char` of SG is a Unicode character of 32 bits, and a `char` of C is a byte
+  --> error_extern_char.sg:2:17
+ 2 |     int putchar(char c)
+   |                 ^^^^
+  hint: `byte`, or `sbyte` for a C `char` that is signed

@@ -1,0 +1,6 @@
+extern "nosuchlibxyz" {
+    int nothing(int value)
+}
+void main() {
+    print(unsafe nothing(1))
+}

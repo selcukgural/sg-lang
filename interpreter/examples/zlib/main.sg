@@ -1,0 +1,16 @@
+// A library of C behind a safe module: `zlib/zlib.sg` declares the functions of zlib and calls
+// them inside `unsafe`; this file does not. Run it with `sg examples/zlib/main.sg`, its tests
+// with `sg test examples/zlib`.
+use zlib
+
+Result<void, ZlibError> main() {
+    var text = "SG calls C through a module that hides it. ".repeat(20)
+    var packed = try compress(text.asBytes())
+    print($"{text.length()} bytes compress to {packed.length()}")
+    var back = try decompress(read packed, text.length())
+    print((string.fromUtf8(read back) ?? "not text") == text)
+    print($"crc32 {checksum(text.asBytes()):x8}")
+    var broken = try decompress(packed[..10], text.length())    // BadData: the stream is cut short, exit code 1
+    print(broken.length())
+    return Ok()
+}

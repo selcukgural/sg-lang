@@ -14,7 +14,7 @@ const NOT_YET: &[&str] = &[
 /// Words of the language that are read where they stand, not names: `shared T`, `weak T`,
 /// `shared checked T`, `shared locked T`, `share x`, `weak x`, `using Name = T`,
 /// `lock x as c { }`, `async int f()`, `await t`, `raw byte p`, `unsafe { }`.
-const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock", "async", "await", "raw", "unsafe"];
+const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock", "async", "await", "raw", "unsafe", "extern"];
 
 type Res<T> = Result<T, Diag>;
 
@@ -26,7 +26,7 @@ pub fn parse(src: &str) -> Res<Program> {
 /// belongs to. What a module defines gets its full name here: `Product` in the folder `stock`
 /// is `stock.Product`.
 pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> {
-    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default() };
+    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default() };
     for (start, end, module) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
         let mut parser = Parser { src, toks, i: 0, struct_literals: true };
@@ -290,6 +290,21 @@ impl<'a> Parser<'a> {
                     return Err(Diag::error(async_span, "`async` is written in front of a function").hint("`async int count(string path) { ... }`"));
                 }
             }
+            if self.at_word("extern") {
+                if public {
+                    return Err(Diag::error(public_span, "`public` is written on each function of an `extern` block, not on the block")
+                        .hint("`extern \"z\" { public int compress(...) }`"));
+                }
+                if is_async {
+                    return Err(Diag::error(async_span, "a C function is not async").hint("a long call is awaited as a task of its own: `await Task.run(work, x)`"));
+                }
+                self.extern_block(program)?;
+                if *self.peek() != Tok::Eof {
+                    self.expect(Tok::Newline, "end of line")?;
+                }
+                self.skip_newlines();
+                continue;
+            }
             // `test` is a word only here, in front of the name of a test.
             let at_test = matches!(self.peek(), Tok::Ident(word) if word == "test") && matches!(self.peek_at(1), Tok::Str(_));
             if at_test {
@@ -334,6 +349,66 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         }
         Ok(uses)
+    }
+
+    /// `extern "z" { int compress(raw byte dest, ref nuint destLength, ...) }`: functions of C,
+    /// each declared on a line of its own, with no body. `extern { }` is the C library itself.
+    fn extern_block(&mut self, program: &mut Program) -> Res<()> {
+        let start = self.bump().span;
+        let lib = match self.peek().clone() {
+            Tok::Str(name) => {
+                self.bump();
+                Some(name)
+            }
+            _ => None,
+        };
+        let foreign = Foreign { lib, span: Span::new(start.start, self.prev_end()) };
+        self.open_brace()?;
+        self.skip_newlines();
+        while *self.peek() != Tok::RBrace {
+            if *self.peek() == Tok::Eof {
+                return Err(self.unexpected("`}`"));
+            }
+            let public = self.eat(&Tok::Public);
+            if self.at_word("async") {
+                return Err(Diag::error(self.span(), "a C function is not async").hint("a long call is awaited as a task of its own: `await Task.run(work, x)`"));
+            }
+            let ret = self.type_expr()?;
+            let (name, name_span) = self.ident("the name of a C function")?;
+            self.expect(Tok::LParen, "`(`")?;
+            let mut params: Vec<Param> = Vec::new();
+            while *self.peek() != Tok::RParen {
+                if *self.peek() == Tok::DotDot {
+                    let span = self.span();
+                    let span = if *self.peek_at(1) == Tok::Dot { span.to(self.toks[self.i + 1].span) } else { span };
+                    return Err(Diag::error(span, "a C function that takes a varying count of arguments is not in the interpreter yet")
+                        .note("declare it with the arguments one call gives, or call a function that takes a fixed count"));
+                }
+                let ty = self.type_expr()?;
+                if matches!(self.peek(), Tok::Comma | Tok::RParen) {
+                    return Err(Diag::error(ty.span, "a parameter of a C function has a name too, as in any function")
+                        .hint(format!("`{} name`", &self.src[ty.span.start..ty.span.end])));
+                }
+                let (name, span) = self.ident("a parameter name")?;
+                params.push(Param { ty, name, span });
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(Tok::RParen, "`)`")?;
+            if *self.peek() == Tok::LBrace {
+                return Err(Diag::error(self.span(), "a C function has no body: it is declared here, and C has it")
+                    .hint("a function of your own is written outside the `extern` block"));
+            }
+            let func = Func { public, is_async: false, ret, name, name_span, this: None, this_ty: None, params, from: Vec::new(), body: Vec::new(), foreign: Some(foreign.clone()) };
+            program.funcs.push(func);
+            if *self.peek() != Tok::RBrace {
+                self.expect(Tok::Newline, "end of line")?;
+            }
+            self.skip_newlines();
+        }
+        self.bump();
+        Ok(())
     }
 
     fn struct_decl(&mut self) -> Res<StructDecl> {
@@ -553,7 +628,7 @@ impl<'a> Parser<'a> {
             }
         }
         let body = self.block()?;
-        Ok(Func { public: false, is_async: false, ret, name, name_span, this, this_ty, params, from, body })
+        Ok(Func { public: false, is_async: false, ret, name, name_span, this, this_ty, params, from, body, foreign: None })
     }
 
     /// An async method is not here yet: `async` is written in front of a function only.

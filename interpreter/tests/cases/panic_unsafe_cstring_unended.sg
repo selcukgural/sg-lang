@@ -1,0 +1,9 @@
+// The interpreter looks for the zero byte only inside the block the pointer is in.
+void main() {
+    var bytes = Memory.allocate<byte>(2)
+    unsafe {
+        bytes[0] = 'h'
+        bytes[1] = 'i'
+    }
+    print(unsafe string.fromCString(bytes) ?? "")
+}

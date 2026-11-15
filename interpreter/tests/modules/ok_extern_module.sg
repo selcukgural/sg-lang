@@ -1,0 +1,7 @@
+use clib
+
+void main() {
+    print(magnitude(-3))
+    var text = CString.from("four") ?? panic("zero byte")
+    print(unsafe strlen(read text))
+}

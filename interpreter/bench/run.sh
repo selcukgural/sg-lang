@@ -38,12 +38,16 @@ PY
 }
 
 printf "%-10s %12s %12s %10s %14s\n" program "release (s)" "checked (s)" "C (s)" "release / C"
-for name in fib primes collatz words list expr parse vector counts show lookup buffer bits hash nbody numbers floats fields lines copy bytes table blocks keywords classes rewrite tree tasks async asynclines tasklist asynccopy echo echosync netlines ring; do
+for name in fib primes collatz words list expr parse vector counts show lookup buffer bits hash nbody numbers floats fields lines copy bytes table blocks keywords classes rewrite tree tasks async asynclines tasklist asynccopy echo echosync netlines ring crc; do
     ./target/release/sg build "bench/$name.sg" --release -o "$out/$name-release"
     # The checked build, optimised like the others, to see what the check alone costs.
     ./target/release/sg emit-c "bench/$name.sg" > "$out/$name-checked.c"
-    cc -std=c11 -O2 -ffp-contract=off -o "$out/$name-checked" "$out/$name-checked.c" -lm -pthread
-    cc -std=c11 -O2 -ffp-contract=off -o "$out/$name-c" "bench/$name.c" -lm -pthread
+    # The libraries a program links: SG writes them on the first line of its C, and the C
+    # written by hand says them in a comment on its first line.
+    sglibs=$(sed -n '1s|^/\* sg-link: \(.*\) \*/$|\1|p' "$out/$name-checked.c")
+    clibs=$(sed -n '1s|^/\* link: \(.*\) \*/$|\1|p' "bench/$name.c")
+    cc -std=c11 -O2 -ffp-contract=off -o "$out/$name-checked" "$out/$name-checked.c" $sglibs -lm -pthread
+    cc -std=c11 -O2 -ffp-contract=off -o "$out/$name-c" "bench/$name.c" $clibs -lm -pthread
     input="$out/$name.in"
     [ -e "$input" ] || input=/dev/null
     [ "$("$out/$name-release" < "$input")" = "$("$out/$name-c" < "$input")" ] || { echo "$name: the two programs print different things"; exit 1; }

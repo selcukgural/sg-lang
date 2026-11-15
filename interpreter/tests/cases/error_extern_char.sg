@@ -1,0 +1,6 @@
+extern {
+    int putchar(char c)
+}
+
+void main() {
+}

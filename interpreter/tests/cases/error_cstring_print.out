@@ -1,0 +1,4 @@
+error: a `CString` value cannot be written as text
+  --> error_cstring_print.sg:3:11
+ 3 |     print(c)
+   |           ^

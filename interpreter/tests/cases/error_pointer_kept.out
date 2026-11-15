@@ -1,0 +1,6 @@
+error: `pointer()` is written only as an argument of a C function
+  C is given the address of the items for the time of the call; a pointer kept after it could point at items that have moved
+  --> error_pointer_kept.sg:3:20
+ 3 |     var p = unsafe bytes.pointer()
+   |                    ^^^^^^^^^^^^^^^
+  hint: memory that C keeps is taken with `Memory.allocate<T>(count)`

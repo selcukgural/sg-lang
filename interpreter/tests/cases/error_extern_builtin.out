@@ -1,0 +1,4 @@
+error: `print` is a built-in function and cannot be redefined
+  --> error_extern_builtin.sg:2:10
+ 2 |     void print(int value)
+   |          ^^^^^

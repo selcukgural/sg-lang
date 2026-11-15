@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the sixty-ninth slice.
+Last brought up to date: 15 November 2026, the seventieth slice.
 
 ## Functions and variables
 
@@ -181,7 +181,13 @@ Last brought up to date: 15 November 2026, the sixty-ninth slice.
 | `p.add(n)`, `p.sub(n)`, `p as *mut u8`, `p.is_null()` | `p + n`, `p - n`, `(raw byte)p`, `p == null` | built | The first three inside `unsafe` |
 | `alloc_zeroed(Layout::array::<T>(n))`, `dealloc` | `Memory.allocate<T>(n)`, `Memory.free(p)` | built | Zeroed memory; `free` inside `unsafe`. The interpreter catches an item outside its block, after `free`, and a block freed twice, as Miri does |
 | `ptr::copy(src, dst, n)` | `Memory.copy(source, target, count)` | built | Inside `unsafe`; the two may overlap |
-| `extern "C" { fn ... }`, `#[link(name = "z")]` | `extern "z" { ... }` | designed | The next slice; every call inside `unsafe` |
+| `extern "C" { fn ... }`, `#[link(name = "z")]` | `extern "z" { ... }` | built | Every call inside `unsafe`; `extern { }` is the C library itself. C names as C writes them; private to the module unless `public` is written on a function |
+| `c_int`, `size_t`, `*const T`, `*mut T` in a signature | `int`, `nuint`, `read T` or `raw T`, `ref T` or `raw T` | built | `ref` and `read` last for the call; `raw T` when C keeps the address. No `char` (a byte is `byte`), no struct by value yet, no `...` |
+| `CString::new(s)?`, `c.as_ptr()` | `try CString.from(s)`, `read c` as an argument | built | A zero byte inside is a `TextError` at its position |
+| `CStr::from_ptr(p).to_str()?.to_owned()` | `try unsafe string.fromCString(p)` | built | Copies and checks the UTF-8 |
+| `v.as_mut_ptr()`, `v.as_ptr()` | `v.pointer()` | built | Only as an argument of a C function, on a list, an array or a slice of plain data; it counts as a `ref` of `v` for the call |
+| `libc::malloc` / `libc::free` beside `Box` | `Memory.allocate` / `Memory.free` | built | One allocator: what C gives with `malloc` goes back with `Memory.free` |
+| a safe wrapper module around a `-sys` crate | a module whose functions of C are private | built | `examples/zlib`: its users write no `unsafe` |
 
 ## Tasks and locks
 

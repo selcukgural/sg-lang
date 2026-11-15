@@ -27,7 +27,8 @@
 //! kqueue (see `NET_ASYNC_RUNTIME`), and the reader of a connection, a `StreamReader` that borrows it
 //! (see `sg_reader` in `IO_RUNTIME`), and raw memory: a `raw T` is a `T*`, an item of it is reached
 //! where it is with nothing checked, and `Memory.allocate` is `calloc` behind the tests of its count
-//! (see `RAW_RUNTIME`).
+//! (see `RAW_RUNTIME`), and the functions of C an `extern` block declares, called directly through an
+//! inline adapter, with `CString` and `buffer.pointer()` (see `FFI_RUNTIME` and `foreign_func`).
 //! A type alias is the type it names. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
@@ -1281,6 +1282,28 @@ static inline void sg_raw_copy(const void* source, void* target, int64_t n, size
     if (n) memmove(target, source, (size_t)n * size);
 }
 "#;
+
+/// What a program that calls C needs: the name a C function has for the linker, written as
+/// a label of its declaration so that it clashes with no header the runtime includes (see
+/// `foreign_func`), and `CString`, the bytes of a text and a zero byte, from `malloc`.
+const FFI_RUNTIME: &str = r#"
+#ifdef __APPLE__
+#define SG_C(name) __asm__("_" name)
+#else
+#define SG_C(name) __asm__(name)
+#endif
+typedef uint8_t* sg_cstring;
+static inline void sg_drop_cstring(sg_cstring* c) { free(*c); *c = NULL; }
+static inline sg_cstring sg_move_cstring(sg_cstring* c) { sg_cstring out = *c; *c = NULL; return out; }
+"#;
+
+/// The libraries the C compiler links a program with: the line `emit` writes first.
+pub fn link_flags(code: &str) -> Vec<String> {
+    match code.lines().next().and_then(|line| line.strip_prefix("/* sg-link:")) {
+        Some(rest) => rest.trim_end_matches("*/").split_whitespace().map(str::to_string).collect(),
+        None => Vec::new(),
+    }
+}
 
 const TABLE: &str = r#"
 static int64_t sg_find_@N(const sg_@N* m, @P key) {
@@ -3874,7 +3897,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         guard_decls: Vec::new(),
         reserving: None,
         sites: Vec::new(),
-        funcs: prog.funcs.iter().filter(|func| !func.is_async).map(|func| func.name.as_str()).collect(),
+        funcs: prog.funcs.iter().filter(|func| !func.is_async && func.foreign.is_none()).map(|func| func.name.as_str()).collect(),
         asyncs: prog.funcs.iter().filter(|func| func.is_async).map(|func| func.name.as_str()).collect(),
         awaits: None,
         exit_blocks: Vec::new(),
@@ -3902,7 +3925,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     for func in &prog.funcs {
         let params = func.params.iter().map(|param| emitter.written(&param.ty)).collect::<Res<Vec<Ty>>>()?;
         let name = cname(&func.name);
-        if func.is_async {
+        if func.foreign.is_some() {
+            emitter.sigs.insert(format!("sg_x_{name}"), params);
+        } else if func.is_async {
             let _ = writeln!(emitter.types, "typedef struct F_{name} F_{name};");
             emitter.made.insert("tasks".to_string());
             emitter.sigs.insert(format!("a_init_{name}"), params.clone());
@@ -3924,7 +3949,17 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
 
     let mut protos = String::new();
     let mut bodies = String::new();
+    // The functions of C the program calls, and the libraries they are in.
+    let called = crate::ffi::called(prog, tests);
+    let mut libs: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for func in &prog.funcs {
+        if let Some(foreign) = &func.foreign {
+            if called.contains(&func.name) {
+                libs.extend(foreign.lib.as_deref());
+                emitter.foreign_func(func, prog, &mut protos)?;
+            }
+            continue;
+        }
         match func.is_async {
             true => emitter.async_func(func, &mut protos, &mut bodies)?,
             false => emitter.func(func, None, &mut protos, &mut bodies)?,
@@ -4005,6 +4040,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     if emitter.made.contains("raw") {
         out.push_str(RAW_RUNTIME);
     }
+    if emitter.made.contains("ffi") {
+        out.push_str(FFI_RUNTIME);
+    }
     if floats {
         out.push_str(crate::shortest::tables());
         out.push_str(crate::shortest::DRAGONBOX);
@@ -4057,12 +4095,19 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         out.push_str(TEST_RUNNER);
     }
     out.push_str(&start);
+    // The libraries to link, on the first line, where `link_flags` reads them.
+    // `-lm` is given to every program already.
+    libs.remove("m");
+    if !libs.is_empty() {
+        let flags: Vec<String> = libs.iter().map(|lib| format!("-l{lib}")).collect();
+        out.insert_str(0, &format!("/* sg-link: {} */\n", flags.join(" ")));
+    }
     Ok(out)
 }
 
 fn not_yet(span: Span, what: &str) -> Diag {
     Diag::error(span, format!("{what} is not in the C back end yet"))
-        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, the collections, arrays and slices, function values, `T*`, `T?`, `read` and `ref`, `shared` values, tasks, async functions and cancellation, the network, and `print`")
+        .note("the back end compiles integers, `bool`, text, functions, structs, enums and `match`, `Result` and `try`, the collections, arrays and slices, function values, `T*`, `T?`, `read` and `ref`, `shared` values, tasks, async functions and cancellation, the network, raw memory and calls of C, and `print`")
 }
 
 /// A C string literal for any text.
@@ -4336,6 +4381,7 @@ fn mangle(ty: &Ty) -> Option<String> {
         Ty::Token => "token".to_string(),
         Ty::Listener => "listener".to_string(),
         Ty::Socket => "socket".to_string(),
+        Ty::CString => "cstring".to_string(),
         Ty::Struct(name) => format!("S_{}", cname(name)),
         Ty::Enum(name) => format!("E_{}", cname(name)),
         Ty::Ptr(inner) => format!("P_{}", mangle(inner)?),
@@ -4833,6 +4879,42 @@ impl<'a> Emitter<'a> {
     // ---- types ----
 
     /// The C type of a value.
+    /// A function of C: its declaration under a name of the runtime (`sg_c_compress`), bound
+    /// to the C name with a label, so that no header the runtime includes declares it
+    /// differently; and an adapter that takes the arguments as the program gives them
+    /// (`sg_x_compress`), where a `read CString` is the text it lends. Each is written once.
+    fn foreign_func(&mut self, func: &Func, prog: &Program, protos: &mut String) -> Res<()> {
+        self.made.insert("ffi".to_string());
+        let (params, ret) = &prog.foreign[&func.name];
+        let c_name = short_name(&func.name);
+        let mut c_types = Vec::new();
+        let mut sg_types = Vec::new();
+        let mut passed = Vec::new();
+        for (position, param) in params.iter().enumerate() {
+            let c_type = match param {
+                Ty::Read(inner) if **inner == Ty::CString => "const char*".to_string(),
+                Ty::Read(inner) => format!("const {}*", self.ctype(inner, func.name_span)?),
+                _ => self.ctype(param, func.name_span)?,
+            };
+            sg_types.push(format!("{} a{position}", self.ctype(param, func.name_span)?));
+            passed.push(match param {
+                Ty::Read(inner) if **inner == Ty::CString => format!("(const char*)*a{position}"),
+                _ => format!("a{position}"),
+            });
+            c_types.push(c_type);
+        }
+        let ret_type = self.ctype(ret, func.name_span)?;
+        if self.made.insert(format!("extern {c_name}")) {
+            let list = if c_types.is_empty() { "void".to_string() } else { c_types.join(", ") };
+            let _ = writeln!(protos, "extern {ret_type} sg_c_{c_name}({list}) SG_C({});", c_string(c_name));
+        }
+        let list = if sg_types.is_empty() { "void".to_string() } else { sg_types.join(", ") };
+        let call = format!("sg_c_{c_name}({})", passed.join(", "));
+        let body = if *ret == Ty::Void { format!("{call};") } else { format!("return {call};") };
+        let _ = writeln!(protos, "static inline {ret_type} sg_x_{}({list}) {{ {body} }}", cname(&func.name));
+        Ok(())
+    }
+
     fn ctype(&mut self, ty: &Ty, span: Span) -> Res<String> {
         let ty = flat(ty);
         Ok(match ty {
@@ -4862,6 +4944,10 @@ impl<'a> Emitter<'a> {
                 "sg_cancel*".to_string()
             }
             Ty::Void => "void".to_string(),
+            Ty::CString => {
+                self.made.insert("ffi".to_string());
+                "sg_cstring".to_string()
+            }
             // A `Formatter` is the text being written.
             Ty::Str | Ty::Formatter => "sg_string".to_string(),
             Ty::Struct(name) => format!("S_{}", cname(name)),
@@ -5536,7 +5622,7 @@ impl<'a> Emitter<'a> {
                 let params = params.iter().map(|param| self.written(param)).collect::<Res<Vec<Ty>>>()?;
                 Ty::Func(params, Box::new(self.written(ret)?))
             }
-            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter | Ty::Reader(_) | Ty::Writer | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket)), []) => base,
+            (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter | Ty::Reader(_) | Ty::Writer | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString)), []) => base,
             (None, []) => match self.full(&ty.name, ty.span) {
                 // An alias is the type it names; the checker has seen that it ends.
                 Some(full) if self.aliases.contains_key(full.as_str()) => self.written(&self.aliases[full.as_str()].ty)?,
@@ -5589,7 +5675,7 @@ impl<'a> Emitter<'a> {
     /// Whether a value of this type owns something that is freed when it ends.
     fn droppable(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader(_) | Ty::Writer | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket => true,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader(_) | Ty::Writer | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString => true,
             Ty::Entry(key, value) => self.droppable(key) || self.droppable(value),
             Ty::Nullable(inner) | Ty::Array(inner, _) => self.droppable(inner),
             Ty::Result(ok, error) => self.droppable(ok) || self.droppable(error),
@@ -10627,6 +10713,8 @@ impl<'a> Emitter<'a> {
                     Ok("sg_cancel_new()".to_string())
                 }
                 Callee::Plain => self.call(format!("f_{}", cname(name)), None, args, head, &expr.ty),
+                // A function of C, through the adapter `foreign_func` wrote.
+                Callee::Extern => self.call(format!("sg_x_{}", cname(name)), None, args, head, &expr.ty),
                 Callee::Static { owner, name } => self.call(format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
                 // A call through a function value kept in a variable.
                 Callee::Value => {
@@ -10972,6 +11060,58 @@ impl<'a> Emitter<'a> {
                     }
                     self.call("sg_from_utf8".to_string(), None, args, head, &expr.ty)
                 }
+                // `CString.from(text)`: the bytes and a zero byte, from `malloc`; a zero byte in
+                // the text is the error, at its position.
+                Callee::ToCString => {
+                    let text = Ty::Read(Box::new(Ty::Str));
+                    let (given, gives) = (self.ctype(&text, expr.span)?, self.ctype(&expr.ty, expr.span)?);
+                    if self.made.insert("sg_to_cstring".to_string()) {
+                        let _ = writeln!(
+                            self.glue,
+                            "static {gives} sg_to_cstring({given} text) {{ const uint8_t* zero = text.len ? memchr(text.ptr, 0, (size_t)text.len) : NULL; \
+                             if (zero) return ({gives}){{ .tag = 1, .u.v1 = {{ (S_TextError){{ .m_position = zero - text.ptr }} }} }}; \
+                             uint8_t* bytes = malloc((size_t)text.len + 1); if (!bytes) abort(); \
+                             if (text.len) memcpy(bytes, text.ptr, (size_t)text.len); bytes[text.len] = 0; \
+                             return ({gives}){{ .tag = 0, .u.v0 = {{ bytes }} }}; }}"
+                        );
+                        self.sigs.insert("sg_to_cstring".to_string(), vec![text]);
+                    }
+                    self.call("sg_to_cstring".to_string(), None, args, head, &expr.ty)
+                }
+                // `string.fromCString(p)`: the bytes up to the zero byte, checked and copied.
+                Callee::FromCString => {
+                    let gives = self.ctype(&expr.ty, expr.span)?;
+                    if self.made.insert("sg_from_cstring".to_string()) {
+                        let _ = writeln!(
+                            self.glue,
+                            "static {gives} sg_from_cstring(const void* p) {{ int64_t n = (int64_t)strlen((const char*)p); int64_t bad = sg_utf8_bad((const uint8_t*)p, n); \
+                             if (bad >= 0) return ({gives}){{ .tag = 1, .u.v1 = {{ (S_TextError){{ .m_position = bad }} }} }}; \
+                             return ({gives}){{ .tag = 0, .u.v0 = {{ sg_clone((sg_str){{ (const uint8_t*)p, n }}) }} }}; }}"
+                        );
+                    }
+                    let pointer = self.first(&args[0], head)?;
+                    Ok(format!("sg_from_cstring({pointer})"))
+                }
+                // `buffer.pointer()`, an argument of a C function: where the items are.
+                Callee::Pointer => {
+                    let mut place = self.value(recv)?;
+                    let mut ty = &recv.ty;
+                    while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Ptr(inner) = ty {
+                        if matches!(**inner, Ty::Slice(_)) {
+                            ty = inner;
+                            break;
+                        }
+                        place = format!("(*{place})");
+                        ty = inner;
+                    }
+                    let Ty::Raw(item) = &expr.ty else { unreachable!("`pointer()` gives a raw pointer") };
+                    let ctype = self.ctype(item, expr.span)?;
+                    Ok(match ty {
+                        Ty::Array(..) => format!("(({ctype}*){place}.items)"),
+                        _ => format!("(({ctype}*){place}.ptr)"),
+                    })
+                }
+                Callee::Extern => unreachable!("a function of C is called by its name"),
                 Callee::Io(call) => self.io(*call, args, head, expr),
                 // `Memory.free(p)` is C's `free`; `Memory.copy` is `memmove` behind a test of the count.
                 Callee::Memory(MemoryCall::Free) => Ok(format!("free({})", self.first(&args[0], head)?)),

@@ -1,0 +1,17 @@
+// Sixteen gigabytes through zlib's CRC-32, 64 KB at a time: a call of C, and the items of an array
+// handed to it, next to the same calls written in C.
+extern "z" {
+    ulong crc32(ulong crc, raw byte buf, uint len)
+}
+
+void main() {
+    var block = byte[65536]
+    for i in 0..65536 {
+        block[i] = (byte)((i * 31 + 7) & 255)
+    }
+    ulong crc = 0
+    for round in 0..262144 {
+        crc = unsafe crc32(crc, block.pointer(), 65536)
+    }
+    print(crc)
+}

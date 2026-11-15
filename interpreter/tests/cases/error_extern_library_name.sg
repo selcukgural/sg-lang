@@ -1,0 +1,6 @@
+extern "z -o /tmp/x" {
+    int abs(int value)
+}
+
+void main() {
+}

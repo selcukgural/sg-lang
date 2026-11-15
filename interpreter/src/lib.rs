@@ -7,6 +7,7 @@ pub mod check;
 pub mod diag;
 pub mod emit_c;
 pub mod exhaust;
+pub mod ffi;
 pub mod interp;
 pub mod input;
 pub mod lexer;

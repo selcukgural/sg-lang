@@ -1,0 +1,4 @@
+void main() {
+    var bytes = Memory.allocate<byte>(1)
+    print(string.fromCString(bytes) ?? "")
+}

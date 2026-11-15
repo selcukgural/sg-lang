@@ -1,0 +1,6 @@
+extern {
+    async int abs(int value)
+}
+
+void main() {
+}

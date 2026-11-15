@@ -1,0 +1,5 @@
+error: the C function `strlen` cannot take a `string`
+  --> error_extern_string.sg:2:18
+ 2 |     nuint strlen(string text)
+   |                  ^^^^^^
+  hint: a text goes to C as `read CString`: `CString.from(text)` makes one

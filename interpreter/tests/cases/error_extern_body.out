@@ -1,0 +1,5 @@
+error: a C function has no body: it is declared here, and C has it
+  --> error_extern_body.sg:2:24
+ 2 |     int abs(int value) {
+   |                        ^
+  hint: a function of your own is written outside the `extern` block

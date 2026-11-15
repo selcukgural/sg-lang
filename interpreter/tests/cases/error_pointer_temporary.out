@@ -1,0 +1,5 @@
+error: the items whose address C is given are kept in a variable
+  --> error_pointer_temporary.sg:6:23
+ 6 |     _ = unsafe memset(List<byte> { 1, 2 }.pointer(), 0, 2)
+   |                       ^^^^^^^^^^^^^^^^^^^
+  hint: `var buffer = List<byte> { 1, 2 }`, then `buffer.pointer()`

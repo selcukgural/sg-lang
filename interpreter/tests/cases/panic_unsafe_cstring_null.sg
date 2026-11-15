@@ -1,0 +1,4 @@
+void main() {
+    raw byte nothing = null
+    print(unsafe string.fromCString(nothing) ?? "")
+}

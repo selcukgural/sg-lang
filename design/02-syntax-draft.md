@@ -1279,6 +1279,38 @@ toHex(read id, ref text)                         // lent where a slice is expect
 
 The full example is in the [example programs](05-examples.md) file.
 
+### Raw memory and calling C
+
+What the checker cannot follow is written inside `unsafe`: an item of raw memory, moving or casting a raw pointer,
+giving memory back, and a call of C. A `raw T` points at plain data (numbers, `bool`, `char`, raw pointers, and
+arrays and structs of them), laid out as C lays it.
+
+```
+extern "z" {                                     // linked as -lz; extern { } is the C library itself
+    nuint compressBound(nuint sourceLen)         // C names as C writes them
+    int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen)
+}
+extern {
+    nuint strlen(read CString text)              // const char*
+}
+
+var room = unsafe compressBound((nuint)data.length())
+var packed = Memory.allocate<byte>((nint)room)   // zeroed, C's calloc; needs no unsafe
+nuint size = room
+var code = unsafe compress(packed, ref size, data.pointer(), (nuint)data.length())
+                                                 // pointer() only as an argument of a C function
+var name = try CString.from("tea")               // a zero byte inside is a TextError
+var length = unsafe strlen(read name)
+var text = try unsafe string.fromCString(p)      // copies up to the zero byte, checks the UTF-8
+unsafe {
+    packed[0] = 1                                // an item of raw memory
+    Memory.free(packed)                          // also memory C gave with malloc
+}
+```
+
+A module that declares the functions of a library without `public` can give its users a safe interface, and they
+write no `unsafe`.
+
 ### Modules and visibility
 
 A folder is a module; there is no declaration in the file. A name without `public` stays inside the module; the rule

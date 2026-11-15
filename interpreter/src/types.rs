@@ -303,6 +303,9 @@ pub enum Ty {
     /// `TcpStream`: a connection over the network, read and written as bytes, without a buffer.
     /// Closed when it ends.
     Socket,
+    /// `CString`: a text with a zero byte after it, for C. Owns its bytes, which are freed when
+    /// it ends; it is lent to C as `read CString`.
+    CString,
     /// `raw T`: an address, owning nothing, that may be `null`; what lies there is read and
     /// written only inside `unsafe`. `T` holds only plain data, or is `void`.
     Raw(Box<Ty>),
@@ -331,6 +334,7 @@ impl Ty {
             "CancellationToken" => Some(Ty::Token),
             "TcpListener" => Some(Ty::Listener),
             "TcpStream" => Some(Ty::Socket),
+            "CString" => Some(Ty::CString),
             _ => IntTy::from_name(name).map(Ty::Int).or_else(|| FloatTy::from_name(name).map(Ty::Float)),
         }
     }
@@ -344,7 +348,7 @@ impl Ty {
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(_) | Ty::Writer | Ty::Locked(_) | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket => false,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(_) | Ty::Writer | Ty::Locked(_) | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString => false,
         }
     }
 
@@ -402,6 +406,7 @@ impl fmt::Display for Ty {
             Ty::Token => f.write_str("CancellationToken"),
             Ty::Listener => f.write_str("TcpListener"),
             Ty::Socket => f.write_str("TcpStream"),
+            Ty::CString => f.write_str("CString"),
             Ty::Raw(inner) => write!(f, "raw {inner}"),
             Ty::Read(inner) => write!(f, "read {inner}"),
             Ty::Ref(inner) => write!(f, "ref {inner}"),

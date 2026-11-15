@@ -1,0 +1,46 @@
+// A text goes to C with a zero byte after it, and comes back checked to be UTF-8.
+extern {
+    nuint strlen(read CString text)
+}
+
+struct Named {
+    CString name
+    int count
+}
+
+nuint measure(read CString text) {
+    return unsafe strlen(read text)
+}
+
+void main() {
+    var made = CString.from("caf\u{e9}")
+    if made is Ok(text) {
+        print(measure(read text))
+    }
+    if CString.from("a\u{0}b") is Error(cause) {
+        print($"a zero byte at {cause.position}")
+    }
+
+    // A `CString` is owned: it moves, and it is freed where its owner ends.
+    var named = Named { name = CString.from("tea") ?? panic("zero byte"), count = 2 }
+    print(unsafe strlen(read named.name))
+    var moved = named.name
+    print(measure(read moved))
+
+    // Bytes that end in a zero byte, read as text: copied, and checked.
+    var bytes = Memory.allocate<byte>(4)
+    unsafe {
+        bytes[0] = 'o'
+        bytes[1] = 'k'
+    }
+    print(unsafe string.fromCString(bytes) ?? "not text")
+    unsafe {
+        bytes[0] = 0xff
+    }
+    if unsafe string.fromCString(bytes) is Error(cause) {
+        print($"not text from byte {cause.position}")
+    }
+    unsafe {
+        Memory.free(bytes)
+    }
+}

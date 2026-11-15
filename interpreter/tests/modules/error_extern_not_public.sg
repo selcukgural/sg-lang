@@ -1,0 +1,5 @@
+use clib
+
+void main() {
+    print(unsafe abs(-1))
+}

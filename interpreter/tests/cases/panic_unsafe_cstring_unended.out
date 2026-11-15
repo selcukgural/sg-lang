@@ -1,0 +1,4 @@
+panic: `string.fromCString` finds no zero byte before the end of the block
+  --> panic_unsafe_cstring_unended.sg:8:11
+ 8 |     print(unsafe string.fromCString(bytes) ?? "")
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

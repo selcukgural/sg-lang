@@ -1,0 +1,8 @@
+extern {
+    int abs(int value)
+}
+
+void main() {
+    Func<int, int> f = abs
+    print(f(-1))
+}

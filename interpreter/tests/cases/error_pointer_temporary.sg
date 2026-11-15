@@ -1,0 +1,7 @@
+extern {
+    raw void memset(raw byte target, int value, nuint count)
+}
+
+void main() {
+    _ = unsafe memset(List<byte> { 1, 2 }.pointer(), 0, 2)
+}

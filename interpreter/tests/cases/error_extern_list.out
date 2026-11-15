@@ -1,0 +1,5 @@
+error: the C function `fill` cannot take a `ref List<byte>`
+  --> error_extern_list.sg:2:15
+ 2 |     void fill(ref List<byte> bytes)
+   |               ^^^^^^^^^^^^^^
+  hint: C takes the address of the items and their count apart: `raw byte bytes` and `nuint count`, given `buffer.pointer()`

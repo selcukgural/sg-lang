@@ -1,0 +1,5 @@
+error: `z -o /tmp/x` is not the name of a library
+  a library is named as the C compiler links it, `extern "z"` for `-lz`: letters, digits and `_ - . +`
+  --> error_extern_library_name.sg:1:1
+ 1 | extern "z -o /tmp/x" {
+   | ^^^^^^^^^^^^^^^^^^^^

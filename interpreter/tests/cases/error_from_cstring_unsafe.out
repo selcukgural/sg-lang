@@ -1,0 +1,5 @@
+error: `string.fromCString` reads memory up to a zero byte, which the checker cannot see is there, so it is written inside `unsafe`
+  --> error_from_cstring_unsafe.sg:3:11
+ 3 |     print(string.fromCString(bytes) ?? "")
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `unsafe string.fromCString(bytes)`, or `unsafe { ... }` around several statements

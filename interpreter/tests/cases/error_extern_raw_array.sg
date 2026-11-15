@@ -1,0 +1,6 @@
+extern {
+    void fill(ref byte[16] bytes)
+}
+
+void main() {
+}

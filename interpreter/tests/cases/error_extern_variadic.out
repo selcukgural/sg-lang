@@ -1,0 +1,5 @@
+error: a C function that takes a varying count of arguments is not in the interpreter yet
+  declare it with the arguments one call gives, or call a function that takes a fixed count
+  --> error_extern_variadic.sg:2:37
+ 2 |     int printf(read CString format, ...)
+   |                                     ^^^

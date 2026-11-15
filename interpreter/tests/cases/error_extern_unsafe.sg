@@ -1,0 +1,7 @@
+extern {
+    int abs(int value)
+}
+
+void main() {
+    print(abs(-1))
+}

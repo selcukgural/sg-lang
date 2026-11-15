@@ -1,0 +1,5 @@
+error: the C function `area` cannot take a `Point`
+  a struct is lent to C for the time of the call, `ref T` or `read T`; one given by value is not in the interpreter yet
+  --> error_extern_struct_value.sg:7:14
+ 7 |     int area(Point p)
+   |              ^^^^^

@@ -1,0 +1,6 @@
+public extern {
+    int abs(int value)
+}
+
+void main() {
+}

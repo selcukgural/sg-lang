@@ -1,0 +1,6 @@
+extern {
+    int printf(read CString format, ...)
+}
+
+void main() {
+}

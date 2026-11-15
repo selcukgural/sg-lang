@@ -90,6 +90,8 @@ pub enum Value {
     Listener(Rc<std::net::TcpListener>),
     /// `TcpStream`, which does not block.
     Socket(Rc<std::net::TcpStream>),
+    /// `CString`: the bytes of a text and a zero byte after them, where C can read them.
+    CStr(Rc<std::ffi::CString>),
     /// `raw T`: an address, and the block of `Memory.allocate` it was made from (see `raw`).
     /// `null` is `Value::Null` until it meets an address.
     Raw(RawPtr),
@@ -463,6 +465,8 @@ struct Shared<'e> {
     input: RefCell<crate::input::Input>,
     test_err: RefCell<String>,
     sched: Sched,
+    /// The functions of C the program calls (see `ffi`).
+    ffi: crate::ffi::Library,
 }
 
 /// What a thread keeps of the program running on it, taken to the thread a task runs on
@@ -1118,6 +1122,14 @@ fn write_file(path: &str, bytes: &[u8], append: bool) -> std::io::Result<()> {
     options.open(path)?.write_all(bytes)
 }
 
+/// The type of the pointer `buffer.pointer()` gives, also when a cast is written around it.
+fn arg_pointer_type(arg: &Expr) -> Ty {
+    match &arg.kind {
+        ExprKind::RawCast { expr, .. } => expr.ty.clone(),
+        _ => arg.ty.clone(),
+    }
+}
+
 /// The address a raw pointer holds; `null` is 0.
 fn raw_of(value: &Value) -> RawPtr {
     match value {
@@ -1509,10 +1521,10 @@ impl Frame {
 }
 
 /// What the fibers of a run share. The input is taken out of the world into a block of its own.
-fn shared<'a>(out: &'a mut dyn Write, mut world: World<'a>) -> Shared<'a> {
+fn shared<'a>(out: &'a mut dyn Write, mut world: World<'a>, ffi: crate::ffi::Library) -> Shared<'a> {
     let source = std::mem::replace(&mut world.input, Box::new(std::io::empty()));
     let input = crate::input::Input::new(source, world.input_waits);
-    Shared { out: RefCell::new(out), world: RefCell::new(world), input: RefCell::new(input), test_err: RefCell::new(String::new()), sched: Sched::new() }
+    Shared { out: RefCell::new(out), world: RefCell::new(world), input: RefCell::new(input), test_err: RefCell::new(String::new()), sched: Sched::new(), ffi }
 }
 
 pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, world: World<'a>) -> Result<(), Stop> {
@@ -1527,9 +1539,10 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
-    let io = shared(out, world);
+    let ffi = crate::ffi::Library::open(prog, false).map_err(Stop::Diag)?;
+    let io = shared(out, world, ffi);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign };
         let result = run_main(&mut interp);
         interp.end_fibers();
         result
@@ -1587,9 +1600,10 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
-    let io = shared(out, world);
+    let ffi = crate::ffi::Library::open(prog, true).map_err(Stop::Diag)?;
+    let io = shared(out, world, ffi);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign };
         run_each_test(&mut interp, prog, sources)
     })
 }
@@ -1709,6 +1723,8 @@ struct Interp<'a, 'e> {
     started: Vec<Rc<RefCell<Task>>>,
     /// The types of the fields of each struct of plain data: how it lies in raw memory.
     plain: &'a HashMap<String, Vec<Ty>>,
+    /// What each function of C takes and gives (see `Program::foreign`).
+    foreign: &'a HashMap<String, (Vec<Ty>, Ty)>,
 }
 
 impl<'a, 'e> Interp<'a, 'e> {
@@ -2146,6 +2162,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             aliases: self.aliases.clone(),
             started: Vec::new(),
             plain: self.plain,
+            foreign: self.foreign,
         };
         let weak = Rc::downgrade(task);
         let name: Rc<str> = func.name.as_str().into();
@@ -2921,9 +2938,45 @@ impl<'a, 'e> Interp<'a, 'e> {
                     let values = self.values(args, frame)?;
                     self.call(func, None, values, expr.span)
                 }
+                Callee::Extern => self.call_extern(name, args, expr, frame),
                 _ => self.call_expr(expr, name, args, frame),
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
+                Callee::Extern | Callee::Pointer => unreachable!("a function of C is called by its name, and `pointer()` is read by its call"),
+                // `string.fromCString(p)`: the bytes up to the zero byte, copied and checked.
+                Callee::FromCString => {
+                    let pointer = raw_of(&strip(self.expr(&args[0], frame)?));
+                    if pointer.addr == 0 {
+                        return Err(Diag::panic(expr.span, "`string.fromCString` is given a pointer that is `null`").into());
+                    }
+                    let length = match raw::text_length(pointer) {
+                        Ok(length) => length,
+                        Err(raw::Fault::Freed) => return Err(Diag::panic(expr.span, "`string.fromCString` reads raw memory after it was given back with `Memory.free`").into()),
+                        Err(_) => return Err(Diag::panic(expr.span, "`string.fromCString` finds no zero byte before the end of the block").into()),
+                    };
+                    // SAFETY: `length` bytes lie at the pointer: in its block, or C said so.
+                    let bytes = unsafe { std::slice::from_raw_parts(pointer.addr as *const u8, length) }.to_vec();
+                    Ok(match String::from_utf8(bytes) {
+                        Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
+                        Err(error) => {
+                            let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
+                            let cause = Value::Struct("TextError".into(), Rc::new(vec![position]));
+                            Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
+                        }
+                    })
+                }
+                // `CString.from(text)`: a zero byte inside is an error at its position.
+                Callee::ToCString => {
+                    let Value::Str(text) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `CString.from` a text") };
+                    Ok(match std::ffi::CString::new(text.as_bytes()) {
+                        Ok(made) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::CStr(Rc::new(made)))])),
+                        Err(error) => {
+                            let position = cell(Value::Int(IntTy::Nint, error.nul_position() as i128));
+                            let cause = Value::Struct("TextError".into(), Rc::new(vec![position]));
+                            Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
+                        }
+                    })
+                }
                 Callee::Static { owner, name } => {
                     let func = self.methods[owner.as_str()][name.as_str()];
                     let values = self.values(args, frame)?;
@@ -3399,6 +3452,85 @@ impl<'a, 'e> Interp<'a, 'e> {
         Ok(())
     }
 
+    /// A call of a function of C. Each argument goes into a slot as the C type it is. A borrow
+    /// and the items of `buffer.pointer()` are copied into memory of their own, where C can
+    /// reach them, and copied back after the call: C may have written them.
+    fn call_extern(&mut self, name: &str, args: &'a [Expr], expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let (params, ret) = &self.foreign[name];
+        let (params, ret) = (params.clone(), ret.clone());
+        let mut slots: Vec<crate::ffi::Slot> = vec![0; args.len()];
+        // Memory lent for the call: where it is, what lies there, and the cells to write back.
+        let mut lent: Vec<(raw::Scratch, Ty, Vec<Cell>)> = Vec::new();
+        for ((arg, param), slot) in args.iter().zip(&params).zip(slots.iter_mut()) {
+            let at = (slot as *mut crate::ffi::Slot).cast::<u8>();
+            let pointer_of = |inner: &'a Expr| match &inner.kind {
+                ExprKind::Method { recv, callee: Callee::Pointer, .. } => Some(&**recv),
+                _ => None,
+            };
+            let buffer = match &arg.kind {
+                ExprKind::RawCast { expr: inner, .. } => pointer_of(inner),
+                _ => pointer_of(arg),
+            };
+            if let Some(recv) = buffer {
+                let holder = self.place(recv, frame)?;
+                let items = cells_of(&owned(holder.borrow().clone()));
+                let Ty::Raw(item) = &arg_pointer_type(arg) else { unreachable!("`pointer()` gives a raw pointer") };
+                let item = (**item).clone();
+                let (size, _) = raw::layout(&item, self.plain);
+                let scratch = raw::Scratch::new(items.len() * size);
+                for (position, held) in items.iter().enumerate() {
+                    store(scratch.addr() + position * size, &item, &held.borrow(), self.plain);
+                }
+                // SAFETY: a slot holds eight bytes, and an address takes as many.
+                unsafe { at.cast::<usize>().write(scratch.addr()) };
+                lent.push((scratch, item, items.to_vec()));
+                continue;
+            }
+            let value = self.expr(arg, frame)?;
+            // SAFETY: a slot holds eight bytes, and each value below takes at most as many.
+            unsafe {
+                match param {
+                    Ty::Int(int) => raw::write_int(at as usize, *int, match strip(value) {
+                        Value::Int(_, number) => number,
+                        _ => unreachable!("the checker gives an integer"),
+                    }),
+                    Ty::Float(_) | Ty::Bool | Ty::Raw(_) => store(at as usize, param, &value, self.plain),
+                    Ty::Read(inner) | Ty::Ref(inner) => {
+                        let Value::Borrow(target) = value else { unreachable!("the checker gives a borrow") };
+                        let target = behind_borrows(target);
+                        if **inner == Ty::CString {
+                            let Value::CStr(text) = &*target.borrow() else { unreachable!("the checker gives a `CString`") };
+                            at.cast::<usize>().write(text.as_ptr() as usize);
+                            continue;
+                        }
+                        let (size, _) = raw::layout(inner, self.plain);
+                        let scratch = raw::Scratch::new(size);
+                        store(scratch.addr(), inner, &target.borrow(), self.plain);
+                        at.cast::<usize>().write(scratch.addr());
+                        // What C was lent to read is not written back.
+                        let back = if matches!(param, Ty::Ref(_)) { vec![target] } else { Vec::new() };
+                        lent.push((scratch, (**inner).clone(), back));
+                    }
+                    other => unreachable!("the checker lets a C function take no `{other}`"),
+                }
+            }
+        }
+        let returned = self.io.ffi.call(name, &mut slots);
+        for (scratch, item, cells) in &lent {
+            let (size, _) = raw::layout(item, self.plain);
+            for (position, held) in cells.iter().enumerate() {
+                let value = load(scratch.addr() + position * size, item, self.plain, expr.span)?;
+                *held.borrow_mut() = value;
+            }
+        }
+        let at = (&returned as *const crate::ffi::Slot).cast::<u8>() as usize;
+        Ok(match &ret {
+            Ty::Void => Value::Void,
+            Ty::Int(int) => Value::Int(*int, unsafe { raw::read_int(at, *int) }),
+            other => load(at, other, self.plain, expr.span)?,
+        })
+    }
+
     /// The address of a place in raw memory and the type of what lies there. The item of raw
     /// memory it is in was checked to lie in a live block (`verb` says whether it is read or
     /// written, for the panic).
@@ -3462,7 +3594,6 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Ok(()) => return Ok(Value::Void),
                     Err(raw::FreeError::Twice) => "`Memory.free` is given memory that was given back already",
                     Err(raw::FreeError::Inside) => "`Memory.free` is given an address inside a block, not the one `Memory.allocate` gave",
-                    Err(raw::FreeError::Unknown) => "`Memory.free` is given an address that `Memory.allocate` did not give",
                 };
                 Err(Diag::panic(span, why).into())
             }

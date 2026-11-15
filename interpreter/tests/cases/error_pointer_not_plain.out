@@ -1,0 +1,4 @@
+error: C is given the address of plain data, and the items are `string`
+  --> error_pointer_not_plain.sg:7:33
+ 7 |     _ = unsafe memset((raw void)names.pointer(), 0, 1)
+   |                                 ^^^^^

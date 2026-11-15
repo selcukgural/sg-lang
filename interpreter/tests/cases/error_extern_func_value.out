@@ -1,0 +1,5 @@
+error: `abs` is a function of C, and a `Func` holds the address of a function of SG
+  --> error_extern_func_value.sg:6:24
+ 6 |     Func<int, int> f = abs
+   |                        ^^^
+  hint: wrap the call in a function of your own and use that

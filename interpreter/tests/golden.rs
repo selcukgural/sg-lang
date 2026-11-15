@@ -167,6 +167,7 @@ fn modules() {
     let dir = root.join("tests/modules");
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().path()).collect();
     entries.push(root.join("examples/shop"));
+    entries.push(root.join("examples/zlib"));
     entries.sort();
     for path in entries {
         if path.extension().is_some_and(|ext| ext == "sg") {
@@ -264,6 +265,7 @@ fn compiled() {
     let modules = root.join("tests/modules");
     let mut programs: Vec<PathBuf> = std::fs::read_dir(&modules).unwrap().map(|entry| entry.unwrap().path()).collect();
     programs.push(root.join("examples/shop"));
+    programs.push(root.join("examples/zlib"));
     programs.sort();
     programs.retain(|path| path.extension().is_some_and(|ext| ext == "sg") || path.join("main.sg").exists());
     let total = files.len() + programs.len();
@@ -293,6 +295,11 @@ fn compiled() {
         if name.starts_with("panic_unsafe_") {
             continue;
         }
+        // A library that is not there: the interpreter says so before the program runs, and the
+        // C compiler would refuse to link it.
+        if name == "error_extern_no_library.sg" {
+            continue;
+        }
         // A program the checker rejects, or one that uses what is not compiled yet.
         // In `tests/release` the build is a release build: overflow wraps.
         let release = path.parent().is_some_and(|dir| dir.ends_with("release"));
@@ -313,8 +320,8 @@ fn compiled() {
         let (c_file, binary) = (work.join(format!("{stem}.c")), work.join(&stem));
         // A program with tasks or `locked` values runs on several threads.
         let threads = code.contains("#define SG_THREADS 1");
-        std::fs::write(&c_file, code).unwrap();
-        let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-ffp-contract=off", "-o"]).arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+        std::fs::write(&c_file, &code).unwrap();
+        let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-ffp-contract=off", "-o"]).arg(&binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).arg("-lm").arg("-pthread").output().unwrap();
         if !cc.status.success() {
             failures.push(format!("--- {name}: the C compiler rejected it\n{}", String::from_utf8_lossy(&cc.stderr)));
             continue;
@@ -382,6 +389,7 @@ fn compiled() {
                 .args(["-std=c11", "-O1", "-g", "-ffp-contract=off", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-o"])
                 .arg(&checked_binary)
                 .arg(&c_file)
+                .args(sg::emit_c::link_flags(&code))
                 .arg("-lm").arg("-pthread")
                 .output()
                 .unwrap();
@@ -417,6 +425,7 @@ fn compiled() {
                 .args(["-std=c11", "-O1", "-g", "-ffp-contract=off", "-fsanitize=thread", "-o"])
                 .arg(&raced_binary)
                 .arg(&c_file)
+                .args(sg::emit_c::link_flags(&code))
                 .arg("-lm")
                 .arg("-pthread")
                 .output()
@@ -652,6 +661,7 @@ fn compiled_tests() {
     }
     let mut folders: Vec<PathBuf> = std::fs::read_dir(root.join("tests/modules")).unwrap().map(|entry| entry.unwrap().path()).collect();
     folders.push(root.join("examples/shop"));
+    folders.push(root.join("examples/zlib"));
     folders.sort();
     for path in folders {
         if path.join("tests.out").exists() {
@@ -678,14 +688,14 @@ fn compiled_tests() {
         let Ok(code) = sg::emit_c_tests(&sources, true) else { continue };
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         let (c_file, plain, checked) = (work.join(format!("{stem}.c")), work.join(&stem), work.join(format!("{stem}-san")));
-        std::fs::write(&c_file, code).unwrap();
+        std::fs::write(&c_file, &code).unwrap();
         let mut builds = vec![(&plain, &["-O1", "-g"][..])];
         if sanitizers {
             builds.push((&checked, &["-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"][..]));
         }
         let mut rejected = false;
         for (binary, flags) in &builds {
-            let cc = std::process::Command::new("cc").args(["-std=c11", "-ffp-contract=off"]).args(*flags).arg("-o").arg(binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+            let cc = std::process::Command::new("cc").args(["-std=c11", "-ffp-contract=off"]).args(*flags).arg("-o").arg(binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).arg("-lm").arg("-pthread").output().unwrap();
             if !cc.status.success() {
                 failures.push(format!("--- {name}: the C compiler rejected it ({})\n{}", flags.join(" "), String::from_utf8_lossy(&cc.stderr)));
                 rejected = true;

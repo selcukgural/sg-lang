@@ -28,6 +28,8 @@ fn build(path: &str, out: Option<String>, release: bool, tests: bool) -> ExitCod
         return ExitCode::SUCCESS;
     };
     let c_file = std::env::temp_dir().join(format!("sg-{}.c", std::process::id()));
+    // The libraries the `extern` blocks of the program name.
+    let libs = sg::emit_c::link_flags(&code);
     if let Err(error) = std::fs::write(&c_file, code) {
         eprintln!("error: cannot write {}: {error}", c_file.display());
         return ExitCode::FAILURE;
@@ -35,10 +37,14 @@ fn build(path: &str, out: Option<String>, release: bool, tests: bool) -> ExitCod
     let level = if release { "-O2" } else { "-O0" };
     // No fused multiply-add: a fractional result is the same as in the interpreter. `-lm`
     // for the math functions (`sqrt`, `fmod`), `-pthread` for the threads of tasks.
-    let status = std::process::Command::new("cc").args(["-std=c11", level, "-ffp-contract=off", "-o", &out]).arg(&c_file).arg("-lm").arg("-pthread").status();
+    let status = std::process::Command::new("cc").args(["-std=c11", level, "-ffp-contract=off", "-o", &out]).arg(&c_file).args(&libs).arg("-lm").arg("-pthread").status();
     let _ = std::fs::remove_file(&c_file);
     match status {
         Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(_) if !libs.is_empty() => {
+            eprintln!("error: the C compiler could not build the program; is every library it links ({}) installed where the C compiler looks?", libs.join(" "));
+            ExitCode::FAILURE
+        }
         Ok(_) => {
             eprintln!("error: the C compiler did not accept the program; this is a mistake in sg");
             ExitCode::FAILURE

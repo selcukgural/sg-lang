@@ -1,0 +1,6 @@
+extern {
+    int abs(int)
+}
+
+void main() {
+}

@@ -1,0 +1,8 @@
+error: `abs` exists in the `clib` module but is not public
+  --> error_extern_not_public.sg:4:18
+ 4 |     print(unsafe abs(-1))
+   |                  ^^^^^^^
+  it is defined here, without `public`:
+  --> clib/clib.sg:3:9
+ 3 |     int abs(int value)
+   |         ^^^

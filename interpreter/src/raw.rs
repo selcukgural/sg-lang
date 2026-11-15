@@ -7,15 +7,24 @@
 //! that a read outside the block, after `Memory.free`, or through `null` is a readable panic
 //! instead of undefined behaviour. A pointer that was read back out of raw memory finds its
 //! block again by its address; one that came from elsewhere is not checked.
+//!
+//! The memory comes from C's `calloc` and goes back with C's `free`, as in compiled code, so
+//! that what C gave with `malloc` can be given back with `Memory.free`, and the other way round.
 
-use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::collections::{BTreeMap, HashMap};
+use std::ffi::c_void;
 use std::sync::{LazyLock, Mutex};
 
 use crate::types::{FloatTy, IntTy, Ty};
 
 /// The alignment of every block: what `malloc` gives on the machines the language runs on.
 const BLOCK_ALIGN: usize = 16;
+
+extern "C" {
+    fn calloc(count: usize, size: usize) -> *mut c_void;
+    #[link_name = "free"]
+    fn c_free(p: *mut c_void);
+}
 
 /// An address and the block it was made from, if the interpreter knows it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -62,9 +71,9 @@ pub enum AllocError {
 /// `count` items of `size` bytes, all zero.
 pub fn allocate(count: usize, size: usize) -> Result<RawPtr, AllocError> {
     let bytes = count.checked_mul(size).filter(|bytes| *bytes <= isize::MAX as usize - BLOCK_ALIGN).ok_or(AllocError::TooLarge)?;
-    let layout = Layout::from_size_align(bytes.max(1), BLOCK_ALIGN).map_err(|_| AllocError::TooLarge)?;
-    // SAFETY: the layout has a size of at least one byte.
-    let base = unsafe { alloc_zeroed(layout) } as usize;
+    // SAFETY: `calloc` takes any size; at least one byte is asked for, so that each block has
+    // an address of its own.
+    let base = unsafe { calloc(bytes.max(1), 1) } as usize;
     if base == 0 {
         return Err(AllocError::OutOfMemory);
     }
@@ -82,8 +91,6 @@ pub enum FreeError {
     Twice,
     /// The address lies inside a block, not where it starts.
     Inside,
-    /// No block of `Memory.allocate` starts there.
-    Unknown,
 }
 
 /// Gives back the block that `p` is the start of; `null` is let be.
@@ -92,9 +99,15 @@ pub fn free(p: RawPtr) -> Result<(), FreeError> {
         return Ok(());
     }
     let mut blocks = BLOCKS.lock().unwrap();
-    let id = match p.block {
+    let id = match p.block.or_else(|| blocks.live.get(&p.addr).copied()) {
         Some(id) => id,
-        None => *blocks.live.get(&p.addr).ok_or(FreeError::Unknown)?,
+        // No block of `Memory.allocate` starts there: the memory is C's, given with `malloc`.
+        None => {
+            drop(blocks);
+            // SAFETY: the program says, inside `unsafe`, that C gave this address.
+            unsafe { c_free(p.addr as *mut c_void) };
+            return Ok(());
+        }
     };
     let block = blocks.by_id.get_mut(&id).expect("a pointer names a block that was made");
     if !block.live {
@@ -106,8 +119,9 @@ pub fn free(p: RawPtr) -> Result<(), FreeError> {
     block.live = false;
     let (base, size) = (block.base, block.size);
     blocks.live.remove(&base);
-    // SAFETY: the block was allocated with this layout and has not been given back.
-    unsafe { dealloc(base as *mut u8, Layout::from_size_align(size.max(1), BLOCK_ALIGN).expect("it was made with it")) };
+    let _ = size;
+    // SAFETY: the block came from `calloc` and has not been given back.
+    unsafe { c_free(base as *mut c_void) };
     Ok(())
 }
 
@@ -135,6 +149,54 @@ pub fn check(p: RawPtr, size: usize) -> Result<(), Fault> {
         return Err(Fault::Outside { at, block: block.size });
     }
     Ok(())
+}
+
+/// How many bytes lie at `p` before a zero byte. In a block of `Memory.allocate` the zero byte
+/// must come before the end of the block; elsewhere C said it is there.
+pub fn text_length(p: RawPtr) -> Result<usize, Fault> {
+    let Some(id) = p.block else {
+        // SAFETY: the program says, inside `unsafe`, that a text C ended lies there.
+        return Ok(unsafe { std::ffi::CStr::from_ptr(p.addr as *const std::ffi::c_char) }.to_bytes().len());
+    };
+    let blocks = BLOCKS.lock().unwrap();
+    let block = &blocks.by_id[&id];
+    if !block.live {
+        return Err(Fault::Freed);
+    }
+    let at = p.addr as i128 - block.base as i128;
+    if at < 0 || at >= block.size as i128 {
+        return Err(Fault::Outside { at, block: block.size });
+    }
+    // SAFETY: the bytes from `p` to the end of the block are in the block, which is live.
+    let rest = unsafe { std::slice::from_raw_parts(p.addr as *const u8, block.size - at as usize) };
+    rest.iter().position(|byte| *byte == 0).ok_or(Fault::Outside { at: block.size as i128, block: block.size })
+}
+
+/// Memory lent to C for one call: a borrow or the items of a buffer, copied there and back.
+/// Given back when it ends.
+pub struct Scratch {
+    base: usize,
+}
+
+impl Scratch {
+    /// `size` bytes, all zero, aligned for any value.
+    pub fn new(size: usize) -> Scratch {
+        // SAFETY: at least one byte is asked for.
+        let base = unsafe { calloc(size.max(1), 1) } as usize;
+        assert!(base != 0, "no memory for a value lent to C");
+        Scratch { base }
+    }
+
+    pub fn addr(&self) -> usize {
+        self.base
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        // SAFETY: the memory came from `calloc` and is given back once.
+        unsafe { c_free(self.base as *mut c_void) };
+    }
 }
 
 /// The live block an address lies in, for a pointer read back out of raw memory.

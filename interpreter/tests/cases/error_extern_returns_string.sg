@@ -1,0 +1,6 @@
+extern {
+    string getenv(read CString name)
+}
+
+void main() {
+}

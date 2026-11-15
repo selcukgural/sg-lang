@@ -1,0 +1,5 @@
+error: `public` is written on each function of an `extern` block, not on the block
+  --> error_extern_public_block.sg:1:1
+ 1 | public extern {
+   | ^^^^^^
+  hint: `extern "z" { public int compress(...) }`

@@ -1,0 +1,5 @@
+error: a C function is not async
+  --> error_extern_async.sg:2:5
+ 2 |     async int abs(int value)
+   |     ^^^^^
+  hint: a long call is awaited as a task of its own: `await Task.run(work, x)`

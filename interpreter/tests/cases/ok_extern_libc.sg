@@ -1,0 +1,73 @@
+// Functions of the C library and of the math library, called inside `unsafe`.
+extern {
+    nuint strlen(read CString text)
+    int abs(int value)
+    long labs(long value)
+    int toupper(int c)
+    raw byte strdup(read CString text)
+    raw byte getenv(read CString name)
+    raw void memset(raw byte target, int value, nuint count)
+    int memcmp(read Pair a, read Pair b, nuint count)
+    raw void memcpy(ref Pair target, read Pair source, nuint count)
+}
+
+extern "m" {
+    double frexp(double value, ref int exponent)
+    double modf(double value, ref double whole)
+    float sqrtf(float value)
+    double pow(double base, double power)
+}
+
+struct Pair {
+    int left
+    long right
+}
+
+void main() {
+    var text = CString.from("hello") ?? panic("zero byte")
+    print(unsafe strlen(read text))
+    print(unsafe abs(-7))
+    print(unsafe labs(-9000000000))
+    print((char)unsafe toupper((int)'q'))
+
+    // What C gives with `malloc` goes back with `Memory.free`.
+    var copy = unsafe strdup(read text)
+    print(unsafe string.fromCString(copy) ?? "not text")
+    unsafe {
+        Memory.free(copy)
+    }
+
+    var missing = CString.from("SG_NO_SUCH_VARIABLE_3141") ?? panic("zero byte")
+    print(unsafe getenv(read missing) == null)
+
+    // A `ref` borrow is written by C, a `read` borrow only read.
+    int exponent = 0
+    var fraction = unsafe frexp(8.0, ref exponent)
+    print($"{fraction} {exponent}")
+    double whole = 0.0
+    var part = unsafe modf(3.25, ref whole)
+    print($"{part} {whole}")
+    print(unsafe sqrtf(2.25))
+    print(unsafe pow(2.0, 10.0))
+
+    // A struct of plain data is laid out as C lays it out.
+    var a = Pair { left = 1, right = 2 }
+    var b = Pair { left = 1, right = 3 }
+    print(unsafe memcmp(read a, read b, 16) < 0)
+    _ = unsafe memcpy(ref a, read b, 16)
+    print($"{a.left} {a.right}")
+
+    // The items of a list, an array or a slice, for the time of the call.
+    var bytes = List<byte> { 1, 2, 3, 4, 5 }
+    unsafe memset(bytes.pointer(), 9, 3)
+    print(bytes)
+    var fixed = byte[4]
+    unsafe memset(fixed.pointer(), 7, 4)
+    print(fixed)
+    clear(ref bytes[3..])
+    print(bytes)
+}
+
+void clear(ref byte[] window) {
+    unsafe memset(window.pointer(), 0, (nuint)window.length())
+}

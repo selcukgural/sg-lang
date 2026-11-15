@@ -1,0 +1,33 @@
+// zlib, linked with `-lz`: a round trip through compress and uncompress, and a checksum.
+extern "z" {
+    nuint compressBound(nuint sourceLen)
+    int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen)
+    int uncompress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen)
+    ulong crc32(ulong crc, raw byte buf, uint len)
+}
+
+void main() {
+    var data = List<byte>()
+    for i in 0..4000 {
+        data.add((byte)(i % 13))
+    }
+    var room = unsafe compressBound((nuint)data.length())
+    var packed = Memory.allocate<byte>((nint)room)
+    nuint size = room
+    var code = unsafe compress(packed, ref size, data.pointer(), (nuint)data.length())
+    print($"compress: {code}, {data.length()} bytes to {size}")
+
+    var back = byte[4000]
+    nuint length = 4000
+    code = unsafe uncompress(back.pointer(), ref length, packed, size)
+    print($"uncompress: {code}, {length} bytes")
+    bool same = true
+    for i in 0..4000 {
+        same = same && back[i] == data[i]
+    }
+    print(same)
+    print(unsafe crc32(0, data.pointer(), (uint)data.length()))
+    unsafe {
+        Memory.free(packed)
+    }
+}

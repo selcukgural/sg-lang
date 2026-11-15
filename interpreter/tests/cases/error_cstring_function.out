@@ -1,0 +1,5 @@
+error: `CString` has no function `make`
+  `CString.from(text)` makes one
+  --> error_cstring_function.sg:2:21
+ 2 |     var c = CString.make("x")
+   |                     ^^^^

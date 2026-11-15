@@ -1,0 +1,6 @@
+extern {
+    nuint strlen(CString text)
+}
+
+void main() {
+}

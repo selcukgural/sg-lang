@@ -1,0 +1,5 @@
+error: `abs` is a function of C, and the checker cannot see what it does, so it is written inside `unsafe`
+  --> error_extern_unsafe.sg:6:11
+ 6 |     print(abs(-1))
+   |           ^^^^^^^
+  hint: `unsafe abs(-1)`, or `unsafe { ... }` around several statements

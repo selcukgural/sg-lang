@@ -1,0 +1,4 @@
+error: `string.fromCString` reads the bytes a `raw byte` points at, and this is `raw int`
+  --> error_from_cstring_type.sg:3:37
+ 3 |     print(unsafe string.fromCString(numbers) ?? "")
+   |                                     ^^^^^^^

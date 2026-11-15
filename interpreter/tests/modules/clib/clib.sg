@@ -1,0 +1,9 @@
+// Functions of C in a module: private unless `public` is written on one.
+extern {
+    int abs(int value)
+    public nuint strlen(read CString text)
+}
+
+public int magnitude(int value) {
+    return unsafe abs(value)
+}

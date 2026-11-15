@@ -29,7 +29,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "CString"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -421,6 +421,8 @@ struct FuncSig {
     /// For a function that returns a borrow, or a value that carries one: where it may come
     /// from. Empty when it can only be a constant.
     sources: Vec<Source>,
+    /// Declared in an `extern` block: a function of C, called inside `unsafe`.
+    foreign: bool,
 }
 
 /// What `Stdin`, `Stdout` and `Stderr` are, for messages; `None` for any other name.
@@ -554,7 +556,7 @@ fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
         }
         sources = borrowed;
     }
-    Ok(FuncSig { public: func.public, is_async: func.is_async, this: func.this, holder, params, param_names, ret, sources })
+    Ok(FuncSig { public: func.public, is_async: func.is_async, this: func.this, holder, params, param_names, ret, sources, foreign: func.foreign.is_some() })
 }
 
 /// With `tests` the `test` blocks are checked too and `main` may be missing: that is what the
@@ -820,6 +822,22 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     // Raw pointers in fields and signatures point at plain data.
     raw_rule(&structs)?;
 
+    // A function of C takes and gives what C can hold without a copy nobody sees.
+    let mut by_c_name: HashMap<&str, &Func> = HashMap::new();
+    for func in prog.funcs.iter().filter(|func| func.foreign.is_some()) {
+        foreign_sig(func, &sigs[&func.name], &structs)?;
+        prog.foreign.insert(func.name.clone(), (sigs[&func.name].params.clone(), sigs[&func.name].ret.clone()));
+        let c_name = short_name(&func.name);
+        if let Some(other) = by_c_name.insert(c_name, func) {
+            let (mine, theirs) = (&sigs[&func.name], &sigs[&other.name]);
+            if mine.params != theirs.params || mine.ret != theirs.ret {
+                return Err(Diag::error(func.name_span, format!("the C function `{c_name}` is declared twice, and the two declarations differ"))
+                    .related(other.name_span, "the other declaration")
+                    .note("C has one function of this name, so it is declared the same way everywhere"));
+            }
+        }
+    }
+
     // Every alias names a type, also one that nothing uses yet.
     for alias in &prog.aliases {
         let ty = resolve_type(&alias.ty, &names, false)?;
@@ -932,6 +950,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             awaiting: false,
             unsafe_at: None,
             writing: false,
+            extern_arg: false,
         };
         if let (Some(this), Some(owner)) = (func.this, owner) {
             let ty = match (&sig.holder, names.kinds[owner]) {
@@ -978,7 +997,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
         Ok(())
     };
-    for func in &mut prog.funcs {
+    for func in prog.funcs.iter_mut().filter(|func| func.foreign.is_none()) {
         body(func, &sigs[&func.name], None)?;
     }
     for decl in &mut prog.structs {
@@ -1061,6 +1080,7 @@ fn check_tests(
             awaiting: false,
             unsafe_at: None,
             writing: false,
+            extern_arg: false,
         };
         checker.declare_streams(test_span)?;
         checker.block(&mut prog.tests[position].body, &[])?;
@@ -2096,6 +2116,9 @@ struct Checker<'a> {
     /// The place being checked is the target of an assignment: an `unsafe` it lacks is asked
     /// for as a block.
     writing: bool,
+    /// The expression being checked is an argument of a function of C: `buffer.pointer()` may
+    /// be written there.
+    extern_arg: bool,
 }
 
 /// A collection that a `for` is going over by borrowing it: nothing may change it until the
@@ -2969,11 +2992,22 @@ impl<'a> Checker<'a> {
     /// Two borrows written in one call that do not go together: the same place lent twice,
     /// one of them as `ref`. `recv`: the receiver of a method and whether it is taken as `ref`.
     fn lent_twice(&mut self, recv: Option<(&Expr, bool)>, args: &[Expr]) -> Res<()> {
-        let mut lent: Vec<(usize, String, bool, Span)> = Vec::new();
         let places = recv.into_iter().chain(args.iter().filter_map(|arg| match &arg.kind {
             ExprKind::Borrow { mutable, expr } => Some((&**expr, *mutable)),
+            // The items whose address C is given may be written by it.
+            ExprKind::Method { recv, callee: Callee::Pointer, .. } => Some((&**recv, true)),
+            ExprKind::RawCast { expr, .. } => match &expr.kind {
+                ExprKind::Method { recv, callee: Callee::Pointer, .. } => Some((&**recv, true)),
+                _ => None,
+            },
             _ => None,
         }));
+        self.lent_places(places.collect())
+    }
+
+    /// The places lent to one call: a `ref` borrow must be the only one of its place.
+    fn lent_places(&mut self, places: Vec<(&Expr, bool)>) -> Res<()> {
+        let mut lent: Vec<(usize, String, bool, Span)> = Vec::new();
         for (place, mutable) in places {
             let Some((name, path)) = store_path(place) else { continue };
             let Some(root) = self.find(name).map(|var| var.id) else { continue };
@@ -3799,7 +3833,7 @@ impl<'a> Checker<'a> {
         let value = result?;
         if !used {
             return Err(Diag::error(word, "nothing here needs `unsafe`")
-                .note("`unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers, `Memory.free` and `Memory.copy`")
+                .note("`unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers, `Memory.free`, `Memory.copy`, a call of a C function and `string.fromCString`")
                 .hint("leave `unsafe` out"));
         }
         Ok(value)
@@ -4720,6 +4754,10 @@ impl<'a> Checker<'a> {
         // The name of a function is a value: its address.
         if let ExprKind::Var(name) = &expr.kind {
             let sig = &self.sigs[name.as_str()];
+            if sig.foreign {
+                return Err(Diag::error(expr.span, format!("`{}` is a function of C, and a `Func` holds the address of a function of SG", short_name(name)))
+                    .hint("wrap the call in a function of your own and use that"));
+            }
             if sig.is_async {
                 return Err(Diag::error(expr.span, format!("`{}` is async, and an async function is called by its name, not kept as a value", short_name(name)))
                     .hint(format!("call it: `{}(...)` starts it as a task, `await {}(...)` runs it here", short_name(name), short_name(name))));
@@ -6603,6 +6641,9 @@ impl<'a> Checker<'a> {
                         None => diag,
                     });
                 };
+                if sig.foreign {
+                    return self.foreign_call(name, args, sig, callee, span);
+                }
                 if !sig.is_async {
                     self.args(name, args, &sig.params, span)?;
                     return Ok(sig.ret.clone());
@@ -6628,6 +6669,56 @@ impl<'a> Checker<'a> {
                 Ok(Ty::Task(Box::new(sig.ret.clone())))
             }
         }
+    }
+
+    /// A call of a function of C: inside `unsafe`, since the checker cannot see what it does.
+    /// `buffer.pointer()` is written only here, as an argument: C is given the address of the
+    /// items for the time of the call, as it is given a `ref` borrow.
+    fn foreign_call(&mut self, name: &str, args: &mut [Expr], sig: &FuncSig, callee: &mut Callee, span: Span) -> Res<Ty> {
+        let short = short_name(name);
+        if args.len() != sig.params.len() {
+            return Err(Diag::error(span, format!("`{short}` takes {} argument(s), {} given", sig.params.len(), args.len())));
+        }
+        self.needs_unsafe(span, &format!("`{short}` is a function of C, and the checker cannot see what it does"))?;
+        for (arg, param) in args.iter_mut().zip(&sig.params) {
+            let pointer = |expr: &Expr| matches!(&expr.kind, ExprKind::Method { name, .. } if name == "pointer");
+            self.extern_arg = match &arg.kind {
+                ExprKind::RawCast { expr, .. } => pointer(expr),
+                _ => pointer(arg),
+            };
+            let checked = self.typed(arg, param);
+            self.extern_arg = false;
+            checked?;
+        }
+        self.lent_twice(None, args)?;
+        *callee = Callee::Extern;
+        Ok(sig.ret.clone())
+    }
+
+    /// `buffer.pointer()`: the address of the items of a list, an array or a slice of plain
+    /// data, as a `raw T`, written only as an argument of a function of C.
+    fn pointer_of(&mut self, recv: &Expr, recv_ty: &Ty, item: Ty, is_place: bool, args: &[Expr], span: Span) -> Res<Ty> {
+        if !std::mem::take(&mut self.extern_arg) {
+            return Err(Diag::error(span, "`pointer()` is written only as an argument of a C function")
+                .note("C is given the address of the items for the time of the call; a pointer kept after it could point at items that have moved")
+                .hint("memory that C keeps is taken with `Memory.allocate<T>(count)`"));
+        }
+        if !args.is_empty() {
+            return Err(Diag::error(span, format!("`pointer` takes 0 argument(s), {} given", args.len())));
+        }
+        if let Some(part) = not_plain(&item, self.structs) {
+            let diag = Diag::error(recv.span, format!("C is given the address of plain data, and the items are `{item}`"));
+            return Err(match part == item {
+                true => diag,
+                false => diag.note(format!("they hold a `{part}`")),
+            });
+        }
+        if !is_place && !recv_ty.is_borrow() {
+            let text = &self.src[recv.span.start..recv.span.end];
+            return Err(Diag::error(recv.span, "the items whose address C is given are kept in a variable")
+                .hint(format!("`var buffer = {text}`, then `buffer.pointer()`")));
+        }
+        Ok(Ty::Raw(Box::new(item)))
     }
 
     /// What an async function returns comes back from its task, which may have run on another
@@ -7433,6 +7524,16 @@ impl<'a> Checker<'a> {
                 if owner == "TcpListener" || owner == "TcpStream" {
                     return self.net_static(owner, name, name_span, args, callee, span, awaited);
                 }
+                // `CString.from(text)`: the text with a zero byte after it; one inside is an error.
+                if owner == "CString" {
+                    if name != "from" {
+                        let diag = Diag::error(name_span, format!("`CString` has no function `{name}`"));
+                        return Err(diag.note("`CString.from(text)` makes one"));
+                    }
+                    self.args(name, args, &[Ty::Read(Box::new(Ty::Str))], span)?;
+                    *callee = Callee::ToCString;
+                    return Ok(Ty::Result(Box::new(Ty::CString), Box::new(Ty::Struct(TEXT_ERROR.to_string()))));
+                }
                 // `string.join(", ", read names)`
                 // `string.fromUtf8(bytes)`: the bytes looked at as text, if they are text.
                 if owner == "string" && name == "fromUtf8" {
@@ -7440,6 +7541,22 @@ impl<'a> Checker<'a> {
                     self.args(name, args, &[bytes], span)?;
                     *callee = Callee::FromUtf8;
                     return Ok(Ty::Result(Box::new(Ty::Read(Box::new(Ty::Str))), Box::new(Ty::Struct(TEXT_ERROR.to_string()))));
+                }
+                // `string.fromCString(p)`: a copy of the text C ends with a zero byte, if it is text.
+                if owner == "string" && name == "fromCString" {
+                    if args.len() != 1 {
+                        return Err(Diag::error(span, format!("`fromCString` takes 1 argument(s), {} given", args.len())));
+                    }
+                    let found = self.expr(&mut args[0], None)?;
+                    let bytes = Ty::Raw(Box::new(Ty::Int(IntTy::Byte)));
+                    if *found.strip_borrow() != bytes && *found.strip_borrow() != Ty::Raw(Box::new(Ty::Int(IntTy::Sbyte))) {
+                        return Err(Diag::error(args[0].span, format!("`string.fromCString` reads the bytes a `raw byte` points at, and this is `{found}`")));
+                    }
+                    let to = found.strip_borrow().clone();
+                    self.coerce(&mut args[0], found, &to)?;
+                    self.needs_unsafe(span, "`string.fromCString` reads memory up to a zero byte, which the checker cannot see is there")?;
+                    *callee = Callee::FromCString;
+                    return Ok(Ty::Result(Box::new(Ty::Str), Box::new(Ty::Struct(TEXT_ERROR.to_string()))));
                 }
                 // `string.withCapacity(n)`: an empty text with room for `n` bytes.
                 if owner == "string" && name == "withCapacity" {
@@ -7449,7 +7566,7 @@ impl<'a> Checker<'a> {
                 }
                 if owner == "string" {
                     if name != "join" {
-                        return Err(Diag::error(name_span, format!("`string` has no function `{name}`")).note("functions for now: join, fromUtf8, withCapacity"));
+                        return Err(Diag::error(name_span, format!("`string` has no function `{name}`")).note("functions for now: join, fromUtf8, fromCString, withCapacity"));
                     }
                     let text = Ty::Read(Box::new(Ty::Str));
                     self.args(name, args, &[text, Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))))], span)?;
@@ -7508,6 +7625,18 @@ impl<'a> Checker<'a> {
             let text = &self.src[recv.span.start..recv.span.end];
             return Err(Diag::error(recv.span, "a place in raw memory is not lent yet, and a method is lent the value it is called on")
                 .hint(format!("copy it out first: `var item = unsafe {text}`, then `item.{name}(...)`")));
+        }
+        // `buffer.pointer()`: the address of the items, for C.
+        if name == "pointer" {
+            let item = match recv_ty.strip_borrow() {
+                Ty::List(item) | Ty::Array(item, _) | Ty::Slice(item) => Some((**item).clone()),
+                _ => None,
+            };
+            if let Some(item) = item {
+                let ty = self.pointer_of(recv, &recv_ty, item, is_place, args, span)?;
+                *callee = Callee::Pointer;
+                return Ok(ty);
+            }
         }
         // `t.wait()`: waits for the task and takes it.
         if let Ty::Task(result) = recv_ty.strip_borrow() {
@@ -8836,6 +8965,56 @@ fn unwrap_unsafe(expr: &mut Expr) {
     }
 }
 
+
+/// What a C function takes and gives: integers, fractional numbers and `bool` as C has them,
+/// raw pointers, `ref T` and `read T` of plain data for the time of the call, and `read CString`
+/// for a text. The name of its library is a name, so that nothing else reaches the C compiler.
+fn foreign_sig(func: &Func, sig: &FuncSig, structs: &HashMap<String, StructInfo>) -> Res<()> {
+    let foreign = func.foreign.as_ref().expect("a function of C");
+    if let Some(lib) = &foreign.lib {
+        let fine = !lib.is_empty() && !lib.starts_with('-') && lib.chars().all(|c| c.is_ascii_alphanumeric() || "_-.+".contains(c));
+        if !fine {
+            return Err(Diag::error(foreign.span, format!("`{lib}` is not the name of a library"))
+                .note("a library is named as the C compiler links it, `extern \"z\"` for `-lz`: letters, digits and `_ - . +`"));
+        }
+    }
+    let c_name = short_name(&func.name);
+    let char_hint = |diag: Diag| diag.note("a `char` of SG is a Unicode character of 32 bits, and a `char` of C is a byte").hint("`byte`, or `sbyte` for a C `char` that is signed");
+    for ((param, ty), written) in func.params.iter().zip(&sig.params).zip(&func.params) {
+        let fine = match ty {
+            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Raw(_) => true,
+            Ty::Read(inner) if **inner == Ty::CString => true,
+            Ty::Read(inner) | Ty::Ref(inner) => not_plain(inner, structs).is_none() && !matches!(**inner, Ty::Raw(_) | Ty::Array(..)),
+            _ => false,
+        };
+        if fine {
+            continue;
+        }
+        let diag = Diag::error(written.ty.span, format!("the C function `{c_name}` cannot take a `{ty}`"));
+        let diag = match ty.strip_borrow() {
+            Ty::Char => char_hint(diag),
+            Ty::Str => diag.hint("a text goes to C as `read CString`: `CString.from(text)` makes one"),
+            Ty::CString => diag.hint("a `CString` is lent to C: `read CString`"),
+            Ty::Array(..) | Ty::Slice(_) | Ty::List(_) => diag.hint(format!("C takes the address of the items and their count apart: `raw {} {}` and `nuint count`, given `buffer.pointer()`", match ty.strip_borrow() {
+                Ty::Array(item, _) | Ty::Slice(item) | Ty::List(item) => item.to_string(),
+                _ => unreachable!("matched above"),
+            }, param.name)),
+            Ty::Struct(_) if !ty.is_borrow() => diag.note("a struct is lent to C for the time of the call, `ref T` or `read T`; one given by value is not in the interpreter yet"),
+            _ => diag.note("C takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data, and `read CString`"),
+        };
+        return Err(diag);
+    }
+    let fine = matches!(sig.ret, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Void | Ty::Raw(_));
+    if !fine {
+        let diag = Diag::error(func.ret.span, format!("the C function `{c_name}` cannot give a `{}`", sig.ret));
+        return Err(match &sig.ret {
+            Ty::Char => char_hint(diag),
+            Ty::Str | Ty::CString => diag.hint("C gives a text as `raw byte`; `unsafe string.fromCString(p)` copies it"),
+            _ => diag.note("C gives an integer, `float`, `double`, `bool`, `raw T` or nothing (`void`)"),
+        });
+    }
+    Ok(())
+}
 
 /// The part of a type that is not plain data, if there is one: what a `raw T` may point at
 /// is numbers, `bool`, `char`, raw pointers, and arrays and structs of them.

@@ -1,0 +1,4 @@
+panic: `string.fromCString` is given a pointer that is `null`
+  --> panic_unsafe_cstring_null.sg:3:11
+ 3 |     print(unsafe string.fromCString(nothing) ?? "")
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

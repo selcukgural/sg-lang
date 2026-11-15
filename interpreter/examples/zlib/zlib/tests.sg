@@ -1,0 +1,23 @@
+test "what is compressed comes back" {
+    var text = "abc".repeat(1000)
+    var packed = try compress(text.asBytes())
+    assert(packed.length() < 100)
+    var back = try decompress(read packed, text.length())
+    var same = try string.fromUtf8(read back)
+    assert(same == text)
+}
+
+test "a size that is too small is an error" {
+    var packed = try compress("hello, hello, hello".asBytes())
+    assert(decompress(read packed, 5) is Error(BufferTooSmall))
+}
+
+test "bytes zlib did not make are an error" {
+    var bytes = byte[4] { 1, 2, 3, 4 }
+    assert(decompress(read bytes, 100) is Error(BadData))
+}
+
+test "the checksum is the one zlib computes" {
+    assert(checksum("hello".asBytes()) == 0x3610a686)
+    assert(checksum("".asBytes()) == 0)
+}

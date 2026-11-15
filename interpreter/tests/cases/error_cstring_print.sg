@@ -1,0 +1,4 @@
+void main() {
+    var c = CString.from("x") ?? panic("zero byte")
+    print(c)
+}

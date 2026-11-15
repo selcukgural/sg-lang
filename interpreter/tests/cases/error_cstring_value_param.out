@@ -1,0 +1,5 @@
+error: the C function `strlen` cannot take a `CString`
+  --> error_cstring_value_param.sg:2:18
+ 2 |     nuint strlen(CString text)
+   |                  ^^^^^^^
+  hint: a `CString` is lent to C: `read CString`

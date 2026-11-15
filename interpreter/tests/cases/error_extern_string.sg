@@ -1,0 +1,6 @@
+extern {
+    nuint strlen(string text)
+}
+
+void main() {
+}

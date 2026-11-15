@@ -1,0 +1,5 @@
+error: `abs` is a function of C, and a `Func` holds the address of a function of SG
+  --> error_extern_task.sg:6:22
+ 6 |     var t = Task.run(abs, -1)
+   |                      ^^^
+  hint: wrap the call in a function of your own and use that

@@ -1,0 +1,5 @@
+error: the C function `getenv` cannot give a `string`
+  --> error_extern_returns_string.sg:2:5
+ 2 |     string getenv(read CString name)
+   |     ^^^^^^
+  hint: C gives a text as `raw byte`; `unsafe string.fromCString(p)` copies it

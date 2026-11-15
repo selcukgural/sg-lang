@@ -10,6 +10,7 @@ cargo run -- test examples/tests_stock.sg       # runs its tests
 cargo run -- examples/shop/main.sg              # a program with modules: the folders next to the file
 cargo run -- test examples/shop                 # the tests of every module of the program in that folder
 cargo run -- test examples/shop --compiled      # the same tests, compiled through C
+cargo run -- examples/zlib/main.sg              # a library of C (zlib) behind a safe module
 cargo run -- build examples/primes.sg -o primes # compiles it through C (needs `cc`)
 cargo run -- emit-c examples/primes.sg          # prints the C
 cargo test
@@ -23,7 +24,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
-| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, `read T` and `ref T` in signatures |
+| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `CString`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, `read T` and `ref T` in signatures |
 | Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
@@ -45,7 +46,8 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Changed through several owners | `new shared checked x` gives a `shared checked T`: what it points to is changed through any of its owners (`a.count += 1`, `a.items.add(x)`, a method that takes `ref this`, `ref a` where a `ref T` goes), and each access is checked against the borrows of it in progress, one that changes it or any number that read it. A read or a write borrows nothing after it; a value lent to a call is borrowed until the call returns, the head of a `for` for the loop, a `match` and an `is` with names for the statement. `read x as n { ... }` and `ref x as n { ... }` lend it for a block. A conflict through the same variable is a compile error, one through another variable a panic that shows both lines. A method can take the owner itself, `read FolderRef this`, so that it can write `share this` and `weak this`. The `shared` values still alive when a program or a test ends hold each other up and are reported (`leak: ...`; in compiled code by a debug build) |
 | Tasks | `Task.run(work, x, share total)` starts `work(x, share total)` as a task and gives a `Task<R>`, `R` being what `work` returns; a `Func` can be started too. `t.wait()` waits for it and gives that value (`try t.wait()` passes its error on). A task that is not waited for on every path is a compile error, and so is `Task.run(...)` alone or dropped with `_ =`. What a task is given and gives back owns all it holds: no borrow, no `shared checked` value, no `Task` (the thread rule, also inside fields). In the interpreter a task runs on a thread of its own when it is waited for, so the output is the same on every run; compiled code starts a thread of the system for it at once. A panic inside one names the line that started it |
 | Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
-| Raw memory | `raw T` is an address that owns nothing and may be `null`; it points at plain data (numbers, `bool`, `char`, raw pointers, and arrays and structs of them), laid out as C lays it, or is a `raw void`. `Memory.allocate<T>(n)` gives room for `n` items, all zero. `p[i]` reads and writes an item (`p[i] = v`, `p[i].x += 1`), `p + n` and `p - n` move by items, `(raw byte)p` reads the memory as another type, `Memory.copy(source, target, count)` copies items (also over itself) and `Memory.free(p)` gives the block back; each of them is written inside `unsafe { ... }`, or with `unsafe` in front of a value (`var first = unsafe p[0]`), and an `unsafe` that nothing needs is an error. `p == q` and `p == null` need no `unsafe`. The interpreter checks every item against the block it came from and panics outside it, after `Memory.free` and through `null`; compiled code checks nothing, and a `raw T` is a `T*`. A raw pointer does not go to another task |
+| Raw memory | `raw T` is an address that owns nothing and may be `null`; it points at plain data (numbers, `bool`, `char`, raw pointers, and arrays and structs of them), laid out as C lays it, or is a `raw void`. `Memory.allocate<T>(n)` gives room for `n` items, all zero (C's `calloc`, in the interpreter too). `p[i]` reads and writes an item (`p[i] = v`, `p[i].x += 1`), `p + n` and `p - n` move by items, `(raw byte)p` reads the memory as another type, `Memory.copy(source, target, count)` copies items (also over itself) and `Memory.free(p)` gives the block back, or memory C gave with `malloc`; each of them is written inside `unsafe { ... }`, or with `unsafe` in front of a value (`var first = unsafe p[0]`), and an `unsafe` that nothing needs is an error. `p == q` and `p == null` need no `unsafe`. The interpreter checks every item against the block it came from and panics outside it, after `Memory.free` and through `null`; compiled code checks nothing, and a `raw T` is a `T*`. A raw pointer does not go to another task |
+| Calling C | `extern "z" { int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen) }` declares functions of C, a block for each library (linked as `-lz`; `extern { }` is the C library itself), each called inside `unsafe`. A C function takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data (C's `T*` and `const T*`, for the time of the call) and `read CString`, and gives one of the first four or nothing. `CString.from(text)` gives a `Result<CString, TextError>`, an error for a zero byte inside; `unsafe string.fromCString(p)` copies what C ended with a zero byte and checks that it is UTF-8. `buffer.pointer()` on a list, an array or a slice of plain data is written only as an argument of a C function. The functions are private to their module unless `public` is written on one, so a module can hide a library behind a safe interface (`examples/zlib`). The interpreter builds a small library of wrappers with `cc` and opens it with `dlopen`; compiled code calls C directly |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
@@ -261,7 +263,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (253 of 1057 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (258 of 1093 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -367,7 +369,9 @@ text a reader reads a block at a time, not a line at a time, and every program t
 faster (491-495), and the sixty-eighth prints a fractional number with Dragonbox (496-500). The sixty-ninth
 (raw memory: `raw T`, `unsafe`, `Memory`) was written in the checker, the interpreter and compiled code
 together: a `raw T` is a `T*`, `p[i]` is `p[i]`, and nothing is checked, while the interpreter checks every
-item against its block (501-516). What is still missing is an error that names it (not silence): the few positions listed with the
+item against its block (501-516). The seventieth (calling C: `extern` blocks, `CString`, `buffer.pointer()`)
+was written in all three too: a call of C in compiled code is a call of C, through an inline adapter, while
+the interpreter calls it through a library of wrappers it builds with `cc` (517-530). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -422,6 +426,7 @@ hand with no checks):
 | `echosync`: `echo` without async, the server's connections and the clients on threads of `Task.run` (the C is that of `echo`) | 1.108 s | 1.118 s | 1.115 s | 0.99 |
 | `netlines`: the two million lines of `lines` sent over the loopback by one task and read line by line by another with `await reader.readLineAsync(ref line)` (the C blocks, with `getline` from a `FILE` over the socket, which checks nothing) | 0.092 s | 0.089 s | 0.081 s | 1.14 |
 | `ring`: a ring buffer of its own over raw memory (`raw long`, `unsafe`), four hundred million numbers in at one end and out at the other through 4096 items (the C is the same over `calloc`) | 0.328 s | 0.326 s | 0.328 s | 1.00 |
+| `crc`: sixteen gigabytes through zlib's `crc32`, 64 KB of an array at a time, handed over with `block.pointer()` (the C calls zlib through its header) | 0.418 s | 0.417 s | 0.421 s | 0.99 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -745,6 +750,8 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/emit_c.rs` | The back end: writes the checked tree as C, with the same panics; tasks are threads of the system |
 | `src/opening.rs` | After the checker: where a `shared checked` value is reached and for how long it is borrowed (the `Open` and `Within` nodes the interpreter follows), the conflicts through the same variable that are certain before the program runs, and the borrows that would outlive their line |
 | `src/waits.rs` | After the checker, on the whole program: which functions wait (take a lock, wait for a task or await one, themselves or through the functions they call), and what waits inside a `lock` block; which functions hold the thread, and what does in an async function; an async function that awaits itself |
+| `src/ffi.rs` | For the interpreter: the library of wrappers for the functions of C a program calls, built with `cc` in a folder of its own and opened with `dlopen` |
+| `src/raw.rs` | For the interpreter: raw memory, real addresses from `calloc`, each checked against the block it came from |
 | `src/sums.rs` | For the back end: the sums in a loop that cannot overflow for a number of rounds, so that a checked build runs those rounds without their test |
 | `src/diag.rs` | Error and panic messages |
 | `src/source.rs` | The files of a program: which folders are modules and which of them are read. All files are kept as one text, so a position says which file it is in |
@@ -761,8 +768,8 @@ error comes after what it printed, and an exit code other than 0 and 1 is a last
 of its own to write files into (it is written back as `{dir}` in the output); a `.in` file gives its input.
 
 Programs with modules are in `tests/modules/`: the folders there (`stock`, `billing`, `shop/parts`, `leaky`,
-`links`, `aliasleak`) are modules, and each `.sg` file next to them is a program of one file that uses them. A folder with a `main.sg`
-(`tests/modules/rootdir`, `examples/shop`) is a program run as a folder; its output is in `main.out` and what
+`links`, `aliasleak`, `clib`) are modules, and each `.sg` file next to them is a program of one file that uses them. A folder with a `main.sg`
+(`tests/modules/rootdir`, `examples/shop`, `examples/zlib`) is a program run as a folder; its output is in `main.out` and what
 the test command prints for it in `tests.out`.
 
 ## Grammar rules
@@ -3898,6 +3905,99 @@ was written, and all were approved the same day:
      `cargo test` compiles 253 of 1057 programs, 40 of them under the thread sanitizer, and 13 of 17 programs
      of tests; on Linux too, in a container, with the same counts.
 
+Choices made in the seventieth slice (calling C: `extern` blocks, `CString`, `buffer.pointer()`), the
+second of the three slices of calling C. 517 to 528 were decided before it on 15 November 2026 (with the
+direction in "Calling C, the direction"); 529 and 530 come from the slice, and all were approved the same day:
+
+517. **An `extern` block declares functions of C**, decided before the slice: `extern "z" { ... }` for a
+     library, `extern { ... }` for the C library itself, at the top level of a file only, each function on
+     a line of its own with no body (a body is an error whose hint is to write it outside). C names are
+     written as C writes them (`compressBound`), the one place the camelCase rule does not hold. The
+     functions are private to their module; `public` is written on each that the users of the module may
+     call (`public extern { }` is an error that shows it), so a module can wrap a library in a safe
+     interface and keep every `unsafe` inside: `examples/zlib` does that for zlib.
+518. **A C name is a name of the module**, decided before the slice: a function of SG and a function of C
+     of one name in a module are "defined twice", a built-in name cannot be taken (`print`), and the same C
+     function declared in two modules must be declared the same way in both (`the C function abs is
+     declared twice, and the two declarations differ`, with both places): C has one function of each name.
+519. **A library is named as the C compiler links it**, decided before the slice: `extern "z"` is `-lz`.
+     The name is letters, digits and `_ - . +` and does not start with `-`, so nothing else reaches the C
+     compiler through it (`extern "z -o x"` is an error). Only the libraries of the functions a program
+     calls are linked. Compiled, they are written on the first line of the C (`/* sg-link: -lz */`), where
+     `sg build` and the tests read them; `-lm` is given to every program already. `sg build -L path` for
+     a library the C compiler does not find by itself, `pkg-config` and frameworks come later.
+520. **What a C function takes and gives**, decided before the slice, with three details from it: the
+     integer types, `float`, `double` and `bool` as their C types; `raw T` as `T*`; `ref T` as `T*` and
+     `read T` as `const T*` of plain data, for the time of the call; `read CString` as `const char*`. It
+     gives one of the first four, or nothing. A parameter has a name (`int abs(int)` is an error whose hint
+     shows it), as in any function. `char` is an error whose hint is `byte` or `sbyte`: a `char` of SG is a
+     character of 32 bits. `string` is an error whose hint is `read CString`, a list or an array one whose
+     hint is the pointer and the count apart (`ref byte[16]` too: C takes the address of the first item,
+     and `buffer.pointer()` gives it), a struct given by value one that says it is not here yet, and `...`
+     is an error that says so too. A C function is not `async`.
+521. **Every call of a C function is written inside `unsafe`**, decided before the slice: the checker
+     cannot see what C does. The arguments are written as for any function (`ref size`, `read name`) and
+     computed from left to right; what a C function gives may be left unused, as with a function of your
+     own. A C function is not a `Func` (`Func<int, int> f = abs` and `Task.run(abs, x)` are errors whose
+     hint is a function of your own around the call): a `Func` is the address of a function of SG.
+522. **A borrow lent to C lasts for the call**, decided before the slice: C must not keep the address of a
+     `ref` or a `read` argument; nothing can check it, and memory C keeps is taken with
+     `Memory.allocate`.
+523. **`buffer.pointer()` is written only as an argument of a C function**, decided before the slice: on a
+     `List<T>`, a `T[N]` or a slice of plain data it gives a `raw T` to the first item, and in the call it
+     counts as a `ref` of the buffer, so `memcpy(bytes.pointer(), bytes.pointer(), n)` is "lent twice"; a
+     cast may stand around it (`(raw void)names.pointer()`). Anywhere else it is an error whose note says
+     why (a pointer kept after the call could point at items that have moved) and whose hint is
+     `Memory.allocate`; on a value that is not kept in a variable or borrowed, an error whose hint names
+     it; on items that are not plain data, an error that names their type. Compiled it is the pointer to
+     the items; the interpreter copies the items into memory of its own before the call and back after it.
+524. **`CString` is a text with a zero byte after it, for C**, decided before the slice: owned, not
+     `Copyable`, freed where its owner ends, moved like a `string`, not `Formattable`; it has no methods
+     and is lent to C as `read CString` (`CString` by value is an error whose hint is that). `CString.from(text)`
+     copies the text and gives a `Result<CString, TextError>`: a zero byte inside is the error, its
+     `position` where the byte is.
+525. **`unsafe string.fromCString(p)` copies the text C ended with a zero byte**, decided before the slice:
+     `p` is a `raw byte` (or `raw sbyte`, C's signed `char`), the bytes up to the zero are checked to be UTF-8
+     and copied, and the result is a `Result<string, TextError>`. In the interpreter a `null` pointer is a
+     panic, and so is a block of `Memory.allocate` that holds no zero byte from the pointer to its end;
+     compiled code checks neither, as with any raw memory.
+526. **One allocator for SG and C**, decided before the slice: in the interpreter too `Memory.allocate` is
+     C's `calloc` and `Memory.free` is C's `free`, so memory C gives with `malloc` (`strdup`) is given back
+     with `Memory.free`, and the other way round. An address that no block of `Memory.allocate` starts at,
+     and that lies in none, is C's and goes to C's `free`; until now that was the panic "an address that
+     `Memory.allocate` did not give" (509).
+527. **The interpreter calls C through wrappers it builds**, decided before the slice: before the program
+     runs, it writes a C file with a wrapper for each C function the program calls, all of one signature
+     (`void w(void **args, void *ret)`), builds it with `cc -shared` with the libraries the blocks name, and
+     opens it with `dlopen`; a call writes each argument into a slot of eight bytes as its C type and hands
+     over their addresses. No libffi, no new dependency. It is built in a folder of its own that only the
+     user can open, made new for each run and removed once the library is open, so no other user can put a
+     library there; nothing is kept between runs (a run that calls C takes about a tenth of a second more).
+     A library or a function that cannot be found is an error at the first `extern` block, before anything
+     runs; on Linux a function missing from the libraries is found when they are linked, as on macOS.
+528. **Compiled code calls C directly**, decided before the slice: each C function is declared under a
+     name of the runtime (`sg_c_compress`) bound to its C name with a label (`__asm__("compress")`, with the
+     `_` macOS puts in front), so it clashes with no header the runtime includes, though its types are
+     written as SG has them (`uint8_t*` where `getenv` gives `char*`); an inline adapter (`sg_x_compress`)
+     takes the arguments as the program gives them and passes a `read CString` as the text it lends. A
+     `CString` is a `uint8_t*` from `malloc`, freed with `free`.
+529. **Measured** (`crc`, a new program): sixteen gigabytes through zlib's `crc32`, 64 KB of an array at a
+     time (262,144 calls), take 0.418 s, 0.417 s in the overflow-checked build, against 0.421 s for the same
+     calls in C through zlib's header (0.99 times): a call of C is a call of C. Apple's zlib computes the
+     sum with the CRC instructions of the processor, so the calls, not the sum, would show any cost.
+530. **The tests**: `ok_extern_libc` calls the C library and the math library (a `ref int` and a `ref
+     double` written by C, a struct of plain data lent to `memcmp` and `memcpy`, what `strdup` gives
+     freed with `Memory.free`, the items of a list, an array and a slice handed to `memset`), `ok_extern_zlib`
+     goes through `compress` and `uncompress` and back, `ok_extern_cstring` makes, moves and measures C
+     text and reads it back (a zero byte inside, bytes that are not UTF-8); two `panic_unsafe_cstring_`
+     programs show what the interpreter catches, and 27 `error_extern_`, `error_pointer_`, `error_cstring_`
+     and `error_from_cstring_` programs the errors of 517 to 527 (`error_extern_no_library` names a library
+     that is not there: the interpreter says so before the program runs, and it is not compiled). `tests/modules/clib` is a module with a
+     private and a public C function, with a program that calls them, one that calls the private one (an
+     error) and one that declares it the other way (an error); `examples/zlib` is the safe wrapper, with
+     its tests. `cargo test` compiles 258 of 1093 programs, 40 of them under the thread sanitizer, and 14 of
+     18 programs of tests; on Linux too, in a container that has zlib, with the same counts.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -3966,7 +4066,13 @@ check off.
 
 - **Of raw memory**: a place in it lent (`read p[i]`, `ref p[i]`, a method called on `p[i]`, 511); items that
   own memory (the design's `put`, `take` and `moveItems`); `Memory.resize`; the difference and the order of
-  two pointers (`p - q`, `p < q`); the address of a variable; and calling C, the next slice.
+  two pointers (`p - q`, `p < q`); the address of a variable.
+- **Of calling C**: a struct given to C or given back by value, a C struct whose layout C decides (opaque
+  types), `Disposable` on a type that wraps a library (the next slice); calls from C back into SG
+  (callbacks), `errno`, functions with a varying count of arguments (`printf`), the address of a `CString`
+  kept by C, `sg build -L path` for a library the C compiler does not find by itself, `pkg-config`,
+  frameworks of macOS, Windows. A C function whose name the C library gives another symbol (`stat` on
+  some systems) is bound to the plain name.
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
   pattern>`); storing a borrow from outside into a value reached through `ref` (the design's
   `where r from name`); a `List<read T>`, and a borrow as the error of a `Result` (a list of a type that
@@ -4139,7 +4245,10 @@ loopback takes 1.14 times `getline` in C, which does not check that they are tex
 check): a reader checks the text of its block at once, not line by line. A fractional number is printed
 with Dragonbox, in a third of the time of `printf("%.17g")` in C. Raw memory is there (`raw T`, `unsafe`,
 `Memory.allocate`, `Memory.copy`, `Memory.free`), checked by the interpreter and not by compiled code, and a
-ring buffer over it takes the time of C. The other places in "Slower than C" wait; next is the rest of
-calling C: `extern` blocks, the calls and the libraries they link, C text (`CString`), then `Disposable` on
-types of your own, opaque C types and a library wrapped in a safe type; after that the clock, random
-numbers, folders and the environment, running another program, Unicode tables and UDP.
+ring buffer over it takes the time of C. C is called through `extern` blocks, linked with the libraries
+they name, with C text (`CString`) and the items of a buffer (`buffer.pointer()`), and zlib wrapped in a
+module of its own needs no `unsafe` where it is used; sixteen gigabytes through zlib's `crc32` take the time
+of the same calls in C. The other places in "Slower than C" wait; next is the last slice of calling C:
+`Disposable` on types of your own, opaque C types and C structs, and a library that keeps state wrapped in
+a safe type; after that the clock, random numbers, folders and the environment, running another program,
+Unicode tables and UDP.

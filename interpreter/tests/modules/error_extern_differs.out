@@ -1,0 +1,9 @@
+error: the C function `abs` is declared twice, and the two declarations differ
+  C has one function of this name, so it is declared the same way everywhere
+  --> clib/clib.sg:3:9
+ 3 |     int abs(int value)
+   |         ^^^
+  the other declaration:
+  --> error_extern_differs.sg:4:10
+ 4 |     long abs(long value)
+   |          ^^^

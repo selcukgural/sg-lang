@@ -1,0 +1,9 @@
+use clib
+
+extern {
+    long abs(long value)
+}
+
+void main() {
+    print(unsafe abs(-1))
+}

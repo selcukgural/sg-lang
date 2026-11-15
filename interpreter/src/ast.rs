@@ -17,6 +17,8 @@ pub struct Program {
     /// `char`, raw pointers, and arrays and structs of them), in the order they are declared:
     /// what lies in raw memory, laid out as C lays it out. Filled in by the checker.
     pub plain: std::collections::HashMap<String, Vec<Ty>>,
+    /// What each function of C takes and gives, under its full name. Filled in by the checker.
+    pub foreign: std::collections::HashMap<String, (Vec<Ty>, Ty)>,
 }
 
 /// One file: where its text lies, the module it belongs to (empty for the root, otherwise the
@@ -118,6 +120,17 @@ pub struct Func {
     /// What is written after `from`: where a returned borrow comes from.
     pub from: Vec<FromItem>,
     pub body: Block,
+    /// Declared in an `extern` block: a function of C, with no body.
+    pub foreign: Option<Foreign>,
+}
+
+/// Where a C function comes from: `extern "z" { ... }` names the library `z` (linked as
+/// `-lz`); `extern { ... }` is the C library itself.
+#[derive(Clone)]
+pub struct Foreign {
+    pub lib: Option<String>,
+    /// The word `extern` and the name of the library after it.
+    pub span: Span,
 }
 
 /// One name after `from`: a parameter (`input`), the source of the type a method belongs to
@@ -153,6 +166,15 @@ pub enum Callee {
     FromUtf8,
     /// `string.withCapacity(n)`
     WithCapacity,
+    /// `string.fromCString(p)`: copies the text C ends with a zero byte, checked to be UTF-8.
+    FromCString,
+    /// `CString.from(text)`: the text with a zero byte after it, for C.
+    ToCString,
+    /// A function declared in an `extern` block: a function of C.
+    Extern,
+    /// `buffer.pointer()`, written only as an argument of a C function: the address of the
+    /// items of a list, an array or a slice.
+    Pointer,
     /// `int.parse(text)`, `double.parse(text)`, `int.parseHex(text)`: the type is the one in
     /// the `Result` it gives; the number is the base the digits are read in (10 or 16).
     Parse(u32),
