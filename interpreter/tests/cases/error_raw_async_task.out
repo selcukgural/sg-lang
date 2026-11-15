@@ -1,0 +1,5 @@
+error: `first` takes a `raw int` here, and a call without `await` starts it as a task of its own, which this cannot go to: the checker does not follow a raw pointer, and two tasks could reach what it points at at once
+  what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`
+  --> error_raw_async_task.sg:8:22
+ 8 |     var task = first(numbers)
+   |                      ^^^^^^^

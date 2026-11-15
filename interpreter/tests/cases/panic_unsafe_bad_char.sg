@@ -1,0 +1,9 @@
+// What raw memory holds is read as the type asked for, and a `char` must be a character.
+void main() {
+    var codes = Memory.allocate<uint>(1)
+    unsafe {
+        codes[0] = 0xd800
+    }
+    raw char letters = unsafe (raw char)codes
+    print(unsafe letters[0])
+}

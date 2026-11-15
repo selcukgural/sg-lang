@@ -1,0 +1,11 @@
+// A pointer kept in raw memory finds its block again when it is read back, and is checked.
+void main() {
+    var numbers = Memory.allocate<int>(2)
+    var table = Memory.allocate<raw int>(1)
+    unsafe {
+        table[0] = numbers
+        table[0][1] = 5
+        print(numbers[1])
+        table[0][2] = 6
+    }
+}

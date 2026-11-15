@@ -1,0 +1,14 @@
+// A place in raw memory is not lent yet: the checker cannot follow how long it lives.
+struct Point {
+    int x
+    int y
+}
+
+int width(read Point p) {
+    return p.x
+}
+
+void main() {
+    var points = Memory.allocate<Point>(1)
+    print(width(unsafe read points[0]))
+}

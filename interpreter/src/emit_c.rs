@@ -25,7 +25,9 @@
 //! `TASK_RUNTIME`), input and output the async way (see `ASYNC_IO_RUNTIME`), and the network,
 //! `TcpListener` and `TcpStream`, without async (see `NET_RUNTIME`) and with it, on a loop of epoll or
 //! kqueue (see `NET_ASYNC_RUNTIME`), and the reader of a connection, a `StreamReader` that borrows it
-//! (see `sg_reader` in `IO_RUNTIME`).
+//! (see `sg_reader` in `IO_RUNTIME`), and raw memory: a `raw T` is a `T*`, an item of it is reached
+//! where it is with nothing checked, and `Memory.allocate` is `calloc` behind the tests of its count
+//! (see `RAW_RUNTIME`).
 //! A type alias is the type it names. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
@@ -1261,6 +1263,25 @@ SG_COLD static _Noreturn void sg_assert_fail_s(const char* text, sg_str l, sg_st
 /// none). An entry that is removed is replaced by the last one. `@N` is the name of the type,
 /// `@K` the key, `@P` the key as it is given to look something up; the lines between `@V{`
 /// and `@V}` are for a map only.
+/// Raw memory: `Memory.allocate<T>(n)` is zeroed memory from `calloc`, behind the tests the
+/// interpreter makes too; nothing about raw memory is checked after that, since it is written
+/// inside `unsafe` (the interpreter checks reads and writes against its blocks, compiled code
+/// leaves them to the sanitizers).
+const RAW_RUNTIME: &str = r#"
+static void* sg_raw_alloc(int64_t n, size_t size, const char* ty, const char* loc) {
+    if (n < 0) sg_panicf(loc, "`Memory.allocate` is given a count below 0: %lld", (long long)n);
+    if (size != 0 && (uint64_t)n > (uint64_t)(PTRDIFF_MAX - 16) / size)
+        sg_panicf(loc, "`Memory.allocate` is asked for more memory than an address can count: %lld items of `%s`", (long long)n, ty);
+    void* p = calloc(n ? (size_t)n : 1, size ? size : 1);
+    if (!p) sg_panicf(loc, "`Memory.allocate` found no memory for %lld items of `%s`", (long long)n, ty);
+    return p;
+}
+static inline void sg_raw_copy(const void* source, void* target, int64_t n, size_t size, const char* loc) {
+    if (n < 0) sg_panicf(loc, "`Memory.copy` is given a count below 0: %lld", (long long)n);
+    if (n) memmove(target, source, (size_t)n * size);
+}
+"#;
+
 const TABLE: &str = r#"
 static int64_t sg_find_@N(const sg_@N* m, @P key) {
     if (m->len == 0) return -1;
@@ -3981,6 +4002,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         .any(|text| FLOAT_WRITERS.iter().any(|name| text.contains(name)));
     let _ = writeln!(out, "#define SG_FLOATS {}", u8::from(floats));
     out.push_str(RUNTIME);
+    if emitter.made.contains("raw") {
+        out.push_str(RAW_RUNTIME);
+    }
     if floats {
         out.push_str(crate::shortest::tables());
         out.push_str(crate::shortest::DRAGONBOX);
@@ -4315,6 +4339,8 @@ fn mangle(ty: &Ty) -> Option<String> {
         Ty::Struct(name) => format!("S_{}", cname(name)),
         Ty::Enum(name) => format!("E_{}", cname(name)),
         Ty::Ptr(inner) => format!("P_{}", mangle(inner)?),
+        Ty::Raw(inner) if **inner == Ty::Void => "R_void".to_string(),
+        Ty::Raw(inner) => format!("R_{}", mangle(inner)?),
         Ty::Shared(inner, checked) => format!("{}_{}", if *checked { "SC" } else { "SH" }, mangle(inner)?),
         Ty::Weak(inner, checked) => format!("{}_{}", if *checked { "WC" } else { "WK" }, mangle(inner)?),
         Ty::Locked(inner) => format!("LK_{}", mangle(inner)?),
@@ -4416,7 +4442,8 @@ fn may_leave(expr: &Expr) -> bool {
     let any = |list: &mut dyn Iterator<Item = &Expr>| list.filter(|inner| may_leave(inner)).count() > 0;
     match &expr.kind {
         ExprKind::Try { .. } | ExprKind::Return(_) | ExprKind::Match { .. } => true,
-        ExprKind::Await(inner) => may_leave(inner),
+        ExprKind::Await(inner) | ExprKind::Unsafe(inner) | ExprKind::RawCast { expr: inner, .. } => may_leave(inner),
+        ExprKind::Allocate { args, .. } => any(&mut args.iter()),
         ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::Constant { .. } => false,
         ExprKind::Array { args, items, .. } => any(&mut args.iter().chain(items.iter().flatten())),
         ExprKind::AsSlice(inner) => may_leave(inner),
@@ -4858,6 +4885,9 @@ impl<'a> Emitter<'a> {
             Ty::Read(inner) | Ty::Ref(inner) => format!("{}*", self.ctype(inner, span)?),
             // What a `locked` value holds is the value; its mutex is in front of it (`sg_mutex`).
             Ty::Locked(inner) => self.ctype(inner, span)?,
+            // A raw pointer is the pointer C has.
+            Ty::Raw(inner) if **inner == Ty::Void => "void*".to_string(),
+            Ty::Raw(inner) => format!("{}*", self.ctype(inner, span)?),
             // A task is a pointer to what its thread fills in (see `need`).
             Ty::Task(_) => {
                 let Some(name) = mangle(ty) else { return Err(not_yet(span, &format!("the type `{ty}`"))) };
@@ -5542,6 +5572,10 @@ impl<'a> Emitter<'a> {
                 return Err(unknown());
             }
         }
+        // `raw byte`: the checker has seen that no `?` follows it.
+        for _ in 0..ty.raw {
+            found = Ty::Raw(Box::new(found));
+        }
         if let Some(word) = holder {
             found = held(word, found);
         }
@@ -5622,6 +5656,7 @@ impl<'a> Emitter<'a> {
                     crate::waits::walk_expr(&item.value, &mut each, &mut |_| {});
                 }
             }
+            (StmtKind::Unsafe(_), false) => {}
             _ => crate::waits::walk_stmt(stmt, &mut each, &mut |_| {}),
         }
         found
@@ -7028,6 +7063,12 @@ impl<'a> Emitter<'a> {
                 self.release(kept, &format!("{pad}    "), out);
                 let _ = writeln!(out, "{pad}}}");
             }
+            // A block of its own: what is declared in it ends with it.
+            StmtKind::Unsafe(body) => {
+                let _ = writeln!(out, "{pad}{{");
+                self.block(body, depth + 1, out)?;
+                let _ = writeln!(out, "{pad}}}");
+            }
             StmtKind::As { mutable, value, name, name_span, body } => {
                 let Ty::Shared(held, _) = value.ty.strip_borrow() else { unreachable!("the checker opens only a `shared` value") };
                 let held = (**held).clone();
@@ -8249,6 +8290,7 @@ impl<'a> Emitter<'a> {
                 _ if found.is_borrow() && !matches!(found.strip_borrow(), Ty::Nullable(_)) => Ok(value),
                 _ => Err(not_yet(span, &format!("a `{found}` lent as `{want}`"))),
             },
+            Ty::Raw(_) if *found == Ty::Null => Ok("NULL".to_string()),
             _ if *found == Ty::Null => Err(not_yet(span, "`null` here")),
             // A pointer to a value is not a pointer to a value and a flag.
             Ty::Ref(to) if is_option(to) && found.is_borrow() && !matches!(found.strip_borrow(), Ty::Nullable(_)) => {
@@ -8369,6 +8411,9 @@ impl<'a> Emitter<'a> {
                 own.max(of(left)).max(of(right))
             }
             ExprKind::Index { recv, index, .. } => Effect::Stops.max(of(recv)).max(of(index)),
+            ExprKind::Unsafe(inner) | ExprKind::RawCast { expr: inner, .. } => of(inner),
+            // It allocates, and stops the program on a count below 0.
+            ExprKind::Allocate { args, .. } => Effect::Acts.max(all(&mut args.iter())),
             ExprKind::Slice { recv, from, to } => Effect::Stops.max(of(recv)).max(all(&mut from.iter().chain(to).map(|inner| &**inner))),
             ExprKind::Interp(parts) => all(&mut parts.iter().filter_map(|part| match part {
                 InterpPart::Expr(inner, _) => Some(inner),
@@ -9694,6 +9739,18 @@ impl<'a> Emitter<'a> {
                 self.pre.push(format!("{held}* {temp} = {found};"));
                 Ok(format!("(*{temp})"))
             }
+            // An item of raw memory, where it is: nothing is checked (it is written inside `unsafe`).
+            ExprKind::Index { recv, index, kind: IndexKind::Raw } => {
+                let once = self.effect(index).max(self.effect(recv)) >= Effect::Acts;
+                let pointer = self.look(recv)?;
+                let at = self.value(index)?;
+                if !once {
+                    return Ok(format!("({pointer}[{at}])"));
+                }
+                let (held, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+                self.pre.push(format!("{held}* {temp} = &{pointer}[{at}];"));
+                Ok(format!("(*{temp})"))
+            }
             // What a map keeps under a key: the key has to be there.
             ExprKind::Index { recv, index, kind: IndexKind::Map } => {
                 let Some((table, _)) = table_behind(&recv.ty) else { return Err(not_yet(expr.span, "this place")) };
@@ -9736,7 +9793,7 @@ impl<'a> Emitter<'a> {
     /// A value that is only looked at, as something C can name more than once. A value that
     /// has no name and owns something is kept in a temporary and dropped after the statement.
     fn look(&mut self, expr: &'a Expr) -> Res<String> {
-        if matches!(expr.kind, ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List | IndexKind::Map | IndexKind::Array, .. } | ExprKind::Open { .. }) {
+        if matches!(expr.kind, ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { kind: IndexKind::List | IndexKind::Map | IndexKind::Array | IndexKind::Raw, .. } | ExprKind::Open { .. }) {
             return self.lvalue(expr);
         }
         let late = self.late.take();
@@ -10267,6 +10324,19 @@ impl<'a> Emitter<'a> {
                     _ => format!("(sg_cmp({left}, {right}) {} 0)", op.symbol()),
                 }))
             }
+            // `p + n` moves by items, as C's does; two addresses, or one and `null`, are compared.
+            ExprKind::Binary(op, left, right) if matches!(left.ty.strip_borrow(), Ty::Raw(_)) || matches!(right.ty.strip_borrow(), Ty::Raw(_)) => {
+                let (left, right) = match (&left.kind, &right.kind) {
+                    (ExprKind::Null, _) => ("NULL".to_string(), self.first(right, head)?),
+                    (_, ExprKind::Null) => (self.first(left, head)?, "NULL".to_string()),
+                    _ => {
+                        let (values, names) = self.two(left, right, head)?;
+                        let joined = sequence(&names, format!("({} {} {})", values[0], op.symbol(), values[1]));
+                        return Ok(joined);
+                    }
+                };
+                Ok(format!("({left} {} {right})", op.symbol()))
+            }
             // Structs, enums and lists are compared where they are, through pointers.
             ExprKind::Binary(op, left, right)
                 if matches!(left.ty.strip_borrow(), Ty::Struct(_) | Ty::Enum(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Result(..) | Ty::Array(..) | Ty::Slice(_) | Ty::Shared(..)) =>
@@ -10340,7 +10410,22 @@ impl<'a> Emitter<'a> {
                     (to, _) => Ok(format!("(({})({inner}))", self.ctype(to, expr.span)?)),
                 }
             }
-            ExprKind::Index { kind: IndexKind::List | IndexKind::Map | IndexKind::Array, .. } => self.lvalue(expr),
+            ExprKind::Index { kind: IndexKind::List | IndexKind::Map | IndexKind::Array | IndexKind::Raw, .. } => self.lvalue(expr),
+            ExprKind::Unsafe(inner) => self.value(inner),
+            // `(raw byte)p`: the same address, read as another pointer.
+            ExprKind::RawCast { expr: inner, .. } => {
+                let pointer = self.first(inner, head)?;
+                Ok(format!("(({})({pointer}))", self.ctype(&expr.ty, expr.span)?))
+            }
+            // `Memory.allocate<T>(n)`: zeroed memory from `calloc` (see `RAW_RUNTIME`).
+            ExprKind::Allocate { args, .. } => {
+                let Ty::Raw(item) = &expr.ty else { unreachable!("the checker gives a raw pointer") };
+                let ctype = self.ctype(item, expr.span)?;
+                let count = self.first(&args[0], head)?;
+                self.made.insert("raw".to_string());
+                let loc = self.loc(expr.span);
+                Ok(format!("(({ctype}*)sg_raw_alloc({count}, sizeof({ctype}), {}, {loc}))", c_string(&item.to_string())))
+            }
             // A borrow of a list or of an array, used as a window onto all of it.
             ExprKind::AsSlice(inner) => self.window(inner),
             // A new array. With braces, each item is written; with one value in parentheses,
@@ -10888,6 +10973,24 @@ impl<'a> Emitter<'a> {
                     self.call("sg_from_utf8".to_string(), None, args, head, &expr.ty)
                 }
                 Callee::Io(call) => self.io(*call, args, head, expr),
+                // `Memory.free(p)` is C's `free`; `Memory.copy` is `memmove` behind a test of the count.
+                Callee::Memory(MemoryCall::Free) => Ok(format!("free({})", self.first(&args[0], head)?)),
+                Callee::Memory(MemoryCall::Copy) => {
+                    let Ty::Raw(item) = args[0].ty.strip_borrow() else { unreachable!("the checker gives `Memory.copy` raw pointers") };
+                    let ctype = self.ctype(item, expr.span)?;
+                    let mut parts = Vec::new();
+                    let mut head = head;
+                    for arg in args {
+                        let before = self.mark();
+                        let value = self.first(arg, head)?;
+                        head = false;
+                        parts.push(self.part(arg, &arg.ty, value, before));
+                    }
+                    let (values, names) = self.in_order(parts)?;
+                    self.made.insert("raw".to_string());
+                    let loc = self.loc(expr.span);
+                    Ok(sequence(&names, format!("sg_raw_copy({}, {}, {}, sizeof({ctype}), {loc})", values[0], values[1], values[2])))
+                }
                 Callee::Stream(call) => self.stream(*call, recv, args, head, expr),
                 Callee::Net(call) => self.net(*call, recv, args, head, expr),
                 // `ulong.fromLittleEndian(bytes)`: the count is checked, then the bytes are one

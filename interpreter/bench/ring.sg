@@ -1,0 +1,40 @@
+// A ring buffer of its own over raw memory: four hundred million numbers go in at one end and
+// come out at the other, through a buffer of 4096 items. `unsafe` stays on the two lines that
+// touch the memory.
+struct Ring {
+    raw long items
+    nint head
+    nint count
+    nint mask
+
+    void push(ref this, long value) {
+        unsafe {
+            this.items[(this.head + this.count) & this.mask] = value
+        }
+        this.count += 1
+    }
+
+    long pop(ref this) {
+        var value = unsafe this.items[this.head]
+        this.head = (this.head + 1) & this.mask
+        this.count -= 1
+        return value
+    }
+}
+
+void main() {
+    var ring = Ring { items = Memory.allocate<long>(4096), head = 0, count = 0, mask = 4095 }
+    long sum = 0
+    for round in 0..100000 {
+        for i in 0..4000 {
+            ring.push((long)i * round)
+        }
+        for i in 0..4000 {
+            sum += ring.pop() ^ i
+        }
+    }
+    unsafe {
+        Memory.free(ring.items)
+    }
+    print(sum)
+}

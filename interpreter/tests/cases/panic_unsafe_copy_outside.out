@@ -1,0 +1,4 @@
+panic: raw memory is written outside its block: items 0 to 7, where the block holds 4 items of `int`
+  --> panic_unsafe_copy_outside.sg:6:9
+ 6 |         Memory.copy(from, to, 8)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^

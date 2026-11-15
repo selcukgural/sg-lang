@@ -8,13 +8,13 @@ use crate::types::{FloatTy, IntTy, Ty};
 /// Words that are in the design but not in the interpreter yet. They get an explicit
 /// message instead of "unknown name".
 const NOT_YET: &[&str] = &[
-    "interface", "raw", "unsafe",
+    "interface",
 ];
 
 /// Words of the language that are read where they stand, not names: `shared T`, `weak T`,
 /// `shared checked T`, `shared locked T`, `share x`, `weak x`, `using Name = T`,
-/// `lock x as c { }`, `async int f()`, `await t`.
-const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock", "async", "await"];
+/// `lock x as c { }`, `async int f()`, `await t`, `raw byte p`, `unsafe { }`.
+const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock", "async", "await", "raw", "unsafe"];
 
 type Res<T> = Result<T, Diag>;
 
@@ -26,7 +26,7 @@ pub fn parse(src: &str) -> Res<Program> {
 /// belongs to. What a module defines gets its full name here: `Product` in the folder `stock`
 /// is `stock.Product`.
 pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> {
-    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new() };
+    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default() };
     for (start, end, module) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
         let mut parser = Parser { src, toks, i: 0, struct_literals: true };
@@ -173,6 +173,16 @@ impl<'a> Parser<'a> {
             return Err(Diag::error(self.span(), "`locked` is written after `shared` or `weak`: several tasks own the value it holds")
                 .hint("`shared locked T` for an owner, `weak locked T` for a look at one"));
         }
+        // `raw byte`, `raw raw byte`: an address of what follows.
+        let mut raw = 0u8;
+        while self.at_word("raw") {
+            self.bump();
+            raw = raw.saturating_add(1);
+            if self.at_word("shared") || self.at_word("weak") || self.at_word("checked") || self.at_word("locked") {
+                return Err(Diag::error(self.span(), "a raw pointer points at plain data, which has one owner and no count")
+                    .note("`raw` is written right before the type it points at: `raw byte`, `shared raw byte`"));
+            }
+        }
         let (mut name, _) = self.ident("a type name")?;
         // `billing.Line`: the module is written in front.
         while *self.peek() == Tok::Dot && matches!(self.peek_at(1), Tok::Ident(_)) {
@@ -220,7 +230,7 @@ impl<'a> Parser<'a> {
             }
             self.bump();
         }
-        Ok(TypeExpr { mode, holder, checked, locked, name, args, suffixes, span: Span::new(start.start, self.prev_end()) })
+        Ok(TypeExpr { mode, holder, checked, locked, raw, name, args, suffixes, span: Span::new(start.start, self.prev_end()) })
     }
 
     /// `using NodeRef = shared Node`
@@ -600,6 +610,9 @@ impl<'a> Parser<'a> {
         if holder && matches!(self.peek_at(first), Tok::Ident(word) if word == "checked" || word == "locked") {
             first += 1;
         }
+        while matches!(self.peek_at(first), Tok::Ident(word) if word == "raw") {
+            first += 1;
+        }
         if !matches!(self.peek_at(first), Tok::Ident(_)) {
             return None;
         }
@@ -636,8 +649,9 @@ impl<'a> Parser<'a> {
     /// The type comes first: `int x = 1`, `Node*? list = null`, `Result<int, E> r = f()`. A
     /// type and then a name is a declaration.
     fn at_declaration(&self) -> bool {
-        // `await task` is not a variable `task` of the type `await`.
-        !self.at_word("await") && self.type_len(0).is_some_and(|n| matches!(self.peek_at(n), Tok::Ident(_)))
+        // `await task` is not a variable `task` of the type `await`, nor `unsafe p[0] = 1` one of
+        // the type `unsafe`.
+        !self.at_word("await") && !self.at_word("unsafe") && self.type_len(0).is_some_and(|n| matches!(self.peek_at(n), Tok::Ident(_)))
     }
 
     /// Whether a declaration starts here and is followed by `=`.
@@ -731,6 +745,11 @@ impl<'a> Parser<'a> {
                 let body = self.block()?;
                 StmtKind::Lock { items, body }
             }
+            // `unsafe { ... }`; `unsafe` in front of a value is read as an expression.
+            Tok::Ident(word) if word == "unsafe" && *self.peek_at(1) == Tok::LBrace => {
+                self.bump();
+                StmtKind::Unsafe(self.block()?)
+            }
             Tok::Return => {
                 self.bump();
                 if matches!(self.peek(), Tok::Newline | Tok::RBrace | Tok::Eof) {
@@ -783,6 +802,11 @@ impl<'a> Parser<'a> {
             _ => {
                 let expr = self.expr()?;
                 if let Some(op) = assign_op(self.peek()) {
+                    if let ExprKind::Unsafe(target) = &expr.kind {
+                        let text = &self.src[target.span.start..target.span.end];
+                        return Err(Diag::error(expr.span, "`unsafe` in front of a value is for reading it; a write is a statement")
+                            .hint(format!("write it inside a block: `unsafe {{ {text} = ... }}`")));
+                    }
                     if !expr.is_place() {
                         return Err(Diag::error(expr.span, "the left side of an assignment must be a variable, a field or an item"));
                     }
@@ -794,10 +818,7 @@ impl<'a> Parser<'a> {
                     }
                 } else if tail_ok(self) {
                     return Ok(Err(expr));
-                } else if matches!(
-                    expr.kind,
-                    ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Match { .. } | ExprKind::Try { .. } | ExprKind::Await(_)
-                ) {
+                } else if is_statement(&expr) {
                     StmtKind::Expr(expr)
                 } else {
                     return Err(Diag::error(expr.span, "the value of this expression is not used")
@@ -1220,6 +1241,25 @@ impl<'a> Parser<'a> {
                 let operand = self.unary()?;
                 Ok(wrap(ExprKind::Await, operand))
             }
+            // A prefix, like `try`: `unsafe p[0] + 1` reads one item and adds to it.
+            Tok::Ident(word) if word == "unsafe" => {
+                self.bump();
+                if *self.peek() == Tok::LBrace {
+                    return Err(Diag::error(start.to(self.span()), "`unsafe { }` is a block of statements, not a value")
+                        .hint("for a value, write `unsafe` in front of it: `var first = unsafe p[0]`"));
+                }
+                let operand = self.unary()?;
+                Ok(wrap(ExprKind::Unsafe, operand))
+            }
+            // `(raw byte)p`: a raw pointer read as one to another type.
+            Tok::LParen if matches!(self.peek_at(1), Tok::Ident(word) if word == "raw") => {
+                self.bump();
+                let ty = self.type_expr()?;
+                self.expect(Tok::RParen, "`)`")?;
+                let operand = self.unary()?;
+                let span = start.to(operand.span);
+                Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::RawCast { ty, expr: Box::new(operand) }, span })
+            }
             // A prefix, like `await`: `try a().b()` tries the whole chain.
             Tok::Try => {
                 self.bump();
@@ -1280,6 +1320,19 @@ impl<'a> Parser<'a> {
                     expr = Expr { ty: Ty::Void, moved: false, kind, span: Span::new(start, self.prev_end()) };
                     continue;
                 }
+            }
+            // `Memory.allocate<int>(n)`: the type of the items is written after the name.
+            if name == "allocate" && *self.peek() == Tok::Lt && matches!(&expr.kind, ExprKind::Var(owner) if owner == "Memory") {
+                let start = expr.span.start;
+                self.bump();
+                let item = self.type_expr()?;
+                self.expect(Tok::Gt, "`>`")?;
+                if *self.peek() != Tok::LParen {
+                    return Err(self.unexpected("`(`").hint("`Memory.allocate<int>(count)`"));
+                }
+                let args = self.args()?;
+                expr = Expr { ty: Ty::Void, moved: false, kind: ExprKind::Allocate { item, args }, span: Span::new(start, self.prev_end()) };
+                continue;
             }
             let recv = Box::new(expr);
             let kind = if *self.peek() == Tok::LParen {
@@ -1560,6 +1613,16 @@ const BITWISE: usize = 4;
 const SHIFT: usize = 7;
 
 /// `a.b.c` written with names only, as one text.
+/// Whether an expression can stand alone as a statement: a call, a `match`, `try` and `await`
+/// of one, and `unsafe` in front of any of them.
+fn is_statement(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Match { .. } | ExprKind::Try { .. } | ExprKind::Await(_) => true,
+        ExprKind::Unsafe(inner) => is_statement(inner),
+        _ => false,
+    }
+}
+
 pub fn dotted(expr: &Expr) -> Option<String> {
     match &expr.kind {
         ExprKind::Var(name) => Some(name.clone()),

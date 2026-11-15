@@ -29,7 +29,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -325,7 +325,7 @@ const TEXT_ERROR: &str = "TextError";
 fn text_error() -> StructDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
-    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, raw: 0, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
     let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere };
     StructDecl { public: true, name: TEXT_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: vec![position], methods: Vec::new() }
 }
@@ -339,7 +339,7 @@ const NUMBER_ERROR: &str = "NumberError";
 fn number_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
-    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, raw: 0, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
     let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere };
     let variants = vec![
         VariantDecl { name: "Invalid".to_string(), span: nowhere, fields: vec![position] },
@@ -376,7 +376,7 @@ fn io_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
     let field = |ty: &str, name: &str| {
-        let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, name: ty.to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+        let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, raw: 0, name: ty.to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
         FieldDecl { public: true, readonly: true, ty, name: name.to_string(), span: nowhere }
     };
     let variant = |name: &str, fields: Vec<FieldDecl>| VariantDecl { name: name.to_string(), span: nowhere, fields };
@@ -561,6 +561,7 @@ fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
 /// test command compiles. A normal run leaves the tests out.
 pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     LOCKED.with(|found| found.borrow_mut().clear());
+    RAW.with(|found| found.borrow_mut().clear());
     let mut names = Names { files: prog.files.clone(), ..Names::default() };
     names.modules = prog.files.iter().filter(|file| !file.module.is_empty()).map(|file| file.module.clone()).collect();
     for file in &prog.files {
@@ -816,6 +817,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
     }
 
+    // Raw pointers in fields and signatures point at plain data.
+    raw_rule(&structs)?;
+
     // Every alias names a type, also one that nothing uses yet.
     for alias in &prog.aliases {
         let ty = resolve_type(&alias.ty, &names, false)?;
@@ -926,6 +930,8 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             src,
             is_async: func.is_async,
             awaiting: false,
+            unsafe_at: None,
+            writing: false,
         };
         if let (Some(this), Some(owner)) = (func.this, owner) {
             let ty = match (&sig.holder, names.kinds[owner]) {
@@ -991,6 +997,13 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         check_tests(prog, &names, &sets, &structs, &enums, &sigs, src)?;
     }
     thread_rule_of_locked(&structs, &enums, &names)?;
+    raw_rule(&structs)?;
+    // What lies in raw memory is laid out from the types of the fields.
+    for (name, info) in &structs {
+        if not_plain(&Ty::Struct(name.clone()), &structs).is_none() {
+            prog.plain.insert(name.clone(), info.fields.iter().map(|(_, ty)| ty.clone()).collect());
+        }
+    }
     crate::waits::check(prog)
 }
 
@@ -1046,6 +1059,8 @@ fn check_tests(
             src,
             is_async: false,
             awaiting: false,
+            unsafe_at: None,
+            writing: false,
         };
         checker.declare_streams(test_span)?;
         checker.block(&mut prog.tests[position].body, &[])?;
@@ -1138,7 +1153,8 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             }
             Ty::Result(Box::new(resolve_type(ok, names, true)?), Box::new(resolve_type(error, names, false)?))
         }
-        Some(Ty::Void) if !allow_void || !ty.suffixes.is_empty() || ty.mode.is_some() => {
+        Some(Ty::Void) if ty.raw > 0 && ty.suffixes.is_empty() => Ty::Void,
+        Some(Ty::Void) if !allow_void || !ty.suffixes.is_empty() || ty.mode.is_some() || ty.raw > 0 => {
             return Err(Diag::error(ty.span, "`void` can only be a return type"));
         }
         Some(base) => base,
@@ -1197,8 +1213,13 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
     // `shared Node?` is a `shared Node` that may be missing: the holder goes around the type
     // before `?` does.
     let mut holder = ty.holder;
+    let mut raw = ty.raw;
     for suffix in &ty.suffixes {
         if *suffix == Suffix::Nullable {
+            if raw > 0 {
+                return Err(Diag::error(ty.span, "a raw pointer can be `null` already, so it is not written with `?`")
+                    .hint("compare it: `p == null`"));
+            }
             if let Some(word) = holder.take() {
                 resolved = held(word, resolved, ty, names)?;
             }
@@ -1222,6 +1243,13 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             }
             Suffix::Nullable => Ty::Nullable(Box::new(resolved)),
         };
+    }
+    if raw > 0 {
+        RAW.with(|found| found.borrow_mut().push((resolved.clone(), ty.span)));
+    }
+    while raw > 0 {
+        resolved = Ty::Raw(Box::new(resolved));
+        raw -= 1;
     }
     if let Some(word) = holder {
         resolved = held(word, resolved, ty, names)?;
@@ -1331,6 +1359,9 @@ thread_local! {
     /// What each `shared locked T` written in the program holds, and where: checked against
     /// the thread rule once the fields of every type are known.
     static LOCKED: std::cell::RefCell<Vec<(Ty, Span)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// What each `raw T` written in the program points at, and where: checked to be plain data
+    /// once the fields of every type are known.
+    static RAW: std::cell::RefCell<Vec<(Ty, Span)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Why a value may not go to another task, for the messages of the thread rule.
@@ -1411,7 +1442,7 @@ fn when_all(ty: &Ty, text: &str, is_async: bool) -> String {
 fn stays(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, names: &Names, seen: &mut Vec<String>) -> Option<(Ty, String)> {
     match ty {
         Ty::Read(_) | Ty::Ref(_) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(true) | Ty::Entry(..) | Ty::Formatter | Ty::Task(_) => Some((ty.clone(), String::new())),
-        Ty::Shared(_, true) | Ty::Weak(_, true) => Some((ty.clone(), String::new())),
+        Ty::Shared(_, true) | Ty::Weak(_, true) | Ty::Raw(_) => Some((ty.clone(), String::new())),
         Ty::Shared(inner, false) | Ty::Weak(inner, false) | Ty::Locked(inner) => stays(inner, structs, enums, names, seen),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) => stays(inner, structs, enums, names, seen),
         Ty::Result(a, b) | Ty::Map(a, b) => stays(a, structs, enums, names, seen).or_else(|| stays(b, structs, enums, names, seen)),
@@ -1446,6 +1477,7 @@ fn why_it_stays(part: &Ty, names: &Names) -> String {
     match part {
         Ty::Shared(..) | Ty::Weak(..) => format!("a `{part}` is checked within one task; one that several tasks change is `shared locked`"),
         Ty::Task(_) => "a task is waited for by the task that started it, and by no other".to_string(),
+        Ty::Raw(_) => "the checker does not follow a raw pointer, and two tasks could reach what it points at at once".to_string(),
         Ty::Reader(true) => "this `StreamReader` reads a connection it borrows, and the task could outlive the connection".to_string(),
         Ty::Struct(name) | Ty::Enum(name) if names.carriers.contains_key(name) => format!("a `{part}` carries a borrow, and the task could outlive what it borrows from"),
         _ => format!("a `{part}` is a borrow, and the task could outlive what it borrows from"),
@@ -2058,6 +2090,12 @@ struct Checker<'a> {
     /// The call being checked is the one an `await` is written in front of: it runs as part
     /// of this task, so what it borrows stays here.
     awaiting: bool,
+    /// The `unsafe` being checked, if any: where its word is, and whether anything in it
+    /// needed it.
+    unsafe_at: Option<(Span, bool)>,
+    /// The place being checked is the target of an assignment: an `unsafe` it lacks is asked
+    /// for as a block.
+    writing: bool,
 }
 
 /// A collection that a `for` is going over by borrowing it: nothing may change it until the
@@ -3237,7 +3275,10 @@ impl<'a> Checker<'a> {
                         }
                     }
                     _ => {
-                        let Some((ty, writable)) = self.place_unchecked(target)? else {
+                        self.writing = true;
+                        let found = self.place_unchecked(target);
+                        self.writing = false;
+                        let Some((ty, writable)) = found? else {
                             return Err(Diag::error(target.span, "a variant of an enum is a value, not a place to write to"));
                         };
                         self.check_parts(target, true)?;
@@ -3684,6 +3725,11 @@ impl<'a> Checker<'a> {
                 self.borrows.binds = loans;
                 self.block_with(body, &[], binds)?;
             }
+            StmtKind::Unsafe(body) => {
+                self.enter_unsafe(stmt_span)?;
+                let result = self.block(body, &[]);
+                self.leave_unsafe(result)?;
+            }
             StmtKind::Return(value) => self.returned(value.as_mut(), stmt_span)?,
             StmtKind::Break | StmtKind::Continue => {
                 let word = if matches!(stmt.kind, StmtKind::Break) { "break" } else { "continue" };
@@ -3737,8 +3783,56 @@ impl<'a> Checker<'a> {
     }
 
     /// An expression whose value is not used: a statement, or an arm of a `match` statement.
+    /// The start of an `unsafe` block or of `unsafe` in front of a value, at `span`.
+    fn enter_unsafe(&mut self, span: Span) -> Res<()> {
+        let word = Span::new(span.start, span.start + "unsafe".len());
+        if let Some((outer, _)) = self.unsafe_at {
+            return Err(Diag::error(word, "this is already inside `unsafe`").related(outer, "the `unsafe` around it").hint("leave the inner `unsafe` out"));
+        }
+        self.unsafe_at = Some((word, false));
+        Ok(())
+    }
+
+    /// The end of the `unsafe` that `enter_unsafe` started: something in it must have needed it.
+    fn leave_unsafe<T>(&mut self, result: Res<T>) -> Res<T> {
+        let (word, used) = self.unsafe_at.take().expect("an `unsafe` was entered");
+        let value = result?;
+        if !used {
+            return Err(Diag::error(word, "nothing here needs `unsafe`")
+                .note("`unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers, `Memory.free` and `Memory.copy`")
+                .hint("leave `unsafe` out"));
+        }
+        Ok(value)
+    }
+
+    /// What is checked at `span` does what the checker cannot follow (`what` says it), so it
+    /// is written inside `unsafe`.
+    fn needs_unsafe(&mut self, span: Span, what: &str) -> Res<()> {
+        match &mut self.unsafe_at {
+            Some((_, used)) => {
+                *used = true;
+                Ok(())
+            }
+            None => {
+                let text = &self.src[span.start..span.end];
+                let diag = Diag::error(span, format!("{what}, so it is written inside `unsafe`"));
+                Err(match self.writing {
+                    true => diag.hint(format!("a write is a statement: `unsafe {{ {text} = ... }}`")),
+                    false => diag.hint(format!("`unsafe {text}`, or `unsafe {{ ... }}` around several statements")),
+                })
+            }
+        }
+    }
+
     fn unused(&mut self, expr: &mut Expr) -> Res<()> {
         let span = expr.span;
+        if let ExprKind::Unsafe(inner) = &mut expr.kind {
+            self.enter_unsafe(span)?;
+            let result = self.unused(inner);
+            self.leave_unsafe(result)?;
+            unwrap_unsafe(expr);
+            return Ok(());
+        }
         match &mut expr.kind {
             ExprKind::Match { subject, arms, borrowed } => {
                 self.match_expr(subject, arms, borrowed, None, true)?;
@@ -4063,7 +4157,7 @@ impl<'a> Checker<'a> {
                 let text = if matches!(expr.kind, ExprKind::Coalesce { .. }) { format!("({text})") } else { text.to_string() };
                 mismatch(Some(format!("a number is not a condition; compare it: `{text} != 0`")))
             }
-            (Ty::Null, _) if matches!(expected.strip_borrow(), Ty::Nullable(_)) => Ok(()),
+            (Ty::Null, _) if matches!(expected.strip_borrow(), Ty::Nullable(_) | Ty::Raw(_)) => Ok(()),
             (Ty::Null, _) => Err(Diag::error(expr.span, format!("`{expected}` cannot be `null`"))
                 .hint(format!("a value that may be missing has the type `{expected}?`"))),
             (Ty::Void, _) => Err(Diag::error(expr.span, "this call does not return a value, and one is needed here")),
@@ -4216,7 +4310,7 @@ impl<'a> Checker<'a> {
             if let (ExprKind::Var(name), ExprKind::Int(length, _)) = (&recv.kind, &index.kind) {
                 let is_type = Ty::from_name(name).is_some() || self.names.full(name, recv.span)?.is_some_and(|full| self.names.kinds.contains_key(&full));
                 if self.find(name).is_none() && name != "this" && is_type && *length >= 0 {
-                    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, name: name.clone(), args: Vec::new(), suffixes: vec![Suffix::Array(*length as usize)], span };
+                    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, raw: 0, name: name.clone(), args: Vec::new(), suffixes: vec![Suffix::Array(*length as usize)], span };
                     expr.kind = ExprKind::Array { ty, args: Vec::new(), items: None };
                     return Ok(None);
                 }
@@ -4297,6 +4391,11 @@ impl<'a> Checker<'a> {
                             let text = &self.src[recv.span.start..recv.span.end];
                             return Err(Diag::error(recv.span, format!("this is `{ty}`: what it looks at may be gone, so `.{name}` cannot reach it"))
                                 .hint(format!("ask for an owner first: `var owner = share {text}`, which is `null` if it is gone")));
+                        }
+                        Ty::Raw(_) => {
+                            let text = &self.src[recv.span.start..recv.span.end];
+                            return Err(Diag::error(*name_span, format!("a `{ty}` has no fields: it is an address, and its items have them"))
+                                .hint(format!("`{text}[0].{name}`")));
                         }
                         other => {
                             return Err(Diag::error(*name_span, format!("`{other}` has no fields")));
@@ -4382,6 +4481,19 @@ impl<'a> Checker<'a> {
                         self.index(index, "an index")?;
                         *kind = IndexKind::Array;
                         Ok(Some(((**item).clone(), writable)))
+                    }
+                    Ty::Raw(item) if **item == Ty::Void => {
+                        let text = &self.src[recv.span.start..recv.span.end];
+                        Err(Diag::error(span, "a `raw void` points at memory of no known type, so it has no items")
+                            .hint(format!("say what lies there with a cast: `unsafe ((raw byte){text})[0]`")))
+                    }
+                    // Whatever reached the pointer, what it points at is not borrowed from it.
+                    Ty::Raw(item) => {
+                        let item = (**item).clone();
+                        self.needs_unsafe(span, "this reaches raw memory, whose size and life the checker does not know")?;
+                        self.index(index, "an index")?;
+                        *kind = IndexKind::Raw;
+                        Ok(Some((item, true)))
                     }
                     _ => {
                         self.indexable(&ty, recv.span)?;
@@ -4589,6 +4701,10 @@ impl<'a> Checker<'a> {
     fn expr_untyped(&mut self, expr: &mut Expr, expected: Option<&Ty>) -> Res<Ty> {
         let span = expr.span;
         if let Some((ty, _)) = self.place(expr)? {
+            // What lies in raw memory is plain data: reading it copies the bytes.
+            if Expr::in_raw_memory(expr) {
+                return Ok(ty);
+            }
             if !ty.is_copyable(self.copyable) {
                 // `xs[i]` reads the item where it is: what cannot be copied is lent.
                 if matches!(expr.kind, ExprKind::Index { .. }) {
@@ -4680,6 +4796,44 @@ impl<'a> Checker<'a> {
         match &mut expr.kind {
             // Put in after a function is checked; nothing is checked twice.
             ExprKind::Open { .. } | ExprKind::Within(_) => unreachable!("the opening of `shared checked` values comes after the check"),
+            ExprKind::Unsafe(inner) => {
+                self.enter_unsafe(span)?;
+                let result = self.expr(inner, expected);
+                let bare = matches!(inner.ty, Ty::Raw(_)) && inner.is_place();
+                let ty = self.leave_unsafe(result).map_err(|diag| match bare {
+                    // `unsafe p + 1` is `(unsafe p) + 1`, as with `try`.
+                    true => diag.hint("`unsafe` takes the value right after it, as `try` does; for a sum, put it in parentheses: `unsafe (p + n)`"),
+                    false => diag,
+                })?;
+                unwrap_unsafe(expr);
+                Ok(ty)
+            }
+            // `Memory.allocate<int>(n)`: room for `n` items, all zero.
+            ExprKind::Allocate { item, args } => {
+                let item_ty = resolve_type(item, self.names, false)?;
+                RAW.with(|found| found.borrow_mut().push((item_ty.clone(), item.span)));
+                if item.mode.is_some() {
+                    return Err(Diag::error(item.span, "raw memory holds plain data, not borrows"));
+                }
+                self.args("Memory.allocate", args, &[Ty::Int(IntTy::Nint)], span)?;
+                Ok(Ty::Raw(Box::new(item_ty)))
+            }
+            // `(raw byte)p`
+            ExprKind::RawCast { ty, expr: inner } => {
+                let target = resolve_type(ty, self.names, false)?;
+                if !matches!(target, Ty::Raw(_)) {
+                    return Err(Diag::error(ty.span, format!("a cast with `raw` gives a raw pointer, and `{target}` is not one")));
+                }
+                let found = self.expr(inner, None)?;
+                let stripped = found.strip_borrow().clone();
+                if !matches!(stripped, Ty::Raw(_)) {
+                    return Err(Diag::error(inner.span, format!("a cast to `{target}` reads a raw pointer as another, and this is `{found}`"))
+                        .note("a raw pointer is made by `Memory.allocate<T>(n)`"));
+                }
+                self.coerce(inner, found, &stripped)?;
+                self.needs_unsafe(span, "this reads a raw pointer as one to another type")?;
+                Ok(target)
+            }
             ExprKind::Float(text, ty) => {
                 *ty = expected.and_then(wanted_float).unwrap_or(FloatTy::Double);
                 fractional_literal(text, *ty, span)?;
@@ -5102,6 +5256,14 @@ impl<'a> Checker<'a> {
                     }
                     None => (self.expr(inner, None)?, false),
                 };
+                if Expr::in_raw_memory(inner) {
+                    let text = &self.src[inner.span.start..inner.span.end];
+                    let diag = Diag::error(span, "a place in raw memory is not lent yet: the checker cannot follow how long it lives");
+                    return Err(match mutable {
+                        true => diag.hint(format!("write it where it is: `unsafe {{ {text} = ... }}`")),
+                        false => diag.hint(format!("copy it out: `var item = unsafe {text}`")),
+                    });
+                }
                 if matches!(ty, Ty::Void | Ty::Never) {
                     return Err(Diag::error(inner.span, "there is no value here to borrow"));
                 }
@@ -5118,8 +5280,13 @@ impl<'a> Checker<'a> {
                 self.not_locked(inner, Access::Write)?;
                 Ok(Ty::Ref(base))
             }
-            ExprKind::IsNull { expr: inner, .. } => {
+            ExprKind::IsNull { expr: inner, negated } => {
                 let ty = self.operand(inner, None)?;
+                if matches!(ty.strip_borrow(), Ty::Raw(_)) {
+                    let text = &self.src[inner.span.start..inner.span.end];
+                    let op = if *negated { "!=" } else { "==" };
+                    return Err(Diag::error(span, "a raw pointer is not a `T?`: it is an address, compared with `null`").hint(format!("`{text} {op} null`")));
+                }
                 if !matches!(ty.strip_borrow(), Ty::Nullable(_) | Ty::Null) {
                     return Err(Diag::error(inner.span, format!("this is `{ty}`, which is never `null`")).note("only a `T?` can be `null`"));
                 }
@@ -6183,6 +6350,42 @@ impl<'a> Checker<'a> {
             (Ty::Str | Ty::Fmt, Ty::Str | Ty::Fmt) if op == BinOp::Add => {
                 Err(undefined().hint("strings are joined with `$\"{a}{b}\"`"))
             }
+            // Two addresses, or an address and `null`, are compared as they are.
+            (Ty::Raw(a), Ty::Raw(b)) if matches!(op, BinOp::Eq | BinOp::Ne) => match a == b {
+                true => {
+                    let raw = left_ty.strip_borrow().clone();
+                    self.coerce(left, left_ty.clone(), &raw)?;
+                    self.coerce(right, right_ty.clone(), &raw)?;
+                    Ok(Ty::Bool)
+                }
+                false => Err(undefined().hint(format!("point both at one type with a cast: `unsafe (raw {a})q`"))),
+            },
+            (Ty::Raw(_), Ty::Null) | (Ty::Null, Ty::Raw(_)) if matches!(op, BinOp::Eq | BinOp::Ne) => {
+                for (side, ty) in [(&mut *left, &left_ty), (&mut *right, &right_ty)] {
+                    if let Ty::Raw(_) = ty.strip_borrow() {
+                        let raw = ty.strip_borrow().clone();
+                        self.coerce(side, ty.clone(), &raw)?;
+                    }
+                }
+                Ok(Ty::Bool)
+            }
+            (Ty::Raw(item), Ty::Int(_)) if matches!(op, BinOp::Add | BinOp::Sub) && **item != Ty::Void => {
+                let raw = left_ty.strip_borrow().clone();
+                self.needs_unsafe(span, "this moves a raw pointer, which may then point outside its memory")?;
+                self.coerce(left, left_ty.clone(), &raw)?;
+                self.index(right, "a count of items")?;
+                Ok(raw)
+            }
+            (Ty::Raw(_), Ty::Int(_)) if matches!(op, BinOp::Add | BinOp::Sub) => {
+                let text = &self.src[left.span.start..left.span.end];
+                Err(Diag::error(span, "a `raw void` points at memory of no known type, so it does not move by items")
+                    .hint(format!("say what lies there with a cast: `(raw byte){text}`")))
+            }
+            (Ty::Int(_), Ty::Raw(_)) if op == BinOp::Add => {
+                let (a, b) = (&self.src[left.span.start..left.span.end], &self.src[right.span.start..right.span.end]);
+                Err(undefined().hint(format!("the pointer is written first: `{b} + {a}`")))
+            }
+            (Ty::Raw(_), _) | (_, Ty::Raw(_)) => Err(undefined().note("a raw pointer is compared with `==` and `!=`, and moved by a count of items with `+` and `-`")),
             (Ty::Null, _) | (_, Ty::Null) if matches!(op, BinOp::Eq | BinOp::Ne) => {
                 let word = if op == BinOp::Eq { "is null" } else { "is not null" };
                 Err(Diag::error(span, "`null` is not compared with `==`").hint(format!("write `x {word}`")))
@@ -6266,6 +6469,8 @@ impl<'a> Checker<'a> {
                     None => diag,
                 })
             }
+            Ty::Raw(_) => Err(Diag::error(span, format!("a `{inner}` cannot be written as text: an address differs from one run to the next"))
+                .hint("write what lies there: `unsafe p[0]`")),
             Ty::Weak(..) => Err(Diag::error(span, format!("a `{inner}` cannot be written as text: what it looks at may be gone"))
                 .hint("ask for an owner first with `share`, which gives `null` if it is gone")),
             other => Err(Diag::error(span, format!("a `{other}` value cannot be written as text"))),
@@ -6839,6 +7044,58 @@ impl<'a> Checker<'a> {
         Ok(Ty::Task(Box::new(ty)))
     }
 
+    /// `Memory.free(p)`, `Memory.copy(source, target, count)`; `Memory.allocate<T>(n)` is an
+    /// `Allocate`.
+    fn memory_call(&mut self, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+        let pointer = |checker: &mut Self, arg: &mut Expr, what: &str| -> Res<Ty> {
+            let found = checker.expr(arg, None)?;
+            let stripped = found.strip_borrow().clone();
+            if !matches!(stripped, Ty::Raw(_)) {
+                return Err(Diag::error(arg.span, format!("{what} is a raw pointer, and this is `{found}`")));
+            }
+            checker.coerce(arg, found, &stripped)?;
+            Ok(stripped)
+        };
+        match name {
+            "allocate" => Err(Diag::error(name_span, "`Memory.allocate` names the type of what it makes room for").hint("`Memory.allocate<int>(count)`")),
+            "free" => {
+                if args.len() != 1 {
+                    return Err(Diag::error(span, format!("`free` takes 1 argument(s), {} given", args.len())));
+                }
+                pointer(self, &mut args[0], "what `Memory.free` gives back")?;
+                self.needs_unsafe(span, "`Memory.free` gives memory back, and a pointer to it may still be used")?;
+                *callee = Callee::Memory(MemoryCall::Free);
+                Ok(Ty::Void)
+            }
+            "copy" => {
+                if args.len() != 3 {
+                    return Err(Diag::error(span, format!("`copy` takes 3 argument(s), {} given", args.len()))
+                        .note("`Memory.copy(source, target, count)` copies `count` items"));
+                }
+                let source = pointer(self, &mut args[0], "what `Memory.copy` copies from")?;
+                let target = pointer(self, &mut args[1], "what `Memory.copy` copies to")?;
+                if source == Ty::Raw(Box::new(Ty::Void)) {
+                    return Err(Diag::error(args[0].span, "a `raw void` points at memory of no known type, so `Memory.copy` cannot count its items")
+                        .hint("say what lies there with a cast: `(raw byte)p`"));
+                }
+                if source != target {
+                    return Err(Diag::error(args[1].span, format!("`Memory.copy` copies between two pointers of one type, and these are `{source}` and `{target}`")));
+                }
+                self.index(&mut args[2], "a count of items")?;
+                self.needs_unsafe(span, "`Memory.copy` writes raw memory, whose size the checker does not know")?;
+                *callee = Callee::Memory(MemoryCall::Copy);
+                Ok(Ty::Void)
+            }
+            _ => {
+                let diag = Diag::error(name_span, format!("`Memory` has no function `{name}`"));
+                Err(match nearest(name, ["allocate", "free", "copy"].into_iter()) {
+                    Some(close) => diag.hint(format!("`{close}`")),
+                    None => diag.note("functions for now: allocate, free, copy"),
+                })
+            }
+        }
+    }
+
     /// `File.readText(path)`, `Stdin.readLine(ref line)`: what reads and writes files and
     /// the input. A path is a `read string`; each gives a `Result` with an `IoError`.
     #[allow(clippy::too_many_arguments)]
@@ -7164,6 +7421,9 @@ impl<'a> Checker<'a> {
                 if owner == "File" {
                     return self.io_call(owner, name, name_span, args, callee, span, awaited);
                 }
+                if owner == "Memory" {
+                    return self.memory_call(name, name_span, args, callee, span);
+                }
                 if owner == "Task" {
                     return self.task_run(name, name_span, args, callee, span, awaited);
                 }
@@ -7242,6 +7502,13 @@ impl<'a> Checker<'a> {
                 None => (self.expr(recv, None)?, true, false),
             },
         };
+        // A method of a struct or an array is lent its receiver, and a place in raw memory is
+        // not lent.
+        if is_place && Expr::in_raw_memory(recv) && matches!(recv_ty, Ty::Struct(_) | Ty::Array(..)) {
+            let text = &self.src[recv.span.start..recv.span.end];
+            return Err(Diag::error(recv.span, "a place in raw memory is not lent yet, and a method is lent the value it is called on")
+                .hint(format!("copy it out first: `var item = unsafe {text}`, then `item.{name}(...)`")));
+        }
         // `t.wait()`: waits for the task and takes it.
         if let Ty::Task(result) = recv_ty.strip_borrow() {
             let result = (**result).clone();
@@ -8283,6 +8550,7 @@ fn changed_in<'b>(block: &'b Block, names: &mut Vec<&'b str>) {
                 }
                 changed_in(body, names);
             }
+            StmtKind::Unsafe(body) => changed_in(body, names),
             StmtKind::Return(Some(expr)) | StmtKind::Expr(expr) | StmtKind::Discard(expr) => taken_in(expr, names),
             StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
         }
@@ -8318,7 +8586,7 @@ fn parts(expr: &Expr) -> Vec<Part<'_>> {
             list.push(Part::Expr(recv));
             list.extend(args.iter().map(Part::Expr));
         }
-        ExprKind::Call { args, .. } | ExprKind::Variant { args, .. } => list.extend(args.iter().map(Part::Expr)),
+        ExprKind::Call { args, .. } | ExprKind::Variant { args, .. } | ExprKind::Allocate { args, .. } => list.extend(args.iter().map(Part::Expr)),
         ExprKind::StructLit { fields, .. } => list.extend(fields.iter().map(|field| Part::Expr(&field.value))),
         ExprKind::Interp(pieces) => {
             for piece in pieces {
@@ -8354,6 +8622,8 @@ fn parts(expr: &Expr) -> Vec<Part<'_>> {
         | ExprKind::AsSlice(inner)
         | ExprKind::Try { expr: inner, .. }
         | ExprKind::Await(inner)
+        | ExprKind::Unsafe(inner)
+        | ExprKind::RawCast { expr: inner, .. }
         | ExprKind::Return(Some(inner))
         | ExprKind::Unary(_, inner)
         | ExprKind::Cast { expr: inner, .. }
@@ -8558,6 +8828,44 @@ fn char_pattern(pattern: &mut Pattern, subject: &Ty) -> Res<Binds> {
 }
 
 /// Replaces `expr` with a node built around it.
+/// `unsafe e`, once checked, is `e`: what `unsafe` allowed is decided.
+fn unwrap_unsafe(expr: &mut Expr) {
+    if let ExprKind::Unsafe(inner) = std::mem::replace(&mut expr.kind, ExprKind::Null) {
+        expr.moved = inner.moved;
+        expr.kind = inner.kind;
+    }
+}
+
+
+/// The part of a type that is not plain data, if there is one: what a `raw T` may point at
+/// is numbers, `bool`, `char`, raw pointers, and arrays and structs of them.
+fn not_plain(ty: &Ty, structs: &HashMap<String, StructInfo>) -> Option<Ty> {
+    match ty {
+        Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Raw(_) => None,
+        Ty::Array(item, _) => not_plain(item, structs),
+        Ty::Struct(name) => structs.get(name).and_then(|info| info.fields.iter().find_map(|(_, field)| not_plain(field, structs))),
+        other => Some(other.clone()),
+    }
+}
+
+/// Every `raw T` resolved since the last call points at plain data or at `void`.
+fn raw_rule(structs: &HashMap<String, StructInfo>) -> Res<()> {
+    for (inner, span) in RAW.with(|found| std::mem::take(&mut *found.borrow_mut())) {
+        if inner == Ty::Void {
+            continue;
+        }
+        if let Some(part) = not_plain(&inner, structs) {
+            let diag = Diag::error(span, format!("a raw pointer points at plain data, and `{inner}` is not"));
+            let diag = match part == inner {
+                true => diag,
+                false => diag.note(format!("it holds a `{part}`")),
+            };
+            return Err(diag.note("plain data is numbers, `bool`, `char`, raw pointers, and arrays and structs of them: what owns nothing and can be copied byte by byte"));
+        }
+    }
+    Ok(())
+}
+
 fn wrap(expr: &mut Expr, build: impl FnOnce(Box<Expr>) -> ExprKind) {
     let span = expr.span;
     let inner = std::mem::replace(expr, Expr { kind: ExprKind::Null, span, ty: Ty::Void, moved: false });
@@ -8572,7 +8880,7 @@ fn leaves(block: &Block, in_loop: bool) -> bool {
         StmtKind::Return(_) => true,
         StmtKind::Break | StmtKind::Continue => in_loop,
         StmtKind::If { then, els: Some(els), .. } => leaves(then, in_loop) && leaves(els, in_loop),
-        StmtKind::As { body, .. } | StmtKind::Lock { body, .. } => leaves(body, in_loop),
+        StmtKind::As { body, .. } | StmtKind::Lock { body, .. } | StmtKind::Unsafe(body) => leaves(body, in_loop),
         StmtKind::While { cond, body, .. } => matches!(cond.kind, ExprKind::Bool(true)) && !has_break(body),
         StmtKind::Expr(expr) => never_returns(expr, in_loop),
         _ => false,
@@ -8613,6 +8921,7 @@ fn first_break(block: &Block) -> Option<Span> {
         // The block of `as` is not a loop: a `break` in it leaves the loop around it.
         StmtKind::As { value, body, .. } => breaks_in(value).or_else(|| first_break(body)),
         StmtKind::Lock { items, body } => items.iter().find_map(|item| breaks_in(&item.value)).or_else(|| first_break(body)),
+        StmtKind::Unsafe(body) => first_break(body),
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Discard(expr) | StmtKind::Let { init: expr, .. } => breaks_in(expr),
         StmtKind::Assign { target, value, .. } => breaks_in(target).or_else(|| breaks_in(value)),
         StmtKind::Return(None) | StmtKind::Continue => None,

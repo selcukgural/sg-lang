@@ -1,0 +1,12 @@
+// A raw pointer that is `null` points at nothing.
+struct Point {
+    int x
+    int y
+}
+
+void main() {
+    raw Point nothing = null
+    unsafe {
+        nothing[0].y = 1
+    }
+}

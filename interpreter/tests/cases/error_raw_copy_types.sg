@@ -1,0 +1,8 @@
+// `Memory.copy` copies between two pointers of one type.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    var bytes = Memory.allocate<byte>(16)
+    unsafe {
+        Memory.copy(numbers, bytes, 4)
+    }
+}

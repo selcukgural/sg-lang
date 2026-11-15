@@ -1,0 +1,5 @@
+error: a `raw int` cannot be written as text: an address differs from one run to the next
+  --> error_raw_print.sg:4:11
+ 4 |     print(numbers)
+   |           ^^^^^^^
+  hint: write what lies there: `unsafe p[0]`

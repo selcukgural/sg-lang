@@ -1,0 +1,5 @@
+error: `Memory.allocate` names the type of what it makes room for
+  --> error_raw_allocate_untyped.sg:3:26
+ 3 |     var numbers = Memory.allocate(4)
+   |                          ^^^^^^^^
+  hint: `Memory.allocate<int>(count)`

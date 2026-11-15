@@ -1,0 +1,5 @@
+// `unsafe` takes the value right after it, as `try` does: here only `numbers`.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    raw int second = unsafe numbers + 1
+}

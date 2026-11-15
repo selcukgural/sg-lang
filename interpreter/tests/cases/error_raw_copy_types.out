@@ -1,0 +1,4 @@
+error: `Memory.copy` copies between two pointers of one type, and these are `raw int` and `raw byte`
+  --> error_raw_copy_types.sg:6:30
+ 6 |         Memory.copy(numbers, bytes, 4)
+   |                              ^^^^^

@@ -1,0 +1,5 @@
+// An item of raw memory is reached only inside `unsafe`: the checker does not know its size or its life.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    print(numbers[0])
+}

@@ -1,0 +1,4 @@
+// `Memory.allocate` names the type of what it makes room for.
+void main() {
+    var numbers = Memory.allocate(4)
+}

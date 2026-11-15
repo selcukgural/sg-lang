@@ -1,0 +1,4 @@
+panic: `Memory.copy` is given a count below 0: -2
+  --> panic_raw_copy_negative.sg:6:9
+ 6 |         Memory.copy(numbers, numbers + 1, count)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

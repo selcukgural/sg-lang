@@ -1,0 +1,5 @@
+error: a place in raw memory is not lent yet: the checker cannot follow how long it lives
+  --> error_raw_lend.sg:13:24
+ 13 |     print(width(unsafe read points[0]))
+    |                        ^^^^^^^^^^^^^^
+  hint: copy it out: `var item = unsafe points[0]`

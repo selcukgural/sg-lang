@@ -1,0 +1,5 @@
+error: a raw pointer points at plain data, which has one owner and no count
+  `raw` is written right before the type it points at: `raw byte`, `shared raw byte`
+  --> error_raw_shared_word.sg:3:9
+ 3 |     raw shared int numbers = null
+   |         ^^^^^^

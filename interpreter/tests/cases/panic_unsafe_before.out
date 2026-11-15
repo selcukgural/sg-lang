@@ -1,0 +1,4 @@
+panic: raw memory is written outside its block: item -1, where the block holds 4 items of `long`
+  --> panic_unsafe_before.sg:6:9
+ 6 |         second[-2] = 5
+   |         ^^^^^^^^^^

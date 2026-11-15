@@ -414,6 +414,7 @@ pub(crate) fn walk_stmt<'a>(stmt: &'a Stmt, each: &mut dyn FnMut(&'a Expr), lock
             }
             walk_block(body, each, lock);
         }
+        StmtKind::Unsafe(body) => walk_block(body, each, lock),
         StmtKind::Return(value) => {
             if let Some(value) = value {
                 walk_expr(value, each, lock);
@@ -456,7 +457,7 @@ fn each_lock<'a>(block: &'a Block, each: &mut dyn FnMut(&'a Block)) {
                     each_lock(els, each);
                 }
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::ForEach { body, .. } | StmtKind::As { body, .. } => each_lock(body, each),
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::ForEach { body, .. } | StmtKind::As { body, .. } | StmtKind::Unsafe(body) => each_lock(body, each),
             _ => {}
         }
         // A `match` arm is a block too.

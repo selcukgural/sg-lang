@@ -1,0 +1,5 @@
+error: `Memory.copy` writes raw memory, whose size the checker does not know, so it is written inside `unsafe`
+  --> error_unsafe_copy.sg:4:5
+ 4 |     Memory.copy(numbers, numbers, 2)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `unsafe Memory.copy(numbers, numbers, 2)`, or `unsafe { ... }` around several statements

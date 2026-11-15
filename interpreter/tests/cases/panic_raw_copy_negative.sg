@@ -1,0 +1,9 @@
+// `Memory.copy` with a count below 0 stops the program, compiled too.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    nint count = -2
+    unsafe {
+        Memory.copy(numbers, numbers + 1, count)
+        Memory.free(numbers)
+    }
+}

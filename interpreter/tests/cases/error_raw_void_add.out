@@ -1,0 +1,5 @@
+error: a `raw void` points at memory of no known type, so it does not move by items
+  --> error_raw_void_add.sg:5:28
+ 5 |     raw void next = unsafe (anything + 1)
+   |                            ^^^^^^^^^^^^^^
+  hint: say what lies there with a cast: `(raw byte)anything`

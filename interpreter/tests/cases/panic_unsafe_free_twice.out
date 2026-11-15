@@ -1,0 +1,4 @@
+panic: `Memory.free` is given memory that was given back already
+  --> panic_unsafe_free_twice.sg:6:9
+ 6 |         Memory.free(numbers)
+   |         ^^^^^^^^^^^^^^^^^^^^

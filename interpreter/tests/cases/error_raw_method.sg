@@ -1,0 +1,14 @@
+// A method is lent the value it is called on, so it is called on a copy.
+struct Point {
+    int x
+    int y
+
+    int sum(read this) {
+        return this.x + this.y
+    }
+}
+
+void main() {
+    var points = Memory.allocate<Point>(1)
+    print(unsafe points[0].sum())
+}

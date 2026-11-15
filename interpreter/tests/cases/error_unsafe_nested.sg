@@ -1,0 +1,7 @@
+// An `unsafe` inside another says nothing more.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    unsafe {
+        print(unsafe numbers[0])
+    }
+}

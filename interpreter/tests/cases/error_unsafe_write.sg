@@ -1,0 +1,5 @@
+// A write into raw memory too.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    numbers[1] = 5
+}

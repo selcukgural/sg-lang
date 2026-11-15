@@ -287,6 +287,12 @@ fn compiled() {
         if name == "panic_stack_overflow.sg" {
             continue;
         }
+        // The interpreter checks every read and write of raw memory against the blocks of
+        // `Memory.allocate`; compiled code checks nothing there (it is written inside `unsafe`),
+        // and leaves it to the sanitizers.
+        if name.starts_with("panic_unsafe_") {
+            continue;
+        }
         // A program the checker rejects, or one that uses what is not compiled yet.
         // In `tests/release` the build is a release build: overflow wraps.
         let release = path.parent().is_some_and(|dir| dir.ends_with("release"));

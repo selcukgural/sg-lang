@@ -1,0 +1,8 @@
+// A block is given back once.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    unsafe {
+        Memory.free(numbers)
+        Memory.free(numbers)
+    }
+}

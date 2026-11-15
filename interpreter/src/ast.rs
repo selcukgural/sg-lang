@@ -13,6 +13,10 @@ pub struct Program {
     pub aliases: Vec<AliasDecl>,
     /// The files the program was read from, in the order of their text.
     pub files: Vec<FileScope>,
+    /// The types of the fields of each struct that holds only plain data (numbers, `bool`,
+    /// `char`, raw pointers, and arrays and structs of them), in the order they are declared:
+    /// what lies in raw memory, laid out as C lays it out. Filled in by the checker.
+    pub plain: std::collections::HashMap<String, Vec<Ty>>,
 }
 
 /// One file: where its text lies, the module it belongs to (empty for the root, otherwise the
@@ -168,6 +172,8 @@ pub enum Callee {
     StreamAsync(StreamCall),
     /// What makes, cancels and looks at a `CancellationSource` or a `CancellationToken`.
     Cancel(CancelCall),
+    /// `Memory.free(p)`, `Memory.copy(source, target, count)`.
+    Memory(MemoryCall),
     /// `TcpListener.bind(address)`, `listener.accept()`, `TcpStream.connect(address)`,
     /// `stream.receive(ref buffer)` and the other functions of the network.
     Net(NetCall),
@@ -196,6 +202,16 @@ pub enum Callee {
     Take,
     /// `slot.replace(value)`: gives the old value and leaves the new one.
     Replace,
+}
+
+/// The functions of `Memory` that are called on raw memory; `Memory.allocate<T>(n)` is an
+/// `Allocate`, since it names a type.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum MemoryCall {
+    /// `Memory.free(p)`: gives back what `Memory.allocate` gave; `null` is let be.
+    Free,
+    /// `Memory.copy(source, target, count)`: `count` items, also when the two overlap.
+    Copy,
 }
 
 /// The functions of a `CancellationSource` and a `CancellationToken`.
@@ -333,6 +349,9 @@ pub struct TypeExpr {
     pub checked: bool,
     /// `locked` after the holder: `shared locked T`.
     pub locked: bool,
+    /// How many times `raw` is written in front of the name: `raw byte` is 1, `raw raw byte`
+    /// 2. A raw pointer goes around the type before `?` does, as a holder does.
+    pub raw: u8,
     /// With its module when one is written: `billing.Line`.
     pub name: String,
     /// The types between `<` and `>`: `Result<int, ParseError>`.
@@ -408,6 +427,9 @@ pub enum StmtKind {
     Expr(Expr),
     /// `_ = e`: runs `e` and drops its value on purpose.
     Discard(Expr),
+    /// `unsafe { ... }`: statements that may do what the checker cannot see is safe, such as
+    /// reading and writing raw memory.
+    Unsafe(Block),
 }
 
 /// One value of a `lock` block and the name of what it holds.
@@ -481,6 +503,14 @@ pub enum ExprKind {
     Coalesce { left: Box<Expr>, right: Box<Expr>, on_result: bool },
     /// `try e`: gives the value, or returns the error (or `null`) to the caller.
     Try { expr: Box<Expr>, kind: TryKind },
+    /// `unsafe e`: a value whose computation may do what the checker cannot see is safe, such
+    /// as reading raw memory. A prefix, like `try` and `await`.
+    Unsafe(Box<Expr>),
+    /// `Memory.allocate<T>(n)`: room for `n` items of `T`, all zero, as a `raw T`. `args` holds
+    /// what was written between the parentheses.
+    Allocate { item: TypeExpr, args: Vec<Expr> },
+    /// `(raw byte)p`: a raw pointer read as a pointer to another type.
+    RawCast { ty: TypeExpr, expr: Box<Expr> },
     /// `await e`: waits, in an async function, for the task `e` and gives what it returns.
     /// `await f(x)` with `f` async runs `f` as part of this task, without a task of its own.
     Await(Box<Expr>),
@@ -549,6 +579,8 @@ pub enum IndexKind {
     Map,
     /// A `T[N]` or a slice.
     Array,
+    /// A `raw T`: the item at that many items after the address, in raw memory.
+    Raw,
 }
 
 /// One item between the braces of a collection: `1`, or `{"x", 10}` for a key and a value.
@@ -783,6 +815,16 @@ impl Expr {
             ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => true,
             // A `shared checked` value opened where it stands is still where it was.
             ExprKind::Open { inner, .. } => inner.is_place(),
+            _ => false,
+        }
+    }
+
+    /// Whether the place lies in raw memory: `p[i]`, `p[i].x`, `p[i].values[2]`. It is not
+    /// lent, and reading it copies what lies there. Known once the checker has set the kinds.
+    pub fn in_raw_memory(&self) -> bool {
+        match &self.kind {
+            ExprKind::Index { kind: IndexKind::Raw, .. } => true,
+            ExprKind::Field { recv, .. } | ExprKind::Index { recv, kind: IndexKind::Array, .. } => recv.in_raw_memory(),
             _ => false,
         }
     }

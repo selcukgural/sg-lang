@@ -1,0 +1,5 @@
+// `Memory.copy` writes raw memory.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    Memory.copy(numbers, numbers, 2)
+}

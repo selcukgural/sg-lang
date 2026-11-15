@@ -1,0 +1,9 @@
+error: this is already inside `unsafe`
+  --> error_unsafe_nested.sg:5:15
+ 5 |         print(unsafe numbers[0])
+   |               ^^^^^^
+  the `unsafe` around it:
+  --> error_unsafe_nested.sg:4:5
+ 4 |     unsafe {
+   |     ^^^^^^
+  hint: leave the inner `unsafe` out

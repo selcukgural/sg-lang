@@ -1,0 +1,5 @@
+5
+panic: raw memory is written outside its block: item 2, where the block holds 2 items of `int`
+  --> panic_unsafe_pointer_kept.sg:9:9
+ 9 |         table[0][2] = 6
+   |         ^^^^^^^^^^^

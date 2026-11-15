@@ -302,6 +302,10 @@ the decisions file ("Async, the direction").
 > **12 November 2026.** Generics of your own are deferred, so `List<T>` is known to the compiler and is not written in
 > the language. The definition below is kept as a sketch of how it could be; the three forms of `for` and `xs[i]`
 > at the end of the section are how the built-in list behaves.
+>
+> **15 November 2026.** Raw memory is built (the sixty-ninth slice) for plain data only: `p[i]` reads and writes by
+> copying, and the `put`, `take` and `moveItems` below wait for items that own memory. The same list written for `int`
+> is the test `ok_raw_memory` (`Numbers`).
 
 Shows that the standard library can be written in the language itself. `unsafe` stays only on the lines that touch
 memory; the user outside does not see it.

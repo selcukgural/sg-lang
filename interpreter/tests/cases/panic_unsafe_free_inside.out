@@ -1,0 +1,4 @@
+panic: `Memory.free` is given an address inside a block, not the one `Memory.allocate` gave
+  --> panic_unsafe_free_inside.sg:5:9
+ 5 |         Memory.free(numbers + 1)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^

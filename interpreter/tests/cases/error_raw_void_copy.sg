@@ -1,0 +1,8 @@
+// `Memory.copy` counts items, and a `raw void` has none.
+void main() {
+    raw void from = null
+    raw void to = null
+    unsafe {
+        Memory.copy(from, to, 1)
+    }
+}

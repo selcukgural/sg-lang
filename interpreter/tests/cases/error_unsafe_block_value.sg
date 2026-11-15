@@ -1,0 +1,5 @@
+// `unsafe { }` is a block of statements; a value is written with `unsafe` in front of it.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    var first = unsafe { numbers[0] }
+}

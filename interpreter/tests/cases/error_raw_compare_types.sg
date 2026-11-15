@@ -1,0 +1,6 @@
+// Two raw pointers are compared when they point at one type.
+void main() {
+    var numbers = Memory.allocate<int>(1)
+    var bytes = Memory.allocate<byte>(4)
+    print(numbers == bytes)
+}

@@ -1,0 +1,6 @@
+error: nothing here needs `unsafe`
+  `unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers, `Memory.free` and `Memory.copy`
+  --> error_unsafe_unused.sg:4:5
+ 4 |     unsafe {
+   |     ^^^^^^
+  hint: leave `unsafe` out

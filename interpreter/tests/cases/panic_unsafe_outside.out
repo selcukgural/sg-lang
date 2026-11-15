@@ -1,0 +1,8 @@
+0
+0
+0
+0
+panic: raw memory is read outside its block: item 4, where the block holds 4 items of `int`
+  --> panic_unsafe_outside.sg:6:15
+ 6 |         print(unsafe numbers[i])
+   |               ^^^^^^^^^^^^^^^^^

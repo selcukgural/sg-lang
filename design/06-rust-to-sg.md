@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the sixty-eighth slice.
+Last brought up to date: 15 November 2026, the sixty-ninth slice.
 
 ## Functions and variables
 
@@ -176,7 +176,12 @@ Last brought up to date: 15 November 2026, the sixty-eighth slice.
 | `a.borrow()`, `a.borrow_mut()` | nothing (each access), or `read a as n { }`, `ref a as n { }` | built | |
 | a cycle of `Rc` leaks without a word | reported at the end of a program or a test | built | A debug build and the tests; the hint names the field to make `weak` |
 | `RefCell<T>` alone, `Cell<T>` | `checked T` | designed | For now `checked` comes after `shared` or `weak` |
-| `*const T`, `*mut T`, `unsafe { }` | `raw T`, `unsafe { }` | designed | |
+| `*const T`, `*mut T`, `unsafe { }` | `raw T`, `unsafe { }`, `unsafe` in front of a value | built | A `raw T` points at plain data (numbers, `bool`, `char`, raw pointers, arrays and structs of them) or is a `raw void`; it may be `null`. An `unsafe` that nothing needs is an error |
+| `*p`, `*p.add(i)`, `(*p).x` | `p[0]`, `p[i]`, `p[i].x` | built | Inside `unsafe`; reading copies the item. A place in raw memory is not lent yet (`&*p`) |
+| `p.add(n)`, `p.sub(n)`, `p as *mut u8`, `p.is_null()` | `p + n`, `p - n`, `(raw byte)p`, `p == null` | built | The first three inside `unsafe` |
+| `alloc_zeroed(Layout::array::<T>(n))`, `dealloc` | `Memory.allocate<T>(n)`, `Memory.free(p)` | built | Zeroed memory; `free` inside `unsafe`. The interpreter catches an item outside its block, after `free`, and a block freed twice, as Miri does |
+| `ptr::copy(src, dst, n)` | `Memory.copy(source, target, count)` | built | Inside `unsafe`; the two may overlap |
+| `extern "C" { fn ... }`, `#[link(name = "z")]` | `extern "z" { ... }` | designed | The next slice; every call inside `unsafe` |
 
 ## Tasks and locks
 

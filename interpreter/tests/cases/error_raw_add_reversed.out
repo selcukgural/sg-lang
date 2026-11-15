@@ -1,0 +1,5 @@
+error: operator `+` is not defined for `int` and `raw int`
+  --> error_raw_add_reversed.sg:4:29
+ 4 |     raw int second = unsafe (1 + numbers)
+   |                             ^^^^^^^^^^^^^
+  hint: the pointer is written first: `numbers + 1`

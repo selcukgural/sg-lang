@@ -1,0 +1,5 @@
+error: a `raw Point` has no fields: it is an address, and its items have them
+  --> error_raw_field.sg:9:18
+ 9 |     print(points.x)
+   |                  ^
+  hint: `points[0].x`

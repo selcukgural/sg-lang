@@ -1,0 +1,6 @@
+// A `raw void` does not move by items either.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    raw void anything = unsafe (raw void)numbers
+    raw void next = unsafe (anything + 1)
+}

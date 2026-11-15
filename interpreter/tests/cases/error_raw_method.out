@@ -1,0 +1,5 @@
+error: a place in raw memory is not lent yet, and a method is lent the value it is called on
+  --> error_raw_method.sg:13:18
+ 13 |     print(unsafe points[0].sum())
+    |                  ^^^^^^^^^
+  hint: copy it out first: `var item = unsafe points[0]`, then `item.sum(...)`

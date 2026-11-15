@@ -1,0 +1,8 @@
+// The interpreter remembers the block `Memory.allocate` gave: an item past its end is a panic
+// (compiled code does not check; the sanitizers do).
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    for i in 0..5 {
+        print(unsafe numbers[i])
+    }
+}

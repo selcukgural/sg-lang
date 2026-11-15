@@ -1,0 +1,5 @@
+error: `unsafe { }` is a block of statements, not a value
+  --> error_unsafe_block_value.sg:4:17
+ 4 |     var first = unsafe { numbers[0] }
+   |                 ^^^^^^^^
+  hint: for a value, write `unsafe` in front of it: `var first = unsafe p[0]`

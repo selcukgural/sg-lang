@@ -165,6 +165,7 @@ impl<'a> Scan<'a> {
                 }
                 self.block(body);
             }
+            StmtKind::Unsafe(body) => self.block(body),
             StmtKind::Return(value) => {
                 if let Some(value) = value {
                     self.expr(value);
@@ -263,6 +264,8 @@ pub(crate) fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
         | ExprKind::IsNull { expr: inner, .. }
         | ExprKind::Try { expr: inner, .. }
         | ExprKind::Await(inner)
+        | ExprKind::Unsafe(inner)
+        | ExprKind::RawCast { expr: inner, .. }
         | ExprKind::Unbox(inner)
         | ExprKind::AsSlice(inner)
         | ExprKind::Widen(_, inner)
@@ -273,7 +276,7 @@ pub(crate) fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
             each(left);
             each(right);
         }
-        ExprKind::Call { args, .. } | ExprKind::Variant { args, .. } => args.iter().for_each(each),
+        ExprKind::Call { args, .. } | ExprKind::Variant { args, .. } | ExprKind::Allocate { args, .. } => args.iter().for_each(each),
         ExprKind::Method { recv, args, .. } => {
             each(recv);
             args.iter().for_each(each);

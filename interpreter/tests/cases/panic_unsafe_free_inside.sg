@@ -1,0 +1,7 @@
+// `Memory.free` takes the address `Memory.allocate` gave, not one inside the block.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    unsafe {
+        Memory.free(numbers + 1)
+    }
+}

@@ -1,0 +1,5 @@
+// A cast between raw pointers reads the memory as another type.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    raw byte bytes = (raw byte)numbers
+}

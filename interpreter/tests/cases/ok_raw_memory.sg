@@ -1,0 +1,167 @@
+// Raw memory (`raw T`, `unsafe`, `Memory`): items of every plain type written and read, a
+// pointer moved and cast, overlapping copies both ways, a pointer to pointers, structs with an
+// array inside, and a buffer of its own that grows. The struct `Mixed` is read back byte by
+// byte, so the interpreter and compiled code must lay it out as C does.
+
+struct Point {
+    int x
+    int y
+}
+
+struct Mixed {
+    byte tag
+    int count
+    byte flag
+    double weight
+    char letter
+    bool on
+}
+
+struct Row {
+    short id
+    int[3] values
+}
+
+// A list of numbers of its own: `unsafe` stays on the lines that touch memory.
+struct Numbers {
+    raw int items
+    nint count
+    nint capacity
+
+    void add(ref this, int value) {
+        if this.count == this.capacity {
+            nint larger = 4
+            if this.capacity > 0 {
+                larger = this.capacity * 2
+            }
+            var bigger = Memory.allocate<int>(larger)
+            unsafe {
+                Memory.copy(this.items, bigger, this.count)
+                Memory.free(this.items)
+            }
+            this.items = bigger
+            this.capacity = larger
+        }
+        unsafe {
+            this.items[this.count] = value
+        }
+        this.count += 1
+    }
+
+    int at(read this, nint i) {
+        if i < 0 || i >= this.count {
+            panic("index out of range")
+        }
+        return unsafe this.items[i]
+    }
+
+    void release(ref this) {
+        unsafe {
+            Memory.free(this.items)
+        }
+        this.items = null
+        this.count = 0
+        this.capacity = 0
+    }
+}
+
+long total(read raw int items, nint count) {
+    long sum = 0
+    for i in 0..count {
+        sum += unsafe items[i]
+    }
+    return sum
+}
+
+void main() {
+    var numbers = Memory.allocate<int>(6)
+    print(total(read numbers, 6))
+    unsafe {
+        for i in 0..6 {
+            numbers[i] = (int)i * 10
+        }
+        numbers[5] += 1
+    }
+    print(total(read numbers, 6))
+
+    // Moved by items, back and forth, and compared.
+    raw int third = unsafe (numbers + 2)
+    raw int first = unsafe (third - 2)
+    print($"{unsafe third[0]} {unsafe third[-1]} {first == numbers} {third != numbers}")
+
+    // Copies that overlap, to the right and to the left.
+    unsafe {
+        Memory.copy(numbers, numbers + 1, 4)
+    }
+    print($"{unsafe numbers[0]} {unsafe numbers[1]} {unsafe numbers[2]} {unsafe numbers[3]} {unsafe numbers[4]} {unsafe numbers[5]}")
+    unsafe {
+        Memory.copy(numbers + 2, numbers, 4)
+    }
+    print($"{unsafe numbers[0]} {unsafe numbers[1]} {unsafe numbers[2]} {unsafe numbers[3]} {unsafe numbers[4]} {unsafe numbers[5]}")
+
+    // The same memory read as bytes: the machine keeps the low byte first.
+    unsafe {
+        numbers[0] = 258
+    }
+    raw byte bytes = unsafe (raw byte)numbers
+    print($"{unsafe bytes[0]} {unsafe bytes[1]} {unsafe bytes[2]}")
+
+    // A pointer to pointers, and `null`.
+    var table = Memory.allocate<raw int>(2)
+    print(unsafe table[0] == null)
+    unsafe {
+        table[1] = third
+        table[1][0] = 99
+    }
+    print($"{unsafe numbers[2]} {unsafe table[1] == third}")
+    raw void anything = unsafe (raw void)table
+    raw raw int again = unsafe (raw raw int)anything
+    print(unsafe again[1][0])
+
+    // Structs, with an array inside.
+    var points = Memory.allocate<Point>(3)
+    unsafe {
+        points[0] = Point { x = 1, y = 2 }
+        points[2].y = 7
+    }
+    var copy = unsafe points[0]
+    copy.x = 100
+    print($"{unsafe points[0].x} {copy.x} {unsafe points[2].y} {unsafe points[1].x}")
+    var rows = Memory.allocate<Row>(2)
+    unsafe {
+        rows[1].id = -3
+        rows[1].values[2] = 42
+    }
+    var row = unsafe rows[1]
+    print($"{row.id} {row.values[0]} {row.values[2]} {unsafe rows[1].values[2]}")
+
+    // Every plain type, and where each field lies.
+    var mixed = Memory.allocate<Mixed>(1)
+    unsafe {
+        mixed[0] = Mixed { tag = 7, count = 1000, flag = 9, weight = 2.5, letter = 'é', on = true }
+    }
+    var back = unsafe mixed[0]
+    print($"{back.tag} {back.count} {back.flag} {back.weight} {back.letter} {back.on}")
+    raw byte at = unsafe (raw byte)mixed
+    print($"{unsafe at[0]} {unsafe at[4]} {unsafe at[5]} {unsafe at[8]} {unsafe at[16]} {unsafe at[24]} {unsafe at[28]}")
+
+    // Room for nothing is still something to give back.
+    var none = Memory.allocate<Point>(0)
+
+    var list = Numbers { items = null, count = 0, capacity = 0 }
+    for i in 0..10 {
+        list.add((int)i * (int)i)
+    }
+    print($"{list.count} {list.capacity} {list.at(9)}")
+    list.release()
+
+    unsafe {
+        Memory.free(numbers)
+        Memory.free(table)
+        Memory.free(points)
+        Memory.free(rows)
+        Memory.free(mixed)
+        Memory.free(none)
+        Memory.free(list.items)
+    }
+}

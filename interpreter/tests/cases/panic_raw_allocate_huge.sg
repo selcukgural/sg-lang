@@ -1,0 +1,9 @@
+// More bytes than an address can count stop the program, compiled too.
+struct Big {
+    long[64] values
+}
+
+void main() {
+    var many = Memory.allocate<Big>(nint.MaxValue / 256)
+    print(many == null)
+}

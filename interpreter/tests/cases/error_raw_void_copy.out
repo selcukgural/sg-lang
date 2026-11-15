@@ -1,0 +1,5 @@
+error: a `raw void` points at memory of no known type, so `Memory.copy` cannot count its items
+  --> error_raw_void_copy.sg:6:21
+ 6 |         Memory.copy(from, to, 1)
+   |                     ^^^^
+  hint: say what lies there with a cast: `(raw byte)p`

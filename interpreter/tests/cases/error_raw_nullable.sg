@@ -1,0 +1,4 @@
+// A raw pointer can be `null` already.
+void main() {
+    raw int? numbers = null
+}

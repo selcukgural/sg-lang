@@ -1,0 +1,5 @@
+error: this moves a raw pointer, which may then point outside its memory, so it is written inside `unsafe`
+  --> error_unsafe_add.sg:4:22
+ 4 |     raw int second = numbers + 1
+   |                      ^^^^^^^^^^^
+  hint: `unsafe numbers + 1`, or `unsafe { ... }` around several statements

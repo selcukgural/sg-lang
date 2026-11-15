@@ -1,0 +1,4 @@
+// `raw` stands right before the type it points at.
+void main() {
+    raw shared int numbers = null
+}

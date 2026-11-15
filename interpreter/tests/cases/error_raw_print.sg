@@ -1,0 +1,5 @@
+// An address is not written as text: it differs from one run to the next.
+void main() {
+    var numbers = Memory.allocate<int>(1)
+    print(numbers)
+}

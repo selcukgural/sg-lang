@@ -1,0 +1,7 @@
+// `Memory` has three functions.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    unsafe {
+        Memory.release(numbers)
+    }
+}

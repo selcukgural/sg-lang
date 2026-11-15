@@ -23,7 +23,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
-| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, `read T` and `ref T` in signatures |
+| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, `read T` and `ref T` in signatures |
 | Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
@@ -45,6 +45,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Changed through several owners | `new shared checked x` gives a `shared checked T`: what it points to is changed through any of its owners (`a.count += 1`, `a.items.add(x)`, a method that takes `ref this`, `ref a` where a `ref T` goes), and each access is checked against the borrows of it in progress, one that changes it or any number that read it. A read or a write borrows nothing after it; a value lent to a call is borrowed until the call returns, the head of a `for` for the loop, a `match` and an `is` with names for the statement. `read x as n { ... }` and `ref x as n { ... }` lend it for a block. A conflict through the same variable is a compile error, one through another variable a panic that shows both lines. A method can take the owner itself, `read FolderRef this`, so that it can write `share this` and `weak this`. The `shared` values still alive when a program or a test ends hold each other up and are reported (`leak: ...`; in compiled code by a debug build) |
 | Tasks | `Task.run(work, x, share total)` starts `work(x, share total)` as a task and gives a `Task<R>`, `R` being what `work` returns; a `Func` can be started too. `t.wait()` waits for it and gives that value (`try t.wait()` passes its error on). A task that is not waited for on every path is a compile error, and so is `Task.run(...)` alone or dropped with `_ =`. What a task is given and gives back owns all it holds: no borrow, no `shared checked` value, no `Task` (the thread rule, also inside fields). In the interpreter a task runs on a thread of its own when it is waited for, so the output is the same on every run; compiled code starts a thread of the system for it at once. A panic inside one names the line that started it |
 | Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
+| Raw memory | `raw T` is an address that owns nothing and may be `null`; it points at plain data (numbers, `bool`, `char`, raw pointers, and arrays and structs of them), laid out as C lays it, or is a `raw void`. `Memory.allocate<T>(n)` gives room for `n` items, all zero. `p[i]` reads and writes an item (`p[i] = v`, `p[i].x += 1`), `p + n` and `p - n` move by items, `(raw byte)p` reads the memory as another type, `Memory.copy(source, target, count)` copies items (also over itself) and `Memory.free(p)` gives the block back; each of them is written inside `unsafe { ... }`, or with `unsafe` in front of a value (`var first = unsafe p[0]`), and an `unsafe` that nothing needs is an error. `p == q` and `p == null` need no `unsafe`. The interpreter checks every item against the block it came from and panics outside it, after `Memory.free` and through `null`; compiled code checks nothing, and a `raw T` is a `T*`. A raw pointer does not go to another task |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
@@ -260,7 +261,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (248 of 1008 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (253 of 1057 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -363,7 +364,10 @@ sixty-sixth (lines over a connection): `conn.reader()` is a `StreamReader` that 
 and keeps what has come in its block until a read can take all it needs, `send` goes through a `read`
 borrow, and `readSome` gives what is there (480-490). The sixty-seventh made no new feature: it checks the
 text a reader reads a block at a time, not a line at a time, and every program that reads lines got
-faster (491-495). What is still missing is an error that names it (not silence): the few positions listed with the
+faster (491-495), and the sixty-eighth prints a fractional number with Dragonbox (496-500). The sixty-ninth
+(raw memory: `raw T`, `unsafe`, `Memory`) was written in the checker, the interpreter and compiled code
+together: a `raw T` is a `T*`, `p[i]` is `p[i]`, and nothing is checked, while the interpreter checks every
+item against its block (501-516). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -417,6 +421,7 @@ hand with no checks):
 | `echo`: an echo server and eight clients in one async program over the loopback, each client sending 64 bytes and waiting for them to come back 20,000 times (the C blocks, with a thread for each connection and each client) | 2.083 s | 2.082 s | 1.119 s | 1.86 |
 | `echosync`: `echo` without async, the server's connections and the clients on threads of `Task.run` (the C is that of `echo`) | 1.108 s | 1.118 s | 1.115 s | 0.99 |
 | `netlines`: the two million lines of `lines` sent over the loopback by one task and read line by line by another with `await reader.readLineAsync(ref line)` (the C blocks, with `getline` from a `FILE` over the socket, which checks nothing) | 0.092 s | 0.089 s | 0.081 s | 1.14 |
+| `ring`: a ring buffer of its own over raw memory (`raw long`, `unsafe`), four hundred million numbers in at one end and out at the other through 4096 items (the C is the same over `calloc`) | 0.328 s | 0.326 s | 0.328 s | 1.00 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -3808,6 +3813,91 @@ on 15 November 2026, approved the same day:
      on five million random numbers that are not powers of two: no difference. `cargo test` compiles 248 of
      1008 programs, 39 of them under the thread sanitizer, and 13 of 17 programs of tests; on Linux too, in a container, with the same counts.
 
+Choices made in the sixty-ninth slice (raw memory: `raw T`, `unsafe`, `Memory`), the first of the three
+slices of calling C. 501 to 510 were decided before it on 15 November 2026; 511 to 516 were chosen while it
+was written, and all were approved the same day:
+
+501. **`raw T` is an address that owns nothing, and it points at plain data**, decided before the slice:
+     numbers, `bool`, `char`, raw pointers, and arrays and structs made only of them, or `void`. A `string`,
+     a `List`, a `T*`, a `shared T` or a struct that holds one is an error that names the part (`it holds a
+     string`): such a value owns memory of its own, and raw memory knows nothing of owners. So raw memory is
+     read and written by copying bytes, and the `put` and `take` of the design (for items that own) come
+     later, with them. Plain data lies as C lays it: the fields in the order they are written, each at the
+     next place its alignment allows, so the same bytes can be handed to C in the next slice. `raw raw byte`
+     is a pointer to pointers; `raw` stands right before the type, after `shared` if there is one (`raw shared
+     int` is an error). A raw pointer is copied like a number, and is not `Formattable`: an address differs
+     from one run to the next.
+502. **What `unsafe` is written around**, decided before the slice: an item of raw memory, read or written
+     (`p[i]`, `p[i].x`, `p[i].values[2]`), `p + n` and `p - n`, a cast between raw pointers (`(raw byte)p`),
+     `Memory.free` and `Memory.copy`. Making, keeping, copying and comparing a pointer (`==`, `!=`, with
+     `null` too) is not, and neither is `Memory.allocate`: memory that is never given back is a leak, not
+     undefined behaviour. Without `unsafe` it is an error that says why the checker cannot follow it (the
+     size and life of raw memory, a pointer that may point outside its memory, ...).
+503. **`unsafe { ... }` around statements, `unsafe` in front of a value**, decided before the slice. The
+     prefix takes what follows it as `try` and `await` do: `unsafe p[0] + 1` reads one item and adds to it,
+     and `unsafe p + 1` is `(unsafe p) + 1`, which is the error of 504 with the hint `unsafe (p + n)`. A block
+     is not a value (`var x = unsafe { p[0] }` is an error that shows the prefix), and a write is a statement
+     in a block: `unsafe p[0] = 1` is an error whose hint is `unsafe { p[0] = ... }`. A block is a scope of
+     its own, as every block is.
+504. **An `unsafe` that nothing needs is an error, and so is one inside another**, decided before the slice,
+     since the language has no warnings: `nothing here needs unsafe`, with the list of 502. Then the word is
+     seen only where the checker really stops following.
+505. **`Memory.allocate<T>(n)` gives room for `n` items, all zero**, decided before the slice: there is no
+     memory that was never written, and zero is a value of every plain type. A count below 0 and more bytes
+     than an address can count are panics, compiled too, and so is a system out of memory; `n` may be 0, and
+     what it gives is still given back with `Memory.free`. Compiled it is `calloc`.
+506. **A raw pointer may be `null`**, decided before the slice, as in C and Rust: `raw int p = null`, `p ==
+     null`. `raw int?` is an error (it can be `null` already), and so is `p is null`, whose hint is `p ==
+     null`: `is` is for a `T?`, which is opened before it is used, and a raw pointer is not.
+507. **`Memory.copy(source, target, count)` copies `count` items, also when the two overlap**, decided
+     before the slice (C's `memmove`; the order of the arguments is the order of the words). A count below 0
+     is a panic, compiled too. The design's `moveItems` is left for items that own memory.
+508. **`raw void` is C's `void*`**, decided before the slice: it is cast to a pointer to some type before
+     anything else is done with it; an item of it, `p + n` and `Memory.copy` of it are errors whose hint is
+     the cast. `Memory.free` takes it.
+509. **The interpreter checks raw memory, compiled code does not**, decided before the slice. A pointer in the
+     interpreter is a real address and the block of `Memory.allocate` it came from; an item outside its
+     block, one after `Memory.free`, one through `null`, a block given back twice, and `Memory.free` of an
+     address inside a block are panics that say so (`raw memory is read outside its block: item 4, where the
+     block holds 4 items of int`). A pointer read back out of raw memory finds its block by its address; one
+     whose block was given back and whose address a later block took is taken for a pointer into the later
+     one. A `char` read out of raw memory must be a character. Compiled code checks none of it and costs
+     nothing for it; the tests run it under the sanitizers. So a program with `unsafe` is tried in the
+     interpreter first, as Rust's is tried under Miri.
+510. **A raw pointer does not go to another task**, decided before the slice: not through `Task.run`, not
+     to an async function called without `await` (a task of its own), not inside a `shared` or `locked`
+     value that does: the checker does not follow it, and two tasks could reach what it points at at once.
+     An async function that is awaited runs as part of the awaiting task and may take one, and a raw
+     pointer may be held across an `await`: the task may go on on another thread, but never on two at once.
+511. **A place in raw memory is not lent yet**: `read p[i]`, `ref p[i]`, and a method of a struct or an
+     array called on it (a method is lent what it is called on) are errors whose hint copies the item out
+     (`var item = unsafe p[i]`) or writes it where it is. The checker cannot follow how long such a borrow
+     lives, and the interpreter would have to lend bytes; Rust lends them, under `unsafe`. Left in "Not here
+     yet".
+512. **Reading an item of raw memory copies it, whatever its type**: plain data owns nothing, so a struct
+     that is not `Copyable` is copied out too (`var p = unsafe points[0]`), and the copy is a value of its
+     own. A write through a `read raw int` writes the memory, not the pointer: `read` keeps the pointer as it
+     is, not what it points at, as `&*mut T` does in Rust.
+513. **The rest of the notation**: a raw pointer has no fields (`p.x` is an error whose hint is
+     `p[0].x`), the pointer is written first in `p + n` (`1 + p` is an error that shows it), the count is an
+     integer that fits a `nint`, and `+=` does not move a pointer; pointers have no order (`<`) and no
+     difference (`p - q`) yet; two pointers of different types are compared after a cast; `Memory` is a
+     built-in name, and `Memory.allocate(4)` without the type is an error that shows it.
+514. **Compiled code**: a `raw T` is a `T*` and a `raw void` a `void*`; `p[i]` is `p[i]`, `p + n` is `p + n`,
+     a cast is a C cast, `Memory.free` is `free` and `Memory.copy` is `memmove` behind the test of the count.
+     The two functions it needs (`sg_raw_alloc`, `sg_raw_copy`) are only in a program that uses them.
+515. **Measured** (`ring`, a new program): a ring buffer of its own over raw memory, four hundred million
+     numbers in and out, takes 0.328 s, 0.326 s in the overflow-checked build, against 0.328 s for the same
+     program in C over `calloc` (1.00 times): an item of raw memory is the item C reaches.
+516. **The tests**: `ok_raw_memory` writes and reads items of every plain type, moves pointers both ways,
+     copies to the right and to the left over the same memory, reads a struct back byte by byte (so the
+     interpreter and C must lay it out alike), keeps pointers in raw memory, and grows a list of its own
+     (`Numbers`, the design's `List` written for `int`); `ok_raw_async` holds a pointer across `await`. Nine
+     `panic_unsafe_` programs show what the interpreter catches (they are not compiled), three `panic_raw_`
+     programs the panics of both, and 35 `error_unsafe_` and `error_raw_` programs the errors of 501 to 513.
+     `cargo test` compiles 253 of 1057 programs, 40 of them under the thread sanitizer, and 13 of 17 programs
+     of tests; on Linux too, in a container, with the same counts.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -3874,6 +3964,9 @@ check off.
 
 ## Not here yet
 
+- **Of raw memory**: a place in it lent (`read p[i]`, `ref p[i]`, a method called on `p[i]`, 511); items that
+  own memory (the design's `put`, `take` and `moveItems`); `Memory.resize`; the difference and the order of
+  two pointers (`p - q`, `p < q`); the address of a variable; and calling C, the next slice.
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
   pattern>`); storing a borrow from outside into a value reached through `ref` (the design's
   `where r from name`); a `List<read T>`, and a borrow as the error of a `Result` (a list of a type that
@@ -4044,6 +4137,9 @@ is read line by line through a `StreamReader` of its own (`conn.reader()`), whic
 goes on sending, and a line longer than 64 KB is an error; reading two million lines sent over the
 loopback takes 1.14 times `getline` in C, which does not check that they are text (0.89 times without the
 check): a reader checks the text of its block at once, not line by line. A fractional number is printed
-with Dragonbox, in a third of the time of `printf("%.17g")` in C. Next are the other places in "Slower than
-C", one at a time; then a stream shared by a reading and a writing task, the
-threads of the pool waiting for the loop themselves, `linesAsync`, and an `async` method.
+with Dragonbox, in a third of the time of `printf("%.17g")` in C. Raw memory is there (`raw T`, `unsafe`,
+`Memory.allocate`, `Memory.copy`, `Memory.free`), checked by the interpreter and not by compiled code, and a
+ring buffer over it takes the time of C. The other places in "Slower than C" wait; next is the rest of
+calling C: `extern` blocks, the calls and the libraries they link, C text (`CString`), then `Disposable` on
+types of your own, opaque C types and a library wrapped in a safe type; after that the clock, random
+numbers, folders and the environment, running another program, Unicode tables and UDP.

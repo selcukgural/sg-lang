@@ -1,0 +1,5 @@
+// A raw pointer moved by items may point outside its memory.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    raw int second = numbers + 1
+}

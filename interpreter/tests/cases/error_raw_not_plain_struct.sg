@@ -1,0 +1,9 @@
+// A struct that holds a `string` is not plain data either.
+struct Person {
+    int age
+    string name
+}
+
+void main() {
+    var people = Memory.allocate<Person>(2)
+}

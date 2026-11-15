@@ -1,0 +1,4 @@
+panic: raw memory is written through a pointer that is `null`
+  --> panic_unsafe_null.sg:10:9
+ 10 |         nothing[0].y = 1
+    |         ^^^^^^^^^^

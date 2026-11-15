@@ -1,0 +1,4 @@
+// A raw pointer points at plain data: a `string` owns memory of its own.
+void main() {
+    raw string names = null
+}

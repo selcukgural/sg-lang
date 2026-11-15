@@ -1,0 +1,4 @@
+panic: `Memory.allocate` is given a count below 0: -1
+  --> panic_raw_allocate_negative.sg:4:19
+ 4 |     var numbers = Memory.allocate<int>(count)
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^

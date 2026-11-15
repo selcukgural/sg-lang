@@ -1,0 +1,5 @@
+error: `unsafe` in front of a value is for reading it; a write is a statement
+  --> error_unsafe_write_prefix.sg:4:5
+ 4 |     unsafe numbers[0] = 1
+   |     ^^^^^^^^^^^^^^^^^
+  hint: write it inside a block: `unsafe { numbers[0] = ... }`

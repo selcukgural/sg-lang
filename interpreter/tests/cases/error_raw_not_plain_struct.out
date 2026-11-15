@@ -1,0 +1,6 @@
+error: a raw pointer points at plain data, and `Person` is not
+  it holds a `string`
+  plain data is numbers, `bool`, `char`, raw pointers, and arrays and structs of them: what owns nothing and can be copied byte by byte
+  --> error_raw_not_plain_struct.sg:8:34
+ 8 |     var people = Memory.allocate<Person>(2)
+   |                                  ^^^^^^

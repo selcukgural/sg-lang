@@ -1,0 +1,5 @@
+error: this reads a raw pointer as one to another type, so it is written inside `unsafe`
+  --> error_unsafe_cast.sg:4:22
+ 4 |     raw byte bytes = (raw byte)numbers
+   |                      ^^^^^^^^^^^^^^^^^
+  hint: `unsafe (raw byte)numbers`, or `unsafe { ... }` around several statements

@@ -1,0 +1,7 @@
+// `unsafe` around what the checker can follow says nothing, so it is an error.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    unsafe {
+        print(numbers == null)
+    }
+}

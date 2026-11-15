@@ -1,0 +1,4 @@
+error: raw memory holds plain data, not borrows
+  --> error_raw_allocate_borrow.sg:3:35
+ 3 |     var numbers = Memory.allocate<read int>(4)
+   |                                   ^^^^^^^^

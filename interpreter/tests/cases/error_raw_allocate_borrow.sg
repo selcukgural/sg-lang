@@ -1,0 +1,4 @@
+// Raw memory holds values, not borrows.
+void main() {
+    var numbers = Memory.allocate<read int>(4)
+}

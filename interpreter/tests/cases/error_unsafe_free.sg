@@ -1,0 +1,5 @@
+// `Memory.free` leaves every pointer to the block pointing at nothing.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    Memory.free(numbers)
+}

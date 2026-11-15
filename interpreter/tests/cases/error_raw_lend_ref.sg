@@ -1,0 +1,11 @@
+// Not lent to be changed either; it is written where it is.
+void bump(ref int n) {
+    n += 1
+}
+
+void main() {
+    var numbers = Memory.allocate<int>(1)
+    unsafe {
+        bump(ref numbers[0])
+    }
+}

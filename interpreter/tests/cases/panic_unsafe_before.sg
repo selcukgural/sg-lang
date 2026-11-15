@@ -1,0 +1,8 @@
+// An item before the start of the block is outside it too.
+void main() {
+    var numbers = Memory.allocate<long>(4)
+    raw long second = unsafe (numbers + 1)
+    unsafe {
+        second[-2] = 5
+    }
+}

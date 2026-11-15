@@ -1,0 +1,7 @@
+// A raw pointer is an address, compared with `null`; `is null` is for a `T?`.
+void main() {
+    raw int numbers = null
+    if numbers is null {
+        print("nothing")
+    }
+}

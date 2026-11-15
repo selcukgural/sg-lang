@@ -1,0 +1,10 @@
+// A raw pointer does not go to another task: the checker does not follow it.
+int first(raw int numbers) {
+    return unsafe numbers[0]
+}
+
+void main() {
+    var numbers = Memory.allocate<int>(1)
+    var task = Task.run(first, numbers)
+    print(task.wait())
+}

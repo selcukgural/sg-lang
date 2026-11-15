@@ -1,0 +1,4 @@
+panic: `Memory.allocate` is asked for more memory than an address can count: 36028797018963967 items of `Big`
+  --> panic_raw_allocate_huge.sg:7:16
+ 7 |     var many = Memory.allocate<Big>(nint.MaxValue / 256)
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

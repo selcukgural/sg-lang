@@ -1,0 +1,5 @@
+error: a place in raw memory is not lent yet: the checker cannot follow how long it lives
+  --> error_raw_lend_ref.sg:9:14
+ 9 |         bump(ref numbers[0])
+   |              ^^^^^^^^^^^^^^
+  hint: write it where it is: `unsafe { numbers[0] = ... }`

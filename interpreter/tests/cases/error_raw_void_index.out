@@ -1,0 +1,5 @@
+error: a `raw void` points at memory of no known type, so it has no items
+  --> error_raw_void_index.sg:5:18
+ 5 |     print(unsafe anything[0])
+   |                  ^^^^^^^^^^^
+  hint: say what lies there with a cast: `unsafe ((raw byte)anything)[0]`

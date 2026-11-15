@@ -1,0 +1,4 @@
+error: `Memory` is a built-in type and cannot be redefined
+  --> error_raw_memory_type.sg:2:8
+ 2 | struct Memory {
+   |        ^^^^^^

@@ -1,0 +1,5 @@
+// `unsafe` in front of a value reads it; a write is a statement inside a block.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    unsafe numbers[0] = 1
+}

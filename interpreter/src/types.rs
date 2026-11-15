@@ -303,6 +303,9 @@ pub enum Ty {
     /// `TcpStream`: a connection over the network, read and written as bytes, without a buffer.
     /// Closed when it ends.
     Socket,
+    /// `raw T`: an address, owning nothing, that may be `null`; what lies there is read and
+    /// written only inside `unsafe`. `T` holds only plain data, or is `void`.
+    Raw(Box<Ty>),
     /// `read T`: read-only borrow.
     Read(Box<Ty>),
     /// `ref T`: writable borrow.
@@ -337,7 +340,7 @@ impl Ty {
     /// copyable until there is a borrow checker.
     pub fn is_copyable(&self, declared: &HashSet<String>) -> bool {
         match self {
-            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) | Ty::Func(..) => true,
+            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) | Ty::Func(..) | Ty::Raw(_) => true,
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
@@ -399,6 +402,7 @@ impl fmt::Display for Ty {
             Ty::Token => f.write_str("CancellationToken"),
             Ty::Listener => f.write_str("TcpListener"),
             Ty::Socket => f.write_str("TcpStream"),
+            Ty::Raw(inner) => write!(f, "raw {inner}"),
             Ty::Read(inner) => write!(f, "read {inner}"),
             Ty::Ref(inner) => write!(f, "ref {inner}"),
         }

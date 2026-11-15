@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use crate::ast::*;
 use crate::diag::{Diag, Span};
 use crate::check::float_fits;
+use crate::raw::{self, RawPtr};
 use crate::types::{FloatTy, IntTy, TextIter, Ty};
 
 /// Limit on nested calls. Past it the program gets a readable panic instead of a crash.
@@ -89,6 +90,9 @@ pub enum Value {
     Listener(Rc<std::net::TcpListener>),
     /// `TcpStream`, which does not block.
     Socket(Rc<std::net::TcpStream>),
+    /// `raw T`: an address, and the block of `Memory.allocate` it was made from (see `raw`).
+    /// `null` is `Value::Null` until it meets an address.
+    Raw(RawPtr),
 }
 
 /// What a `CancellationSource` and its tokens look at: whether it is cancelled, and the
@@ -1114,6 +1118,80 @@ fn write_file(path: &str, bytes: &[u8], append: bool) -> std::io::Result<()> {
     options.open(path)?.write_all(bytes)
 }
 
+/// The address a raw pointer holds; `null` is 0.
+fn raw_of(value: &Value) -> RawPtr {
+    match value {
+        Value::Raw(pointer) => *pointer,
+        Value::Null => RawPtr::NULL,
+        _ => unreachable!("the checker gives a raw pointer here"),
+    }
+}
+
+/// The value of type `ty` that lies at `addr`, which the caller has checked.
+fn load(addr: usize, ty: &Ty, plain: &HashMap<String, Vec<Ty>>, span: Span) -> Result<Value, Diag> {
+    // SAFETY: the caller checked that the bytes of a value of `ty` lie at `addr`, or the
+    // pointer came from outside, where the program says so with `unsafe`.
+    unsafe {
+        let at = addr as *const u8;
+        Ok(match ty {
+            Ty::Int(int) => Value::Int(*int, raw::read_int(addr, *int)),
+            Ty::Float(FloatTy::Float) => Value::Float(FloatTy::Float, at.cast::<f32>().read_unaligned() as f64),
+            Ty::Float(FloatTy::Double) => Value::Float(FloatTy::Double, at.cast::<f64>().read_unaligned()),
+            Ty::Bool => Value::Bool(at.read() != 0),
+            Ty::Char => {
+                let code = at.cast::<u32>().read_unaligned();
+                let Some(found) = char::from_u32(code) else {
+                    return Err(Diag::panic(span, format!("raw memory holds {code} where a `char` is read, and no character has that code")));
+                };
+                Value::Char(found)
+            }
+            Ty::Raw(_) => {
+                let address = at.cast::<usize>().read_unaligned();
+                Value::Raw(RawPtr { addr: address, block: raw::block_at(address) })
+            }
+            Ty::Array(item, length) => {
+                let (size, _) = raw::layout(item, plain);
+                let items = (0..*length).map(|at| load(addr + at * size, item, plain, span).map(cell)).collect::<Result<Vec<Cell>, Diag>>()?;
+                Value::Array(Rc::new(items))
+            }
+            Ty::Struct(name) => {
+                let fields = plain[name].iter().zip(raw::offsets(name, plain)).map(|(field, at)| load(addr + at, field, plain, span).map(cell)).collect::<Result<Vec<Cell>, Diag>>()?;
+                Value::Struct(name.as_str().into(), Rc::new(fields))
+            }
+            other => unreachable!("raw memory holds plain data, not `{other}`"),
+        })
+    }
+}
+
+/// Writes `value`, of type `ty`, at `addr`, which the caller has checked.
+fn store(addr: usize, ty: &Ty, value: &Value, plain: &HashMap<String, Vec<Ty>>) {
+    let value = strip(value.clone());
+    // SAFETY: as for `load`.
+    unsafe {
+        let at = addr as *mut u8;
+        match (ty, &value) {
+            (Ty::Int(int), Value::Int(_, number)) => raw::write_int(addr, *int, *number),
+            (Ty::Float(FloatTy::Float), Value::Float(_, number)) => at.cast::<f32>().write_unaligned(*number as f32),
+            (Ty::Float(FloatTy::Double), Value::Float(_, number)) => at.cast::<f64>().write_unaligned(*number),
+            (Ty::Bool, Value::Bool(truth)) => at.write(u8::from(*truth)),
+            (Ty::Char, Value::Char(found)) => at.cast::<u32>().write_unaligned(*found as u32),
+            (Ty::Raw(_), pointer) => at.cast::<usize>().write_unaligned(raw_of(pointer).addr),
+            (Ty::Array(item, _), Value::Array(items)) => {
+                let (size, _) = raw::layout(item, plain);
+                for (position, held) in items.iter().enumerate() {
+                    store(addr + position * size, item, &held.borrow(), plain);
+                }
+            }
+            (Ty::Struct(name), Value::Struct(_, fields)) => {
+                for ((field, at), held) in plain[name].iter().zip(raw::offsets(name, plain)).zip(fields.iter()) {
+                    store(addr + at, field, &held.borrow(), plain);
+                }
+            }
+            (other, _) => unreachable!("raw memory holds plain data, not `{other}`"),
+        }
+    }
+}
+
 fn cell(value: Value) -> Cell {
     Rc::new(RefCell::new(value))
 }
@@ -1451,7 +1529,7 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
     let io = shared(out, world);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new() };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain };
         let result = run_main(&mut interp);
         interp.end_fibers();
         result
@@ -1511,7 +1589,7 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
     let io = shared(out, world);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new() };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain };
         run_each_test(&mut interp, prog, sources)
     })
 }
@@ -1629,6 +1707,8 @@ struct Interp<'a, 'e> {
     aliases: HashMap<&'a str, &'a TypeExpr>,
     /// The tasks this fiber started that it has not waited for yet.
     started: Vec<Rc<RefCell<Task>>>,
+    /// The types of the fields of each struct of plain data: how it lies in raw memory.
+    plain: &'a HashMap<String, Vec<Ty>>,
 }
 
 impl<'a, 'e> Interp<'a, 'e> {
@@ -2065,6 +2145,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             guards: Vec::new(),
             aliases: self.aliases.clone(),
             started: Vec::new(),
+            plain: self.plain,
         };
         let weak = Rc::downgrade(task);
         let name: Rc<str> = func.name.as_str().into();
@@ -2205,6 +2286,17 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let value = self.expr(init, frame)?;
                 frame.declare(name, value);
             }
+            // A write into raw memory: the right side first, as for any place.
+            StmtKind::Assign { target, op, value, .. } if target.in_raw_memory() => {
+                let mut new = strip(self.expr(value, frame)?);
+                let verb = if op.is_some() { "read" } else { "written" };
+                let (at, ty) = self.raw_place(target, verb, frame)?;
+                if let Some(op) = op {
+                    let old = load(at.addr, &ty, self.plain, target.span)?;
+                    new = binary(*op, old, new, stmt.span)?;
+                }
+                store(at.addr, &ty, &new, self.plain);
+            }
             StmtKind::Assign { target, op, value, through } => {
                 let mut new = self.expr(value, frame)?;
                 let mut target = self.place(target, frame)?;
@@ -2322,6 +2414,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             // `lock a as x, b as y { ... }`: what each `shared locked` value holds, lent to
             // change for the block. Tasks change hands only where one waits, and nothing in
             // the block waits, so no other task holds the lock here.
+            StmtKind::Unsafe(body) => return self.block(body, frame),
             StmtKind::Lock { items, body } => {
                 let mut taken: Vec<Rc<Held>> = Vec::new();
                 frame.scopes.push(Scope::default());
@@ -2365,6 +2458,11 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// The cell an expression names. Field access looks through pointers and borrows.
     /// An expression that is not a place gets a temporary cell.
     fn place(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Cell> {
+        // What lies in raw memory is not lent: a place there is read as a copy.
+        if expr.in_raw_memory() {
+            let (at, ty) = self.raw_place(expr, "read", frame)?;
+            return Ok(cell(load(at.addr, &ty, self.plain, expr.span)?));
+        }
         match &expr.kind {
             ExprKind::Var(name) => Ok(frame.slot(name)),
             ExprKind::Open { inner, how } => {
@@ -2468,6 +2566,10 @@ impl<'a, 'e> Interp<'a, 'e> {
             // A moved value leaves its place empty, as it does in compiled code: what is left
             // behind would otherwise count as one more owner of a `shared` value. A moved
             // writer is the only one that writes its buffer, when it is dropped.
+            ExprKind::Field { .. } | ExprKind::Index { .. } if expr.in_raw_memory() => {
+                let (at, ty) = self.raw_place(expr, "read", frame)?;
+                Ok(load(at.addr, &ty, self.plain, expr.span)?)
+            }
             ExprKind::Var(_) | ExprKind::Field { .. } if expr.moved => Ok(self.place(expr, frame)?.replace(Value::Null)),
             ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
                 let value = fresh(&self.place(expr, frame)?.borrow());
@@ -2526,10 +2628,46 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 Ok(Value::Bool(self.condition(right, frame)?))
             }
+            // `p + n`: `n` items further on.
+            ExprKind::Binary(op, left, right) if matches!(expr.ty, Ty::Raw(_)) => {
+                let Ty::Raw(item) = &expr.ty else { unreachable!("tested above") };
+                let base = raw_of(&strip(self.expr(left, frame)?));
+                let count = self.int(right, frame)?;
+                let (size, _) = raw::layout(item, self.plain);
+                let count = if *op == BinOp::Sub { count.wrapping_neg() } else { count };
+                Ok(Value::Raw(base.offset(count.wrapping_mul(size as i128))))
+            }
+            // Two addresses, or one and `null`.
+            ExprKind::Binary(op, left, right) if matches!(left.ty.strip_borrow(), Ty::Raw(_)) || matches!(right.ty.strip_borrow(), Ty::Raw(_)) => {
+                let left = raw_of(&strip(self.expr(left, frame)?));
+                let right = raw_of(&strip(self.expr(right, frame)?));
+                Ok(Value::Bool((left.addr == right.addr) == (*op == BinOp::Eq)))
+            }
             ExprKind::Binary(op, left, right) => {
                 let left = strip(self.expr(left, frame)?);
                 let right = strip(self.expr(right, frame)?);
                 self.binary(*op, left, right, expr.span)
+            }
+            ExprKind::Unsafe(inner) => self.expr(inner, frame),
+            ExprKind::RawCast { expr: inner, .. } => Ok(match strip(self.expr(inner, frame)?) {
+                Value::Null => Value::Null,
+                pointer => Value::Raw(raw_of(&pointer)),
+            }),
+            // `Memory.allocate<T>(n)`
+            ExprKind::Allocate { args, .. } => {
+                let Ty::Raw(item) = &expr.ty else { unreachable!("the checker gives a raw pointer") };
+                let count = self.int(&args[0], frame)?;
+                if count < 0 {
+                    return Err(Diag::panic(expr.span, format!("`Memory.allocate` is given a count below 0: {count}")).into());
+                }
+                let (size, _) = raw::layout(item, self.plain);
+                match raw::allocate(count as usize, size) {
+                    Ok(pointer) => Ok(Value::Raw(pointer)),
+                    Err(raw::AllocError::TooLarge) => {
+                        Err(Diag::panic(expr.span, format!("`Memory.allocate` is asked for more memory than an address can count: {count} items of `{item}`")).into())
+                    }
+                    Err(raw::AllocError::OutOfMemory) => Err(Diag::panic(expr.span, format!("`Memory.allocate` found no memory for {count} items of `{item}`")).into()),
+                }
             }
             ExprKind::Char(value) => Ok(Value::Char(*value)),
             ExprKind::Array { args, items, .. } => {
@@ -2895,6 +3033,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     })
                 }
                 Callee::Io(call) => self.io(*call, args, frame),
+                Callee::Memory(call) => self.memory(*call, args, expr.span, frame),
                 Callee::Stream(call) => self.stream(*call, recv, args, None, frame),
                 Callee::Net(call) => self.net(*call, recv, args, None, expr.span, frame),
                 // Awaited where it is written: the wait is done here, and the task given has
@@ -3258,6 +3397,96 @@ impl<'a, 'e> Interp<'a, 'e> {
             guard.reserved = false;
         }
         Ok(())
+    }
+
+    /// The address of a place in raw memory and the type of what lies there. The item of raw
+    /// memory it is in was checked to lie in a live block (`verb` says whether it is read or
+    /// written, for the panic).
+    fn raw_place(&mut self, expr: &'a Expr, verb: &str, frame: &mut Frame) -> Res<(RawPtr, Ty)> {
+        match &expr.kind {
+            ExprKind::Index { recv, index, kind: IndexKind::Raw } => {
+                let base = raw_of(&strip(self.expr(recv, frame)?));
+                let at = self.int(index, frame)?;
+                let (size, _) = raw::layout(&expr.ty, self.plain);
+                let item = base.offset(at.wrapping_mul(size as i128));
+                self.reach(item, 1, &expr.ty, verb, expr.span)?;
+                Ok((item, expr.ty.clone()))
+            }
+            ExprKind::Field { recv, index, .. } => {
+                let (base, ty) = self.raw_place(recv, verb, frame)?;
+                let Ty::Struct(name) = &ty else { unreachable!("a field in raw memory is a field of a struct") };
+                let at = raw::offsets(name, self.plain)[*index];
+                Ok((base.offset(at as i128), expr.ty.clone()))
+            }
+            ExprKind::Index { recv, index, .. } => {
+                let (base, ty) = self.raw_place(recv, verb, frame)?;
+                let Ty::Array(item, length) = &ty else { unreachable!("an item in raw memory is an item of an array") };
+                let at = self.int(index, frame)?;
+                if at < 0 || at >= *length as i128 {
+                    return Err(Diag::panic(expr.span, format!("index {at} is out of range: the length is {length}")).into());
+                }
+                let (size, _) = raw::layout(item, self.plain);
+                Ok((base.offset(at * size as i128), (**item).clone()))
+            }
+            _ => unreachable!("the checker found a place in raw memory"),
+        }
+    }
+
+    /// Whether `size` bytes of raw memory, a `ty`, can be read or written at `at`; a panic
+    /// that says why not.
+    fn reach(&self, at: RawPtr, count: usize, ty: &Ty, verb: &str, span: Span) -> Res<()> {
+        let (size, _) = raw::layout(ty, self.plain);
+        let why = match raw::check(at, count.saturating_mul(size)) {
+            Ok(()) => return Ok(()),
+            Err(raw::Fault::Null) => format!("raw memory is {verb} through a pointer that is `null`"),
+            Err(raw::Fault::Freed) => format!("raw memory is {verb} after it was given back with `Memory.free`"),
+            Err(raw::Fault::Outside { at, block }) if size > 0 => {
+                let first = at.div_euclid(size as i128);
+                let items = match count {
+                    1 => format!("item {first}"),
+                    _ => format!("items {first} to {}", first + count as i128 - 1),
+                };
+                format!("raw memory is {verb} outside its block: {items}, where the block holds {} items of `{ty}`", block / size)
+            }
+            Err(raw::Fault::Outside { at, block }) => format!("raw memory is {verb} outside its block: byte {at}, where the block holds {block} bytes"),
+        };
+        Err(Diag::panic(span, why).into())
+    }
+
+    /// `Memory.free(p)` and `Memory.copy(source, target, count)`.
+    fn memory(&mut self, call: MemoryCall, args: &'a [Expr], span: Span, frame: &mut Frame) -> Res<Value> {
+        match call {
+            MemoryCall::Free => {
+                let pointer = raw_of(&strip(self.expr(&args[0], frame)?));
+                let why = match raw::free(pointer) {
+                    Ok(()) => return Ok(Value::Void),
+                    Err(raw::FreeError::Twice) => "`Memory.free` is given memory that was given back already",
+                    Err(raw::FreeError::Inside) => "`Memory.free` is given an address inside a block, not the one `Memory.allocate` gave",
+                    Err(raw::FreeError::Unknown) => "`Memory.free` is given an address that `Memory.allocate` did not give",
+                };
+                Err(Diag::panic(span, why).into())
+            }
+            MemoryCall::Copy => {
+                let source = raw_of(&strip(self.expr(&args[0], frame)?));
+                let target = raw_of(&strip(self.expr(&args[1], frame)?));
+                let count = self.int(&args[2], frame)?;
+                if count < 0 {
+                    return Err(Diag::panic(span, format!("`Memory.copy` is given a count below 0: {count}")).into());
+                }
+                if count == 0 {
+                    return Ok(Value::Void);
+                }
+                let Ty::Raw(item) = args[0].ty.strip_borrow() else { unreachable!("the checker gives `Memory.copy` raw pointers") };
+                let (size, _) = raw::layout(item, self.plain);
+                let count = usize::try_from(count).unwrap_or(usize::MAX);
+                let bytes = count.saturating_mul(size);
+                self.reach(source, count, item, "read", span)?;
+                self.reach(target, count, item, "written", span)?;
+                // SAFETY: both ranges lie in live blocks, or came from outside under `unsafe`.
+                unsafe { raw::copy(source.addr, target.addr, bytes) };
+                Ok(Value::Void)
+            }
+        }
     }
 
     fn int(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<i128> {

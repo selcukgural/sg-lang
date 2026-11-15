@@ -1,0 +1,10 @@
+// A raw pointer is an address; its items have the fields.
+struct Point {
+    int x
+    int y
+}
+
+void main() {
+    var points = Memory.allocate<Point>(1)
+    print(points.x)
+}

@@ -1,0 +1,5 @@
+error: a raw pointer is not a `T?`: it is an address, compared with `null`
+  --> error_raw_is_null.sg:4:8
+ 4 |     if numbers is null {
+   |        ^^^^^^^^^^^^^^^
+  hint: `numbers == null`

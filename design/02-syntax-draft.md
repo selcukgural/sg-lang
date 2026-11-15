@@ -1233,7 +1233,7 @@ var part = data[..4]                             // slice of a slice, no copy. E
 fill(ref buffer[4..], 0)                         // a range that is written through: ref in front, a ref byte[]
 var part = make()[..4]                           // error: borrows from a value with no name, gone when the line ends.
                                                  // Hint: give the value a name first
-var raw = "GET /".asBytes()                      // from text to bytes, free
+var request = "GET /".asBytes()                  // from text to bytes, free
 var text = try string.fromUtf8(data[..end])      // from bytes to text: validates, does not copy
 byte[] copy = data                               // error: byte[] is not a type on its own.
                                                  // Hint: List<byte> to own, read byte[] for a window

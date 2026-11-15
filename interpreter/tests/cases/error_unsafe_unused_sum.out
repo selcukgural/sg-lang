@@ -1,0 +1,6 @@
+error: nothing here needs `unsafe`
+  `unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers, `Memory.free` and `Memory.copy`
+  --> error_unsafe_unused_sum.sg:4:22
+ 4 |     raw int second = unsafe numbers + 1
+   |                      ^^^^^^
+  hint: `unsafe` takes the value right after it, as `try` does; for a sum, put it in parentheses: `unsafe (p + n)`

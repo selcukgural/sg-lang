@@ -1,0 +1,8 @@
+// `Memory.copy` reads and writes inside the blocks it is given.
+void main() {
+    var from = Memory.allocate<int>(8)
+    var to = Memory.allocate<int>(4)
+    unsafe {
+        Memory.copy(from, to, 8)
+    }
+}

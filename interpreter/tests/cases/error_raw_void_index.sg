@@ -1,0 +1,6 @@
+// A `raw void` points at memory of no known type.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    raw void anything = unsafe (raw void)numbers
+    print(unsafe anything[0])
+}

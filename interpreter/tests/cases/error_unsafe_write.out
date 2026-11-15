@@ -1,0 +1,5 @@
+error: this reaches raw memory, whose size and life the checker does not know, so it is written inside `unsafe`
+  --> error_unsafe_write.sg:4:5
+ 4 |     numbers[1] = 5
+   |     ^^^^^^^^^^
+  hint: a write is a statement: `unsafe { numbers[1] = ... }`

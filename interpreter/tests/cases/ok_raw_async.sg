@@ -1,0 +1,26 @@
+// An async function that is awaited runs as part of the task that awaits it, so it may take a
+// raw pointer, and hold one across an `await`: the task goes on on another thread perhaps, but
+// never on two at once.
+async long total(raw int items, nint count) {
+    long sum = 0
+    for i in 0..count {
+        await Task.delay(1)
+        sum += unsafe items[i]
+    }
+    return sum
+}
+
+async void main() {
+    var items = Memory.allocate<int>(3)
+    unsafe {
+        items[0] = 5
+        items[1] = 6
+        items[2] = 7
+    }
+    raw int kept = items
+    await Task.delay(1)
+    print(await total(kept, 3))
+    unsafe {
+        Memory.free(items)
+    }
+}

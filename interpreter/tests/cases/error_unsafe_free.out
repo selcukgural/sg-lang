@@ -1,0 +1,5 @@
+error: `Memory.free` gives memory back, and a pointer to it may still be used, so it is written inside `unsafe`
+  --> error_unsafe_free.sg:4:5
+ 4 |     Memory.free(numbers)
+   |     ^^^^^^^^^^^^^^^^^^^^
+  hint: `unsafe Memory.free(numbers)`, or `unsafe { ... }` around several statements

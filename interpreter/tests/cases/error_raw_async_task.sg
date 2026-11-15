@@ -1,0 +1,10 @@
+// An async function called without `await` is a task of its own, and the thread rule holds.
+async int first(raw int numbers) {
+    return unsafe numbers[0]
+}
+
+async void main() {
+    var numbers = Memory.allocate<int>(1)
+    var task = first(numbers)
+    print(await task)
+}

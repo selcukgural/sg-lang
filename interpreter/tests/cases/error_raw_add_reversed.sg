@@ -1,0 +1,5 @@
+// The pointer is written first in `p + n`.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    raw int second = unsafe (1 + numbers)
+}

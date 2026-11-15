@@ -1,0 +1,9 @@
+// Memory given back with `Memory.free` is not read again.
+void main() {
+    var numbers = Memory.allocate<int>(4)
+    raw int kept = numbers
+    unsafe {
+        Memory.free(numbers)
+    }
+    print(unsafe kept[0])
+}

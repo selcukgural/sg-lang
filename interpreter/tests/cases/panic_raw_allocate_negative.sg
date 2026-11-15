@@ -1,0 +1,6 @@
+// A count below 0 stops the program, compiled too.
+void main() {
+    nint count = -1
+    var numbers = Memory.allocate<int>(count)
+    print(numbers == null)
+}
