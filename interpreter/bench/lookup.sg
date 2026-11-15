@@ -33,7 +33,7 @@ void main() {
     long sum = 0
     long missing = 0
     nint key = 0
-    for round in 0..300000000 {
+    for _ in 0..300000000 {
         key = (key * 5 + 7) % 1024
         var record = find(read records, key)
         if record is not null {

@@ -19,6 +19,7 @@ pub mod source;
 pub mod opening;
 pub mod sums;
 pub mod types;
+pub mod unread;
 pub mod waits;
 
 use std::io::Write;

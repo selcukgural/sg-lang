@@ -34,7 +34,7 @@ void main() {
     var text = "the quick brown fox jumps over the lazy dog and then the cat sleeps "
     var found = 0
     var foundInCopies = 0
-    for round in 0..4000000 {
+    for _ in 0..4000000 {
         found += matches(read text, "the")
         foundInCopies += matchesCopied(read text, "the")
     }

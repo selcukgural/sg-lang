@@ -34,7 +34,7 @@ void main() {
     print(SecureRandom.nextUlong() != SecureRandom.nextUlong())
     var inRange = true
     var seen = bool[6]
-    for i in 0..1000 {
+    for _ in 0..1000 {
         var n = SecureRandom.nextInt(1, 7)
         inRange = inRange && n >= 1 && n < 7
         seen[n - 1] = true

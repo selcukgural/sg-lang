@@ -20,20 +20,20 @@ panic: overflow: 2147483647 + 1 does not fit in int
   hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
 FAIL  taking below zero
 panic: overflow: 90 - 255 does not fit in ulong
-  --> tests_loop_sum.sg:166:9
- 166 |         left -= b
+  --> tests_loop_sum.sg:167:9
+ 167 |         left -= b
      |         ^^^^^^^^^
   hint: `trySubtract` gives `null` instead, and `wrappingSubtract` wraps around
 FAIL  a short that overflows past its rounds
 panic: overflow: 32600 + 200 does not fit in short
-  --> tests_loop_sum.sg:174:9
- 174 |         small += b
+  --> tests_loop_sum.sg:176:9
+ 176 |         small += b
      |         ^^^^^^^^^^
   hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
 FAIL  a negative sum that overflows
 panic: overflow: -9223372036854775808 + -1 does not fit in long
-  --> tests_loop_sum.sg:182:9
- 182 |         sum += x
+  --> tests_loop_sum.sg:185:9
+ 185 |         sum += x
      |         ^^^^^^^^
   hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
 5 of 11 test(s) failed

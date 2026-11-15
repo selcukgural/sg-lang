@@ -169,6 +169,12 @@ Design rules that are already enforced:
   `distance.abs()` or `xs.contains(3)` alone does nothing. The built-in methods that change their value and
   give one too (`removeLast`, `next`, the `add` and `remove` of a set) and the functions you write may stand
   alone.
+- A local variable whose value nothing reads is an error: one never used, and one only written (`x = 1`,
+  `x += 1`, a write to a field or an item). A write through a borrow, a `shared` value or raw memory is a use,
+  and so is every other use, a method called on it and `ref x` among them. A parameter is not looked at, nor a
+  variable of a `Disposable` type or of a struct that holds one. The name of a `for`, of a pattern and of an
+  `as` or `lock` block is held to it too; `_` stands for one that is not needed. A write to a copy of a struct
+  has the borrow as its hint (`var p = ref rect.corner`).
 - `try` needs a function that can pass the error on: one that returns a `Result` (or a `T?` for `try` on a
   `T?`). With a different error type, `try` wraps the error in the one variant of the caller's error type that
   carries it; none or more than one is an error.
@@ -266,7 +272,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (276 of 1166 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (281 of 1183 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -763,6 +769,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/emit_c.rs` | The back end: writes the checked tree as C, with the same panics; tasks are threads of the system |
 | `src/opening.rs` | After the checker: where a `shared checked` value is reached and for how long it is borrowed (the `Open` and `Within` nodes the interpreter follows), the conflicts through the same variable that are certain before the program runs, and the borrows that would outlive their line |
 | `src/waits.rs` | After the checker, on the whole program: which functions wait (take a lock, wait for a task or await one, themselves or through the functions they call), and what waits inside a `lock` block; which functions hold the thread, and what does in an async function; an async function that awaits itself |
+| `src/unread.rs` | Last of the checks: the local variables whose value nothing reads, from what the checker noted each name stands for, telling a read from a write along the checked tree of each function and test |
 | `src/ffi.rs` | For the interpreter: the library of wrappers for the functions of C a program calls, built with `cc` in a folder of its own and opened with `dlopen` |
 | `src/raw.rs` | For the interpreter: raw memory, real addresses from `calloc`, each checked against the block it came from |
 | `src/sums.rs` | For the back end: the sums in a loop that cannot overflow for a number of rounds, so that a checked build runs those rounds without their test |
@@ -4446,6 +4453,60 @@ compiled C to the C compiler's warnings), and all were approved the same day:
      sanitizer, and 15 of 19 programs of tests, all without a warning; on Linux too, in a container, with gcc and the same counts. Taking the fix of 585 back out
      makes the test fail on `panic_assert_compare`, as it should.
 
+Choices made in the seventy-sixth slice (a variable nothing reads, a compile error; in the checker, with the C
+of compiled code following it), and all were approved the same day:
+
+588. **A local variable whose value nothing reads is a compile error**: one never used (`var total = 10`
+     alone) and one only written (`best = x` in a loop, `count += 1`, `p.x = 0`). The error points at the
+     name, "`total` is never used" or "`best` is given values that are never read", the second with the first
+     write. A value written over before it is read, or given after the last read, is not looked at yet (in
+     "Not here yet").
+589. **What a read is**: writing the whole variable, `x op= v`, and a write to one of its fields or items are
+     not reads. A write whose way goes through a borrow (`var p = ref rect.corner`, the variable of `for x in
+     ref xs`, a `ref` name of a pattern), a `shared` or `weak` value, raw memory or a slice lands in a place
+     that outlives the variable, and is one. Through a `T*` it is not: the variable owns what it points to.
+     Every other use is a read: a method called on the variable, `ref x` given to a call, a call of a
+     variable that holds a function, `try x.close()`, `t.wait()`. So a list only added to is not seen.
+590. **What is not looked at**: a parameter (a `Func` it is given as, `dispose(ref this)` and `main(args)` may
+     need one they do not use), and a `var` of a `Disposable` type, whose use is its end. The decision said a
+     `Disposable` type; the slice found two more that are kept for their end alike (in `ok_disposable`), and
+     takes them too: a struct with a `Disposable` in its fields, and a `shared` owner of one, whose end may be
+     the last. A change from what was decided before the slice.
+591. **The names of `for`, of a pattern and of a block**: `for i in 0..3` with `i` unused is the error, with
+     the hint `for _ in 0..3`; a name of a `match` arm or of an `is`, with the pattern written again with `_`
+     in its place (`Rect(w, _)`, `Ok(_)`). The names of an `as` and a `lock` block are held to it as well, with
+     a note that the block does nothing with what it is lent; the decision named `for` and patterns only.
+592. **A write to a copy**: when the variable was given a `Copyable` struct copied out of a field or an item
+     (`var p = rect.corner`) and is only written in its parts, a note says it is a copy whose writes do not
+     reach `rect.corner`, and the hint is the borrow, `var p = ref rect.corner`. Otherwise the hint is to read
+     it where it is needed or to take it away with the lines that write it; a variable never used has
+     "take the line away", or `_ = ...` to run what it is given.
+593. **How it is built**: the checker notes, for each name it looks up, which variable it found, and every
+     local variable it declares (`Seen`). A pass of its own, `unread.rs`, then goes over the checked tree of
+     each function and test and tells reads from writes. It runs after every other check of the program, so
+     this error, the least of them, never hides another (an `error_` program keeps its own error). A use the
+     checker found another way counts for every variable of that name declared before it: the rule may miss
+     an unread variable there, but never calls one unread that is read. No cost at run time.
+594. **Compiled code follows**: the `(void)` that told the C compiler a variable, the variable of a `for`, or a
+     name of an arm or of an `is` is used (587) is gone, since SG now reads each of them; only a `for _`
+     keeps one. The C compiler's `-Wunused-variable` and `-Wunused-but-set-variable`, under `-Werror` in the
+     tests, are a second check of the rule. A parameter keeps its `(void)`.
+595. **What it found in the code already written**: 51 names of a `for` or of a pattern that nothing used,
+     now `_`: 26 in the measured programs, 4 in the examples, 21 in the tests. By hand: `ok_list` and
+     `ok_compiled_struct`, which write to a copy to show it is one, now print the copy too; `ok_weak` ended a
+     value with `taken = null`, and now with `_ = taken`; `ok_option_exits` drops what `take` gives with
+     `_ = list.take()`; three `panic_` programs and four tests of `tests_loop_sum`, whose writes end in the
+     panic they test, read the variable after it. The language's own module had none.
+596. **The tests**: eleven `error_unread_` programs (a variable never used, one written in a loop, `+=`, a
+     write to a copy, to items, through a `T*`, the variable of a `for` over a collection and over a range, a
+     name of a `match` arm and of an `is`, and of a `lock` block), `tests_error_unread` for a `test` block,
+     and `ok_unread` with what passes: a write through `ref` and through `shared checked`, `ref x` given to a
+     call, a list only added to, a `Disposable` and a struct that holds one, `_` in a loop and in a pattern,
+     a value given after its last read, and an unused parameter. `cargo test` compiles 281 of 1183
+     programs, 45 of them under the thread sanitizer, and 15 of 20 programs of tests, all without a warning
+     of the C compiler now that the names are not marked used; on Linux too, in a container, with gcc and the
+     same counts.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -4597,6 +4658,9 @@ check off.
   `r.choose(xs)`) wait for generics or a built-in method; Fisher-Yates is four lines (`ok_random_seeded`
   has it). `nextFloat`, numbers of a normal distribution (`nextGaussian`), and `split` to give a task a
   generator of its own that does not overlap.
+- **Of values that are never read**: a value written over before it is read (`x = 1` then `x = 2`), or given
+  after the last read, passes; Rust warns on both, with a look at every path. A list only added to is read by
+  `add`, a method called on it, and passes too.
 - Freeing a long linked list recurses, the open stack-depth question from the design; here it runs on a 1 GB stack.
   Compiled code frees a chain of `T*` in a loop, but a chain of `shared` values recursively, one call for each.
 

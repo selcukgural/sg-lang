@@ -21,7 +21,7 @@ long round(int count) {
 
 void main() {
     long sum = 0
-    for i in 0..20 {
+    for _ in 0..20 {
         sum += round(1000000)
     }
     print(sum)

@@ -1,0 +1,11 @@
+// Writing a variable is not reading it: `best` is given values that nothing looks at.
+void main() {
+    var xs = List<int> { 4, 9, 2 }
+    var best = 0
+    for x in xs {
+        if x > 5 {
+            best = x
+        }
+    }
+    print("done")
+}

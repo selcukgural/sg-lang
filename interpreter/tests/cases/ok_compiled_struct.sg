@@ -65,6 +65,7 @@ void main() {
     var p = rect.corner                  // Copyable: a copy
     p.x = 0
     print(rect.corner.x)
+    print(p.x)
 
     var a = 1
     var b = 2

@@ -1,0 +1,5 @@
+error: `total` is never used
+  --> error_unread_var.sg:3:9
+ 3 |     var total = 10
+   |         ^^^^^
+  hint: take the line away; to run what it is given and drop the value on purpose, write `_ = ...`

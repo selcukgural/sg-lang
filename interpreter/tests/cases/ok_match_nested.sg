@@ -36,7 +36,7 @@ void main() {
         print("big")
     }
     var n = 1 + match read s {
-        Circle(r) => 2 * match read s {
+        Circle(_) => 2 * match read s {
             Circle(q) => q
             Empty => 0
         }

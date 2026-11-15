@@ -1,0 +1,17 @@
+// A `Copyable` struct is copied: the write goes to the copy, and the rectangle stays as it was.
+struct Point : Copyable {
+    int x
+    int y
+}
+
+struct Rect : Copyable {
+    Point corner
+    int width
+}
+
+void main() {
+    var rect = Rect { corner = Point { x = 1, y = 2 }, width = 3 }
+    var p = rect.corner
+    p.x = 0
+    print(rect.width)
+}

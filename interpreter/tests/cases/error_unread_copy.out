@@ -1,0 +1,10 @@
+error: `p` is given values that are never read
+  `p` is a copy of `rect.corner`: what is written to it does not reach `rect.corner`
+  --> error_unread_copy.sg:14:9
+ 14 |     var p = rect.corner
+    |         ^
+  it is written here:
+  --> error_unread_copy.sg:15:5
+ 15 |     p.x = 0
+    |     ^^^
+  hint: to change `rect.corner` itself, borrow it: `var p = ref rect.corner`

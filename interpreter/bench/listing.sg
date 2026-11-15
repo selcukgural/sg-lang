@@ -3,7 +3,7 @@
 Result<void, IoError> main() {
     long bytes = 0
     long files = 0
-    for i in 0..100 {
+    for _ in 0..100 {
         var entries = try Directory.list("target/bench/listing")
         for entry in entries {
             bytes += entry.name.length()

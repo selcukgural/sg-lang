@@ -149,7 +149,7 @@ Result<void, ZlibError> main() {
     }
     var deflater = try Deflater(1)
     nint total = 0
-    for round in 0..16384 {
+    for _ in 0..16384 {
         try deflater.write(read block)
         total += deflater.take().length()
     }

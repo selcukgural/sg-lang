@@ -1,0 +1,9 @@
+// The rule holds in a `test` block too.
+int twice(int n) {
+    return n * 2
+}
+
+test "twice" {
+    var expected = 4
+    assert(twice(2) == 4)
+}

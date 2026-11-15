@@ -1,0 +1,9 @@
+error: `squares` is given values that are never read
+  --> error_unread_item.sg:3:9
+ 3 |     var squares = List<int> { 0, 0, 0 }
+   |         ^^^^^^^
+  it is written here:
+  --> error_unread_item.sg:5:9
+ 5 |         squares[i] = i * i
+   |         ^^^^^^^^^^
+  hint: read `squares` where it is needed, or take it away with the lines that write it

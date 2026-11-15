@@ -9,7 +9,7 @@ ulong next(ulong state) {
 
 void main() {
     var text = string.withCapacity(1 << 25)
-    for pass in 0..3 {
+    for _ in 0..3 {
         text.clear()
         ulong state = 11
         for i in 0..1000000 {

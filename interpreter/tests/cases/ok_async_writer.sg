@@ -19,7 +19,7 @@ async Result<void, IoError> main(List<string> args) {
     // Bytes of 64 KB or more go out straight, after what the block holds.
     try await more.writeAsync("big:")
     var big = List<byte>()
-    for i in 0..70000 {
+    for _ in 0..70000 {
         big.add(120)
     }
     try await more.writeBytesAsync(read big)

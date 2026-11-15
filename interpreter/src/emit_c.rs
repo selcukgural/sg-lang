@@ -4512,13 +4512,13 @@ fn tracks(name: &str, owner: Option<&str>) -> bool {
 /// one of the module's at its own line too.
 pub const RUNTIME_METHODS: [&str; 5] = ["format", "equals", "compare", "hash", "dispose"];
 
-/// The names an `is` gives a block, each marked used for C: the block may leave one unused,
-/// as SG allows.
-fn used(names: Names) -> Names {
-    names.into_iter().map(|(local, line)| {
-        let line = format!("{line} (void){};", local.cname);
-        (local, line)
-    }).collect()
+/// `(void)v;` for the variable of a `for` written `_`, which the body cannot use: SG reads
+/// every other name it declares, so C is not told that one is used.
+fn unnamed(name: &str, cname: &str) -> String {
+    match name {
+        "_" => format!(" (void){cname};"),
+        _ => String::new(),
+    }
 }
 
 /// Whether the C code names `name` as a whole word.
@@ -7646,9 +7646,7 @@ impl<'a> Emitter<'a> {
                 let value = self.head_value(init, &ty)?;
                 self.flush_pre(&pad, out);
                 let cname = self.declare(name, ty);
-                // SG lets a variable be given values that are never read (a write to a copy, to
-                // show it is one); C is told it is used, so it does not warn.
-                let _ = writeln!(out, "{pad}{ctype} {cname} = {value}; (void){cname};");
+                let _ = writeln!(out, "{pad}{ctype} {cname} = {value};");
                 self.flush_post(&pad, out);
             }
             StmtKind::Assign { target, op, value, through } => {
@@ -7716,7 +7714,6 @@ impl<'a> Emitter<'a> {
             }
             StmtKind::If { cond, then, els, after } => {
                 let (mut cond, names, chained, decls) = self.condition(cond, !after.is_empty())?;
-                let names = used(names);
                 for line in decls {
                     let _ = writeln!(out, "{pad}{line}");
                 }
@@ -7758,7 +7755,6 @@ impl<'a> Emitter<'a> {
             StmtKind::While { cond, body, after } => {
                 self.nothing_gone();
                 let (cond, names, chained, decls) = self.condition(cond, !after.is_empty())?;
-                let names = used(names);
                 // Declared before the loop, so that the code after it sees the names that
                 // `after` lists.
                 for line in decls {
@@ -7807,8 +7803,7 @@ impl<'a> Emitter<'a> {
                 self.counted_loop(&pad, out, (&counter, counter_ty), &format!("{counter} < {end}"), var, body, depth, |this| {
                     this.temps += 1;
                     let cname = format!("v_{var}_{}", this.temps);
-                    // `(void)`: a body that does not use the variable leaves no warning.
-                    let line = format!("{ty} {cname} = {counter}; (void){cname};");
+                    let line = format!("{ty} {cname} = {counter};{}", unnamed(var, &cname));
                     Ok(vec![(Local { name: var.clone(), cname, ty: from.ty.clone(), gone: false, drop: None }, line)])
                 })?;
                 let _ = writeln!(out, "{pad}}}");
@@ -7850,7 +7845,7 @@ impl<'a> Emitter<'a> {
                         self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}.len"), var, body, depth + 1, |this| {
                             this.temps += 1;
                             let cname = format!("v_{var}_{}", this.temps);
-                            let line = format!("{item_c} {cname} = {it}.entries[{at}]{at_item}; (void){cname};");
+                            let line = format!("{item_c} {cname} = {it}.entries[{at}]{at_item};{}", unnamed(var, &cname));
                             Ok(vec![(Local { name: var.clone(), cname, ty: item.clone(), gone: false, drop: None }, line)])
                         })?;
                         self.scopes.pop();
@@ -7895,7 +7890,7 @@ impl<'a> Emitter<'a> {
                         self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {length}"), var, body, depth + 1, |this| {
                             this.temps += 1;
                             let cname = format!("v_{var}_{}", this.temps);
-                            let line = format!("{held} {cname} = {it}.items[{at}]; (void){cname};");
+                            let line = format!("{held} {cname} = {it}.items[{at}];{}", unnamed(var, &cname));
                             Ok(vec![(Local { name: var.clone(), cname, ty: (**item).clone(), gone: false, drop: None }, line)])
                         })?;
                         self.scopes.pop();
@@ -7925,7 +7920,7 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(out, "{inner}while ({}(&{it}, &{at})) {{", next_of(kind));
                 self.temps += 1;
                 let cname = format!("v_{var}_{}", self.temps);
-                let line = format!("{held} {cname} = {at}; (void){cname};");
+                let line = format!("{held} {cname} = {at};{}", unnamed(var, &cname));
                 let local = Local { name: var.clone(), cname, ty: item, gone: false, drop: None };
                 self.loops.push(self.scopes.len());
                 self.block_with(body, depth + 2, out, vec![(local, line)])?;
@@ -7972,7 +7967,7 @@ impl<'a> Emitter<'a> {
                         self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}.len"), var, body, depth + 1, |this| {
                             this.temps += 1;
                             let cname = format!("v_{var}_{}", this.temps);
-                            let line = format!("{held} {cname} = {it}.ptr[{at}]; (void){cname};");
+                            let line = format!("{held} {cname} = {it}.ptr[{at}];{}", unnamed(var, &cname));
                             Ok(vec![(Local { name: var.clone(), cname, ty: (**item).clone(), gone: false, drop: None }, line)])
                         })?;
                         self.scopes.pop();
@@ -8440,15 +8435,15 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    /// A name that borrows what is at `at`, and the C line that declares it. The name is not
-    /// in scope yet.
-    /// The variable of a `for` that borrows each item: a body may leave it unused, as SG allows.
+    /// The variable of a `for` that borrows each item.
     fn loop_name(&mut self, name: &str, ty: Ty, at: &str, span: Span) -> Res<(Local, String)> {
         let (local, line) = self.borrowed_name(name, ty, at, span)?;
-        let line = format!("{line} (void){};", local.cname);
+        let line = format!("{line}{}", unnamed(name, &local.cname));
         Ok((local, line))
     }
 
+    /// A name that borrows what is at `at`, and the C line that declares it. The name is not
+    /// in scope yet.
     fn borrowed_name(&mut self, name: &str, ty: Ty, at: &str, span: Span) -> Res<(Local, String)> {
         // What is there may be a borrow itself (a field `read string text`): the name is a
         // copy of it, not a borrow of a borrow.
@@ -8622,17 +8617,16 @@ impl<'a> Emitter<'a> {
                     let (_, inner, inner_ty) = self.nullable_at(&held, &subject.ty).expect("`null` is taken only from a `T?`");
                     let inner_ctype = self.ctype(&inner_ty, subject.span)?;
                     let cname = self.declare(name, inner_ty);
-                    // An arm may leave its names unused, as SG allows; C is told they are used.
-                    let _ = writeln!(out, "{body_pad}{inner_ctype} {cname} = {inner}; (void){cname};");
+                    let _ = writeln!(out, "{body_pad}{inner_ctype} {cname} = {inner};");
                 }
                 PatternKind::Bind(name) => {
                     let cname = self.declare(name, subject.ty.clone());
-                    let _ = writeln!(out, "{body_pad}{ctype} {cname} = {held}; (void){cname};");
+                    let _ = writeln!(out, "{body_pad}{ctype} {cname} = {held};");
                 }
                 _ if has_choice(&arm.pattern) && !arm.pattern.names().is_empty() => {
                     let (names, drops) = self.take_apart_choices(&arm.pattern, &held, &subject.ty, mode, subject.span)?;
                     for (local, line) in names {
-                        let _ = writeln!(out, "{body_pad}{line} (void){};", local.cname);
+                        let _ = writeln!(out, "{body_pad}{line}");
                         self.scopes.last_mut().expect("an open scope").push(local);
                     }
                     chosen = drops;
@@ -8641,7 +8635,7 @@ impl<'a> Emitter<'a> {
                     let mut names = Vec::new();
                     self.take_apart(&arm.pattern, &held, &subject.ty, mode, &mut names, &mut chosen)?;
                     for (local, line) in names {
-                        let _ = writeln!(out, "{body_pad}{line} (void){};", local.cname);
+                        let _ = writeln!(out, "{body_pad}{line}");
                         self.scopes.last_mut().expect("an open scope").push(local);
                     }
                 }

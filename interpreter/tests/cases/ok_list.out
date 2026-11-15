@@ -27,6 +27,7 @@ consumed barbara
 consumed tony
 Point { x = 10, y = 2 }
 Point { x = 3, y = 4 }
+Point { x = 3, y = 99 }
 5
 core: 2
 ada

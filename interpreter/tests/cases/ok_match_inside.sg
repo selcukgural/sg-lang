@@ -21,8 +21,8 @@ int area(read Shape shape) {
 
 string label(read Shape shape) {
     return match shape {
-        Circle(r) => "circle"
-        Square(s) => "square"
+        Circle(_) => "circle"
+        Square(_) => "square"
         Empty => "empty"
     }
 }

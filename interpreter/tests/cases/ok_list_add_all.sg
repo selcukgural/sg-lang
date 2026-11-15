@@ -36,7 +36,7 @@ void main() {
     // Many items one call at a time, and many in one call.
     var counts = List<long>()
     var piece = long[5] { 1, 2, 3, 4, 5 }
-    for i in 0..1000 {
+    for _ in 0..1000 {
         counts.addAll(read piece)
     }
     var all = List<long>()

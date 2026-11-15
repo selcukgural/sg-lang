@@ -1,0 +1,6 @@
+// Counting to a number with a name the body does not use.
+void main() {
+    for i in 0..3 {
+        print("again")
+    }
+}

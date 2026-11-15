@@ -26,7 +26,7 @@ void shuffle(ref List<string> items, ref Random r) {
 
 int draw(Random r) {
     var total = 0
-    for i in 0..1000 {
+    for _ in 0..1000 {
         total += r.nextInt(0, 10)
     }
     return total
@@ -40,7 +40,7 @@ void main() {
     // A number in a range, each as likely as the others: sixty thousand rolls of a die.
     var r = Random.fromSeed(7)
     var counts = int[6]
-    for i in 0..60000 {
+    for _ in 0..60000 {
         counts[roll(ref r) - 1] += 1
     }
     print(counts)
@@ -54,7 +54,7 @@ void main() {
 
     // The ends of the ranges.
     var lowest = true
-    for i in 0..100 {
+    for _ in 0..100 {
         lowest = lowest && r.nextInt(-5, -4) == -5
     }
     print(lowest)
@@ -63,7 +63,7 @@ void main() {
     var wide = r.nextLong(long.MinValue, long.MaxValue)
     print(wide < long.MaxValue)
     var top = true
-    for i in 0..100 {
+    for _ in 0..100 {
         top = top && r.nextLong(long.MaxValue - 1, long.MaxValue) == long.MaxValue - 1
     }
     print(top)
@@ -74,7 +74,7 @@ void main() {
     var inside = true
     var sum = 0.0
     var heads = 0
-    for i in 0..100000 {
+    for _ in 0..100000 {
         var x = r.nextDouble()
         inside = inside && x >= 0.0 && x < 1.0
         sum += x
@@ -94,7 +94,7 @@ void main() {
     var again = Random.fromSeed(42)
     print(again.nextUlong().toLittleEndian())
     var part = List<byte>()
-    for i in 0..4 {
+    for _ in 0..4 {
         part.add(0)
     }
     seeded.fill(ref part[1..3])

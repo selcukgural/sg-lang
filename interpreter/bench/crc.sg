@@ -10,7 +10,7 @@ void main() {
         block[i] = (byte)((i * 31 + 7) & 255)
     }
     ulong crc = 0
-    for round in 0..262144 {
+    for _ in 0..262144 {
         crc = unsafe crc32(crc, block.pointer(), 65536)
     }
     print(crc)

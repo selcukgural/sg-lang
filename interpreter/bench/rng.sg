@@ -3,7 +3,7 @@
 void main() {
     var r = Random.fromSeed(2026)
     long total = 0
-    for i in 0..100000000 {
+    for _ in 0..100000000 {
         total += r.nextInt(0, 1000)
     }
     print(total)

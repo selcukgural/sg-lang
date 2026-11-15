@@ -1,0 +1,9 @@
+error: `count` is given values that are never read
+  --> error_unread_compound.sg:3:9
+ 3 |     var count = 0
+   |         ^^^^^
+  it is written here:
+  --> error_unread_compound.sg:6:9
+ 6 |         count += 1
+   |         ^^^^^
+  hint: read `count` where it is needed, or take it away with the lines that write it

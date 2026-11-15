@@ -1,4 +1,5 @@
 void main() {
     var counts = HashMap<string, int>()
     counts["a"] += 1
+    print(counts)
 }

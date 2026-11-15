@@ -65,7 +65,7 @@ void main() {
     var ws = weak slot
     var taken = slot.take()
     print(share ws is null)                  // `taken` owns it now
-    taken = null
+    _ = taken                                // ends it here
     print(share ws is null)
 
     // A `weak` of a `weak` looks at the same value.

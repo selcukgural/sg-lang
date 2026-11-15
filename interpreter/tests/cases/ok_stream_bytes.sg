@@ -104,7 +104,7 @@ Result<void, IoError> main(List<string> args) {
     print($"big: {back.length()} bytes, {back[0]} {back[1]} {back[70000]} {back[70001]}")
     var bigReader = try File.openText(read big)
     var bigBuffer = List<byte> {}
-    for i in 0..70005 {
+    for _ in 0..70005 {
         bigBuffer.add(0)
     }
     var bigGot = try bigReader.readBytes(ref bigBuffer)

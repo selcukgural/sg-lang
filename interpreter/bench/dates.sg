@@ -4,7 +4,7 @@
 void main() {
     ulong state = 7
     long sum = 0
-    for i in 0..10000000 {
+    for _ in 0..10000000 {
         state = state.wrappingMultiply(6364136223846793005).wrappingAdd(1442695040888963407)
         long seconds = (long)(state >> 20) % 9467280000 - 2208988800
         var moment = DateTime.fromUnixSeconds(seconds)

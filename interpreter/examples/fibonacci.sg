@@ -9,7 +9,7 @@ long fibRecursive(int n) {
 long fibLoop(int n) {
     long a = 0
     long b = 1
-    for i in 0..n {
+    for _ in 0..n {
         var next = a + b
         a = b
         b = next

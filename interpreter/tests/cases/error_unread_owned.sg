@@ -1,0 +1,10 @@
+// A `T*` owns what it points to: a write through it ends with it.
+struct Node {
+    int value
+}
+
+void main() {
+    var node = new Node { value = 1 }
+    node.value = 2
+    print("set")
+}

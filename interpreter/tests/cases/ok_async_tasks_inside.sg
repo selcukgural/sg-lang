@@ -2,7 +2,7 @@
 // and a delay of zero, which only lets the others go first.
 async int count(int from, int steps) {
     int total = from
-    for i in 0..steps {
+    for _ in 0..steps {
         await Task.delay(0)
         total += 1
     }

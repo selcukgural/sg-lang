@@ -1,0 +1,16 @@
+// A name in a pattern that the arm does not use.
+enum Shape {
+    Circle(double radius)
+    Rect(double width, double height)
+}
+
+double area(Shape s) {
+    return match s {
+        Circle(r) => 3.14 * r * r
+        Rect(w, h) => w * w
+    }
+}
+
+void main() {
+    print(area(Shape.Rect(2.0, 3.0)))
+}

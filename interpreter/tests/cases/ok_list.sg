@@ -83,6 +83,7 @@ void main() {
     p.y = 99
     print(points[0])
     print(points[1])
+    print(p)
     for point in ref points {
         point.y += 1
     }

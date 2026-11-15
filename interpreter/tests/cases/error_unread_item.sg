@@ -1,0 +1,8 @@
+// A list that is only written into, item by item, is never read.
+void main() {
+    var squares = List<int> { 0, 0, 0 }
+    for i in 0..3 {
+        squares[i] = i * i
+    }
+    print("filled")
+}

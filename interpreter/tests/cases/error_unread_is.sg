@@ -1,0 +1,15 @@
+// A name an `is` gives that nothing uses.
+Result<int, string> parse(string text) {
+    if text == "" {
+        return Error("empty")
+    }
+    return Ok((int)text.length())
+}
+
+void main() {
+    var r = parse("12")
+    if r is Ok(n) {
+        print("a number")
+    }
+    _ = r
+}

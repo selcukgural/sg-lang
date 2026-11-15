@@ -1,0 +1,5 @@
+error: `h` is never used
+  --> error_unread_match.sg:10:17
+ 10 |         Rect(w, h) => w * w
+    |                 ^
+  hint: write `_` in its place: `Rect(w, _)`

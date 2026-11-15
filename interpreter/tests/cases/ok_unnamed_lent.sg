@@ -85,12 +85,12 @@ void main() {
         match read shape(n) {
             Circle(r) => print($"circle {r}")
             Box(w, label) when w > 2 => print($"big box {label}")
-            Box(w, label) => print($"small box {label}")
+            Box(_, label) => print($"small box {label}")
             Empty => print("nothing")
         }
     }
     var n = 5
-    while shape(n) is Box(w, label) {
+    while shape(n) is Box(_, label) {
         print($"while: {label}")
         n -= 2
         if n == 1 {

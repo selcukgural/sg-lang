@@ -1,0 +1,9 @@
+error: `best` is given values that are never read
+  --> error_unread_written.sg:4:9
+ 4 |     var best = 0
+   |         ^^^^
+  it is written here:
+  --> error_unread_written.sg:7:13
+ 7 |             best = x
+   |             ^^^^
+  hint: read `best` where it is needed, or take it away with the lines that write it

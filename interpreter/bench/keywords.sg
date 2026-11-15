@@ -26,7 +26,7 @@ void main() {
     }
     var words = List<string>()
     long seed = 7
-    for i in 0..1000000 {
+    for _ in 0..1000000 {
         seed = (seed * 1103515245 + 12345) % 2147483648
         words.add(table[(nint)(seed % 24)].clone())
     }

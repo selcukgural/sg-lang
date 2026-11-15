@@ -93,7 +93,7 @@ void main() {
     bodies[0].vz = -pz / mass
 
     print(energy(read bodies))
-    for step in 0..20000000 {
+    for _ in 0..20000000 {
         advance(ref bodies, 0.01)
     }
     print(energy(read bodies))

@@ -51,7 +51,7 @@ Entry*? prepend(Entry*? list, string? key) {
 }
 
 void clear(ref Entry*? list, ref int? count) {
-    var old = list.take()
+    _ = list.take()
     count = null
 }
 

@@ -1,0 +1,8 @@
+// The name of a `for` that the body does not use.
+void main() {
+    var hits = 0
+    for line in "a\nb\nc".lines() {
+        hits += 1
+    }
+    print(hits)
+}

@@ -1,0 +1,5 @@
+error: `expected` is never used
+  --> tests_error_unread.sg:7:9
+ 7 |     var expected = 4
+   |         ^^^^^^^^
+  hint: take the line away; to run what it is given and drop the value on purpose, write `_ = ...`

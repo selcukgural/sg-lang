@@ -1,0 +1,5 @@
+error: `n` is never used
+  --> error_unread_is.sg:11:16
+ 11 |     if r is Ok(n) {
+    |                ^
+  hint: write `_` in its place: `Ok(_)`

@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the seventy-fifth slice.
+Last brought up to date: 15 November 2026, the seventy-sixth slice.
 
 ## Functions and variables
 
@@ -28,6 +28,10 @@ Last brought up to date: 15 November 2026, the seventy-fifth slice.
 | `let x = 1;` | `var x = 1` | built | No `;` at the end of a line |
 | `let x: i64 = 1;` | `long x = 1` | built | |
 | `let mut x = 1;` | `var x = 1` | built | Every variable can be given a new value; a field can be `readonly` |
+| the `unused_variables` lint (a warning) | nothing to write | built | A local variable nothing reads is a compile error: `var x = 1` alone, a variable only written (`x += 1`, `p.x = 0` on a copy), the name of a `for` or of a pattern. A write through `ref`, `shared` or raw memory is a use; a parameter and a `Disposable` value are not looked at |
+| `let _guard = ...;` | `var guard = ...` | built | A variable of a `Disposable` type is kept for its end without being read; SG has no `_name` |
+| `for _ in 0..n`, `Some(_)` | `for _ in 0..n`, `Ok(_)` | built | |
+| the `unused_assignments` lint (`x = 2` never read after) | nothing | not in SG | Not looked at yet: a value given after the last read, or written over before it is read, passes; noted for later |
 | `type Id = u64;` | `using Id = ulong` | built | `public using` from a module |
 | `std::process::exit(2)` | `exit(2)` | built | Takes a `byte`, so `exit(256)` is a compile error |
 | `panic!("...")` | `panic("...")` | built | |

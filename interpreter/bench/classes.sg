@@ -15,7 +15,7 @@ int kind(byte c) {
 void main() {
     var bytes = List<byte>()
     long seed = 7
-    for i in 0..10000000 {
+    for _ in 0..10000000 {
         seed = (seed * 1103515245 + 12345) % 2147483648
         bytes.add((byte)(seed % 128))
     }

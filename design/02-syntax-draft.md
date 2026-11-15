@@ -666,6 +666,24 @@ xs.removeLast()                                  // the item is dropped; the lis
 _ = xs.contains(3)                               // thrown away on purpose
 ```
 
+A local variable whose value nothing reads is a compile error too, as in Go. Writing it is not reading it: not `x = 1`,
+not `x += 1`, not a write to one of its fields or items. A write that goes through a borrow, a `shared` value or raw
+memory reaches a place that lives on, and counts as a use; so does every other use, a method called on the variable
+and `ref x` given to a call among them. A parameter may go unused, and so may a variable of a `Disposable` type (or of a
+struct that holds one), whose use is its end. The name of a `for` or of a pattern that is not needed is written `_`:
+
+```
+var total = 10                                   // error: `total` is never used
+var p = rect.corner                              // error: `p` is given values that are never read
+p.x = 0                                          //   note: `p` is a copy of `rect.corner`; hint: `var p = ref rect.corner`
+var q = ref rect.corner                          // a borrow: the write changes `rect`
+q.x = 0
+for _ in 0..3 { print("again") }                 // `for i in 0..3` with `i` unused is an error
+if r is Ok(_) { print("a number") }              // so is `Ok(n)` with `n` unused
+```
+
+A value given to a variable after its last read (`n = 2` at the end) is not looked at yet.
+
 ### Construction
 
 `new` puts the value on the heap and gives a `T*`; it does not mean creating an object:

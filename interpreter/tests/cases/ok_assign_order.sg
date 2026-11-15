@@ -32,7 +32,7 @@ nint at(read string what, nint value) {
 }
 
 int grow(ref List<string> xs) {
-    for i in 0..100 {
+    for _ in 0..100 {
         xs.add("more")
     }
     return 7

@@ -31,7 +31,7 @@ void grow(read FolderRef folder, int depth, ref long made) {
     if depth == 0 {
         return
     }
-    for i in 0..10 {
+    for _ in 0..10 {
         var child = folder.add()
         made += 1
         child.addBytes(made % 1000)
@@ -42,7 +42,7 @@ void grow(read FolderRef folder, int depth, ref long made) {
 void main() {
     long total = 0
     long made = 0
-    for round in 0..20 {
+    for _ in 0..20 {
         var root = new FolderRef { bytes = 0, parent = null, children = List<FolderRef>() }
         grow(read root, 5, ref made)
         total += root.bytes

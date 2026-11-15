@@ -1,0 +1,5 @@
+error: `line` is never used
+  --> error_unread_loop.sg:4:9
+ 4 |     for line in "a\nb\nc".lines() {
+   |         ^^^^
+  hint: when the loop needs no name: `for _ in "a\nb\nc".lines()`

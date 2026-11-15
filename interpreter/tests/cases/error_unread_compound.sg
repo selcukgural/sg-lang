@@ -1,0 +1,8 @@
+// `count += 1` reads the old value only to write the new one: nothing reads `count`.
+void main() {
+    var count = 0
+    for word in "a b c".splitWhitespace() {
+        print(word)
+        count += 1
+    }
+}

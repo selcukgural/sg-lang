@@ -15,7 +15,7 @@ Result<void, ZlibError> main() {
     // the deflater ends.
     var deflater = try Deflater(6)
     var stream = List<byte>()
-    for i in 0..10 {
+    for _ in 0..10 {
         try deflater.write(text.asBytes())
         stream.addAll(read deflater.take())
     }

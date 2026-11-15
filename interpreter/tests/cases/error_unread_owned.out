@@ -1,0 +1,9 @@
+error: `node` is given values that are never read
+  --> error_unread_owned.sg:7:9
+ 7 |     var node = new Node { value = 1 }
+   |         ^^^^
+  it is written here:
+  --> error_unread_owned.sg:8:5
+ 8 |     node.value = 2
+   |     ^^^^^^^^^^
+  hint: read `node` where it is needed, or take it away with the lines that write it

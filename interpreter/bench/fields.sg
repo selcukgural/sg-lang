@@ -25,11 +25,11 @@ void main() {
     long total = 0
     long letters = 0
     long lines = 0
-    for pass in 0..20 {
+    for _ in 0..20 {
         for line in all.lines() {
             var fields = line.split(',')
             var name = fields.next() ?? ""
-            for ch in name.trim().chars() {
+            for _ in name.trim().chars() {
                 letters += 1
             }
             for field in fields {

@@ -83,7 +83,7 @@ void main() {
     // The bytes come from xorshift, so they are the same on every run.
     var bytes = List<byte>()
     ulong state = 0x9e37_79b9_7f4a_7c15
-    for i in 0..1048576 {
+    for _ in 0..1048576 {
         state ^= state << 13
         state ^= state >> 7
         state ^= state << 17

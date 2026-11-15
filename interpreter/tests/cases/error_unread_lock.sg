@@ -1,0 +1,11 @@
+// The name a `lock` block is lent, which the block does nothing with.
+struct Counter {
+    int value
+}
+
+void main() {
+    var counter = new shared locked Counter { value = 0 }
+    lock counter as c {
+        print("inside")
+    }
+}

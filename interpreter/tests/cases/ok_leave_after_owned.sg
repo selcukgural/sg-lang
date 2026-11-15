@@ -51,7 +51,7 @@ string describe(Shape shape) {
 int sized(read Shape shape) {
     var text = join(make(2), make(3), match shape {
         Circle(r) => r
-        Named(name) => return -1
+        Named(_) => return -1
         Empty => 0
     })
     return (int)text.length()

@@ -1,0 +1,83 @@
+// What the rule of values that are never read lets through.
+struct Point : Copyable {
+    int x
+    int y
+}
+
+struct Rect : Copyable {
+    Point corner
+    int width
+}
+
+struct Lease : Disposable {
+    string name
+
+    void dispose(ref this) {
+        print($"{this.name} given back")
+    }
+}
+
+struct Room {
+    Lease lease
+    int size
+}
+
+struct Counter {
+    int value
+}
+
+void fill(ref List<int> xs) {
+    xs.add(7)
+}
+
+// A parameter may go unused.
+int constant(int ignored) {
+    return 1
+}
+
+Result<int, string> three() {
+    return Ok(3)
+}
+
+void main() {
+    // A borrow: the write goes to the rectangle.
+    var rect = Rect { corner = Point { x = 1, y = 2 }, width = 3 }
+    var p = ref rect.corner
+    p.x = 0
+    print(rect.corner.x)
+
+    // A `shared checked` value: the write reaches every owner.
+    var first = new shared checked Point { x = 5, y = 6 }
+    var second = share first
+    second.x = 50
+    print(first.x)
+
+    // Lent to a call: the call may read it.
+    var xs = List<int>()
+    fill(ref xs)
+
+    // A method called on it reads it: a list only added to is not seen.
+    var log = List<string>()
+    log.add("started")
+
+    // A `Disposable` is kept for its end, and so is a struct that holds one.
+    var lease = Lease { name = "desk" }
+    var room = Room { lease = Lease { name = "room" }, size = 12 }
+    print("working")
+
+    // `_` for what is not needed, in a loop and in a pattern.
+    for _ in 0..2 {
+        print("tick")
+    }
+    var r = three()
+    if r is Ok(_) {
+        print("ok")
+    }
+
+    // A value written after its last read is not looked at yet.
+    var n = 1
+    print(n)
+    n = 2
+
+    print(constant(9))
+}

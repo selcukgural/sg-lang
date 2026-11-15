@@ -52,7 +52,7 @@ void main() {
     print(window.average() ?? -1)
 
     // More than the window holds: the oldest ones are written over.
-    for i in 0..6 {
+    for _ in 0..6 {
         window.add(100)
     }
     print(window.average() ?? -1)

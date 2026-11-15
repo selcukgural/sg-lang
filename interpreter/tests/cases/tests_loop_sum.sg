@@ -154,9 +154,10 @@ test "a sum that overflows after the rounds without the test" {
 
 test "a count at the top of int" {
     int count = int.MaxValue - 2
-    for i in 0..5 {
+    for _ in 0..5 {
         count += 1
     }
+    print(count)
 }
 
 test "taking below zero" {
@@ -165,6 +166,7 @@ test "taking below zero" {
     for b in bytes {
         left -= b
     }
+    print(left)
 }
 
 test "a short that overflows past its rounds" {
@@ -173,6 +175,7 @@ test "a short that overflows past its rounds" {
     for b in bytes {
         small += b
     }
+    print(small)
 }
 
 test "a negative sum that overflows" {
@@ -181,4 +184,5 @@ test "a negative sum that overflows" {
     for x in read xs {
         sum += x
     }
+    print(sum)
 }

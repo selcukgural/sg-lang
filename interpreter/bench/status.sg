@@ -2,7 +2,7 @@
 // time of its last write.
 Result<void, IoError> main() {
     long size = 0
-    for i in 0..1000000 {
+    for _ in 0..1000000 {
         var info = try File.info("target/bench/listing/file-04242.txt")
         size += info.size
     }

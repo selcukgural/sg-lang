@@ -991,7 +991,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
     }
 
-    let body = |func: &mut Func, sig: &FuncSig, owner: Option<&str>| -> Res<()> {
+    let body = |func: &mut Func, sig: &FuncSig, owner: Option<&str>| -> Res<crate::unread::Seen> {
         let mut checker = Checker {
             names: &names,
             copyable: &copyable,
@@ -1019,6 +1019,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             unsafe_at: None,
             writing: false,
             extern_arg: false,
+            seen: crate::unread::Seen::default(),
         };
         if let (Some(this), Some(owner)) = (func.this, owner) {
             let ty = match (&sig.holder, names.kinds[owner]) {
@@ -1063,25 +1064,28 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 _ => diag,
             });
         }
-        Ok(())
+        Ok(checker.seen)
     };
+    // What each body was found to use, in the order of the bodies, for the rule of values
+    // that are never read: it comes last, after every other error.
+    let mut seen = Vec::new();
     for func in prog.funcs.iter_mut().filter(|func| func.foreign.is_none()) {
-        body(func, &sigs[&func.name], None)?;
+        seen.push(body(func, &sigs[&func.name], None)?);
     }
     for decl in &mut prog.structs {
         let owner = decl.name.as_str();
         for method in &mut decl.methods {
-            body(method, &structs[owner].methods[&method.name], Some(owner))?;
+            seen.push(body(method, &structs[owner].methods[&method.name], Some(owner))?);
         }
     }
     for decl in &mut prog.enums {
         let owner = decl.name.as_str();
         for method in &mut decl.methods {
-            body(method, &enums[owner].methods[&method.name], Some(owner))?;
+            seen.push(body(method, &enums[owner].methods[&method.name], Some(owner))?);
         }
     }
     if tests {
-        check_tests(prog, &names, &sets, &structs, &enums, &sigs, src)?;
+        seen.extend(check_tests(prog, &names, &sets, &structs, &enums, &sigs, src)?);
     }
     thread_rule_of_locked(&structs, &enums, &names)?;
     raw_rule(&structs)?;
@@ -1091,7 +1095,14 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             prog.plain.insert(name.clone(), info.fields.iter().map(|(_, ty)| ty.clone()).collect());
         }
     }
-    crate::waits::check(prog)
+    crate::waits::check(prog)?;
+    let bodies = prog.funcs.iter().filter(|func| func.foreign.is_none()).map(|func| &func.body);
+    let methods = prog.structs.iter().flat_map(|decl| &decl.methods).chain(prog.enums.iter().flat_map(|decl| &decl.methods)).map(|method| &method.body);
+    let tested = prog.tests.iter().map(|test| &test.body).take(if tests { usize::MAX } else { 0 });
+    for (body, seen) in bodies.chain(methods).chain(tested).zip(&seen) {
+        crate::unread::check(body, seen, &|ty: &Ty| disposes(ty, &structs), src)?;
+    }
+    Ok(())
 }
 
 /// Whether this is a raw pointer to a type of C declared in an `extern` block.
@@ -1169,6 +1180,22 @@ fn thread_rule_of_locked(structs: &HashMap<String, StructInfo>, enums: &HashMap<
     Ok(())
 }
 
+/// A variable of this type has a use in its end alone: a `dispose` runs there, of its struct or
+/// of a struct in its fields (when it is the last owner, for a `shared` one).
+fn disposes(ty: &Ty, structs: &HashMap<String, StructInfo>) -> bool {
+    fn looks(ty: &Ty, structs: &HashMap<String, StructInfo>, seen: &mut Vec<String>) -> bool {
+        match ty {
+            Ty::Struct(name) if !seen.contains(name) => {
+                seen.push(name.clone());
+                structs.get(name).is_some_and(|info| info.disposable || info.fields.iter().any(|(_, field)| looks(field, structs, seen)))
+            }
+            Ty::Nullable(inner) | Ty::Ptr(inner) | Ty::Shared(inner, _) => looks(inner, structs, seen),
+            _ => false,
+        }
+    }
+    looks(ty, structs, &mut Vec::new())
+}
+
 fn check_tests(
     prog: &mut Program,
     names: &Names,
@@ -1177,8 +1204,9 @@ fn check_tests(
     enums: &HashMap<String, EnumInfo>,
     sigs: &HashMap<String, FuncSig>,
     src: &str,
-) -> Res<()> {
+) -> Res<Vec<crate::unread::Seen>> {
     let (copyable, formattable, equatable, comparable) = (sets.copyable, sets.formattable, sets.equatable, sets.comparable);
+    let mut seen = Vec::new();
     for position in 0..prog.tests.len() {
         let test = &prog.tests[position];
         let test_span = test.name_span;
@@ -1213,13 +1241,15 @@ fn check_tests(
             unsafe_at: None,
             writing: false,
             extern_arg: false,
+            seen: crate::unread::Seen::default(),
         };
         checker.declare_streams(test_span)?;
         checker.block(&mut prog.tests[position].body, &[])?;
         checker.borrow_conflicts()?;
         crate::opening::open(&mut prog.tests[position].body, &|ty: &Ty| lends(ty, names), src)?;
+        seen.push(checker.seen);
     }
-    Ok(())
+    Ok(seen)
 }
 
 fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
@@ -2256,6 +2286,9 @@ struct Checker<'a> {
     /// The expression being checked is an argument of a function of C: `buffer.pointer()` may
     /// be written there.
     extern_arg: bool,
+    /// The local variables and what each use of a name was found to be, for the rule of
+    /// values that are never read (`unread`).
+    seen: crate::unread::Seen,
 }
 
 /// A collection that a `for` is going over by borrowing it: nothing may change it until the
@@ -2445,6 +2478,7 @@ impl<'a> Checker<'a> {
         if let Some(what) = std_stream(name) {
             return Err(Diag::error(span, format!("`{name}` is {what} of the program, so a variable cannot have its name")));
         }
+        self.seen.locals.insert(span.start, (name.to_string(), ty.clone(), span));
         self.declare(name, ty, span)
     }
 
@@ -2552,9 +2586,11 @@ impl<'a> Checker<'a> {
     }
 
     fn var(&mut self, name: &str, span: Span) -> Res<&mut Var> {
-        if self.find(name).is_none() {
+        let Some(var) = self.find(name) else {
             return Err(self.unknown_var(name, span));
-        }
+        };
+        let at = var.at.start;
+        self.seen.uses.insert((span.start, name.to_string()), at);
         Ok(self.find(name).expect("just found"))
     }
 

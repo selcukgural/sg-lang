@@ -1,0 +1,5 @@
+error: `c` is never used
+  the block is lent the value under this name and does nothing with it
+  --> error_unread_lock.sg:8:21
+ 8 |     lock counter as c {
+   |                     ^

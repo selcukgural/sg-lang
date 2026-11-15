@@ -5,7 +5,7 @@ struct Row {
 
 int countWords(read string text) {
     int words = 0
-    for w in text.splitWhitespace() {
+    for _ in text.splitWhitespace() {
         words += 1
     }
     return words

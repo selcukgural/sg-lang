@@ -27,7 +27,7 @@ void main() {
     // A bit that is 1 says "not a prime".
     var limit = 64000000
     var words = List<long>()
-    for i in 0..limit / 64 {
+    for _ in 0..limit / 64 {
         words.add(0)
     }
     var primes = 0

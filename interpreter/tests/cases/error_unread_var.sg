@@ -1,0 +1,6 @@
+// A variable nothing reads is a mistake or a leftover.
+void main() {
+    var total = 10
+    var count = 3
+    print(count)
+}

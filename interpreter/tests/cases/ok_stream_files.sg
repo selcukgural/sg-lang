@@ -80,7 +80,7 @@ Result<void, IoError> main(List<string> args) {
     print($"after flush: [{seen}]")
     // 64 KB in the buffer: it is written without a flush.
     var big = string.withCapacity(70000)
-    for i in 0..7000 {
+    for _ in 0..7000 {
         big.write("0123456789")
     }
     try w.write(read big)

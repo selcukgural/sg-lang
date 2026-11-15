@@ -160,7 +160,8 @@ function values; ownership, moves and the borrow check; several owners of one va
 and `weak T`, which looks without owning), changed through any of them with `shared checked T` (each access
 checked against the borrows in progress, a certain conflict a compile error, the values that hold each
 other up reported when the program ends) and type aliases (`using NodeRef = shared Node`);
-modules (`use`, `public`, `readonly`); `test` blocks.
+modules (`use`, `public`, `readonly`); `test` blocks. A local variable nothing reads is a compile error, also one only written
+(`var p = rect.corner; p.x = 0` writes to a copy, and the hint is `var p = ref rect.corner`), with `_` for a name that is not needed.
 
 Programs read and write files whole or piece by piece, as text or as bytes, and append to them (a writer left open is a compile error), read
 their input line by line and see their command line. Tasks (`Task.run`, `t.wait()`, every task waited for) and
