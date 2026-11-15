@@ -1,0 +1,10 @@
+// Several tasks may own a `shared` connection, so none reads it.
+Result<void, IoError> first(shared TcpStream conn) {
+    var reader = conn.reader()
+    var line = ""
+    try reader.readLine(ref line)
+    return Ok()
+}
+
+void main() {
+}

@@ -1,0 +1,14 @@
+// A reader keeps in its block what has come and has not been given out: a `receive` while the
+// reader is used again would take bytes from under it.
+Result<void, IoError> talk(TcpStream conn) {
+    var reader = conn.reader()
+    var line = ""
+    try reader.readLine(ref line)
+    var buffer = byte[16](0)
+    try conn.receive(ref buffer)
+    try reader.readLine(ref line)
+    return Ok()
+}
+
+void main() {
+}

@@ -272,8 +272,10 @@ pub enum Ty {
     Slice(Box<Ty>),
     /// What `text.chars()`, `text.split(...)` and the others give: it borrows the text.
     TextIter(TextIter),
-    /// `StreamReader`: a file or the input, read piece by piece. Closed when it ends.
-    Reader,
+    /// `StreamReader`: a file or the input, read piece by piece. Closed when it ends. With
+    /// `true` it reads a connection it borrows (`conn.reader()`), and so carries a borrow; it is
+    /// lent where a `StreamReader` is lent.
+    Reader(bool),
     /// `StreamWriter`: a file or an output, written piece by piece through a buffer. A local
     /// one must be closed (`Closable`): `close` gives the error that writing the buffer met.
     Writer,
@@ -320,7 +322,7 @@ impl Ty {
             "string" => Some(Ty::Str),
             "void" => Some(Ty::Void),
             "Formatter" => Some(Ty::Formatter),
-            "StreamReader" => Some(Ty::Reader),
+            "StreamReader" => Some(Ty::Reader(false)),
             "StreamWriter" => Some(Ty::Writer),
             "CancellationSource" => Some(Ty::Source),
             "CancellationToken" => Some(Ty::Token),
@@ -339,7 +341,7 @@ impl Ty {
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader | Ty::Writer | Ty::Locked(_) | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket => false,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(_) | Ty::Writer | Ty::Locked(_) | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket => false,
         }
     }
 
@@ -389,7 +391,7 @@ impl fmt::Display for Ty {
             Ty::Array(item, length) => write!(f, "{item}[{length}]"),
             Ty::Slice(item) => write!(f, "{item}[]"),
             Ty::TextIter(kind) => f.write_str(kind.name()),
-            Ty::Reader => f.write_str("StreamReader"),
+            Ty::Reader(_) => f.write_str("StreamReader"),
             Ty::Writer => f.write_str("StreamWriter"),
             Ty::Locked(inner) => write!(f, "locked {inner}"),
             Ty::Task(result) => write!(f, "Task<{result}>"),

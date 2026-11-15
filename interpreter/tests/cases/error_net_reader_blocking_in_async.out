@@ -1,0 +1,6 @@
+error: `readLine` on the reader of a connection holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_net_reader_blocking_in_async.sg:5:16
+ 5 |     try reader.readLine(ref line)
+   |                ^^^^^^^^
+  hint: `await reader.readLineAsync(ref line)` does the same work without holding the thread

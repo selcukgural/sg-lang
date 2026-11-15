@@ -1,0 +1,83 @@
+// Lines over a connection without async. The reader of a connection is a `StreamReader`, so a
+// function that takes a `ref StreamReader` reads the input and a connection alike.
+Result<int, IoError> words(ref StreamReader reader) {
+    var line = ""
+    int count = 0
+    while try reader.readLine(ref line) {
+        for _ in line.splitWhitespace() {
+            count += 1
+        }
+    }
+    return Ok(count)
+}
+
+// Each line is answered with its length while the reader goes over the lines; the words of the
+// rest are counted once the client sends `count`.
+Result<int, IoError> serve(TcpListener listener) {
+    var conn = try listener.accept()
+    var reader = conn.reader()
+    for line in reader.lines() {
+        var text = try line
+        if text == "count" {
+            break
+        }
+        try conn.send($"{text.length()}\n".toString().asBytes())
+    }
+    return words(ref reader)
+}
+
+Result<void, IoError> ask(read string address) {
+    var conn = try TcpStream.connect(address)
+    var reader = conn.reader()
+    try conn.send("one two\nthree\n\nfour five six\r\n".asBytes())
+    var line = ""
+    for _ in 0..4 {
+        try reader.readLine(ref line)
+        print(line)
+    }
+    try conn.send("count\na b c\nd e\n".asBytes())
+    return Ok()
+}
+
+// `readText` gives what is left, once the other side lets the connection go: an error when it is
+// longer than the limit. `readBytes` fills the buffer unless the end comes first.
+Result<string, IoError> whole(TcpListener listener, nint limit) {
+    var conn = try listener.accept()
+    var reader = conn.reader(limit)
+    var buffer = byte[4](0)
+    var n = try reader.readBytes(ref buffer)
+    var head = (string.fromUtf8(buffer[0..n]) ?? "not text").clone()
+    var rest = try reader.readText()
+    return Ok($"{head}|{rest}".toString())
+}
+
+Result<void, IoError> send(read string address, read string text) {
+    var conn = try TcpStream.connect(address)
+    try conn.send(text.asBytes())
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = Task.run(serve, listener)
+    try ask(read address)
+    var said = try server.wait()
+    print($"{said} words")
+    var typed = try words(ref Stdin)
+    print($"{typed} words in the input")
+    var limits = List<nint>()
+    limits.add(20)
+    limits.add(5)
+    for limit in limits {
+        var other = try TcpListener.bind("127.0.0.1:0")
+        var at = $"127.0.0.1:{other.port()}".toString()
+        var task = Task.run(whole, other, limit)
+        try send(read at, "0123456789abc")
+        match task.wait() {
+            Ok(text) => print(text)
+            Error(cause) => print($"limit {limit}: {cause}")
+        }
+    }
+    return Ok()
+}

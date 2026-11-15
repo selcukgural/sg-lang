@@ -1,0 +1,5 @@
+error: a reader cannot read a `shared` connection: several tasks could read it at once
+  a connection read by one task and sent on by another is not here yet
+  --> error_net_reader_shared.sg:3:18
+ 3 |     var reader = conn.reader()
+   |                  ^^^^

@@ -173,7 +173,8 @@ interpreter and in compiled code, where an async function becomes a machine whos
 frame, run by a pool of threads, and input and output the async way runs on threads of its own. TCP
 connections (`TcpListener`, `TcpStream`, with and without async) run in both too: compiled, one thread
 waits for every socket a task waits for, with epoll or kqueue, and a cancel ends a wait for a socket or for
-a line of the input at once. Generics of your own are put off. There is no UDP yet, no standard library,
+a line of the input at once. A connection is read line by line through a `StreamReader` that borrows it
+while it goes on sending, and a line longer than 64 KB is an error, not memory without end. Generics of your own are put off. There is no UDP yet, no standard library,
 no package manager and no editor support.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in

@@ -1,0 +1,5 @@
+error: this `StreamReader` reads a connection it borrows, and a `StreamReader` that is not lent reads a file of its own
+  it lives no longer than the connection: it is kept in a variable, and lent with `ref` to a function that reads it
+  --> error_net_reader_returned.sg:4:12
+ 4 |     return conn.reader()
+   |            ^^^^^^^^^^^^^

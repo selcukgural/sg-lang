@@ -1,0 +1,96 @@
+// Lines over a connection, the async way. `conn.reader()` gives a `StreamReader` that borrows the
+// connection: it reads lines through a block of its own, while the connection goes on sending
+// through the same borrow. A line ends at `\n`, and a `\r` before it is not part of the line.
+async Result<int, IoError> serve(TcpStream conn) {
+    var reader = conn.reader()
+    var line = ""
+    int count = 0
+    while try await reader.readLineAsync(ref line) {
+        count += 1
+        try await conn.sendAsync($"{count}: {line.length()} {line}\n".toString().asBytes())
+    }
+    return Ok(count)
+}
+
+async Result<void, IoError> ask(string address) {
+    var conn = try await TcpStream.connectAsync(read address)
+    var reader = conn.reader()
+    try await conn.sendAsync("first\r\nsecond\n".asBytes())
+    try await conn.sendAsync("thi".asBytes())
+    try await conn.sendAsync("rd\n".asBytes())
+    var line = ""
+    for _ in 0..3 {
+        try await reader.readLineAsync(ref line)
+        print(line)
+    }
+    return Ok()
+}
+
+// A line longer than the limit is an error, and so is every read after it.
+async Result<void, IoError> limited(read TcpListener listener, read string address) {
+    var client = try await TcpStream.connectAsync(address)
+    var conn = try await listener.acceptAsync()
+    try await client.sendAsync("eight ch\nnine char\nshort\n".asBytes())
+    var reader = conn.reader(8)
+    var line = ""
+    for _ in 0..3 {
+        match await reader.readLineAsync(ref line) {
+            Ok(more) => print($"line: {line} {more}")
+            Error(cause) => print($"error: {cause}")
+        }
+    }
+    return Ok()
+}
+
+// `readSome` gives what has come, at most what the buffer holds: a header line first, then the
+// rest as it comes, from the same block.
+async Result<void, IoError> some(read TcpListener listener, read string address) {
+    var client = try await TcpStream.connectAsync(address)
+    var conn = try await listener.acceptAsync()
+    try await client.sendAsync("size 11\nhello world".asBytes())
+    var reader = conn.reader()
+    var header = ""
+    try await reader.readLineAsync(ref header)
+    print(header)
+    var buffer = byte[4](0)
+    nint got = 0
+    while got < 11 {
+        var n = try await reader.readSomeAsync(ref buffer)
+        print($"{n}: {string.fromUtf8(buffer[0..n]) ?? "not text"}")
+        got += n
+    }
+    return Ok()
+}
+
+// A cancel ends a wait for the rest of a line, and what had come stays in the block: the next read
+// gives the whole line.
+async Result<void, IoError> cancelled(read TcpListener listener, read string address) {
+    var client = try await TcpStream.connectAsync(address)
+    var conn = try await listener.acceptAsync()
+    var reader = conn.reader()
+    try await client.sendAsync("half ".asBytes())
+    var line = ""
+    var soon = CancellationSource.after(30)
+    match await reader.readLineAsync(ref line, read soon.token()) {
+        Ok(_) => print($"line: {line}")
+        Error(cause) => print($"error: {cause}")
+    }
+    try await client.sendAsync("and the rest\n".asBytes())
+    try await reader.readLineAsync(ref line)
+    print(line)
+    return Ok()
+}
+
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var client = ask(address.clone())
+    var conn = try await listener.acceptAsync()
+    var count = try await serve(conn)
+    try await client
+    print($"{count} lines")
+    try await limited(read listener, read address)
+    try await some(read listener, read address)
+    try await cancelled(read listener, read address)
+    return Ok()
+}

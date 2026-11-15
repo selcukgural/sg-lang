@@ -1,0 +1,4 @@
+panic: the longest line of a reader is at least 1 byte, and this is 0
+  --> panic_net_reader_limit.sg:7:30
+ 7 |     var reader = conn.reader(limit)
+   |                              ^^^^^

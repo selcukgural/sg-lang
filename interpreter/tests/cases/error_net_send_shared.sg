@@ -1,0 +1,8 @@
+// Several tasks may own a `shared` connection, so none sends on it.
+Result<void, IoError> greet(shared TcpStream conn) {
+    try conn.send("hello".asBytes())
+    return Ok()
+}
+
+void main() {
+}

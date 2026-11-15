@@ -1,0 +1,5 @@
+error: a `TcpStream` has no `readerAsync`: making a reader does not wait
+  --> error_net_reader_async.sg:2:24
+ 2 |     var reader = await conn.readerAsync()
+   |                        ^^^^^^^^^^^^^^^^^^
+  hint: `conn.reader()`, in an async function too; its methods with `Async` wait

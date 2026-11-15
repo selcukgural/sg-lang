@@ -1,0 +1,7 @@
+async Result<void, IoError> first(TcpStream conn) {
+    var reader = await conn.readerAsync()
+    return Ok()
+}
+
+void main() {
+}

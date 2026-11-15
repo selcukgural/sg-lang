@@ -1,5 +1,5 @@
 error: `StreamReader` has no method `writeLine`
-  methods: readLine, readText, lines, readBytes
+  methods: readLine, readText, lines, readBytes, readSome
   a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)` and `File.openAppend(path)` give a `StreamWriter`
   --> error_stdin_write.sg:3:15
  3 |     _ = Stdin.writeLine("hello")

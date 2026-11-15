@@ -218,6 +218,7 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         ExprKind::Method { recv, name, name_span, callee: Callee::Stream(_), .. } => match stream_name(recv) {
             Some("Stdout" | "Stderr") => None,
             Some("Stdin") => Some((*name_span, format!("`Stdin.{name}`"))),
+            _ if matches!(recv.ty.strip_borrow(), crate::types::Ty::Reader(true)) => Some((*name_span, format!("`{name}` on the reader of a connection"))),
             _ => Some((*name_span, format!("`{name}` on a file"))),
         },
         // Binding and asking for the port do not wait for the network.

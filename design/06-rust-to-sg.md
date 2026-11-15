@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the sixty-fifth slice.
+Last brought up to date: 15 November 2026, the sixty-sixth slice.
 
 ## Functions and variables
 
@@ -249,10 +249,13 @@ Last brought up to date: 15 November 2026, the sixty-fifth slice.
 | `listener.accept()?` | `try listener.accept()` | built | Through a `read` borrow, as `accept(&self)`; gives the `TcpStream` alone, not the address of the other side |
 | `TcpStream::connect("example.com:80")?` | `try TcpStream.connect("example.com:80")` | built | The host looked up by name, each address tried in turn |
 | `stream.read(&mut buf)?` | `try stream.receive(ref buffer)` | built | What has come, how many, 0 at the end; `read` is a word of SG, and `receive` is C#'s name |
-| `stream.write_all(&bytes)?` | `try stream.send(bytes)` | built | All of them; writing after the other side has gone is `ConnectionReset`, never `SIGPIPE` |
+| `stream.write_all(&bytes)?` | `try stream.send(bytes)` | built | All of them; writing after the other side has gone is `ConnectionReset`, never `SIGPIPE`. Through a `read` borrow, as `Write for &TcpStream`, so it sends while a reader borrows the stream; not through a `shared` stream |
+| `BufReader::new(&stream)`, `.read_line(&mut line)?`, `.lines()` | `var reader = stream.reader()`, `try reader.readLine(ref line)`, `reader.lines()` | built | A `StreamReader` that borrows the stream; `receive` while it is used again is a compile error, since it would take bytes from under its block. A line, or a text, longer than 64 KB is `IoError.LineTooLong` (`stream.reader(limit)` for another limit), as Go's `bufio.Scanner`; every read after it gives it too |
+| `reader.fill_buf()?` / `BufRead` then `consume` | `try reader.readSome(ref buffer)` | built | On every `StreamReader`: what the block holds, or one read of the system when it is empty |
+| `tokio::io::BufReader::new(stream).lines()` | `await reader.readLineAsync(ref line)` | built | A line the block holds is read in place; a cancel ends a wait, and what came stays in the block |
 | `drop(stream)`, `stream.shutdown(Both)` | the stream ends | built | Closed where it ends; no `close` |
 | `tokio::net::TcpListener`, `TcpStream`, `.await` | `await listener.acceptAsync()`, `connectAsync`, `receiveAsync`, `sendAsync` | built | A token may come last, and a cancel ends a wait at once; what came stays in the socket |
-| `stream.into_split()`, `stream.shutdown(Write)`, `peer_addr()`, `set_nodelay` | none yet | designed | Later slices of the network |
+| `stream.into_split()`, `Arc<TcpStream>` sent on from several threads, `stream.shutdown(Write)`, `peer_addr()`, `set_nodelay` | none yet | designed | Later slices of the network |
 | `UdpSocket` | none yet | designed | |
 
 ## Tests and the tools

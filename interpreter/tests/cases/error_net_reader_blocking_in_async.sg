@@ -1,0 +1,10 @@
+// In an async function a reader of a connection is read the async way, as a file is.
+async Result<void, IoError> first(TcpStream conn) {
+    var reader = conn.reader()
+    var line = ""
+    try reader.readLine(ref line)
+    return Ok()
+}
+
+void main() {
+}

@@ -1,0 +1,8 @@
+Result<void, IoError> first(ref TcpStream conn) {
+    var line = ""
+    try conn.readLine(ref line)
+    return Ok()
+}
+
+void main() {
+}

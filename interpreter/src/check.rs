@@ -252,7 +252,7 @@ fn gives_only(name: &str, callee: &Callee) -> bool {
     match callee {
         Callee::Join | Callee::WithCapacity | Callee::FromBytes { .. } => true,
         Callee::Cancel(call) => *call != CancelCall::Cancel && *call != CancelCall::Check,
-        Callee::Net(NetCall::Port) => true,
+        Callee::Net(NetCall::Port | NetCall::Reader) => true,
         Callee::Plain => !matches!(name, "removeLast" | "add" | "remove" | "getOrAdd" | "next"),
         _ => false,
     }
@@ -364,13 +364,14 @@ const IO_ERROR: &str = "IoError";
 
 /// The built-in `enum IoError : Copyable, Formattable, Equatable { NotFound, PermissionDenied,
 /// IsDirectory, NoSpace, InvalidText(long position), Other(int code), Cancelled(Cancelled
-/// cancelled), ConnectionRefused, ConnectionReset, AddressInUse, HostNotFound }`. The first
+/// cancelled), ConnectionRefused, ConnectionReset, AddressInUse, HostNotFound, LineTooLong }`. The first
 /// four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
 /// where text was read, counted from the start of the file or of the input; `Other` keeps the
 /// code the system gave; `Cancelled` is async input or output whose token was cancelled, and
 /// lets `try` turn the error of `token.check()` into an `IoError`. The last four are the
 /// network's: nobody listens at the address, the other side broke the connection off, the
 /// address is taken, and the host could not be found (or the address is not `host:port`).
+/// `LineTooLong`: the reader of a connection met a line, or a text, longer than its limit.
 fn io_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
@@ -391,6 +392,7 @@ fn io_error() -> EnumDecl {
         variant("ConnectionReset", Vec::new()),
         variant("AddressInUse", Vec::new()),
         variant("HostNotFound", Vec::new()),
+        variant("LineTooLong", Vec::new()),
     ];
     EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants, methods: Vec::new() }
 }
@@ -434,7 +436,7 @@ fn std_stream(name: &str) -> Option<&'static str> {
 /// Whether a value of this type is a borrow or carries one inside.
 fn lends(ty: &Ty, names: &Names) -> bool {
     match ty {
-        Ty::Read(_) | Ty::Ref(_) | Ty::TextIter(_) => true,
+        Ty::Read(_) | Ty::Ref(_) | Ty::TextIter(_) | Ty::Reader(true) => true,
         Ty::Struct(name) | Ty::Enum(name) => names.carriers.contains_key(name),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) => lends(inner, names),
         Ty::Result(a, b) | Ty::Map(a, b) | Ty::Entry(a, b) => lends(a, names) || lends(b, names),
@@ -1408,7 +1410,7 @@ fn when_all(ty: &Ty, text: &str, is_async: bool) -> String {
 /// that holds itself through a pointer ends.
 fn stays(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, names: &Names, seen: &mut Vec<String>) -> Option<(Ty, String)> {
     match ty {
-        Ty::Read(_) | Ty::Ref(_) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Entry(..) | Ty::Formatter | Ty::Task(_) => Some((ty.clone(), String::new())),
+        Ty::Read(_) | Ty::Ref(_) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(true) | Ty::Entry(..) | Ty::Formatter | Ty::Task(_) => Some((ty.clone(), String::new())),
         Ty::Shared(_, true) | Ty::Weak(_, true) => Some((ty.clone(), String::new())),
         Ty::Shared(inner, false) | Ty::Weak(inner, false) | Ty::Locked(inner) => stays(inner, structs, enums, names, seen),
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) => stays(inner, structs, enums, names, seen),
@@ -1444,6 +1446,7 @@ fn why_it_stays(part: &Ty, names: &Names) -> String {
     match part {
         Ty::Shared(..) | Ty::Weak(..) => format!("a `{part}` is checked within one task; one that several tasks change is `shared locked`"),
         Ty::Task(_) => "a task is waited for by the task that started it, and by no other".to_string(),
+        Ty::Reader(true) => "this `StreamReader` reads a connection it borrows, and the task could outlive the connection".to_string(),
         Ty::Struct(name) | Ty::Enum(name) if names.carriers.contains_key(name) => format!("a `{part}` carries a borrow, and the task could outlive what it borrows from"),
         _ => format!("a `{part}` is a borrow, and the task could outlive what it borrows from"),
     }
@@ -2250,7 +2253,7 @@ impl<'a> Checker<'a> {
     /// `Stdin`, `Stdout` and `Stderr`: every function and test has them, as `ref` parameters
     /// that the program gives. They are lent on and written through, never moved.
     fn declare_streams(&mut self, span: Span) -> Res<()> {
-        for (name, ty) in [("Stdin", Ty::Reader), ("Stdout", Ty::Writer), ("Stderr", Ty::Writer)] {
+        for (name, ty) in [("Stdin", Ty::Reader(false)), ("Stdout", Ty::Writer), ("Stderr", Ty::Writer)] {
             self.declare(name, Ty::Ref(Box::new(ty)), span)?;
             self.find(name).expect("just declared").param = true;
         }
@@ -2704,6 +2707,10 @@ impl<'a> Checker<'a> {
                 // `reader.lines()` reads through the reader as long as it is used.
                 if matches!(callee, Callee::Stream(StreamCall::Lines)) {
                     return self.lent_by(recv, false, true);
+                }
+                // `conn.reader()` reads the connection as long as it is used, and lets it send.
+                if matches!(callee, Callee::Net(NetCall::Reader)) {
+                    return self.lent_by(recv, false, false);
                 }
                 // `split` looks at its separator as long as it looks at the text.
                 if name == "split" && matches!(expr.ty, Ty::TextIter(_)) && args[0].ty.is_borrow() {
@@ -4060,6 +4067,13 @@ impl<'a> Checker<'a> {
             (Ty::Null, _) => Err(Diag::error(expr.span, format!("`{expected}` cannot be `null`"))
                 .hint(format!("a value that may be missing has the type `{expected}?`"))),
             (Ty::Void, _) => Err(Diag::error(expr.span, "this call does not return a value, and one is needed here")),
+            // A reader of a connection is lent where a reader is lent.
+            (Ty::Read(from) | Ty::Ref(from), Ty::Read(to)) | (Ty::Ref(from), Ty::Ref(to)) if **from == Ty::Reader(true) && **to == Ty::Reader(false) => {
+                expr.ty = expected.clone();
+                Ok(())
+            }
+            (Ty::Reader(true), Ty::Reader(false)) => Err(Diag::error(expr.span, "this `StreamReader` reads a connection it borrows, and a `StreamReader` that is not lent reads a file of its own")
+                .note("it lives no longer than the connection: it is kept in a variable, and lent with `ref` to a function that reads it")),
             // A borrow of a list or an array where a slice goes: a window onto all of it.
             (Ty::Read(from) | Ty::Ref(from), Ty::Read(to)) | (Ty::Ref(from), Ty::Ref(to)) if as_slice(from, to) => {
                 wrap(expr, ExprKind::AsSlice);
@@ -6753,9 +6767,9 @@ impl<'a> Checker<'a> {
         awaited: bool,
     ) -> Res<Ty> {
         let count = match (target, base) {
-            (Ty::Reader, "readText") => 0,
-            (Ty::Reader, "readLine" | "readBytes") => 1,
-            (Ty::Reader, "lines") => {
+            (Ty::Reader(_), "readText") => 0,
+            (Ty::Reader(_), "readLine" | "readBytes" | "readSome") => 1,
+            (Ty::Reader(_), "lines") => {
                 let reader = &self.src[recv.span.start..recv.span.end];
                 return Err(Diag::error(name_span, "a `StreamReader` has no `linesAsync`: a `for` does not await")
                     .hint(format!("read line by line: `while try await {reader}.readLineAsync(ref line) {{ ... }}`")));
@@ -6785,7 +6799,7 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Reader => &["readLineAsync", "readTextAsync", "readBytesAsync"],
+                    Ty::Reader(_) => &["readLineAsync", "readTextAsync", "readBytesAsync", "readSomeAsync"],
                     _ => &["writeAsync", "writeLineAsync", "writeBytesAsync", "flushAsync", "closeAsync"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
@@ -6809,12 +6823,12 @@ impl<'a> Checker<'a> {
         let Callee::Stream(call) = *callee else { unreachable!("a method of a stream") };
         if !awaited {
             let text = &self.src[span.start..span.end];
-            let stream = if *target == Ty::Reader { "reader" } else { "writer" };
+            let stream = if matches!(target, Ty::Reader(_)) { "reader" } else { "writer" };
             let diag = match call {
                 StreamCall::Close => Diag::error(span, "`closeAsync` is awaited where it is written, so the file is closed before the next line"),
                 _ => Diag::error(span, format!("`{name}` lends the {stream}, and a call without `await` starts it as a task of its own, which a borrow cannot go to")),
             };
-            return Err(match (self.is_async, *target == Ty::Reader) {
+            return Err(match (self.is_async, matches!(target, Ty::Reader(_))) {
                 (true, _) if call == StreamCall::Close => diag.hint(format!("`await {text}`")),
                 (true, _) => diag.hint(format!("`await {text}` runs it as part of this task, where it can borrow")),
                 (false, true) => diag.note("async input is awaited in an async function; elsewhere the methods without `Async` do the same work"),
@@ -6842,7 +6856,7 @@ impl<'a> Checker<'a> {
             ("File", "writeText") => (IoCall::WriteText, vec![text(), text()], Ty::Void),
             ("File", "writeBytes") => (IoCall::WriteBytes, vec![text(), bytes], Ty::Void),
             ("File", "appendText") => (IoCall::AppendText, vec![text(), text()], Ty::Void),
-            ("File", "openText") => (IoCall::OpenText, vec![text()], Ty::Reader),
+            ("File", "openText") => (IoCall::OpenText, vec![text()], Ty::Reader(false)),
             ("File", "createText") => (IoCall::CreateText, vec![text()], Ty::Writer),
             ("File", "openAppend") => (IoCall::OpenAppend, vec![text()], Ty::Writer),
             _ => {
@@ -6952,15 +6966,20 @@ impl<'a> Checker<'a> {
     }
 
     /// The methods of a `TcpListener` (`accept`, `acceptAsync`, `port`) and of a `TcpStream`
-    /// (`receive`, `send` and their async versions). A listener takes connections through a
-    /// `read` borrow; a stream goes on from where it is, so it is read and written through a
-    /// `ref`. An async method lends what it is called on, so it is awaited where it is written.
+    /// (`receive`, `send` and their async versions, `reader`). A listener takes connections
+    /// through a `read` borrow. A stream receives through a `ref`, since what comes is taken
+    /// from it, and sends through a `read` borrow, so that it sends while a reader made with
+    /// `reader()` borrows it; a reader holds that borrow, so `receive` cannot take bytes from
+    /// under it. Neither is done through a `shared` stream, which several tasks may own.
+    /// An async method lends what it is called on, so it is awaited where it is written.
+    /// `shared`: the stream is reached through a `shared` value that is not `checked`.
     #[allow(clippy::too_many_arguments)]
     fn net_method(
         &mut self,
         recv: &mut Expr,
         target: &Ty,
         writable: bool,
+        shared: bool,
         name: &str,
         name_span: Span,
         args: &mut [Expr],
@@ -6974,6 +6993,9 @@ impl<'a> Checker<'a> {
             None => (name, false),
         };
         let bytes = |mode: fn(Box<Ty>) -> Ty| mode(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+        if (target, base) == (&Ty::Socket, "reader") {
+            return self.socket_reader(recv, shared, name, is_async, args, callee, span);
+        }
         let (call, params, ty) = match (target, base) {
             (Ty::Listener, "accept") => (NetCall::Accept, Vec::new(), io(Ty::Socket)),
             (Ty::Listener, "port") if !is_async => (NetCall::Port, Vec::new(), Ty::Int(IntTy::Int)),
@@ -6982,7 +7004,7 @@ impl<'a> Checker<'a> {
             _ => {
                 let known: &[&str] = match target {
                     Ty::Listener => &["accept", "acceptAsync", "port"],
-                    _ => &["receive", "receiveAsync", "send", "sendAsync"],
+                    _ => &["receive", "receiveAsync", "send", "sendAsync", "reader"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 let other = match (target, base) {
@@ -6994,7 +7016,12 @@ impl<'a> Checker<'a> {
                     (_, "close" | "shutdown" | "dispose") => diag.note(format!("a `{target}` has nothing to lose: it is closed when it ends")),
                     (Ty::Listener, "receive" | "send") => diag.note("a `TcpListener` takes connections: `listener.accept()` gives a `TcpStream`, which receives and sends"),
                     (Ty::Socket, "accept") => diag.note("a `TcpListener` takes connections: `TcpListener.bind(address)`, then `listener.accept()`"),
-                    (Ty::Socket, "readLine" | "readText" | "writeLine") => diag.note("a `TcpStream` receives and sends bytes: `receive(ref buffer)`, `send(text.asBytes())`; `string.fromUtf8(bytes)` looks at bytes as text"),
+                    (Ty::Socket, "readLine" | "readText" | "lines") => {
+                        let conn = &self.src[recv.span.start..recv.span.end];
+                        diag.note("a `TcpStream` receives bytes; a `StreamReader` reads lines and text")
+                            .hint(format!("`var reader = {conn}.reader()`, then `reader.{name}(...)`"))
+                    }
+                    (Ty::Socket, "writeLine") => diag.note("a `TcpStream` sends bytes: `send(text.asBytes())`"),
                     (Ty::Listener, "port") => diag.hint("`port()` does not wait: `listener.port()`"),
                     _ => match other.or_else(|| nearest(name, known.iter().copied())) {
                         Some(close) => diag.hint(format!("`{close}`")),
@@ -7024,8 +7051,17 @@ impl<'a> Checker<'a> {
         if let Some(token) = token.first_mut() {
             self.token_arg(token)?;
         }
-        // A stream goes on from where it is: reading or writing changes it.
-        if matches!(call, NetCall::Receive | NetCall::Send) {
+        // `send` goes through a `read` borrow, so that a reader may borrow the stream while
+        // it sends; not through a `shared` one, which tasks on other threads may own.
+        if call == NetCall::Send {
+            if shared {
+                return Err(Diag::error(recv.span, format!("`{name}` cannot go through a `shared` connection: several tasks could send on it at once"))
+                    .note("a connection is sent on by one task at a time; a connection read by one task and sent on by another is not here yet"));
+            }
+            self.touch(recv, Access::Read);
+        }
+        // Receiving takes what has come from the stream: it goes through a `ref`.
+        if call == NetCall::Receive {
             if !writable {
                 if let Some(diag) = self.readonly(recv) {
                     return Err(diag.note(format!("`{name}` goes on from where the connection is")));
@@ -7050,6 +7086,30 @@ impl<'a> Checker<'a> {
         }
         *callee = Callee::NetAsync(call);
         Ok(Ty::Task(Box::new(ty)))
+    }
+
+    /// `conn.reader()`, `conn.reader(limit)`: a `StreamReader` that reads the connection
+    /// through a block of its own and borrows it (`Ty::Reader(true)`). Making it does not wait,
+    /// so it has no async version and is called in an async function as it is. Not through a
+    /// `shared` connection, which tasks on several threads may own.
+    #[allow(clippy::too_many_arguments)]
+    fn socket_reader(&mut self, recv: &mut Expr, shared: bool, name: &str, is_async: bool, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+        let conn = &self.src[recv.span.start..recv.span.end];
+        if is_async {
+            return Err(Diag::error(span, format!("a `TcpStream` has no `{name}`: making a reader does not wait"))
+                .hint(format!("`{conn}.reader()`, in an async function too; its methods with `Async` wait")));
+        }
+        if shared {
+            return Err(Diag::error(recv.span, "a reader cannot read a `shared` connection: several tasks could read it at once")
+                .note("a connection read by one task and sent on by another is not here yet"));
+        }
+        if args.len() > 1 {
+            return Err(Diag::error(span, format!("`reader` takes 0 argument(s), or 1 (the longest line it reads, in bytes); {} given", args.len())));
+        }
+        self.args(name, args, &[Ty::Int(IntTy::Nint)][..args.len()], span)?;
+        self.touch(recv, Access::Read);
+        *callee = Callee::Net(NetCall::Reader);
+        Ok(Ty::Reader(true))
     }
 
     fn method(
@@ -7222,6 +7282,7 @@ impl<'a> Checker<'a> {
         }
         // Like field access, a method call looks through pointers and borrows.
         let mut borrowed = false;
+        let mut shared = false;
         let mut target = &recv_ty;
         loop {
             target = match target {
@@ -7239,6 +7300,7 @@ impl<'a> Checker<'a> {
                 // through `shared checked` it may change it.
                 Ty::Shared(inner, checked) => {
                     (writable, borrowed) = (*checked, true);
+                    shared |= !*checked;
                     inner
                 }
                 _ => break,
@@ -7362,7 +7424,7 @@ impl<'a> Checker<'a> {
         if matches!(target, Ty::List(_) | Ty::Map(..) | Ty::Set(_)) {
             return self.collection_method(recv, target, target, writable, name, name_span, args, span);
         }
-        if matches!(target, Ty::Reader | Ty::Writer) {
+        if matches!(target, Ty::Reader(_) | Ty::Writer) {
             let target = target.clone();
             if let Some(base) = name.strip_suffix("Async") {
                 return self.stream_async(recv, &target, writable, borrowed, base, name, name_span, args, callee, span, awaited);
@@ -7375,7 +7437,7 @@ impl<'a> Checker<'a> {
         }
         if matches!(target, Ty::Listener | Ty::Socket) {
             let target = target.clone();
-            return self.net_method(recv, &target, writable, name, name_span, args, callee, span, awaited);
+            return self.net_method(recv, &target, writable, shared, name, name_span, args, callee, span, awaited);
         }
         // An array and a slice have the methods of a list that only look, and the two that
         // change the order of the items without changing how many there are.
@@ -8000,10 +8062,11 @@ impl<'a> Checker<'a> {
         };
         let result = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
         let call = match (target, name) {
-            (Ty::Reader, "readLine") => StreamCall::ReadLine,
-            (Ty::Reader, "readText") => StreamCall::ReadText,
-            (Ty::Reader, "lines") => StreamCall::Lines,
-            (Ty::Reader, "readBytes") => StreamCall::ReadBytes,
+            (Ty::Reader(_), "readLine") => StreamCall::ReadLine,
+            (Ty::Reader(_), "readText") => StreamCall::ReadText,
+            (Ty::Reader(_), "lines") => StreamCall::Lines,
+            (Ty::Reader(_), "readBytes") => StreamCall::ReadBytes,
+            (Ty::Reader(_), "readSome") => StreamCall::ReadSome,
             (Ty::Writer, "write") => StreamCall::Write,
             (Ty::Writer, "writeLine") => StreamCall::WriteLine,
             (Ty::Writer, "writeBytes") => StreamCall::WriteBytes,
@@ -8011,7 +8074,7 @@ impl<'a> Checker<'a> {
             (Ty::Writer, "close") => StreamCall::Close,
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Reader => &["readLine", "readText", "lines", "readBytes"],
+                    Ty::Reader(_) => &["readLine", "readText", "lines", "readBytes", "readSome"],
                     _ => &["write", "writeLine", "writeBytes", "flush", "close"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
@@ -8020,9 +8083,9 @@ impl<'a> Checker<'a> {
                     None => diag.note(format!("methods: {}", known.join(", "))),
                 };
                 return Err(match (target, name) {
-                    (Ty::Reader, "close") => diag.note("a reader has nothing to lose: its file is closed when it ends"),
-                    (Ty::Reader, "write" | "writeLine" | "writeBytes" | "flush") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)` and `File.openAppend(path)` give a `StreamWriter`"),
-                    (Ty::Writer, "readLine" | "readText" | "lines" | "readBytes") => diag.note("a `StreamWriter` writes; `Stdin` and `File.openText(path)` give a `StreamReader`"),
+                    (Ty::Reader(_), "close") => diag.note("a reader has nothing to lose: its file is closed when it ends"),
+                    (Ty::Reader(_), "write" | "writeLine" | "writeBytes" | "flush") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)` and `File.openAppend(path)` give a `StreamWriter`"),
+                    (Ty::Writer, "readLine" | "readText" | "lines" | "readBytes" | "readSome") => diag.note("a `StreamWriter` writes; `Stdin` and `File.openText(path)` give a `StreamReader`"),
                     _ => diag,
                 });
             }
@@ -8065,10 +8128,10 @@ impl<'a> Checker<'a> {
                 arity(0)?;
                 Ty::TextIter(TextIter::ReadLines)
             }
-            StreamCall::ReadBytes => {
+            StreamCall::ReadBytes | StreamCall::ReadSome => {
                 let lent_read = args.first().is_some_and(|arg| self.src[arg.span.start..arg.span.end].starts_with("read "));
                 self.args(shown, args, &[Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))))], span).map_err(|diag| match lent_read {
-                    true => diag.hint("`readBytes` writes into the buffer, so it is lent with `ref`"),
+                    true => diag.hint(format!("`{shown}` writes into the buffer, so it is lent with `ref`")),
                     false => diag,
                 })?;
                 result(Ty::Int(IntTy::Nint))

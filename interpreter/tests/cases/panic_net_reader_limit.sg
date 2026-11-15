@@ -1,0 +1,11 @@
+// The limit of a reader is a length in bytes, at least 1.
+Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var conn = try TcpStream.connect(read address)
+    nint limit = 0
+    var reader = conn.reader(limit)
+    var line = ""
+    try reader.readLine(ref line)
+    return Ok()
+}

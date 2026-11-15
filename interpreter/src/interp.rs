@@ -489,6 +489,9 @@ impl Thread {
 /// code alike: a program that reads its own file back sees the same bytes in both.
 const STREAM_BUFFER: usize = 65536;
 
+/// The longest line, or text, the reader of a connection gives unless told otherwise.
+const READER_LIMIT: usize = 65536;
+
 thread_local! {
     /// `Stdin`, `Stdout` and `Stderr` of the program running on this thread.
     static STREAMS: RefCell<Option<[Cell; 3]>> = const { RefCell::new(None) };
@@ -500,7 +503,7 @@ thread_local! {
 /// Makes `Stdin`, `Stdout` and `Stderr` for a program that starts.
 fn open_streams() {
     let writer = |sink| cell(Value::Writer(Rc::new(RefCell::new(Writer { sink, buffer: Vec::new(), failed: None }))));
-    let stdin = cell(Value::Reader(Rc::new(RefCell::new(Reader { file: None, done: 0 }))));
+    let stdin = cell(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: None, done: 0 }))));
     STREAMS.with(|streams| *streams.borrow_mut() = Some([stdin, writer(Sink::Stdout), writer(Sink::Stderr)]));
     ENDING.with(|ending| ending.set(false));
 }
@@ -650,12 +653,65 @@ fn behind(value: &Value) -> Option<Cell> {
     }
 }
 
-/// A `StreamReader`: a file read through a buffer, or, with no file, the input of the program.
+/// A `StreamReader`: a file read through a buffer, a connection (`net`), or, with neither,
+/// the input of the program.
 #[derive(Debug)]
 pub struct Reader {
     file: Option<std::io::BufReader<std::fs::File>>,
+    net: Option<NetReader>,
     /// The bytes given out so far: where an `InvalidText` lies.
     done: u64,
+}
+
+impl Reader {
+    fn is_stdin(&self) -> bool {
+        self.file.is_none() && self.net.is_none()
+    }
+}
+
+/// The reader of a connection (`conn.reader(limit)`). What has come and has not been given
+/// out stays in `block` until a read can take all it needs, so a cancel loses nothing.
+#[derive(Debug)]
+pub struct NetReader {
+    stream: Rc<std::net::TcpStream>,
+    block: Vec<u8>,
+    /// Where what has not been given out starts in `block`.
+    at: usize,
+    /// The other side has let the connection go.
+    ended: bool,
+    /// The longest line, or text, it gives.
+    limit: usize,
+    /// It met a longer one: every later read gives `LineTooLong`.
+    too_long: bool,
+}
+
+impl NetReader {
+    /// What a read can do with what the block holds: `None` when it needs more to come,
+    /// `Some(None)` when the line or the text is longer than the limit, and `Some(Some(n))`
+    /// when it takes the first `n` bytes. `want`: the size of the buffer of `readBytes` and
+    /// `readSome`.
+    fn ready(&self, call: StreamCall, want: usize) -> Option<Option<usize>> {
+        if self.too_long {
+            return Some(None);
+        }
+        let rest = &self.block[self.at..];
+        let held = rest.len();
+        let fits = |content: usize, taken: usize| Some(if content > self.limit { None } else { Some(taken) });
+        match call {
+            StreamCall::ReadLine => match rest.iter().position(|byte| *byte == b'\n') {
+                Some(end) => fits(end - usize::from(end > 0 && rest[end - 1] == b'\r'), end + 1),
+                // A line of `limit` bytes may still end with `\r\n`.
+                None if held > self.limit.saturating_add(1) => Some(None),
+                None if self.ended => fits(held, held),
+                None => None,
+            },
+            StreamCall::ReadText if held > self.limit => Some(None),
+            StreamCall::ReadText => self.ended.then_some(Some(held)),
+            StreamCall::ReadBytes if held >= want || self.ended => Some(Some(held.min(want))),
+            StreamCall::ReadSome if held > 0 || self.ended || want == 0 => Some(Some(held.min(want))),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -969,6 +1025,12 @@ fn map_add(entries: &mut Entries, key: Value, value: Value, shown: String, span:
 /// `IoError.HostNotFound`: the host could not be found, or the address is not `host:port`.
 fn io_host_not_found() -> Value {
     Value::Enum("IoError".into(), 10, Rc::new(Vec::new()))
+}
+
+/// `IoError.LineTooLong`: the reader of a connection met a line, or a text, longer than its
+/// limit.
+fn io_line_too_long() -> Value {
+    Value::Enum("IoError".into(), 11, Rc::new(Vec::new()))
 }
 
 fn io_cancelled() -> Value {
@@ -1769,6 +1831,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             StreamCall::ReadLine => crate::input::Need::Line,
             StreamCall::ReadText => crate::input::Need::End,
             StreamCall::ReadBytes => crate::input::Need::Bytes(cells_of(&owned(self.expr(&args[0], frame)?)).len()),
+            StreamCall::ReadSome => crate::input::Need::Some,
             _ => unreachable!("only reads wait for the input"),
         };
         let source = match token {
@@ -1855,6 +1918,21 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Err(None) => failed(io_host_not_found()),
                     Err(Some(error)) => io_failed(error),
                 })
+            }
+            NetCall::Reader => {
+                let Value::Socket(stream) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `reader` on a stream") };
+                let limit = match args.first() {
+                    Some(arg) => match strip(self.expr(arg, frame)?) {
+                        Value::Int(_, limit) if limit < 1 => {
+                            return Err(Diag::panic(arg.span, format!("the longest line of a reader is at least 1 byte, and this is {limit}")).into())
+                        }
+                        Value::Int(_, limit) => usize::try_from(limit).unwrap_or(usize::MAX),
+                        _ => unreachable!("the checker makes the limit a number"),
+                    },
+                    None => READER_LIMIT,
+                };
+                let net = NetReader { stream, block: Vec::new(), at: 0, ended: false, limit, too_long: false };
+                Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: Some(net), done: 0 }))))
             }
             NetCall::Port => {
                 let Value::Listener(listener) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `port` on a listener") };
@@ -2203,7 +2281,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     let item = match (&collection, &snapshot) {
                         (_, Some(items)) => items.get(next).cloned(),
                         (Value::Iter(cursor), _) => cursor.borrow_mut().next().map(cell),
-                        (Value::Lines(lines), _) => self.next_line(lines)?.map(cell),
+                        (Value::Lines(lines), _) => self.next_line(lines, iter.span)?.map(cell),
                         (Value::List(items), _) => items.borrow().get(next).cloned(),
                         (Value::Array(items) | Value::Slice(items), _) => items.get(next).cloned(),
                         _ => unreachable!("the checker only lets `for` go over a collection"),
@@ -2815,7 +2893,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Callee::NetAsync(call) => {
                     let given = match call {
                         NetCall::Connect | NetCall::Receive | NetCall::Send => 1,
-                        NetCall::Accept | NetCall::Bind | NetCall::Port => 0,
+                        NetCall::Accept | NetCall::Bind | NetCall::Port | NetCall::Reader => 0,
                     };
                     let value = self.net(*call, recv, &args[..given], args.get(given), expr.span, frame)?;
                     Ok(self.ended_task(value, expr.span))
@@ -2895,8 +2973,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                     let given = if matches!(call, StreamCall::ReadText | StreamCall::Flush | StreamCall::Close) { 0 } else { 1 };
                     let token = args.get(given);
                     // The input that can make the program wait is waited for outside the run.
-                    if matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes) && self.io.input.borrow().waits {
-                        let stdin = matches!(owned(self.expr(recv, frame)?), Value::Reader(reader) if reader.borrow().file.is_none());
+                    if matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome) && self.io.input.borrow().waits {
+                        let stdin = matches!(owned(self.expr(recv, frame)?), Value::Reader(reader) if reader.borrow().is_stdin());
                         if stdin {
                             if let Some(cancelled) = self.input_wait(*call, &args[..given], token, expr.span, frame)? {
                                 return Ok(self.ended_task(cancelled, expr.span));
@@ -2970,7 +3048,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     };
                     let lent = self.guards.len();
                     if let Value::Lines(lines) = &recv {
-                        return Ok(self.next_line(lines)?.unwrap_or(Value::Null));
+                        return Ok(self.next_line(lines, expr.span)?.unwrap_or(Value::Null));
                     }
                     // `f.write(x)` inside a `format` method.
                     if let Value::Formatter(written) = &recv {
@@ -3567,7 +3645,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             // A folder opens, but cannot be read: it is told at once, as compiled code does.
             IoCall::OpenText => done(std::fs::File::open(&path).and_then(|file| match file.metadata()?.is_dir() {
                 true => Err(std::io::Error::from_raw_os_error(21)),
-                false => Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(std::io::BufReader::with_capacity(STREAM_BUFFER, file)), done: 0 })))),
+                false => Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(std::io::BufReader::with_capacity(STREAM_BUFFER, file)), net: None, done: 0 })))),
             })),
             IoCall::CreateText | IoCall::OpenAppend => {
                 let opened = match call {
@@ -3584,13 +3662,33 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// looked at after the arguments, before the work.
     fn stream(&mut self, call: StreamCall, recv: &'a Expr, args: &'a [Expr], token: Option<&'a Expr>, frame: &mut Frame) -> Res<Value> {
         let stream = owned(self.expr(recv, frame)?);
+        if let Value::Reader(reader) = &stream {
+            if reader.borrow().net.is_some() && call != StreamCall::Lines {
+                let (slot, cells) = match call {
+                    StreamCall::ReadLine => match self.expr(&args[0], frame)? {
+                        Value::Borrow(slot) => (Some(behind_borrows(slot)), Rc::new(Vec::new())),
+                        _ => unreachable!("the checker makes the line a `ref string`"),
+                    },
+                    StreamCall::ReadBytes | StreamCall::ReadSome => (None, cells_of(&owned(self.expr(&args[0], frame)?))),
+                    _ => (None, Rc::new(Vec::new())),
+                };
+                let source = match token {
+                    Some(token) => self.token(token, frame)?,
+                    None => None,
+                };
+                if source.as_ref().is_some_and(|source| source.borrow().cancelled) {
+                    return Ok(failed(io_cancelled()));
+                }
+                return self.net_read(call, reader, slot.as_ref(), &cells, source.as_ref(), recv.span);
+            }
+        }
         match (call, stream) {
             (StreamCall::ReadLine, Value::Reader(reader)) => {
                 let Value::Borrow(slot) = self.expr(&args[0], frame)? else { unreachable!("the checker makes the line a `ref string`") };
                 if self.cancelled(token, frame)? {
                     return Ok(failed(io_cancelled()));
                 }
-                self.read_line(&reader, &behind_borrows(slot))
+                self.read_line(&reader, &behind_borrows(slot), recv.span)
             }
             (StreamCall::ReadText, Value::Reader(reader)) => {
                 if self.cancelled(token, frame)? {
@@ -3651,6 +3749,42 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
                 })
             }
+            // What the block holds, or one read of the system when it is empty.
+            (StreamCall::ReadSome, Value::Reader(reader)) => {
+                let cells = cells_of(&owned(self.expr(&args[0], frame)?));
+                if self.cancelled(token, frame)? {
+                    return Ok(failed(io_cancelled()));
+                }
+                let mut bytes = vec![0u8; cells.len()];
+                let read = loop {
+                    if bytes.is_empty() {
+                        break Ok(0);
+                    }
+                    let step = match reader.borrow_mut().file.as_mut() {
+                        Some(file) => file.read(&mut bytes),
+                        None => {
+                            if self.io.world.borrow().input_is_terminal {
+                                self.flush_out()?;
+                            }
+                            self.io.input.borrow_mut().read(&mut bytes)
+                        }
+                    };
+                    match step {
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        other => break other,
+                    }
+                };
+                Ok(match read {
+                    Ok(got) => {
+                        reader.borrow_mut().done += got as u64;
+                        for (slot, byte) in cells.iter().zip(&bytes[..got]) {
+                            *slot.borrow_mut() = Value::Int(IntTy::Byte, *byte as i128);
+                        }
+                        ok(Value::Int(IntTy::Nint, got as i128))
+                    }
+                    Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+                })
+            }
             (StreamCall::WriteBytes, Value::Writer(writer)) => {
                 let bytes: Vec<u8> = cells_of(&owned(self.expr(&args[0], frame)?)).iter().map(|item| match &*item.borrow() {
                     Value::Int(_, byte) => *byte as u8,
@@ -3692,9 +3826,113 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
     }
 
+    /// A read of the reader of a connection: what has come is received into its block, waiting
+    /// for the connection when nothing has, until the block holds all the read needs (a whole
+    /// line, the whole text, the bytes asked for, or anything for `readSome`); it is then taken.
+    /// A cancel ends a wait, and what came stays in the block. `slot`: the line of `readLine`;
+    /// `cells`: the buffer of `readBytes` and `readSome`.
+    fn net_read(&mut self, call: StreamCall, reader: &Rc<RefCell<Reader>>, slot: Option<&Cell>, cells: &[Cell], source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<Value> {
+        let put = |line: &str| {
+            if let Some(slot) = slot {
+                let mut current = slot.borrow_mut();
+                let Value::Str(text) = &mut *current else { unreachable!("the checker makes the line text") };
+                let text = Rc::make_mut(text);
+                text.clear();
+                text.push_str(line);
+            }
+        };
+        let taken = loop {
+            let ready = reader.borrow().net.as_ref().expect("a reader of a connection").ready(call, cells.len());
+            match ready {
+                Some(taken) => break taken,
+                None => match self.net_fill(reader, source, at)? {
+                    Ok(false) => {}
+                    Ok(true) => return Ok(failed(io_cancelled())),
+                    Err(error) => {
+                        put("");
+                        return Ok(failed(io_cause(Some(&error), error.raw_os_error())));
+                    }
+                },
+            }
+        };
+        let mut held = reader.borrow_mut();
+        let start = held.done;
+        let net = held.net.as_mut().expect("a reader of a connection");
+        let Some(count) = taken else {
+            net.too_long = true;
+            put("");
+            return Ok(failed(io_line_too_long()));
+        };
+        let mut bytes = net.block[net.at..net.at + count].to_vec();
+        net.at += count;
+        held.done += count as u64;
+        Ok(match call {
+            StreamCall::ReadLine if bytes.is_empty() => {
+                put("");
+                ok(Value::Bool(false))
+            }
+            StreamCall::ReadLine => {
+                if bytes.last() == Some(&b'\n') {
+                    bytes.pop();
+                    if bytes.last() == Some(&b'\r') {
+                        bytes.pop();
+                    }
+                }
+                match std::str::from_utf8(&bytes) {
+                    Ok(line) => {
+                        put(line);
+                        ok(Value::Bool(true))
+                    }
+                    Err(error) => {
+                        put("");
+                        failed(io_cause(None, None).invalid_text(start + error.valid_up_to() as u64))
+                    }
+                }
+            }
+            StreamCall::ReadText => text_read(bytes, start),
+            _ => {
+                for (slot, byte) in cells.iter().zip(&bytes) {
+                    *slot.borrow_mut() = Value::Int(IntTy::Byte, *byte as i128);
+                }
+                ok(Value::Int(IntTy::Nint, count as i128))
+            }
+        })
+    }
+
+    /// Receives what has come on the connection of a reader into its block, waiting for the
+    /// socket when nothing has: `Ok(true)` when a cancel cut the wait short.
+    fn net_fill(&mut self, reader: &Rc<RefCell<Reader>>, source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<Result<bool, std::io::Error>> {
+        let stream = reader.borrow().net.as_ref().expect("a reader of a connection").stream.clone();
+        let fd = crate::net::fd_of(&*stream);
+        let mut bytes = vec![0u8; STREAM_BUFFER];
+        loop {
+            match (&*stream).read(&mut bytes) {
+                Ok(got) => {
+                    let mut held = reader.borrow_mut();
+                    let net = held.net.as_mut().expect("a reader of a connection");
+                    net.ended |= got == 0;
+                    net.block.drain(..net.at);
+                    net.at = 0;
+                    net.block.extend_from_slice(&bytes[..got]);
+                    return Ok(Ok(false));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if self.wait_for(Outside::Socket(fd, false), source, at)? {
+                        return Ok(Ok(true));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Ok(Err(error)),
+            }
+        }
+    }
+
     /// The next line into `slot`, without its `\n` or `\r\n`: `Ok(true)`, `Ok(false)` at the
     /// end, or `Error`. A line that is not text is used up, and `slot` is left empty.
-    fn read_line(&mut self, reader: &Rc<RefCell<Reader>>, slot: &Cell) -> Res<Value> {
+    fn read_line(&mut self, reader: &Rc<RefCell<Reader>>, slot: &Cell, at: Span) -> Res<Value> {
+        if reader.borrow().net.is_some() {
+            return self.net_read(StreamCall::ReadLine, reader, Some(slot), &[], None, at);
+        }
         let mut bytes = Vec::new();
         let read = match reader.borrow_mut().file.as_mut() {
             Some(file) => file.read_until(b'\n', &mut bytes),
@@ -3746,13 +3984,13 @@ impl<'a, 'e> Interp<'a, 'e> {
     }
 
     /// What `reader.lines()` gives next: a line of its own, or the error that ends it.
-    fn next_line(&mut self, lines: &Rc<RefCell<Lines>>) -> Res<Option<Value>> {
+    fn next_line(&mut self, lines: &Rc<RefCell<Lines>>, at: Span) -> Res<Option<Value>> {
         if lines.borrow().done {
             return Ok(None);
         }
         let reader = lines.borrow().reader.clone();
         let line = cell(Value::Str(Rc::new(String::new())));
-        let result = self.read_line(&reader, &line)?;
+        let result = self.read_line(&reader, &line, at)?;
         Ok(match result {
             Value::Enum(_, 0, fields) if matches!(*fields[0].borrow(), Value::Bool(true)) => Some(ok(line.borrow().clone())),
             Value::Enum(_, 0, _) => {

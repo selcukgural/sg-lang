@@ -1,0 +1,8 @@
+// The reader of a connection borrows it: it is kept in a variable and lent, not given back as a
+// reader of its own.
+StreamReader open(ref TcpStream conn) {
+    return conn.reader()
+}
+
+void main() {
+}

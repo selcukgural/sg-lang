@@ -1,0 +1,6 @@
+error: `TcpStream` has no method `readLine`
+  a `TcpStream` receives bytes; a `StreamReader` reads lines and text
+  --> error_net_read_line.sg:3:14
+ 3 |     try conn.readLine(ref line)
+   |              ^^^^^^^^
+  hint: `var reader = conn.reader()`, then `reader.readLine(...)`

@@ -1073,6 +1073,7 @@ public enum IoError : Copyable, Formattable, Equatable {   // built in
     ConnectionReset                              // the other side broke the connection off
     AddressInUse                                 // the address is taken
     HostNotFound                                 // the host could not be found, or it is not `host:port`
+    LineTooLong                                  // the reader of a connection met a line longer than its limit
 }
 
 Result<void, IoError> main(List<string> args) {  // the words after the program's name

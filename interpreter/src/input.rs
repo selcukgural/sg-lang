@@ -35,6 +35,8 @@ pub enum Need {
     Line,
     Bytes(usize),
     End,
+    /// Anything: `readSome`.
+    Some,
 }
 
 pub struct Input {
@@ -77,6 +79,7 @@ impl Input {
             Need::Line => held.contains(&b'\n'),
             Need::Bytes(count) => held.len() >= count,
             Need::End => false,
+            Need::Some => !held.is_empty(),
         }
     }
 

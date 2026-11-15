@@ -1,0 +1,45 @@
+// Lines over a connection, the async way: the two million lines of the log of `lines`, 125 MB,
+// sent over the loopback by one task and read line by line by another with the reader of the
+// connection (`conn.reader()`, `await reader.readLineAsync(ref line)`). A line the block of the
+// reader holds is read in place; the task waits on the loop of the network only when the block has
+// no whole line. The sender reads the input in pieces of 64 KB and sends each. `run.sh` gives the
+// input (`netlines.in`, the input of `lines`). The C is the classic way: blocking sockets, a thread
+// that sends and one that reads with `getline` from a `FILE` over the socket.
+async Result<void, IoError> send(string address) {
+    var conn = try await TcpStream.connectAsync(read address)
+    var buffer = byte[65536](0)
+    while true {
+        var n = try await Stdin.readBytesAsync(ref buffer)
+        if n == 0 {
+            return Ok()
+        }
+        try await conn.sendAsync(buffer[0..n])
+    }
+}
+
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var sender = send(address)
+    var conn = try await listener.acceptAsync()
+    var reader = conn.reader()
+    string line = ""
+    long lines = 0
+    long bytes = 0
+    long longest = 0
+    long errors = 0
+    while try await reader.readLineAsync(ref line) {
+        lines += 1
+        long length = line.length()
+        bytes += length
+        if length > longest {
+            longest = length
+        }
+        if line.startsWith("ERROR") {
+            errors += 1
+        }
+    }
+    try await sender
+    print($"{lines} lines, {bytes} bytes, longest {longest}, {errors} errors")
+    return Ok()
+}
