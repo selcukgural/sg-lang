@@ -1,0 +1,9 @@
+error: `w` is not closed at this `return`, so an error writing its buffer would be lost
+  --> error_async_writer_unclosed.sg:4:5
+ 4 |     return Ok()
+   |     ^^^^^^^^^^^
+  it is opened here:
+  --> error_async_writer_unclosed.sg:2:9
+ 2 |     var w = try await File.createTextAsync("out.txt")
+   |         ^
+  hint: `try await w.closeAsync()`; to drop the error on purpose, `_ = await w.closeAsync()`

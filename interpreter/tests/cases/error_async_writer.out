@@ -1,6 +1,0 @@
-error: `writeLineAsync` is not here yet
-  streams are opened, written and closed the async way in a later part; `Stdout` and `Stderr` are written without waiting
-  --> error_async_writer.sg:2:22
- 2 |     try await Stdout.writeLineAsync("hello")
-   |                      ^^^^^^^^^^^^^^
-  hint: a function that writes a file runs on a thread of its own with `await Task.run(work, x)`

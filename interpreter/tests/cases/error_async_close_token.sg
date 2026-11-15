@@ -1,0 +1,6 @@
+async Result<void, IoError> main() {
+    var source = CancellationSource()
+    var w = try await File.createTextAsync("out.txt")
+    try await w.closeAsync(read source.token())
+    return Ok()
+}

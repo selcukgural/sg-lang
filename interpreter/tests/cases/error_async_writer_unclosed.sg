@@ -1,0 +1,5 @@
+async Result<void, IoError> main() {
+    var w = try await File.createTextAsync("out.txt")
+    try await w.writeLineAsync("one")
+    return Ok()
+}

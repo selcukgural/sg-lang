@@ -1,0 +1,6 @@
+async Result<void, IoError> main() {
+    var path = "out.txt"
+    var w = try File.createText(read path)
+    try await w.closeAsync()
+    return Ok()
+}

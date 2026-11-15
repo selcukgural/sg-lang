@@ -2268,7 +2268,10 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let name = &var.name;
-            let hint = format!("`try {name}.close()`; to drop the error on purpose, `_ = {name}.close()`");
+            let hint = match self.is_async {
+                true => format!("`try await {name}.closeAsync()`; to drop the error on purpose, `_ = await {name}.closeAsync()`"),
+                false => format!("`try {name}.close()`; to drop the error on purpose, `_ = {name}.close()`"),
+            };
             let ends = if var.param { "the function ends" } else { "its block ends" };
             let diag = match (exit, var.moved.whole.is_some()) {
                 (_, true) => Diag::error(var.at, format!("`{name}` is closed on some paths but not on all of them, so an error writing its buffer could be lost"))
@@ -3330,9 +3333,13 @@ impl<'a> Checker<'a> {
                         }
                         let var = self.var(name, target.span)?;
                         if var.declared == Ty::Writer && (var.moved.whole.is_none() || var.moved.partly) {
+                            let hint = match is_async {
+                                true => format!("close it first: `try await {name}.closeAsync()`; to drop the error on purpose, `_ = await {name}.closeAsync()`"),
+                                false => format!("close it first: `try {name}.close()`; to drop the error on purpose, `_ = {name}.close()`"),
+                            };
                             return Err(Diag::error(target.span, format!("`{name}` is given another writer while the one it holds is still open, so an error writing its buffer would be lost"))
                                 .related(var.at, "it is declared here")
-                                .hint(format!("close it first: `try {name}.close()`; to drop the error on purpose, `_ = {name}.close()`")));
+                                .hint(hint));
                         }
                         let var = self.var(name, target.span)?;
                         var.moved = Moved::default();
@@ -6745,35 +6752,65 @@ impl<'a> Checker<'a> {
                 return Err(Diag::error(name_span, "a `StreamReader` has no `linesAsync`: a `for` does not await")
                     .hint(format!("read line by line: `while try await {reader}.readLineAsync(ref line) {{ ... }}`")));
             }
-            (Ty::Writer, "write" | "writeLine" | "writeBytes" | "flush" | "close") => {
-                return Err(Diag::error(name_span, format!("`{name}` is not here yet"))
-                    .note("streams are opened, written and closed the async way in a later part; `Stdout` and `Stderr` are written without waiting")
-                    .hint("a function that writes a file runs on a thread of its own with `await Task.run(work, x)`"));
+            (Ty::Writer, "write" | "writeLine" | "writeBytes") => 1,
+            (Ty::Writer, "flush") => 0,
+            // `closeAsync` takes the writer, and is not cancelled: what the writer holds is
+            // written, as when it ends without `close`.
+            (Ty::Writer, "close") => {
+                if let Some((var, what)) = match &recv.kind {
+                    ExprKind::Var(var) => std_stream(var).map(|what| (var, what)),
+                    _ => None,
+                } {
+                    return Err(Diag::error(recv.span, format!("`{var}` is {what} of the program and stays open until it ends"))
+                        .hint(format!("`try await {var}.flushAsync()` writes what it holds")));
+                }
+                if borrowed {
+                    return Err(Diag::error(recv.span, "`closeAsync` takes the writer and uses it up, but this writer is only borrowed")
+                        .note("whoever owns the writer closes it")
+                        .hint("`flushAsync()` writes what it holds through a borrow"));
+                }
+                if !args.is_empty() {
+                    return Err(Diag::error(span, format!("`closeAsync` takes 0 argument(s), {} given", args.len()))
+                        .note("closing is not cancelled, so it takes no token: what the writer holds is written and the file is closed"));
+                }
+                0
             }
             _ => {
-                let known = ["readLineAsync", "readTextAsync", "readBytesAsync"];
+                let known: &[&str] = match target {
+                    Ty::Reader => &["readLineAsync", "readTextAsync", "readBytesAsync"],
+                    _ => &["writeAsync", "writeLineAsync", "writeBytesAsync", "flushAsync", "closeAsync"],
+                };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
-                return Err(match nearest(name, known.into_iter()) {
+                return Err(match nearest(name, known.iter().copied()) {
                     Some(close) => diag.hint(format!("`{close}`")),
-                    None => diag.note(format!("async methods for now: {}", known.join(", "))),
+                    None => diag.note(format!("async methods: {}", known.join(", "))),
                 });
             }
         };
+        if args.len() != count && args.len() != count + 1 {
+            return Err(Diag::error(span, format!("`{name}` takes {count} argument(s), or {} with a token last; {} given", count + 1, args.len())));
+        }
         let (given, token) = match args.len() == count + 1 {
             true => args.split_at_mut(count),
             false => (args, &mut [][..]),
         };
-        let ty = self.stream_method(recv, target, writable, borrowed, base, name_span, given, callee, span)?;
+        let ty = self.stream_method(recv, target, writable, borrowed, base, name, name_span, given, callee, span)?;
         if let Some(token) = token.first_mut() {
             self.token_arg(token)?;
         }
-        let Callee::Stream(call) = *callee else { unreachable!("a method of a reader") };
+        let Callee::Stream(call) = *callee else { unreachable!("a method of a stream") };
         if !awaited {
             let text = &self.src[span.start..span.end];
-            let diag = Diag::error(span, format!("`{name}` lends the reader, and a call without `await` starts it as a task of its own, which a borrow cannot go to"));
-            return Err(match self.is_async {
-                true => diag.hint(format!("`await {text}` runs it as part of this task, where it can borrow")),
-                false => diag.note("async input is awaited in an async function; elsewhere the methods without `Async` do the same work"),
+            let stream = if *target == Ty::Reader { "reader" } else { "writer" };
+            let diag = match call {
+                StreamCall::Close => Diag::error(span, "`closeAsync` is awaited where it is written, so the file is closed before the next line"),
+                _ => Diag::error(span, format!("`{name}` lends the {stream}, and a call without `await` starts it as a task of its own, which a borrow cannot go to")),
+            };
+            return Err(match (self.is_async, *target == Ty::Reader) {
+                (true, _) if call == StreamCall::Close => diag.hint(format!("`await {text}`")),
+                (true, _) => diag.hint(format!("`await {text}` runs it as part of this task, where it can borrow")),
+                (false, true) => diag.note("async input is awaited in an async function; elsewhere the methods without `Async` do the same work"),
+                (false, false) => diag.note("async output is awaited in an async function; elsewhere the methods without `Async` do the same work"),
             });
         }
         *callee = Callee::StreamAsync(call);
@@ -6802,7 +6839,7 @@ impl<'a> Checker<'a> {
             ("File", "openAppend") => (IoCall::OpenAppend, vec![text()], Ty::Writer),
             _ => {
                 let known: &[&str] = match is_async {
-                    true => &["readTextAsync", "readBytesAsync", "writeTextAsync", "writeBytesAsync", "appendTextAsync"],
+                    true => &["readTextAsync", "readBytesAsync", "writeTextAsync", "writeBytesAsync", "appendTextAsync", "openTextAsync", "createTextAsync", "openAppendAsync"],
                     false => &["readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "createText", "openAppend"],
                 };
                 let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
@@ -6817,11 +6854,6 @@ impl<'a> Checker<'a> {
             self.args(name, args, &params, span)?;
             *callee = Callee::Io(call);
             return Ok(result);
-        }
-        if matches!(call, IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend) {
-            return Err(Diag::error(name_span, format!("`File.{base}` has no async version yet"))
-                .note("streams are opened, written and closed the async way in a later part")
-                .hint("a function that does it runs on a thread of its own with `await Task.run(work, x)`"));
         }
         self.async_args(name, args, &params, span)?;
         self.awaited_here(&format!("File.{name}"), awaited, args, span)?;
@@ -7177,7 +7209,7 @@ impl<'a> Checker<'a> {
             if let Some(base) = name.strip_suffix("Async") {
                 return self.stream_async(recv, &target, writable, borrowed, base, name, name_span, args, callee, span, awaited);
             }
-            return self.stream_method(recv, &target, writable, borrowed, name, name_span, args, callee, span);
+            return self.stream_method(recv, &target, writable, borrowed, name, name, name_span, args, callee, span);
         }
         if matches!(target, Ty::Source | Ty::Token) {
             let target = target.clone();
@@ -7794,6 +7826,7 @@ impl<'a> Checker<'a> {
         writable: bool,
         borrowed: bool,
         name: &str,
+        shown: &str,
         name_span: Span,
         args: &mut [Expr],
         callee: &mut Callee,
@@ -7801,7 +7834,7 @@ impl<'a> Checker<'a> {
     ) -> Res<Ty> {
         let arity = |count: usize| match args.len() == count {
             true => Ok(()),
-            false => Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len()))),
+            false => Err(Diag::error(span, format!("`{shown}` takes {count} argument(s), {} given", args.len()))),
         };
         let result = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
         let call = match (target, name) {
@@ -7852,14 +7885,14 @@ impl<'a> Checker<'a> {
         }
         if !writable {
             if let Some(diag) = self.readonly(recv) {
-                return Err(diag.note(format!("`{name}` goes on from where the stream is")));
+                return Err(diag.note(format!("`{shown}` goes on from where the stream is")));
             }
-            return Err(self.read_only(recv, Diag::error(recv.span, format!("`{name}` goes on from where the stream is, but it is reached through a `read` borrow"))
+            return Err(self.read_only(recv, Diag::error(recv.span, format!("`{shown}` goes on from where the stream is, but it is reached through a `read` borrow"))
                 .hint(format!("take it as `ref {target}` instead of `read {target}`"))));
         }
         let ty = match call {
             StreamCall::ReadLine => {
-                self.args(name, args, &[Ty::Ref(Box::new(Ty::Str))], span)?;
+                self.args(shown, args, &[Ty::Ref(Box::new(Ty::Str))], span)?;
                 result(Ty::Bool)
             }
             StreamCall::ReadText => {
@@ -7872,14 +7905,14 @@ impl<'a> Checker<'a> {
             }
             StreamCall::ReadBytes => {
                 let lent_read = args.first().is_some_and(|arg| self.src[arg.span.start..arg.span.end].starts_with("read "));
-                self.args(name, args, &[Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))))], span).map_err(|diag| match lent_read {
+                self.args(shown, args, &[Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))))], span).map_err(|diag| match lent_read {
                     true => diag.hint("`readBytes` writes into the buffer, so it is lent with `ref`"),
                     false => diag,
                 })?;
                 result(Ty::Int(IntTy::Nint))
             }
             StreamCall::WriteBytes => {
-                self.args(name, args, &[Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))))], span)?;
+                self.args(shown, args, &[Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))))], span)?;
                 result(Ty::Void)
             }
             StreamCall::Write | StreamCall::WriteLine => {

@@ -48,7 +48,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
-| Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, and on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`: the work of the function without `Async`, as a task, with a token that may come last (`read token`). A call given a borrow is awaited where it is written. In the interpreter the work is done when it is called; the token is looked at first. Compiled too: the work is done on a thread of input and output while the task waits, and a line the block of the input already holds is read in place |
+| Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`, on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`, and on a writer (`Stdout` and `Stderr` too) `writeAsync(x)`, `writeLineAsync(x)`, `writeBytesAsync(bytes)`, `flushAsync()` and `closeAsync()`: the work of the function without `Async`, as a task, with a token that may come last (`read token`; not for `closeAsync`). A call given a borrow, and `closeAsync`, is awaited where it is written. A writer an async function drops without `closeAsync` is written and closed the async way, awaited where it is dropped. In the interpreter the work is done when it is called; the token is looked at first. Compiled too: the work is done on a thread of input and output while the task waits, and what the block of a reader or a writer can do is done in place |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -353,7 +353,9 @@ for each core, runs the tasks that can go on (417-431). Since the sixty-second, 
 compiled too: the work is done on threads of their own, started as they are needed, while the task waits,
 and a read the block of a reader can answer is done in place (432-440). The sixty-third slice (a list of
 tasks, `Task.whenAll` and `Task.whenAny`) was written in the checker, the interpreter and compiled code
-together: a list of tasks has a group that its tasks tell as they end (441-452). What is still missing is an error that names it (not silence): the few positions listed with the
+together: a list of tasks has a group that its tasks tell as they end (441-452). So was the sixty-fourth
+(streams opened, written and closed the async way): a writer an async task drops is put on the task's
+list and closed on a thread of input and output where the task awaits it (453-465). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -402,6 +404,7 @@ hand with no checks):
 | `async`: for each number below a million, an async function starts a task for one Collatz length and awaits another in place; nothing has to wait | 0.244 s | 0.372 s | 0.226 s | 1.08 |
 | `asynclines`: `lines` the async way, the two million lines read with `await Stdin.readLineAsync` in an async `main` (the C is that of `lines`) | 0.125 s | 0.125 s | 0.090 s | 1.37 |
 | `tasklist`: in each of 200,000 rounds, eight async tasks for Collatz lengths taken with `Task.whenAll` and eight with `Task.whenAny`; none has to wait (the C keeps each result in a block it allocates, in an array for the list) | 0.476 s | 0.689 s | 0.384 s | 1.24 |
+| `asynccopy`: `copy` the async way, the log read with `await reader.readLineAsync` and written with `await writer.writeLineAsync` in an async `main` (the C is that of `copy`) | 0.301 s | 0.299 s | 0.275 s | 1.09 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -3451,6 +3454,92 @@ Choices made in the sixty-third slice (async, the fifth part: a list of tasks, `
      970 programs, 30 of them under the thread sanitizer, and 13 of 17 programs of tests; on Linux too, in
      a container, with the same counts.
 
+Choices made in the sixty-fourth slice (async, the sixth part: streams opened, written and closed the
+async way), in the checker, the interpreter and compiled code together, approved on 15 November 2026:
+
+453. **A writer dropped in an async function is closed the async way**, decided before the slice: where a
+     writer ends without `closeAsync` (a way out with an error, the end of a block, a field, an item or a
+     `shared` value that ends, a variable given another value), what its block holds is written and its
+     file closed on a thread of input and output, and the function awaits it there; the error of that
+     writing is lost, as when a writer ends without `close` in code that is not async. A cancelled token
+     does not stop it, and a panic writes nothing, as before. Until this slice the writer was closed on
+     the thread of the pool, which held it for as long as the writing took. C# does the same with
+     `await using` (`DisposeAsync` awaited on the way out of an exception), Python with `async with`;
+     Rust has no async drop, and Tokio's `BufWriter` loses what it holds.
+454. **In the order the names end**, decided before the slice: the writers and the tasks left behind on a
+     way out with an error end together in the reverse order of their names, one after the other: a task
+     declared after a writer is awaited before the writer is closed. The interpreter kept the names of a
+     block in no set order, so its writers and tasks ended in another order; its names are now kept in the
+     order they are declared and end in the reverse one, as compiled code always did, and a task left
+     behind is awaited where its name ends.
+455. **Compiled, a dropped writer goes on its task's list**: the drop of a writer in the machine of an
+     async task (`sg_job_now` set) moves the writer to the end of a list in the task (`sg_task.closing`,
+     one pointer more in every task) instead of writing it. Where the function awaits the closing (after a
+     statement that reaches a writer, and after the drop of a variable that owns one on a way out), the
+     list is handed to a thread of input and output (`sg_closing_run`), which writes and closes the writers
+     in the order they were dropped while the task waits. A function that reaches no writer, through a
+     value or a borrow, has no such place and costs nothing more. A writer dropped inside a `lock` block is
+     closed after the block, which does not wait. A writer still on the list when the task ends is closed
+     there, a net under the compiler that no test reaches.
+456. **A function that is not async may drop a writer**, changed from what was decided before the
+     slice. It was decided that such a function counts as holding the thread when an async function
+     calls it (the rule of choice 391). Written, there is no need: called from an async task, it runs on
+     the task's thread with `sg_job_now` set, so the writer it drops goes on the task's list like any other
+     and is closed where the caller awaits it, after the line of the call. Nothing is written on the thread
+     of the pool, and the rule would have refused functions that only take a writer by value and give it
+     back, or end with an error.
+457. **`File.openTextAsync`, `File.createTextAsync` and `File.openAppendAsync`** give the stream of the
+     function without `Async` as a task, with a token that may come last, and are awaited where they are
+     written, since a path is lent (`read string`). The hint for `File.createText` in an async function is
+     now `await File.createTextAsync(...)`.
+458. **The async methods of a writer**: `writeAsync(x)` and `writeLineAsync(x)` (what `print` takes),
+     `writeBytesAsync(bytes)` and `flushAsync()`, each with a token that may come last, and `closeAsync()`,
+     which takes the writer, as `close` does, and meets the `Closable` check. They lend the writer, so they
+     are awaited where they are written; so is `closeAsync`, which needs no borrow, so that the file is
+     closed before the next line. `closeAsync` takes no token: closing is not cancelled. In an async
+     function the hint of the `Closable` check is `try await w.closeAsync()`, and that of a writer's method
+     without `Async` is the method with it.
+459. **What the block can take is written in place**, decided before the slice, as a read the block can
+     answer (435): `writeAsync` and `writeLineAsync` write into the block of 64 KB on the task's thread,
+     and only a block that is full is written out on a thread of input and output while the task waits.
+     `writeBytesAsync` puts fewer than 64 KB into the block the same way; 64 KB or more go to a thread,
+     which writes the block and then the bytes straight. `flushAsync` is done in place when the block is
+     empty, `closeAsync` always on a thread (closing a file on a network can wait too).
+460. **`Stdout` and `Stderr` have the async methods**, decided before the slice, done in place as `print`
+     writes, in order with it: a function that takes a `ref StreamWriter` and awaits `writeLineAsync` works
+     when it is given `Stdout`. `Stdout.closeAsync()` is an error, as `close` is, with `flushAsync` as the
+     hint.
+461. **A cancelled token writes nothing**: the method gives `IoError.Cancelled(...)`, what was put into
+     the block for this call is taken out again, and the writer goes on. The token is looked at after the
+     value is computed, as the interpreter does.
+462. **In the interpreter** the async methods and functions do the work of those without `Async` when
+     they are called, and give a task that has ended, as the reads do (412); the token is looked at
+     first. A dropped writer is written there, on the task's own thread.
+463. **The names in C**: `sg_io_writer` and `sg_io_run_writer` (the block, the bytes or the closing on a
+     thread), `sg_writer_wrote_n`, `sg_writer_bytes_n` and `sg_writer_flush_n` (the work done in place,
+     -1 when the block has to go), `sg_closing`, `sg_closing_put`, `sg_closing_io`, `sg_closing_run` and
+     `sg_closing_left`, and `sg_drop_writer_now`, the drop that writes. `SG_CLOSING` is 1 in a program
+     with an async function that reaches a writer.
+464. **Measured** (`bench/asynccopy`): the log of `lines` (two million lines, 125 MB) copied line by line
+     the async way, each line with its number in front, opened with `openTextAsync` and
+     `createTextAsync`, read with `readLineAsync` and written with `writeLineAsync` in an async `main`:
+     0.301 s against 0.275 s for the C of `copy` (`getline` and `fprintf`), 1.09 times; 0.299 s in a
+     checked build. The same program without async takes 0.258 s (0.94 times C). What async adds, about
+     0.04 s, is the hand-over of each block of 64 KB to a thread of input and output and back, some four
+     thousand of them for the reads and the writes; a line itself is read and written in place. In
+     "Slower than C".
+465. **The tests**: `ok_async_writer` (every async method and function, more than the block holds, bytes of
+     64 KB and more, a cancelled token, a missing folder, `Stdout` and `Stderr` in order with `print`),
+     `ok_async_writer_drop` (a writer dropped on a way out with an error, given to a task that ends with
+     one, a task declared after a writer awaited first, a writer in a struct given another value, in a list
+     that is cleared, dropped by a function that is not async, dropped inside a `lock` block, and left in
+     a struct at the end of the function; each file read on the next line is whole) and ten programs the
+     checker refuses (`error_async_close_*`, `error_async_writer_*`, `error_async_create_blocking`).
+     `error_async_writer` and `error_async_open_text`, which said "not here yet", are gone. The two
+     programs that run are compiled and run under the thread sanitizer too, and no file they write is
+     left half written. `cargo test` compiles 239 of 980 programs, 32 of them under the thread sanitizer,
+     and 13 of 17 programs of tests; on Linux too, in a container, with the same counts.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -3496,6 +3585,12 @@ check off.
   woken through the pool after it: about 12 µs a block, 0.023 s of the 0.035 s. Candidates: the thread
   fills the next block while the task reads this one (reading ahead), a larger block for a reader read
   the async way, and a task that goes on on the thread that woke it.
+- **Copying a file the async way** (`asynccopy`, 1.09 times C, choice 464; 0.94 without async): the
+  same hand-over as above, for the reader's blocks and the writer's: each block of 64 KB filled or
+  written out goes to a thread of input and output and the task is woken through the pool after it,
+  about 0.04 s for some four thousand blocks. Candidates: those of the reader, and for the writer, a
+  block written out while the task fills the next one (writing behind), waited for only when that one
+  is full too.
 - **Taking tasks out of a list** (`tasklist`, 1.24 times C, choice 451; the same tasks awaited one by one
   take 1.06): each list makes a group with a mutex and a condition, and each task takes its lock once when
   it ends and once when it is taken. Candidates: no group for a list whose tasks had all ended when they
@@ -3529,9 +3624,8 @@ check off.
   in the design), and so an alias with type parameters (`using Link<T> = ...`).
 - Channels; the task of `Task.whenAll` kept in a variable to be awaited later (`var all =
   Task.whenAll(tasks)`), and a `for` over a list of tasks (a `break` would leave tasks); a method or a function of a struct
-  started as a task (a `Func` is a function written at the top level). Of async: streams opened,
-  written and closed the async way (`File.openTextAsync`, `writer.writeLineAsync`), an `async` method, an
-  async function kept as a `Func`. In the interpreter, async input and output is done when it is called, so a
+  started as a task (a `Func` is a function written at the top level). Of async: `linesAsync` (a `for`
+  that awaits), an `async` method, an async function kept as a `Func`. In the interpreter, async input and output is done when it is called, so a
   read of `Stdin` that waits for a line holds every task (412); compiled code does not. A token cancelled
   while the work is under way does not stop it, in either (433). `checked` on its own, in a value with one
   owner (`checked int hits` in a plain struct, the design's `RefCell` outside `Rc`). `List<shared T>.clone()`,
@@ -3662,6 +3756,9 @@ and a read that the block of a reader already holds is done in place, so reading
 the async way takes 1.37 times the same program in C (without async, about the time of C). Tasks are kept
 in a list (`List<Task<R>>`) and waited for all at once (`await Task.whenAll(tasks)`, what each gave in the
 order of the list) or as they end (`await Task.whenAny(ref tasks)`), and a list whose tasks are not all
-waited for is a compile error; compiled, each list has a group that its tasks tell as they end. Next are
-streams opened, written and closed the async way (`File.openTextAsync`, `writer.writeLineAsync`), then the
-network, which brings the loop of epoll and kqueue.
+waited for is a compile error; compiled, each list has a group that its tasks tell as they end. Streams
+are opened, written and closed the async way (`File.createTextAsync`, `await writer.writeLineAsync(x)`,
+`await writer.closeAsync()`), and a writer an async function drops on its way out is written and closed
+the async way too, awaited where it is dropped, so a thread of the pool never writes a file; copying the
+log line by line the async way takes 1.09 times the same program in C. Next is the network, which
+brings the loop of epoll and kqueue.

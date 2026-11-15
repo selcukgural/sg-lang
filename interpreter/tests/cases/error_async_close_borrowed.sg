@@ -1,0 +1,11 @@
+async Result<void, IoError> finish(ref StreamWriter w) {
+    try await w.closeAsync()
+    return Ok()
+}
+
+async Result<void, IoError> main() {
+    var w = try await File.createTextAsync("out.txt")
+    try await finish(ref w)
+    try await w.closeAsync()
+    return Ok()
+}

@@ -1,6 +1,0 @@
-error: `File.openText` has no async version yet
-  streams are opened, written and closed the async way in a later part
-  --> error_async_open_text.sg:2:33
- 2 |     var reader = try await File.openTextAsync("a.txt")
-   |                                 ^^^^^^^^^^^^^
-  hint: a function that does it runs on a thread of its own with `await Task.run(work, x)`

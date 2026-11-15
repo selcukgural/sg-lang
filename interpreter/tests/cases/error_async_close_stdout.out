@@ -1,0 +1,5 @@
+error: `Stdout` is the output of the program and stays open until it ends
+  --> error_async_close_stdout.sg:3:15
+ 3 |     try await Stdout.closeAsync()
+   |               ^^^^^^
+  hint: `try await Stdout.flushAsync()` writes what it holds

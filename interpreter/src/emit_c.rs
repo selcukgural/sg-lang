@@ -60,7 +60,9 @@
 //! and `false` when it has to wait. `await f()` runs `f` in a frame inside the caller's; a call
 //! without `await` is a task, one block with the frame inside, that the pool of `TASK_RUNTIME` runs.
 //! `await File.readTextAsync(path)` puts the work into the frame and hands it to a thread of input
-//! and output, which wakes the task when it is done (`await_io`).
+//! and output, which wakes the task when it is done (`await_io`); what the block of a reader or a
+//! writer can do is done in place (`await_writer`). A writer an async task drops goes on the task's
+//! list, and the function awaits its closing on such a thread where it was dropped (`closing_line`).
 //! A `Result<T, E>` is such an enum with the variants `Ok(T value)` and `Error(E cause)`; `try`
 //! is one test on the tag and, on an error, a `return`. A `List<T>` is a pointer to its items,
 //! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index, and
@@ -162,6 +164,7 @@ typedef struct sg_task {
     struct sg_task* next;
     struct sg_task* later;
     void* waiter;
+    void* closing;
     int kind;
     int state;
 } sg_task;
@@ -1599,6 +1602,9 @@ enum { SG_IDLE, SG_QUEUED, SG_RUNNING, SG_WOKEN, SG_FINISHED };
 typedef struct { const char* name; const char* at; } sg_site;
 /* The async task whose machine this thread is running. */
 static _Thread_local sg_task* sg_job_now = NULL;
+#if SG_CLOSING
+static void sg_closing_left(sg_task* job);
+#endif
 static void sg_wake(sg_task* job);
 SG_COLD static _Noreturn void sg_refused(int code, const char* what, const char* at) {
     SG_PANIC_START();
@@ -1857,6 +1863,9 @@ static void sg_job_run(sg_task* job) {
         sg_job_now = outer_job;
         sg_task_now = outer_task;
         if (ended) {
+#if SG_CLOSING
+            if (job->closing) sg_closing_left(job);
+#endif
             __atomic_store_n(&job->state, SG_FINISHED, __ATOMIC_SEQ_CST);
             sg_task_ended(job);
             return;
@@ -1874,6 +1883,7 @@ static void sg_job_start(sg_task* job, bool (*poll)(sg_task*), const char* name,
     job->poll = poll;
     job->kind = SG_ASYNC;
     job->waiter = NULL;
+    job->closing = NULL;
     job->next = NULL;
     job->state = SG_RUNNING;
     sg_job_run(job);
@@ -2409,13 +2419,49 @@ static int sg_writer_close(sg_writer* w) {
     return code;
 }
 /* A writer that ends without `close` writes its block and closes, and the error is lost. */
-static inline void sg_drop_writer(sg_writer* w) {
-    if (w->fd < 0 || w->std) return;
+static void sg_drop_writer_now(sg_writer* w) {
     if (!w->failed) (void)sg_write_all(w->fd, w->buf.ptr, w->buf.len);
     close(w->fd);
     w->fd = -1;
     sg_drop_string(&w->buf);
     w->buf = (sg_string){ (uint8_t*)"", 0, 0 };
+}
+#if SG_CLOSING
+/* A writer an async task drops is put at the end of the task's list (`sg_task.closing`), and
+   the task awaits its closing on a thread of input and output where it was dropped (see
+   `sg_closing_run`): the threads of the pool never write a file. */
+typedef struct sg_closing { struct sg_closing* next; sg_writer w; } sg_closing;
+static void sg_closing_put(sg_writer* w) {
+    sg_closing* c = malloc(sizeof *c);
+    if (!c) abort();
+    c->next = NULL;
+    c->w = *w;
+    sg_closing** at = (sg_closing**)&sg_job_now->closing;
+    while (*at) at = &(*at)->next;
+    *at = c;
+    w->fd = -1;
+    w->buf = (sg_string){ (uint8_t*)"", 0, 0 };
+}
+/* Writers an async task dropped where its machine does not await their closing: closed here,
+   as the task ends. The compiler puts that await after every place a writer can be dropped, so
+   this is a net under it. */
+static void sg_closing_left(sg_task* job) {
+    sg_closing* c = (sg_closing*)job->closing;
+    job->closing = NULL;
+    while (c) {
+        sg_closing* next = c->next;
+        sg_drop_writer_now(&c->w);
+        free(c);
+        c = next;
+    }
+}
+#endif
+static inline void sg_drop_writer(sg_writer* w) {
+    if (w->fd < 0 || w->std) return;
+#if SG_CLOSING
+    if (sg_job_now) { sg_closing_put(w); return; }
+#endif
+    sg_drop_writer_now(w);
 }
 static inline sg_writer sg_move_writer(sg_writer* w) {
     sg_writer out = *w;
@@ -2560,6 +2606,59 @@ static void sg_io_start(sg_io* io, void (*work)(sg_io*), const char* loc) {
     pthread_mutex_unlock(&sg_io_lock);
 }
 static inline bool sg_io_done(sg_io* io) { return __atomic_load_n(&io->done, __ATOMIC_ACQUIRE); }
+/* What a writer's async methods cannot do in place: write the block out, then `bytes` straight
+   (a `writeBytesAsync` of 64 KB or more); with `w` NULL, close the writer `held`, moved here
+   (`closeAsync`). `r`: the error code, or 0. */
+typedef struct { sg_io io; sg_writer* w; const uint8_t* bytes; int64_t len; sg_writer held; int r; } sg_io_writer;
+static void sg_io_run_writer(sg_io* io) {
+    sg_io_writer* x = (sg_io_writer*)io;
+    if (!x->w) { x->r = sg_writer_close(&x->held); return; }
+    int code = x->w->failed ? x->w->failed : sg_writer_out(x->w);
+    if (!code && x->len > 0) {
+        code = sg_write_all(x->w->fd, x->bytes, x->len);
+        if (code) x->w->failed = code;
+    }
+    x->r = code;
+}
+static inline sg_io_writer sg_io_writer_out(sg_writer* w, const uint8_t* bytes, int64_t len) { return (sg_io_writer){ .w = w, .bytes = bytes, .len = len }; }
+static inline sg_io_writer sg_io_writer_close(sg_writer held) { return (sg_io_writer){ .w = NULL, .held = held }; }
+/* The async methods of a writer done in place: -1 when the block has to go out on a thread.
+   A standard stream is written at once, as `print` writes. */
+static inline int sg_writer_wrote_n(sg_writer* w) {
+    if (w->failed) { w->buf.len = 0; return w->failed; }
+    if (w->std) return sg_writer_wrote(w);
+    return w->buf.len >= 65536 ? -1 : 0;
+}
+static int sg_writer_bytes_n(sg_writer* w, const uint8_t* bytes, int64_t len, bool* big) {
+    *big = false;
+    if (sg_failed(w)) return sg_failed(w);
+    if (len == 0) return 0;
+    if (w->std) return sg_writer_bytes(w, bytes, len);
+    if (len < 65536) {
+        sg_put(&w->buf, bytes, len);
+        return sg_writer_wrote_n(w);
+    }
+    *big = true;
+    return -1;
+}
+static inline int sg_writer_flush_n(sg_writer* w) {
+    if (sg_failed(w)) return sg_failed(w);
+    if (w->std) return sg_writer_flush(w);
+    return w->buf.len > 0 ? -1 : 0;
+}
+#if SG_CLOSING
+/* The writers an async task dropped, written and closed in order on a thread. */
+typedef struct { sg_io io; sg_closing* list; } sg_closing_io;
+static void sg_closing_run(sg_io* io) {
+    sg_closing* c = ((sg_closing_io*)io)->list;
+    while (c) {
+        sg_closing* next = c->next;
+        sg_drop_writer_now(&c->w);
+        free(c);
+        c = next;
+    }
+}
+#endif
 /* The async read done in place: the input is taken for it if no other task has it; a task
    that has it may be waiting for the system, so then the read goes to a thread. `SG_IN_GIVE`
    lets it go. */
@@ -2680,6 +2779,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         awaits: None,
         exit_blocks: Vec::new(),
         frames: Vec::new(),
+        closing: None,
     };
     // Every struct and enum is named first, so that a type can point at itself or at a later
     // one. Then the types themselves, each after the types it holds by value.
@@ -2784,6 +2884,8 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         true => "#if defined(__linux__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n#define SG_THREADS 1\n".to_string(),
         false => "#define SG_THREADS 0\n".to_string(),
     };
+    // An async function that may drop a writer has it closed on a thread (`sg_closing_put`).
+    let _ = writeln!(out, "#define SG_CLOSING {}", u8::from(emitter.made.contains("closing")));
     out.push_str(RUNTIME);
     if emitter.made.contains("tasks") {
         out.push_str(TASK_RUNTIME);
@@ -2840,6 +2942,16 @@ fn not_yet(span: Span, what: &str) -> Diag {
 /// or a collection, also behind a borrow or a pointer.
 /// `Stdin`, `Stdout` and `Stderr`: every function has them, as `ref` parameters the program
 /// gives, which are the streams of the runtime.
+/// The type a borrow reaches, also inside: what a value of this type can get at.
+fn reached(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Read(inner) | Ty::Ref(inner) | Ty::Slice(inner) => reached(inner),
+        Ty::Weak(inner, checked) => Ty::Shared(Box::new(reached(inner)), *checked),
+        Ty::Nullable(inner) => Ty::Nullable(Box::new(reached(inner))),
+        other => other.clone(),
+    }
+}
+
 fn streams() -> Vec<Local> {
     [("Stdin", "sg_stdin", Ty::Reader), ("Stdout", "sg_stdout", Ty::Writer), ("Stderr", "sg_stderr", Ty::Writer)]
         .into_iter()
@@ -3505,6 +3617,9 @@ struct Emitter<'a> {
     /// The frames of the async functions: the name, the C struct, the frames it holds by value,
     /// and the type of the task it becomes, written after every frame.
     frames: Vec<(String, String, Vec<String>, String)>,
+    /// While an async function that may drop a writer is written: where it is, for the thread
+    /// that closes the writers it drops (see `closing_line`).
+    closing: Option<String>,
 }
 
 impl<'a> Emitter<'a> {
@@ -4339,6 +4454,80 @@ impl<'a> Emitter<'a> {
             }
             _ => false,
         }
+    }
+
+    /// Whether a value of this type owns a `StreamWriter`, which writes its block and closes
+    /// its file when it is dropped. `seen`: the structs and enums looked into, for a type that
+    /// holds itself.
+    fn owns_writer(&self, ty: &Ty, seen: &mut Vec<String>) -> bool {
+        match ty {
+            Ty::Writer => true,
+            Ty::Ptr(inner) | Ty::Shared(inner, _) | Ty::Locked(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Nullable(inner) | Ty::Array(inner, _) | Ty::Task(inner) => {
+                self.owns_writer(inner, seen)
+            }
+            Ty::Map(key, value) | Ty::Entry(key, value) | Ty::Result(key, value) => self.owns_writer(key, seen) || self.owns_writer(value, seen),
+            Ty::Struct(name) | Ty::Enum(name) => {
+                if seen.contains(name) {
+                    return false;
+                }
+                seen.push(name.clone());
+                let fields: Vec<&FieldDecl> = match self.structs.get(name.as_str()) {
+                    Some(decl) => decl.fields.iter().collect(),
+                    None => self.enums[name.as_str()].variants.iter().flat_map(|variant| &variant.fields).collect(),
+                };
+                fields.into_iter().any(|field| self.written(&field.ty).is_ok_and(|ty| self.owns_writer(&ty, seen)))
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a value that owns a writer, or a borrow of one, is anywhere in the body: a
+    /// variable, a temporary or a value a call gives. A writer comes only from `File`, which
+    /// an async function does not call, so one dropped there, or by a function it calls, is
+    /// reached through such a value.
+    fn mentions_writer(&self, body: &Block) -> bool {
+        body.iter().any(|stmt| self.stmt_mentions_writer(stmt, true))
+    }
+
+    /// The same for one statement; without `whole`, only the expressions a statement with a
+    /// body has before it (`if`, `while`, `for`): what is inside has its own statements.
+    fn stmt_mentions_writer(&self, stmt: &Stmt, whole: bool) -> bool {
+        let mut found = false;
+        let mut each = |expr: &Expr| {
+            if !found {
+                found = self.owns_writer(&reached(&expr.ty), &mut Vec::new());
+            }
+        };
+        match (&stmt.kind, whole) {
+            (StmtKind::If { cond, .. } | StmtKind::While { cond, .. }, false) => crate::waits::walk_expr(cond, &mut each, &mut |_| {}),
+            (StmtKind::For { from, to, .. }, false) => {
+                crate::waits::walk_expr(from, &mut each, &mut |_| {});
+                crate::waits::walk_expr(to, &mut each, &mut |_| {});
+            }
+            (StmtKind::ForEach { iter: value, .. } | StmtKind::As { value, .. }, false) => crate::waits::walk_expr(value, &mut each, &mut |_| {}),
+            (StmtKind::Lock { items, .. }, false) => {
+                for item in items {
+                    crate::waits::walk_expr(&item.value, &mut each, &mut |_| {});
+                }
+            }
+            _ => crate::waits::walk_stmt(stmt, &mut each, &mut |_| {}),
+        }
+        found
+    }
+
+    /// Where an async function that may drop a writer awaits the closing of those it dropped
+    /// (`sg_closing_run` on a thread of input and output), in the order they were dropped.
+    fn closing_line(&self) -> Option<String> {
+        let loc = self.closing.as_ref()?;
+        Some(format!(
+            "if (sg_job_now->closing) {{ sg_closing_io sg_cl = {{ .list = sg_job_now->closing }}; sg_job_now->closing = NULL; \
+             sg_io_start(&sg_cl.io, sg_closing_run, {loc}); SG_RESUME(0); if (!sg_io_done(&sg_cl.io)) return false; }}"
+        ))
+    }
+
+    /// Whether the code being written is inside a `lock` block, which does not wait.
+    fn in_lock(&self) -> bool {
+        self.scopes.iter().flatten().any(|local| local.name == "lock")
     }
 
     /// The C statement that drops what is at `place`.
@@ -5261,6 +5450,11 @@ impl<'a> Emitter<'a> {
         }
         self.ret = ret.clone();
         self.temps = 0;
+        self.closing = None;
+        if scope.iter().any(|local| self.owns_writer(&local.ty, &mut Vec::new())) || self.mentions_writer(&func.body) {
+            self.made.extend(["closing".to_string(), "async io".to_string(), "tasks".to_string()]);
+            self.closing = Some(self.loc(func.name_span));
+        }
         self.scopes = vec![scope];
         self.awaits = Some(vec![func.name_span]);
         self.exit_blocks.clear();
@@ -5278,6 +5472,7 @@ impl<'a> Emitter<'a> {
             body.push_str(&block);
         }
         self.scopes.clear();
+        self.closing = None;
         let awaits = self.awaits.take().expect("set above");
         written?;
         // The borrows of `shared checked` values, one on each line.
@@ -5517,10 +5712,25 @@ impl<'a> Emitter<'a> {
     /// The drops for every variable in the scopes from `from` on, innermost and newest first.
     fn drops(&self, from: usize) -> Vec<String> {
         let mut lines = Vec::new();
+        // A writer dropped inside a `lock` block is closed once the lock is let go.
+        let mut locks = self.scopes.iter().flatten().filter(|local| local.name == "lock").count();
+        let mut closes = false;
         for scope in self.scopes[from..].iter().rev() {
             for local in scope.iter().rev() {
+                // An async function awaits the closing of a writer where it is dropped.
+                if let Some(line) = self.closing_line().filter(|_| closes && locks == 0) {
+                    lines.push(line);
+                    closes = false;
+                }
                 match &local.drop {
-                    Some(line) => lines.push(line.clone()),
+                    Some(line) => {
+                        lines.push(line.clone());
+                        if local.name == "lock" {
+                            locks -= 1;
+                        } else {
+                            closes = true;
+                        }
+                    }
                     // A task is waited for on the way out; an async function awaits it.
                     None if !local.gone && matches!(local.ty, Ty::Task(_)) && self.awaits.is_some() => {
                         let task = &local.cname;
@@ -5531,10 +5741,16 @@ impl<'a> Emitter<'a> {
                         let list = &local.cname;
                         lines.push(format!("SG_RESUME(0); if (!sg_group_all({list}.group, {list}.len)) return false; {}", self.drop_of(&local.ty, list)));
                     }
-                    None if !local.gone && self.droppable(&local.ty) => lines.push(self.drop_of(&local.ty, &local.cname)),
+                    None if !local.gone && self.droppable(&local.ty) => {
+                        lines.push(self.drop_of(&local.ty, &local.cname));
+                        closes |= self.owns_writer(&local.ty, &mut Vec::new());
+                    }
                     None => {}
                 }
             }
+        }
+        if let Some(line) = self.closing_line().filter(|_| closes && locks == 0) {
+            lines.push(line);
         }
         lines
     }
@@ -5639,6 +5855,11 @@ impl<'a> Emitter<'a> {
         self.reserving = None;
         let written = self.stmt_in(stmt, depth, out);
         self.end_guards(from);
+        // The writers the statement dropped are closed before the next one.
+        let leaves = matches!(stmt.kind, StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue);
+        if let Some(line) = self.closing_line().filter(|_| !leaves && !self.in_lock() && self.stmt_mentions_writer(stmt, false)) {
+            let _ = writeln!(out, "{}{line}", "    ".repeat(depth));
+        }
         written
     }
 
@@ -5684,7 +5905,8 @@ impl<'a> Emitter<'a> {
                 self.flush_pre(&pad, out);
                 let kept = self.hold();
                 let give = pointers.iter().map(|pointer| format!("sg_give({pointer});")).collect::<Vec<_>>().join(" ");
-                self.scopes.push(vec![Local { name: String::new(), cname: String::new(), ty: Ty::Void, gone: false, drop: Some(give.clone()) }]);
+                // Named `lock`, which no variable can be: what it gives back is a lock.
+                self.scopes.push(vec![Local { name: "lock".to_string(), cname: String::new(), ty: Ty::Void, gone: false, drop: Some(give.clone()) }]);
                 let _ = writeln!(out, "{pad}{{");
                 self.block_with(body, depth + 1, out, names)?;
                 self.scopes.pop();
@@ -7456,26 +7678,7 @@ impl<'a> Emitter<'a> {
     /// that calls the runtime (`IO_RUNTIME`) and puts what it gives into the `Result`.
     fn io(&mut self, call: IoCall, args: &'a [Expr], head: bool, expr: &'a Expr) -> Res<String> {
         self.made.insert("io".to_string());
-        let span = expr.span;
-        let gives = self.ctype(&expr.ty, span)?;
-        self.io_error(span)?;
-        let failed = |cause: &str| format!("return ({gives}){{ .tag = 1, .u.v1 = {{ {cause} }} }};");
-        let text = Ty::Read(Box::new(Ty::Str));
-        let (fname, params, body) = match call {
-            IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend => {
-                let (fname, open, ctype) = match call {
-                    IoCall::OpenText => ("sg_file_open_text", "sg_open_reader(a0, ", "sg_reader"),
-                    IoCall::CreateText => ("sg_file_create_text", "sg_open_writer(a0, false, ", "sg_writer"),
-                    _ => ("sg_file_open_append", "sg_open_writer(a0, true, ", "sg_writer"),
-                };
-                (fname, vec![text], format!("{ctype} s; int code = {open}&s); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ s }} }};", failed("sg_io_error(code)")))
-            }
-            _ => {
-                let fname = self.io_whole(call, &expr.ty, span)?;
-                return self.call(fname.to_string(), None, args, head, &expr.ty);
-            }
-        };
-        self.io_glue(fname, &params, &body, &gives, span)?;
+        let fname = self.io_whole(call, &expr.ty, expr.span)?;
         self.call(fname.to_string(), None, args, head, &expr.ty)
     }
 
@@ -7511,8 +7714,8 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    /// The functions of `File` that read or write a whole file: the function of the glue that
-    /// gives `result`, written once, and its name.
+    /// The functions of `File`: the function of the glue that gives `result`, written once,
+    /// and its name.
     fn io_whole(&mut self, call: IoCall, result: &Ty, span: Span) -> Res<&'static str> {
         self.io_error(span)?;
         let gives = self.ctype(result, span)?;
@@ -7560,7 +7763,14 @@ impl<'a> Emitter<'a> {
                     ),
                 )
             }
-            IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend => unreachable!("written by `io`"),
+            IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend => {
+                let (fname, open, ctype) = match call {
+                    IoCall::OpenText => ("sg_file_open_text", "sg_open_reader(a0, ", "sg_reader"),
+                    IoCall::CreateText => ("sg_file_create_text", "sg_open_writer(a0, false, ", "sg_writer"),
+                    _ => ("sg_file_open_append", "sg_open_writer(a0, true, ", "sg_writer"),
+                };
+                (fname, vec![text], format!("{ctype} s; int code = {open}&s); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ s }} }};", failed("sg_io_error(code)")))
+            }
         };
         self.io_glue(fname, &params, &body, &gives, span)?;
         Ok(fname)
@@ -7800,6 +8010,10 @@ impl<'a> Emitter<'a> {
                 let value = self.await_io(fname, &params, None, args, head, expr)?;
                 result(self, value)
             }
+            ExprKind::Method { recv, args, callee: Callee::StreamAsync(call), .. } if !matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes) => {
+                let value = self.await_writer(*call, recv, args, expr)?;
+                result(self, value)
+            }
             ExprKind::Method { recv, args, callee: Callee::StreamAsync(call), .. } => {
                 let (fname, params) = self.stream_glue(*call, &expr.ty, true, inner.span)?;
                 let before = self.mark();
@@ -7839,6 +8053,96 @@ impl<'a> Emitter<'a> {
                 result(self, format!("sg_wait_{}({task})", mangle(&inner.ty).expect("a task has a C name")))
             }
         }
+    }
+
+    /// `await writer.writeLineAsync(x)` and the other async methods of a writer. What the block
+    /// can take is written into it in place, as the method without `Async` does; when it holds
+    /// 64 KB, or for `flushAsync` when it holds anything, it is written out on a thread of input
+    /// and output while the task waits (`sg_io_writer`), and so are the bytes of a
+    /// `writeBytesAsync` of 64 KB or more. `closeAsync` always goes to a thread, with the writer.
+    /// A standard stream is written in place, as `print` writes. A cancelled token gives the
+    /// error and writes nothing; what was put into the block for the call is taken back.
+    fn await_writer(&mut self, call: StreamCall, recv: &'a Expr, args: &'a [Expr], expr: &'a Expr) -> Res<String> {
+        let span = expr.span;
+        self.io_error(span)?;
+        self.made.insert("async io".to_string());
+        let gives = self.ctype(&expr.ty, span)?;
+        let (w, c, loc) = (self.temp(), self.temp(), self.loc(span));
+        let token = |this: &mut Self, at: usize| -> Res<Option<String>> {
+            match args.get(at) {
+                Some(arg) => Ok(Some(format!("sg_cancelled(*({}))", this.value(arg)?))),
+                None => Ok(None),
+            }
+        };
+        let big = match call {
+            StreamCall::Close => {
+                let value = match recv.is_place() {
+                    true => {
+                        let place = self.lvalue(recv)?;
+                        self.move_of(&Ty::Writer, &place)
+                    }
+                    false => self.value(recv)?,
+                };
+                self.pre.push(format!("sg_io_writer {w}i = sg_io_writer_close({value}); sg_io_start(&{w}i.io, sg_io_run_writer, {loc});"));
+                self.resume_point(span);
+                self.pre.push(format!("if (!sg_io_done(&{w}i.io)) return false; int {c} = {w}i.r;"));
+                return Ok(self.writer_result(&c, &gives));
+            }
+            StreamCall::Write | StreamCall::WriteLine => {
+                let out = self.list_address(recv)?;
+                self.pre.push(format!(
+                    "sg_writer* {w} = {out}; sg_string {w}b = SG_LIT(\"\", 0); sg_string* {w}p = SG_THREADS && {w}->std ? &{w}b : &{w}->buf; int64_t {w}n = {w}p->len;"
+                ));
+                let written = self.write_into(&format!("{w}p"), &args[0])?;
+                let end = if call == StreamCall::WriteLine { format!(" sg_put({w}p, \"\\n\", 1);") } else { String::new() };
+                self.pre.push(format!("{written};{end}"));
+                let put = format!("{w}p == &{w}->buf ? sg_writer_wrote_n({w}) : sg_std_put({w}, {w}p)");
+                match token(self, 1)? {
+                    Some(cancelled) => self.pre.push(format!(
+                        "int {c} = 0; if ({cancelled}) {{ {w}p->len = {w}n; if ({w}p == &{w}b) sg_drop_string(&{w}b); {c} = -2; }} else {c} = {put};"
+                    )),
+                    None => self.pre.push(format!("int {c} = {put};")),
+                }
+                "NULL, 0".to_string()
+            }
+            StreamCall::WriteBytes => {
+                let out = self.list_address(recv)?;
+                self.pre.push(format!("sg_writer* {w} = {out};"));
+                let bytes = self.value(&args[0])?;
+                let slice = self.ctype(&args[0].ty, args[0].span)?;
+                self.pre.push(format!("{slice} {w}s = {bytes}; bool {w}g = false;"));
+                let put = format!("sg_writer_bytes_n({w}, {w}s.ptr, {w}s.len, &{w}g)");
+                match token(self, 1)? {
+                    Some(cancelled) => self.pre.push(format!("int {c} = {cancelled} ? -2 : {put};")),
+                    None => self.pre.push(format!("int {c} = {put};")),
+                }
+                format!("{w}g ? {w}s.ptr : NULL, {w}g ? {w}s.len : 0")
+            }
+            StreamCall::Flush => {
+                let out = self.list_address(recv)?;
+                self.pre.push(format!("sg_writer* {w} = {out};"));
+                match token(self, 0)? {
+                    Some(cancelled) => self.pre.push(format!("int {c} = {cancelled} ? -2 : sg_writer_flush_n({w});")),
+                    None => self.pre.push(format!("int {c} = sg_writer_flush_n({w});")),
+                }
+                "NULL, 0".to_string()
+            }
+            StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::Lines => unreachable!("a reader is read by `await_io`"),
+        };
+        let awaits = self.awaits.as_mut().expect("`await` is only in async functions");
+        awaits.push(span);
+        let mark = awaits.len() - 1;
+        self.pre.push(format!(
+            "if ({c} == -1) {{ sg_io_writer {w}i = sg_io_writer_out({w}, {big}); sg_io_start(&{w}i.io, sg_io_run_writer, {loc}); \
+             SG_RESUME({mark}); if (!sg_io_done(&{w}i.io)) return false; {c} = {w}i.r; }}"
+        ));
+        Ok(self.writer_result(&c, &gives))
+    }
+
+    /// What an async method of a writer gives, from its code: 0, -2 for a cancelled token, or
+    /// the error of the system.
+    fn writer_result(&self, code: &str, gives: &str) -> String {
+        format!("({code} == 0 ? ({gives}){{ .tag = 0 }} : ({gives}){{ .tag = 1, .u.v1 = {{ {code} == -2 ? sg_io_cancelled() : sg_io_error({code}) }} }})")
     }
 
     /// `await File.readTextAsync(path)`, `await Stdin.readLineAsync(ref line, read token)`: the

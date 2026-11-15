@@ -1,0 +1,20 @@
+// `copy` the async way: the log of `lines` (two million lines, 125 MB) is opened with
+// `File.openTextAsync`, read with `await reader.readLineAsync` and written with
+// `await writer.writeLineAsync` through a `StreamWriter` from `File.createTextAsync`, in an
+// async `main`. A line the reader's block holds is read in place, and a line the writer's
+// block can take is written in place; only when a block is used up or full does a thread of
+// input and output fill it or write it out while the task waits. The C is that of `copy`,
+// which waits for nothing.
+async Result<void, IoError> main() {
+    var reader = try await File.openTextAsync("target/bench/lines.in")
+    var writer = try await File.createTextAsync("target/bench/asynccopy-sg.out")
+    string line = ""
+    long lines = 0
+    while try await reader.readLineAsync(ref line) {
+        lines += 1
+        try await writer.writeLineAsync($"{lines}: {line}")
+    }
+    try await writer.closeAsync()
+    print($"{lines} lines copied")
+    return Ok()
+}

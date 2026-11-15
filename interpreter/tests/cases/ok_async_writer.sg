@@ -1,0 +1,85 @@
+// The async methods of a writer, and the async ways to open a stream: the same work as the
+// methods without `Async`, awaited where they are written.
+async Result<void, IoError> main(List<string> args) {
+    var path = $"{args[0]}/notes.txt".toString()
+    var w = try await File.createTextAsync(read path)
+    try await w.writeLineAsync("one")
+    try await w.writeAsync(2)
+    try await w.writeAsync('\n')
+    var bytes = "three\n".asBytes()
+    try await w.writeBytesAsync(bytes)
+    try await w.flushAsync()
+    // More than the block holds: it goes out on the way.
+    for i in 0..20000 {
+        try await w.writeLineAsync($"line {i}")
+    }
+    try await w.closeAsync()
+
+    var more = try await File.openAppendAsync(read path)
+    // Bytes of 64 KB or more go out straight, after what the block holds.
+    try await more.writeAsync("big:")
+    var big = List<byte>()
+    for i in 0..70000 {
+        big.add(120)
+    }
+    try await more.writeBytesAsync(read big)
+    try await more.writeLineAsync("")
+    try await more.writeLineAsync("last")
+    try await more.closeAsync()
+
+    var reader = try await File.openTextAsync(read path)
+    var text = try await reader.readTextAsync()
+    var count = 0
+    nint longest = 0
+    for line in text.lines() {
+        if count < 3 || count > 20001 {
+            if line.length() > 20 {
+                print($"{line.length()} bytes")
+            } else {
+                print(line)
+            }
+        }
+        count += 1
+        if line.length() > longest {
+            longest = line.length()
+        }
+    }
+    print($"{count} lines, the longest {longest}")
+
+    // A cancelled token: nothing is written, and the writer goes on.
+    var source = CancellationSource()
+    source.cancel()
+    var token = source.token()
+    var other = $"{args[0]}/other.txt".toString()
+    var o = try await File.createTextAsync(read other)
+    if await o.writeLineAsync("never", read token) is Error(cause) {
+        print(cause)
+    }
+    if await o.flushAsync(read token) is Error(cause) {
+        print(cause)
+    }
+    if await o.writeBytesAsync(bytes, read token) is Error(cause) {
+        print(cause)
+    }
+    try await o.writeLineAsync("kept")
+    try await o.closeAsync()
+    print(try await File.readTextAsync(read other))
+
+    // A missing folder.
+    var missing = $"{args[0]}/no/such.txt".toString()
+    if await File.createTextAsync(read missing) is Error(cause) {
+        print(cause)
+    }
+    if await File.openTextAsync(read missing) is Error(cause) {
+        print(cause)
+    }
+
+    // `Stdout` and `Stderr` are written in place, in order with `print`.
+    try await Stdout.writeLineAsync("to the output")
+    print("printed")
+    try await Stdout.writeAsync("no line, ")
+    try await Stdout.flushAsync()
+    try await Stdout.writeLineAsync("then a line")
+    try await Stderr.writeLineAsync("to the standard error")
+    return Ok()
+}

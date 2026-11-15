@@ -1,0 +1,6 @@
+Result<void, IoError> main() {
+    var w = try File.createText("out.txt")
+    var writing = w.flushAsync()
+    try w.close()
+    return Ok()
+}

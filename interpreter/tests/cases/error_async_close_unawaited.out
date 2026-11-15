@@ -1,0 +1,5 @@
+error: `closeAsync` is awaited where it is written, so the file is closed before the next line
+  --> error_async_close_unawaited.sg:3:19
+ 3 |     var closing = w.closeAsync()
+   |                   ^^^^^^^^^^^^^^
+  hint: `await w.closeAsync()`

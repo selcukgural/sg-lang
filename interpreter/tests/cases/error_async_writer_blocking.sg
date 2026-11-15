@@ -1,0 +1,8 @@
+// Writing a file the way that holds the thread is refused in an async function; the hint is
+// the async method.
+async Result<void, IoError> main() {
+    var w = try await File.createTextAsync("out.txt")
+    try w.writeLine("one")
+    try await w.closeAsync()
+    return Ok()
+}

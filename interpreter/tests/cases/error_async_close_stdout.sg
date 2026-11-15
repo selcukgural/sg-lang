@@ -1,0 +1,5 @@
+async Result<void, IoError> main() {
+    try await Stdout.writeLineAsync("done")
+    try await Stdout.closeAsync()
+    return Ok()
+}

@@ -1120,7 +1120,7 @@ enum Flow {
 
 /// Moves the names of an `is` that the checker lets the code after an `if` or `while` see
 /// out of the scope of its condition, into the scope around the statement.
-fn keep_names(after: &[String], mut names: HashMap<String, Cell>, frame: &mut Frame) {
+fn keep_names(after: &[String], mut names: Scope, frame: &mut Frame) {
     for name in after {
         if let Some(value) = names.remove(name) {
             frame.scopes.last_mut().expect("an open scope").insert(name.clone(), value);
@@ -1204,7 +1204,41 @@ fn fits(pattern: &Pattern, held: &Cell, borrowed: bool, binds: &mut Vec<(String,
 
 /// Variables of one function call.
 struct Frame {
-    scopes: Vec<HashMap<String, Cell>>,
+    scopes: Vec<Scope>,
+}
+
+/// The names of one block, in the order they were declared. They end in the reverse order
+/// (`dispose` order): what is declared later may have borrowed from what is declared earlier.
+#[derive(Default)]
+struct Scope(Vec<(String, Cell)>);
+
+impl Scope {
+    fn get(&self, name: &str) -> Option<&Cell> {
+        self.0.iter().rev().find(|(each, _)| each == name).map(|(_, slot)| slot)
+    }
+
+    fn insert(&mut self, name: String, slot: Cell) {
+        match self.0.iter_mut().find(|(each, _)| *each == name) {
+            Some(found) => found.1 = slot,
+            None => self.0.push((name, slot)),
+        }
+    }
+
+    fn remove(&mut self, name: &str) -> Option<Cell> {
+        let at = self.0.iter().position(|(each, _)| each == name)?;
+        Some(self.0.remove(at).1)
+    }
+
+    /// The newest name, taken out to end.
+    fn pop(&mut self) -> Option<Cell> {
+        self.0.pop().map(|(_, slot)| slot)
+    }
+}
+
+impl Drop for Scope {
+    fn drop(&mut self) {
+        while self.0.pop().is_some() {}
+    }
 }
 
 impl Frame {
@@ -1307,7 +1341,7 @@ fn run_each_test<'a>(interp: &mut Interp<'a, '_>, prog: &'a Program, sources: &c
         interp.io.test_err.borrow_mut().clear();
         open_streams();
         let first = LIVE.with(|live| live.borrow().next);
-        let mut frame = Frame { scopes: vec![HashMap::new()] };
+        let mut frame = Frame { scopes: vec![Scope::default()] };
         let ended = match interp.block(&test.body, &mut frame) {
             Ok(Flow::Return(value)) | Err(Unwind::Return(value)) => Ok(value),
             Ok(_) => Ok(Value::Void),
@@ -1678,7 +1712,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 .note(format!("last called: `{}`", func.name))
                 .into());
         }
-        let mut frame = Frame { scopes: vec![HashMap::new()] };
+        let mut frame = Frame { scopes: vec![Scope::default()] };
         if let Some(this) = this {
             frame.declare("this", this);
         }
@@ -1687,10 +1721,22 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
         self.depth += 1;
         let result = self.block(&func.body, &mut frame);
-        drop(frame);
+        // What the function still holds ends in the reverse order of its names. A stop of the
+        // run waits for nothing: the program ends. Otherwise a task left behind (an exit with
+        // an error) is awaited where its name ends, before what was declared before it.
+        let stops = matches!(result, Err(Unwind::Stop(_) | Unwind::Abandon));
+        let mut ended = Ok(());
+        while let Some(mut scope) = frame.scopes.pop() {
+            while let Some(slot) = scope.pop() {
+                drop(slot);
+                if ended.is_ok() && !stops && !self.started.is_empty() {
+                    ended = self.unwaited();
+                }
+            }
+        }
         self.depth -= 1;
-        // A stop of the run waits for nothing: the program ends.
-        if !self.started.is_empty() && !matches!(result, Err(Unwind::Stop(_) | Unwind::Abandon)) {
+        ended?;
+        if !self.started.is_empty() && !stops {
             self.unwaited()?;
         }
         match result {
@@ -1701,7 +1747,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     }
 
     fn block(&mut self, block: &'a Block, frame: &mut Frame) -> Res<Flow> {
-        frame.scopes.push(HashMap::new());
+        frame.scopes.push(Scope::default());
         let mut flow = Flow::Next;
         for stmt in block {
             flow = self.stmt(stmt, frame)?;
@@ -1741,7 +1787,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             StmtKind::If { cond, then, els, after } => {
                 // The scope holds the names of an `is` pattern in the condition.
-                frame.scopes.push(HashMap::new());
+                frame.scopes.push(Scope::default());
                 let flow = if self.condition(cond, frame)? {
                     self.block(then, frame)?
                 } else if let Some(els) = els {
@@ -1760,7 +1806,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 loop {
                     // What the condition lent for the names it gave ends with the round.
                     self.guards.truncate(mark);
-                    frame.scopes.push(HashMap::new());
+                    frame.scopes.push(Scope::default());
                     let flow = match self.condition(cond, frame)? {
                         true => loop_flow(self.block(body, frame))?,
                         false => {
@@ -1784,7 +1830,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 };
                 let depth = frame.scopes.len();
                 for i in start..end {
-                    frame.scopes.push(HashMap::new());
+                    frame.scopes.push(Scope::default());
                     frame.declare(var, Value::Int(ty, i));
                     let flow = loop_flow(self.block(body, frame))?;
                     frame.scopes.truncate(depth);
@@ -1820,7 +1866,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     let Some(item) = item else { break };
                     next += 1;
                     let bound = if by.is_some() { Value::Borrow(item) } else { item.borrow().clone() };
-                    frame.scopes.push(HashMap::new());
+                    frame.scopes.push(Scope::default());
                     frame.declare(var, bound);
                     let flow = loop_flow(self.block(body, frame))?;
                     frame.scopes.truncate(depth);
@@ -1835,7 +1881,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             StmtKind::As { value, name, body, .. } => {
                 let holder = self.expr(value, frame)?;
                 let Some(held) = held_of(&holder) else { unreachable!("the checker opens only a `shared` value") };
-                frame.scopes.push(HashMap::new());
+                frame.scopes.push(Scope::default());
                 frame.declare(name, Value::Borrow(held.value.clone()));
                 let flow = self.block(body, frame);
                 frame.scopes.pop();
@@ -1846,7 +1892,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             // the block waits, so no other task holds the lock here.
             StmtKind::Lock { items, body } => {
                 let mut taken: Vec<Rc<Held>> = Vec::new();
-                frame.scopes.push(HashMap::new());
+                frame.scopes.push(Scope::default());
                 for item in items {
                     let holder = self.expr(&item.value, frame)?;
                     let Some(held) = held_of(&holder) else { unreachable!("the checker locks only a `shared locked` value") };
@@ -2239,7 +2285,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let held = cell(value.clone());
                 let depth = frame.scopes.len();
                 for arm in arms {
-                    frame.scopes.push(HashMap::new());
+                    frame.scopes.push(Scope::default());
                     // `var other` takes the value as it was given; any other pattern looks inside.
                     let mut binds = Vec::new();
                     let fits = match &arm.pattern.kind {
@@ -2463,7 +2509,10 @@ impl<'a, 'e> Interp<'a, 'e> {
                 // has ended when it is given; a token is looked at before the work.
                 Callee::IoAsync(call) => {
                     let mut values = self.values(args, frame)?;
-                    let params = if matches!(call, IoCall::ReadText | IoCall::ReadBytes) { 1 } else { 2 };
+                    let params = match call {
+                        IoCall::ReadText | IoCall::ReadBytes | IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend => 1,
+                        IoCall::WriteText | IoCall::WriteBytes | IoCall::AppendText => 2,
+                    };
                     let source = match values.len() > params {
                         true => match owned(values.pop().expect("a token")) {
                             Value::Token(source) => source,
@@ -2477,8 +2526,10 @@ impl<'a, 'e> Interp<'a, 'e> {
                     };
                     Ok(self.ended_task(value, expr.span))
                 }
+                // A writer's async methods do the work of the methods without `Async`; the
+                // block that the compiled code writes on a thread of its own is written here.
                 Callee::StreamAsync(call) => {
-                    let given = if *call == StreamCall::ReadText { 0 } else { 1 };
+                    let given = if matches!(call, StreamCall::ReadText | StreamCall::Flush | StreamCall::Close) { 0 } else { 1 };
                     let token = args.get(given);
                     let value = self.stream(*call, recv, &args[..given], token, frame)?;
                     Ok(self.ended_task(value, expr.span))
@@ -3233,17 +3284,28 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Value::Int(_, byte) => *byte as u8,
                     _ => unreachable!("the checker makes the items bytes"),
                 }).collect();
+                if self.cancelled(token, frame)? {
+                    return Ok(failed(io_cancelled()));
+                }
                 self.write_stream(&writer, &bytes, false)
             }
             (StreamCall::Write | StreamCall::WriteLine, Value::Writer(writer)) => {
                 let value = self.expr(&args[0], frame)?;
+                if self.cancelled(token, frame)? {
+                    return Ok(failed(io_cancelled()));
+                }
                 let mut text = self.show(&value, false, args[0].span)?;
                 if call == StreamCall::WriteLine {
                     text.push('\n');
                 }
                 self.write_stream(&writer, text.as_bytes(), false)
             }
-            (StreamCall::Flush, Value::Writer(writer)) => self.write_stream(&writer, &[], true),
+            (StreamCall::Flush, Value::Writer(writer)) => {
+                if self.cancelled(token, frame)? {
+                    return Ok(failed(io_cancelled()));
+                }
+                self.write_stream(&writer, &[], true)
+            }
             (StreamCall::Close, Value::Writer(writer)) => {
                 let result = self.write_stream(&writer, &[], true)?;
                 let mut writer = writer.borrow_mut();

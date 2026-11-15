@@ -1,0 +1,6 @@
+error: `closeAsync` takes the writer and uses it up, but this writer is only borrowed
+  whoever owns the writer closes it
+  --> error_async_close_borrowed.sg:2:15
+ 2 |     try await w.closeAsync()
+   |               ^
+  hint: `flushAsync()` writes what it holds through a borrow

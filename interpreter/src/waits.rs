@@ -228,11 +228,9 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
 /// `File.readTextAsync(read path)` for `File.readText(read path)`.
 fn async_version(expr: &Expr) -> Option<String> {
     let (written, args) = match &expr.kind {
-        ExprKind::Call { callee: Callee::Io(call), args, .. } | ExprKind::Method { callee: Callee::Io(call), args, .. } => match call {
-            IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend => return None,
-            _ => (format!("File.{}Async", call.name()), args),
-        },
-        ExprKind::Method { recv, name, callee: Callee::Stream(StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes), args, .. } => {
+        ExprKind::Call { callee: Callee::Io(call), args, .. } | ExprKind::Method { callee: Callee::Io(call), args, .. } => (format!("File.{}Async", call.name()), args),
+        ExprKind::Method { callee: Callee::Stream(StreamCall::Lines), .. } => return None,
+        ExprKind::Method { recv, name, callee: Callee::Stream(_), args, .. } => {
             let reader = match stream_name(recv) {
                 Some(name) => name.to_string(),
                 None => short_reader(recv)?,
@@ -245,7 +243,7 @@ fn async_version(expr: &Expr) -> Option<String> {
     Some(format!("{written}({})", shown.join(", ")))
 }
 
-/// The reader as the program names it, when it is a variable: `reader` in `reader.readLine(ref line)`.
+/// The stream as the program names it, when it is a variable: `reader` in `reader.readLine(ref line)`.
 fn short_reader(expr: &Expr) -> Option<String> {
     match &expr.kind {
         ExprKind::Var(name) => Some(name.clone()),
@@ -363,13 +361,13 @@ fn look(expr: &Expr, scan: &mut Body, taken: &mut Vec<(String, usize, Ty)>) {
 }
 
 /// Walks a block: `each` sees every expression, `lock` every `lock` statement.
-fn walk_block<'a>(block: &'a Block, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn FnMut(Span)) {
+pub(crate) fn walk_block<'a>(block: &'a Block, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn FnMut(Span)) {
     for stmt in block {
         walk_stmt(stmt, each, lock);
     }
 }
 
-fn walk_stmt<'a>(stmt: &'a Stmt, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn FnMut(Span)) {
+pub(crate) fn walk_stmt<'a>(stmt: &'a Stmt, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn FnMut(Span)) {
     match &stmt.kind {
         StmtKind::Let { init, .. } => walk_expr(init, each, lock),
         StmtKind::Assign { target, value, .. } => {
@@ -417,7 +415,7 @@ fn walk_stmt<'a>(stmt: &'a Stmt, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn 
     }
 }
 
-fn walk_expr<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn FnMut(Span)) {
+pub(crate) fn walk_expr<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn FnMut(Span)) {
     each(expr);
     if let ExprKind::Match { arms, .. } = &expr.kind {
         for arm in arms {

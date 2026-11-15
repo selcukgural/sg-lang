@@ -1,0 +1,133 @@
+// A writer an async function drops without `closeAsync` writes what it holds and closes, and
+// the function awaits that where the writer is dropped: the next line finds the file whole.
+struct Log {
+    StreamWriter w
+    int lines
+}
+
+struct Holder {
+    StreamWriter? w
+}
+
+async Result<void, IoError> leaves(string path, string missing) {
+    var w = try await File.createTextAsync(read path)
+    try await w.writeLineAsync("written before the error")
+    var text = try await File.readTextAsync(read missing)
+    print(text)
+    try await w.closeAsync()
+    return Ok()
+}
+
+async Result<StreamWriter, IoError> given(StreamWriter w, string missing) {
+    var text = try await File.readTextAsync(read missing)
+    print(text)
+    return Ok(w)
+}
+
+async Result<void, IoError> pass(string path, string missing) {
+    var w = try await File.createTextAsync(read path)
+    try await w.writeLineAsync("given to the task")
+    var task = given(w, missing)
+    var back = try await task
+    try await back.closeAsync()
+    return Ok()
+}
+
+// A task declared after the writer is awaited first, as names end in the reverse order.
+async void look(string path) {
+    await Task.delay(10)
+    match await File.readTextAsync(read path) {
+        Ok(value) => print($"the task saw {value.length()} bytes")
+        Error(cause) => print($"the task saw {cause}")
+    }
+}
+
+async Result<void, IoError> ordered(string path, string missing) {
+    var w = try await File.createTextAsync(read path)
+    try await w.writeLineAsync("closed after the task")
+    var task = look(path.clone())
+    var text = try await File.readTextAsync(read missing)
+    print(text)
+    await task
+    try await w.closeAsync()
+    return Ok()
+}
+
+void discard(Log log) {
+}
+
+async Result<void, IoError> held(string dir) {
+    // In a struct: closed where the struct is dropped.
+    var first = $"{dir}/first.txt".toString()
+    var log = Log { w = try await File.createTextAsync(read first), lines = 0 }
+    try await log.w.writeLineAsync("first")
+    log = Log { w = try await File.createTextAsync(read $"{dir}/second.txt".toString()), lines = 0 }
+    print(try await File.readTextAsync(read first))
+
+    // In a list: closed where the list lets them go.
+    var logs = List<StreamWriter>()
+    for i in 0..3 {
+        var w = try await File.createTextAsync(read $"{dir}/list{i}.txt".toString())
+        try await w.writeLineAsync($"list {i}")
+        logs.add(w)
+    }
+    logs.clear()
+    for i in 0..3 {
+        print(try await File.readTextAsync(read $"{dir}/list{i}.txt".toString()))
+    }
+
+    // Dropped by a function that is not async: closed after the line that called it.
+    try await log.w.writeLineAsync("second")
+    discard(log)
+    print(try await File.readTextAsync(read $"{dir}/second.txt".toString()))
+
+    // Dropped inside a `lock` block: closed once the lock is let go.
+    var third = $"{dir}/third.txt".toString()
+    var w3 = try await File.createTextAsync(read third)
+    try await w3.writeLineAsync("third")
+    var holder = new shared locked Holder { w = w3 }
+    lock holder as h {
+        h.w = null
+        print("let go inside the lock")
+    }
+    print(try await File.readTextAsync(read third))
+
+    // At the end of the function, what it still holds.
+    var last = Log { w = try await File.createTextAsync(read $"{dir}/last.txt".toString()), lines = 0 }
+    try await last.w.writeLineAsync("last")
+    return Ok()
+}
+
+async void show(string path) {
+    match await File.readTextAsync(read path) {
+        Ok(text) => print(text)
+        Error(cause) => print(cause)
+    }
+}
+
+async void main(List<string> args) {
+    var dir = args[0].clone()
+    var path = $"{dir}/leaves.txt".toString()
+    var missing = $"{dir}/missing.txt".toString()
+    if await leaves(path.clone(), missing.clone()) is Error(cause) {
+        print($"leaves: {cause}")
+    }
+    await show(path.clone())
+
+    var given_path = $"{dir}/given.txt".toString()
+    if await pass(given_path.clone(), missing.clone()) is Error(cause) {
+        print($"given: {cause}")
+    }
+    await show(given_path.clone())
+
+    var ordered_path = $"{dir}/ordered.txt".toString()
+    if await ordered(ordered_path.clone(), missing.clone()) is Error(cause) {
+        print($"ordered: {cause}")
+    }
+    await show(ordered_path.clone())
+
+    if await held(dir.clone()) is Error(cause) {
+        print($"held: {cause}")
+    }
+    await show($"{dir}/last.txt".toString())
+}

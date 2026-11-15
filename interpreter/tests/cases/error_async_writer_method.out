@@ -1,0 +1,5 @@
+error: `StreamWriter` has no method `writeLinesAsync`
+  --> error_async_writer_method.sg:3:17
+ 3 |     try await w.writeLinesAsync("one")
+   |                 ^^^^^^^^^^^^^^^
+  hint: `writeLineAsync`

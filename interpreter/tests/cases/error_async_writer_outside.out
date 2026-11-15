@@ -1,0 +1,5 @@
+error: `flushAsync` lends the writer, and a call without `await` starts it as a task of its own, which a borrow cannot go to
+  async output is awaited in an async function; elsewhere the methods without `Async` do the same work
+  --> error_async_writer_outside.sg:3:19
+ 3 |     var writing = w.flushAsync()
+   |                   ^^^^^^^^^^^^^^

@@ -1,0 +1,6 @@
+error: `File.createText` holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_async_create_blocking.sg:3:22
+ 3 |     var w = try File.createText(read path)
+   |                      ^^^^^^^^^^
+  hint: `await File.createTextAsync(read path)` does the same work without holding the thread
