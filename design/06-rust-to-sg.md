@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the sixty-sixth slice.
+Last brought up to date: 15 November 2026, the sixty-eighth slice.
 
 ## Functions and variables
 
@@ -44,6 +44,7 @@ Last brought up to date: 15 November 2026, the sixty-sixth slice.
 | `i8` `u8` `i16` `u16` `i32` `u32` `i64` `u64` | `sbyte` `byte` `short` `ushort` `int` `uint` `long` `ulong` | built | |
 | `isize`, `usize` | `nint`, `nuint` | built | An index and a length are `nint` |
 | `f32`, `f64` | `float`, `double` | built | |
+| `println!("{}", x)` on an `f64` | `print(x)` | built | The same fewest digits, laid out as JavaScript does (`1e+21`, `2` for `2.0`); in a tie between two numbers of the fewest digits Rust takes the larger, SG the even one (`160057272853489.62`, Rust `...63`). Compiled with Dragonbox, as the `ryu` crate is used for speed in Rust |
 | overflow: panic in debug, wrap in release | the same | built | Rust's rule, also for shifts and casts |
 | `x as i32` (cuts the bits) | `(int)x` (panics if it does not fit) | built | `wrappingToInt()` cuts the bits, `tryToInt()` gives `null` |
 | `i32::try_from(x).ok()` | `x.tryToInt()` | built | `int?` |

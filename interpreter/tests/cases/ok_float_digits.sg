@@ -1,0 +1,36 @@
+// The digits of a printed fractional number: the fewest that read back as the same number, and
+// of those the nearest; a tie between two goes to the even digit. The interpreter and the
+// compiled code (Dragonbox) print the same.
+
+void main() {
+    // Two numbers of seventeen digits are as near: the even one.
+    print(160057272853489.625)
+    print(0.125e-300)
+    // Next to a power of two the number below is nearer: sixteen digits read back, where the
+    // number rounded to sixteen digits does not (7.120236347223044e-307).
+    print(7.120236347223045e-307)
+    print(2.98023223876953125e-8)
+    print(1.7976931348623157e308)
+    print(-1.7976931348623157e308)
+    print(5e-324)
+    print(2.2250738585072014e-308)
+    print(1e22)
+    print(1e23)
+    print(9007199254740993.0)
+    print(0.3)
+    print(123.456)
+    print(1e-300)
+
+    // A `float`: the fewest digits that read back as that `float`.
+    float tie = 0.000244140625
+    print(tie)
+    float small = 1e-45
+    print(small)
+    float largest = 3.4028235e38
+    print(largest)
+    float tenth = 0.1
+    print(tenth)
+    float power = 16777216
+    print(power)
+    print($"{(float)2.98023223876953125e-8} {(float)1e10} {(float)123.456}")
+}

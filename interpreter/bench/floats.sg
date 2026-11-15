@@ -1,0 +1,37 @@
+// Fractional numbers written as text: a million numbers, every other one with all seventeen
+// digits (`512.0471906447226`) and the others with a few (`1234.567`), written into one text
+// with `$"{x}\n"`, three times over; then the last text is read back with `double.parse` and
+// added up, which shows that every number read back as itself. The C program writes each with
+// `%.17g`, the usual way to write a number that reads back in C: always seventeen digits.
+ulong next(ulong state) {
+    return state.wrappingMultiply(6364136223846793005).wrappingAdd(1442695040888963407)
+}
+
+void main() {
+    var text = string.withCapacity(1 << 25)
+    for pass in 0..3 {
+        text.clear()
+        ulong state = 11
+        for i in 0..1000000 {
+            state = next(state)
+            double x = (double)(state >> 44) / 1000.0
+            if i % 2 == 0 {
+                x = (double)(state >> 11) / 9007199254740992.0 * 1000.0
+            }
+            text.write($"{x}\n")
+        }
+    }
+
+    double sum = 0
+    int count = 0
+    nint start = 0
+    for i in 0..text.length() {
+        if text[i] == '\n' {
+            sum += double.parse(text[start..i]) ?? 0
+            start = i + 1
+            count += 1
+        }
+    }
+    print(count)
+    print((long)(sum * 1000))
+}

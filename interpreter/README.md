@@ -86,7 +86,7 @@ Design rules that are already enforced:
   only when the type holds it exactly (`int` to `double`, not `long`); the arithmetic is the hardware's and
   never panics, and nothing is fused. `==` and `<` are the hardware's, `equals`, `compare`, `sort` and `==`
   on a struct a total order. A cast to an integer drops the fraction and follows the overflow rule. A
-  number is printed with the fewest digits that read back as it (`0.1`, `2`, `1e+21`).
+  number is printed with the fewest digits that read back as it, the nearest of them (`0.1`, `2`, `1e+21`).
 - `parse` reads a sign and digits for an integer, and also a point and an exponent for a fractional
   number; nothing else (no spaces, no `_`, no `0x`). What `print` writes it reads back. A whole number
   past the type is `OutOfRange`; a fractional one past the type is `Infinity`, as in Rust, C# and C.
@@ -260,7 +260,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (247 of 1007 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (248 of 1008 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -398,6 +398,7 @@ hand with no checks):
 | `hash`: XXH64, the 64-bit xxHash, written with `ulong`, over one megabyte, two thousand times, the bytes read eight at a time with `ulong.fromLittleEndian` | 0.128 s | 0.129 s | 0.128 s | 1.00 |
 | `nbody`: the sun and the four giant planets moved twenty million steps in `double`, a square root for each pair at each step | 0.661 s | 0.662 s | 0.679 s | 0.97 |
 | `numbers`: a million lines of whole and fractional numbers read ten times with `long.parse` and `double.parse` and added up | 0.186 s | 0.191 s | 0.196 s | 0.95 |
+| `floats`: a million fractional numbers, every other one of seventeen digits, written into a text with `$"{x}\n"` three times over and read back once (the C writes each with `%.17g`, always seventeen digits) | 0.251 s | 0.251 s | 0.762 s | 0.33 |
 | `fields`: a million lines like ` Ada17 , 120, -45 ,6789` gone over twenty times with `lines`, `split`, `trim`, `long.parse` and `chars` | 1.228 s | 1.259 s | 1.202 s | 1.02 |
 | `lines`: two million lines of a log (125 MB) read from the input with `Stdin.readLine`, each checked to be UTF-8, and counted | 0.075 s | 0.077 s | 0.091 s | 0.82 |
 | `copy`: the same log read from a file with `File.openText` and written to another, each line with its number in front, through `File.createText` | 0.226 s | 0.223 s | 0.272 s | 0.83 |
@@ -515,11 +516,20 @@ little less time than in C (0.135 s against 0.143 s for the ten rounds), and bui
 same (0.056 s against 0.055 s). Until the thirty-seventh slice the text was a million small ones, each
 from `toString`, put together with `string.join` (0.071 s). The first version took 2.7 times
 the time of C, for three reasons. The fractional numbers were built with `toString`, and printing a
-`double` tries up to seventeen lengths ("Slower than C" below); every text made by `toString` was written
+`double` tried up to seventeen lengths (since the sixty-eighth slice one Dragonbox, 497); every text made by `toString` was written
 twice, once to find its length (now once, choice 166); and every fractional number went to `strtod`
 through a copy, where most are short enough to be one correctly rounded division (choice 164). The
 overflow-checked build takes the same time: the digits are added up by the runtime on 128 bits, where
 nothing can overflow, and the one checked addition for each line is a test that is never taken.
+
+`floats` writes fractional numbers: a million, every other one with all seventeen digits
+(`512.0471906447226`) and the others with a few (`1234.567`), each written into one text with `$"{x}\n"`,
+three times over; the last text is then read back and added up, which shows that each number read back
+as itself (both programs print the same sum). The C program writes each number with `%.17g`, the usual way
+in C to write a number that reads back: `printf` cannot give the fewest digits, so it always gives
+seventeen. SG finds the fewest with Dragonbox (497), one or two multiplications by a power of ten from a
+table; until the sixty-eighth slice it wrote each number with 1, 2, ... 17 digits and read each back,
+and took 4.627 s, six times the time of C.
 
 `fields` splits text: a million lines of a name and three numbers, with spaces around the fields, `\r\n`
 at the ends and an `é` in every seventh name, gone over twenty times. Each line comes from `lines()`, its
@@ -1688,6 +1698,9 @@ the rest was approved on 13 November 2026:
      reads back. So both print the same digits by construction. Cost: up to 17 tries for a number
      that needs 17 digits; a shortest-digits algorithm (Ryu, Grisu) is faster and is a candidate if a
      measurement finds printing slow. (The first version of `numbers` found it: "Slower than C".)
+     *Changed in the sixty-eighth slice (496-498):* the digits are the fewest that read back and the
+     nearest of them, a tie to the even digit; compiled code finds them with Dragonbox and the
+     interpreter with Rust's shortest digits, and the two agree by the rule.
 151. **In compiled code** `float` and `double` are C's; `sqrt` and the others come from `<math.h>`, and
      `sg build` links `-lm`. A cast to an integer goes through one helper per integer type, which
      tests the whole part against the two powers of two at the ends of the type (one comparison pair
@@ -3759,6 +3772,42 @@ before it on 15 November 2026 after a measurement, approved the same day:
      and on every sequence of three bytes. `cargo test` compiles 247 of 1007 programs, 39 of them under the
      thread sanitizer, and 13 of 17 programs of tests; on Linux too, in a container, with the same counts.
 
+Choices made in the sixty-eighth slice (printing a fractional number with Dragonbox), decided before it
+on 15 November 2026, approved the same day:
+
+496. **The digits of a fractional number are the fewest that read back as it, and of those the nearest; a
+     tie between two goes to the even digit**, decided before the slice. Until now (150) the number was
+     rounded to 1, 2, ... digits until it read back. The two rules differ only next to a power of two,
+     where the number below is twice as near as the one above: the number rounded to sixteen digits may
+     not read back where another of sixteen does. 46 of the 2,046 powers of two of a `double` now print
+     one digit fewer: 2^-1017 was `7.1202363472230444e-307` and is `7.120236347223045e-307`. The new rule
+     is JavaScript's (whose layout SG already has), Python's `repr` and Java's since 19. Rust's `{}` and
+     `{:e}` give the same digits but for a tie, where they take the larger: `160057272853489.625` is
+     `160057272853489.62` here, in JavaScript and Python, and `...489.63` in Rust.
+497. **Compiled code finds the digits with Dragonbox** (Junekey Jeon, 2020), decided before the slice:
+     the fastest of the known ways; Ryu (Rust's `ryu`, `serde_json`) and Schubfach (Java) give the same
+     digits, so one could take its place later without a program printing anything else. The C is
+     written here (`shortest.rs`); its tables, 619 powers of ten in 128 bits for a `double` and 78 in 64
+     bits for a `float`, each rounded up, are made by `sg` itself with arithmetic on numbers of any size,
+     and are only in a program that writes a fractional number (`SG_FLOATS`): one whose code calls a
+     helper that does. The exponent is written by hand too, so printing calls no `snprintf`.
+498. **The interpreter takes the count of digits from Rust's `{:e}`**, and the number rounded to that
+     many digits with `{:.*e}` (which rounds a tie to the even digit) when it reads back; when it does
+     not (next to a power of two), the digits `{:e}` gave. Both print the same digits by the rule, each
+     by its own way.
+499. **Measured** (`floats`, a new program): 0.251 s against 0.762 s for C's `%.17g` (0.33 times), in
+     the overflow-checked build too; with the old search 4.627 s (6.07 times). The entry in "Slower than
+     C" is gone. Printing a number in C with the fewest digits needs a library such as Ryu's; with one
+     the times would be about the same.
+500. **The tests**: `ok_float_digits` prints ties, the powers of two whose digits changed, the largest
+     and smallest numbers, `1e+22` and `1e+23`, and `float`s, the same in the interpreter and compiled
+     code. Outside `cargo test` (it takes minutes), the C was compared with the rule written in Rust on
+     every one of the 2^32 `float`s, on 400 million random `double`s, on every power of two and the
+     numbers next to it, the whole numbers below two million and those divided by a thousand, numbers
+     like `n e p` for p from -300 to 300, the smallest and the largest million, and with the old search
+     on five million random numbers that are not powers of two: no difference. `cargo test` compiles 248 of
+     1008 programs, 39 of them under the thread sanitizer, and 13 of 17 programs of tests; on Linux too, in a container, with the same counts.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -3781,11 +3830,6 @@ check off.
 - **The hash of a `HashMap`** (`counts`, 1.17 times): SipHash-1-3 with a key drawn at start against C's
   one multiplication. Keeping it is a decision (13 November, choice 50); a faster hash for integer keys
   that still resists chosen keys is the open question.
-- **Printing a fractional number** (`numbers`' first version, 2.7 times with the text built by
-  `toString`): the fewest digits are found by writing the number with 1, 2, ... 17 digits and reading each
-  back (choice 150), up to seventeen `snprintf` and `strtod` for one number, where C's `printf("%g")` is
-  one. The interpreter finds them the same way. Candidates: a shortest-digits algorithm (Ryu, as Rust
-  uses), in both, so that they still agree by construction.
 - **Wrapping arithmetic in a loop that is only arithmetic** (`vector`'s first version, 1.28 times): C may
   assume a signed overflow never happens and turn `i * 7 + round` into a counter; wrapping is defined, so
   the C compiler keeps the arithmetic. Rust pays the same. No candidate yet.
@@ -3999,6 +4043,7 @@ the same program in C with blocking threads the async way, and the time of C wit
 is read line by line through a `StreamReader` of its own (`conn.reader()`), which borrows it while it
 goes on sending, and a line longer than 64 KB is an error; reading two million lines sent over the
 loopback takes 1.14 times `getline` in C, which does not check that they are text (0.89 times without the
-check): a reader checks the text of its block at once, not line by line. Next are the places in "Slower than
+check): a reader checks the text of its block at once, not line by line. A fractional number is printed
+with Dragonbox, in a third of the time of `printf("%.17g")` in C. Next are the other places in "Slower than
 C", one at a time; then a stream shared by a reading and a writing task, the
 threads of the pool waiting for the loop themselves, `linesAsync`, and an `async` method.

@@ -8,7 +8,8 @@
 //! interpreter's does.
 //!
 //! Only a part of the language is compiled so far: integers, `float` and `double` (with their
-//! constants, `parse`, the conversions that do not panic and the math of `<math.h>`), `bool`, `char`,
+//! constants, `parse`, the conversions that do not panic, the math of `<math.h>`, and printed with
+//! the fewest digits by Dragonbox, `shortest.rs`), `bool`, `char`,
 //! text (with `trim`, the searches, the iterators `chars`, `split`, `splitWhitespace` and `lines`,
 //! `replaceAll` and `repeat`, `write` and `clear`, which add to a text where it is, as `f.write` does, and the width and the
 //! letter after a value in `$"..."`), functions, structs,
@@ -119,6 +120,11 @@ use crate::sums;
 use crate::types::{FloatTy, IntTy, TextIter, Ty};
 
 type Res<T> = Result<T, Diag>;
+
+/// The helpers of the runtime that write a fractional number as text (`sg_shortest`): a
+/// program that calls none of them has no tables of powers of ten.
+const FLOAT_WRITERS: [&str; 7] =
+    ["sg_shortest", "sg_put_double", "sg_put_float", "sg_fixed", "sg_fcast_", "sg_assert_fail_d", "sg_assert_fail_f"];
 
 /// What every compiled program starts with: the checks, written once.
 const RUNTIME: &str = r#"#include <math.h>
@@ -277,26 +283,31 @@ SG_COLD static _Noreturn void sg_assert_fail_b(const char* text, bool l, bool r,
 }
 
 /* A fractional number as text: the fewest digits that read back as the same number (as a
-   `float` when `single`), laid out as JavaScript does it: `0.1`, `100`, `1.5e+21`, `1e-7`.
-   Writes at most 32 bytes into `out` and gives how many. */
+   `float` when `single`), and of those the nearest (Dragonbox, see `shortest.rs`), laid out as
+   JavaScript does it: `0.1`, `100`, `1.5e+21`, `1e-7`. Writes at most 32 bytes into `out` and
+   gives how many. Only a program that prints a fractional number has the tables
+   (`SG_FLOATS`); in the others this is never called. */
+#if SG_FLOATS
+static void sg_dragon(double v, bool single, uint64_t* digits, int* exp);
+#endif
 static int sg_shortest(char* out, double v, bool single) {
     if (v != v) { memcpy(out, "NaN", 3); return 3; }
     if (isinf(v)) { if (v > 0) { memcpy(out, "Infinity", 8); return 8; } memcpy(out, "-Infinity", 9); return 9; }
     if (v == 0) { if (signbit(v)) { memcpy(out, "-0", 2); return 2; } out[0] = '0'; return 1; }
-    char written[40];
-    int most = single ? 9 : 17;
-    for (int p = 1; p <= most; p++) {
-        snprintf(written, sizeof written, "%.*e", p - 1, v);
-        if (single ? strtof(written, NULL) == (float)v : strtod(written, NULL) == v) break;
-    }
-    bool negative = written[0] == '-';
-    const char* at = written + negative;
-    char digits[24];
-    int count = 0, n = 0;
-    while (*at != 'e') { if (*at != '.') digits[count++] = *at; at++; }
-    int point = atoi(at + 1) + 1;
+#if SG_FLOATS
+    uint64_t whole;
+    int exp;
+    sg_dragon(v, single, &whole, &exp);
+    char written[24];
+    char* end = written + sizeof written;
+    char* at = end;
+    do { *--at = (char)('0' + whole % 10); whole /= 10; } while (whole);
+    int count = (int)(end - at);
+    int point = exp + count;
+    const char* digits = at;
+    int n = 0;
     while (count > 1 && digits[count - 1] == '0') count--;
-    if (negative) out[n++] = '-';
+    if (v < 0) out[n++] = '-';
     if (count <= point && point <= 21) {
         memcpy(out + n, digits, (size_t)count); n += count;
         for (int i = count; i < point; i++) out[n++] = '0';
@@ -311,9 +322,19 @@ static int sg_shortest(char* out, double v, bool single) {
     } else {
         out[n++] = digits[0];
         if (count > 1) { out[n++] = '.'; memcpy(out + n, digits + 1, (size_t)(count - 1)); n += count - 1; }
-        n += snprintf(out + n, 8, "e%c%d", point - 1 < 0 ? '-' : '+', abs(point - 1));
+        int power = point - 1;
+        out[n++] = 'e';
+        out[n++] = power < 0 ? '-' : '+';
+        if (power < 0) power = -power;
+        if (power >= 100) out[n++] = (char)('0' + power / 100);
+        if (power >= 10) out[n++] = (char)('0' + power / 10 % 10);
+        out[n++] = (char)('0' + power % 10);
     }
     return n;
+#else
+    (void)single;
+    abort();
+#endif
 }
 SG_COLD static void sg_err_float(double v, bool single) {
     char text[40];
@@ -3953,7 +3974,17 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         emitter.made.insert("net async".to_string());
     }
     let _ = writeln!(out, "#define SG_NET {}", u8::from(emitter.made.contains("net")));
+    // The tables of powers of ten are only in a program that writes a fractional number: one
+    // whose code calls a helper that does.
+    let floats = [&emitter.types, &emitter.late_types, &emitter.glue, &bodies, &start]
+        .iter()
+        .any(|text| FLOAT_WRITERS.iter().any(|name| text.contains(name)));
+    let _ = writeln!(out, "#define SG_FLOATS {}", u8::from(floats));
     out.push_str(RUNTIME);
+    if floats {
+        out.push_str(crate::shortest::tables());
+        out.push_str(crate::shortest::DRAGONBOX);
+    }
     if emitter.made.contains("tasks") {
         out.push_str(TASK_RUNTIME);
     }

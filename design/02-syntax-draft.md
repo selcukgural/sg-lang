@@ -789,7 +789,7 @@ The arithmetic is the hardware's and never panics: a division by zero gives `Inf
 keeps the sign of the left side. A `float` is computed as a `float`. Each operation is rounded on its own:
 `a * b + c` is never fused into one instruction, so compiled code and the interpreter give the same digits.
 The bit operators are for integers only. A number is printed with the fewest digits that read back as the
-same number:
+same number, and of those the nearest (a tie goes to the even digit, as in JavaScript and Python):
 
 ```
 print(0.1 + 0.2)                                 // 0.30000000000000004

@@ -937,8 +937,9 @@ fn float_key(value: f64) -> i64 {
 }
 
 /// How a fractional number is written: the fewest digits that read back as the same
-/// number, laid out as JavaScript does it (`0.1`, `100`, `1.5e+21`, `1e-7`). `float` reads
-/// back as a `float`.
+/// number, and of those the nearest, a tie going to the even digit (choice 496), laid out as
+/// JavaScript does it (`0.1`, `100`, `1.5e+21`, `1e-7`). `float` reads back as a `float`.
+/// The compiled code finds the same digits with Dragonbox (`shortest.rs`).
 pub fn show_float(value: f64, ty: FloatTy) -> String {
     if value.is_nan() {
         return "NaN".to_string();
@@ -949,17 +950,10 @@ pub fn show_float(value: f64, ty: FloatTy) -> String {
     if value == 0.0 {
         return if value.is_sign_negative() { "-0" } else { "0" }.to_string();
     }
-    let most = match ty {
-        FloatTy::Float => 9,
-        FloatTy::Double => 17,
+    let written = match ty {
+        FloatTy::Float => fewest_digits(value as f32),
+        FloatTy::Double => fewest_digits(value),
     };
-    let written = (1..=most)
-        .map(|digits| format!("{:.*e}", digits - 1, value))
-        .find(|text| match ty {
-            FloatTy::Float => text.parse::<f32>().ok() == Some(value as f32),
-            FloatTy::Double => text.parse::<f64>().ok() == Some(value),
-        })
-        .expect("17 digits always read back");
     let (mantissa, exponent) = written.split_once('e').expect("written with an exponent");
     let negative = mantissa.starts_with('-');
     let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
@@ -981,6 +975,21 @@ pub fn show_float(value: f64, ty: FloatTy) -> String {
         format!("-{body}")
     } else {
         body
+    }
+}
+
+/// The fewest digits of a number, written with an exponent (`1.25e-1`). Rust's `{:e}` finds
+/// how many; of the numbers with that many digits it gives one that reads back, but in a tie
+/// between two it takes the larger. The number correctly rounded to that many digits
+/// (`{:.*e}` rounds a tie to the even digit) is the nearest, and is taken when it reads back;
+/// it does not only next to a power of two, where the number below is nearer.
+fn fewest_digits<T: std::fmt::LowerExp + std::str::FromStr + PartialEq>(value: T) -> String {
+    let shortest = format!("{value:e}");
+    let count = shortest.split('e').next().expect("a mantissa").bytes().filter(u8::is_ascii_digit).count();
+    let rounded = format!("{value:.*e}", count - 1);
+    match rounded.parse::<T>() {
+        Ok(back) if back == value => rounded,
+        _ => shortest,
     }
 }
 

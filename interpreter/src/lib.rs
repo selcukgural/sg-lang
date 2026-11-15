@@ -12,6 +12,7 @@ pub mod input;
 pub mod lexer;
 pub mod net;
 pub mod parser;
+pub mod shortest;
 pub mod source;
 pub mod opening;
 pub mod sums;
