@@ -1,0 +1,10 @@
+error: the async function `even` awaits itself around: `even` awaits `odd` awaits `even`
+  an awaited call runs inside the task of its caller, so a task that holds itself would have no end
+  --> error_async_itself_around.sg:5:18
+ 5 |     return await odd(n - 1)
+   |                  ^^^
+  `odd` awaits `even` here:
+  --> error_async_itself_around.sg:12:18
+ 12 |     return await even(n - 1)
+    |                  ^^^^
+  hint: keep the call's task in a variable, which gives it a task of its own: `var task = f(x)`, then `await task`

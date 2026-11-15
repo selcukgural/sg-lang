@@ -1,0 +1,10 @@
+struct Store {
+    int count
+
+    async int total(read this) {
+        return this.count
+    }
+}
+
+void main() {
+}

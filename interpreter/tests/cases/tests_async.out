@@ -1,0 +1,6 @@
+ok    an async function is waited for in a test
+FAIL  an error of an awaited task fails the test
+error: empty
+FAIL  a task left after an error is waited for
+error: empty
+2 of 3 test(s) failed

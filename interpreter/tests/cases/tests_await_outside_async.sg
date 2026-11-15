@@ -1,0 +1,10 @@
+async int answer() {
+    return 42
+}
+
+test "the answer" {
+    assert(await answer() == 42)
+}
+
+void main() {
+}

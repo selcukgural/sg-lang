@@ -1,0 +1,14 @@
+// A panic in an async task ends the program at once, even while the task that started it
+// waits for something else.
+async int divide(int x) {
+    await Task.delay(5)
+    return 10 / x
+}
+
+async void main() {
+    var bad = divide(0)
+    print("waiting")
+    await Task.delay(50)
+    print("not reached")
+    print(await bad)
+}

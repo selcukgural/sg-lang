@@ -1,0 +1,17 @@
+// A `lock` block that returns on every path ends the function: the lock is let go there.
+struct Counter {
+    int value
+}
+
+int bump(shared locked Counter counter) {
+    lock counter as c {
+        c.value += 1
+        return c.value
+    }
+}
+
+void main() {
+    var counter = new shared locked Counter { value = 0 }
+    print(bump(share counter))
+    print(bump(share counter))
+}

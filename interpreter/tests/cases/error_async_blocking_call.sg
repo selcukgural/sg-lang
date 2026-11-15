@@ -1,0 +1,13 @@
+string ask() {
+    var line = ""
+    _ = Stdin.readLine(ref line)
+    return line
+}
+
+string greet() {
+    return $"hello, {ask()}".toString()
+}
+
+async void main() {
+    print(greet())
+}

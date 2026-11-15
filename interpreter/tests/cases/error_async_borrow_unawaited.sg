@@ -1,0 +1,13 @@
+async int total(read List<int> xs) {
+    int sum = 0
+    for x in xs {
+        sum += x
+    }
+    return sum
+}
+
+async void main() {
+    var xs = List<int> { 1, 2, 3 }
+    var task = total(read xs)
+    print(await task)
+}

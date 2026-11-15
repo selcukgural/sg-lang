@@ -378,7 +378,7 @@ impl Opener<'_> {
             ExprKind::AsSlice(inner) => self.expr(inner, used)?,
             ExprKind::Load(inner) | ExprKind::Widen(_, inner) | ExprKind::Cast { expr: inner, .. } | ExprKind::Unary(_, inner) => self.expr(inner, Use::Value)?,
             ExprKind::New(inner) | ExprKind::NewShared { value: inner, .. } | ExprKind::Share(inner) | ExprKind::WeakOf(inner) => self.expr(inner, Use::Value)?,
-            ExprKind::IsNull { expr: inner, .. } | ExprKind::Try { expr: inner, .. } => self.expr(inner, Use::Value)?,
+            ExprKind::IsNull { expr: inner, .. } | ExprKind::Try { expr: inner, .. } | ExprKind::Await(inner) => self.expr(inner, Use::Value)?,
             ExprKind::Return(value) => {
                 if let Some(value) = value {
                     self.expr(value, Use::Value)?;

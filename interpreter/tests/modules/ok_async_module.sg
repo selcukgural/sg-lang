@@ -1,0 +1,8 @@
+// An async function of another module, awaited in place with its full name and with `use`.
+use counting
+
+async void main() {
+    var xs = List<int> { 1, 2, 3 }
+    print(await counting.total(read xs))
+    print(await total(read xs))
+}

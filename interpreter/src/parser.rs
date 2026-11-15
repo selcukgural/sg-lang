@@ -13,8 +13,8 @@ const NOT_YET: &[&str] = &[
 
 /// Words of the language that are read where they stand, not names: `shared T`, `weak T`,
 /// `shared checked T`, `shared locked T`, `share x`, `weak x`, `using Name = T`,
-/// `lock x as c { }`.
-const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock"];
+/// `lock x as c { }`, `async int f()`, `await t`.
+const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock", "async", "await"];
 
 type Res<T> = Result<T, Diag>;
 
@@ -272,6 +272,14 @@ impl<'a> Parser<'a> {
             first = false;
             let public_span = self.span();
             let public = self.eat(&Tok::Public);
+            let async_span = self.span();
+            let is_async = self.at_word("async");
+            if is_async {
+                self.bump();
+                if matches!(self.peek(), Tok::Struct | Tok::Enum) || self.at_word("using") || (matches!(self.peek(), Tok::Ident(word) if word == "test") && matches!(self.peek_at(1), Tok::Str(_))) {
+                    return Err(Diag::error(async_span, "`async` is written in front of a function").hint("`async int count(string path) { ... }`"));
+                }
+            }
             // `test` is a word only here, in front of the name of a test.
             let at_test = matches!(self.peek(), Tok::Ident(word) if word == "test") && matches!(self.peek_at(1), Tok::Str(_));
             if at_test {
@@ -307,6 +315,7 @@ impl<'a> Parser<'a> {
                 let (name, name_span) = self.ident("a function name")?;
                 let mut func = self.func(ret, name, name_span, false)?;
                 func.public = public;
+                func.is_async = is_async;
                 program.funcs.push(func);
             }
             if *self.peek() != Tok::Eof {
@@ -331,6 +340,7 @@ impl<'a> Parser<'a> {
                 return Err(self.unexpected("`}`"));
             }
             let public = self.eat(&Tok::Public);
+            self.no_async_method()?;
             let readonly_span = self.span();
             let readonly = self.eat(&Tok::Readonly);
             let ty = self.type_expr()?;
@@ -407,6 +417,7 @@ impl<'a> Parser<'a> {
                 && matches!(self.peek_at(1), Tok::LParen | Tok::Newline | Tok::RBrace | Tok::Comma | Tok::Eof);
             if !variant_line {
                 let public = self.eat(&Tok::Public);
+                self.no_async_method()?;
                 let ty = self.type_expr()?;
                 let (member, span) = self.ident("a method name")?;
                 if *self.peek() != Tok::LParen {
@@ -532,7 +543,16 @@ impl<'a> Parser<'a> {
             }
         }
         let body = self.block()?;
-        Ok(Func { public: false, ret, name, name_span, this, this_ty, params, from, body })
+        Ok(Func { public: false, is_async: false, ret, name, name_span, this, this_ty, params, from, body })
+    }
+
+    /// An async method is not here yet: `async` is written in front of a function only.
+    fn no_async_method(&self) -> Res<()> {
+        if self.at_word("async") {
+            return Err(Diag::error(self.span(), "an `async` method is not in the interpreter yet")
+                .hint("write it as an async function that takes the value: `async int count(read Store store)`"));
+        }
+        Ok(())
     }
 
     fn open_brace(&mut self) -> Res<()> {
@@ -616,7 +636,8 @@ impl<'a> Parser<'a> {
     /// The type comes first: `int x = 1`, `Node*? list = null`, `Result<int, E> r = f()`. A
     /// type and then a name is a declaration.
     fn at_declaration(&self) -> bool {
-        self.type_len(0).is_some_and(|n| matches!(self.peek_at(n), Tok::Ident(_)))
+        // `await task` is not a variable `task` of the type `await`.
+        !self.at_word("await") && self.type_len(0).is_some_and(|n| matches!(self.peek_at(n), Tok::Ident(_)))
     }
 
     /// Whether a declaration starts here and is followed by `=`.
@@ -775,7 +796,7 @@ impl<'a> Parser<'a> {
                     return Ok(Err(expr));
                 } else if matches!(
                     expr.kind,
-                    ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Match { .. } | ExprKind::Try { .. }
+                    ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Match { .. } | ExprKind::Try { .. } | ExprKind::Await(_)
                 ) {
                     StmtKind::Expr(expr)
                 } else {
@@ -1193,6 +1214,11 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let operand = self.unary()?;
                 Ok(wrap(ExprKind::WeakOf, operand))
+            }
+            Tok::Ident(word) if word == "await" => {
+                self.bump();
+                let operand = self.unary()?;
+                Ok(wrap(ExprKind::Await, operand))
             }
             // A prefix, like `await`: `try a().b()` tries the whole chain.
             Tok::Try => {

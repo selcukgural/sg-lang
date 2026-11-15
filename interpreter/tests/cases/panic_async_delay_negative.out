@@ -1,0 +1,5 @@
+before
+panic: `Task.delay(-5)`: a delay is not negative
+  --> panic_async_delay_negative.sg:3:11
+ 3 |     await Task.delay(-5)
+   |           ^^^^^^^^^^^^^^

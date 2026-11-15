@@ -1,0 +1,8 @@
+async Result<int, IoError> size(string path) {
+    var text = try File.readText(read path)
+    return Ok((int)text.length())
+}
+
+async void main() {
+    print(await size("a.txt") ?? 0)
+}

@@ -1,0 +1,5 @@
+error: `async` is written in front of a function
+  --> error_async_struct.sg:1:1
+ 1 | async struct Store {
+   | ^^^^^
+  hint: `async int count(string path) { ... }`

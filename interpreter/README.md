@@ -45,6 +45,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Changed through several owners | `new shared checked x` gives a `shared checked T`: what it points to is changed through any of its owners (`a.count += 1`, `a.items.add(x)`, a method that takes `ref this`, `ref a` where a `ref T` goes), and each access is checked against the borrows of it in progress, one that changes it or any number that read it. A read or a write borrows nothing after it; a value lent to a call is borrowed until the call returns, the head of a `for` for the loop, a `match` and an `is` with names for the statement. `read x as n { ... }` and `ref x as n { ... }` lend it for a block. A conflict through the same variable is a compile error, one through another variable a panic that shows both lines. A method can take the owner itself, `read FolderRef this`, so that it can write `share this` and `weak this`. The `shared` values still alive when a program or a test ends hold each other up and are reported (`leak: ...`; in compiled code by a debug build) |
 | Tasks | `Task.run(work, x, share total)` starts `work(x, share total)` as a task and gives a `Task<R>`, `R` being what `work` returns; a `Func` can be started too. `t.wait()` waits for it and gives that value (`try t.wait()` passes its error on). A task that is not waited for on every path is a compile error, and so is `Task.run(...)` alone or dropped with `_ =`. What a task is given and gives back owns all it holds: no borrow, no `shared checked` value, no `Task` (the thread rule, also inside fields). In the interpreter a task runs on a thread of its own when it is waited for, so the output is the same on every run; compiled code starts a thread of the system for it at once. A panic inside one names the line that started it |
 | Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
+| Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Not in compiled code yet |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -103,7 +104,9 @@ Design rules that are already enforced:
   `exit`, and before the variable gets another task. An exit with an error (`try`, `return Error(...)`)
   lets it go: the task is waited for there and what it gives is dropped, since the caller gets the error
   that made the function stop. A `Task` is kept only as it is, in a local variable, a parameter or a return
-  value: not in a field, a list, a `T?` or behind `read`.
+  value: not in a field, a list, a `T?` or behind `read`. In an async function a task is waited for with
+  `await t`, which takes it as `wait` does; the call of an async function alone on a line is an error, as
+  `Task.run(...)` alone is.
 - `Stdin`, `Stdout` and `Stderr` are lent, never moved or closed, and no variable may have their names.
   Reading and writing go on from where a stream is, so they need it as `ref`, not `read`.
 - `exit` takes a `byte`, so `exit(256)` is a compile error. It gives no value, so a function that ends in
@@ -253,7 +256,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (217 of 884 programs for now; the others are programs the checker rejects, on purpose). A
+memory behind (218 of 912 programs for now; the others are programs the checker rejects, on purpose, or that use what it does not compile yet, such as async). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -339,7 +342,8 @@ that are alive in a list for the leak report (347-355). The fifty-seventh slice 
 `lock`) was written in the checker and the interpreter, and since the fifty-eighth it is compiled: a task
 is a thread of the system with a stack of 8 MB, a `locked` value has a mutex in front of its counts, and a
 `lock` block takes its values in the order of their addresses and gives them back on every way out
-(371-383). What is still missing is an error that names it (not silence): the few positions listed with the
+(371-383). The fifty-ninth slice (async functions, `await` and `Task.delay`) is in the checker and the
+interpreter; compiled code refuses an async function with "is not in the C back end yet" (384-402). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -695,10 +699,10 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/parser.rs` | Hand-written recursive descent parser |
 | `src/types.rs` | Types as the checker sees them |
 | `src/check.rs` | Static checks: names, types, `null` safety, use after move (per variable and per field), `match` covering every variant, `return` on every path, unused `Result`, what `try` may pass on, what `Copyable` and `Formattable` promise. Writes resolved details (literal types, field indexes, implicit conversions, what each call runs) into the tree |
-| `src/interp.rs` | Runs the checked tree; only data-dependent failures (panics) are left to it |
+| `src/interp.rs` | Runs the checked tree; only data-dependent failures (panics) are left to it. Every task that runs code is a fiber, a thread of its own of which one runs at a time |
 | `src/emit_c.rs` | The back end: writes the checked tree as C, with the same panics; tasks are threads of the system |
 | `src/opening.rs` | After the checker: where a `shared checked` value is reached and for how long it is borrowed (the `Open` and `Within` nodes the interpreter follows), the conflicts through the same variable that are certain before the program runs, and the borrows that would outlive their line |
-| `src/waits.rs` | After the checker, on the whole program: which functions wait (take a lock or wait for a task, themselves or through the functions they call), and what waits inside a `lock` block |
+| `src/waits.rs` | After the checker, on the whole program: which functions wait (take a lock, wait for a task or await one, themselves or through the functions they call), and what waits inside a `lock` block; which functions hold the thread, and what does in an async function; an async function that awaits itself |
 | `src/sums.rs` | For the back end: the sums in a loop that cannot overflow for a number of rounds, so that a checked build runs those rounds without their test |
 | `src/diag.rs` | Error and panic messages |
 | `src/source.rs` | The files of a program: which folders are modules and which of them are read. All files are kept as one text, so a position says which file it is in |
@@ -3075,6 +3079,87 @@ Choices made in the fifty-eighth slice (tasks, `locked` and `lock` in compiled c
      included. `-pthread` and `_POSIX_C_SOURCE` (for `flockfile` under glibc) are enough. There is no
      CI; this was run by hand.
 
+Choices made in the fifty-ninth slice (async, the first part: async functions, `await` and `Task.delay`, in
+the checker and the interpreter), approved on 15 November 2026:
+
+384. **Async comes in parts.** This one: `async` functions, `await`, `Task.delay` and the rules of the
+     design's "Async, the direction" that need nothing more. Next: cancellation (`CancellationSource`, a
+     token) with input and output that is async, where the design left open how a cancellation shows in
+     a `Result` and what the functions are named. Then compiled code: the state machines, the pool of
+     threads and the loop that waits for input and output.
+385. **`async` is written in front of a function at the top level**, and the type after it is what the body
+     returns: `async int count()` returns an `int`, and its call gives a `Task<int>`, the same `Task<R>` that
+     `Task.run` gives. `async void f()` gives a `Task<void>`, which is awaited like any task, so it is not
+     C#'s `async void` that nobody can wait for, which the design leaves out. An `async` method is not here
+     yet (an error whose hint is a function that takes the value), nor is `async` in front of anything but
+     a function.
+386. **A call without `await` starts the task at once, and it runs on the caller until it first waits**, as
+     in C# (the design's "Starting"); then the caller goes on. A task of `Task.run` still runs when it is
+     waited for (356), so a program without async functions runs as it did.
+387. **`await f(x)` runs `f` as part of this task**, with no task of its own: the interpreter calls it where
+     it stands, as compiled code is to put its state machine inside the caller's (the design's "`await f()`
+     takes no allocation").
+388. **What a call without `await` is given follows the thread rule; `await f(read xs)` can borrow.** A call
+     without `await` is a task that may run on another thread while the caller goes on, as `Task.run`'s is
+     (360), so a borrow is an error there, with the hint `await f(read xs)` in an async function. An awaited
+     call ends before the caller goes on, so it lends as a call does. This is Rust's line: `tokio::spawn`
+     needs what it is given to be owned, an awaited future borrows. What an async function returns comes
+     back from a task, so it follows the thread rule wherever it is called.
+389. **`await t` takes the task, as `wait` does (359)**, and is written only in an async function; elsewhere
+     the hint is `t.wait()`, in a test too. The value it gives is used or dropped with `_ =` on purpose, as
+     for `wait`; `await` on what is not a task is an error, and when it is the call of a function that is not
+     async the hint is to drop the `await`.
+390. **`wait` in an async function is an error** whose hint is `await t` (the design's "Waiting the wrong
+     way"). Code that is not async, `main` or a task of `Task.run`, waits for an async task with `wait`: it
+     holds a thread of its own while it waits.
+391. **What holds the thread is an error in an async function**: `wait`, the functions of `File`, reading
+     `Stdin`, reading and writing a file through a stream, and a call of a function that does one of them,
+     found on the whole program after the checker as 365 finds what waits, with the chain in the message
+     (`greet` calls `ask`, which does `Stdin.readLine` here). The hint is `await Task.run(work, x)`.
+     Writing to `Stdout` and `Stderr`, and `print`, are not counted, as C# writes to its console from async
+     code; a write to the terminal is short, and the design's promise is about waits that can take long.
+392. **`await` in a `lock` block is an error, and an async function that awaits counts as waiting**, so its
+     call in a `lock` block is refused too, with the line of its `await` (the design's "Locks").
+393. **An async function that awaits itself, directly or through others, is an error** whose hint keeps the
+     call's task in a variable, which gives it a task of its own (the design's "Calling itself"). Only
+     awaited calls make the circle; `var below = depth(n - 1)` then `await below` is accepted.
+394. **An async function is not a value**: `Task.run(answer)` and `var f = answer` are errors whose hint is
+     to call it. The size of its state machine is known only where it is called by its name; a `Func` that
+     gives a task can come with compiled code if it is needed.
+395. **`Task.delay(ms)`** gives a `Task<void>` that ends after that many milliseconds, an `int`; a negative
+     number is a panic. Code that is not async can `wait` for it, which sleeps. Its form with a token comes
+     with cancellation.
+396. **`main` can be async**: `async void main()`, `async Result<void, E> main()`, with the command line
+     too; the message of a wrong `main` says so.
+397. **In the interpreter every task that runs code is a fiber**: a thread of its own, of which one runs at a
+     time; the turn changes hands only where one waits, and the fibers whose wait is over get it in the
+     order they became ready (the design's "Tasks in the interpreter"). The clock of the run moves only when
+     every fiber waits and a timer is next, so which timer ends first never depends on how fast the machine
+     is, and the run still sleeps until the time comes: `ok_async_order` prints the same on every run. Each
+     fiber waits on a condition of its own, so only the next one wakes: 2,000 tasks alive at once take
+     0.46 s (29 s when every hand-over woke them all), 20,000 one after the other 0.5 s. The output, the
+     input and what a test writes to the standard error are shared by the fibers of a run.
+398. **A panic in a task stops the run at once**, even while the task that started it waits for something
+     else (`panic_async`); before this slice a task ran only when it was waited for, so its panic came at
+     the wait. The message names the task, the innermost (372); fibers still waiting end without a word,
+     and a writer they hold does not write its buffer, as after any panic.
+399. **When nothing could end a wait, the run stops with a panic** ("every task waits, and nothing is left
+     that could end a wait"). It cannot happen yet, since a task is not given to another task; it is there
+     for channels (the design's "Channels").
+400. **Found on the way: a `lock` block that returns on every path ends the function.** The check that a
+     function returns did not look into a `lock` block, so `int bump(...) { lock c as x { x.value += 1;
+     return x.value } }` was refused (`ok_lock_returns`, compiled too).
+401. **The example in the design is corrected**: `countLines("a.txt", source.token)` gives a
+     `Task<Result<int, IoError>>`, not a `Task<int>`; `try await first` takes the `int` out.
+402. **The tests**: `ok_async_order` (two tasks and their delays, one awaited in place), `ok_async_results`
+     (`try await`, an awaited call that borrows a list, `await Task.run`, an error, `wait` from `main`),
+     `ok_async_error_exit` (a task left by an error exit is waited for), `ok_async_tasks_inside` (async
+     tasks that start tasks, a `Task.run` task that waits for an async one, `Task.delay(0)`), `panic_async`,
+     `panic_async_delay_negative`, two test files (`tests_async`, `tests_await_outside_async`),
+     `ok_lock_returns`, `ok_async_module` (an async function of a module, awaited with its full name and
+     with `use`) and twenty tests of errors. Compiled code refuses an async function and `Task.delay` with
+     "is not in the C back end yet"; `cargo test` compiles 218 of 912 programs.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -3137,8 +3222,10 @@ check off.
 - Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
   in the design), and so an alias with type parameters (`using Link<T> = ...`).
-- A list of tasks and waiting for several at once (`Task.whenAll`, `Task.whenAny`), async, channels; a method or a function of a struct
-  started as a task (a `Func` is a function written at the top level). `checked` on its own, in a value with one
+- A list of tasks and waiting for several at once (`Task.whenAll`, `Task.whenAny`), channels; a method or a function of a struct
+  started as a task (a `Func` is a function written at the top level). Of async: cancellation
+  (`CancellationSource`, a token), input and output that is async, an `async` method, an async function
+  kept as a `Func`, and all of it in compiled code. `checked` on its own, in a value with one
   owner (`checked int hits` in a plain struct, the design's `RefCell` outside `Rc`). `List<shared T>.clone()`,
   since a list has no `clone` yet, so the design's hint "loop over a copy" is not given. A conflict through two
   items of one list (`xs[i]` and `xs[j]`) is left to run time even when `i` and `j` are the same name.
@@ -3247,3 +3334,10 @@ All of it is compiled too: a task is a thread of the system with a stack of 8 MB
 mutex in front of its counts, the output stays whole and a panic names its task as in the interpreter, and
 every program with tasks runs clean under the thread sanitizer. Four tasks adding to a locked total take the
 time of the same program in C with threads and a mutex.
+
+Async functions run in the interpreter as C# runs them: `async int count()` gives a `Task<int>` that has
+started, `await` waits without holding the thread, and `Task.delay(ms)` lets time go by. Waiting the wrong
+way is a compile error: `wait`, input and output that holds the thread and a function that does either, in
+an async function; `await` in a `lock` block; an async function that awaits itself. Every task is a fiber
+that gets the turn where another waits, and the clock moves only when all wait, so the output is the same
+on every run. Next come cancellation and input and output that is async, then all of it in compiled code.

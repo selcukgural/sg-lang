@@ -10,9 +10,11 @@
 //! rejects any use of the old one.
 
 use std::cell::{Cell as Flag, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{BufRead, Read, Write};
 use std::rc::Rc;
+use std::sync::{Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use crate::ast::*;
 use crate::diag::{Diag, Span};
@@ -75,28 +77,224 @@ pub enum Value {
     Writer(Rc<RefCell<Writer>>),
     /// `reader.lines()`.
     Lines(Rc<RefCell<Lines>>),
-    /// `Task<R>`: a task started with `Task.run`.
+    /// `Task<R>`: a task started with `Task.run`, by the call of an async function, or by
+    /// `Task.delay`.
     Task(Rc<RefCell<Task>>),
 }
 
-/// A task started with `Task.run`. Tasks change hands only where one waits, so a task runs
-/// when it is waited for: the one that waits gives it its turn until it ends.
+/// A task. Every task that runs code is a fiber: a thread of its own, of which one runs at a
+/// time (see `Sched`).
 #[derive(Debug)]
 pub struct Task {
-    /// The function and what it is given; taken when the task runs.
-    work: Option<(Rc<str>, Vec<Value>)>,
+    state: TaskState,
     /// Where it was started, for the message of a panic inside it.
     started: Span,
+    /// The fibers that wait for it to end.
+    waiters: Vec<usize>,
 }
 
-/// What a task takes to the thread it runs on, and back: the values of one program are only
-/// ever used by one thread at a time.
+#[derive(Debug)]
+enum TaskState {
+    /// Started with `Task.run` and not waited for yet: such a task runs when it is waited for,
+    /// so the order of a program without async functions is the order of its waits. The
+    /// function and what it is given.
+    Lazy(Rc<str>, Vec<Value>),
+    /// Running on its fiber, or waiting there; or a `Task.delay` whose time has not come.
+    Running,
+    /// Ended, with what its function returned, until the one that waits takes it.
+    Done(Option<Value>),
+}
+
+/// What a fiber takes to the thread it runs on: the values of one program are only ever used
+/// by the fiber that has the turn.
 struct Baton<T>(T);
 
-// SAFETY: a task runs while the task that waits for it is blocked in `join` for the whole
-// time, and it is given every value (`Rc`, `RefCell`) it reaches through the baton, so no
-// two threads ever use one of them at the same time; `join` orders the uses before and after.
+// SAFETY: a fiber touches the values of the program (`Rc`, `RefCell`) only while it has the
+// turn, and the turn changes hands under the mutex of `Sched`, which orders every use before
+// the hand-over before every use after it. The fiber is given what it reaches through the baton.
 unsafe impl<T> Send for Baton<T> {}
+
+/// Who has the turn among the fibers of one run. Fiber 0 is the thread that runs `main` or
+/// the tests; every task that runs code gets a fiber of its own when it starts. A fiber gives
+/// the turn away only where it waits, so a run goes the same way every time.
+struct Sched {
+    state: Mutex<State>,
+}
+
+struct State {
+    running: usize,
+    next_fiber: usize,
+    /// The fibers whose wait is over, in the order they get the turn.
+    ready: VecDeque<usize>,
+    /// The `Task.delay` tasks, by when they end on the clock of the run, then in the order
+    /// they were made.
+    timers: BTreeMap<(u64, u64), std::rc::Weak<RefCell<Task>>>,
+    made: u64,
+    /// The clock of the run, in milliseconds. It moves only when every fiber waits and a
+    /// timer is next, so which timer ends first never depends on the speed of the machine;
+    /// the run still sleeps until the time comes.
+    now: u64,
+    clock: Instant,
+    /// The fibers that have a thread and have not ended.
+    fibers: BTreeSet<usize>,
+    /// What each fiber waits on for its turn, fiber 0 included: only the one that gets the
+    /// turn is woken.
+    wakers: HashMap<usize, std::sync::Arc<Condvar>>,
+    /// What the thread-locals of the program hold, from the fiber that gives the turn away to
+    /// the one that takes it.
+    thread: Option<Thread>,
+    /// A fiber stopped the run (a panic, `exit`): fiber 0 gets the turn, and this.
+    stop: Option<Stop>,
+    /// The interpreter itself failed on a fiber: fiber 0 goes on failing with it.
+    crashed: Option<Box<dyn std::any::Any + Send>>,
+    /// Fiber 0 is ending the other fibers after a stop: one that gets the turn unwinds.
+    ending: bool,
+}
+
+// SAFETY: as for `Baton`: what `State` holds of the program is touched only by the fiber that
+// has the turn, and only under the mutex.
+unsafe impl Send for State {}
+
+impl Sched {
+    fn new() -> Sched {
+        let state = State {
+            running: 0,
+            next_fiber: 1,
+            ready: VecDeque::new(),
+            timers: BTreeMap::new(),
+            made: 0,
+            now: 0,
+            clock: Instant::now(),
+            fibers: BTreeSet::new(),
+            wakers: HashMap::from([(0, std::sync::Arc::new(Condvar::new()))]),
+            thread: None,
+            stop: None,
+            crashed: None,
+            ending: false,
+        };
+        Sched { state: Mutex::new(state) }
+    }
+
+    /// Gives the turn to fiber `next` and wakes it.
+    fn give(state: &mut State, next: usize) {
+        state.running = next;
+        if let Some(waker) = state.wakers.get(&next) {
+            waker.notify_one();
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn wait_turn<'g>(&self, mut state: MutexGuard<'g, State>, me: usize) -> MutexGuard<'g, State> {
+        let waker = state.wakers[&me].clone();
+        while state.running != me {
+            state = waker.wait(state).unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        state
+    }
+
+    /// Fiber `me`, which has said where it waits, gives the turn to `next` and waits to get it
+    /// back.
+    fn hand(&self, mut state: MutexGuard<'_, State>, me: usize, next: usize) -> Res<()> {
+        state.thread = Some(Thread::take());
+        Self::give(&mut state, next);
+        let mut state = self.wait_turn(state, me);
+        Self::resume(&mut state, me)
+    }
+
+    /// What fiber `me` does when the turn comes back to it.
+    fn resume(state: &mut State, me: usize) -> Res<()> {
+        if let Some(thread) = state.thread.take() {
+            thread.put();
+        }
+        if me == 0 {
+            if let Some(crash) = state.crashed.take() {
+                std::panic::resume_unwind(crash);
+            }
+            if let Some(stop) = state.stop.take() {
+                return Err(Unwind::Stop(stop));
+            }
+        } else if state.ending {
+            ending();
+            return Err(Unwind::Abandon);
+        }
+        Ok(())
+    }
+
+    /// Fiber `me` waits for something to end: the turn goes to the fiber that is ready first.
+    fn block(&self, me: usize, at: Span) -> Res<()> {
+        let mut state = self.lock();
+        let next = Self::next(&mut state, at);
+        self.hand(state, me, next)
+    }
+
+    /// The fiber that gets the turn: the first that is ready. When none is, the time of the
+    /// first timer comes. When there is no timer either, nothing could end a wait, and the
+    /// run stops with a panic.
+    fn next(state: &mut State, at: Span) -> usize {
+        loop {
+            if let Some(fiber) = state.ready.pop_front() {
+                return fiber;
+            }
+            let Some((&key, _)) = state.timers.iter().next() else {
+                state.stop = Some(Stop::Diag(Diag::panic(at, "every task waits, and nothing is left that could end a wait")));
+                return 0;
+            };
+            let task = state.timers.remove(&key).expect("just seen");
+            let due = state.clock + Duration::from_millis(key.0);
+            let now = Instant::now();
+            if due > now {
+                std::thread::sleep(due - now);
+            }
+            state.now = key.0;
+            if let Some(task) = task.upgrade() {
+                let mut task = task.borrow_mut();
+                task.state = TaskState::Done(Some(Value::Void));
+                let waiters = std::mem::take(&mut task.waiters);
+                state.ready.extend(waiters);
+            }
+        }
+    }
+
+    /// Fiber `me` has ended with `result`: its task gets what it returned, and the turn goes
+    /// on. A stop goes to fiber 0.
+    fn finish(&self, me: usize, task: Option<Rc<RefCell<Task>>>, result: Result<Value, Unwind>, at: Span) {
+        let mut state = self.lock();
+        state.fibers.remove(&me);
+        state.wakers.remove(&me);
+        let next = match result {
+            Ok(value) => {
+                if let Some(task) = task {
+                    let mut task = task.borrow_mut();
+                    task.state = TaskState::Done(Some(value));
+                    let waiters = std::mem::take(&mut task.waiters);
+                    state.ready.extend(waiters);
+                }
+                Self::next(&mut state, at)
+            }
+            Err(Unwind::Abandon) => 0,
+            Err(Unwind::Stop(stop)) => {
+                state.stop = Some(stop);
+                0
+            }
+            Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop"),
+        };
+        state.thread = Some(Thread::take());
+        Self::give(&mut state, next);
+    }
+}
+
+/// What every fiber of one run reaches: the output, the world around the program, what a
+/// test wrote to the standard error, and the scheduler. Only the fiber that has the turn
+/// touches them.
+struct Shared<'e> {
+    out: RefCell<&'e mut dyn Write>,
+    world: RefCell<World<'e>>,
+    test_err: RefCell<String>,
+    sched: Sched,
+}
 
 /// What a thread keeps of the program running on it, taken to the thread a task runs on
 /// and brought back.
@@ -813,6 +1011,8 @@ enum Unwind {
     Return(Value),
     Break,
     Continue,
+    /// Another fiber stopped the run, and this one ends without a word.
+    Abandon,
 }
 
 impl From<Diag> for Unwind {
@@ -951,7 +1151,16 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
-    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, in_test: false, test_err: String::new(), guards: Vec::new(), aliases, started: Vec::new() };
+    let io = Shared { out: RefCell::new(out), world: RefCell::new(world), test_err: RefCell::new(String::new()), sched: Sched::new() };
+    std::thread::scope(|scope| {
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new() };
+        let result = run_main(&mut interp);
+        interp.end_fibers();
+        result
+    })
+}
+
+fn run_main(interp: &mut Interp) -> Result<(), Stop> {
     let first = LIVE.with(|live| live.borrow().next);
     open_streams();
     let main = interp.funcs["main"];
@@ -959,7 +1168,8 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
     let mut args = Vec::new();
     if !main.params.is_empty() {
         let mut words = Vec::new();
-        for (number, word) in std::mem::take(&mut interp.world.args).into_iter().enumerate() {
+        let given = std::mem::take(&mut interp.io.world.borrow_mut().args);
+        for (number, word) in given.into_iter().enumerate() {
             match String::from_utf8(word) {
                 Ok(word) => words.push(cell(Value::Str(Rc::new(word)))),
                 Err(_) => return Err(Stop::Failed(format!("args[{number}] is not valid UTF-8"))),
@@ -982,7 +1192,7 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
             None => Ok(()),
         },
         Err(Unwind::Stop(stop)) => Err(stop),
-        Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop"),
+        Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop; fiber 0 is not abandoned"),
     }
 }
 
@@ -1001,12 +1211,19 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
-    let mut interp = Interp { funcs, methods, structs, enums, src, out, depth: 0, world, in_test: true, test_err: String::new(), guards: Vec::new(), aliases, started: Vec::new() };
+    let io = Shared { out: RefCell::new(out), world: RefCell::new(world), test_err: RefCell::new(String::new()), sched: Sched::new() };
+    std::thread::scope(|scope| {
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new() };
+        run_each_test(&mut interp, prog, sources)
+    })
+}
+
+fn run_each_test<'a>(interp: &mut Interp<'a, '_>, prog: &'a Program, sources: &crate::source::Sources) -> Result<(usize, usize), Stop> {
     let (mut passed, mut failed) = (0, 0);
     for test in &prog.tests {
         // Nothing is shared between tests: each starts with variables of its own.
         interp.depth = 0;
-        interp.test_err.clear();
+        interp.io.test_err.borrow_mut().clear();
         open_streams();
         let first = LIVE.with(|live| live.borrow().next);
         let mut frame = Frame { scopes: vec![HashMap::new()] };
@@ -1018,9 +1235,21 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
         drop(frame);
         interp.guards.clear();
         // A test that ended with an error leaves the tasks it did not wait for: they run now.
-        let ended = match interp.unwaited() {
-            Ok(()) => ended,
-            Err(stop) => Err(stop),
+        // One that stopped leaves the fibers that still wait: they end.
+        let ended = match ended {
+            Err(Unwind::Stop(stop)) => {
+                interp.started.clear();
+                interp.end_fibers();
+                Err(Unwind::Stop(stop))
+            }
+            ended => match interp.unwaited() {
+                Ok(()) => ended,
+                Err(stop) => {
+                    interp.started.clear();
+                    interp.end_fibers();
+                    Err(stop)
+                }
+            },
         };
         // A test that passes and leaves `shared` values alive fails with the report.
         let ended = match ended {
@@ -1046,7 +1275,7 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
             Err(Unwind::Stop(stop)) => return Err(stop),
             Err(_) => unreachable!("`break` and `continue` end at their loop"),
         };
-        let reason = reason.map(|reason| format!("{}{reason}", interp.test_err));
+        let reason = reason.map(|reason| format!("{}{reason}", interp.io.test_err.borrow()));
         // A test of a module is written with its module in front: `stock: nothing ships ...`.
         let name = match sources.file_at(test.name_span.start).module.as_str() {
             "" => test.name.clone(),
@@ -1079,97 +1308,186 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     }
 }
 
-struct Interp<'a> {
+struct Interp<'a, 'e> {
     funcs: HashMap<&'a str, &'a Func>,
     /// Functions written in struct bodies: struct name, then function name.
     methods: HashMap<&'a str, HashMap<&'a str, &'a Func>>,
     structs: HashMap<&'a str, &'a StructDecl>,
     enums: HashMap<&'a str, &'a EnumDecl>,
     src: &'a str,
-    out: &'a mut dyn Write,
+    /// The output, the world, and what the running test wrote with `printError` (shown under
+    /// the test's `FAIL` line, and dropped when the test passes, as compiled tests do).
+    io: &'a Shared<'e>,
+    /// Where the threads of fibers are started.
+    scope: &'a std::thread::Scope<'a, 'e>,
+    /// The fiber this runs on.
+    me: usize,
     depth: usize,
-    world: World<'a>,
     /// Running the test command: `exit` fails the test instead of ending the program.
     in_test: bool,
-    /// What the running test wrote with `printError`: it is shown under the test's `FAIL`
-    /// line, and dropped when the test passes, as compiled tests do.
-    test_err: String,
     /// The borrows of `shared checked` values in progress, the latest last. Each part of the
     /// program that lends one drops what it added when it ends.
     guards: Vec<Guard>,
     aliases: HashMap<&'a str, &'a TypeExpr>,
-    /// The tasks this task started that have not run yet.
+    /// The tasks this fiber started that it has not waited for yet.
     started: Vec<Rc<RefCell<Task>>>,
 }
 
-impl<'a> Interp<'a> {
+impl<'a, 'e> Interp<'a, 'e> {
     /// Waits for the tasks that nothing holds any more: a function that ended with an error
     /// left them (the checker lets every other exit go only after they are waited for). What
     /// they give is dropped; the error that ended the function is the one that counts.
     fn unwaited(&mut self) -> Res<()> {
         while let Some(at) = self.started.iter().position(|task| Rc::strong_count(task) == 1) {
             let task = self.started.remove(at);
-            self.run_task(&task)?;
+            let started = task.borrow().started;
+            self.await_task(&task, started)?;
         }
         Ok(())
     }
 
-    /// Runs a task to its end on a thread of its own, while this one waits, and gives what
-    /// its function returned.
-    fn run_task(&mut self, task: &Rc<RefCell<Task>>) -> Res<Value> {
+    /// Waits for a task, `wait` and `await` alike, and gives what its function returned. A
+    /// task of `Task.run` starts here; the others are running already, or are timers.
+    fn await_task(&mut self, task: &Rc<RefCell<Task>>, at: Span) -> Res<Value> {
         self.started.retain(|other| !Rc::ptr_eq(other, task));
-        let (name, args, started) = {
-            let mut task = task.borrow_mut();
-            let (name, args) = task.work.take().expect("a task runs once");
-            (name, args, task.started)
+        loop {
+            let state = std::mem::replace(&mut task.borrow_mut().state, TaskState::Running);
+            match state {
+                TaskState::Done(value) => return Ok(value.expect("a task is waited for once")),
+                TaskState::Lazy(name, args) => {
+                    task.borrow_mut().waiters.push(self.me);
+                    let func = self.funcs[&*name];
+                    self.start_fiber(task, func, args, false)?;
+                }
+                TaskState::Running => {
+                    task.borrow_mut().waiters.push(self.me);
+                    self.io.sched.block(self.me, at)?;
+                }
+            }
+        }
+    }
+
+    /// `f(x)` of an async function `f`, without `await`: the task starts now and runs until it
+    /// first waits, then this fiber goes on, as in C#.
+    fn start_async(&mut self, func: &'a Func, args: Vec<Value>, at: Span) -> Res<Value> {
+        let task = Rc::new(RefCell::new(Task { state: TaskState::Running, started: at, waiters: Vec::new() }));
+        self.started.push(task.clone());
+        self.start_fiber(&task, func, args, true)?;
+        Ok(Value::Task(task))
+    }
+
+    /// `Task.delay(ms)`: a task that ends when the clock of the run has gone that far.
+    fn delay(&mut self, ms: i128, at: Span) -> Res<Value> {
+        if ms < 0 {
+            return Err(Diag::panic(at, format!("`Task.delay({ms})`: a delay is not negative")).into());
+        }
+        let task = Rc::new(RefCell::new(Task { state: TaskState::Running, started: at, waiters: Vec::new() }));
+        let mut state = self.io.sched.lock();
+        let key = (state.now + ms as u64, state.made);
+        state.made += 1;
+        state.timers.insert(key, Rc::downgrade(&task));
+        drop(state);
+        self.started.push(task.clone());
+        Ok(Value::Task(task))
+    }
+
+    /// Runs `func(args)` for `task` on a fiber of its own, which gets the turn now. With
+    /// `caller_ready` this fiber is next once the new one waits; otherwise this one waits for
+    /// the task and goes on when it ends.
+    fn start_fiber(&mut self, task: &Rc<RefCell<Task>>, func: &'a Func, args: Vec<Value>, caller_ready: bool) -> Res<()> {
+        let started = task.borrow().started;
+        let id = {
+            let mut state = self.io.sched.lock();
+            let id = state.next_fiber;
+            state.next_fiber += 1;
+            state.fibers.insert(id);
+            state.wakers.insert(id, std::sync::Arc::new(Condvar::new()));
+            id
         };
-        let func = self.funcs[&*name];
-        let world = World { args: Vec::new(), input: &mut *self.world.input, input_is_terminal: self.world.input_is_terminal, err: &mut *self.world.err };
         let mut inner = Interp {
             funcs: self.funcs.clone(),
             methods: self.methods.clone(),
             structs: self.structs.clone(),
             enums: self.enums.clone(),
             src: self.src,
-            out: &mut *self.out,
+            io: self.io,
+            scope: self.scope,
+            me: id,
             depth: 0,
-            world,
             in_test: self.in_test,
-            test_err: String::new(),
             guards: Vec::new(),
             aliases: self.aliases.clone(),
             started: Vec::new(),
         };
-        let thread = Thread::take();
+        let weak = Rc::downgrade(task);
+        let name: Rc<str> = func.name.as_str().into();
+        let io = self.io;
         let work = Baton(move || {
-            thread.put();
-            let result = inner.call(func, None, args, started);
-            let written = std::mem::take(&mut inner.test_err);
-            drop(inner);
-            Baton((result, written, Thread::take()))
-        });
-        let ran = std::thread::scope(|scope| {
-            let spawned = std::thread::Builder::new().stack_size(crate::STACK_BYTES).spawn_scoped(scope, move || {
-                let work = work;
-                (work.0)()
-            });
-            spawned.map(|handle| handle.join())
-        });
-        let (result, written, thread) = match ran {
-            Ok(Ok(Baton(ended))) => ended,
-            Ok(Err(panic)) => std::panic::resume_unwind(panic),
-            Err(error) => return Err(Diag::panic(started, format!("the system refused a thread for this task: {error}")).into()),
-        };
-        thread.put();
-        self.test_err.push_str(&written);
-        // A panic that already shows a second place keeps it: the line of a task started
-        // inside this one, or the borrow it met.
-        result.map_err(|unwind| match unwind {
-            Unwind::Stop(Stop::Diag(diag)) if diag.kind == crate::diag::Kind::Panic && diag.related.is_none() => {
-                Unwind::Stop(Stop::Diag(diag.related(started, format!("in the task `{}` started here", short_name(&name)))))
+            let sched = &io.sched;
+            let state = sched.lock();
+            let mut state = sched.wait_turn(state, id);
+            let begun = Sched::resume(&mut state, id);
+            drop(state);
+            let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let result = begun.and_then(|()| inner.call(func, None, args, started));
+                drop(inner);
+                // A panic that already shows a second place keeps it: the line of a task
+                // started inside this one, or the borrow it met.
+                result.map_err(|unwind| match unwind {
+                    Unwind::Stop(Stop::Diag(diag)) if diag.kind == crate::diag::Kind::Panic && diag.related.is_none() => {
+                        Unwind::Stop(Stop::Diag(diag.related(started, format!("in the task `{}` started here", short_name(&name)))))
+                    }
+                    other => other,
+                })
+            }));
+            match ran {
+                Ok(result) => sched.finish(id, weak.upgrade(), result, started),
+                Err(crash) => {
+                    let mut state = sched.lock();
+                    state.fibers.remove(&id);
+                    state.wakers.remove(&id);
+                    state.crashed = Some(crash);
+                    state.thread = Some(Thread::take());
+                    Sched::give(&mut state, 0);
+                }
             }
-            other => other,
-        })
+        });
+        let spawned = std::thread::Builder::new().stack_size(crate::STACK_BYTES).spawn_scoped(self.scope, move || {
+            let work = work;
+            (work.0)()
+        });
+        if let Err(error) = spawned {
+            let mut state = self.io.sched.lock();
+            state.fibers.remove(&id);
+            state.wakers.remove(&id);
+            drop(state);
+            return Err(Diag::panic(started, format!("the system refused a thread for this task: {error}")).into());
+        }
+        let mut state = self.io.sched.lock();
+        if caller_ready {
+            state.ready.push_front(self.me);
+        }
+        self.io.sched.hand(state, self.me, id)
+    }
+
+    /// After a stop on fiber 0: every other fiber still waiting gets the turn once, one after
+    /// the other, and unwinds.
+    fn end_fibers(&mut self) {
+        let sched = &self.io.sched;
+        let mut state = sched.lock();
+        state.ending = true;
+        state.ready.clear();
+        state.timers.clear();
+        while let Some(&fiber) = state.fibers.iter().next() {
+            state.thread = Some(Thread::take());
+            Sched::give(&mut state, fiber);
+            state = sched.wait_turn(state, 0);
+            if let Some(thread) = state.thread.take() {
+                thread.put();
+            }
+        }
+        state.ending = false;
+        state.stop = None;
     }
 
     fn call(&mut self, func: &'a Func, this: Option<Value>, args: Vec<Value>, call_span: Span) -> Res<Value> {
@@ -1189,7 +1507,8 @@ impl<'a> Interp<'a> {
         let result = self.block(&func.body, &mut frame);
         drop(frame);
         self.depth -= 1;
-        if !self.started.is_empty() {
+        // A stop of the run waits for nothing: the program ends.
+        if !self.started.is_empty() && !matches!(result, Err(Unwind::Stop(_) | Unwind::Abandon)) {
             self.unwaited()?;
         }
         match result {
@@ -1778,6 +2097,17 @@ impl<'a> Interp<'a> {
                 }
                 unreachable!("the checker requires an arm for every variant")
             }
+            // `await f(x)` of an async function runs it here, as part of this task.
+            ExprKind::Await(inner) => {
+                if let ExprKind::Call { name, args, callee: Callee::Plain, .. } = &inner.kind {
+                    if let Some(func) = self.funcs.get(name.as_str()).copied().filter(|func| func.is_async) {
+                        let values = self.values(args, frame)?;
+                        return self.call(func, None, values, inner.span);
+                    }
+                }
+                let Value::Task(task) = strip(self.expr(inner, frame)?) else { unreachable!("the checker lets only a task be awaited") };
+                self.await_task(&task, expr.span)
+            }
             ExprKind::Call { name, args, callee, .. } => match callee {
                 Callee::Static { owner, name } => {
                     let func = self.methods[owner.as_str()][name.as_str()];
@@ -1909,13 +2239,17 @@ impl<'a> Interp<'a> {
                 Callee::TaskRun => {
                     let Value::Func(name) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker lets `Task.run` start only a function") };
                     let values = self.values(&args[1..], frame)?;
-                    let task = Rc::new(RefCell::new(Task { work: Some((name, values)), started: expr.span }));
+                    let task = Rc::new(RefCell::new(Task { state: TaskState::Lazy(name, values), started: expr.span, waiters: Vec::new() }));
                     self.started.push(task.clone());
                     Ok(Value::Task(task))
                 }
+                Callee::Delay => {
+                    let Value::Int(_, ms) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker lets `Task.delay` take an `int`") };
+                    self.delay(ms, expr.span)
+                }
                 Callee::Wait => {
                     let Value::Task(task) = strip(self.expr(recv, frame)?) else { unreachable!("the checker lets only a task be waited for") };
-                    self.run_task(&task)
+                    self.await_task(&task, expr.span)
                 }
                 Callee::Take => {
                     let slot = behind_borrows(self.place(recv, frame)?);
@@ -2198,12 +2532,13 @@ impl<'a> Interp<'a> {
                 // What was printed before comes first, as it does on a terminal. Nothing can
                 // be told when the standard error cannot be written, so that is not an error.
                 if self.in_test {
-                    self.test_err.push_str(&text);
-                    self.test_err.push('\n');
+                    let mut written = self.io.test_err.borrow_mut();
+                    written.push_str(&text);
+                    written.push('\n');
                     return Ok(Value::Void);
                 }
                 self.flush_out()?;
-                let _ = writeln!(self.world.err, "{text}");
+                let _ = writeln!(self.io.world.borrow_mut().err, "{text}");
                 Ok(Value::Void)
             }
             "panic" => {
@@ -2226,7 +2561,10 @@ impl<'a> Interp<'a> {
             _ => {
                 let func = self.funcs[name];
                 let values = self.values(args, frame)?;
-                self.call(func, None, values, expr.span)
+                match func.is_async {
+                    true => self.start_async(func, values, expr.span),
+                    false => self.call(func, None, values, expr.span),
+                }
             }
         }
     }
@@ -2504,7 +2842,7 @@ impl<'a> Interp<'a> {
     }
 
     fn flush_out(&mut self) -> Res<()> {
-        self.out.flush().map_err(output_failed)
+        self.io.out.borrow_mut().flush().map_err(output_failed)
     }
 
     /// `File.readText(path)` and the others: each gives `Ok` with what it read, or `Error`
@@ -2569,10 +2907,10 @@ impl<'a> Interp<'a> {
                 let read = match reader.borrow_mut().file.as_mut() {
                     Some(file) => file.read_to_end(&mut bytes),
                     None => {
-                        if self.world.input_is_terminal {
+                        if self.io.world.borrow().input_is_terminal {
                             self.flush_out()?;
                         }
-                        self.world.input.read_to_end(&mut bytes)
+                        self.io.world.borrow_mut().input.read_to_end(&mut bytes)
                     }
                 };
                 reader.borrow_mut().done += bytes.len() as u64;
@@ -2594,10 +2932,10 @@ impl<'a> Interp<'a> {
                     let step = match reader.borrow_mut().file.as_mut() {
                         Some(file) => file.read(&mut bytes[got..]),
                         None => {
-                            if self.world.input_is_terminal {
+                            if self.io.world.borrow().input_is_terminal {
                                 self.flush_out()?;
                             }
-                            self.world.input.read(&mut bytes[got..])
+                            self.io.world.borrow_mut().input.read(&mut bytes[got..])
                         }
                     };
                     match step {
@@ -2653,10 +2991,10 @@ impl<'a> Interp<'a> {
         let read = match reader.borrow_mut().file.as_mut() {
             Some(file) => file.read_until(b'\n', &mut bytes),
             None => {
-                if self.world.input_is_terminal {
+                if self.io.world.borrow().input_is_terminal {
                     self.flush_out()?;
                 }
-                self.world.input.read_until(b'\n', &mut bytes)
+                self.io.world.borrow_mut().input.read_until(b'\n', &mut bytes)
             }
         };
         let start = reader.borrow().done;
@@ -2729,18 +3067,22 @@ impl<'a> Interp<'a> {
         }
         let writer = &mut *writer;
         let result = match &mut writer.sink {
-            Sink::Stdout => match self.out.write_all(bytes).and_then(|()| if flush { self.out.flush() } else { Ok(()) }) {
-                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => return Err(output_failed(error)),
-                other => other,
-            },
+            Sink::Stdout => {
+                let mut out = self.io.out.borrow_mut();
+                match out.write_all(bytes).and_then(|()| if flush { out.flush() } else { Ok(()) }) {
+                    Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => return Err(output_failed(error)),
+                    other => other,
+                }
+            }
             // As `printError`: in a test it is kept for the `FAIL` line.
             Sink::Stderr if self.in_test => {
-                self.test_err.push_str(&String::from_utf8_lossy(bytes));
+                self.io.test_err.borrow_mut().push_str(&String::from_utf8_lossy(bytes));
                 Ok(())
             }
             Sink::Stderr => {
                 self.flush_out()?;
-                self.world.err.write_all(bytes).and_then(|()| if flush { self.world.err.flush() } else { Ok(()) })
+                let mut world = self.io.world.borrow_mut();
+                world.err.write_all(bytes).and_then(|()| if flush { world.err.flush() } else { Ok(()) })
             }
             Sink::File(file) => {
                 writer.buffer.extend_from_slice(bytes);
@@ -2766,7 +3108,7 @@ impl<'a> Interp<'a> {
     }
 
     fn write_line(&mut self, text: &str) -> Res<()> {
-        writeln!(self.out, "{text}").map_err(output_failed)
+        writeln!(self.io.out.borrow_mut(), "{text}").map_err(output_failed)
     }
 }
 

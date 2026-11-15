@@ -1,0 +1,11 @@
+struct Counter {
+    int value
+}
+
+async void main() {
+    var counter = new shared locked Counter { value = 0 }
+    lock counter as c {
+        await Task.delay(1)
+        c.value += 1
+    }
+}

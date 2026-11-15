@@ -1,5 +1,5 @@
 error: `main` is written `void main()` or `Result<void, E> main()`
-  to see the command line: `void main(List<string> args)`
+  to see the command line: `void main(List<string> args)`; to await, `async` in front
   --> error_main_args_type.sg:2:6
  2 | void main(List<int> args) {
    |      ^^^^

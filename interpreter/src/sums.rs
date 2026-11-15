@@ -262,6 +262,7 @@ pub(crate) fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
         | ExprKind::WeakOf(inner)
         | ExprKind::IsNull { expr: inner, .. }
         | ExprKind::Try { expr: inner, .. }
+        | ExprKind::Await(inner)
         | ExprKind::Unbox(inner)
         | ExprKind::AsSlice(inner)
         | ExprKind::Widen(_, inner)

@@ -1,0 +1,5 @@
+error: an async function does not `wait`: that would hold the thread, which other tasks need, until the task ends
+  --> error_async_wait.sg:7:16
+ 7 |     print(task.wait())
+   |                ^^^^
+  hint: `await task` waits without holding the thread

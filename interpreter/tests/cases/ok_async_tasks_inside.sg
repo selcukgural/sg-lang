@@ -1,0 +1,29 @@
+// An async task that starts tasks of its own, a `Task.run` task that waits for an async one,
+// and a delay of zero, which only lets the others go first.
+async int count(int from, int steps) {
+    int total = from
+    for i in 0..steps {
+        await Task.delay(0)
+        total += 1
+    }
+    return total
+}
+
+int blocking(int start) {
+    var task = count(start, 3)
+    return task.wait()
+}
+
+async int both() {
+    var a = count(0, 2)
+    var b = count(100, 1)
+    var c = Task.run(blocking, 10)
+    return await a + await b + await c
+}
+
+async void main() {
+    var first = both()
+    var second = count(1000, 4)
+    print(await first)
+    print(await second)
+}

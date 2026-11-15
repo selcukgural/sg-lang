@@ -1,0 +1,5 @@
+error: `await` is written in an async function
+  --> error_await_outside_async.sg:7:11
+ 7 |     print(await task)
+   |           ^^^^^^^^^^
+  hint: make `main` async (`async` in front of it), or wait for the task here: `task.wait()`

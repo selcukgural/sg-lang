@@ -1,0 +1,5 @@
+error: expected `int`, found `string`
+  `Task.delay(ms)` takes the milliseconds as an `int`
+  --> error_task_delay_type.sg:2:27
+ 2 |     var task = Task.delay("long")
+   |                           ^^^^^^

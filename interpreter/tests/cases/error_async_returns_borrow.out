@@ -1,0 +1,5 @@
+error: the async function `first` returns a `read string`, which cannot come back from a task: a `read string` is a borrow, and the task could outlive what it borrows from
+  what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`
+  --> error_async_returns_borrow.sg:1:7
+ 1 | async read string first(read List<string> names) {
+   |       ^^^^^^^^^^^

@@ -99,6 +99,9 @@ pub struct FieldDecl {
 
 pub struct Func {
     pub public: bool,
+    /// Written with `async`: a call gives a `Task` of what `ret` names, and the body can
+    /// `await`.
+    pub is_async: bool,
     pub ret: TypeExpr,
     pub name: String,
     pub name_span: Span,
@@ -165,6 +168,8 @@ pub enum Callee {
     TaskRun,
     /// `t.wait()`: waits for the task and gives what its function returned; takes the task.
     Wait,
+    /// `Task.delay(ms)`: a task that ends when that many milliseconds have gone by.
+    Delay,
     /// `slot.take()`: gives the value and leaves `null`.
     Take,
     /// `slot.replace(value)`: gives the old value and leaves the new one.
@@ -393,6 +398,9 @@ pub enum ExprKind {
     Coalesce { left: Box<Expr>, right: Box<Expr>, on_result: bool },
     /// `try e`: gives the value, or returns the error (or `null`) to the caller.
     Try { expr: Box<Expr>, kind: TryKind },
+    /// `await e`: waits, in an async function, for the task `e` and gives what it returns.
+    /// `await f(x)` with `f` async runs `f` as part of this task, without a task of its own.
+    Await(Box<Expr>),
     /// `return e` on the right side of `??`.
     Return(Option<Box<Expr>>),
     /// `e is Circle(r)` / `e is not Circle`. `by_ref`: the names are `ref` borrows, otherwise

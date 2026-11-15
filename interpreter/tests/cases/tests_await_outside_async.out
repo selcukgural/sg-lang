@@ -1,0 +1,5 @@
+error: `await` is written in an async function
+  --> tests_await_outside_async.sg:6:12
+ 6 |     assert(await answer() == 42)
+   |            ^^^^^^^^^^^^^^
+  hint: a test waits for the task: `answer().wait()`

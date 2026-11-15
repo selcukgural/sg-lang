@@ -1,0 +1,5 @@
+error: `answer` is async, and an async function is called by its name, not kept as a value
+  --> error_async_value.sg:6:25
+ 6 |     var task = Task.run(answer)
+   |                         ^^^^^^
+  hint: call it: `answer(...)` starts it as a task, `await answer(...)` runs it here

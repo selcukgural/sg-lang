@@ -385,6 +385,8 @@ struct Source {
 struct FuncSig {
     /// Written with `public`: other modules can call it.
     public: bool,
+    /// Written with `async`: a call gives a `Task` of `ret`.
+    is_async: bool,
     this: Option<This>,
     /// The type written in front of `this` (`read FolderRef this`), resolved: a `shared` value
     /// of the struct the method belongs to. The method is called on that value.
@@ -528,7 +530,7 @@ fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
         }
         sources = borrowed;
     }
-    Ok(FuncSig { public: func.public, this: func.this, holder, params, param_names, ret, sources })
+    Ok(FuncSig { public: func.public, is_async: func.is_async, this: func.this, holder, params, param_names, ret, sources })
 }
 
 /// With `tests` the `test` blocks are checked too and `main` may be missing: that is what the
@@ -853,7 +855,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             };
             if !ret_ok || !args_ok {
                 return Err(Diag::error(main.name_span, "`main` is written `void main()` or `Result<void, E> main()`")
-                    .note("to see the command line: `void main(List<string> args)`"));
+                    .note("to see the command line: `void main(List<string> args)`; to await, `async` in front"));
             }
             // The error `main` ends with is written out.
             if let Ty::Result(_, error) = &sigs["main"].ret {
@@ -895,6 +897,8 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             owner,
             module: names.module(func.name_span),
             src,
+            is_async: func.is_async,
+            awaiting: false,
         };
         if let (Some(this), Some(owner)) = (func.this, owner) {
             let ty = match (&sig.holder, names.kinds[owner]) {
@@ -917,6 +921,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             }
             checker.declare(&param.name, ty.clone(), param.span)?;
             checker.find(&param.name).expect("just declared").param = true;
+        }
+        if func.is_async {
+            checker.async_returns(func, &sig.ret)?;
         }
         checker.declare_streams(func.name_span)?;
         checker.block(&mut func.body, &[])?;
@@ -1010,6 +1017,8 @@ fn check_tests(
             owner: None,
             module: names.module(test_span),
             src,
+            is_async: false,
+            awaiting: false,
         };
         checker.declare_streams(test_span)?;
         checker.block(&mut prog.tests[position].body, &[])?;
@@ -1955,6 +1964,11 @@ struct Checker<'a> {
     /// The module the code being checked is in; empty for the root.
     module: &'a str,
     src: &'a str,
+    /// The function being checked is `async`: it can `await`, and it does not `wait`.
+    is_async: bool,
+    /// The call being checked is the one an `await` is written in front of: it runs as part
+    /// of this task, so what it borrows stays here.
+    awaiting: bool,
 }
 
 /// A collection that a `for` is going over by borrowing it: nothing may change it until the
@@ -2216,7 +2230,10 @@ impl<'a> Checker<'a> {
             Some((_, "exit")) => diag.note("`exit` ends the program at once, and would cut the task off"),
             _ => diag.note("every task is waited for: its error is not lost, and no work is cut off"),
         };
-        diag.hint(format!("`{name}.wait()`"))
+        match self.is_async {
+            true => diag.hint(format!("`await {name}`")),
+            false => diag.hint(format!("`{name}.wait()`")),
+        }
     }
 
     fn find(&mut self, name: &str) -> Option<&mut Var> {
@@ -3570,13 +3587,21 @@ impl<'a> Checker<'a> {
             ExprKind::Match { subject, arms, borrowed } => {
                 self.match_expr(subject, arms, borrowed, None, true)?;
             }
-            ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Try { .. } => {
+            ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Try { .. } | ExprKind::Await(_) => {
                 let ty = self.expr(expr, None)?;
                 if matches!(ty, Ty::Task(_)) {
                     let text = &self.src[span.start..span.end];
-                    return Err(Diag::error(span, "this task is started and then not waited for")
-                        .note("every task is waited for: its error is not lost, and no work is cut off when the program ends")
-                        .hint(format!("keep it and wait for it later: `var task = {text}`, then `task.wait()`")));
+                    let diag = Diag::error(span, "this task is started and then not waited for")
+                        .note("every task is waited for: its error is not lost, and no work is cut off when the program ends");
+                    return Err(match self.is_async {
+                        true => diag.hint(format!("`await {text}`, or keep it and await it later: `var task = {text}`, then `await task`")),
+                        false => diag.hint(format!("keep it and wait for it later: `var task = {text}`, then `task.wait()`")),
+                    });
+                }
+                if matches!(expr.kind, ExprKind::Await(_)) && !matches!(ty, Ty::Void | Ty::Result(..)) {
+                    let text = &self.src[span.start..span.end];
+                    return Err(Diag::error(span, format!("the `{ty}` that `{text}` gives is not used"))
+                        .hint(format!("keep it: `var value = {text}`; to drop it on purpose, `_ = {text}`")));
                 }
                 // `line.trim()` alone changes nothing: a built-in method that only gives a value
                 // gives it to nobody.
@@ -4398,6 +4423,10 @@ impl<'a> Checker<'a> {
         // The name of a function is a value: its address.
         if let ExprKind::Var(name) = &expr.kind {
             let sig = &self.sigs[name.as_str()];
+            if sig.is_async {
+                return Err(Diag::error(expr.span, format!("`{}` is async, and an async function is called by its name, not kept as a value", short_name(name)))
+                    .hint(format!("call it: `{}(...)` starts it as a task, `await {}(...)` runs it here", short_name(name), short_name(name))));
+            }
             let ty = Ty::Func(sig.params.clone(), Box::new(sig.ret.clone()));
             expr.kind = ExprKind::FuncRef(name.clone());
             return Ok(ty);
@@ -4934,6 +4963,7 @@ impl<'a> Checker<'a> {
                 Ok(inner)
             }
             ExprKind::Try { expr: inner, kind } => self.try_expr(inner, kind, span),
+            ExprKind::Await(inner) => self.await_expr(inner, span),
             ExprKind::Return(value) => {
                 self.returned(value.as_deref_mut(), span)?;
                 Ok(Ty::Never)
@@ -6047,6 +6077,7 @@ impl<'a> Checker<'a> {
     }
 
     fn call(&mut self, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+        let awaited = std::mem::take(&mut self.awaiting);
         let arity = |count: usize| {
             if args.len() == count {
                 Ok(())
@@ -6153,10 +6184,86 @@ impl<'a> Checker<'a> {
                         None => diag,
                     });
                 };
+                if !sig.is_async {
+                    self.args(name, args, &sig.params, span)?;
+                    return Ok(sig.ret.clone());
+                }
+                // Called without `await`, the function starts as a task of its own, which may
+                // run on another thread while this one goes on: what it takes and gives follows
+                // the thread rule, as with `Task.run`.
+                if !awaited {
+                    for (position, param) in sig.params.iter().enumerate().take(args.len()) {
+                        if let Some((part, at)) = stays(param, self.structs, self.enums, self.names, &mut Vec::new()) {
+                            let what = if part == *param { String::new() } else { format!(", which holds a `{part}`{at}") };
+                            let text = &self.src[span.start..span.end];
+                            let diag = Diag::error(args[position].span, format!("`{}` takes a `{param}` here{what}, and a call without `await` starts it as a task of its own, which this cannot go to: {}", short_name(name), why_it_stays(&part, self.names)));
+                            return Err(match &part {
+                                Ty::Read(_) | Ty::Ref(_) if self.is_async => diag.hint(format!("`await {text}` runs it as part of this task, where it can borrow")),
+                                Ty::Read(inner) | Ty::Ref(inner) => diag.hint(format!("give the task a value of its own: a `{inner}` to own, or a `shared {inner}` that both keep")),
+                                _ => diag.note(THREAD_RULE),
+                            });
+                        }
+                    }
+                }
                 self.args(name, args, &sig.params, span)?;
-                Ok(sig.ret.clone())
+                Ok(Ty::Task(Box::new(sig.ret.clone())))
             }
         }
+    }
+
+    /// What an async function returns comes back from its task, which may have run on another
+    /// thread: it follows the thread rule.
+    fn async_returns(&self, func: &Func, ret: &Ty) -> Res<()> {
+        if let Some((part, at)) = stays(ret, self.structs, self.enums, self.names, &mut Vec::new()) {
+            let what = if part == *ret { String::new() } else { format!(", which holds a `{part}`{at}") };
+            return Err(Diag::error(func.ret.span, format!("the async function `{}` returns a `{ret}`{what}, which cannot come back from a task: {}", short_name(&func.name), why_it_stays(&part, self.names)))
+                .note(THREAD_RULE));
+        }
+        Ok(())
+    }
+
+    /// `await task`, `await f(x)`: waits for the task without holding the thread, and gives
+    /// what its function returned. Takes the task.
+    fn await_expr(&mut self, inner: &mut Expr, span: Span) -> Res<Ty> {
+        if !self.is_async {
+            let text = &self.src[inner.span.start..inner.span.end];
+            let diag = Diag::error(span, "`await` is written in an async function");
+            return Err(match self.in_test {
+                true => diag.hint(format!("a test waits for the task: `{text}.wait()`")),
+                false => diag.hint(format!("make `{}` async (`async` in front of it), or wait for the task here: `{text}.wait()`", short_name(&self.func_name))),
+            });
+        }
+        // `await stock.load(read xs)`: the function of a module is a call too.
+        self.unqualify(inner);
+        let (ty, is_place) = match self.place(inner)? {
+            Some((ty, _)) => (ty, true),
+            None => {
+                if matches!(inner.kind, ExprKind::Call { .. }) {
+                    self.awaiting = true;
+                }
+                let ty = self.expr(inner, None);
+                self.awaiting = false;
+                (ty?, false)
+            }
+        };
+        let Ty::Task(result) = ty.strip_borrow() else {
+            let diag = Diag::error(inner.span, format!("`await` waits for a task, and this is a `{ty}`"));
+            return Err(match &inner.kind {
+                ExprKind::Call { name, .. } if self.sigs.contains_key(name.as_str()) => {
+                    diag.hint(format!("`{}` is not async, so its call gives the value at once: drop the `await`", short_name(name)))
+                }
+                _ => diag,
+            });
+        };
+        let result = (**result).clone();
+        if ty.is_borrow() {
+            return Err(Diag::error(inner.span, "`await` takes the task and uses it up, and this one is only borrowed").note("whoever started the task waits for it"));
+        }
+        if is_place {
+            self.move_out(inner, &ty)?;
+            inner.moved = true;
+        }
+        Ok(result)
     }
 
     /// `Stack.create(args)`: a function of the struct that does not take `this`.
@@ -6241,8 +6348,17 @@ impl<'a> Checker<'a> {
     /// `Task.run(work, a, b)`: starts `work(a, b)` as a task of its own. The arguments are
     /// checked as in a call; what the function takes and gives follows the thread rule.
     fn task_run(&mut self, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+        // `Task.delay(ms)`: a task that only lets time go by.
+        if name == "delay" {
+            if args.len() != 1 {
+                return Err(Diag::error(span, format!("`Task.delay` takes 1 argument(s), {} given", args.len())).hint("`Task.delay(100)` ends after 100 milliseconds"));
+            }
+            self.typed(&mut args[0], &Ty::Int(IntTy::Int)).map_err(|diag| diag.note("`Task.delay(ms)` takes the milliseconds as an `int`"))?;
+            *callee = Callee::Delay;
+            return Ok(Ty::Task(Box::new(Ty::Void)));
+        }
         if name != "run" {
-            return Err(Diag::error(name_span, format!("`Task` has the function `run`, not `{name}`")).hint("`Task.run(work, x)` starts `work(x)` as a task"));
+            return Err(Diag::error(name_span, format!("`Task` has the functions `run` and `delay`, not `{name}`")).hint("`Task.run(work, x)` starts `work(x)` as a task"));
         }
         let Some((first, rest)) = args.split_first_mut() else {
             return Err(Diag::error(span, "`Task.run` takes the function to start, then what it is given: `Task.run(work, x)`"));
@@ -6433,6 +6549,11 @@ impl<'a> Checker<'a> {
             }
             if !args.is_empty() {
                 return Err(Diag::error(span, format!("`wait` takes 0 argument(s), {} given", args.len())));
+            }
+            if self.is_async {
+                let task = &self.src[recv.span.start..recv.span.end];
+                return Err(Diag::error(name_span, "an async function does not `wait`: that would hold the thread, which other tasks need, until the task ends")
+                    .hint(format!("`await {task}` waits without holding the thread")));
             }
             if recv_ty.is_borrow() || !is_place {
                 return Err(Diag::error(recv.span, "`wait` takes the task and uses it up, and this one is only borrowed").note("whoever started the task waits for it"));
@@ -7491,6 +7612,7 @@ fn parts(expr: &Expr) -> Vec<Part<'_>> {
         | ExprKind::Unbox(inner)
         | ExprKind::AsSlice(inner)
         | ExprKind::Try { expr: inner, .. }
+        | ExprKind::Await(inner)
         | ExprKind::Return(Some(inner))
         | ExprKind::Unary(_, inner)
         | ExprKind::Cast { expr: inner, .. }
@@ -7709,7 +7831,7 @@ fn leaves(block: &Block, in_loop: bool) -> bool {
         StmtKind::Return(_) => true,
         StmtKind::Break | StmtKind::Continue => in_loop,
         StmtKind::If { then, els: Some(els), .. } => leaves(then, in_loop) && leaves(els, in_loop),
-        StmtKind::As { body, .. } => leaves(body, in_loop),
+        StmtKind::As { body, .. } | StmtKind::Lock { body, .. } => leaves(body, in_loop),
         StmtKind::While { cond, body, .. } => matches!(cond.kind, ExprKind::Bool(true)) && !has_break(body),
         StmtKind::Expr(expr) => never_returns(expr, in_loop),
         _ => false,

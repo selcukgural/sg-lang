@@ -1,0 +1,4 @@
+async void main() {
+    print("before")
+    await Task.delay(-5)
+}

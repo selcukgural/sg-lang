@@ -1,4 +1,4 @@
-error: `Task` has the function `run`, not `start`
+error: `Task` has the functions `run` and `delay`, not `start`
   --> error_task_run_name.sg:6:18
  6 |     var t = Task.start(twice, 1)
    |                  ^^^^^

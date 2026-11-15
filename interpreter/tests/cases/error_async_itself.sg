@@ -1,0 +1,10 @@
+async int countDown(int n) {
+    if n == 0 {
+        return 0
+    }
+    return 1 + await countDown(n - 1)
+}
+
+async void main() {
+    print(await countDown(3))
+}

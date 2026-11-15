@@ -1,0 +1,9 @@
+slow starts
+fast starts
+both started
+fast ends after 10 ms
+slow ends after 30 ms
+slow awaited
+third starts
+third ends after 5 ms
+done

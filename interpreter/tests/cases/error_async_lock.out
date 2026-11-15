@@ -1,0 +1,6 @@
+error: a `lock` block does not await a task
+  a task that holds a lock never waits, so it always lets the lock go: locks and waits cannot deadlock
+  --> error_async_lock.sg:8:9
+ 8 |         await Task.delay(1)
+   |         ^^^^^^^^^^^^^^^^^^^
+  hint: await the task before the block or after it

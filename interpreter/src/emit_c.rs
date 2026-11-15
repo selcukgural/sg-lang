@@ -1985,6 +1985,9 @@ static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) 
 /// debug build, where `+`, `-`, `*` and unary `-` panic on overflow; without it, a release
 /// build, where they wrap. `tests`: the program that runs the `test` blocks instead of `main`.
 pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Res<String> {
+    if let Some(func) = prog.funcs.iter().find(|func| func.is_async) {
+        return Err(not_yet(func.name_span, "an `async` function"));
+    }
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let mut emitter = Emitter {
@@ -2501,6 +2504,7 @@ fn may_leave(expr: &Expr) -> bool {
     let any = |list: &mut dyn Iterator<Item = &Expr>| list.filter(|inner| may_leave(inner)).count() > 0;
     match &expr.kind {
         ExprKind::Try { .. } | ExprKind::Return(_) | ExprKind::Match { .. } => true,
+        ExprKind::Await(_) => unreachable!("a program with `async` functions is not compiled yet"),
         ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::Constant { .. } => false,
         ExprKind::Array { args, items, .. } => any(&mut args.iter().chain(items.iter().flatten())),
         ExprKind::AsSlice(inner) => may_leave(inner),
@@ -6103,6 +6107,7 @@ impl<'a> Emitter<'a> {
                 own.max(of(recv)).max(all(&mut args.iter()))
             }
             ExprKind::Try { .. } | ExprKind::Return(_) => Effect::Acts,
+            ExprKind::Await(_) => unreachable!("a program with `async` functions is not compiled yet"),
             ExprKind::Match { .. } | ExprKind::Collection { .. } => Effect::Changes,
             // An array is its items and nothing else: nothing is allocated for it.
             ExprKind::Array { args, items, .. } => all(&mut args.iter().chain(items.iter().flatten())),
@@ -7788,6 +7793,7 @@ impl<'a> Emitter<'a> {
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
                 Callee::TaskRun => self.task_run(args, head, expr),
+                Callee::Delay => Err(not_yet(expr.span, "`Task.delay`")),
                 // `t.wait()`: the task is taken (the checker marked the move), joined and freed.
                 Callee::Wait => {
                     let task = self.first(recv, head)?;

@@ -1,0 +1,25 @@
+async Result<int, string> parse(string text) {
+    await Task.delay(1)
+    if text == "" {
+        return Error("empty")
+    }
+    return Ok((int)text.length())
+}
+
+test "an async function is waited for in a test" {
+    var task = parse("four")
+    assert(try task.wait() == 4)
+}
+
+test "an error of an awaited task fails the test" {
+    var task = parse("")
+    var length = try task.wait()
+    assert(length == 0)
+}
+
+test "a task left after an error is waited for" {
+    var kept = parse("kept")
+    var task = parse("")
+    _ = try task.wait()
+    _ = kept.wait()
+}

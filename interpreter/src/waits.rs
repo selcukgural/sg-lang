@@ -2,6 +2,11 @@
 //! a function that does one of these, followed through the calls. A task that holds a lock
 //! then never waits, so it always lets the lock go, and locks and waits cannot deadlock.
 //!
+//! An async function does not hold its thread: inside it there is no `wait`, no input or
+//! output that holds the thread until it is done, and no call of a function that does one of
+//! these. And an async function does not await itself, directly or around: the task of a call
+//! that is awaited lies inside the task of the caller, which would then have no end.
+//!
 //! Runs after the checker, on the whole program: whether a function waits depends on the
 //! functions it calls, wherever they are written. A call through a `Func` is taken to wait
 //! when any function whose address the program takes, with as many parameters and the same
@@ -16,11 +21,21 @@ use crate::types::Ty;
 
 type Res<T> = Result<T, Diag>;
 
-/// Why a function waits.
+/// How a function waits by itself.
+#[derive(Clone, Copy, PartialEq)]
+enum How {
+    Lock,
+    Wait,
+    Await,
+}
+
+/// Why a function waits, or holds its thread.
 #[derive(Clone)]
 enum Why {
-    /// It takes a lock (`true`) or waits for a task (`false`) here.
-    Itself(Span, bool),
+    /// It takes a lock, waits for a task or awaits one here; or, for holding the thread, it
+    /// does what the text says here.
+    Itself(Span, How),
+    Holds(Span, String),
     /// It calls this function, which waits.
     Calls(String),
     /// It calls a function value that could be this function, which waits.
@@ -30,8 +45,13 @@ enum Why {
 /// What one body does that matters here, in the order it is written.
 #[derive(Default)]
 struct Body {
-    /// The first `lock` or `wait` written in it (not counting what calls do).
-    itself: Option<(Span, bool)>,
+    /// The first `lock`, `wait` or `await` written in it (not counting what calls do).
+    itself: Option<(Span, How)>,
+    /// The first thing written in it that holds the thread until it is done: a `wait`, input
+    /// or output that is not async. What it is, for the message.
+    holds: Option<(Span, String)>,
+    /// The async functions it awaits by name, with where.
+    awaits: Vec<(String, Span)>,
     /// The functions it calls by name, with where.
     calls: Vec<(String, Span)>,
     /// The calls through a function value: how many arguments, the return type, where.
@@ -65,7 +85,7 @@ pub fn check(prog: &Program) -> Res<()> {
         // The one written first.
         if let Some(span) = lock {
             if scan.itself.is_none_or(|(wait, _)| span.start < wait.start) {
-                scan.itself = Some((span, true));
+                scan.itself = Some((span, How::Lock));
             }
         }
         scans.insert(name, scan);
@@ -106,6 +126,155 @@ pub fn check(prog: &Program) -> Res<()> {
     for test in &prog.tests {
         locks_in(&test.body, &waits, &taken)?;
     }
+
+    // Which functions hold their thread, found the same way. An async function never does
+    // (that is refused below), and its call only starts a task.
+    let asyncs: HashMap<&str, &Func> = prog.funcs.iter().filter(|func| func.is_async).map(|func| (func.name.as_str(), func)).collect();
+    let mut holds: HashMap<String, Why> = HashMap::new();
+    for (name, scan) in &scans {
+        if let Some((span, what)) = &scan.holds {
+            holds.insert(name.to_string(), Why::Holds(*span, what.clone()));
+        }
+    }
+    loop {
+        let mut found = Vec::new();
+        for (name, scan) in &scans {
+            if holds.contains_key(*name) || asyncs.contains_key(name) {
+                continue;
+            }
+            if let Some((callee, _)) = scan.calls.iter().find(|(callee, _)| holds.contains_key(callee)) {
+                found.push((name.to_string(), Why::Calls(callee.clone())));
+            } else if let Some(target) = scan.values.iter().find_map(|(count, ret, _)| value_target(&taken, &holds, *count, ret)) {
+                found.push((name.to_string(), Why::CallsValue(target)));
+            }
+        }
+        if found.is_empty() {
+            break;
+        }
+        holds.extend(found);
+    }
+    for func in prog.funcs.iter().filter(|func| func.is_async) {
+        held_in(&func.body, &holds, &taken)?;
+    }
+    for func in prog.funcs.iter().filter(|func| func.is_async) {
+        awaits_itself(func, &scans, &asyncs)?;
+    }
+    Ok(())
+}
+
+/// Refuses what holds the thread in the body of an async function.
+fn held_in(body: &Block, holds: &HashMap<String, Why>, taken: &[(String, usize, Ty)]) -> Res<()> {
+    let mut error: Option<Diag> = None;
+    walk_block(
+        body,
+        &mut |expr| {
+            if error.is_some() {
+                return;
+            }
+            let call = |name: &str, span: Span| {
+                holds.get(name)?;
+                let diag = Diag::error(span, format!("`{}` holds the thread until it is done, and an async function does not hold its thread", short_name(name)));
+                Some(explained(diag, name, holds).note(NO_HOLD).hint(RUN_APART))
+            };
+            error = match &expr.kind {
+                // `wait` itself is refused by the checker, with its own hint.
+                ExprKind::Method { callee: Callee::Wait, .. } => None,
+                _ if holding(expr).is_some() => {
+                    let (span, what) = holding(expr).expect("just seen");
+                    Some(Diag::error(span, format!("{what} holds the thread until it is done, and an async function does not hold its thread")).note(NO_HOLD).hint(RUN_APART))
+                }
+                ExprKind::Method { name, name_span, callee: Callee::Method { owner, .. }, .. } => call(&format!("{owner}.{name}"), *name_span),
+                ExprKind::Call { callee: Callee::Static { owner, name }, name_span, .. } => call(&format!("{owner}.{name}"), *name_span),
+                ExprKind::Call { name, name_span, callee: Callee::Plain, .. } => call(name, *name_span),
+                ExprKind::Call { args, name_span, callee: Callee::Value | Callee::FieldValue(_), .. }
+                | ExprKind::Method { args, name_span, callee: Callee::FieldValue(_), .. } => value_target(taken, holds, args.len(), &expr.ty).map(|target| {
+                    let diag = Diag::error(*name_span, format!("this function value could be `{}`, which holds the thread until it is done, and an async function does not hold its thread", short_name(&target)));
+                    explained(diag, &target, holds).note(NO_HOLD).hint(RUN_APART)
+                }),
+                _ => None,
+            };
+        },
+        &mut |_| {},
+    );
+    error.map_or(Ok(()), Err)
+}
+
+const NO_HOLD: &str = "the tasks of async functions share a few threads: one that holds its thread keeps the others from running";
+const RUN_APART: &str = "a function that does it runs on a thread of its own with `await Task.run(work, x)`";
+
+/// What an expression does by itself that holds the thread until it is done, as the
+/// message names it: input or output that is not async, or a `wait`. Writing to the output
+/// and to the standard error is not counted, as `print` is not.
+fn holding(expr: &Expr) -> Option<(Span, String)> {
+    match &expr.kind {
+        ExprKind::Method { callee: Callee::Wait, name_span, .. } => Some((*name_span, "`wait`".to_string())),
+        ExprKind::Call { callee: Callee::Io(call), name_span, .. } | ExprKind::Method { callee: Callee::Io(call), name_span, .. } => {
+            Some((*name_span, format!("`File.{}`", call.name())))
+        }
+        ExprKind::Method { recv, name, name_span, callee: Callee::Stream(_), .. } => match stream_name(recv) {
+            Some("Stdout" | "Stderr") => None,
+            Some("Stdin") => Some((*name_span, format!("`Stdin.{name}`"))),
+            _ => Some((*name_span, format!("`{name}` on a file"))),
+        },
+        _ => None,
+    }
+}
+
+/// `Stdin`, `Stdout` or `Stderr`, when the expression is one of them.
+fn stream_name(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Var(name) if matches!(name.as_str(), "Stdin" | "Stdout" | "Stderr") => Some(name),
+        ExprKind::Borrow { expr: inner, .. } | ExprKind::Load(inner) | ExprKind::Unbox(inner) => stream_name(inner),
+        _ => None,
+    }
+}
+
+/// Refuses an async function that awaits itself, directly or through other async functions.
+fn awaits_itself(func: &Func, scans: &HashMap<&str, Body>, asyncs: &HashMap<&str, &Func>) -> Res<()> {
+    let start = func.name.as_str();
+    // Breadth first, with the way back to `start` for the message.
+    let mut came_from: HashMap<&str, (&str, Span)> = HashMap::new();
+    let mut queue: Vec<&str> = vec![start];
+    let mut at = 0;
+    while at < queue.len() {
+        let name = queue[at];
+        at += 1;
+        for (callee, span) in &scans[name].awaits {
+            if !asyncs.contains_key(callee.as_str()) {
+                continue;
+            }
+            if callee == start {
+                // The chain from `start` to here.
+                let mut chain = vec![(name, *span)];
+                let mut back = name;
+                while back != start {
+                    let (from, span) = came_from[back];
+                    chain.push((from, span));
+                    back = from;
+                }
+                chain.reverse();
+                let (_, first) = chain[0];
+                let short = short_name(start);
+                let diag = match chain.len() {
+                    1 => Diag::error(first, format!("the async function `{short}` awaits itself")),
+                    _ => {
+                        let names: Vec<String> = chain.iter().map(|(name, _)| format!("`{}`", short_name(name))).collect();
+                        let (last_name, last_span) = chain[chain.len() - 1];
+                        Diag::error(first, format!("the async function `{short}` awaits itself around: {} awaits `{short}`", names.join(" awaits ")))
+                            .related(last_span, format!("`{}` awaits `{short}` here", short_name(last_name)))
+                    }
+                };
+                return Err(diag
+                    .note("an awaited call runs inside the task of its caller, so a task that holds itself would have no end")
+                    .hint("keep the call's task in a variable, which gives it a task of its own: `var task = f(x)`, then `await task`"));
+            }
+            let callee = asyncs[callee.as_str()].name.as_str();
+            if !came_from.contains_key(callee) && callee != start {
+                came_from.insert(callee, (name, *span));
+                queue.push(callee);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -118,9 +287,18 @@ fn value_target(taken: &[(String, usize, Ty)], waits: &HashMap<String, Why>, cou
 /// Records what one expression does: a `wait`, a call, a call through a value, a function
 /// whose address is taken.
 fn look(expr: &Expr, scan: &mut Body, taken: &mut Vec<(String, usize, Ty)>) {
+    if scan.holds.is_none() {
+        scan.holds = holding(expr);
+    }
     match &expr.kind {
         ExprKind::Method { callee: Callee::Wait, name_span, .. } => {
-            scan.itself.get_or_insert((*name_span, false));
+            scan.itself.get_or_insert((*name_span, How::Wait));
+        }
+        ExprKind::Await(inner) => {
+            scan.itself.get_or_insert((expr.span, How::Await));
+            if let ExprKind::Call { name, name_span, callee: Callee::Plain, .. } = &inner.kind {
+                scan.awaits.push((name.clone(), *name_span));
+            }
         }
         ExprKind::Method { name, name_span, callee: Callee::Method { owner, .. }, .. } => scan.calls.push((format!("{owner}.{name}"), *name_span)),
         ExprKind::Call { callee: Callee::Static { owner, name }, name_span, .. } => scan.calls.push((format!("{owner}.{name}"), *name_span)),
@@ -276,6 +454,11 @@ fn inside(body: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize, T
                         .note(NO_WAIT)
                         .hint("wait for the task before the block or after it"),
                 ),
+                ExprKind::Await(_) => Some(
+                    Diag::error(expr.span, "a `lock` block does not await a task")
+                        .note(NO_WAIT)
+                        .hint("await the task before the block or after it"),
+                ),
                 ExprKind::Method { name, name_span, callee: Callee::Method { owner, .. }, .. } => called(&format!("{owner}.{name}"), *name_span, waits),
                 ExprKind::Call { callee: Callee::Static { owner, name }, name_span, .. } => called(&format!("{owner}.{name}"), *name_span, waits),
                 ExprKind::Call { name, name_span, callee: Callee::Plain, .. } => called(name, *name_span, waits),
@@ -318,8 +501,19 @@ fn explained(diag: Diag, name: &str, waits: &HashMap<String, Why>) -> Diag {
     let mut at = name.to_string();
     for _ in 0..waits.len() {
         match &waits[&at] {
-            Why::Itself(span, lock) => {
-                let what = if *lock { "takes a lock" } else { "waits for a task" };
+            Why::Holds(span, what) => {
+                let path = match chain.len() {
+                    1 => format!("`{}` does {what} here", chain[0]),
+                    _ => format!("{}, which does {what} here", chain.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(" calls ")),
+                };
+                return diag.related(*span, path);
+            }
+            Why::Itself(span, how) => {
+                let what = match how {
+                    How::Lock => "takes a lock",
+                    How::Wait => "waits for a task",
+                    How::Await => "awaits a task",
+                };
                 let path = match chain.len() {
                     1 => format!("`{}` {what} here", chain[0]),
                     _ => format!("{} {what} here", chain.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(" calls ")),

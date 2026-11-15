@@ -1,0 +1,5 @@
+error: `total` takes a `read List<int>` here, and a call without `await` starts it as a task of its own, which this cannot go to: a `read List<int>` is a borrow, and the task could outlive what it borrows from
+  --> error_async_borrow_from_sync.sg:7:22
+ 7 |     var task = total(read xs)
+   |                      ^^^^^^^
+  hint: give the task a value of its own: a `List<int>` to own, or a `shared List<int>` that both keep

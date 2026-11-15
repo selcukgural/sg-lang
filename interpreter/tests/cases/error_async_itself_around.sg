@@ -1,0 +1,17 @@
+async int even(int n) {
+    if n == 0 {
+        return 1
+    }
+    return await odd(n - 1)
+}
+
+async int odd(int n) {
+    if n == 0 {
+        return 0
+    }
+    return await even(n - 1)
+}
+
+async void main() {
+    print(await even(4))
+}

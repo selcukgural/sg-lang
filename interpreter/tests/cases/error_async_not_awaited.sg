@@ -1,0 +1,8 @@
+async void hello() {
+    print("hello")
+}
+
+async void main() {
+    var task = hello()
+    print("started")
+}

@@ -1,0 +1,42 @@
+// `try await` passes an error on; `await f(read xs)` runs `f` as part of this task, so it
+// can borrow; work that holds a thread runs apart with `await Task.run(...)`; code that is
+// not async waits for an async task with `wait`.
+int square(int x) {
+    return x * x
+}
+
+async Result<int, string> half(int x) {
+    await Task.delay(1)
+    if x % 2 != 0 {
+        return Error($"{x} is odd".toString())
+    }
+    return Ok(x / 2)
+}
+
+async Result<int, string> halves(read List<int> xs) {
+    int total = 0
+    for x in xs {
+        total += try await half(x)
+    }
+    return Ok(total)
+}
+
+async Result<void, string> run() {
+    var evens = List<int> { 2, 4, 6 }
+    print(try await halves(read evens))
+    var squared = await Task.run(square, 7)
+    print(squared)
+    var first = half(10)
+    var second = half(20)
+    print(try await first + try await second)
+    var mixed = List<int> { 8, 3 }
+    print(try await halves(read mixed))
+    return Ok()
+}
+
+void main() {
+    var task = run()
+    if task.wait() is Error(cause) {
+        print($"run: {cause}")
+    }
+}

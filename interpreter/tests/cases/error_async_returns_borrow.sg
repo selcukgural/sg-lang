@@ -1,0 +1,6 @@
+async read string first(read List<string> names) {
+    return read names[0]
+}
+
+void main() {
+}

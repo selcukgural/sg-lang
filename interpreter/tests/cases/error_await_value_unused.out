@@ -1,0 +1,5 @@
+error: the `int` that `await answer()` gives is not used
+  --> error_await_value_unused.sg:6:5
+ 6 |     await answer()
+   |     ^^^^^^^^^^^^^^
+  hint: keep it: `var value = await answer()`; to drop it on purpose, `_ = await answer()`

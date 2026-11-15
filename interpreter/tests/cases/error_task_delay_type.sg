@@ -1,0 +1,4 @@
+void main() {
+    var task = Task.delay("long")
+    task.wait()
+}

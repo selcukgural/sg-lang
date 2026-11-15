@@ -1,0 +1,19 @@
+// An async function called without `await` starts at once and runs until it first waits;
+// then the caller goes on. In the interpreter the clock moves only when every task waits,
+// so the order is the same on every run.
+async void worker(string name, int ms) {
+    print($"{name} starts")
+    await Task.delay(ms)
+    print($"{name} ends after {ms} ms")
+}
+
+async void main() {
+    var slow = worker("slow", 30)
+    var fast = worker("fast", 10)
+    print("both started")
+    await slow
+    print("slow awaited")
+    await fast
+    await worker("third", 5)
+    print("done")
+}

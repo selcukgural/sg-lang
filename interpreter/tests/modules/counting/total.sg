@@ -1,0 +1,9 @@
+// An async function of a module, which borrows what it adds up.
+public async int total(read List<int> xs) {
+    int sum = 0
+    for x in xs {
+        await Task.delay(1)
+        sum += x
+    }
+    return sum
+}

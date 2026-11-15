@@ -1,0 +1,21 @@
+struct Counter {
+    int value
+}
+
+async int slow() {
+    await Task.delay(1)
+    return 1
+}
+
+Task<int> start(shared locked Counter counter) {
+    lock counter as c {
+        c.value += 1
+        return slow()
+    }
+}
+
+void main() {
+    var counter = new shared locked Counter { value = 0 }
+    var task = start(share counter)
+    print(task.wait())
+}

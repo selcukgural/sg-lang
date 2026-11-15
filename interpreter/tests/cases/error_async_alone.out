@@ -1,0 +1,6 @@
+error: this task is started and then not waited for
+  every task is waited for: its error is not lost, and no work is cut off when the program ends
+  --> error_async_alone.sg:6:5
+ 6 |     hello()
+   |     ^^^^^^^
+  hint: `await hello()`, or keep it and await it later: `var task = hello()`, then `await task`

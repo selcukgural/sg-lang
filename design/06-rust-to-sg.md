@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the fifty-eighth slice.
+Last brought up to date: 15 November 2026, the fifty-ninth slice.
 
 ## Functions and variables
 
@@ -193,7 +193,13 @@ Last brought up to date: 15 November 2026, the fifty-eighth slice.
 | a lock held across a wait | a compile error | built | Nothing in a `lock` block waits, so locks and waits cannot deadlock |
 | lock poisoning | none | built | A panic stops the process |
 | `static`, `thread_local!` | none | not in SG | No global variables: what tasks share is in the arguments of `Task.run` |
-| `async fn`, `.await`, tokio | `async`, `await t`, one built-in runtime | designed | C#'s behaviour, compiled as Rust compiles it ("Async, the direction") |
+| `async fn`, `.await` | `async int f()`, `await t`, `await f(x)` | interpreter | C#'s behaviour: a call starts the task at once; a call alone on a line is an error. Compiled as Rust compiles it ("Async, the direction") |
+| `tokio::spawn(f(x))` | `var t = f(x)` (no `await`) | interpreter | What it is given follows the thread rule; `await f(read x)` can borrow, as an awaited future does |
+| `tokio::time::sleep(d).await` | `await Task.delay(ms)` | interpreter | |
+| `block_on(f())` | `f().wait()` in code that is not async | interpreter | `wait` in an async function is an error |
+| `spawn_blocking(work)` | `await Task.run(work, x)` | interpreter | A call that holds the thread in an async function is an error, followed through the calls |
+| `Box::pin(f(n - 1)).await` | `var t = f(n - 1)`, then `await t` | interpreter | An async function that awaits itself is an error |
+| tokio, async-std, smol | one built-in runtime | designed | |
 
 ## Modules
 

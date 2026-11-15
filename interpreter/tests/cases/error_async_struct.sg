@@ -1,0 +1,6 @@
+async struct Store {
+    int count
+}
+
+void main() {
+}

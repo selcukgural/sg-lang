@@ -1,0 +1,6 @@
+error: the async function `countDown` awaits itself
+  an awaited call runs inside the task of its caller, so a task that holds itself would have no end
+  --> error_async_itself.sg:5:22
+ 5 |     return 1 + await countDown(n - 1)
+   |                      ^^^^^^^^^
+  hint: keep the call's task in a variable, which gives it a task of its own: `var task = f(x)`, then `await task`

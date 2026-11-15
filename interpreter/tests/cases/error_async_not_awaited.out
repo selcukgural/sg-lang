@@ -1,0 +1,6 @@
+error: `task` is not waited for before its block ends
+  every task is waited for: its error is not lost, and no work is cut off
+  --> error_async_not_awaited.sg:6:9
+ 6 |     var task = hello()
+   |         ^^^^
+  hint: `await task`

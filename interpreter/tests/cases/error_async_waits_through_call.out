@@ -1,0 +1,10 @@
+error: `both` holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_async_waits_through_call.sg:11:11
+ 11 |     print(both())
+    |           ^^^^
+  `both` does `wait` here:
+  --> error_async_waits_through_call.sg:7:17
+ 7 |     return task.wait()
+   |                 ^^^^
+  hint: a function that does it runs on a thread of its own with `await Task.run(work, x)`

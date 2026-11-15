@@ -1,0 +1,12 @@
+int twice(int x) {
+    return x * 2
+}
+
+int both() {
+    var task = Task.run(twice, 4)
+    return task.wait()
+}
+
+async void main() {
+    print(both())
+}
