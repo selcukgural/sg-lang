@@ -77,20 +77,41 @@ impl Diag {
             Kind::Panic => "panic",
             Kind::Leak => "leak",
         };
-        let mut text = format!("{label}: {}\n", self.msg);
+        let mut text = format!("{label}: {}\n", unprefixed(&self.msg));
         for note in &self.notes {
-            text.push_str(&format!("  {note}\n"));
+            text.push_str(&format!("  {}\n", unprefixed(note)));
         }
         text.push_str(&sources.snippet(self.span));
         if let Some((span, note)) = self.related.as_deref() {
-            text.push_str(&format!("  {note}:\n"));
+            text.push_str(&format!("  {}:\n", unprefixed(note)));
             text.push_str(&sources.snippet(*span));
         }
         if let Some(hint) = &self.hint {
-            text.push_str(&format!("  hint: {hint}\n"));
+            text.push_str(&format!("  hint: {}\n", unprefixed(hint)));
         }
         text
     }
+}
+
+/// A message names the types of the language's own module as a program writes them: `Duration`,
+/// not `std.Duration`. No module of a program is named `std`, so the prefix is always theirs.
+fn unprefixed(text: &str) -> std::borrow::Cow<'_, str> {
+    let prefix = format!("{}.", crate::source::STD_MODULE);
+    if !text.contains(&prefix) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(&prefix) {
+        let joined = rest[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.');
+        out.push_str(&rest[..at]);
+        if joined {
+            out.push_str(&prefix);
+        }
+        rest = &rest[at + prefix.len()..];
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
 }
 
 /// Location, source line and a marker under the span.

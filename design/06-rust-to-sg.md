@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the seventy-first slice.
+Last brought up to date: 15 November 2026, the seventy-second slice.
 
 ## Functions and variables
 
@@ -274,6 +274,18 @@ Last brought up to date: 15 November 2026, the seventy-first slice.
 | `tokio::net::TcpListener`, `TcpStream`, `.await` | `await listener.acceptAsync()`, `connectAsync`, `receiveAsync`, `sendAsync` | built | A token may come last, and a cancel ends a wait at once; what came stays in the socket |
 | `stream.into_split()`, `Arc<TcpStream>` sent on from several threads, `stream.shutdown(Write)`, `peer_addr()`, `set_nodelay` | none yet | designed | Later slices of the network |
 | `UdpSocket` | none yet | designed | |
+
+## Time
+
+| Rust | SG | Status | Note |
+|---|---|---|---|
+| `std::time::Instant::now()`, `start.elapsed()`, `later.duration_since(earlier)` | `Instant.now()`, `start.elapsed()`, `later.since(earlier)` | built | `since` gives a negative `Duration` where Rust's saturates at zero; an `Instant` is not printed |
+| `std::time::Duration::from_millis(250)`, `d.as_millis()`, `d.as_secs_f64()` | `Duration.fromMilliseconds(250)`, `d.milliseconds()`, `d.totalSeconds()` | built | A `long` of nanoseconds that may be negative; `{:?}` and `print(d)` both write `1.5s` |
+| `a + b`, `a - b`, `d * 3`, `a.checked_add(b)` | `a.plus(b)`, `a.minus(b)`, `d.times(3)` | built | Methods; an overflow follows the rule of the numbers, so there is no `checked_` form yet |
+| `SystemTime::now()`, `.duration_since(UNIX_EPOCH)` | `DateTime.now()`, `t.unixSeconds()`, `t.unixMilliseconds()` | built | UTC, nanoseconds in a `long`: the years 1677 to 2262 |
+| `chrono::Utc.with_ymd_and_hms(...)`, `t.year()`, `t.weekday()`, `t.to_rfc3339()` | `DateTime.utc(...)` (a `Result<DateTime, DateError>`), `t.year()`, `t.dayOfWeek()`, `print(t)` | built | In the language, not a crate; `2026-11-15T09:30:05Z` |
+| `std::thread::sleep(d)` | `var pause = Task.delay(ms)`, `pause.wait()`; `await Task.delay(ms)` in async code | built | Milliseconds as an `int` |
+| `chrono::Local`, `chrono-tz`, `NaiveDate::parse_from_str` | none yet | designed | Time zones and reading a date out of text come later |
 
 ## Tests and the tools
 

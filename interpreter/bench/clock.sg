@@ -1,0 +1,15 @@
+// Ten million readings of the monotonic clock, each the time gone by since the start, checked
+// never to go back. `elapsed` is a call of the language's own module over `clock_gettime`.
+void main() {
+    var start = Instant.now()
+    var before = Duration.fromNanoseconds(0)
+    long steady = 0
+    for i in 0..10000000 {
+        var gone = start.elapsed()
+        if gone >= before {
+            steady += 1
+        }
+        before = gone
+    }
+    print(steady)
+}

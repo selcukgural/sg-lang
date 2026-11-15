@@ -1,0 +1,6 @@
+// A release build: the arithmetic of `Duration` follows the rule of the numbers, so a span too
+// long for a `long` of nanoseconds wraps, where a debug build panics (`panic_time_overflow`).
+void main() {
+    print(Duration.fromSeconds(10000000000))
+    print(Duration.fromNanoseconds(long.MaxValue).plus(Duration.fromNanoseconds(1)))
+}

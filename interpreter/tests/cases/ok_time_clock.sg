@@ -1,0 +1,38 @@
+// `Instant`: the monotonic clock. Only the time between two readings means something, and it is
+// at least what a delay waited, also when the delay comes after a long computation.
+
+int work() {
+    var total = 0
+    for i in 0..3000000 {
+        total = (total + i) % 1000
+    }
+    return total
+}
+
+async Duration waited(int ms) {
+    var start = Instant.now()
+    await Task.delay(ms)
+    return start.elapsed()
+}
+
+async void main() {
+    var first = Instant.now()
+    var second = Instant.now()
+    print(second >= first)
+    print(second.since(first) >= Duration.fromNanoseconds(0))
+    print(first.since(second) <= Duration.fromNanoseconds(0))
+
+    var start = Instant.now()
+    var pause = Task.delay(30)
+    await pause
+    print(start.elapsed() >= Duration.fromMilliseconds(30))
+
+    // A delay asked for after the program computed for a while still waits its time.
+    print(work() >= 0)
+    print(await waited(40) >= Duration.fromMilliseconds(40))
+
+    var later = first.plus(Duration.fromSeconds(1))
+    print(later.since(first))
+    print(later.minus(Duration.fromSeconds(1)) == first)
+    print(later > first)
+}

@@ -1,0 +1,4 @@
+error: `Duration` is a built-in type and cannot be redefined
+  --> error_time_redefine.sg:2:8
+ 2 | struct Duration {
+   |        ^^^^^^^^

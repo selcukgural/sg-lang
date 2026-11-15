@@ -15,6 +15,7 @@ use std::rc::Rc;
 use crate::ast::*;
 use crate::diag::{nearest, Diag, Span};
 use crate::exhaust;
+use crate::source::{STD_MODULE, STD_TYPES};
 use crate::types::{FloatTy, IntTy, TextIter, Ty};
 
 type Res<T> = Result<T, Diag>;
@@ -29,7 +30,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "CString"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "CString", "Duration", "Instant", "DateTime", "DayOfWeek", "DateError"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -132,6 +133,13 @@ impl Names {
         if written == TEXT_ERROR || written == NUMBER_ERROR || written == IO_ERROR || written == CANCELLED {
             return Ok(Some(written.to_string()));
         }
+        // The types of the language's own module are seen from every module.
+        if STD_TYPES.contains(&written) {
+            let full = format!("{STD_MODULE}.{written}");
+            if self.known(&full) {
+                return Ok(Some(full));
+            }
+        }
         let mut found: Vec<String> = Vec::new();
         let mut closed = None;
         for (used, _) in uses {
@@ -166,6 +174,20 @@ impl Names {
             self.known(&full) && self.public.contains(&full) && !uses.iter().any(|(used, _)| used == *module)
         })?;
         Some(format!("`use {module}` at the top of the file"))
+    }
+}
+
+/// What to say about a type that lacks an interface: a type of the program can have it added, a
+/// type of the language's own module cannot.
+fn lacks(diag: Diag, name: &str, interface: &str) -> Diag {
+    if module_of(name) != STD_MODULE {
+        return diag.hint(format!("add it to the definition: `{name} : {interface}`"));
+    }
+    match (short_name(name), interface) {
+        ("Instant", "Formattable") => diag
+            .note("an `Instant` means something only next to another one")
+            .hint("the time between two is a `Duration`, which is written: `start.elapsed()`, `later.since(earlier)`"),
+        (short, _) => diag.note(format!("`{short}` is a built-in type, and it is not `{interface}`")),
     }
 }
 
@@ -577,6 +599,10 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     names.modules = prog.files.iter().filter(|file| !file.module.is_empty()).map(|file| file.module.clone()).collect();
     for file in &prog.files {
         for (module, span) in &file.uses {
+            if module == STD_MODULE && file.module != STD_MODULE {
+                return Err(Diag::error(*span, "`std` is the language's own module, and its types are seen from every module")
+                    .hint("take the line away: `Duration`, `Instant` and `DateTime` need no `use`"));
+            }
             if names.modules.contains(module) {
                 continue;
             }
@@ -613,7 +639,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         .chain(prog.enums.iter().map(|decl| (&decl.name, decl.name_span, TypeKind::Enum)))
         .chain(prog.aliases.iter().map(|decl| (&decl.name, decl.name_span, TypeKind::Alias)));
     for (name, span, kind) in declared {
-        if BUILTIN_TYPES.contains(&short_name(name)) {
+        if BUILTIN_TYPES.contains(&short_name(name)) && module_of(name) != STD_MODULE {
             return Err(Diag::error(span, format!("`{}` is a built-in type and cannot be redefined", short_name(name))));
         }
         if Ty::from_name(short_name(name)).is_some() || names.kinds.insert(name.clone(), kind).is_some() {
@@ -2545,6 +2571,9 @@ impl<'a> Checker<'a> {
     }
 
     fn not_public(&self, member: &str, owner: &str, span: Span) -> Diag {
+        if module_of(owner) == STD_MODULE {
+            return Diag::error(span, format!("`{}` keeps `{member}` to itself: its methods give what it holds", short_name(owner)));
+        }
         Diag::error(span, format!("`{member}` is not public: it stays inside the `{}` module", module_of(owner)))
     }
 
@@ -4316,6 +4345,11 @@ impl<'a> Checker<'a> {
             (Ty::Read(from), Ty::Read(to)) if **from == Ty::Str && **to == Ty::Slice(Box::new(Ty::Int(IntTy::Byte))) => {
                 mismatch(Some(format!("the bytes of a text: `{text}.asBytes()`")))
             }
+            // The two clocks are two types, so that one is not measured against the other.
+            (Ty::Struct(a), Ty::Struct(b)) if [a.as_str(), b.as_str()].iter().all(|name| matches!(*name, "std.Instant" | "std.DateTime")) => {
+                Err(Diag::error(expr.span, format!("expected `{expected}`, found `{found}`"))
+                    .note("an `Instant` is a reading of the monotonic clock and a `DateTime` one of the clock of the system, which can be set and go back; the time between two readings is taken on one clock"))
+            }
             (Ty::Fmt, Ty::Str) => Err(Diag::error(expr.span, "expected `string`; `$\"...\"` does not become a `string` on its own")
                 .hint("add `.toString()` at the end; that is where the allocation shows")),
             // `T` where `T?` is expected.
@@ -5264,6 +5298,15 @@ impl<'a> Checker<'a> {
                 }
                 // A field that cannot be seen cannot be given a value.
                 if !self.inside(name) {
+                    if module_of(name) == STD_MODULE {
+                        let short = short_name(name);
+                        let make = match short {
+                            "Duration" => "`Duration.fromMilliseconds(n)`, `Duration.fromSeconds(n)`",
+                            "Instant" => "`Instant.now()`",
+                            _ => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
+                        };
+                        return Err(Diag::error(*name_span, format!("a `{short}` is made by its functions, not field by field")).hint(make));
+                    }
                     if let Some(position) = info.open.iter().position(|open| !open) {
                         let (short, field) = (short_name(name), &info.fields[position].0);
                         let diag = Diag::error(*name_span, format!("`{field}` is not public, so a `{short}` cannot be built field by field outside the `{}` module", module_of(name)));
@@ -6463,8 +6506,11 @@ impl<'a> Checker<'a> {
             if self.comparable.contains(name) {
                 return Ok(Ty::Bool);
             }
-            return Err(Diag::error(span, format!("`{symbol}` puts the values in order, and `{name}` is not `Comparable`"))
-                .hint(format!("add `: Comparable` to the definition and write `int compare(read this, read {name} other)`")));
+            let diag = Diag::error(span, format!("`{symbol}` puts the values in order, and `{name}` is not `Comparable`"));
+            if module_of(name) == STD_MODULE {
+                return Err(lacks(diag, name, "Comparable"));
+            }
+            return Err(diag.hint(format!("add `: Comparable` to the definition and write `int compare(read this, read {name} other)`")));
         }
         // A collection is `Equatable` if what it holds is; it has no order of its own.
         if let (collection @ (Ty::List(_) | Ty::Set(_) | Ty::Map(..) | Ty::Array(..) | Ty::Slice(_)), true, true) = (peel(&left_ty), peel(&left_ty) == peel(&right_ty), op.is_comparison()) {
@@ -6559,6 +6605,17 @@ impl<'a> Checker<'a> {
                 Err(undefined().hint(format!("the pointer is written first: `{b} + {a}`")))
             }
             (Ty::Raw(_), _) | (_, Ty::Raw(_)) => Err(undefined().note("a raw pointer is compared with `==` and `!=`, and moved by a count of items with `+` and `-`")),
+            // Time is added and taken away by methods: the language defines no operators.
+            (Ty::Struct(name), _) if module_of(name) == STD_MODULE && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) => {
+                let (a, b) = (&self.src[left.span.start..left.span.end], &self.src[right.span.start..right.span.end]);
+                let call = match (op, short_name(name)) {
+                    (BinOp::Add, _) => format!("`{a}.plus({b})`"),
+                    (BinOp::Sub, "Duration") => format!("`{a}.minus({b})`"),
+                    (BinOp::Sub, _) => format!("`{a}.since({b})` for the time between two, `{a}.minus({b})` for a moment before"),
+                    _ => format!("`{a}.times({b})`"),
+                };
+                Err(undefined().hint(call))
+            }
             (Ty::Null, _) | (_, Ty::Null) if matches!(op, BinOp::Eq | BinOp::Ne) => {
                 let word = if op == BinOp::Eq { "is null" } else { "is not null" };
                 Err(Diag::error(span, "`null` is not compared with `==`").hint(format!("write `x {word}`")))
@@ -6626,8 +6683,7 @@ impl<'a> Checker<'a> {
             Ty::Task(_) => Err(Diag::error(span, format!("a `{inner}` cannot be written as text")).hint("wait for it and write what it gives: `print(task.wait())`")),
             Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str | Ty::Fmt => Ok(()),
             Ty::Struct(name) | Ty::Enum(name) if self.formattable.contains(name) => Ok(()),
-            Ty::Struct(name) | Ty::Enum(name) => Err(Diag::error(span, format!("`{name}` cannot be written as text: it is not `Formattable`"))
-                .hint(format!("add it to the definition: `{name} : Formattable`"))),
+            Ty::Struct(name) | Ty::Enum(name) => Err(lacks(Diag::error(span, format!("`{name}` cannot be written as text: it is not `Formattable`")), name, "Formattable")),
             Ty::Void => Err(Diag::error(span, "this call does not return a value, and one is needed here")),
             Ty::Nullable(_) => Err(Diag::error(span, format!("this is `{ty}` and may be `null`; there is no text for `null`"))
                 .hint("give a fallback with `??`, or test with `is null`")),
@@ -7000,7 +7056,15 @@ impl<'a> Checker<'a> {
                 return Err(Diag::error(span, format!("`Task.delay` takes 1 or 2 argument(s), {} given", args.len()))
                     .hint("`Task.delay(100)` ends after 100 milliseconds; `Task.delay(100, read token)` ends early when the token is cancelled"));
             }
-            self.typed(&mut args[0], &Ty::Int(IntTy::Int)).map_err(|diag| diag.note("`Task.delay(ms)` takes the milliseconds as an `int`"))?;
+            self.typed(&mut args[0], &Ty::Int(IntTy::Int)).map_err(|diag| {
+                // `Duration` is the language's own type, so the message names no other.
+                let span_given = diag.msg.ends_with("found `Duration`");
+                let diag = diag.note("`Task.delay(ms)` takes the milliseconds as an `int`");
+                match span_given {
+                    true => diag.hint(format!("`Task.delay((int){}.milliseconds())`", &self.src[args[0].span.start..args[0].span.end])),
+                    false => diag,
+                }
+            })?;
             if args.len() == 1 {
                 *callee = Callee::Delay(false);
                 return Ok(Ty::Task(Box::new(Ty::Void)));
@@ -7649,6 +7713,12 @@ impl<'a> Checker<'a> {
                 }
                 if owner == "Memory" {
                     return self.memory_call(name, name_span, args, callee, span);
+                }
+                // The two readings of the clock, which only the language's own module makes.
+                if owner == "Clock" && self.names.module(span) == STD_MODULE && matches!(name, "monotonic" | "wall") {
+                    self.args(name, args, &[], span)?;
+                    *callee = Callee::Clock(name == "wall");
+                    return Ok(Ty::Int(IntTy::Long));
                 }
                 if owner == "Task" {
                     return self.task_run(name, name_span, args, callee, span, awaited);
@@ -8410,8 +8480,7 @@ impl<'a> Checker<'a> {
         let compares = |item: &Ty, needs: &str| match item {
             _ if needs == "Equatable" && can_equal => Ok(()),
             _ if needs == "Comparable" && can_order => Ok(()),
-            Ty::Struct(inner) | Ty::Enum(inner) => Err(Diag::error(name_span, format!("`{name}` compares the items, and `{inner}` is not `{needs}`"))
-                .hint(format!("add it to the definition: `{inner} : {needs}`"))),
+            Ty::Struct(inner) | Ty::Enum(inner) => Err(lacks(Diag::error(name_span, format!("`{name}` compares the items, and `{inner}` is not `{needs}`")), inner, needs)),
             Ty::List(_) | Ty::Set(_) | Ty::Map(..) if needs == "Comparable" => Err(Diag::error(name_span, format!("`{name}` puts the items in order, and a collection has no order of its own"))),
             other => Err(Diag::error(name_span, format!("`{name}` compares the items, and `{other}` is not `{needs}`"))
                 .note(format!("`{needs}`: numbers{}, `char`, `string` and the types written with `: {needs}`", if needs == "Equatable" { ", `bool`" } else { "" }))),

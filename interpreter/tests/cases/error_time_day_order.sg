@@ -1,0 +1,4 @@
+void main() {
+    var days = List<DayOfWeek> { DayOfWeek.Sunday, DayOfWeek.Monday }
+    days.sort()
+}

@@ -1,0 +1,5 @@
+error: a `DateTime` is made by its functions, not field by field
+  --> error_time_literal.sg:2:17
+ 2 |     var start = DateTime { ns = 0 }
+   |                 ^^^^^^^^
+  hint: `DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`

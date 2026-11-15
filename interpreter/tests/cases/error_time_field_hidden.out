@@ -1,0 +1,4 @@
+error: `Duration` keeps `ns` to itself: its methods give what it holds
+  --> error_time_field_hidden.sg:3:16
+ 3 |     print(span.ns)
+   |                ^^

@@ -1,0 +1,11 @@
+// A module that shows the types of the clock in what it makes public: they are seen here and in
+// the module that uses this one, with no `use` for them.
+
+public struct Deadline : Copyable {
+    public DateTime at
+    public Duration grace
+}
+
+public Deadline deadline(read DateTime start, Duration span) {
+    return Deadline { at = start.plus(span), grace = span.times(2) }
+}

@@ -1,0 +1,5 @@
+error: expected `Instant`, found `DateTime`
+  an `Instant` is a reading of the monotonic clock and a `DateTime` one of the clock of the system, which can be set and go back; the time between two readings is taken on one clock
+  --> error_time_mixed_clocks.sg:4:23
+ 4 |     print(start.since(then))
+   |                       ^^^^

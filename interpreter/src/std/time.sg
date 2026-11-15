@@ -1,0 +1,403 @@
+// The clock: a span of time (`Duration`), a moment of a monotonic clock (`Instant`), and a moment
+// of the calendar in UTC (`DateTime`). Written in SG and brought along by the language; a program
+// that names one of these types gets this module, seen from every module with nothing written.
+// Only the two readings of the clock (`Clock.monotonic()`, `Clock.wall()`) are the compiler's own,
+// and only this module can call them.
+
+// A span of time, in nanoseconds; it may be negative. The arithmetic follows the rule of the
+// numbers: an overflow is a panic in a debug build and in a test, and wraps in a release build.
+public struct Duration : Copyable, Equatable, Hashable, Comparable, Formattable {
+    long ns
+
+    public Duration fromNanoseconds(long count) {
+        return Duration { ns = count }
+    }
+
+    public Duration fromMicroseconds(long count) {
+        return Duration { ns = count * 1000 }
+    }
+
+    public Duration fromMilliseconds(long count) {
+        return Duration { ns = count * 1000000 }
+    }
+
+    public Duration fromSeconds(long count) {
+        return Duration { ns = count * 1000000000 }
+    }
+
+    // The whole units in the span, cut toward zero.
+    public long nanoseconds(read this) {
+        return this.ns
+    }
+
+    public long microseconds(read this) {
+        return this.ns / 1000
+    }
+
+    public long milliseconds(read this) {
+        return this.ns / 1000000
+    }
+
+    public long seconds(read this) {
+        return this.ns / 1000000000
+    }
+
+    // The span in seconds, with the fraction.
+    public double totalSeconds(read this) {
+        return (double)this.ns / 1000000000.0
+    }
+
+    public Duration plus(read this, Duration other) {
+        return Duration { ns = this.ns + other.ns }
+    }
+
+    public Duration minus(read this, Duration other) {
+        return Duration { ns = this.ns - other.ns }
+    }
+
+    public Duration times(read this, long factor) {
+        return Duration { ns = this.ns * factor }
+    }
+
+    public int compare(read this, read Duration other) {
+        return this.ns.compare(other.ns)
+    }
+
+    // In the unit its size calls for, with the fewest digits after the point: `1.5s`, `250ms`,
+    // `3µs`, `-2ms`, `0s`. Seconds stay seconds: `90s`.
+    public void format(read this, ref Formatter f) {
+        if this.ns == 0 {
+            f.write("0s")
+            return
+        }
+        // The unit is chosen on the size without negating it, since the most negative span has
+        // no positive one.
+        long unit = 1000000000
+        int width = 9
+        if this.ns > -1000 && this.ns < 1000 {
+            unit = 1
+            width = 0
+        } else if this.ns > -1000000 && this.ns < 1000000 {
+            unit = 1000
+            width = 3
+        } else if this.ns > -1000000000 && this.ns < 1000000000 {
+            unit = 1000000
+            width = 6
+        }
+        var whole = this.ns / unit
+        var part = this.ns % unit
+        if this.ns < 0 {
+            f.write("-")
+            whole = -whole
+            part = -part
+        }
+        f.write(whole)
+        if part != 0 {
+            while part % 10 == 0 {
+                part = part / 10
+                width -= 1
+            }
+            f.write(".")
+            var shown = digits(part)
+            while shown < width {
+                f.write("0")
+                shown += 1
+            }
+            f.write(part)
+        }
+        if unit == 1 {
+            f.write("ns")
+        } else if unit == 1000 {
+            f.write("µs")
+        } else if unit == 1000000 {
+            f.write("ms")
+        } else {
+            f.write("s")
+        }
+    }
+}
+
+// A moment of the monotonic clock: it never goes back and nothing sets it. Only the distance
+// between two moments means something, so it is not printed.
+public struct Instant : Copyable, Equatable, Hashable, Comparable {
+    long ns
+
+    public Instant now() {
+        return Instant { ns = Clock.monotonic() }
+    }
+
+    // The time gone by since this moment.
+    public Duration elapsed(read this) {
+        return Duration { ns = Clock.monotonic() - this.ns }
+    }
+
+    // The time from `earlier` to this moment; negative when `earlier` is later.
+    public Duration since(read this, Instant earlier) {
+        return Duration { ns = this.ns - earlier.ns }
+    }
+
+    public Instant plus(read this, Duration span) {
+        return Instant { ns = this.ns + span.ns }
+    }
+
+    public Instant minus(read this, Duration span) {
+        return Instant { ns = this.ns - span.ns }
+    }
+
+    public int compare(read this, read Instant other) {
+        return this.ns.compare(other.ns)
+    }
+}
+
+public enum DayOfWeek : Copyable, Equatable, Hashable, Formattable {
+    Monday
+    Tuesday
+    Wednesday
+    Thursday
+    Friday
+    Saturday
+    Sunday
+}
+
+// The part of a date or a time that `DateTime.utc` was given wrong, or a moment outside the years
+// a `DateTime` holds.
+public enum DateError : Copyable, Equatable, Hashable, Formattable {
+    InvalidMonth
+    InvalidDay
+    InvalidHour
+    InvalidMinute
+    InvalidSecond
+    OutOfRange
+}
+
+// A moment of the calendar in UTC: the nanoseconds since 1970-01-01T00:00:00Z, as the clock of
+// the system counts them, without leap seconds. It holds the years 1677 to 2262. The calendar is
+// the Gregorian one, also before it was in use.
+public struct DateTime : Copyable, Equatable, Hashable, Comparable, Formattable {
+    long ns
+
+    // The clock of the system: it can be set, and can go back.
+    public DateTime now() {
+        return DateTime { ns = Clock.wall() }
+    }
+
+    public DateTime fromUnixSeconds(long seconds) {
+        return DateTime { ns = seconds * 1000000000 }
+    }
+
+    public DateTime fromUnixMilliseconds(long milliseconds) {
+        return DateTime { ns = milliseconds * 1000000 }
+    }
+
+    public Result<DateTime, DateError> utc(int year, int month, int day, int hour, int minute, int second) {
+        if month < 1 || month > 12 {
+            return Error(DateError.InvalidMonth)
+        }
+        if day < 1 || day > daysInMonth(year, month) {
+            return Error(DateError.InvalidDay)
+        }
+        if hour < 0 || hour > 23 {
+            return Error(DateError.InvalidHour)
+        }
+        if minute < 0 || minute > 59 {
+            return Error(DateError.InvalidMinute)
+        }
+        if second < 0 || second > 59 {
+            return Error(DateError.InvalidSecond)
+        }
+        // A year this far out is outside the range whatever the rest says, and the days of it
+        // would not fit the arithmetic below.
+        if year < 1000 || year > 3000 {
+            return Error(DateError.OutOfRange)
+        }
+        long seconds = daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second
+        // The whole seconds whose nanoseconds a `long` holds.
+        if seconds < -9223372036 || seconds > 9223372036 {
+            return Error(DateError.OutOfRange)
+        }
+        return Ok(DateTime { ns = seconds * 1000000000 })
+    }
+
+    // The seconds since 1970, rounded down: a moment before 1970 with a fraction counts the
+    // second it lies in.
+    public long unixSeconds(read this) {
+        return floorDivide(this.ns, 1000000000)
+    }
+
+    public long unixMilliseconds(read this) {
+        return floorDivide(this.ns, 1000000)
+    }
+
+    public int year(read this) {
+        return civilFromDays(floorDivide(this.ns, 86400000000000)).year
+    }
+
+    public int month(read this) {
+        return civilFromDays(floorDivide(this.ns, 86400000000000)).month
+    }
+
+    public int day(read this) {
+        return civilFromDays(floorDivide(this.ns, 86400000000000)).day
+    }
+
+    public int hour(read this) {
+        return (int)(floorModulo(this.ns, 86400000000000) / 3600000000000)
+    }
+
+    public int minute(read this) {
+        return (int)(floorModulo(this.ns, 3600000000000) / 60000000000)
+    }
+
+    public int second(read this) {
+        return (int)(floorModulo(this.ns, 60000000000) / 1000000000)
+    }
+
+    public int nanosecond(read this) {
+        return (int)floorModulo(this.ns, 1000000000)
+    }
+
+    public DayOfWeek dayOfWeek(read this) {
+        // 1970-01-01 was a Thursday.
+        var day = floorModulo(floorDivide(this.ns, 86400000000000) + 3, 7)
+        if day == 0 {
+            return DayOfWeek.Monday
+        } else if day == 1 {
+            return DayOfWeek.Tuesday
+        } else if day == 2 {
+            return DayOfWeek.Wednesday
+        } else if day == 3 {
+            return DayOfWeek.Thursday
+        } else if day == 4 {
+            return DayOfWeek.Friday
+        } else if day == 5 {
+            return DayOfWeek.Saturday
+        }
+        return DayOfWeek.Sunday
+    }
+
+    // The time from `earlier` to this moment; negative when `earlier` is later.
+    public Duration since(read this, DateTime earlier) {
+        return Duration { ns = this.ns - earlier.ns }
+    }
+
+    public DateTime plus(read this, Duration span) {
+        return DateTime { ns = this.ns + span.ns }
+    }
+
+    public DateTime minus(read this, Duration span) {
+        return DateTime { ns = this.ns - span.ns }
+    }
+
+    public int compare(read this, read DateTime other) {
+        return this.ns.compare(other.ns)
+    }
+
+    // ISO 8601: `2026-11-15T09:30:05Z`, with the fraction of the second in 3, 6 or 9 digits when
+    // there is one: `2026-11-15T09:30:05.120Z`.
+    public void format(read this, ref Formatter f) {
+        var date = civilFromDays(floorDivide(this.ns, 86400000000000))
+        var time = floorModulo(this.ns, 86400000000000)
+        var hour = time / 3600000000000
+        var minute = time / 60000000000 % 60
+        var second = time / 1000000000 % 60
+        var part = time % 1000000000
+        f.write($"{date.year:D4}-{date.month:D2}-{date.day:D2}T{hour:D2}:{minute:D2}:{second:D2}")
+        if part != 0 {
+            if part % 1000000 == 0 {
+                f.write($".{part / 1000000:D3}")
+            } else if part % 1000 == 0 {
+                f.write($".{part / 1000:D6}")
+            } else {
+                f.write($".{part:D9}")
+            }
+        }
+        f.write("Z")
+    }
+}
+
+struct Civil : Copyable {
+    int year
+    int month
+    int day
+}
+
+// How many decimal digits a positive number has.
+int digits(long value) {
+    var count = 1
+    var rest = value
+    while rest >= 10 {
+        rest = rest / 10
+        count += 1
+    }
+    return count
+}
+
+long floorDivide(long a, long b) {
+    var quotient = a / b
+    if a % b != 0 && (a < 0) != (b < 0) {
+        quotient -= 1
+    }
+    return quotient
+}
+
+long floorModulo(long a, long b) {
+    var rest = a % b
+    if rest != 0 && (rest < 0) != (b < 0) {
+        rest += b
+    }
+    return rest
+}
+
+bool isLeapYear(long year) {
+    return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+int daysInMonth(long year, int month) {
+    if month == 2 {
+        if isLeapYear(year) {
+            return 29
+        }
+        return 28
+    }
+    if month == 4 || month == 6 || month == 9 || month == 11 {
+        return 30
+    }
+    return 31
+}
+
+// The days from 1970-01-01 to a date, and back: Howard Hinnant's algorithms, which count in eras
+// of 400 years that start on the first of March.
+long daysFromCivil(long year, int month, int day) {
+    var y = year
+    if month <= 2 {
+        y -= 1
+    }
+    var era = floorDivide(y, 400)
+    var yearOfEra = y - era * 400
+    long shifted = month + 9
+    if month > 2 {
+        shifted = month - 3
+    }
+    var dayOfYear = (153 * shifted + 2) / 5 + day - 1
+    var dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+    return era * 146097 + dayOfEra - 719468
+}
+
+Civil civilFromDays(long days) {
+    var z = days + 719468
+    var era = floorDivide(z, 146097)
+    var dayOfEra = z - era * 146097
+    var yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096) / 365
+    var dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100)
+    var shifted = (5 * dayOfYear + 2) / 153
+    var day = dayOfYear - (153 * shifted + 2) / 5 + 1
+    var month = shifted + 3
+    if shifted >= 10 {
+        month = shifted - 9
+    }
+    var year = yearOfEra + era * 400
+    if month <= 2 {
+        year += 1
+    }
+    return Civil { year = (int)year, month = (int)month, day = (int)day }
+}

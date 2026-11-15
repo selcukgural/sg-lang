@@ -1,0 +1,17 @@
+// Ten million moments between 1900 and 2200, each taken apart into its year, month, day, hour,
+// minute and second, and its day of the week: the calendar of the language's own module, in SG,
+// against `gmtime_r` of the C library.
+void main() {
+    ulong state = 7
+    long sum = 0
+    for i in 0..10000000 {
+        state = state.wrappingMultiply(6364136223846793005).wrappingAdd(1442695040888963407)
+        long seconds = (long)(state >> 20) % 9467280000 - 2208988800
+        var moment = DateTime.fromUnixSeconds(seconds)
+        sum += moment.year() + moment.month() + moment.day() + moment.hour() + moment.minute() + moment.second()
+        if moment.dayOfWeek() == DayOfWeek.Sunday {
+            sum += 1
+        }
+    }
+    print(sum)
+}

@@ -1357,6 +1357,34 @@ struct Div {                                     // the fields of C's div_t, in 
 A module that declares the functions of a library without `public` can give its users a safe interface, and they
 write no `unsafe`: a `Disposable` type holds what C made and gives it back when it ends.
 
+### The clock
+
+Three types come with the language: `Instant` for measuring, `Duration` for a span of time, `DateTime` for the
+calendar in UTC. They are written in SG, in the language's own module, and seen from every module with nothing
+written. The two clocks are two types, so the time between two readings is taken on one clock.
+
+```
+var start = Instant.now()                        // the monotonic clock: never goes back
+work()
+var took = start.elapsed()                       // a Duration
+print($"took {took}")                            // took 1.5s; an Instant itself is not printed
+if took > Duration.fromMilliseconds(200) {
+    printError($"slow: {took.milliseconds()} ms")
+}
+var longer = took.plus(Duration.fromSeconds(1))  // methods, not operators: + is an error
+
+var now = DateTime.now()                         // the clock of the system, in UTC; it can be set
+print(now)                                       // 2026-11-15T09:30:05.120Z
+var due = DateTime.utc(2026, 12, 31, 23, 59, 0) ?? panic("not a date")
+                                                 // Result<DateTime, DateError>: InvalidDay for 30 February
+print($"{due.year()}-{due.month()} {due.dayOfWeek()}, in {due.since(now).seconds()} s")
+var epoch = DateTime.fromUnixSeconds(0)          // 1970-01-01T00:00:00Z
+```
+
+A `Duration` is a `long` of nanoseconds and may be negative; its arithmetic follows the rule of the numbers (a
+panic in a debug build, wrapping in a release build). A `DateTime` holds the years 1677 to 2262. Time zones,
+reading a date out of text and formats of your own come later; `Task.delay` takes its milliseconds as an `int`.
+
 ### Modules and visibility
 
 A folder is a module; there is no declaration in the file. A name without `public` stays inside the module; the rule

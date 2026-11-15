@@ -1,0 +1,5 @@
+void main() {
+    var start = Instant.now()
+    var then = DateTime.now()
+    print(start.since(then))
+}

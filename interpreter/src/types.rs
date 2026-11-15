@@ -377,7 +377,8 @@ impl fmt::Display for Ty {
             Ty::Void => f.write_str("void"),
             Ty::Never => f.write_str("never"),
             Ty::Null => f.write_str("null"),
-            Ty::Struct(name) | Ty::Enum(name) => f.write_str(name),
+            // The types of the language's own module are named without it, as they are written.
+            Ty::Struct(name) | Ty::Enum(name) => f.write_str(name.strip_prefix("std.").unwrap_or(name)),
             Ty::Formatter => f.write_str("Formatter"),
             Ty::Ptr(inner) => write!(f, "{inner}*"),
             Ty::Shared(inner, checked) => write!(f, "shared {}{inner}", if *checked { "checked " } else { "" }),

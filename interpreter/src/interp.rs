@@ -125,6 +125,29 @@ enum Timer {
     Cancel(std::rc::Weak<RefCell<Cancel>>),
 }
 
+/// `Clock.monotonic()` and `Clock.wall()`: the real clocks, not the clock of the run, so that
+/// what a program measures is the time it took. Read with `clock_gettime`, as compiled code reads
+/// them, so that the monotonic clock is the same one (Rust's own stops while macOS sleeps).
+fn clock(wall: bool) -> i128 {
+    #[repr(C)]
+    struct Timespec {
+        seconds: i64,
+        nanoseconds: std::ffi::c_long,
+    }
+    extern "C" {
+        fn clock_gettime(clock: std::ffi::c_int, time: *mut Timespec) -> std::ffi::c_int;
+    }
+    const REALTIME: std::ffi::c_int = 0;
+    #[cfg(target_os = "macos")]
+    const MONOTONIC: std::ffi::c_int = 6;
+    #[cfg(not(target_os = "macos"))]
+    const MONOTONIC: std::ffi::c_int = 1;
+    let mut time = Timespec { seconds: 0, nanoseconds: 0 };
+    // SAFETY: `time` is a `struct timespec` that lives across the call.
+    unsafe { clock_gettime(if wall { REALTIME } else { MONOTONIC }, &mut time) };
+    i128::from(time.seconds) * 1_000_000_000 + i128::from(time.nanoseconds)
+}
+
 /// The `Cancelled { }` that a cancelled wait gives.
 fn cancelled() -> Value {
     Value::Struct("Cancelled".into(), Fields::plain(Vec::new()))
@@ -175,8 +198,11 @@ struct State {
     /// The fibers whose wait is over, in the order they get the turn.
     ready: VecDeque<usize>,
     /// The `Task.delay` tasks and the `CancellationSource.after` sources, by when they end on
-    /// the clock of the run, then in the order they were made.
-    timers: BTreeMap<(u64, u64), Timer>,
+    /// the clock of the run, then in the order they were made; each with the moment of the real
+    /// clock before which it does not end. The clock of the run gives the order, so that it is
+    /// the same on every run; the real clock holds a timer back until its time has really gone
+    /// by since it was made, also after the run computed for longer than the clock moved.
+    timers: BTreeMap<(u64, u64), (Instant, Timer)>,
     made: u64,
     /// The clock of the run, in milliseconds. It moves only when every fiber waits and a
     /// timer is next, so which timer ends first never depends on the speed of the machine;
@@ -293,6 +319,12 @@ impl Sched {
         self.hand(state, me, next)
     }
 
+    /// When a timer ends on the real clock: at its time on the clock of the run, but not before
+    /// `earliest`, its time counted from when it was made.
+    fn due(state: &State, at: u64, earliest: Instant) -> Instant {
+        (state.clock + Duration::from_millis(at)).max(earliest)
+    }
+
     /// The fiber that gets the turn: the first that is ready. When none is, the time of the
     /// first timer comes. When there is no timer either, nothing could end a wait, and the
     /// run stops with a panic.
@@ -303,7 +335,7 @@ impl Sched {
             }
             // Sockets and threads are waited for until the first timer is due.
             if !state.outside.is_empty() {
-                let limit = state.timers.keys().next().map(|key| (state.clock + Duration::from_millis(key.0)).saturating_duration_since(Instant::now()));
+                let limit = state.timers.iter().next().map(|(key, (earliest, _))| Self::due(state, key.0, *earliest).saturating_duration_since(Instant::now()));
                 if limit != Some(Duration::ZERO) {
                     Self::wait_outside(state, limit);
                     continue;
@@ -313,14 +345,14 @@ impl Sched {
                 state.stop = Some(Stop::Diag(Diag::panic(at, "every task waits, and nothing is left that could end a wait")));
                 return 0;
             };
-            let timer = state.timers.remove(&key).expect("just seen");
+            let (earliest, timer) = state.timers.remove(&key).expect("just seen");
             // A source that is gone cancels nothing, and is not waited for.
             if let Timer::Cancel(source) = &timer {
                 if source.strong_count() == 0 {
                     continue;
                 }
             }
-            let due = state.clock + Duration::from_millis(key.0);
+            let due = Self::due(state, key.0, earliest);
             let now = Instant::now();
             if due > now {
                 std::thread::sleep(due - now);
@@ -420,7 +452,7 @@ impl Sched {
             }
         }
         for key in keys {
-            if let Some(Timer::Delay { task, .. }) = state.timers.remove(&key) {
+            if let Some((_, Timer::Delay { task, .. })) = state.timers.remove(&key) {
                 if let Some(task) = task.upgrade() {
                     Self::end_timer(state, &task, failed(cancelled()));
                 }
@@ -1898,7 +1930,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         let key = (state.now + ms as u64, state.made);
         state.made += 1;
         let token = told.map(|_| source.as_ref().map_or_else(std::rc::Weak::new, Rc::downgrade));
-        state.timers.insert(key, Timer::Delay { task: Rc::downgrade(&task), token });
+        state.timers.insert(key, (Instant::now() + Duration::from_millis(ms as u64), Timer::Delay { task: Rc::downgrade(&task), token }));
         drop(state);
         if let Some(source) = source {
             source.borrow_mut().delays.push(key);
@@ -1915,7 +1947,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         let mut state = self.io.sched.lock();
         let key = (state.now + ms as u64, state.made);
         state.made += 1;
-        state.timers.insert(key, Timer::Cancel(Rc::downgrade(&source)));
+        state.timers.insert(key, (Instant::now() + Duration::from_millis(ms as u64), Timer::Cancel(Rc::downgrade(&source))));
         Ok(Value::Source(source))
     }
 
@@ -3173,6 +3205,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     })
                 }
                 Callee::Io(call) => self.io(*call, args, frame),
+                Callee::Clock(wall) => Ok(Value::Int(IntTy::Long, clock(*wall))),
                 Callee::Memory(call) => self.memory(*call, args, expr.span, frame),
                 Callee::Stream(call) => self.stream(*call, recv, args, None, frame),
                 Callee::Net(call) => self.net(*call, recv, args, None, expr.span, frame),

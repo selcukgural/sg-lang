@@ -11,6 +11,16 @@ use std::path::{Path, PathBuf};
 use crate::diag::{snippet, Span};
 use crate::lexer::{lex, Tok};
 
+/// The module of the types the language writes in SG and brings along (`Duration`, `Instant`,
+/// `DateTime`): seen from every module with nothing written. No folder of a program has this name.
+pub const STD_MODULE: &str = "std";
+
+/// The types of the language's own modules, each with the module's text: a program that names
+/// one gets the module.
+pub const STD_TYPES: &[&str] = &["Duration", "Instant", "DateTime", "DayOfWeek", "DateError"];
+
+const STD_TIME: &str = include_str!("std/time.sg");
+
 pub struct SourceFile {
     /// As it is written in messages.
     pub path: String,
@@ -34,7 +44,21 @@ impl Sources {
     /// A program that is one text.
     pub fn single(src: &str, path: &str) -> Sources {
         let file = SourceFile { path: path.to_string(), module: String::new(), start: 0, end: src.len(), tested: true };
-        Sources { text: src.to_string(), files: vec![file], root: None }
+        let mut sources = Sources { text: src.to_string(), files: vec![file], root: None };
+        sources.add_std();
+        sources
+    }
+
+    /// The language's own module, after the files of the program, when one of them names a type
+    /// of it.
+    fn add_std(&mut self) {
+        let named = self.files.iter().any(|file| {
+            let Ok(toks) = lex(&self.text, Span::new(file.start, file.end), false) else { return false };
+            toks.iter().any(|tok| matches!(&tok.tok, Tok::Ident(name) if STD_TYPES.contains(&name.as_str())))
+        });
+        if named {
+            self.add("<built-in>/std/time.sg".to_string(), STD_MODULE, STD_TIME, false);
+        }
     }
 
     fn add(&mut self, path: String, module: &str, text: &str, tested: bool) -> usize {
@@ -115,6 +139,9 @@ fn modules_under(dir: &Path, prefix: &str, found: &mut Vec<String>) {
 
 /// A folder is a module only if its name can be written in the language.
 fn is_module_name(name: &str) -> bool {
+    if name == STD_MODULE {
+        return false;
+    }
     let mut chars = name.chars();
     chars.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
@@ -206,5 +233,6 @@ pub fn load(path: &Path, every_module: bool) -> Result<Sources, String> {
             sources.add(shown(&file), &module, &read(&file)?, every_module);
         }
     }
+    sources.add_std();
     Ok(sources)
 }

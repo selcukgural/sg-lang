@@ -1,0 +1,6 @@
+error: `Instant` cannot be written as text: it is not `Formattable`
+  an `Instant` means something only next to another one
+  --> error_time_instant_print.sg:3:11
+ 3 |     print(start)
+   |           ^^^^^
+  hint: the time between two is a `Duration`, which is written: `start.elapsed()`, `later.since(earlier)`

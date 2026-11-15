@@ -1,0 +1,4 @@
+void main() {
+    var span = Duration.fromSeconds(10000000000)
+    print(span)
+}

@@ -1,0 +1,5 @@
+error: `sort` compares the items, and `DayOfWeek` is not `Comparable`
+  `DayOfWeek` is a built-in type, and it is not `Comparable`
+  --> error_time_day_order.sg:3:10
+ 3 |     days.sort()
+   |          ^^^^

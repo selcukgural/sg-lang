@@ -1,0 +1,9 @@
+use timing
+
+void main() {
+    var start = DateTime.utc(2026, 11, 15, 8, 0, 0) ?? panic("a valid date")
+    var due = deadline(read start, Duration.fromSeconds(3600))
+    print(due.at)
+    print(due.grace)
+    print(due.at.since(start) < due.grace)
+}

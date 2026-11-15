@@ -1,0 +1,5 @@
+error: operator `+` is not defined for `Duration` and `Duration`
+  --> error_time_plus.sg:3:18
+ 3 |     var longer = span + span
+   |                  ^^^^^^^^^^^
+  hint: `span.plus(span)`

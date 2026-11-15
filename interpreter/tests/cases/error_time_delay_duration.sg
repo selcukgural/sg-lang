@@ -1,0 +1,4 @@
+void main() {
+    var pause = Duration.fromMilliseconds(5)
+    var t = Task.delay(pause)
+}

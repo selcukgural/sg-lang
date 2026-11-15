@@ -1,0 +1,59 @@
+// `DateTime`: a moment of the calendar in UTC, written in ISO 8601 and taken apart into its
+// parts, with the Gregorian calendar and the range a `long` of nanoseconds holds.
+
+void show(int year, int month, int day, int hour, int minute, int second) {
+    match DateTime.utc(year, month, day, hour, minute, second) {
+        Ok(moment) => print($"{moment} {moment.dayOfWeek()}")
+        Error(cause) => print($"{year}-{month}-{day} {hour}:{minute}:{second}: {cause}")
+    }
+}
+
+void main() {
+    print(DateTime.fromUnixSeconds(0))
+    print(DateTime.fromUnixSeconds(951825600))
+    print(DateTime.fromUnixMilliseconds(1763199005120))
+    print(DateTime.fromUnixSeconds(1).plus(Duration.fromMicroseconds(250)))
+    print(DateTime.fromUnixSeconds(1).plus(Duration.fromNanoseconds(7)))
+
+    show(2000, 2, 29, 12, 0, 0)
+    show(2024, 12, 31, 23, 59, 59)
+    show(1970, 1, 1, 0, 0, 0)
+    show(1969, 12, 31, 23, 59, 59)
+    show(1900, 2, 29, 0, 0, 0)
+    show(2023, 2, 29, 0, 0, 0)
+    show(2023, 4, 31, 0, 0, 0)
+    show(2023, 13, 1, 0, 0, 0)
+    show(2023, 0, 1, 0, 0, 0)
+    show(2023, 1, 1, 24, 0, 0)
+    show(2023, 1, 1, 0, 60, 0)
+    show(2023, 1, 1, 0, 0, 60)
+    // The edges of what a `DateTime` holds.
+    show(2262, 4, 11, 23, 47, 16)
+    show(2262, 4, 11, 23, 47, 17)
+    show(1677, 9, 21, 0, 12, 44)
+    show(1677, 9, 21, 0, 12, 43)
+    show(9999, 1, 1, 0, 0, 0)
+
+    // Before 1970 a part of a second counts the second it lies in.
+    var before = DateTime.fromUnixMilliseconds(-1)
+    print(before)
+    print($"{before.year()}-{before.month()}-{before.day()} {before.hour()}:{before.minute()}:{before.second()} {before.nanosecond()}")
+    print($"{before.unixSeconds()} {before.unixMilliseconds()}")
+
+    var start = DateTime.utc(2026, 11, 15, 9, 30, 0) ?? panic("a valid date")
+    var end = start.plus(Duration.fromSeconds(5400))
+    print(end)
+    print(end.since(start))
+    print(start.since(end))
+    print(end.minus(Duration.fromSeconds(86400)))
+    print(start < end)
+    print(start == DateTime.fromUnixSeconds(start.unixSeconds()))
+    var days = HashMap<DateTime, string>()
+    days.add(start, "start")
+    print(days[DateTime.fromUnixSeconds(1794735000)])
+
+    // The clock of the system: its value changes, what it is after does not.
+    var now = DateTime.now()
+    print(now > start.minus(Duration.fromSeconds(86400)))
+    print(now.year() >= 2026)
+}

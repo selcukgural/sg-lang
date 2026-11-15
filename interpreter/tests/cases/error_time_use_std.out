@@ -1,0 +1,5 @@
+error: `std` is the language's own module, and its types are seen from every module
+  --> error_time_use_std.sg:1:5
+ 1 | use std
+   |     ^^^
+  hint: take the line away: `Duration`, `Instant` and `DateTime` need no `use`

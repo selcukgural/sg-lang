@@ -31,7 +31,9 @@
 //! inline adapter, with `CString` and `buffer.pointer()` (see `FFI_RUNTIME` and `foreign_func`), and
 //! structs of plain data by value, and types of C declared and never defined, only pointed at. A
 //! `Disposable` struct has a byte that a move sets, and its drop calls its `dispose` first when the
-//! byte is not set (see `struct_decl`). A type alias is the type it names. Anything else is an error
+//! byte is not set (see `struct_decl`). The clock is the language's own module, written in SG and
+//! compiled as a module of the program is; only its two readings are C (see `CLOCK_RUNTIME`). A type
+//! alias is the type it names. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
 //! How values are represented: the integer types are fixed-size C integers (`int8_t` to `uint64_t`), and
@@ -1282,6 +1284,17 @@ static void* sg_raw_alloc(int64_t n, size_t size, const char* ty, const char* lo
 static inline void sg_raw_copy(const void* source, void* target, int64_t n, size_t size, const char* loc) {
     if (n < 0) sg_panicf(loc, "`Memory.copy` is given a count below 0: %lld", (long long)n);
     if (n) memmove(target, source, (size_t)n * size);
+}
+"#;
+
+/// The two clocks the language's own module reads (`Clock.monotonic()`, `Clock.wall()`): the
+/// nanoseconds of the monotonic clock, and of the clock of the system since 1970.
+const CLOCK_RUNTIME: &str = r#"
+#include <time.h>
+static inline int64_t sg_clock(clockid_t id) {
+    struct timespec t;
+    clock_gettime(id, &t);
+    return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
 }
 "#;
 
@@ -4016,11 +4029,12 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     // A program with tasks or `locked` values runs on several threads.
     let threads = emitter.made.contains("tasks") || emitter.made.contains("threads");
-    // glibc keeps `flockfile` out of strict C11 unless POSIX is asked for.
-    let mut out = match threads {
-        true => "#if defined(__linux__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n#define SG_THREADS 1\n".to_string(),
-        false => "#define SG_THREADS 0\n".to_string(),
+    // glibc keeps `flockfile` and `clock_gettime` out of strict C11 unless POSIX is asked for.
+    let mut out = match threads || emitter.made.contains("clock") {
+        true => "#if defined(__linux__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n".to_string(),
+        false => String::new(),
     };
+    let _ = writeln!(out, "#define SG_THREADS {}", u8::from(threads));
     // `accept4` and the flags of `socket` are GNU's on Linux.
     if emitter.made.contains("net") {
         out.insert_str(0, "#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n");
@@ -4044,6 +4058,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     if emitter.made.contains("ffi") {
         out.push_str(FFI_RUNTIME);
+    }
+    if emitter.made.contains("clock") {
+        out.push_str(CLOCK_RUNTIME);
     }
     if floats {
         out.push_str(crate::shortest::tables());
@@ -5603,6 +5620,13 @@ impl<'a> Emitter<'a> {
         // with nothing written.
         if name == "TextError" || name == "NumberError" || name == "Cancelled" {
             return Some(name.to_string());
+        }
+        // So are the types of the language's own module.
+        if crate::source::STD_TYPES.contains(&name) {
+            let full = format!("{}.{name}", crate::source::STD_MODULE);
+            if known(&full) {
+                return Some(full);
+            }
         }
         let public = |full: &str| {
             let alias = || self.aliases.get(full).map(|decl| decl.public);
@@ -11132,6 +11156,10 @@ impl<'a> Emitter<'a> {
                 Callee::Io(call) => self.io(*call, args, head, expr),
                 // `Memory.free(p)` is C's `free`; `Memory.copy` is `memmove` behind a test of the count.
                 Callee::Memory(MemoryCall::Free) => Ok(format!("free({})", self.first(&args[0], head)?)),
+                Callee::Clock(wall) => {
+                    self.made.insert("clock".to_string());
+                    Ok(format!("sg_clock({})", if *wall { "CLOCK_REALTIME" } else { "CLOCK_MONOTONIC" }))
+                }
                 Callee::Memory(MemoryCall::Copy) => {
                     let Ty::Raw(item) = args[0].ty.strip_borrow() else { unreachable!("the checker gives `Memory.copy` raw pointers") };
                     let ctype = self.ctype(item, expr.span)?;

@@ -24,7 +24,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
-| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `CString`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, types of C seen only behind a raw pointer (`struct sqlite3` in an `extern` block), `read T` and `ref T` in signatures |
+| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `CString`, `Duration`, `Instant`, `DateTime`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, types of C seen only behind a raw pointer (`struct sqlite3` in an `extern` block), `read T` and `ref T` in signatures |
 | Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
@@ -53,6 +53,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
 | Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`, on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`, `readSomeAsync(ref buffer)`, and on a writer (`Stdout` and `Stderr` too) `writeAsync(x)`, `writeLineAsync(x)`, `writeBytesAsync(bytes)`, `flushAsync()` and `closeAsync()`: the work of the function without `Async`, as a task, with a token that may come last (`read token`; not for `closeAsync`). A call given a borrow, and `closeAsync`, is awaited where it is written. A writer an async function drops without `closeAsync` is written and closed the async way, awaited where it is dropped. In the interpreter the work is done when it is called; the token is looked at first. Compiled too: the work is done on a thread of input and output while the task waits, and what the block of a reader or a writer can do is done in place. A read of an input that can make the program wait (a pipe, a terminal) waits on a thread in both, and a cancel ends the wait; what comes later stays for the next read |
 | Network | `TcpListener.bind("127.0.0.1:8080")` (a number, `localhost`, or `":8080"` for every address of the machine; port 0 lets the system choose, `listener.port()` tells which), `listener.accept()`, `TcpStream.connect("example.com:80")` (the host looked up by name, each of its addresses tried in turn), `stream.receive(ref buffer)` (what has come, at most what the buffer holds; how many, 0 once the other side has let go) and `stream.send(bytes)` (all of them, through a `read` borrow): each gives a `Result` with an `IoError` (`ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong` are the network's). `stream.reader()` gives a `StreamReader` that borrows the stream and reads it through a block of its own (`readLine`, `lines()`, `readText`, `readBytes`, `readSome` and their async versions), while the stream goes on sending; a line or a text longer than 64 KB (`stream.reader(limit)` for another limit) is `LineTooLong`, and so is every read after it. A `receive` while the reader is used again is a compile error, and neither `send` nor `reader()` goes through a `shared` stream. `acceptAsync`, `connectAsync`, `receiveAsync` and `sendAsync` do the same work as a task, awaited where they are written, with a token that may come last; a cancel ends a wait at once and loses nothing that came. A socket sends without a buffer and is closed when it ends. In an async function the calls without `Async` are an error, as for files. In the interpreter a socket that is not ready gives the turn away, and the scheduler waits for the sockets with `poll` when no task can run. Compiled too: a call that has to wait waits with `poll`, and an async one on the loop of the network (epoll, kqueue), on a thread of its own |
+| Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. All three are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -263,7 +264,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (258 of 1093 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (267 of 1140 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -431,6 +432,8 @@ hand with no checks):
 | `ring`: a ring buffer of its own over raw memory (`raw long`, `unsafe`), four hundred million numbers in at one end and out at the other through 4096 items (the C is the same over `calloc`) | 0.328 s | 0.326 s | 0.328 s | 1.00 |
 | `crc`: sixteen gigabytes through zlib's `crc32`, 64 KB of an array at a time, handed over with `block.pointer()` (the C calls zlib through its header) | 0.418 s | 0.417 s | 0.421 s | 0.99 |
 | `deflate`: a gigabyte at level 1 through zlib's stream, 64 KB at a time, behind the safe `Deflater` of `examples/zlib` (the C calls zlib through its header) | 1.001 s | 1.001 s | 0.962 s | 1.04 |
+| `clock`: ten million times `start.elapsed()` on the monotonic clock, each compared with the one before (the C calls `clock_gettime`) | 0.191 s | 0.180 s | 0.189 s | 1.01 |
+| `dates`: ten million moments between 1900 and 2200 taken apart into year, month, day, hour, minute, second and the day of the week by the calendar of the language's own module, in SG (the C calls `gmtime_r`) | 0.121 s | 0.295 s | 0.413 s | 0.29 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -758,7 +761,8 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/raw.rs` | For the interpreter: raw memory, real addresses from `calloc`, each checked against the block it came from |
 | `src/sums.rs` | For the back end: the sums in a loop that cannot overflow for a number of rounds, so that a checked build runs those rounds without their test |
 | `src/diag.rs` | Error and panic messages |
-| `src/source.rs` | The files of a program: which folders are modules and which of them are read. All files are kept as one text, so a position says which file it is in |
+| `src/source.rs` | The files of a program: which folders are modules and which of them are read. All files are kept as one text, so a position says which file it is in; the language's own module comes last, when a file names one of its types |
+| `src/std/time.sg` | The language's own module `std`, written in SG: `Duration`, `Instant`, `DateTime` and the calendar. Only it calls the two readings of the clock, `Clock.monotonic()` and `Clock.wall()` |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
 
 It is a library with a thin command line on top, so that a language server can later reuse the parser and the
@@ -772,7 +776,7 @@ error comes after what it printed, and an exit code other than 0 and 1 is a last
 of its own to write files into (it is written back as `{dir}` in the output); a `.in` file gives its input.
 
 Programs with modules are in `tests/modules/`: the folders there (`stock`, `billing`, `shop/parts`, `leaky`,
-`links`, `aliasleak`, `clib`) are modules, and each `.sg` file next to them is a program of one file that uses them. A folder with a `main.sg`
+`links`, `aliasleak`, `clib`, `timing`) are modules, and each `.sg` file next to them is a program of one file that uses them. A folder with a `main.sg`
 (`tests/modules/rootdir`, `examples/shop`, `examples/zlib`) is a program run as a folder; its output is in `main.out` and what
 the test command prints for it in `tests.out`.
 
@@ -4091,6 +4095,86 @@ come from the slice, and all were approved the same day:
      programs, 41 of them under the thread sanitizer, and 14 of 18 programs of tests; on Linux too, in a container, with the
      same counts.
 
+Choices made in the seventy-second slice (the clock). 546 to 548, 550, 551, 553 and 554 were decided before
+it on 15 November 2026, with the parts of 548 and 551 marked as coming from the slice; 545, 549, 552 and 555
+come from the slice, and all were approved the same day:
+
+545. **The clock is written in SG**, in the language's own module `std` (`src/std/time.sg`), which a program
+     gets when one of its files names `Duration`, `Instant`, `DateTime`, `DayOfWeek` or `DateError`. Its
+     types are seen from every module with nothing written, as `TextError` is; `use std` is an error whose
+     hint takes the line away, a folder named `std` is not a module, and a program cannot define a type of
+     these names. Its fields are its own: a field of it (`span.ns`) and a value of it built field by field
+     are errors whose hints name its methods and functions. The two readings of the clock,
+     `Clock.monotonic()` and `Clock.wall()`, are the compiler's, and only this module can call them. So
+     equality, hashing, printing in a collection, sorting and compiled code are what every struct of a
+     program has; nothing of the clock needed a new case in the interpreter or the back end besides those
+     two readings. A message names the types as a program writes them, `Duration`, not `std.Duration`.
+546. **`Duration`**: a span of time in a `long` of nanoseconds, which may be negative, `Copyable`,
+     `Equatable`, `Hashable`, `Comparable` and `Formattable`. `Duration.fromNanoseconds`,
+     `fromMicroseconds`, `fromMilliseconds` and `fromSeconds` take a `long`; `nanoseconds()`,
+     `microseconds()`, `milliseconds()` and `seconds()` give the whole count cut toward zero, and
+     `totalSeconds()` a `double`; `plus`, `minus` and `times(long)` are methods, since the language defines
+     no operators (`span + span` is an error whose hint is `span.plus(span)`). The arithmetic follows the
+     rule of the numbers: an overflow is a panic in a debug build and in a test, and wraps in a release
+     build. Printed in the unit its size calls for (`ns`, `µs`, `ms`, `s`) with the fewest digits after the
+     point: `1.5s`, `250ms`, `3µs`, `-2ms`, `0s`; seconds stay seconds (`90s`).
+547. **`Instant`**: a reading of the monotonic clock, which never goes back and which nothing sets;
+     `Copyable`, `Equatable`, `Hashable` and `Comparable`, and not `Formattable`: printing one is an error
+     whose note says that it means something only next to another, and whose hint is `start.elapsed()`.
+     `Instant.now()`, `start.elapsed()`, `later.since(earlier)` (negative when `earlier` is later, never a
+     panic), `plus` and `minus` of a `Duration`. An `Instant` given where a `DateTime` goes, or the other
+     way, is an error whose note says why they are two types. Read with `clock_gettime(CLOCK_MONOTONIC)`, in
+     the interpreter too; on Linux it stops while the machine sleeps, on macOS it does not.
+548. **`DateTime`**: a moment of the calendar in UTC, a `long` of nanoseconds since 1970 as the clock of the
+     system counts them (no leap seconds), from 1677 to 2262; the Gregorian calendar, also before it was in
+     use. `DateTime.now()` (`CLOCK_REALTIME`, which can be set and go back), `DateTime.fromUnixSeconds(n)`,
+     `DateTime.fromUnixMilliseconds(n)`, and `DateTime.utc(year, month, day, hour, minute, second)`, which
+     gives a `Result<DateTime, DateError>`: `InvalidMonth`, `InvalidDay` (29 February of a year that is not
+     a leap year too), `InvalidHour`, `InvalidMinute`, `InvalidSecond`, or `OutOfRange` outside what a
+     `DateTime` holds. `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()` and
+     `dayOfWeek()` (a `DayOfWeek`, `Monday` to `Sunday`) take it apart; `unixSeconds()` and
+     `unixMilliseconds()` count down to the second it lies in, so before 1970 a part of a second counts the
+     earlier second. `since`, `plus` and, from the slice, `minus`. Printed in ISO 8601,
+     `2026-11-15T09:30:05Z`, with the fraction in 3, 6 or 9 digits when there is one. The calendar is
+     Howard Hinnant's arithmetic of eras of 400 years, in SG, not the C library's `gmtime`, which knows
+     time zones and takes a lock. From the slice: the names of the errors, the order of their checks (the
+     month first, so that the day is checked against it), and `DayOfWeek` without an order (`<` on it is an
+     error whose note says it is a built-in type without one).
+549. **A panic inside the language's own module points at its line there**: `Duration.fromSeconds` of a
+     count too large stops at the multiplication in `<built-in>/std/time.sg`, as the same code would in a
+     module of the program, and its hint names `tryMultiply`, which the caller cannot reach. Pointing at the
+     call is left for later (Not here yet).
+550. **A delay waits its time in the interpreter too.** A delay was put on the clock of the run, which moves
+     only when every task waits; after a program computed for a second, `Task.delay(100)` ended at once. Now
+     the clock of the run still gives the order of the timers, so the output is the same on every run, and
+     each timer also waits until its time has really gone by since it was made, as in compiled code. The
+     same holds for `CancellationSource.after`.
+551. **`Task.delay` keeps its `int` of milliseconds**, with no form that takes a `Duration` (the language has
+     no overloads); given a `Duration`, the hint is `Task.delay((int)pause.milliseconds())`. There is no
+     `sleep`: code that is not async waits for a delay kept in a variable (`var pause = Task.delay(100)`,
+     `pause.wait()`). Found in the slice: `Task.delay(100).wait()` in one line is an error, since `wait`
+     takes only a task kept in a variable, and its message says the task is borrowed; left in Not here yet.
+552. **Compiled code** compiles the module like the program's own code; the two readings are `sg_clock`, one
+     call of `clock_gettime`, in the runtime of a program that reads the clock, which asks glibc for POSIX
+     as a program with threads does. The interpreter reads the same clocks with `clock_gettime`, declared to
+     the C library directly, so it has no dependency.
+553. **Measured** (`clock`, a new program): ten million times `start.elapsed()`, each compared with the one
+     before, take 0.191 s, 0.180 s in the overflow-checked build, against 0.189 s for `clock_gettime` in C
+     (1.01 times).
+554. **Measured** (`dates`, a new program): ten million moments between 1900 and 2200 taken apart into their
+     six parts and their day of the week take 0.121 s, 0.295 s in the overflow-checked build, against 0.413 s
+     for `gmtime_r` in C (0.29 times): the C library looks at the time zone and takes a lock on each call,
+     and the C compiler computes the date once for the three calls that ask for its parts.
+555. **The tests**: `ok_time_duration` makes, reads, compares, sorts and prints spans, the largest and the
+     smallest among them; `ok_time_date` takes dates apart, prints them with and without a fraction, goes
+     through every error of `DateTime.utc` and the edges of the range, before 1970 too, and keeps a
+     `DateTime` as a key; `ok_time_clock` measures delays, one after a computation among them. Their output is
+     the same in the interpreter and in compiled code. `panic_time_overflow` and `tests/release/duration_wraps`
+     show the rule of the numbers in a debug and a release build, `tests/modules/ok_time_module` a module that
+     shows the types in what it makes public, and ten `error_time_` programs the errors of 545 to 551.
+     `cargo test` compiles 267 of 1140 programs, 42 of them under the thread sanitizer, and 14 of 18
+     programs of tests; on Linux too, in a container, with the same counts.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -4230,6 +4314,12 @@ check off.
   variables of the environment; the command line as bytes (a word that is not UTF-8 stops the program).
   `IoError` does not carry the path (choice 195). `PermissionDenied` and `NoSpace` are mapped but have no
   test: the tests cannot make a file they may not read or fill a disk.
+- **Of the clock**: time zones and local time, reading a date out of text, formats of your own
+  (`yyyy-MM-dd`), minutes and hours in the text of a `Duration` (`1m30s`), `Task.delay` given a `Duration`,
+  `abs` and `dividedBy` on a `Duration`, the number of a day of the week and an order of the days. A panic
+  inside the language's own module (`Duration.fromSeconds` of a count too large) points at its line there,
+  not at the call (549). `Task.delay(ms).wait()` in one line: `wait` takes only a task kept in a variable,
+  and the message says the task is borrowed (551).
 - Freeing a long linked list recurses, the open stack-depth question from the design; here it runs on a 1 GB stack.
   Compiled code frees a chain of `T*` in a loop, but a chain of `shared` values recursively, one call for each.
 
@@ -4349,5 +4439,8 @@ module of its own needs no `unsafe` where it is used; sixteen gigabytes through 
 of the same calls in C. A type of your own is `Disposable` (its `dispose` runs where its last owner ends)
 and `Closable` (a local of it is closed), a type of C is only pointed at, and a struct of plain data goes
 to C by value; zlib's stream, wrapped in a `Deflater`, compresses a gigabyte in 1.04 times the time of the
-same calls in C. The other places in "Slower than C" wait; next are the clock, random numbers, folders and
-the environment, running another program, Unicode tables and UDP.
+same calls in C. The clock is there: `Instant` for measuring, `Duration` for a span of time and `DateTime`
+for the calendar in UTC, written in SG in the language's own module; ten million readings of the clock
+take the time of `clock_gettime` in C, and taking ten million moments apart takes 0.29 times `gmtime_r`.
+The other places in "Slower than C" wait; next are random numbers, folders and the environment, running
+another program, Unicode tables and UDP.

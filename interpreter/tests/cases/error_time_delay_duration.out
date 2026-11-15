@@ -1,0 +1,6 @@
+error: expected `int`, found `Duration`
+  `Task.delay(ms)` takes the milliseconds as an `int`
+  --> error_time_delay_duration.sg:3:24
+ 3 |     var t = Task.delay(pause)
+   |                        ^^^^^
+  hint: `Task.delay((int)pause.milliseconds())`

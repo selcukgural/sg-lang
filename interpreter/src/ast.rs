@@ -230,6 +230,10 @@ pub enum Callee {
     /// token (`Task.delay(ms, read token)`, the `bool`), it ends early when the token is
     /// cancelled, and gives a `Result<void, Cancelled>`.
     Delay(bool),
+    /// `Clock.monotonic()` (`false`) and `Clock.wall()` (`true`): the nanoseconds of the
+    /// monotonic clock and of the clock of the system since 1970, as a `long`. Only the
+    /// language's own module calls them.
+    Clock(bool),
     /// `slot.take()`: gives the value and leaves `null`.
     Take,
     /// `slot.replace(value)`: gives the old value and leaves the new one.

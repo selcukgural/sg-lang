@@ -1,0 +1,4 @@
+void main() {
+    var start = Instant.now()
+    print(start)
+}

@@ -1,0 +1,5 @@
+use std
+
+void main() {
+    print(Duration.fromSeconds(1))
+}

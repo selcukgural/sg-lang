@@ -1,0 +1,40 @@
+// `Duration`: a span of time in nanoseconds, made and read in the unit asked for, and printed in
+// the unit its size calls for.
+
+void main() {
+    var half = Duration.fromMilliseconds(500)
+    var second = Duration.fromSeconds(1)
+    print(half)
+    print(second)
+    print(second.plus(half))
+    print(half.minus(second))
+    print(half.times(3))
+    print(Duration.fromSeconds(90))
+    print(Duration.fromMicroseconds(1500))
+    print(Duration.fromNanoseconds(999))
+    print(Duration.fromNanoseconds(1000))
+    print(Duration.fromNanoseconds(1000001))
+    print(Duration.fromNanoseconds(1000000001))
+    print(Duration.fromNanoseconds(0))
+    print(Duration.fromNanoseconds(-1))
+    print(Duration.fromNanoseconds(long.MaxValue))
+    print(Duration.fromNanoseconds(long.MinValue))
+
+    // The whole units, cut toward zero.
+    var span = Duration.fromNanoseconds(-2999999999)
+    print($"{span.seconds()} {span.milliseconds()} {span.microseconds()} {span.nanoseconds()}")
+    print(Duration.fromMilliseconds(1250).totalSeconds())
+
+    // Compared, kept in a set and sorted like any value that is `Comparable` and `Hashable`.
+    print(half < second)
+    print(half == Duration.fromMicroseconds(500000))
+    print(second.compare(read half))
+    var spans = List<Duration> { second, Duration.fromNanoseconds(5), half }
+    spans.sort()
+    print(spans)
+    var seen = HashSet<Duration>()
+    seen.add(half)
+    seen.add(Duration.fromMilliseconds(500))
+    print(seen.length())
+    print($"took {Duration.fromMilliseconds(42)}")
+}
