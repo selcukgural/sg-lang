@@ -260,7 +260,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (246 of 1006 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (247 of 1007 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -361,7 +361,9 @@ sixty-fifth (the network: `TcpListener` and `TcpStream`, and a cancel that ends 
 the input): one thread waits for every socket a task waits for, with epoll or kqueue (466-479). So was the
 sixty-sixth (lines over a connection): `conn.reader()` is a `StreamReader` that borrows the connection
 and keeps what has come in its block until a read can take all it needs, `send` goes through a `read`
-borrow, and `readSome` gives what is there (480-490). What is still missing is an error that names it (not silence): the few positions listed with the
+borrow, and `readSome` gives what is there (480-490). The sixty-seventh made no new feature: it checks the
+text a reader reads a block at a time, not a line at a time, and every program that reads lines got
+faster (491-495). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -397,8 +399,8 @@ hand with no checks):
 | `nbody`: the sun and the four giant planets moved twenty million steps in `double`, a square root for each pair at each step | 0.661 s | 0.662 s | 0.679 s | 0.97 |
 | `numbers`: a million lines of whole and fractional numbers read ten times with `long.parse` and `double.parse` and added up | 0.186 s | 0.191 s | 0.196 s | 0.95 |
 | `fields`: a million lines like ` Ada17 , 120, -45 ,6789` gone over twenty times with `lines`, `split`, `trim`, `long.parse` and `chars` | 1.228 s | 1.259 s | 1.202 s | 1.02 |
-| `lines`: two million lines of a log (125 MB) read from the input with `Stdin.readLine`, each checked to be UTF-8, and counted | 0.096 s | 0.097 s | 0.089 s | 1.08 |
-| `copy`: the same log read from a file with `File.openText` and written to another, each line with its number in front, through `File.createText` | 0.252 s | 0.253 s | 0.270 s | 0.93 |
+| `lines`: two million lines of a log (125 MB) read from the input with `Stdin.readLine`, each checked to be UTF-8, and counted | 0.075 s | 0.077 s | 0.091 s | 0.82 |
+| `copy`: the same log read from a file with `File.openText` and written to another, each line with its number in front, through `File.createText` | 0.226 s | 0.223 s | 0.272 s | 0.83 |
 | `bytes`: the same log read in pieces of 4 KB with `readBytes` and written with `writeBytes` through a writer from `File.openAppend` | 0.030 s | 0.030 s | 0.032 s | 0.94 |
 | `table`: two million lines printed with widths, hex, binary and two digits after the point (`{i:x8} {a,10}  {name,-8}\|{x,10:F3}  {mask:b16} {code:X6}`) | 0.471 s | 0.471 s | 0.533 s | 0.89 |
 | `blocks`: eight million pieces of 1 to 255 bytes (about a gigabyte) gathered with `addAll` into a `List<byte>` that is emptied at 64 MB | 0.035 s | 0.035 s | 0.035 s | 1.00 |
@@ -408,12 +410,12 @@ hand with no checks):
 | `tree`: the design's folder tree, 111,111 `shared checked` folders that look at their parent with `weak`, each adding a size to every folder above it, built and freed twenty times | 0.095 s | 0.102 s | 0.062 s | 1.53 |
 | `tasks`: four tasks at a time over the numbers below 400,000, ten times; each adds up Collatz lengths and adds them to a `shared locked` total every 100 numbers | 0.115 s | 0.188 s | 0.115 s | 1.00 |
 | `async`: for each number below a million, an async function starts a task for one Collatz length and awaits another in place; nothing has to wait | 0.244 s | 0.372 s | 0.226 s | 1.08 |
-| `asynclines`: `lines` the async way, the two million lines read with `await Stdin.readLineAsync` in an async `main` (the C is that of `lines`) | 0.125 s | 0.125 s | 0.090 s | 1.37 |
+| `asynclines`: `lines` the async way, the two million lines read with `await Stdin.readLineAsync` in an async `main` (the C is that of `lines`) | 0.113 s | 0.114 s | 0.088 s | 1.28 |
 | `tasklist`: in each of 200,000 rounds, eight async tasks for Collatz lengths taken with `Task.whenAll` and eight with `Task.whenAny`; none has to wait (the C keeps each result in a block it allocates, in an array for the list) | 0.476 s | 0.689 s | 0.384 s | 1.24 |
-| `asynccopy`: `copy` the async way, the log read with `await reader.readLineAsync` and written with `await writer.writeLineAsync` in an async `main` (the C is that of `copy`) | 0.301 s | 0.299 s | 0.275 s | 1.09 |
+| `asynccopy`: `copy` the async way, the log read with `await reader.readLineAsync` and written with `await writer.writeLineAsync` in an async `main` (the C is that of `copy`) | 0.283 s | 0.284 s | 0.271 s | 1.04 |
 | `echo`: an echo server and eight clients in one async program over the loopback, each client sending 64 bytes and waiting for them to come back 20,000 times (the C blocks, with a thread for each connection and each client) | 2.083 s | 2.082 s | 1.119 s | 1.86 |
 | `echosync`: `echo` without async, the server's connections and the clients on threads of `Task.run` (the C is that of `echo`) | 1.108 s | 1.118 s | 1.115 s | 0.99 |
-| `netlines`: the two million lines of `lines` sent over the loopback by one task and read line by line by another with `await reader.readLineAsync(ref line)` (the C blocks, with `getline` from a `FILE` over the socket, which checks nothing) | 0.117 s | 0.117 s | 0.080 s | 1.46 |
+| `netlines`: the two million lines of `lines` sent over the loopback by one task and read line by line by another with `await reader.readLineAsync(ref line)` (the C blocks, with `getline` from a `FILE` over the socket, which checks nothing) | 0.092 s | 0.089 s | 0.081 s | 1.14 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -534,17 +536,17 @@ slower (1.54 s, in every run); why was not looked into, and the change was left 
 `lines` reads its input: two million lines of a log, 125 MB with some `\r\n` ends and a `café` here
 and there, read with `Stdin.readLine` into one text that is used for every line, and counted (the
 lines, their bytes, the longest, the ones that start with `ERROR`). The C program reads them with
-`getline` into one buffer, as one does. SG takes 1.08 times its time, and all of that is the check that
-every line is UTF-8, which `getline` does not make: with the check taken out of the generated C the SG
-program takes 0.058 s against 0.090 s, since it finds a line with `memchr` in a block of its own where
-`getline` goes through `FILE*`. The check first took the program to about 1.15 times; looking at eight
-bytes at a time while they are ASCII brought it to 1.08 (choice 202). The rest is in "Slower than C".
+`getline` into one buffer, as one does. SG takes 0.82 times its time, and checks that every line is
+UTF-8, which `getline` does not: it finds a line with `memchr` in a block of its own where `getline` goes
+through `FILE*`, and it checks the block at once, so the lines inside the part known to be text cost
+nothing more (choice 491). The check first took the program to about 1.15 times; looking at eight bytes
+at a time while they are ASCII brought it to 1.08 (choice 202), and checking a block at a time to 0.82.
 
 `copy` reads the same log from a file, opened with `File.openText` and read with `readLine` into one
 text, and writes each line with its number in front (`17: INFO 350 ...`) with `writeLine` through a
 writer from `File.createText`, 140 MB in all. The C program reads with `getline` and writes with
-`fprintf` into a `FILE*` with a buffer of 64 KB. SG takes 0.93 times its time (0.25 s against 0.27 s,
-over three runs of five): it checks every line and still reads faster, as `lines` showed, and the
+`fprintf` into a `FILE*` with a buffer of 64 KB. SG takes 0.83 times its time (0.23 s against 0.27 s;
+0.93 before the check of a block at a time): it checks every line and still reads faster, as `lines` showed, and the
 writing is a `vsnprintf` into the writer's block where C's is an `fprintf`.
 
 `bytes` copies the same log as bytes: `readBytes` into a buffer of 4 KB on the stack, and `writeBytes` of
@@ -3719,6 +3721,44 @@ together, approved on 15 November 2026:
      programs, 38 of them under the thread sanitizer, and 13 of 17 programs of tests; on Linux too, in a
      container, with the same counts.
 
+Choices made in the sixty-seventh slice (checking UTF-8 a block at a time, in compiled code), decided
+before it on 15 November 2026 after a measurement, approved the same day:
+
+491. **A reader checks its block at once**, decided before the slice: a line is checked with the rest of
+     the block, from where the check stands, and the lines inside the part known to be text cost
+     nothing; where it stands is kept in the reader (`checked`, counted as `done` counts, so a block that
+     is filled again or moved keeps it right). A line starts after a `\n`, which never lies inside a
+     character, so what is found is what a check of the line alone finds: the same lines are text, and a
+     bad one gives the same place; after it the check goes on from the next line. A line that two blocks
+     share (one in 64 KB) is checked whole, as before; a read of bytes (`readBytes`, `readSome`), which
+     can stop inside a character, lets go of what is known. It is so for a file, the input and a
+     connection. A measurement before the slice found that a check of each line costs about the same
+     whatever the way of checking (0.033 s to 0.042 s for the two million lines, the reading itself
+     0.019 s): the lines are short (61 bytes), and the cost is in each call and in where the `é` falls.
+492. **The check itself**, decided before the slice: sixteen bytes at a time while they are ASCII, then
+     eight, the ASCII after a character byte by byte without going back to the top, and a character of two
+     bytes looked at first (`sg_utf8_valid`, which gives how many bytes from the first are whole
+     characters; `sg_utf8_bad` is made of it). It is the same C on every machine: 6.3 GB/s against 4.3
+     before on the whole log. A check with NEON (Keiser and Lemire's, as `simdjson` and `simdutf` do) was
+     measured at 8.8 GB/s, some 6 ms less on the log, but only on arm64; x86 needs SSSE3, which a
+     program would have to look for when it starts. It is left in "Slower than C". `readText`,
+     `string.fromUtf8` and the command line use the new check too.
+493. **Measured**, each before and after on the same machine (best of seven): `lines` 0.096 s → 0.075
+     s against 0.089 s for C (1.08 → 0.84 times), `copy` 0.253 → 0.226 against 0.271 (0.93 → 0.83),
+     `asynclines` 0.134 → 0.112 against 0.088 (1.27 now), `asynccopy` 0.305 → 0.284 against 0.274
+     (1.04), `netlines` 0.115 → 0.092 against 0.079 (1.46 → 1.16). The table above has the new times.
+494. **The interpreter is not changed**: it checks each line with Rust's `from_utf8`, which is what
+     compiled code must agree with.
+495. **The tests**: `ok_text_blocks` makes a file of 388 KB with characters of one to four bytes, some cut
+     by the end of a block, bytes that are not UTF-8 (an overlong form, a lone continuation, a
+     surrogate), lines ended by `\r\n` and a last line cut inside a character, and reads it with
+     `readLine` and with a `readBytes` of three bytes every 97 reads, from the file and from a connection;
+     the lines, the bad ones and their places agree with the interpreter. Two faults put into the C on
+     purpose (no letting go after `readBytes`, a block taken as text without a check) change what it
+     prints. Every way of checking was compared with the old check on twenty million random sequences
+     and on every sequence of three bytes. `cargo test` compiles 247 of 1007 programs, 39 of them under the
+     thread sanitizer, and 13 of 17 programs of tests; on Linux too, in a container, with the same counts.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -3759,12 +3799,12 @@ check off.
   still takes its allocation and the atomic steps of a task that might be woken from another thread.
   Candidates: a task that ends before it first waits could skip those steps, and its block could come
   from a list of freed ones.
-- **Reading the input the async way** (`asynclines`, 1.37 times C, choice 439): a line the block holds
+- **Reading the input the async way** (`asynclines`, 1.28 times C, choice 439; 1.37 before choice 491): a line the block holds
   is read in place, but each block of 64 KB is filled on a thread of input and output, and the task is
   woken through the pool after it: about 12 µs a block, 0.023 s of the 0.035 s. Candidates: the thread
   fills the next block while the task reads this one (reading ahead), a larger block for a reader read
   the async way, and a task that goes on on the thread that woke it.
-- **Copying a file the async way** (`asynccopy`, 1.09 times C, choice 464; 0.94 without async): the
+- **Copying a file the async way** (`asynccopy`, 1.04 times C, choice 464; 1.09 before choice 491; 0.83 without async): the
   same hand-over as above, for the reader's blocks and the writer's: each block of 64 KB filled or
   written out goes to a thread of input and output and the task is woken through the pool after it,
   about 0.04 s for some four thousand blocks. Candidates: those of the reader, and for the writer, a
@@ -3781,12 +3821,12 @@ check off.
   again each time. Candidates: the threads of the pool wait for the loop themselves when they have nothing
   to do, so the one the system wakes runs the task (as Tokio's workers do), and a socket that stays on the
   loop, woken by its edges, instead of being put on again for each wait.
-- **Checking that a line is UTF-8** (`lines`, 1.08 times `getline`, which checks nothing; without the
-  check the SG program takes 0.058 s against 0.090 s; `netlines`, 1.46 times, 0.89 without it, choice
-  488, where the C reads the lines while another thread reads the file, so nothing hides the check): the check looks at eight bytes at a time while they
-  are ASCII and at one byte at a time from the first that is not (choice 202). Candidates: a check with
-  vector instructions (as `simdutf` does, and Rust's `from_utf8` in part), used by every place that
-  checks: `readText`, `readLine`, the command line, `string.fromUtf8`.
+- **Checking that a line is UTF-8** (`netlines`, 1.14 times `getline`, which checks nothing, 0.89 without
+  the check, choice 493; `lines` takes 0.82 times with it): the reader checks its block at once (491), with
+  sixteen bytes at a time while they are ASCII and one byte at a time inside a character (492), about
+  6 GB/s; the check is still some 0.02 s of the 0.09 s. Candidates: a check with vector instructions (as
+  `simdutf` does), measured at 8.8 GB/s with NEON on arm64; on x86 it needs SSSE3, which a program has to
+  look for when it starts.
 
 ## Not here yet
 
@@ -3875,10 +3915,10 @@ written as the design wrote it. A text is built piece by piece where it is (`wri
 `string.withCapacity`), and building a million lines takes the time of `sprintf` into one buffer in C.
 A program reads and writes files whole, reads its input line by line into one text, and sees its command
 line (`main(List<string> args)`); it writes to the standard error with `printError` and ends with a code of
-its choice with `exit`. Reading two million lines takes 1.08 times `getline` in C, which does not check
+its choice with `exit`. Reading two million lines takes 0.82 times `getline` in C, which does not check
 that they are text. A file is read and written piece by piece through a `StreamReader` and a
 `StreamWriter`, `Stdin`, `Stdout` and `Stderr` are such streams, and a writer left open in a local
-variable is a compile error; copying the log line by line into another file takes 0.93 times the time
+variable is a compile error; copying the log line by line into another file takes 0.83 times the time
 of `getline` and `fprintf` in C. A writer appends with `File.openAppend`, and bytes are read and
 written piece by piece (`readBytes`, `writeBytes`); copying the log as bytes takes 0.94 times the time of
 `fread` and `fwrite` in C. A value in `$"..."` takes a width and a letter, as in C# (`{n,5}`, `{b:X2}`,
@@ -3944,20 +3984,21 @@ program gives the interpreter's output and runs clean under the thread sanitizer
 call that does not wait is 1.08 times the same calls in C. Input and output the async way is compiled as
 well: the work is done on threads of input and output, started as they are needed, while the task waits,
 and a read that the block of a reader already holds is done in place, so reading the input line by line
-the async way takes 1.37 times the same program in C (without async, about the time of C). Tasks are kept
+the async way takes 1.28 times the same program in C (without async, less than the time of C). Tasks are kept
 in a list (`List<Task<R>>`) and waited for all at once (`await Task.whenAll(tasks)`, what each gave in the
 order of the list) or as they end (`await Task.whenAny(ref tasks)`), and a list whose tasks are not all
 waited for is a compile error; compiled, each list has a group that its tasks tell as they end. Streams
 are opened, written and closed the async way (`File.createTextAsync`, `await writer.writeLineAsync(x)`,
 `await writer.closeAsync()`), and a writer an async function drops on its way out is written and closed
 the async way too, awaited where it is dropped, so a thread of the pool never writes a file; copying the
-log line by line the async way takes 1.09 times the same program in C. The network is there too: a
+log line by line the async way takes 1.04 times the same program in C. The network is there too: a
 `TcpListener` takes connections and a `TcpStream` receives and sends bytes, without async and with it;
 compiled, one thread waits for every socket a task waits for, with epoll or kqueue, and a cancel ends a
 wait for a socket, or for a line of the input, at once. An echo server with eight clients takes 1.86 times
 the same program in C with blocking threads the async way, and the time of C without async. A connection
 is read line by line through a `StreamReader` of its own (`conn.reader()`), which borrows it while it
 goes on sending, and a line longer than 64 KB is an error; reading two million lines sent over the
-loopback takes 1.46 times `getline` in C, which does not check that they are text (0.89 times without the
-check). Next is open: a stream shared by a reading and a writing task, a faster check of UTF-8, the
+loopback takes 1.14 times `getline` in C, which does not check that they are text (0.89 times without the
+check): a reader checks the text of its block at once, not line by line. Next are the places in "Slower than
+C", one at a time; then a stream shared by a reading and a writing task, the
 threads of the pool waiting for the loop themselves, `linesAsync`, and an `async` method.

@@ -623,33 +623,48 @@ SG_COLD static _Noreturn void sg_bytes_fail(const char* what, int64_t want, int6
     fprintf(stderr, "panic: `%s` reads %lld bytes, and it was given %lld\n", what, (long long)want, (long long)len);
     sg_die(loc);
 }
-/* Where the first byte lies that is not part of valid UTF-8, or -1 when the bytes are text. */
-static int64_t sg_utf8_bad(const uint8_t* bytes, int64_t len) {
+/* How many of the bytes, from the first, are whole characters of UTF-8: all of them when they are
+   text, otherwise where the first byte lies that is not part of a character, or the first byte of a
+   character the end cuts off. Sixteen bytes, then eight, are passed at a time while they are ASCII,
+   and the ASCII after a character byte by byte. */
+static int64_t sg_utf8_valid(const uint8_t* b, int64_t len) {
     int64_t at = 0;
-    while (at < len) {
-        /* Eight bytes at a time while none of them has its high bit set: plain ASCII. */
-        if (at + 8 <= len) {
-            uint64_t word;
-            memcpy(&word, bytes + at, 8);
-            if (!(word & 0x8080808080808080ULL)) { at += 8; continue; }
+    for (;;) {
+        while (at + 16 <= len) {
+            uint64_t x, y;
+            memcpy(&x, b + at, 8);
+            memcpy(&y, b + at + 8, 8);
+            if ((x | y) & 0x8080808080808080ULL) break;
+            at += 16;
         }
-        uint8_t first = bytes[at];
-        if (first < 0x80) { at++; continue; }
+        if (at + 8 <= len) {
+            uint64_t x;
+            memcpy(&x, b + at, 8);
+            if (!(x & 0x8080808080808080ULL)) at += 8;
+        }
+        while (at < len && b[at] < 0x80) at++;
+        if (at >= len) return len;
+        uint8_t first = b[at];
+        if (first >= 0xC2 && first <= 0xDF) {
+            if (at + 1 >= len || (b[at + 1] & 0xC0) != 0x80) return at;
+            at += 2;
+            continue;
+        }
         int64_t more;
         uint8_t low = 0x80, high = 0xBF;
-        if (first >= 0xC2 && first <= 0xDF) more = 1;
-        else if (first >= 0xE0 && first <= 0xEF) { more = 2; if (first == 0xE0) low = 0xA0; if (first == 0xED) high = 0x9F; }
+        if (first >= 0xE0 && first <= 0xEF) { more = 2; if (first == 0xE0) low = 0xA0; if (first == 0xED) high = 0x9F; }
         else if (first >= 0xF0 && first <= 0xF4) { more = 3; if (first == 0xF0) low = 0x90; if (first == 0xF4) high = 0x8F; }
         else return at;
-        if (at + more >= len) {
-            /* The character is cut off by the end: it is still bad from its first byte on. */
-            return at;
-        }
-        if (bytes[at + 1] < low || bytes[at + 1] > high) return at;
-        for (int64_t i = 2; i <= more; i++) if ((bytes[at + i] & 0xC0) != 0x80) return at;
+        if (at + more >= len) return at;
+        if (b[at + 1] < low || b[at + 1] > high) return at;
+        for (int64_t i = 2; i <= more; i++) if ((b[at + i] & 0xC0) != 0x80) return at;
         at += more + 1;
     }
-    return -1;
+}
+/* Where the first byte lies that is not part of valid UTF-8, or -1 when the bytes are text. */
+static inline int64_t sg_utf8_bad(const uint8_t* bytes, int64_t len) {
+    int64_t valid = sg_utf8_valid(bytes, len);
+    return valid == len ? -1 : valid;
 }
 /* A short text is written once, into a buffer on the stack, and copied; only a longer one
    is written a second time, into the room it was found to need. */
@@ -2393,7 +2408,7 @@ static sg_reader sg_net_reader(sg_socket* s, int64_t limit, const char* loc) {
     }
     uint8_t* block = malloc(65536);
     if (!block) abort();
-    return (sg_reader){ s->fd, block, 0, 0, 0, false, s, 65536, limit, false };
+    return (sg_reader){ s->fd, block, 0, 0, 0, false, s, 65536, limit, false, 0 };
 }
 "#;
 
@@ -2885,11 +2900,30 @@ static int sg_write_file(sg_str path, const uint8_t* bytes, int64_t len, bool ap
    borrows, and keeps in its block all that has come and has not been given out, so that a read
    that has to wait for more, and is cancelled, loses nothing: the block grows (`cap`) until it
    holds what the read needs. A line, or a text, longer than `limit` is an error, and so is every
-   read after it (`too_long`). */
+   read after it (`too_long`).
+   `checked`: how far, counted as `done` counts, the bytes are known to be UTF-8 (see
+   `sg_block_bad`). */
 struct sg_socket_s;
-typedef struct { int fd; uint8_t* block; int64_t at, len, done; bool ended; struct sg_socket_s* sock; int64_t cap, limit; bool too_long; } sg_reader;
+typedef struct { int fd; uint8_t* block; int64_t at, len, done; bool ended; struct sg_socket_s* sock; int64_t cap, limit; bool too_long; int64_t checked; } sg_reader;
 static uint8_t sg_in_block[65536];
-static sg_reader sg_stdin = { 0, sg_in_block, 0, 0, 0, false, NULL, 65536, 0, false };
+static sg_reader sg_stdin = { 0, sg_in_block, 0, 0, 0, false, NULL, 65536, 0, false, 0 };
+/* Where the first byte that is not UTF-8 lies in the bytes `from` to `to` of the block, from
+   `from`, or -1. A line is checked with the rest of the block, at once, from where the check
+   stands: the lines after it inside the part known to be text cost nothing, where a check of
+   each short line costs about as much again as reading it. `from` starts a line, after a `\n`, so
+   it starts a character whenever the bytes before it are text: what is found is what a check of
+   the line alone finds. A read that takes bytes and not lines (`readBytes`, `readSome`) can stop
+   inside a character, so it lets go of what is known (`checked = done`). */
+static int64_t sg_block_bad(sg_reader* r, int64_t from, int64_t to) {
+    int64_t base = r->done - r->at;
+    if (r->checked < base + from) r->checked = base + from;
+    if (base + to > r->checked) {
+        int64_t i = r->checked - base;
+        r->checked += sg_utf8_valid(r->block + i, r->len - i);
+    }
+    if (base + to <= r->checked) return -1;
+    return sg_utf8_bad(r->block + from, to - from);
+}
 static int sg_in_terminal = -1;
 /* Where several tasks run, one of them at a time reads the input. */
 #if SG_THREADS
@@ -2994,10 +3028,10 @@ static int sg_sock_line(sg_reader* r, sg_string* line, bool* more, int64_t* bad,
         keep--;
         if (keep > 0 && from[keep - 1] == '\r') keep--;
     }
+    int64_t at = sg_block_bad(r, r->at, r->at + keep);
     r->at += n;
     r->done += n;
     *more = n > 0;
-    int64_t at = sg_utf8_bad(from, keep);
     if (at >= 0) { *bad = start + at; return -1; }
     sg_put(line, from, keep);
     return 0;
@@ -3029,6 +3063,8 @@ static int sg_read_line_at(sg_reader* r, sg_string* line, bool* more, int64_t* b
     line->len = 0;
     int64_t start = r->done;
     bool any = false;
+    /* The line lies whole in the block, from `first`: it is checked with the block. */
+    int64_t first = -1;
     for (;;) {
         if (r->at == r->len) {
             if (r->ended) break;
@@ -3037,10 +3073,11 @@ static int sg_read_line_at(sg_reader* r, sg_string* line, bool* more, int64_t* b
             if (code) return code;
             continue;
         }
-        any = true;
         const uint8_t* from = r->block + r->at;
         const uint8_t* end = memchr(from, '\n', (size_t)(r->len - r->at));
         if (now && !end) return -2;
+        if (end && !any) first = r->at;
+        any = true;
         int64_t n = end ? end - from + 1 : r->len - r->at;
         sg_put(line, from, n);
         r->at += n;
@@ -3053,7 +3090,7 @@ static int sg_read_line_at(sg_reader* r, sg_string* line, bool* more, int64_t* b
         line->len--;
         if (line->len > 0 && line->ptr[line->len - 1] == '\r') line->len--;
     }
-    int64_t at = sg_utf8_bad(line->ptr, line->len);
+    int64_t at = first >= 0 ? sg_block_bad(r, first, first + line->len) : sg_utf8_bad(line->ptr, line->len);
     if (at >= 0) { line->len = 0; *bad = start + at; return -1; }
     return 0;
 }
@@ -3087,6 +3124,7 @@ static int sg_read_rest(sg_reader* r, sg_string* text) {
 static int sg_read_bytes(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
     int64_t n = 0;
     int code = 0;
+    r->checked = r->done;
 #if SG_NET
     /* A connection: what the block holds first, the rest received straight into `to`. A read
        done in place by an async call (see `sg_reader_net`) finds all of it in the block. */
@@ -3137,6 +3175,7 @@ static int sg_read_bytes(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
    most `len` bytes, `*got` says how many (0 at the end). */
 static int sg_read_some(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
     *got = 0;
+    r->checked = r->done;
 #if SG_NET
     if (r->sock) {
         int64_t n = sg_sock_wait(r, SG_NEED_SOME, len, false);
@@ -3172,7 +3211,7 @@ static int sg_open_reader(sg_str path, sg_reader* out) {
     if (fstat(fd, &info) == 0 && S_ISDIR(info.st_mode)) { close(fd); return EISDIR; }
     uint8_t* block = malloc(65536);
     if (!block) abort();
-    *out = (sg_reader){ fd, block, 0, 0, 0, false, NULL, 65536, 0, false };
+    *out = (sg_reader){ fd, block, 0, 0, 0, false, NULL, 65536, 0, false, 0 };
     return 0;
 }
 static inline void sg_drop_reader(sg_reader* r) {

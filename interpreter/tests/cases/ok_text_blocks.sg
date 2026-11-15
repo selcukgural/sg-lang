@@ -1,0 +1,108 @@
+// Lines checked to be text. Compiled code checks the block of a reader at once and the lines
+// inside the part known to be text cost nothing; what it finds must be what a check of each line
+// alone finds. The file has characters of one to four bytes, some of them cut by the end of a block
+// of 64 KB, bytes that are not UTF-8 (an overlong form, a lone continuation, a surrogate), lines that
+// end with `\r\n`, a last line cut inside a character, and reads of bytes between the lines that
+// stop inside a character. It is read from the file and from a connection.
+ulong next(ref ulong seed) {
+    seed = seed.wrappingMultiply(6364136223846793005).wrappingAdd(1442695040888963407)
+    return seed >> 33
+}
+
+List<byte> made() {
+    var bytes = List<byte>()
+    ulong seed = 7
+    for _ in 0..9000 {
+        var pieces = next(ref seed) % 50
+        for _ in 0..pieces {
+            var x = next(ref seed) % 1000
+            if x < 600 {
+                bytes.add((byte)(97 + x % 26))
+            } else if x < 800 {
+                bytes.add(0xC3)
+                bytes.add(0xA9)
+            } else if x < 900 {
+                bytes.add(0xE2)
+                bytes.add(0x82)
+                bytes.add(0xAC)
+            } else if x < 996 {
+                bytes.add(0xF0)
+                bytes.add(0x9F)
+                bytes.add(0x98)
+                bytes.add(0x80)
+            } else if x < 997 {
+                bytes.add(0xC0)
+                bytes.add(0x80)
+            } else if x < 998 {
+                bytes.add(0x80)
+            } else {
+                bytes.add(0xED)
+                bytes.add(0xA0)
+                bytes.add(0x80)
+            }
+        }
+        if next(ref seed) % 5 == 0 {
+            bytes.add(13)
+        }
+        bytes.add(10)
+    }
+    bytes.add(0x41)
+    bytes.add(0xE2)
+    bytes.add(0x82)
+    return bytes
+}
+
+Result<string, IoError> count(ref StreamReader reader) {
+    var line = ""
+    var small = byte[3](0)
+    long lines = 0
+    long bad = 0
+    long sum = 0
+    int round = 0
+    while true {
+        round += 1
+        if round % 97 == 0 {
+            var n = try reader.readBytes(ref small)
+            if n == 0 {
+                break
+            }
+            sum += n
+            continue
+        }
+        match reader.readLine(ref line) {
+            Ok(true) => {
+                lines += 1
+                sum += line.length()
+            }
+            Ok(false) => break
+            Error(InvalidText(at)) => {
+                bad += 1
+                sum += at
+            }
+            Error(cause) => return Error(cause)
+        }
+    }
+    return Ok($"{lines} lines, {bad} not text, {sum}".toString())
+}
+
+Result<void, IoError> send(TcpListener listener, List<byte> bytes) {
+    var conn = try listener.accept()
+    try conn.send(read bytes)
+    return Ok()
+}
+
+Result<void, IoError> main(List<string> args) {
+    var bytes = made()
+    var path = $"{args[0]}/text.txt".toString()
+    try File.writeBytes(read path, read bytes)
+    var file = try File.openText(read path)
+    print(try count(ref file))
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var sender = Task.run(send, listener, bytes)
+    var conn = try TcpStream.connect(read address)
+    var reader = conn.reader()
+    print(try count(ref reader))
+    try sender.wait()
+    return Ok()
+}
