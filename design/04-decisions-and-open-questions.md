@@ -458,6 +458,13 @@ smallness: what each language does best is taken in the form that fits us, and i
 - **After the first version:** implementing an interface outside the definition of the type (`extend`), using an interface
   as a type (`read Shape`), associated types, default method bodies, operator definitions, constant parameters, a variable that `is not` opens into the outer scope, a `sync` that pushes the data to disk after `close` (`Flush(true)` in C#), generic type aliases (`using Link<T> = shared checked T`), lazy list chains (like LINQ).
 
+*Deferred on 15 November 2026: properties.* A struct has fields, and what does work is a method: `text.length()`,
+`source.token()`. A property (C#'s `get` and `set`) would look like a field and run code, so `x.y` would no longer
+tell that it is cheap (`source.token` costs an atomic count); what a getter gives, owned or lent, would be a second
+contract; and a setter has no place in memory, so `ref x.y` and `x.y += 1` would need rules of their own. The common
+use, read from outside and written from inside, is a `public readonly` field. Talked through again if a real need
+shows up.
+
 *Deferred on 12 November 2026: generics of your own.* They cost nothing at run time, but they are the largest source of
 concepts in the design (type parameters, `where`, your own `interface`, associated types, conditional `Copyable`), and
 eleven slices of the interpreter ran without them. `Result<T, E>`, `T?`, `List<T>`, `HashMap<K, V>` and `HashSet<T>`
