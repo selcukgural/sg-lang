@@ -1,0 +1,9 @@
+error: `tasks` is used after the loop that emptied it
+  --> error_task_list_after_loop.sg:12:5
+ 12 |     tasks.add(count(20))
+    |     ^^^^^
+  after this loop its tasks count as waited for, and the list as used up:
+  --> error_task_list_after_loop.sg:9:11
+ 9 |     while tasks.length() > 0 {
+   |           ^^^^^^^^^^^^^^^^^^
+  hint: for more tasks, give it a new list first: `tasks = List<...>()`

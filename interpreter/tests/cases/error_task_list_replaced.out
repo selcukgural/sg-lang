@@ -1,0 +1,9 @@
+error: `tasks` is given another list while the tasks it holds are not waited for
+  --> error_task_list_replaced.sg:9:5
+ 9 |     tasks = List<Task<int>>()
+   |     ^^^^^
+  it is declared here:
+  --> error_task_list_replaced.sg:7:9
+ 7 |     var tasks = List<Task<int>>()
+   |         ^^^^^
+  hint: wait for them first: `_ = await Task.whenAll(tasks)`

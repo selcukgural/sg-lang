@@ -1,0 +1,6 @@
+error: the tasks in `tasks` are not waited for before its block ends
+  a list of tasks is given to `Task.whenAll`, or emptied by a loop `while tasks.length() > 0` that takes them with `Task.whenAny`
+  --> error_task_list_unwaited.sg:7:9
+ 7 |     var tasks = List<Task<int>>()
+   |         ^^^^^
+  hint: `_ = await Task.whenAll(tasks)`

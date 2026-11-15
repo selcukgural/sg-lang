@@ -47,6 +47,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
+| A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
 | Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, and on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`: the work of the function without `Async`, as a task, with a token that may come last (`read token`). A call given a borrow is awaited where it is written. In the interpreter the work is done when it is called; the token is looked at first. Compiled too: the work is done on a thread of input and output while the task waits, and a line the block of the input already holds is read in place |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
@@ -258,7 +259,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (234 of 949 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (237 of 970 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -350,7 +351,9 @@ the sixty-first, async functions, delays and cancellation are compiled too: an a
 whose variables live in a frame, a task is one block with its frame inside, and a pool of threads, one
 for each core, runs the tasks that can go on (417-431). Since the sixty-second, async input and output is
 compiled too: the work is done on threads of their own, started as they are needed, while the task waits,
-and a read the block of a reader can answer is done in place (432-441). What is still missing is an error that names it (not silence): the few positions listed with the
+and a read the block of a reader can answer is done in place (432-440). The sixty-third slice (a list of
+tasks, `Task.whenAll` and `Task.whenAny`) was written in the checker, the interpreter and compiled code
+together: a list of tasks has a group that its tasks tell as they end (441-452). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -398,6 +401,7 @@ hand with no checks):
 | `tasks`: four tasks at a time over the numbers below 400,000, ten times; each adds up Collatz lengths and adds them to a `shared locked` total every 100 numbers | 0.115 s | 0.188 s | 0.115 s | 1.00 |
 | `async`: for each number below a million, an async function starts a task for one Collatz length and awaits another in place; nothing has to wait | 0.244 s | 0.372 s | 0.226 s | 1.08 |
 | `asynclines`: `lines` the async way, the two million lines read with `await Stdin.readLineAsync` in an async `main` (the C is that of `lines`) | 0.125 s | 0.125 s | 0.090 s | 1.37 |
+| `tasklist`: in each of 200,000 rounds, eight async tasks for Collatz lengths taken with `Task.whenAll` and eight with `Task.whenAny`; none has to wait (the C keeps each result in a block it allocates, in an array for the list) | 0.476 s | 0.689 s | 0.384 s | 1.24 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -3376,6 +3380,77 @@ code), approved on 15 November 2026:
      under the thread sanitizer, and 13 of 17 programs of tests; on Linux too, in a container, with the same
      counts, where the threads of input and output wait on the monotonic clock in their own way.
 
+Choices made in the sixty-third slice (async, the fifth part: a list of tasks, `Task.whenAll` and
+`Task.whenAny`), in the checker, the interpreter and compiled code together, approved on 15 November 2026:
+
+441. **A list of tasks is kept where a task is kept** (358): `List<Task<R>>` is a type of a local
+     variable, a parameter and a return value, and nothing else: not a field, an item of another
+     collection, a `T?`, a `shared` value, and not behind `read` or `ref` in a type. It does not go to
+     another task (the thread rule). A task in a `HashMap` or a `List<List<Task<R>>>` is still refused
+     (`error_task_in_list` became `error_task_in_map`).
+442. **It has `add` and `length`, and nothing else**: an index, `removeLast`, `clear` and the other methods
+     are errors whose hint is `Task.whenAny`; `for` over it is an error, since a `break` would leave the
+     tasks after it with no one to wait for them, and the hint is a `for` over what `Task.whenAll` gives. A
+     list of tasks that has no name (made by a call) cannot be given a method, and one alone on a line is an
+     error, as a task is.
+443. **Every task in it is waited for**, decided before the slice: the list is given to `Task.whenAll`, or
+     emptied by a loop `while tasks.length() > 0` (`!= 0`, `0 <` and `0 !=` too) with no `break`, which ends
+     only when no task is left; otherwise it is a compile error, on some paths too, and so is giving it
+     another list or dropping it with `_ =`. After that loop the list counts as used up: using it again is
+     an error whose hint is a new list. A way out with an error waits for what is left in it, and what
+     they give is dropped (357).
+444. **`Task.whenAll(tasks)` takes the list** and gives a `Task<List<R>>`, a `Task<void>` when the tasks
+     give nothing: what each gave, in the order of the list, not in the order they ended (C#'s order). An
+     error is an item of the list, so none is lost; C#'s `await Task.WhenAll` throws only the first. An empty
+     list gives an empty list at once.
+445. **`Task.whenAny(ref tasks)` gives what the first task to end gave**, decided before the slice, and
+     takes that task out of the list, as Rust's `JoinSet::join_next`; the list is lent with `ref` because it
+     changes. It cancels nothing, and the tasks left are waited for as any are (443). An empty list is a
+     panic: no task could end.
+446. **Both are awaited, or waited for, where they are written**: `await Task.whenAll(tasks)` in an async
+     function, `Task.whenAll(tasks).wait()` in code that is not async, the same for `whenAny`. The task of
+     either kept in a variable is an error whose hint is to await it there: the one of `whenAny` borrows the
+     list, and one of `whenAll` kept for later would need a task of its own that waits for the others (Not
+     here yet). `wait` and `await` on them are what waits, so a `lock` block refuses them and an async
+     function refuses `wait`, as for any task.
+447. **No `isCompleted`**, decided before the slice: what C# keeps on a task (`IsFaulted`, `IsCanceled`,
+     `Exception`) is in what an SG task gives (`Error(...)`, `IoError.Cancelled`), and a loop that asks
+     whether a task has ended without waiting would never end in the interpreter, where tasks change hands
+     only where one waits. `Task.whenAny` answers "which has ended".
+448. **In the interpreter**, `whenAll` waits for the tasks one after the other in the order of the list,
+     so a task of `Task.run` runs when its turn comes. `whenAny` takes the first task in the list that has
+     ended; when none has, the fiber waits for all of them at once and, if one is a task of `Task.run` that
+     has not run, the first such runs then, as if it were waited for. A fiber woken by one task is taken off
+     the others, and off the queue of fibers to run, so a second task that ends does not wake it later. The
+     output is the same on every run.
+449. **Compiled, a list of tasks has a group** (`sg_group`): the list holds pointers to the tasks, and the
+     group is made with the first task added: a mutex, a condition, the tasks that have ended in the order
+     they ended, and the async task waiting, if one is. A task added tells the group when it ends (its
+     `waiter` with the second bit set), or at once if it has ended already, as the last thing it does with
+     the group, under the lock; the group is freed only after every task in it has told it, so a task that
+     ends on another thread never meets a freed group. `whenAny` takes the first task the group was told
+     of, so compiled code gives the first that ended; `whenAll` waits until as many have ended as the list
+     holds and takes them in the order of the list. An async task that waits is woken; code that is not async
+     sleeps on the condition. A task block grows by one pointer (`later`).
+450. **The names in C**: `sg_group` and its functions, `sg_all_L_TK_R` (what `whenAll` gives),
+     `sg_any_L_TK_R` (one task taken out of the list) and `sg_when_any_empty` (the panic).
+451. **Measured** (`bench/tasklist`): in each of 200,000 rounds eight async tasks are taken with
+     `Task.whenAll` and eight with `Task.whenAny`, and none has to wait: 0.476 s against 0.384 s for C,
+     which keeps each result in a block it allocates, 1.24 times; 0.689 s in a checked build. The same
+     sixteen tasks kept in sixteen variables and awaited one by one take 0.406 s (1.06 times, the cost of
+     a task, 430), so the list adds about 0.07 s, some 22 ns a task: a group for each list (an allocation,
+     a mutex and a condition made and unmade), a lock each time a task tells it and each time one is
+     taken. In "Slower than C".
+452. **The tests**: `ok_task_list` (`whenAll` in the order of the list, `whenAny` in the order the tasks
+     end, tasks that give nothing with a delay among them, an empty list, a way out with an error that
+     waits for the task left in the list, two hundred tasks that end at about the same time on the
+     threads of the pool), `ok_task_list_threads` (tasks of `Task.run` and of async functions in one list,
+     from code that is not async, two hundred of them ending on other threads while the list is taken
+     from), `panic_when_any_empty` and eighteen programs the checker refuses (`error_task_list_*`,
+     `error_when_*`). The two programs run under the thread sanitizer too. `cargo test` compiles 237 of
+     970 programs, 30 of them under the thread sanitizer, and 13 of 17 programs of tests; on Linux too, in
+     a container, with the same counts.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -3421,6 +3496,11 @@ check off.
   woken through the pool after it: about 12 µs a block, 0.023 s of the 0.035 s. Candidates: the thread
   fills the next block while the task reads this one (reading ahead), a larger block for a reader read
   the async way, and a task that goes on on the thread that woke it.
+- **Taking tasks out of a list** (`tasklist`, 1.24 times C, choice 451; the same tasks awaited one by one
+  take 1.06): each list makes a group with a mutex and a condition, and each task takes its lock once when
+  it ends and once when it is taken. Candidates: no group for a list whose tasks had all ended when they
+  were added (a count is enough), a group kept from a list that ended for the next one, and room for the
+  tasks reserved at once when the list is filled in a loop.
 - **Checking that a line is UTF-8** (`lines`, 1.08 times `getline`, which checks nothing; without the
   check the SG program takes 0.058 s against 0.090 s): the check looks at eight bytes at a time while they
   are ASCII and at one byte at a time from the first that is not (choice 202). Candidates: a check with
@@ -3447,7 +3527,8 @@ check off.
 - Interfaces of your own (`interface`, `where`) and the other built-in ones (`Clonable`, `Disposable`). `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
   in the design), and so an alias with type parameters (`using Link<T> = ...`).
-- A list of tasks and waiting for several at once (`Task.whenAll`, `Task.whenAny`), channels; a method or a function of a struct
+- Channels; the task of `Task.whenAll` kept in a variable to be awaited later (`var all =
+  Task.whenAll(tasks)`), and a `for` over a list of tasks (a `break` would leave tasks); a method or a function of a struct
   started as a task (a `Func` is a function written at the top level). Of async: streams opened,
   written and closed the async way (`File.openTextAsync`, `writer.writeLineAsync`), an `async` method, an
   async function kept as a `Func`. In the interpreter, async input and output is done when it is called, so a
@@ -3578,6 +3659,9 @@ program gives the interpreter's output and runs clean under the thread sanitizer
 call that does not wait is 1.08 times the same calls in C. Input and output the async way is compiled as
 well: the work is done on threads of input and output, started as they are needed, while the task waits,
 and a read that the block of a reader already holds is done in place, so reading the input line by line
-the async way takes 1.37 times the same program in C (without async, about the time of C). What comes next is open: the things
-listed under "Not here yet" for async (a list of tasks, waiting for several at once, streams written the
-async way), or the network, which brings the loop of epoll and kqueue.
+the async way takes 1.37 times the same program in C (without async, about the time of C). Tasks are kept
+in a list (`List<Task<R>>`) and waited for all at once (`await Task.whenAll(tasks)`, what each gave in the
+order of the list) or as they end (`await Task.whenAny(ref tasks)`), and a list whose tasks are not all
+waited for is a compile error; compiled, each list has a group that its tasks tell as they end. Next are
+streams opened, written and closed the async way (`File.openTextAsync`, `writer.writeLineAsync`), then the
+network, which brings the loop of epoll and kqueue.

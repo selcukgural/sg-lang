@@ -1,0 +1,5 @@
+error: the tasks of a list are not reached one by one: they are taken out by `Task.whenAll` and `Task.whenAny`, which wait for them
+  --> error_task_list_index.sg:9:17
+ 9 |     print(await tasks[0])
+   |                 ^^^^^^^^
+  hint: `await Task.whenAny(ref tasks)` takes out the first task to end, with what it gave

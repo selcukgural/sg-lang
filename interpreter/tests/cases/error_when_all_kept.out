@@ -1,0 +1,5 @@
+error: `Task.whenAll` is awaited, or waited for, where it is written
+  --> error_when_all_kept.sg:9:15
+ 9 |     var all = Task.whenAll(tasks)
+   |               ^^^^^^^^^^^^^^^^^^^
+  hint: `await Task.whenAll(tasks)`

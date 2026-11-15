@@ -1,0 +1,5 @@
+error: `for` does not go over a list of tasks: a `break` would leave the tasks after it with no one to wait for them
+  --> error_task_list_for.sg:9:14
+ 9 |     for t in tasks {
+   |              ^^^^^
+  hint: wait for them all and go over what they gave: `for value in await Task.whenAll(tasks)`; or take them as they end: `while tasks.length() > 0 { ... Task.whenAny(ref tasks) ... }`

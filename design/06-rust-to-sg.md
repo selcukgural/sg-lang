@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the sixty-second slice.
+Last brought up to date: 15 November 2026, the sixty-third slice.
 
 ## Functions and variables
 
@@ -205,6 +205,10 @@ Last brought up to date: 15 November 2026, the sixty-second slice.
 | `token.is_cancelled()` | `token.isCancelled()`, `try token.check()` | built | `check` gives `Error(Cancelled { })`, which `try` turns into `IoError.Cancelled(...)` |
 | `select! { _ = token.cancelled() => ..., _ = sleep(d) => ... }` | `await Task.delay(ms, read token)` | built | Gives `Error(Cancelled { })` when the token is cancelled first |
 | dropping a future to cancel it | none | not in SG | A task stops only where it looks at its token |
+| `Vec<JoinHandle<T>>`, `JoinSet<T>` | `List<Task<T>>` | built | Kept only where a task is kept; its methods are `add` and `length`, and its tasks are taken out only by `Task.whenAll` and `Task.whenAny` |
+| `join_all(handles).await` | `await Task.whenAll(tasks)` | built | What each gave, in the order of the list; an error is an item of the list, none is lost. `Task.whenAll(tasks).wait()` in code that is not async |
+| `set.join_next().await` | `await Task.whenAny(ref tasks)` | built | What the first task to end gave, taken out of the list; nothing is cancelled. A `while tasks.length() > 0` loop around it empties the list, as the compiler sees |
+| a `JoinSet` dropped (its tasks aborted) | none | not in SG | A list of tasks that is not emptied is a compile error; a way out with an error waits for what is left in it |
 | `tokio::fs::read_to_string(p).await` | `await File.readTextAsync(read path)` | built | Each function of `File` that reads or writes a whole file has an `Async` version; a token may come last. Compiled, the work runs on a thread of input and output, as tokio's `spawn_blocking` does it |
 | `reader.read_line(&mut line).await` | `await reader.readLineAsync(ref line)` | built | Also `readTextAsync`, `readBytesAsync`, on `Stdin` too; a line the block already holds is read in place, as tokio's `BufReader` does it; streams opened and written the async way come later |
 | tokio, async-std, smol | one built-in runtime | built | A pool of threads, one for each core, and a clock for delays; only a program with tasks carries them. Input and output the async way runs on threads of their own, started as they are needed (up to 512, as tokio's blocking threads) |

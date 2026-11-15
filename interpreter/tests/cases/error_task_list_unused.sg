@@ -1,0 +1,14 @@
+async int count(int ms) {
+    await Task.delay(ms)
+    return ms
+}
+
+List<Task<int>> start() {
+    var tasks = List<Task<int>>()
+    tasks.add(count(10))
+    return tasks
+}
+
+void main() {
+    start()
+}

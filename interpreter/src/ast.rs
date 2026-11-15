@@ -176,6 +176,12 @@ pub enum Callee {
     TaskRun,
     /// `t.wait()`: waits for the task and gives what its function returned; takes the task.
     Wait,
+    /// `Task.whenAll(tasks)`: takes a `List<Task<R>>` and gives a task of what each gave, in
+    /// the order of the list. Awaited or waited for where it is written.
+    WhenAll,
+    /// `Task.whenAny(ref tasks)`: gives what the first task of the list to end gave, and
+    /// takes that task out of the list. Awaited or waited for where it is written.
+    WhenAny,
     /// `Task.delay(ms)`: a task that ends when that many milliseconds have gone by. With a
     /// token (`Task.delay(ms, read token)`, the `bool`), it ends early when the token is
     /// cancelled, and gives a `Result<void, Cancelled>`.

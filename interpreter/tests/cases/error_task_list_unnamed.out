@@ -1,0 +1,5 @@
+error: this list of tasks has no name, so its tasks could not be waited for after this call
+  --> error_task_list_unnamed.sg:13:11
+ 13 |     print(start().length())
+    |           ^^^^^^^
+  hint: keep it in a variable: `var tasks = ...`

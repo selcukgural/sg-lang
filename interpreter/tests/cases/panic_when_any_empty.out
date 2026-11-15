@@ -1,0 +1,5 @@
+1
+panic: `Task.whenAny` is given an empty list, so no task could end
+  --> panic_when_any_empty.sg:9:17
+ 9 |     print(await Task.whenAny(ref tasks))
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^

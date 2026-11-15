@@ -1,0 +1,5 @@
+error: `Task` has the functions `run`, `delay`, `whenAll` and `whenAny`, not `whenAl`
+  --> error_when_wrong_name.sg:8:22
+ 8 |     print(await Task.whenAl(tasks))
+   |                      ^^^^^^
+  hint: `Task.whenAll`

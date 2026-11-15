@@ -1,0 +1,7 @@
+error: the tasks in `tasks` are waited for on some paths but not on all of them
+  wait for them on every path, or once where the paths meet
+  a list of tasks is given to `Task.whenAll`, or emptied by a loop `while tasks.length() > 0` that takes them with `Task.whenAny`
+  --> error_task_list_some_paths.sg:7:9
+ 7 |     var tasks = List<Task<int>>()
+   |         ^^^^^
+  hint: `_ = await Task.whenAll(tasks)`

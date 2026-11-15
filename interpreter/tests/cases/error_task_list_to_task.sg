@@ -1,0 +1,18 @@
+long sum(List<Task<long>> tasks) {
+    long total = 0
+    for n in Task.whenAll(tasks).wait() {
+        total += n
+    }
+    return total
+}
+
+long square(long n) {
+    return n * n
+}
+
+void main() {
+    var tasks = List<Task<long>>()
+    tasks.add(Task.run(square, (long)2))
+    var total = Task.run(sum, tasks)
+    print(total.wait())
+}

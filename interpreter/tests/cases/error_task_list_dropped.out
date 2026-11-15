@@ -1,0 +1,6 @@
+error: a list of tasks is not dropped: they would go on with no one to wait for them
+  every task is waited for, and none is cancelled without being told
+  --> error_task_list_dropped.sg:9:9
+ 9 |     _ = tasks
+   |         ^^^^^
+  hint: wait for them: `_ = await Task.whenAll(tasks)`

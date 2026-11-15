@@ -1,0 +1,5 @@
+error: `Task.whenAny` takes the task that ends out of the list, so it is given the list with `ref`
+  --> error_when_any_no_ref.sg:9:30
+ 9 |     print(await Task.whenAny(tasks))
+   |                              ^^^^^
+  hint: `Task.whenAny(ref tasks)`

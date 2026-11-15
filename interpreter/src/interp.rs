@@ -1448,6 +1448,68 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
     }
 
+    /// `Task.whenAll(tasks)`: waits for the tasks one after the other, in the order of the
+    /// list, which is left empty; a task of `Task.run` runs when its turn comes. Gives an ended
+    /// task of what they gave, as a list unless they give nothing.
+    fn when_all(&mut self, list: &Rc<RefCell<Vec<Cell>>>, gives: bool, at: Span) -> Res<Value> {
+        let items = std::mem::take(&mut *list.borrow_mut());
+        let mut values = Vec::with_capacity(items.len());
+        for item in items {
+            let Value::Task(task) = item.borrow().clone() else { unreachable!("a list of tasks") };
+            values.push(cell(self.await_task(&task, at)?));
+        }
+        let value = if gives { Value::List(Rc::new(RefCell::new(values))) } else { Value::Void };
+        Ok(self.ended_task(value, at))
+    }
+
+    /// `Task.whenAny(ref tasks)`: the first task of the list that has ended is taken out of it,
+    /// and an ended task of what it gave is given. When none has, this fiber waits for all of
+    /// them at once; when one of them is a task of `Task.run` that has not run, the first such
+    /// runs now, as if it were waited for. An empty list is a panic: nothing could end.
+    fn when_any(&mut self, list: &Rc<RefCell<Vec<Cell>>>, at: Span) -> Res<Value> {
+        if list.borrow().is_empty() {
+            return Err(Diag::panic(at, "`Task.whenAny` is given an empty list, so no task could end").into());
+        }
+        loop {
+            let tasks: Vec<Rc<RefCell<Task>>> = list
+                .borrow()
+                .iter()
+                .map(|item| match &*item.borrow() {
+                    Value::Task(task) => task.clone(),
+                    _ => unreachable!("a list of tasks"),
+                })
+                .collect();
+            if let Some(first) = tasks.iter().position(|task| matches!(task.borrow().state, TaskState::Done(_))) {
+                list.borrow_mut().remove(first);
+                let value = self.await_task(&tasks[first], at)?;
+                return Ok(self.ended_task(value, at));
+            }
+            for task in &tasks {
+                let mut task = task.borrow_mut();
+                if matches!(task.state, TaskState::Running) {
+                    task.waiters.push(self.me);
+                }
+            }
+            let lazy = tasks.iter().find(|task| matches!(task.borrow().state, TaskState::Lazy(..)));
+            let waited = match lazy {
+                Some(task) => {
+                    let TaskState::Lazy(name, args) = std::mem::replace(&mut task.borrow_mut().state, TaskState::Running) else { unreachable!("just seen") };
+                    task.borrow_mut().waiters.push(self.me);
+                    let func = self.funcs[&*name];
+                    self.start_fiber(task, func, args, false)
+                }
+                None => self.io.sched.block(self.me, at),
+            };
+            // Only the first end counts: this fiber no longer waits for the others, and is not
+            // made ready again by one that ended at the same time.
+            for task in &tasks {
+                task.borrow_mut().waiters.retain(|fiber| *fiber != self.me);
+            }
+            self.io.sched.lock().ready.retain(|fiber| *fiber != self.me);
+            waited?;
+        }
+    }
+
     /// `f(x)` of an async function `f`, without `await`: the task starts now and runs until it
     /// first waits, then this fiber goes on, as in C#.
     fn start_async(&mut self, func: &'a Func, args: Vec<Value>, at: Span) -> Res<Value> {
@@ -2424,6 +2486,17 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Callee::Wait => {
                     let Value::Task(task) = strip(self.expr(recv, frame)?) else { unreachable!("the checker lets only a task be waited for") };
                     self.await_task(&task, expr.span)
+                }
+                // `Task.whenAll(tasks)` and `Task.whenAny(ref tasks)` are awaited where they are
+                // written: the wait is done here, and the task given has ended.
+                Callee::WhenAll => {
+                    let Value::List(list) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `Task.whenAll` a list") };
+                    let gives = !matches!(&expr.ty, Ty::Task(result) if **result == Ty::Void);
+                    self.when_all(&list, gives, expr.span)
+                }
+                Callee::WhenAny => {
+                    let Value::List(list) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `Task.whenAny` a list") };
+                    self.when_any(&list, expr.span)
                 }
                 Callee::Take => {
                     let slot = behind_borrows(self.place(recv, frame)?);

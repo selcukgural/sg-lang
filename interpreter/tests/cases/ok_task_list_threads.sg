@@ -1,0 +1,47 @@
+// Tasks kept in a list and waited for from code that is not async: tasks of `Task.run`, which
+// run on threads of their own, and the tasks of async functions. Which ends first is up to
+// the threads, so only what does not depend on it is printed.
+long square(long n) {
+    return n * n
+}
+
+async long later(long n) {
+    await Task.delay(10)
+    return n
+}
+
+void main() {
+    var tasks = List<Task<long>>()
+    for i in 1..5 {
+        tasks.add(Task.run(square, (long)i))
+    }
+    long first = Task.whenAny(ref tasks).wait()
+    var rest = Task.whenAll(tasks).wait()
+    long sum = first
+    for n in read rest {
+        sum += n
+    }
+    print($"{sum} from {rest.length() + 1} tasks")
+
+    var mixed = List<Task<long>>()
+    mixed.add(later(100))
+    mixed.add(Task.run(square, (long)3))
+    mixed.add(later(20))
+    long total = 0
+    while mixed.length() > 0 {
+        total += Task.whenAny(ref mixed).wait()
+    }
+    print(total)
+
+    // Many at once: they end on other threads while the list is being taken from.
+    var many = List<Task<long>>()
+    for i in 0..100 {
+        many.add(Task.run(square, (long)i))
+        many.add(later((long)i))
+    }
+    long all = 0
+    while many.length() > 0 {
+        all += Task.whenAny(ref many).wait()
+    }
+    print(all)
+}

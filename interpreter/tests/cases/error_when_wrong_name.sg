@@ -1,0 +1,9 @@
+async int one() {
+    return 1
+}
+
+async void main() {
+    var tasks = List<Task<int>>()
+    tasks.add(one())
+    print(await Task.whenAl(tasks))
+}

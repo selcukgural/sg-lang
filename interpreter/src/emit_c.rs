@@ -20,7 +20,8 @@
 //! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`),
 //! `shared`, `weak` and `shared checked` values with the `as` blocks, `this` with a type and the leak
 //! report (see `SHARED_RUNTIME`), tasks, `locked` values and the `lock` block, async functions,
-//! `await`, `Task.delay` and cancellation (see `TASK_RUNTIME`), and input and output the async way
+//! `await`, `Task.delay`, cancellation and lists of tasks with `Task.whenAll` and `Task.whenAny` (see
+//! `TASK_RUNTIME`), and input and output the async way
 //! (see `ASYNC_IO_RUNTIME`).
 //! A type alias is the type it names. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
@@ -148,7 +149,8 @@ const RUNTIME: &str = r#"#include <math.h>
 
    A task is a thread of its own (`Task.run`), the machine of an async function that the pool
    runs, or a delay. `waiter` is who waits for it: nobody yet, the async task that awaits it, a
-   thread asleep in `wait` (its lowest bit set), or `SG_ENDED`. */
+   thread asleep in `wait` (its lowest bit set), the group of the list of tasks it is in (its
+   second bit set), or `SG_ENDED`. `later` is the task that ended after it in its group. */
 #if SG_THREADS
 #include <pthread.h>
 typedef struct sg_task {
@@ -158,6 +160,7 @@ typedef struct sg_task {
     void (*run)(struct sg_task*);
     bool (*poll)(struct sg_task*);
     struct sg_task* next;
+    struct sg_task* later;
     void* waiter;
     int kind;
     int state;
@@ -1616,12 +1619,39 @@ static int sg_thread_start(pthread_t* thread, void* (*body)(void*), void* arg, b
 
 /* A thread asleep until a task ends. */
 typedef struct { pthread_mutex_t m; pthread_cond_t c; bool ended; } sg_parked;
+/* The group of a list of tasks (`List<Task<R>>`): each task in the list tells it when it ends,
+   and the group keeps them in the order they ended until `Task.whenAny` takes one out, or
+   `Task.whenAll` all of them. Whoever waits there is woken: an async task (`job`), or threads
+   asleep on `c`. A task tells its group last thing, under the lock, so a group is freed only
+   after every task in it has told it. */
+typedef struct sg_group {
+    pthread_mutex_t m;
+    pthread_cond_t c;
+    sg_task* first;
+    sg_task* last;
+    int64_t ended;
+    sg_task* job;
+} sg_group;
+#define SG_GROUP 2
+static void sg_group_told(sg_group* g, sg_task* t) {
+    pthread_mutex_lock(&g->m);
+    t->later = NULL;
+    if (g->last) g->last->later = t;
+    else g->first = t;
+    g->last = t;
+    g->ended++;
+    if (g->job) sg_wake(g->job);
+    pthread_cond_broadcast(&g->c);
+    pthread_mutex_unlock(&g->m);
+}
 /* The task has ended: whoever waits for it goes on. The task may be freed at once, so nothing
-   of it is touched after the exchange. */
+   of it is touched after the exchange (a group takes it out only once it is told). */
 static void sg_task_ended(sg_task* t) {
     void* w = __atomic_exchange_n(&t->waiter, SG_ENDED, __ATOMIC_ACQ_REL);
     if (!w) return;
-    if ((uintptr_t)w & 1) {
+    if (((uintptr_t)w & 3) == SG_GROUP) {
+        sg_group_told((sg_group*)((uintptr_t)w - SG_GROUP), t);
+    } else if ((uintptr_t)w & 1) {
         sg_parked* p = (sg_parked*)((uintptr_t)w - 1);
         pthread_mutex_lock(&p->m);
         p->ended = true;
@@ -1679,6 +1709,78 @@ static void sg_task_start(sg_task* task, void (*run)(sg_task*), const char* name
 static inline void sg_task_join(sg_task* task) {
     if (task->kind != SG_THREAD) sg_park(task);
     else if (pthread_join(task->thread, NULL) != 0) abort();
+}
+
+/* `tasks.add(task)`: the task tells the group of the list when it ends, or now, if it has. */
+static void sg_group_add(sg_group** slot, sg_task* t) {
+    sg_group* g = *slot;
+    if (!g) {
+        g = malloc(sizeof(sg_group));
+        if (!g) abort();
+        pthread_mutex_init(&g->m, NULL);
+        pthread_cond_init(&g->c, NULL);
+        g->first = g->last = NULL;
+        g->ended = 0;
+        g->job = NULL;
+        *slot = g;
+    }
+    void* none = NULL;
+    if (!__atomic_compare_exchange_n(&t->waiter, &none, (void*)((uintptr_t)g + SG_GROUP), false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) sg_group_told(g, t);
+}
+static void sg_group_free(sg_group* g) {
+    if (!g) return;
+    pthread_mutex_destroy(&g->m);
+    pthread_cond_destroy(&g->c);
+    free(g);
+}
+/* The first task of the group that ended, taken out of it; NULL if none has. */
+static sg_task* sg_group_pop(sg_group* g) {
+    sg_task* t = g->first;
+    if (t) {
+        g->first = t->later;
+        if (!g->first) g->last = NULL;
+        g->ended--;
+    }
+    return t;
+}
+/* `await Task.whenAll(tasks)`: whether all `n` tasks of the list have ended; if not, the async
+   task running now is woken when one does. */
+static bool sg_group_all(sg_group* g, int64_t n) {
+    if (n == 0) return true;
+    pthread_mutex_lock(&g->m);
+    bool all = g->ended == n;
+    g->job = all ? NULL : sg_job_now;
+    pthread_mutex_unlock(&g->m);
+    return all;
+}
+/* `await Task.whenAny(ref tasks)`: the first task to end, taken out of the group, or NULL; then
+   the async task running now is woken when one ends. */
+static sg_task* sg_group_any(sg_group* g) {
+    pthread_mutex_lock(&g->m);
+    sg_task* t = sg_group_pop(g);
+    g->job = t ? NULL : sg_job_now;
+    pthread_mutex_unlock(&g->m);
+    return t;
+}
+/* The same for code that is not async, and for the drop of a list that still holds tasks (on a
+   way out with an error): the thread sleeps. */
+static void sg_group_park_all(sg_group* g, int64_t n) {
+    if (n == 0) return;
+    pthread_mutex_lock(&g->m);
+    while (g->ended < n) pthread_cond_wait(&g->c, &g->m);
+    pthread_mutex_unlock(&g->m);
+}
+static sg_task* sg_group_park_any(sg_group* g) {
+    pthread_mutex_lock(&g->m);
+    sg_task* t;
+    while (!(t = sg_group_pop(g))) pthread_cond_wait(&g->c, &g->m);
+    pthread_mutex_unlock(&g->m);
+    return t;
+}
+SG_COLD static _Noreturn void sg_when_any_empty(const char* loc) {
+    SG_PANIC_START();
+    fprintf(stderr, "panic: `Task.whenAny` is given an empty list, so no task could end\n");
+    sg_die(loc);
 }
 
 /* The pool: async tasks that can run, first in first out, and the threads that run them. */
@@ -2976,6 +3078,11 @@ fn is_text_behind_pointer(ty: &Ty) -> bool {
 
 /// The name a type has inside the names of its helpers: `sg_drop_P_S_Node`. `None` for a type
 /// the back end does not hold in a `T*` or a `T?` yet.
+/// A `List<Task<R>>`.
+fn is_task_list(ty: &Ty) -> bool {
+    matches!(ty, Ty::List(item) if matches!(**item, Ty::Task(_)))
+}
+
 fn mangle(ty: &Ty) -> Option<String> {
     Some(match ty {
         Ty::Int(ty) => ty.name().to_string(),
@@ -3543,6 +3650,61 @@ impl<'a> Emitter<'a> {
         })
     }
 
+    /// A list of tasks, `name`: a list of pointers to the tasks and the group they tell when
+    /// they end (see `sg_group`), made with the first task added. `sg_all_` takes every task
+    /// once all have ended, in the order of the list, and gives what they gave (`whenAll`);
+    /// `sg_any_` takes one that the group gave out of the list, and gives what it gave
+    /// (`whenAny`). A list dropped with tasks in it (on a way out with an error) waits for them
+    /// all, and drops what they gave.
+    fn task_list(&mut self, name: &str, item: &Ty, span: Span) -> Res<()> {
+        let Ty::Task(result) = item else { unreachable!("a list of tasks") };
+        let held = self.ctype(item, span)?;
+        let task = mangle(item).expect("a task has a C name");
+        let list = format!("sg_{name}");
+        let _ = writeln!(self.types, "typedef struct {{ {held}* ptr; int64_t len; int64_t cap; struct sg_group* group; }} {list};");
+        let _ = writeln!(
+            self.glue_protos,
+            "static void sg_drop_from_{name}({list}* v, int64_t from);\nstatic inline void sg_drop_{name}({list}* v);\nstatic inline {list} sg_move_{name}({list}* v);"
+        );
+        let _ = writeln!(
+            self.glue,
+            "static void sg_drop_from_{name}({list}* v, int64_t from) {{ if (v->group) sg_group_park_all(v->group, v->len); for (int64_t i = from; i < v->len; i++) sg_drop_{task}(&v->ptr[i]); free(v->ptr); sg_group_free(v->group); v->group = NULL; }}"
+        );
+        let _ = writeln!(self.glue, "static inline void sg_drop_{name}({list}* v) {{ sg_drop_from_{name}(v, 0); }}");
+        let _ = writeln!(self.glue, "static inline {list} sg_move_{name}({list}* v) {{ {list} out = *v; *v = ({list}){{ 0 }}; return out; }}");
+        let _ = writeln!(
+            self.glue,
+            "static inline void sg_add_{name}({list}* v, {held} item) {{ if (__builtin_expect(v->len == v->cap, 0)) v->ptr = sg_grow(v->ptr, &v->cap, sizeof({held})); v->ptr[v->len++] = item; sg_group_add(&v->group, &item->head); }}"
+        );
+        self.sigs.insert(format!("sg_add_{name}"), vec![item.clone()]);
+        // What the tasks gave, as a list in the order of theirs.
+        let (gives, keep, back) = match &**result {
+            Ty::Void => ("void".to_string(), format!("sg_wait_{task}(v->ptr[i]);"), String::new()),
+            result => {
+                let values = Ty::List(Box::new(result.clone()));
+                let values_c = self.ctype(&values, span)?;
+                let values_name = mangle(&values).expect("a list has a C name");
+                (
+                    values_c.clone(),
+                    format!("sg_add_{values_name}(&out, sg_wait_{task}(v->ptr[i]));"),
+                    format!("{values_c} out = {{ 0 }}; if (v->len) out.ptr = sg_reserve(NULL, &out.cap, v->len, sizeof(*out.ptr)); "),
+                )
+            }
+        };
+        let end = if gives == "void" { "" } else { " return out;" };
+        let _ = writeln!(
+            self.glue,
+            "static {gives} sg_all_{name}({list}* v) {{ {back}for (int64_t i = 0; i < v->len; i++) {keep} free(v->ptr); sg_group_free(v->group); *v = ({list}){{ 0 }};{end} }}"
+        );
+        let gives_one = if **result == Ty::Void { "void".to_string() } else { self.ctype(result, span)? };
+        let ret = if **result == Ty::Void { "" } else { "return " };
+        let _ = writeln!(
+            self.glue,
+            "static {gives_one} sg_any_{name}({list}* v, sg_task* t) {{ int64_t i = 0; while (&v->ptr[i]->head != t) i++; {held} one = v->ptr[i]; memmove(&v->ptr[i], &v->ptr[i + 1], (size_t)(v->len - i - 1) * sizeof({held})); v->len--; {ret}sg_wait_{task}(one); }}"
+        );
+        Ok(())
+    }
+
     /// A `read T?` with nothing in it.
     fn lent_none(&self, option: &Ty) -> &'static str {
         if matches!(option, Ty::Nullable(inner) if **inner == Ty::Str) { "SG_NO_STR" } else { "NULL" }
@@ -3806,6 +3968,12 @@ impl<'a> Emitter<'a> {
             // A list: where its items are, how many there are and how many there is room for.
             // An empty list has no block. Only a pointer to the items is kept, so a struct
             // can hold a list of its own kind.
+            Ty::List(item) if matches!(**item, Ty::Task(_)) => {
+                if !self.made.insert(name.clone()) {
+                    return Ok(());
+                }
+                self.task_list(&name, item, span)?;
+            }
             Ty::List(item) => {
                 if !self.made.insert(name.clone()) {
                     return Ok(());
@@ -5357,6 +5525,11 @@ impl<'a> Emitter<'a> {
                     None if !local.gone && matches!(local.ty, Ty::Task(_)) && self.awaits.is_some() => {
                         let task = &local.cname;
                         lines.push(format!("SG_RESUME(0); if ({task} && !sg_ready(&{task}->head)) return false; {}", self.drop_of(&local.ty, task)));
+                    }
+                    // So is a list of tasks, all of them.
+                    None if !local.gone && is_task_list(&local.ty) && self.awaits.is_some() => {
+                        let list = &local.cname;
+                        lines.push(format!("SG_RESUME(0); if (!sg_group_all({list}.group, {list}.len)) return false; {}", self.drop_of(&local.ty, list)));
                     }
                     None if !local.gone && self.droppable(&local.ty) => lines.push(self.drop_of(&local.ty, &local.cname)),
                     None => {}
@@ -7635,6 +7808,28 @@ impl<'a> Emitter<'a> {
                 let value = self.await_io(fname, &params, Some(receiver), args, head, expr)?;
                 result(self, value)
             }
+            // `await Task.whenAll(tasks)`: the list is taken, and what its tasks gave is taken
+            // once the group says all have ended.
+            ExprKind::Method { args, callee: Callee::WhenAll, .. } => {
+                let name = mangle(&args[0].ty).expect("a list has a C name");
+                let value = self.first(&args[0], head)?;
+                let (ctype, list) = (self.ctype(&args[0].ty, args[0].span)?, self.temp());
+                self.pre.push(format!("{ctype} {list} = {value};"));
+                self.resume_point(expr.span);
+                self.pre.push(format!("if (!sg_group_all({list}.group, {list}.len)) return false;"));
+                result(self, format!("sg_all_{name}(&{list})"))
+            }
+            // `await Task.whenAny(ref tasks)`: the first task the group says has ended is taken
+            // out of the list.
+            ExprKind::Method { args, callee: Callee::WhenAny, .. } => {
+                let name = mangle(args[0].ty.strip_borrow()).expect("a list has a C name");
+                let value = self.first(&args[0], head)?;
+                let (ctype, list, task, loc) = (self.ctype(&args[0].ty, args[0].span)?, self.temp(), self.temp(), self.loc(inner.span));
+                self.pre.push(format!("{ctype} {list} = {value}; if ({list}->len == 0) sg_when_any_empty({loc}); sg_task* {task} = NULL;"));
+                self.resume_point(expr.span);
+                self.pre.push(format!("if (!({task} = sg_group_any({list}->group))) return false;"));
+                result(self, format!("sg_any_{name}({list}, {task})"))
+            }
             _ => {
                 let value = self.first(inner, head)?;
                 let (ctype, task) = (self.ctype(&inner.ty, inner.span)?, self.temp());
@@ -8837,6 +9032,23 @@ impl<'a> Emitter<'a> {
                     })
                 }
                 // `t.wait()`: the task is taken (the checker marked the move), joined and freed.
+                // `Task.whenAll(tasks).wait()`, `Task.whenAny(ref tasks).wait()`: the thread
+                // sleeps until the group says the tasks have ended.
+                Callee::Wait if matches!(&recv.kind, ExprKind::Method { callee: Callee::WhenAll | Callee::WhenAny, .. }) => {
+                    let ExprKind::Method { args: given, callee: when, .. } = &recv.kind else { unreachable!("just seen") };
+                    let list_ty = given[0].ty.strip_borrow();
+                    let name = mangle(list_ty).expect("a list has a C name");
+                    let value = self.first(&given[0], head)?;
+                    let (ctype, list) = (self.ctype(&given[0].ty, given[0].span)?, self.temp());
+                    if *when == Callee::WhenAll {
+                        self.pre.push(format!("{ctype} {list} = {value}; sg_group_park_all({list}.group, {list}.len);"));
+                        return Ok(format!("sg_all_{name}(&{list})"));
+                    }
+                    let loc = self.loc(recv.span);
+                    self.pre.push(format!("{ctype} {list} = {value}; if ({list}->len == 0) sg_when_any_empty({loc});"));
+                    Ok(format!("sg_any_{name}({list}, sg_group_park_any({list}->group))"))
+                }
+                Callee::WhenAll | Callee::WhenAny => unreachable!("the checker has them awaited or waited for where they are written"),
                 Callee::Wait => {
                     let task = self.first(recv, head)?;
                     Ok(format!("sg_wait_{}({task})", mangle(recv.ty.strip_borrow()).expect("a task has a C name")))

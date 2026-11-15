@@ -1,0 +1,100 @@
+// Tasks kept in a list: awaited all at once with `Task.whenAll`, or taken one by one as they
+// end with `Task.whenAny`. The delays are far apart, so that compiled code, on a real clock,
+// prints the same lines.
+async int count(string name, int ms) {
+    await Task.delay(ms)
+    print($"{name} ends")
+    return (int)name.length()
+}
+
+async Result<int, IoError> load(string name, int ms) {
+    await Task.delay(ms)
+    print($"{name} loaded")
+    if name == "missing" {
+        return Error(IoError.NotFound)
+    }
+    return Ok((int)name.length())
+}
+
+async int quick(int n) {
+    await Task.delay(n % 3)
+    return n
+}
+
+async void tick(int ms) {
+    await Task.delay(ms)
+    print($"tick {ms}")
+}
+
+// An error leaves while a task is still in the list: it is awaited on the way out, and what it
+// gives is dropped.
+async Result<int, IoError> total(List<string> names) {
+    var tasks = List<Task<Result<int, IoError>>>()
+    int ms = 100
+    for name in names {
+        tasks.add(load(name, ms))
+        ms += 100
+    }
+    int sum = 0
+    while tasks.length() > 0 {
+        sum += try await Task.whenAny(ref tasks)
+    }
+    return Ok(sum)
+}
+
+async Result<void, IoError> main() {
+    // What they gave, in the order of the list, not the order they ended in.
+    var tasks = List<Task<int>>()
+    tasks.add(count("three", 300))
+    tasks.add(count("one", 100))
+    tasks.add(count("two", 200))
+    print(await Task.whenAll(tasks))
+
+    // The first to end, taken out of the list.
+    var more = List<Task<int>>()
+    more.add(count("ccc", 300))
+    more.add(count("a", 100))
+    more.add(count("bb", 200))
+    while more.length() > 0 {
+        int n = await Task.whenAny(ref more)
+        print($"got {n}, {more.length()} left")
+    }
+
+    // Tasks that give nothing, a delay among them.
+    var ticks = List<Task<void>>()
+    ticks.add(tick(200))
+    ticks.add(Task.delay(300))
+    ticks.add(tick(100))
+    await Task.whenAny(ref ticks)
+    print($"{ticks.length()} left")
+    await Task.whenAll(ticks)
+    print("all ticked")
+
+    // A list with no task in it.
+    var none = List<Task<int>>()
+    print(await Task.whenAll(none))
+
+    var names = List<string>()
+    names.add("abc")
+    names.add("missing")
+    names.add("late")
+    if await total(names) is Error(cause) {
+        print($"total: {cause}")
+    }
+    var good = List<string>()
+    good.add("ab")
+    good.add("cde")
+    print(try await total(good))
+
+    // Many that end at about the same time, on the threads of the pool.
+    var many = List<Task<int>>()
+    for i in 0..200 {
+        many.add(quick(i))
+    }
+    int sum = 0
+    while many.length() > 0 {
+        sum += await Task.whenAny(ref many)
+    }
+    print(sum)
+    return Ok()
+}

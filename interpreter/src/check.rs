@@ -686,7 +686,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                     .hint(format!("`struct {}<from source>`", decl.name)));
             }
             let field_ty = resolve_type(&field.ty, &names, false)?;
-            if matches!(field_ty, Ty::Task(_)) {
+            if keeps_tasks(&field_ty) {
                 return Err(task_kept(field.ty.span));
             }
             fields.push((field.name.clone(), field_ty));
@@ -715,7 +715,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                         .hint(format!("`enum {}<from source>`", decl.name)));
                 }
                 let field_ty = resolve_type(&field.ty, &names, false)?;
-                if matches!(field_ty, Ty::Task(_)) {
+                if keeps_tasks(&field_ty) {
                     return Err(task_kept(field.ty.span));
                 }
                 fields.push((field.name.clone(), field_ty));
@@ -1219,11 +1219,17 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
     if ty.mode.is_none() && matches!(resolved, Ty::Slice(_)) {
         return Err(bare_slice(ty.span, &resolved));
     }
+    // A `List<Task<R>>` is kept where a task is: its tasks are waited for with
+    // `Task.whenAll` and `Task.whenAny`.
     let nested = match &resolved {
         Ty::Task(result) => task_inside(result),
+        Ty::List(item) => match &**item {
+            Ty::Task(result) => task_inside(result),
+            other => task_inside(other),
+        },
         other => task_inside(other),
     };
-    if nested || (ty.mode.is_some() && matches!(resolved, Ty::Task(_))) {
+    if nested || (ty.mode.is_some() && keeps_tasks(&resolved)) {
         return Err(task_kept(ty.span));
     }
     Ok(match ty.mode {
@@ -1333,8 +1339,60 @@ fn task_inside(ty: &Ty) -> bool {
 
 /// A `Task` written where the compiler could not see it waited for.
 fn task_kept(span: Span) -> Diag {
-    Diag::error(span, "a `Task` is kept only in a local variable, a parameter or a return value, as it is")
+    Diag::error(span, "a `Task` is kept only in a local variable, a parameter or a return value, as it is or in a `List<Task<R>>`")
         .note("every task is waited for, and the compiler sees that only where the task stays in one function's hands")
+}
+
+/// A type whose value holds tasks that are waited for before it ends: a `Task`, or a
+/// `List<Task<R>>`.
+fn keeps_tasks(ty: &Ty) -> bool {
+    match ty {
+        Ty::Task(_) => true,
+        Ty::List(item) => matches!(**item, Ty::Task(_)),
+        _ => false,
+    }
+}
+
+/// `Task.whenAll(...)` or `Task.whenAny(...)`, as written, before it is checked.
+fn is_when(expr: &Expr) -> bool {
+    matches!(&expr.kind, ExprKind::Method { recv, name, .. } if matches!(&recv.kind, ExprKind::Var(owner) if owner == "Task") && matches!(name.as_str(), "whenAll" | "whenAny"))
+}
+
+/// The list of tasks a `while` empties: `while tasks.length() > 0`, also with `!= 0`, `0 <`
+/// or `0 !=`. The loop ends only when the list has no task left.
+fn emptied_by(cond: &Expr) -> Option<&str> {
+    let ExprKind::Binary(op, left, right) = &cond.kind else { return None };
+    let zero = |expr: &Expr| matches!(unwidened(expr).kind, ExprKind::Int(0, _));
+    fn length(expr: &Expr) -> Option<&str> {
+        match &unwidened(expr).kind {
+            ExprKind::Method { recv, name, args, .. } if name == "length" && args.is_empty() && task_list(&recv.ty) => match &recv.kind {
+                ExprKind::Var(list) => Some(list.as_str()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    match op {
+        BinOp::Gt | BinOp::Ne if zero(right) => length(left),
+        BinOp::Lt | BinOp::Ne if zero(left) => length(right),
+        _ => None,
+    }
+}
+
+/// A `List<Task<R>>`.
+fn task_list(ty: &Ty) -> bool {
+    matches!(ty, Ty::List(item) if matches!(**item, Ty::Task(_)))
+}
+
+/// How the tasks of the list `text`, a `List<Task<R>>`, are waited for: in an async function
+/// or not. What they give is dropped on purpose unless they give nothing.
+fn when_all(ty: &Ty, text: &str, is_async: bool) -> String {
+    let gives = !matches!(ty, Ty::List(item) if matches!(&**item, Ty::Task(result) if **result == Ty::Void));
+    let drop = if gives { "_ = " } else { "" };
+    match is_async {
+        true => format!("`{drop}await Task.whenAll({text})`"),
+        false => format!("`{drop}Task.whenAll({text}).wait()`"),
+    }
 }
 
 /// The part of a type that cannot go to another task (the thread rule), and where it lies:
@@ -1936,6 +1994,9 @@ struct Moved {
     /// The whole value was moved out on some of the paths that reach here, not on all:
     /// what tells a `StreamWriter` closed in one branch only.
     partly: bool,
+    /// `whole` is a loop `while tasks.length() > 0`, after which a list of tasks is empty:
+    /// its tasks count as waited for, and the list as used up.
+    emptied: bool,
 }
 
 #[derive(Default)]
@@ -2200,7 +2261,7 @@ impl<'a> Checker<'a> {
             if var.moved.whole.is_some() && !var.moved.partly {
                 continue;
             }
-            if matches!(var.declared, Ty::Task(_)) {
+            if keeps_tasks(&var.declared) {
                 return Err(self.unwaited(var, exit));
             }
             if var.declared != Ty::Writer {
@@ -2236,6 +2297,20 @@ impl<'a> Checker<'a> {
     fn unwaited(&self, var: &Var, exit: Option<(Span, &str)>) -> Diag {
         let name = &var.name;
         let ends = if var.param { "the function ends" } else { "its block ends" };
+        if task_list(&var.declared) {
+            let diag = match (exit, var.moved.whole.is_some()) {
+                (_, true) => Diag::error(var.at, format!("the tasks in `{name}` are waited for on some paths but not on all of them"))
+                    .note("wait for them on every path, or once where the paths meet"),
+                (Some((span, word)), false) => Diag::error(span, format!("the tasks in `{name}` are not waited for at this `{word}`"))
+                    .related(var.at, "the list is kept here"),
+                (None, false) => Diag::error(var.at, format!("the tasks in `{name}` are not waited for before {ends}")),
+            };
+            let diag = match exit {
+                Some((_, "exit")) => diag.note("`exit` ends the program at once, and would cut the tasks off"),
+                _ => diag.note(format!("a list of tasks is given to `Task.whenAll`, or emptied by a loop `while {name}.length() > 0` that takes them with `Task.whenAny`")),
+            };
+            return diag.hint(when_all(&var.declared, name, self.is_async));
+        }
         let diag = match (exit, var.moved.whole.is_some()) {
             (_, true) => Diag::error(var.at, format!("`{name}` is waited for on some paths but not on all of them"))
                 .note("wait for it on every path, or once where the paths meet"),
@@ -2446,6 +2521,11 @@ impl<'a> Checker<'a> {
     fn live_var(&mut self, name: &str, span: Span) -> Res<&mut Var> {
         let var = self.var(name, span)?;
         if let Some(moved) = var.moved.whole {
+            if var.moved.emptied {
+                return Err(Diag::error(span, format!("`{name}` is used after the loop that emptied it"))
+                    .related(moved, "after this loop its tasks count as waited for, and the list as used up")
+                    .hint(format!("for more tasks, give it a new list first: `{name} = List<...>()`")));
+            }
             return Err(Diag::error(span, format!("`{name}` was moved and can no longer be used")).related(moved, "it was moved here"));
         }
         var.unopened = None;
@@ -2994,6 +3074,9 @@ impl<'a> Checker<'a> {
         for (scope, saved) in self.scopes.iter_mut().zip(other) {
             for (var, moved) in scope.vars.iter_mut().zip(saved) {
                 var.moved.partly = var.moved.partly || moved.partly || var.moved.whole.is_some() != moved.whole.is_some();
+                if var.moved.whole.is_none() {
+                    var.moved.emptied = moved.emptied;
+                }
                 var.moved.whole = var.moved.whole.or(moved.whole);
                 for part in &moved.parts {
                     if !var.moved.parts.iter().any(|(path, _)| *path == part.0) {
@@ -3102,6 +3185,11 @@ impl<'a> Checker<'a> {
                         .hint("write the call alone, without `_ =`"));
                 }
                 Ty::Null => return Err(Diag::error(value.span, "there is nothing to discard in `null`")),
+                ty if task_list(&ty) => {
+                    return Err(Diag::error(value.span, "a list of tasks is not dropped: they would go on with no one to wait for them")
+                        .note("every task is waited for, and none is cancelled without being told")
+                        .hint(format!("wait for them: {}", when_all(&ty, &self.src[value.span.start..value.span.end], self.is_async))));
+                }
                 Ty::Task(_) => {
                     return Err(Diag::error(value.span, "a task is not dropped: it would go on with no one to wait for it")
                         .note("every task is waited for, and none is cancelled without being told")
@@ -3227,6 +3315,13 @@ impl<'a> Checker<'a> {
                         if let Some(what) = std_stream(name) {
                             return Err(Diag::error(target.span, format!("`{name}` is {what} of the program and cannot be given another value")));
                         }
+                        let is_async = self.is_async;
+                        let var = self.var(name, target.span)?;
+                        if task_list(&var.declared) && (var.moved.whole.is_none() || var.moved.partly) {
+                            return Err(Diag::error(target.span, format!("`{name}` is given another list while the tasks it holds are not waited for"))
+                                .related(var.at, "it is declared here")
+                                .hint(format!("wait for them first: {}", when_all(&var.declared, name, is_async))));
+                        }
                         let var = self.var(name, target.span)?;
                         if matches!(var.declared, Ty::Task(_)) && (var.moved.whole.is_none() || var.moved.partly) {
                             return Err(Diag::error(target.span, format!("`{name}` is given another task while the one it holds is not waited for"))
@@ -3322,6 +3417,14 @@ impl<'a> Checker<'a> {
                         self.narrow(&name);
                     }
                     *after = self.names_after(fails, "while")?;
+                    // `while tasks.length() > 0 { ... }`: the loop ends only when the list has
+                    // no task left, so after it every task in it was waited for.
+                    if let Some(name) = emptied_by(cond) {
+                        let var = self.var(name, cond.span)?;
+                        if var.moved.whole.is_none() {
+                            var.moved = Moved { whole: Some(cond.span), emptied: true, ..Moved::default() };
+                        }
+                    }
                 }
             }
             StmtKind::For { var, var_span, from, to, body } => {
@@ -3412,6 +3515,20 @@ impl<'a> Checker<'a> {
                         return Err(Diag::error(iter.span, format!("`for` goes over a range `a..b`, a `List`, an array, a slice, a `HashMap` or a `HashSet`, found `{found}`")));
                     }
                 };
+                // A loop could leave a task of the list at a `break`: the tasks are waited for
+                // first, and the loop goes over what they gave.
+                if matches!(item, Ty::Task(_)) {
+                    let list = match &iter.kind {
+                        ExprKind::Borrow { expr, .. } => &self.src[expr.span.start..expr.span.end],
+                        _ => &self.src[iter.span.start..iter.span.end],
+                    };
+                    let wait = match self.is_async {
+                        true => format!("await Task.whenAll({list})"),
+                        false => format!("Task.whenAll({list}).wait()"),
+                    };
+                    return Err(Diag::error(iter.span, "`for` does not go over a list of tasks: a `break` would leave the tasks after it with no one to wait for them")
+                        .hint(format!("wait for them all and go over what they gave: `for value in {wait}`; or take them as they end: `while {list}.length() > 0 {{ ... Task.whenAny(ref {list}) ... }}`")));
+                }
                 let item = match mode {
                     None => item,
                     Some(Mode::Read) => Ty::Read(Box::new(item)),
@@ -3606,6 +3723,12 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Try { .. } | ExprKind::Await(_) => {
                 let ty = self.expr(expr, None)?;
+                if task_list(&ty) {
+                    let text = &self.src[span.start..span.end];
+                    return Err(Diag::error(span, "the tasks of this list are not waited for")
+                        .note("every task is waited for: its error is not lost, and no work is cut off when the program ends")
+                        .hint(when_all(&ty, text, self.is_async)));
+                }
                 if matches!(ty, Ty::Task(_)) {
                     let text = &self.src[span.start..span.end];
                     let diag = Diag::error(span, "this task is started and then not waited for")
@@ -4197,6 +4320,14 @@ impl<'a> Checker<'a> {
                         self.index(index, "an index")?;
                         *kind = IndexKind::Text;
                         Ok(Some((Ty::Int(IntTy::Byte), false)))
+                    }
+                    Ty::List(item) if matches!(**item, Ty::Task(_)) => {
+                        let list = &self.src[recv.span.start..recv.span.end];
+                        Err(Diag::error(span, "the tasks of a list are not reached one by one: they are taken out by `Task.whenAll` and `Task.whenAny`, which wait for them")
+                            .hint(match self.is_async {
+                                true => format!("`await Task.whenAny(ref {list})` takes out the first task to end, with what it gave"),
+                                false => format!("`Task.whenAny(ref {list}).wait()` takes out the first task to end, with what it gave"),
+                            }))
                     }
                     Ty::List(item) => {
                         self.index(index, "an index")?;
@@ -6419,8 +6550,15 @@ impl<'a> Checker<'a> {
             *callee = Callee::Delay(true);
             return Ok(Ty::Task(Box::new(Ty::Result(Box::new(Ty::Void), Box::new(Ty::Struct(CANCELLED.to_string()))))));
         }
+        if name == "whenAll" || name == "whenAny" {
+            return self.when(name, args, callee, span, awaited);
+        }
         if name != "run" {
-            return Err(Diag::error(name_span, format!("`Task` has the functions `run` and `delay`, not `{name}`")).hint("`Task.run(work, x)` starts `work(x)` as a task"));
+            let diag = Diag::error(name_span, format!("`Task` has the functions `run`, `delay`, `whenAll` and `whenAny`, not `{name}`"));
+            return Err(match nearest(name, ["run", "delay", "whenAll", "whenAny"].into_iter()) {
+                Some(close) => diag.hint(format!("`Task.{close}`")),
+                None => diag.hint("`Task.run(work, x)` starts `work(x)` as a task"),
+            });
         }
         let Some((first, rest)) = args.split_first_mut() else {
             return Err(Diag::error(span, "`Task.run` takes the function to start, then what it is given: `Task.run(work, x)`"));
@@ -6458,6 +6596,62 @@ impl<'a> Checker<'a> {
         self.args(&func, rest, &params, span)?;
         *callee = Callee::TaskRun;
         Ok(Ty::Task(ret))
+    }
+
+    /// `Task.whenAll(tasks)`: takes a `List<Task<R>>` and gives a task of what each gave, in
+    /// the order of the list (a `Task<void>` when they give nothing). `Task.whenAny(ref tasks)`
+    /// gives a task of what the first of them to end gave, and takes that task out of the list.
+    /// Both are awaited, or waited for, where they are written: what they give is a task of
+    /// their own only for that moment.
+    fn when(&mut self, name: &str, args: &mut [Expr], callee: &mut Callee, span: Span, awaited: bool) -> Res<Ty> {
+        let any = name == "whenAny";
+        let written = if any { "Task.whenAny(ref tasks)" } else { "Task.whenAll(tasks)" };
+        let [arg] = args else {
+            return Err(Diag::error(span, format!("`Task.{name}` takes 1 argument, the list of tasks, {} given", args.len())).hint(format!("`{written}`")));
+        };
+        let text = self.src[arg.span.start..arg.span.end].to_string();
+        let found = self.expr(arg, None)?;
+        let list = match (any, &found) {
+            (false, list) if task_list(list) => list.clone(),
+            (true, Ty::Ref(list)) if task_list(list) => (**list).clone(),
+            (true, list) if task_list(list) || task_list(list.strip_borrow()) => {
+                let place = match &arg.kind {
+                    ExprKind::Borrow { expr, .. } => &self.src[expr.span.start..expr.span.end],
+                    _ => text.as_str(),
+                };
+                return Err(Diag::error(arg.span, "`Task.whenAny` takes the task that ends out of the list, so it is given the list with `ref`")
+                    .hint(format!("`Task.whenAny(ref {place})`")));
+            }
+            (false, list) if task_list(list.strip_borrow()) => {
+                return Err(Diag::error(arg.span, "`Task.whenAll` takes the list and every task in it, so it is given the list itself, not a borrow")
+                    .note("the tasks that are left after `Task.whenAny` are waited for with `Task.whenAll` too"));
+            }
+            _ => {
+                let diag = Diag::error(arg.span, format!("`Task.{name}` waits for the tasks of a `List<Task<R>>`, and this is a `{found}`"));
+                return Err(match found.strip_borrow() {
+                    Ty::Task(_) => diag.hint(match self.is_async {
+                        true => format!("one task is awaited by itself: `await {text}`"),
+                        false => format!("one task is waited for by itself: `{text}.wait()`"),
+                    }),
+                    _ => diag.note("tasks are put in a list with `add`: `tasks.add(count(path))`"),
+                });
+            }
+        };
+        if !awaited {
+            let diag = Diag::error(span, format!("`Task.{name}` is awaited, or waited for, where it is written"));
+            return Err(match self.is_async {
+                true => diag.hint(format!("`await {}`", &self.src[span.start..span.end])),
+                false => diag.hint(format!("`{}.wait()`", &self.src[span.start..span.end])),
+            });
+        }
+        let Ty::List(item) = list else { unreachable!("a list of tasks") };
+        let Ty::Task(result) = *item else { unreachable!("a list of tasks") };
+        *callee = if any { Callee::WhenAny } else { Callee::WhenAll };
+        Ok(Ty::Task(Box::new(match (*result, any) {
+            (result, true) => result,
+            (Ty::Void, false) => Ty::Void,
+            (result, false) => Ty::List(Box::new(result)),
+        })))
     }
 
     /// `CancellationSource.after(ms)`: a function of the source type. The token type has only
@@ -6783,8 +6977,16 @@ impl<'a> Checker<'a> {
                 recv.ty = if *behind == Ty::Str { Ty::Read(behind) } else { Ty::Ref(behind) };
             }
         }
+        // `Task.whenAll(tasks).wait()`: waits for the task of the call where it is written.
+        let when = name == "wait" && is_when(recv);
         let (recv_ty, mut writable, is_place) = match &recv.kind {
             ExprKind::Slice { .. } if matches!(name, "sort" | "reverse") => (recv.ty.clone(), true, false),
+            _ if when => {
+                self.awaiting = true;
+                let ty = self.expr(recv, None);
+                self.awaiting = false;
+                (ty?, true, false)
+            }
             _ => match self.place(recv)? {
                 Some((ty, writable)) => (ty, writable, true),
                 None => (self.expr(recv, None)?, true, false),
@@ -6804,6 +7006,10 @@ impl<'a> Checker<'a> {
                 let task = &self.src[recv.span.start..recv.span.end];
                 return Err(Diag::error(name_span, "an async function does not `wait`: that would hold the thread, which other tasks need, until the task ends")
                     .hint(format!("`await {task}` waits without holding the thread")));
+            }
+            if when {
+                *callee = Callee::Wait;
+                return Ok(result);
             }
             if recv_ty.is_borrow() || !is_place {
                 return Err(Diag::error(recv.span, "`wait` takes the task and uses it up, and this one is only borrowed").note("whoever started the task waits for it"));
@@ -6942,6 +7148,26 @@ impl<'a> Checker<'a> {
             "take" => return self.take(recv, &recv_ty, writable, is_place, args, callee, span),
             "replace" => return self.replace(recv, &recv_ty, writable, is_place, args, callee, span),
             _ => {}
+        }
+        // A list of tasks only takes tasks and says how many it has: its tasks are taken out
+        // by `Task.whenAll` and `Task.whenAny`, which wait for them.
+        if task_list(target) {
+            let list = &self.src[recv.span.start..recv.span.end];
+            if !matches!(name, "add" | "length") {
+                let diag = Diag::error(name_span, format!("a `{target}` has the methods `add` and `length`, not `{name}`"))
+                    .note("its tasks are taken out by `Task.whenAll` and `Task.whenAny`, which wait for them");
+                return Err(match name {
+                    "removeLast" | "remove" | "get" | "clear" => diag.hint(match self.is_async {
+                        true => format!("`await Task.whenAny(ref {list})` takes out the first task to end, with what it gave"),
+                        false => format!("`Task.whenAny(ref {list}).wait()` takes out the first task to end, with what it gave"),
+                    }),
+                    _ => diag,
+                });
+            }
+            if !is_place {
+                return Err(Diag::error(recv.span, "this list of tasks has no name, so its tasks could not be waited for after this call")
+                    .hint("keep it in a variable: `var tasks = ...`"));
+            }
         }
         if matches!(target, Ty::List(_) | Ty::Map(..) | Ty::Set(_)) {
             return self.collection_method(recv, target, target, writable, name, name_span, args, span);

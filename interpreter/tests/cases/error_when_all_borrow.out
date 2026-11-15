@@ -1,0 +1,5 @@
+error: `Task.whenAll` takes the list and every task in it, so it is given the list itself, not a borrow
+  the tasks that are left after `Task.whenAny` are waited for with `Task.whenAll` too
+  --> error_when_all_borrow.sg:9:28
+ 9 |     _ = await Task.whenAll(read tasks)
+   |                            ^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: a `Task` is kept only in a local variable, a parameter or a return value, as it is or in a `List<Task<R>>`
+  every task is waited for, and the compiler sees that only where the task stays in one function's hands
+  --> error_task_list_nested.sg:2:18
+ 2 |     var groups = List<List<Task<int>>>()
+   |                  ^^^^^^^^^^^^^^^^^^^^^

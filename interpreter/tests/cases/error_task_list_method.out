@@ -1,0 +1,6 @@
+error: a `List<Task<int>>` has the methods `add` and `length`, not `removeLast`
+  its tasks are taken out by `Task.whenAll` and `Task.whenAny`, which wait for them
+  --> error_task_list_method.sg:9:17
+ 9 |     print(tasks.removeLast())
+   |                 ^^^^^^^^^^
+  hint: `await Task.whenAny(ref tasks)` takes out the first task to end, with what it gave

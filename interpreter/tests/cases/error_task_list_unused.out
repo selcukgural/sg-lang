@@ -1,0 +1,6 @@
+error: the tasks of this list are not waited for
+  every task is waited for: its error is not lost, and no work is cut off when the program ends
+  --> error_task_list_unused.sg:13:5
+ 13 |     start()
+    |     ^^^^^^^
+  hint: `_ = Task.whenAll(start()).wait()`

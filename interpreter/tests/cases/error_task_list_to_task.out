@@ -1,0 +1,5 @@
+error: `sum` takes a `List<Task<long>>` here, which holds a `Task<long>`, which cannot go to another task: a task is waited for by the task that started it, and by no other
+  what goes to another task, comes back from one or is held by a `locked` value owns all it holds: no borrow, no `shared checked` value, no `Task`
+  --> error_task_list_to_task.sg:16:31
+ 16 |     var total = Task.run(sum, tasks)
+    |                               ^^^^^

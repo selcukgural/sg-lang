@@ -1,0 +1,41 @@
+// Lists of tasks. In each of 200,000 rounds, eight tasks for the Collatz lengths of eight numbers
+// are kept in a list and taken all at once with `Task.whenAll`, and eight more are taken one by
+// one with `Task.whenAny`. No task ever has to wait, so what is measured is what a list adds to
+// the tasks: its group, which each task tells as it ends, and taking the tasks out of it. The C
+// program calls the same function and keeps each result in a block it allocates, in an array
+// of them, for the list.
+async long steps(long start) {
+    var n = start
+    long count = 0
+    while n != 1 {
+        if n % 2 == 0 {
+            n = n / 2
+        } else {
+            n = 3 * n + 1
+        }
+        count += 1
+    }
+    return count
+}
+
+async void main() {
+    long total = 0
+    for round in 0..200000 {
+        long first = (long)round * 16 + 1
+        var tasks = List<Task<long>>()
+        for i in 0..8 {
+            tasks.add(steps(first + i))
+        }
+        for n in await Task.whenAll(tasks) {
+            total += n
+        }
+        var more = List<Task<long>>()
+        for i in 8..16 {
+            more.add(steps(first + i))
+        }
+        while more.length() > 0 {
+            total += await Task.whenAny(ref more)
+        }
+    }
+    print(total)
+}

@@ -1,0 +1,3 @@
+void main() {
+    var tasks = HashMap<string, Task<int>>()
+}

@@ -1,0 +1,13 @@
+async int count(int ms) {
+    await Task.delay(ms)
+    return ms
+}
+
+async void main() {
+    var tasks = List<Task<int>>()
+    tasks.add(count(10))
+    while tasks.length() > 0 {
+        print(await Task.whenAny(ref tasks))
+    }
+    tasks.add(count(20))
+}
