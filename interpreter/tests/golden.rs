@@ -465,6 +465,80 @@ fn compiled() {
     );
 }
 
+/// Compiled code reads the input the async way on a thread of input and output, so a task that
+/// waits for a line holds no thread of the pool (the interpreter holds every task meanwhile, so
+/// this is a test of compiled code alone). Sixty-four tasks wait for a line each, more than the
+/// pool has threads, and a task that only waits for a delay still runs: its line on the standard
+/// error is looked for before any input is given.
+#[test]
+fn compiled_input_waits_alone() {
+    const PROGRAM: &str = r#"
+async Result<long, IoError> one() {
+    var line = ""
+    _ = try await Stdin.readLineAsync(ref line)
+    return Ok(line.length())
+}
+
+async Result<long, IoError> readers(int depth) {
+    if depth == 0 {
+        return await one()
+    }
+    var left = readers(depth - 1)
+    var right = readers(depth - 1)
+    long sum = try await left
+    sum += try await right
+    return Ok(sum)
+}
+
+async void tick() {
+    await Task.delay(20)
+    printError("tick")
+}
+
+async Result<void, IoError> main() {
+    var ticking = tick()
+    var lines = readers(6)
+    await ticking
+    print(try await lines)
+    return Ok()
+}
+"#;
+    use std::io::{BufRead, Write};
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if std::process::Command::new("cc").arg("--version").output().is_err() {
+        eprintln!("no C compiler (`cc`) found: the back end is not tested");
+        return;
+    }
+    let work = root.join("target").join("compiled");
+    std::fs::create_dir_all(&work).unwrap();
+    let (c_file, binary) = (work.join("input-waits-alone.c"), work.join("input-waits-alone"));
+    std::fs::write(&c_file, sg::emit_c(PROGRAM, "input_waits_alone.sg", true).unwrap()).unwrap();
+    let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-o"]).arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+    assert!(cc.status.success(), "the C compiler rejected it:\n{}", String::from_utf8_lossy(&cc.stderr));
+    let mut child = std::process::Command::new(&binary)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let errors = child.stderr.take().unwrap();
+    let (send, lines) = std::sync::mpsc::channel();
+    let reading = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(errors).lines() {
+            let _ = send.send(line.unwrap());
+        }
+    });
+    let first = lines.recv_timeout(std::time::Duration::from_secs(10));
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all("ab\n".repeat(64).as_bytes()).unwrap();
+    drop(stdin);
+    let run = child.wait_with_output().unwrap();
+    reading.join().unwrap();
+    assert_eq!(first.as_deref(), Ok("tick"), "the task that waits for a delay did not run while the others waited for the input");
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "128\n");
+    assert!(run.status.success());
+}
+
 /// The test command on compiled code. Every program of tests is built into the program that
 /// runs its `test` blocks, each in a process of its own, and what that program writes is
 /// compared with what the test command of the interpreter writes: the same `.out` files. It

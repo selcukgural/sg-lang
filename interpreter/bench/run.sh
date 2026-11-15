@@ -20,6 +20,7 @@ with open(sys.argv[1], "w", encoding="utf-8", newline="") as out:
         text = " ".join(r.choice(words) for _ in range(r.randint(3, 14)))
         out.write(f"{r.choice(levels)} {r.randint(1, 5000)} {text}{chr(13) if i % 5 == 0 else ''}\n")
 PY
+cp "$out/lines.in" "$out/asynclines.in"
 
 best() {
     python3 - "$1" "$2" <<'PY'
@@ -36,7 +37,7 @@ PY
 }
 
 printf "%-10s %12s %12s %10s %14s\n" program "release (s)" "checked (s)" "C (s)" "release / C"
-for name in fib primes collatz words list expr parse vector counts show lookup buffer bits hash nbody numbers fields lines copy bytes table blocks keywords classes rewrite tree tasks async; do
+for name in fib primes collatz words list expr parse vector counts show lookup buffer bits hash nbody numbers fields lines copy bytes table blocks keywords classes rewrite tree tasks async asynclines; do
     ./target/release/sg build "bench/$name.sg" --release -o "$out/$name-release"
     # The checked build, optimised like the others, to see what the check alone costs.
     ./target/release/sg emit-c "bench/$name.sg" > "$out/$name-checked.c"

@@ -20,7 +20,8 @@
 //! `File.openAppend`, and `Stdin`, `Stdout` and `Stderr` as such streams), the command line and `exit` (see `IO_RUNTIME`),
 //! `shared`, `weak` and `shared checked` values with the `as` blocks, `this` with a type and the leak
 //! report (see `SHARED_RUNTIME`), tasks, `locked` values and the `lock` block, async functions,
-//! `await`, `Task.delay` and cancellation (see `TASK_RUNTIME`).
+//! `await`, `Task.delay` and cancellation (see `TASK_RUNTIME`), and input and output the async way
+//! (see `ASYNC_IO_RUNTIME`).
 //! A type alias is the type it names. Anything else is an error
 //! that names what is missing, so nothing is compiled wrongly in silence.
 //!
@@ -57,6 +58,8 @@
 //! frame, its body comes back to where it stopped with a jump, and it gives `true` when it has ended
 //! and `false` when it has to wait. `await f()` runs `f` in a frame inside the caller's; a call
 //! without `await` is a task, one block with the frame inside, that the pool of `TASK_RUNTIME` runs.
+//! `await File.readTextAsync(path)` puts the work into the frame and hands it to a thread of input
+//! and output, which wakes the task when it is done (`await_io`).
 //! A `Result<T, E>` is such an enum with the variants `Ok(T value)` and `Error(E cause)`; `try`
 //! is one test on the tag and, on an error, a `return`. A `List<T>` is a pointer to its items,
 //! a length and a capacity; `xs[i]` is the item where it is, behind a check of the index, and
@@ -2130,14 +2133,17 @@ static int sg_reader_fill(sg_reader* r) {
     }
 }
 /* The next line into `line`, without its `\n` or `\r\n`: 0 with `*more` false at the end,
-   the code the system gave, or -1 with `*bad` where the line is not UTF-8. */
-static int sg_read_line(sg_reader* r, sg_string* line, bool* more, int64_t* bad) {
+   the code the system gave, or -1 with `*bad` where the line is not UTF-8. With `now`, the line
+   is read only if the block holds all of it, or the end was met: otherwise -2, and nothing of
+   the reader is used (the async read done in place, see `ASYNC_IO_RUNTIME`). */
+static int sg_read_line_at(sg_reader* r, sg_string* line, bool* more, int64_t* bad, bool now) {
     line->len = 0;
     int64_t start = r->done;
     bool any = false;
     for (;;) {
         if (r->at == r->len) {
             if (r->ended) break;
+            if (now) return -2;
             int code = sg_reader_fill(r);
             if (code) return code;
             continue;
@@ -2145,6 +2151,7 @@ static int sg_read_line(sg_reader* r, sg_string* line, bool* more, int64_t* bad)
         any = true;
         const uint8_t* from = r->block + r->at;
         const uint8_t* end = memchr(from, '\n', (size_t)(r->len - r->at));
+        if (now && !end) return -2;
         int64_t n = end ? end - from + 1 : r->len - r->at;
         sg_put(line, from, n);
         r->at += n;
@@ -2161,6 +2168,7 @@ static int sg_read_line(sg_reader* r, sg_string* line, bool* more, int64_t* bad)
     if (at >= 0) { line->len = 0; *bad = start + at; return -1; }
     return 0;
 }
+static inline int sg_read_line(sg_reader* r, sg_string* line, bool* more, int64_t* bad) { return sg_read_line_at(r, line, more, bad, false); }
 /* What is left. */
 static int sg_read_rest(sg_reader* r, sg_string* text) {
     *text = SG_LIT("", 0);
@@ -2345,6 +2353,115 @@ static int sg_open_writer(sg_str path, bool append, sg_writer* out) {
     *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 } };
     return 0;
 }
+"#;
+
+/// What a program with async input and output needs besides `IO_RUNTIME`: the threads that do
+/// work which may block for an async task. The task puts the work, its arguments and the room for
+/// what it gives into its frame (`sg_io`), hands it to these threads and waits; the thread that
+/// takes it does the work as code that is not async would, marks it done and wakes the task. A
+/// file cannot be waited for any other way (it is always ready), and the input is read the same way,
+/// so a task that waits for a line holds no thread of the pool. Threads are started as work comes
+/// and none is free, up to 512; one that has had nothing to do for 10 seconds ends (the numbers of
+/// Tokio's threads for blocking work). A read of a reader that the block it keeps can answer is
+/// done in place, without a thread (`sg_reader_try` and the `_n` functions of the glue).
+const ASYNC_IO_RUNTIME: &str = r#"
+typedef struct sg_io {
+    struct sg_io* next;
+    sg_task* job;
+    void (*work)(struct sg_io*);
+    int done;
+} sg_io;
+#define SG_IO_MOST 512
+#define SG_IO_KEEP_NS ((int64_t)10 * 1000000000)
+static pthread_mutex_t sg_io_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t sg_io_wait;
+static bool sg_io_started = false;
+static sg_io* sg_io_first = NULL;
+static sg_io* sg_io_last = NULL;
+static int64_t sg_io_queued = 0;
+static int sg_io_threads = 0;
+static int sg_io_idle = 0;
+/* Waits on the condition for at most `ns`, on the monotonic clock: what `pthread_cond_timedwait`
+   gives. */
+static int sg_io_sleep(int64_t ns) {
+    struct timespec t;
+#if defined(__APPLE__)
+    t.tv_sec = (time_t)(ns / 1000000000);
+    t.tv_nsec = (long)(ns % 1000000000);
+    return pthread_cond_timedwait_relative_np(&sg_io_wait, &sg_io_lock, &t);
+#else
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    int64_t at = (int64_t)t.tv_nsec + ns % 1000000000;
+    t.tv_sec += (time_t)(ns / 1000000000 + at / 1000000000);
+    t.tv_nsec = (long)(at % 1000000000);
+    return pthread_cond_timedwait(&sg_io_wait, &sg_io_lock, &t);
+#endif
+}
+static void* sg_io_main(void* unused) {
+    (void)unused;
+    pthread_mutex_lock(&sg_io_lock);
+    for (;;) {
+        if (!sg_io_first) {
+            sg_io_idle++;
+            int code = sg_io_sleep(SG_IO_KEEP_NS);
+            sg_io_idle--;
+            if (!sg_io_first && code == ETIMEDOUT) break;
+            continue;
+        }
+        sg_io* io = sg_io_first;
+        sg_io_first = io->next;
+        if (!sg_io_first) sg_io_last = NULL;
+        sg_io_queued--;
+        pthread_mutex_unlock(&sg_io_lock);
+        /* Once it is marked done, the task may go on and its frame be gone: the task to wake is
+           read first. */
+        sg_task* job = io->job;
+        io->work(io);
+        __atomic_store_n(&io->done, 1, __ATOMIC_RELEASE);
+        sg_wake(job);
+        pthread_mutex_lock(&sg_io_lock);
+    }
+    sg_io_threads--;
+    pthread_mutex_unlock(&sg_io_lock);
+    return NULL;
+}
+/* The async task running now hands the work over and then waits until it is done. A thread is
+   started when the work queued is more than the threads that have nothing to do; a system that
+   refuses one is a panic only when there is no thread at all, otherwise the work waits for one. */
+static void sg_io_start(sg_io* io, void (*work)(sg_io*), const char* loc) {
+    io->job = sg_job_now;
+    io->work = work;
+    io->next = NULL;
+    io->done = 0;
+    pthread_mutex_lock(&sg_io_lock);
+    if (!sg_io_started) {
+        pthread_condattr_t attr;
+        pthread_condattr_init(&attr);
+#if !defined(__APPLE__)
+        pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+#endif
+        pthread_cond_init(&sg_io_wait, &attr);
+        pthread_condattr_destroy(&attr);
+        sg_io_started = true;
+    }
+    if (sg_io_last) sg_io_last->next = io;
+    else sg_io_first = io;
+    sg_io_last = io;
+    sg_io_queued++;
+    if (sg_io_queued > sg_io_idle && sg_io_threads < SG_IO_MOST) {
+        pthread_t thread;
+        int code = sg_thread_start(&thread, sg_io_main, NULL, true);
+        if (code == 0) sg_io_threads++;
+        else if (sg_io_threads == 0) sg_refused(code, "input and output", loc);
+    }
+    if (sg_io_idle > 0) pthread_cond_signal(&sg_io_wait);
+    pthread_mutex_unlock(&sg_io_lock);
+}
+static inline bool sg_io_done(sg_io* io) { return __atomic_load_n(&io->done, __ATOMIC_ACQUIRE); }
+/* The async read done in place: the input is taken for it if no other task has it; a task
+   that has it may be waiting for the system, so then the read goes to a thread. `SG_IN_GIVE`
+   lets it go. */
+static inline bool sg_reader_try(sg_reader* r) { return r != &sg_stdin || pthread_mutex_trylock(&sg_in_lock) == 0; }
 "#;
 
 /// What a program of tests ends with: each `test` block runs in a process of its own, so a
@@ -2571,6 +2688,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     if emitter.made.contains("io") {
         out.push_str(IO_RUNTIME);
+    }
+    if emitter.made.contains("async io") {
+        out.push_str(ASYNC_IO_RUNTIME);
     }
     if tests {
         out.push_str(TEST_SUPPORT);
@@ -2950,6 +3070,19 @@ fn cname(full: &str) -> String {
         let _ = write!(out, "{}{part}_", part.len());
     }
     out + name
+}
+
+/// Whether computing the expression can leave the function (`may_leave`) or wait: it holds an
+/// `await`.
+fn may_leave_or_wait(expr: &Expr) -> bool {
+    may_leave(expr) || holds_await(expr)
+}
+
+/// Whether the expression holds an `await`.
+fn holds_await(expr: &Expr) -> bool {
+    let mut found = matches!(expr.kind, ExprKind::Await(_));
+    sums::children(expr, &mut |inner| found |= holds_await(inner));
+    found
 }
 
 /// Whether computing the expression can leave the function: it holds a `try`, a `?? return`,
@@ -5006,7 +5139,7 @@ impl<'a> Emitter<'a> {
         }
         for field in &hoisted.fields {
             let line = format!("{} {}{};", field.ty, field.name, field.array);
-            if field.ty.starts_with("F_") || field.ty == "sg_delay" {
+            if field.ty.starts_with("F_") || field.ty.starts_with("sg_io_") || field.ty == "sg_delay" {
                 if let Some(held) = field.ty.strip_prefix("F_") {
                     deps.push(held.to_string());
                 }
@@ -7164,7 +7297,10 @@ impl<'a> Emitter<'a> {
                 };
                 (fname, vec![text], format!("{ctype} s; int code = {open}&s); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ s }} }};", failed("sg_io_error(code)")))
             }
-            _ => return self.io_whole(call, args, head, expr),
+            _ => {
+                let fname = self.io_whole(call, &expr.ty, span)?;
+                return self.call(fname.to_string(), None, args, head, &expr.ty);
+            }
         };
         self.io_glue(fname, &params, &body, &gives, span)?;
         self.call(fname.to_string(), None, args, head, &expr.ty)
@@ -7180,7 +7316,8 @@ impl<'a> Emitter<'a> {
                 self.glue,
                 "static {error_c} sg_io_error(int code) {{ int kind = sg_io_kind(code); \
                  if (kind == 5) return ({error_c}){{ .tag = 5, .u.v5 = {{ code }} }}; return ({error_c}){{ .tag = (uint8_t)kind }}; }}\n\
-                 static {error_c} sg_io_bad_text(int64_t at) {{ return ({error_c}){{ .tag = 4, .u.v4 = {{ at }} }}; }}"
+                 static {error_c} sg_io_bad_text(int64_t at) {{ return ({error_c}){{ .tag = 4, .u.v4 = {{ at }} }}; }}\n\
+                 static inline {error_c} sg_io_cancelled(void) {{ return ({error_c}){{ .tag = 6 }}; }}"
             );
         }
         Ok(())
@@ -7201,10 +7338,11 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    /// The functions of `File` that read or write a whole file.
-    fn io_whole(&mut self, call: IoCall, args: &'a [Expr], head: bool, expr: &'a Expr) -> Res<String> {
-        let span = expr.span;
-        let gives = self.ctype(&expr.ty, span)?;
+    /// The functions of `File` that read or write a whole file: the function of the glue that
+    /// gives `result`, written once, and its name.
+    fn io_whole(&mut self, call: IoCall, result: &Ty, span: Span) -> Res<&'static str> {
+        self.io_error(span)?;
+        let gives = self.ctype(result, span)?;
         let failed = |cause: &str| format!("return ({gives}){{ .tag = 1, .u.v1 = {{ {cause} }} }};");
         let text = Ty::Read(Box::new(Ty::Str));
         let (fname, params, body) = match call {
@@ -7252,7 +7390,7 @@ impl<'a> Emitter<'a> {
             IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend => unreachable!("written by `io`"),
         };
         self.io_glue(fname, &params, &body, &gives, span)?;
-        self.call(fname.to_string(), None, args, head, &expr.ty)
+        Ok(fname)
     }
 
     /// The methods of `StreamReader` and `StreamWriter`. Reading and writing go through the
@@ -7296,57 +7434,82 @@ impl<'a> Emitter<'a> {
                 ))
             }
             StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::WriteBytes => {
-                let reader = match call {
-                    StreamCall::WriteBytes => Ty::Ref(Box::new(Ty::Writer)),
-                    _ => Ty::Ref(Box::new(Ty::Reader)),
-                };
+                let (fname, params) = self.stream_glue(call, &expr.ty, false, span)?;
                 let receiver = self.list_address(recv)?;
-                let receiver = self.part(recv, &reader, receiver, before);
-                let bytes = |mode: fn(Box<Ty>) -> Ty| mode(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
-                let (fname, params, body) = match call {
-                    StreamCall::ReadBytes => (
-                        "sg_reader_bytes_r",
-                        vec![reader, bytes(Ty::Ref)],
-                        format!(
-                            "int64_t got = 0; SG_IN_TAKE(a0); int code = sg_read_bytes(a0, a1.ptr, a1.len, &got); SG_IN_GIVE(a0); if (code) {} \
-                             return ({gives}){{ .tag = 0, .u.v0 = {{ got }} }};",
-                            failed("sg_io_error(code)")
-                        ),
-                    ),
-                    StreamCall::WriteBytes => (
-                        "sg_writer_bytes_r",
-                        vec![reader, bytes(Ty::Read)],
-                        format!("int code = sg_writer_bytes(a0, a1.ptr, a1.len); if (code) {} return ({gives}){{ .tag = 0 }};", failed("sg_io_error(code)")),
-                    ),
-                    StreamCall::ReadLine => (
-                        "sg_reader_line_r",
-                        vec![reader, Ty::Ref(Box::new(Ty::Str))],
-                        format!(
-                            "bool more = false; int64_t bad = 0; SG_IN_TAKE(a0); int code = sg_read_line(a0, a1, &more, &bad); SG_IN_GIVE(a0); \
-                             if (code == -1) {} if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ more }} }};",
-                            failed("sg_io_bad_text(bad)"),
-                            failed("sg_io_error(code)")
-                        ),
-                    ),
-                    _ => (
-                        "sg_reader_text_r",
-                        vec![reader],
-                        format!(
-                            "SG_IN_TAKE(a0); int64_t start = a0->done; sg_string text; int code = sg_read_rest(a0, &text); SG_IN_GIVE(a0); if (code) {} \
-                             int64_t bad = sg_utf8_bad(text.ptr, text.len); \
-                             if (bad >= 0) {{ sg_drop_string(&text); {} }} return ({gives}){{ .tag = 0, .u.v0 = {{ text }} }};",
-                            failed("sg_io_error(code)"),
-                            failed("sg_io_bad_text(start + bad)")
-                        ),
-                    ),
-                };
-                self.io_glue(fname, &params, &body, &gives, span)?;
-                // The receiver is not one of the arguments the signature lists.
-                let listed = params[1..].to_vec();
-                self.sigs.insert(fname.to_string(), listed);
+                let receiver = self.part(recv, &params[0], receiver, before);
                 self.call(fname.to_string(), Some(receiver), args, head, &expr.ty)
             }
         }
+    }
+
+    /// The function of the glue for a method of a stream that reads, or writes bytes, which
+    /// gives `result`, written once: its name, and the types it is given, the stream first.
+    /// With `unheld`, for a reader, a second function for the async read done in place (`_n`):
+    /// its caller holds the input, it reads only what the block of the reader can give without
+    /// the system, and it says whether it did, with what it gives in `out`.
+    fn stream_glue(&mut self, call: StreamCall, result: &Ty, unheld: bool, span: Span) -> Res<(&'static str, Vec<Ty>)> {
+        self.io_error(span)?;
+        let gives = self.ctype(result, span)?;
+        let reader = match call {
+            StreamCall::WriteBytes => Ty::Ref(Box::new(Ty::Writer)),
+            _ => Ty::Ref(Box::new(Ty::Reader)),
+        };
+        let bytes = |mode: fn(Box<Ty>) -> Ty| mode(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+        // The body, as the call holds the input and gives its value (`now` false), or as `_n`.
+        let body = |now: bool| {
+            let give = |value: String| match now {
+                false => format!("return {value};"),
+                true => format!("{{ *out = {value}; return true; }}"),
+            };
+            let failed = |cause: &str| give(format!("({gives}){{ .tag = 1, .u.v1 = {{ {cause} }} }}"));
+            let (take, put) = if now { ("", "") } else { ("SG_IN_TAKE(a0); ", "SG_IN_GIVE(a0); ") };
+            match call {
+                StreamCall::ReadBytes => format!(
+                    "{}int64_t got = 0; {take}int code = sg_read_bytes(a0, a1.ptr, a1.len, &got); {put}if (code) {} {}",
+                    if now { "if (!a0->ended && a0->len - a0->at < a1.len) return false; " } else { "" },
+                    failed("sg_io_error(code)"),
+                    give(format!("({gives}){{ .tag = 0, .u.v0 = {{ got }} }}"))
+                ),
+                StreamCall::WriteBytes => format!(
+                    "int code = sg_writer_bytes(a0, a1.ptr, a1.len); if (code) {} {}",
+                    failed("sg_io_error(code)"),
+                    give(format!("({gives}){{ .tag = 0 }}"))
+                ),
+                StreamCall::ReadLine => format!(
+                    "bool more = false; int64_t bad = 0; {take}int code = sg_read_line_at(a0, a1, &more, &bad, {now}); {put}{}if (code == -1) {} if (code) {} {}",
+                    if now { "if (code == -2) return false; " } else { "" },
+                    failed("sg_io_bad_text(bad)"),
+                    failed("sg_io_error(code)"),
+                    give(format!("({gives}){{ .tag = 0, .u.v0 = {{ more }} }}"))
+                ),
+                _ => format!(
+                    "{}{take}int64_t start = a0->done; sg_string text; int code = sg_read_rest(a0, &text); {put}if (code) {} \
+                     int64_t bad = sg_utf8_bad(text.ptr, text.len); if (bad >= 0) {{ sg_drop_string(&text); {} }} {}",
+                    if now { "if (!a0->ended) return false; " } else { "" },
+                    failed("sg_io_error(code)"),
+                    failed("sg_io_bad_text(start + bad)"),
+                    give(format!("({gives}){{ .tag = 0, .u.v0 = {{ text }} }}"))
+                ),
+            }
+        };
+        let (fname, params) = match call {
+            StreamCall::ReadBytes => ("sg_reader_bytes_r", vec![reader, bytes(Ty::Ref)]),
+            StreamCall::WriteBytes => ("sg_writer_bytes_r", vec![reader, bytes(Ty::Read)]),
+            StreamCall::ReadLine => ("sg_reader_line_r", vec![reader, Ty::Ref(Box::new(Ty::Str))]),
+            _ => ("sg_reader_text_r", vec![reader]),
+        };
+        self.io_glue(fname, &params, &body(false), &gives, span)?;
+        if unheld && call != StreamCall::WriteBytes && self.made.insert(format!("{fname}_n")) {
+            let mut written = Vec::new();
+            for (index, param) in params.iter().enumerate() {
+                written.push(format!("{} a{index}", self.ctype(param, span)?));
+            }
+            let _ = writeln!(self.glue, "static bool {fname}_n({}, {gives}* out) {{ {} }}", written.join(", "), body(true));
+        }
+        // The receiver is not one of the arguments the signature lists.
+        let listed = params[1..].to_vec();
+        self.sigs.insert(fname.to_string(), listed);
+        Ok((fname, params))
     }
 
     /// `sg_read_lines_next`: the next line of `reader.lines()` as a text of its own, or the
@@ -7458,7 +7621,20 @@ impl<'a> Emitter<'a> {
                     false => result(self, String::new()),
                 }
             }
-            ExprKind::Method { callee: Callee::IoAsync(_) | Callee::StreamAsync(_), .. } => Err(not_yet(inner.span, "async input and output")),
+            ExprKind::Method { args, callee: Callee::IoAsync(call), .. } => {
+                let fname = self.io_whole(*call, &expr.ty, inner.span)?;
+                let params = self.sigs[fname].clone();
+                let value = self.await_io(fname, &params, None, args, head, expr)?;
+                result(self, value)
+            }
+            ExprKind::Method { recv, args, callee: Callee::StreamAsync(call), .. } => {
+                let (fname, params) = self.stream_glue(*call, &expr.ty, true, inner.span)?;
+                let before = self.mark();
+                let reader = self.list_address(recv)?;
+                let receiver = self.part(recv, &params[0], reader, before);
+                let value = self.await_io(fname, &params, Some(receiver), args, head, expr)?;
+                result(self, value)
+            }
             _ => {
                 let value = self.first(inner, head)?;
                 let (ctype, task) = (self.ctype(&inner.ty, inner.span)?, self.temp());
@@ -7468,6 +7644,66 @@ impl<'a> Emitter<'a> {
                 result(self, format!("sg_wait_{}({task})", mangle(&inner.ty).expect("a task has a C name")))
             }
         }
+    }
+
+    /// `await File.readTextAsync(path)`, `await Stdin.readLineAsync(ref line, read token)`: the
+    /// function of the glue `fname`, which takes `params`, is done on a thread of input and
+    /// output (`ASYNC_IO_RUNTIME`) while the task waits. Its arguments, and the room for what it
+    /// gives, are a block in the frame (`sg_io_F`), written by a function that takes them as the
+    /// call would (`sg_io_of_F`, `_t` with a token, which it looks at then). A cancelled token
+    /// gives the error at once, and a read of a reader its block can answer is done in place
+    /// (`reader`: the reader). What it gave is the value.
+    fn await_io(&mut self, fname: &str, params: &[Ty], reader: Option<Part>, args: &'a [Expr], head: bool, expr: &'a Expr) -> Res<String> {
+        self.made.insert("async io".to_string());
+        let span = expr.span;
+        let told = args.len() + usize::from(reader.is_some()) > params.len();
+        let setter = format!("sg_io_of_{fname}{}", if told { "_t" } else { "" });
+        if self.made.insert(format!("sg_io_{fname}")) {
+            let gives = self.ctype(&expr.ty, span)?;
+            let (mut fields, mut takes, mut sets, mut gets) = (String::new(), Vec::new(), String::new(), Vec::new());
+            for (index, param) in params.iter().enumerate() {
+                let ctype = self.ctype(param, span)?;
+                let _ = write!(fields, " {ctype} a{index};");
+                takes.push(format!("{ctype} a{index}"));
+                let _ = write!(sets, " .a{index} = a{index},");
+                gets.push(format!("x->a{index}"));
+            }
+            let _ = writeln!(self.late_types, "typedef struct {{ sg_io io;{fields} bool cancelled; {gives} r; }} sg_io_{fname};");
+            let gets = gets.join(", ");
+            let takes = takes.join(", ");
+            let token = self.ctype(&Ty::Read(Box::new(Ty::Token)), span)?;
+            let comma = if takes.is_empty() { "" } else { ", " };
+            let _ = writeln!(
+                self.glue,
+                "static void sg_io_run_{fname}(sg_io* io) {{ sg_io_{fname}* x = (sg_io_{fname}*)io; x->r = {fname}({gets}); }}\n\
+                 static inline sg_io_{fname} sg_io_of_{fname}({}) {{ return (sg_io_{fname}){{{sets} .cancelled = false }}; }}\n\
+                 static inline sg_io_{fname} sg_io_of_{fname}_t({takes}{comma}{token} tk) {{ return (sg_io_{fname}){{{sets} .cancelled = sg_cancelled(*tk) }}; }}",
+                if takes.is_empty() { "void" } else { &takes }
+            );
+            let now = match &reader {
+                Some(_) => format!(" if (sg_reader_try(x->a0)) {{ bool now = {fname}_n({gets}, &x->r); SG_IN_GIVE(x->a0); if (now) {{ x->io.done = 1; return; }} }}"),
+                None => String::new(),
+            };
+            let _ = writeln!(
+                self.glue,
+                "static void sg_io_go_{fname}(sg_io_{fname}* x, const char* loc) {{ \
+                 if (x->cancelled) {{ x->r = ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }}; x->io.done = 1; return; }}{now} \
+                 sg_io_start(&x->io, sg_io_run_{fname}, loc); }}"
+            );
+        }
+        let skip = usize::from(reader.is_some());
+        let mut takes = params[skip..].to_vec();
+        if told {
+            takes.push(Ty::Read(Box::new(Ty::Token)));
+        }
+        self.sigs.insert(setter.clone(), takes);
+        let value = self.call(setter, reader, args, head, &Ty::Void)?;
+        let (io, loc) = (self.temp(), self.loc(span));
+        self.pre.push(format!("sg_io_{fname} {io} = {value};"));
+        self.pre.push(format!("sg_io_go_{fname}(&{io}, {loc});"));
+        self.resume_point(span);
+        self.pre.push(format!("if (!sg_io_done(&{io}.io)) return false;"));
+        Ok(format!("{io}.r"))
     }
 
     /// The function that starts a task through a function of this type, written once: it
@@ -8232,6 +8468,29 @@ impl<'a> Emitter<'a> {
                 self.pre.extend(decls);
                 Ok(test)
             }
+            ExprKind::Binary(op @ (BinOp::And | BinOp::Or), left, right) if head && may_leave_or_wait(right) => {
+                // A right side that can leave the function or wait runs in an `if` of its own
+                // before the statement, after the left side, which owns nothing then: the way out
+                // and the place to come back to are statements there.
+                let post = self.post.len();
+                let left = self.first(left, head)?;
+                if self.post.len() != post {
+                    return Err(not_yet(right.span, &format!("`try` or `await` on the right of `{}` after a value that needs a temporary", op.symbol()))
+                        .hint("give the left side a name first"));
+                }
+                let temp = self.temp();
+                self.pre.push(format!("bool {temp} = {left};"));
+                let before = (self.pre.len(), self.post.len());
+                self.maybe += 1;
+                let right_value = self.first(right, true);
+                self.maybe -= 1;
+                let right_value = right_value?;
+                let pre: String = self.pre.drain(before.0..).map(|line| format!("{line} ")).collect();
+                let post: String = self.post.drain(before.1..).map(|line| format!(" {line}")).collect();
+                let test = if *op == BinOp::And { temp.clone() } else { format!("!{temp}") };
+                self.pre.push(format!("if ({test}) {{ {pre}{temp} = {right_value};{post} }}"));
+                Ok(temp)
+            }
             ExprKind::Binary(op @ (BinOp::And | BinOp::Or), left, right) => {
                 let left = self.first(left, head)?;
                 // The right side runs only sometimes, so it cannot need a line before the statement.
@@ -8552,7 +8811,7 @@ impl<'a> Emitter<'a> {
                     let (ctype, loc) = (self.ctype(&expr.ty, expr.span)?, self.loc(expr.span));
                     Ok(format!("(({ctype})sg_delay_task_new({ms}, {loc}))"))
                 }
-                Callee::IoAsync(_) | Callee::StreamAsync(_) => Err(not_yet(expr.span, "async input and output")),
+                Callee::IoAsync(_) | Callee::StreamAsync(_) => unreachable!("the checker has async input and output awaited where it is written"),
                 Callee::Cancel(CancelCall::After) => {
                     self.made.insert("tasks".to_string());
                     let ms = self.value_as(&args[0], &Ty::Int(IntTy::Int))?;

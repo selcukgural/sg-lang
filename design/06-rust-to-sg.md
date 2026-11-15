@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the sixty-first slice.
+Last brought up to date: 15 November 2026, the sixty-second slice.
 
 ## Functions and variables
 
@@ -205,9 +205,9 @@ Last brought up to date: 15 November 2026, the sixty-first slice.
 | `token.is_cancelled()` | `token.isCancelled()`, `try token.check()` | built | `check` gives `Error(Cancelled { })`, which `try` turns into `IoError.Cancelled(...)` |
 | `select! { _ = token.cancelled() => ..., _ = sleep(d) => ... }` | `await Task.delay(ms, read token)` | built | Gives `Error(Cancelled { })` when the token is cancelled first |
 | dropping a future to cancel it | none | not in SG | A task stops only where it looks at its token |
-| `tokio::fs::read_to_string(p).await` | `await File.readTextAsync(read path)` | interpreter | Each function of `File` that reads or writes a whole file has an `Async` version; a token may come last |
-| `reader.read_line(&mut line).await` | `await reader.readLineAsync(ref line)` | interpreter | Also `readTextAsync`, `readBytesAsync`, on `Stdin` too; streams opened and written the async way come later |
-| tokio, async-std, smol | one built-in runtime | built | A pool of threads, one for each core, and a clock for delays; only a program with tasks carries them. Input and output the async way runs on threads of its own, in compiled code next |
+| `tokio::fs::read_to_string(p).await` | `await File.readTextAsync(read path)` | built | Each function of `File` that reads or writes a whole file has an `Async` version; a token may come last. Compiled, the work runs on a thread of input and output, as tokio's `spawn_blocking` does it |
+| `reader.read_line(&mut line).await` | `await reader.readLineAsync(ref line)` | built | Also `readTextAsync`, `readBytesAsync`, on `Stdin` too; a line the block already holds is read in place, as tokio's `BufReader` does it; streams opened and written the async way come later |
+| tokio, async-std, smol | one built-in runtime | built | A pool of threads, one for each core, and a clock for delays; only a program with tasks carries them. Input and output the async way runs on threads of their own, started as they are needed (up to 512, as tokio's blocking threads) |
 
 ## Modules
 

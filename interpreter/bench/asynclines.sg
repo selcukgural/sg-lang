@@ -1,0 +1,25 @@
+// `lines` the async way: the same two million lines of a log, 125 MB, read with
+// `await Stdin.readLineAsync` in an async `main`. A line that the block of the input already
+// holds is read in place; only when the block is used up does a thread of input and output
+// fill it while the task waits. `run.sh` gives the input (`asynclines.in`, the input of
+// `lines`); the C is that of `lines`, which reads without waiting for anything.
+async Result<void, IoError> main() {
+    string line = ""
+    long lines = 0
+    long bytes = 0
+    long longest = 0
+    long errors = 0
+    while try await Stdin.readLineAsync(ref line) {
+        lines += 1
+        long length = line.length()
+        bytes += length
+        if length > longest {
+            longest = length
+        }
+        if line.startsWith("ERROR") {
+            errors += 1
+        }
+    }
+    print($"{lines} lines, {bytes} bytes, longest {longest}, {errors} errors")
+    return Ok()
+}

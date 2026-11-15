@@ -168,8 +168,8 @@ values that several tasks change (`shared locked T`, a `lock` block that cannot 
 interpreter and in compiled code, where a task is a thread of the system. Async functions in the way of
 C# (`async`, `await`, `Task.delay`, waiting the wrong way a compile error), cancellation tokens that a
 task looks at where it chooses, and async reading and writing of files and the input run in the
-interpreter; async functions, delays and cancellation are compiled too (an async function becomes a machine
-whose variables live in a frame, run by a pool of threads), and async input and output comes next. Generics of your
+interpreter and in compiled code, where an async function becomes a machine whose variables live in a
+frame, run by a pool of threads, and input and output the async way runs on threads of its own. Generics of your
 own are put off. There is nothing for the network yet, no standard library, no package manager and no
 editor support.
 

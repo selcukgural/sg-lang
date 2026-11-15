@@ -47,7 +47,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
-| Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, and on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`: the work of the function without `Async`, as a task, with a token that may come last (`read token`). A call given a borrow is awaited where it is written. In the interpreter the work is done when it is called; the token is looked at first. Not in compiled code yet |
+| Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, and on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`: the work of the function without `Async`, as a task, with a token that may come last (`read token`). A call given a borrow is awaited where it is written. In the interpreter the work is done when it is called; the token is looked at first. Compiled too: the work is done on a thread of input and output while the task waits, and a line the block of the input already holds is read in place |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -258,7 +258,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (231 of 948 programs for now; the others are programs the checker rejects, on purpose, or that use what it does not compile yet, such as async input and output). A
+memory behind (234 of 949 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -348,8 +348,9 @@ is a thread of the system with a stack of 8 MB, a `locked` value has a mutex in 
 (cancellation and async input and output, 403-416) were written in the checker and the interpreter; since
 the sixty-first, async functions, delays and cancellation are compiled too: an async function is a machine
 whose variables live in a frame, a task is one block with its frame inside, and a pool of threads, one
-for each core, runs the tasks that can go on (417-431). Async input and output is refused with "is not in
-the C back end yet" until the sixty-second. What is still missing is an error that names it (not silence): the few positions listed with the
+for each core, runs the tasks that can go on (417-431). Since the sixty-second, async input and output is
+compiled too: the work is done on threads of their own, started as they are needed, while the task waits,
+and a read the block of a reader can answer is done in place (432-441). What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
 Who frees memory: the checker has already decided who owns each value, and the back end follows it. An owned
@@ -396,6 +397,7 @@ hand with no checks):
 | `tree`: the design's folder tree, 111,111 `shared checked` folders that look at their parent with `weak`, each adding a size to every folder above it, built and freed twenty times | 0.095 s | 0.102 s | 0.062 s | 1.53 |
 | `tasks`: four tasks at a time over the numbers below 400,000, ten times; each adds up Collatz lengths and adds them to a `shared locked` total every 100 numbers | 0.115 s | 0.188 s | 0.115 s | 1.00 |
 | `async`: for each number below a million, an async function starts a task for one Collatz length and awaits another in place; nothing has to wait | 0.244 s | 0.372 s | 0.226 s | 1.08 |
+| `asynclines`: `lines` the async way, the two million lines read with `await Stdin.readLineAsync` in an async `main` (the C is that of `lines`) | 0.125 s | 0.125 s | 0.090 s | 1.37 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -3317,6 +3319,63 @@ compiled code), approved on 15 November 2026:
      231 of 948 programs, 24 of them under the thread sanitizer, and 13 of 17 programs of tests; on Linux
      too, in a container, with the same counts, where the clock waits on the monotonic clock in its own way.
 
+Choices made in the sixty-second slice (async, the fourth part: input and output the async way in compiled
+code), approved on 15 November 2026:
+
+432. **The work is done on a thread of input and output** (417): `await File.readTextAsync(read path)`
+     hands the work of `File.readText` to a thread that may block, which puts what it gives into the
+     task's frame, marks it done and wakes the task; the task holds no thread meanwhile. The work, its
+     arguments and the room for what it gives are one block in the frame (`sg_io_F`), in the room the other
+     awaits share, so nothing is allocated for it. Every async call of input and output is given a borrow
+     (a path, a reader), so the checker has it awaited where it is written (409), and that is the only way
+     it is compiled.
+433. **The token is looked at before the work**, chosen before the slice: a cancelled token gives
+     `Cancelled` at once and nothing is read or written, as in the interpreter (412). Work that has started
+     goes to its end, so a read of the input that waits for a line waits for it after a cancel too. Ending
+     such a wait needs the loop that waits for the network (the input and a pipe to wake it, waited for
+     together), which comes with the network.
+434. **The threads of input and output**, chosen before the slice: one is started when work is queued and
+     none is free, up to 512; above that the work waits in the queue, first in first out. A thread that has
+     had nothing to do for 10 seconds ends. These are the numbers of Tokio's threads for blocking work.
+     Each has the stack of 8 MB that every thread has (375), of which the system gives only the pages
+     used. A system that refuses a thread is a panic only when there is none; otherwise the work waits for
+     one that is there.
+435. **A read the block can answer is done in place**, chosen before the slice: a reader keeps a block of
+     64 KB, and `readLineAsync` when the block holds a whole line, `readBytesAsync` when it holds as many
+     bytes as asked, and any read after the end are done on the task's own thread, without waiting; only a
+     read that needs the system goes to a thread. When another task is reading the input at that moment,
+     the read goes to a thread too, since that task may be waiting for the system: the input is tried, not
+     waited for, on a thread of the pool. Tokio's `BufReader` works the same way. Measured in 439.
+436. **A task that waits for the input holds no thread of the pool**: here compiled code differs from the
+     interpreter on purpose (412). A test of compiled code alone shows it (`compiled_input_waits_alone`):
+     sixty-four tasks wait for a line each, more than the pool has threads, and a task that only waits for
+     a delay still runs; its line is looked for before any input is given.
+437. **`try` and `await` on the right of `&&` and `||`**: the right side, which runs only sometimes, is
+     written as an `if` of its own before the statement, after the left side, when it can leave the
+     function or wait. `while count < 2 && try await Stdin.readLineAsync(ref line)` in `ok_async_stdin` is
+     compiled now, and so is `text.length() > 0 && try int.parse(read text) < 10` in code that is not
+     async. Fewer positions are refused (81, 420): the right of `??`, and the right of `&&` and `||` after
+     a left side that made a value needing a temporary, where the hint is to give the left side a name.
+438. **The names in C** for a function of the glue `F` that an async call goes through: `sg_io_F` (the
+     block in the frame), `sg_io_of_F` and `sg_io_of_F_t` (the block made from the arguments, with a token
+     the second), `sg_io_go_F` (the token, the read in place, or the thread), `sg_io_run_F` (what the
+     thread does) and, for a reader, `F_n` (the read in place, which says whether the block was enough). The runtime is added only to a program that does input and output the async way.
+439. **Measured** (`bench/asynclines`): `lines` the async way, two million lines (125 MB) read with
+     `await Stdin.readLineAsync`: 0.125 s, against 0.091 s for `lines` without async and 0.090 s for C,
+     1.37 times; the checked build takes the same. Handing every read to a thread would take 7.6 s, 84
+     times (measured by turning the read in place off), so 435 is what makes reading the input this way
+     usable. Of the 0.035 s left, about 0.023 s is the trip to a thread and back for each block of 64 KB
+     (about 1,900 of them, measured by filling the block in place), and the rest is the lock of the input
+     and the variables kept in the frame; the read in place is one pass over the line (`sg_read_line_at`
+     with `now`: a line not whole in the block is left for the thread untouched). In "Slower than C".
+440. **The tests**: `ok_async_files` and `ok_async_stdin` are compiled now, and a new `ok_async_io_tasks`
+     (thirty-two tasks reading and writing files of their own at once, `try` and `await` on the right of
+     `&&` and `||`, the input read in place and on a thread, by lines, by bytes and the rest), with
+     `compiled_input_waits_alone` (436). Each runs under the thread sanitizer too, and the read in place
+     was checked once more by turning it off (439). `cargo test` compiles 234 of 949 programs, 27 of them
+     under the thread sanitizer, and 13 of 17 programs of tests; on Linux too, in a container, with the same
+     counts, where the threads of input and output wait on the monotonic clock in their own way.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -3357,6 +3416,11 @@ check off.
   still takes its allocation and the atomic steps of a task that might be woken from another thread.
   Candidates: a task that ends before it first waits could skip those steps, and its block could come
   from a list of freed ones.
+- **Reading the input the async way** (`asynclines`, 1.37 times C, choice 439): a line the block holds
+  is read in place, but each block of 64 KB is filled on a thread of input and output, and the task is
+  woken through the pool after it: about 12 µs a block, 0.023 s of the 0.035 s. Candidates: the thread
+  fills the next block while the task reads this one (reading ahead), a larger block for a reader read
+  the async way, and a task that goes on on the thread that woke it.
 - **Checking that a line is UTF-8** (`lines`, 1.08 times `getline`, which checks nothing; without the
   check the SG program takes 0.058 s against 0.090 s): the check looks at eight bytes at a time while they
   are ASCII and at one byte at a time from the first that is not (choice 202). Candidates: a check with
@@ -3386,9 +3450,9 @@ check off.
 - A list of tasks and waiting for several at once (`Task.whenAll`, `Task.whenAny`), channels; a method or a function of a struct
   started as a task (a `Func` is a function written at the top level). Of async: streams opened,
   written and closed the async way (`File.openTextAsync`, `writer.writeLineAsync`), an `async` method, an
-  async function kept as a `Func`, and async input and output in compiled code. In the interpreter, async input and
-  output is done when it is called, so a read of `Stdin` that waits for a line holds every task, and a token
-  cancelled meanwhile does not stop it (412). `checked` on its own, in a value with one
+  async function kept as a `Func`. In the interpreter, async input and output is done when it is called, so a
+  read of `Stdin` that waits for a line holds every task (412); compiled code does not. A token cancelled
+  while the work is under way does not stop it, in either (433). `checked` on its own, in a value with one
   owner (`checked int hits` in a plain struct, the design's `RefCell` outside `Rc`). `List<shared T>.clone()`,
   since a list has no `clone` yet, so the design's hint "loop over a copy" is not given. A conflict through two
   items of one list (`xs[i]` and `xs[j]`) is left to run time even when `i` and `j` are the same name.
@@ -3511,5 +3575,9 @@ Async functions, delays and cancellation are compiled too: an async function is 
 live in a frame, `await f()` runs `f` in a frame inside the caller's, and a task is one allocation that runs
 on the caller's thread until it first waits, then on a pool of threads, one for each core. Every such
 program gives the interpreter's output and runs clean under the thread sanitizer, and what async adds to a
-call that does not wait is 1.08 times the same calls in C. Next comes input and output the async way in
-compiled code, on threads of its own.
+call that does not wait is 1.08 times the same calls in C. Input and output the async way is compiled as
+well: the work is done on threads of input and output, started as they are needed, while the task waits,
+and a read that the block of a reader already holds is done in place, so reading the input line by line
+the async way takes 1.37 times the same program in C (without async, about the time of C). What comes next is open: the things
+listed under "Not here yet" for async (a list of tasks, waiting for several at once, streams written the
+async way), or the network, which brings the loop of epoll and kqueue.

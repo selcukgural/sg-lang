@@ -1,0 +1,72 @@
+// Async input and output from many tasks at once, and `try` and `await` on the right of `&&`
+// and `||`. Thirty-two tasks each write a file of their own, add to it and read it back while
+// the others do the same; the input is read in pieces: lines, then bytes, then the rest.
+
+// Writes `n` bytes and a `!` into the file and gives how long it is when read back.
+async Result<long, IoError> roundTrip(string path, int n) {
+    var text = "x".repeat(n)
+    try await File.writeTextAsync(read path, read text)
+    try await File.appendTextAsync(read path, "!")
+    var back = try await File.readTextAsync(read path)
+    return Ok(back.length())
+}
+
+// Two tasks below each step, the files at the bottom, all of them waiting at once.
+async Result<long, IoError> tree(string dir, int depth, int at) {
+    if depth == 0 {
+        return await roundTrip($"{dir}/file{at}.txt".toString(), at * 100)
+    }
+    var left = tree(dir.clone(), depth - 1, 2 * at)
+    var right = tree(dir.clone(), depth - 1, 2 * at + 1)
+    long sum = try await left
+    sum += try await right
+    return Ok(sum)
+}
+
+async bool exists(read string path) {
+    return await File.readTextAsync(read path) is Ok(_)
+}
+
+// `try` on the right of `&&` and `||`, in code that is not async.
+Result<bool, NumberError> small(read string text) {
+    return Ok(text.length() > 0 && try int.parse(read text) < 10)
+}
+
+Result<bool, NumberError> emptyOrSmall(read string text) {
+    return Ok(text.length() == 0 || try int.parse(read text) < 10)
+}
+
+async Result<void, IoError> main(List<string> args) {
+    var dir = args[0].clone()
+    print(try await tree(dir.clone(), 5, 0))
+
+    var path = $"{dir}/file3.txt".toString()
+    var missing = $"{dir}/missing.txt".toString()
+    print(await exists(read path) && await exists(read missing))
+    print(await exists(read missing) || await exists(read path))
+    print($"{small("7") ?? false} {small("12") ?? true} {small("") ?? true}")
+    if small("x") is Error(e) {
+        print($"x: {e}")
+    }
+    print($"{emptyOrSmall("") ?? false} {emptyOrSmall("12") ?? true}")
+    if emptyOrSmall("x") is Error(e) {
+        print($"x: {e}")
+    }
+
+    // The lines a block of the input already holds are read in place, the rest on a thread.
+    var line = ""
+    long lines = 0
+    long bytes = 0
+    while lines < 3000 && try await Stdin.readLineAsync(ref line) {
+        lines += 1
+        bytes += line.length()
+    }
+    print($"{lines} lines, {bytes} bytes")
+    var buffer = byte[16](0)
+    var got = try await Stdin.readBytesAsync(ref buffer)
+    print($"{got}: {string.fromUtf8(buffer[..got]) ?? "not text"}")
+    var rest = try await Stdin.readTextAsync()
+    print($"rest {rest.length()}")
+    print(try await Stdin.readLineAsync(ref line))
+    return Ok()
+}
