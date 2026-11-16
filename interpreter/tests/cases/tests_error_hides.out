@@ -1,0 +1,10 @@
+error: `count` is already a local variable of a block around this one, and a new name cannot hide it
+  a name means one thing in a function: SG does not let an inner block declare it again, as C# does not
+  --> tests_error_hides.sg:5:13
+ 5 |         var count = 2
+   |             ^^^^^
+  it is declared here:
+  --> tests_error_hides.sg:3:9
+ 3 |     var count = 1
+   |         ^^^^^
+  hint: give the new variable another name

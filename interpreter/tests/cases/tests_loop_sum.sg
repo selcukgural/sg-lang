@@ -129,18 +129,24 @@ test "a loop inside a loop" {
 }
 
 test "the loop's own variable is never a sum" {
-    long sum = 0
+    var ys = int[3] { 1, 2, 3 }
+    if ys.length() > 0 {
+        long sum = 0
+        for y in ys {
+            sum += y
+        }
+        assert(sum == 6)
+    }
+    // The `sum` above has ended; a loop's own variable of that name is not one to keep.
     var xs = List<int> { 1, 2, 3 }
     for sum in read xs {
         long seen = sum
         assert(seen > 0)
     }
-    var ys = int[3] { 1, 2, 3 }
     for sum in ys {
         sum += 10
         assert(sum > 10)
     }
-    assert(sum == 0)
 }
 
 test "a sum that overflows after the rounds without the test" {

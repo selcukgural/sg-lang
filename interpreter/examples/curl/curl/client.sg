@@ -280,15 +280,15 @@ public struct Client : Disposable {
         try succeeded(unsafe curl_easy_getinfo(this.handle, 2097154, ref status))
         raw byte kind = null
         try succeeded(unsafe curl_easy_getinfo(this.handle, 1048594, ref kind))
-        string? contentType = null
+        string? responseType = null
         if kind != null {
             if unsafe string.fromCString(kind) is Ok(text) {
-                contentType = text.clone()
+                responseType = text.clone()
             }
         }
         return Ok(Response {
             status = (int)status,
-            contentType = contentType,
+            contentType = responseType,
             headers = received.headers.replace(List<Header>()),
             body = received.body.replace(List<byte>())
         })

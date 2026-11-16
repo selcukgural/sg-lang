@@ -1,0 +1,10 @@
+error: `text` is already a parameter of `echo`, and a new name cannot hide it
+  a name means one thing in a function: SG does not let an inner block declare it again, as C# does not
+  --> error_hides_parameter.sg:4:9
+ 4 |     var text = text.toUpper()
+   |         ^^^^
+  it is declared here:
+  --> error_hides_parameter.sg:3:25
+ 3 | string echo(read string text) {
+   |                         ^^^^
+  hint: give the new variable another name

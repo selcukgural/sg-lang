@@ -1,0 +1,10 @@
+error: `total` is already a local variable of a block around this one, and a new name cannot hide it
+  a name means one thing in a function: SG does not let an inner block declare it again, as C# does not
+  --> error_hides_local.sg:7:13
+ 7 |         var total = x * 2
+   |             ^^^^^
+  it is declared here:
+  --> error_hides_local.sg:4:9
+ 4 |     var total = 0
+   |         ^^^^^
+  hint: give the new variable another name

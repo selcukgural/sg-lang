@@ -1,0 +1,11 @@
+// A name never hides another: the `total` inside would be a second variable, and the line after
+// the loop would print the first one, which never changed.
+void main() {
+    var total = 0
+    var xs = List<int> { 1, 2, 3 }
+    for x in read xs {
+        var total = x * 2
+        print(total)
+    }
+    print(total)
+}

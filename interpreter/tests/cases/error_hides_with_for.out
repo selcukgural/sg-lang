@@ -1,0 +1,10 @@
+error: `sum` is already a local variable of a block around this one, and a new name cannot hide it
+  a name means one thing in a function: SG does not let an inner block declare it again, as C# does not
+  --> error_hides_with_for.sg:5:9
+ 5 |     for sum in xs {
+   |         ^^^
+  it is declared here:
+  --> error_hides_with_for.sg:3:10
+ 3 |     long sum = 0
+   |          ^^^
+  hint: give the new variable another name

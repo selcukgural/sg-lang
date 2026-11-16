@@ -27,6 +27,7 @@ Last brought up to date: 17 November 2026, the ninety-first slice.
 | `std::env::args()` | `void main(List<string> args)` | built | The words after the program's name, checked to be UTF-8 |
 | `let x = 1;` | `var x = 1` | built | No `;` at the end of a line |
 | `let x: i64 = 1;` | `long x = 1` | built | |
+| `let x = x.trim();` (shadowing) | `var trimmed = x.trim()` | built | A new variable takes a new name: a name of a block around it that is still open, local or parameter, is a compile error, as in C#. Blocks side by side, and code after a block has ended, may use a name again |
 | `let mut x = 1;` | `var x = 1` | built | Every variable can be given a new value; a field can be `readonly` |
 | the `unused_variables` lint (a warning) | nothing to write | built | A local variable nothing reads is a compile error: `var x = 1` alone, a variable only written (`x += 1`, `p.x = 0` on a copy), the name of a `for` or of a pattern. A write through `ref`, `shared` or raw memory is a use; a parameter and a `Disposable` value are not looked at |
 | `let _guard = ...;` | `var guard = ...` | built | A variable of a `Disposable` type is kept for its end without being read; SG has no `_name` |

@@ -1,0 +1,11 @@
+// The rule holds in a test as it does in a function.
+test "a name hidden in a test" {
+    var count = 1
+    if count > 0 {
+        var count = 2
+        assert(count == 2)
+    }
+}
+
+void main() {
+}

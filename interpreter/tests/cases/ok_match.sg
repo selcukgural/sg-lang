@@ -86,12 +86,12 @@ void main() {
     print(describe(read Token.Plus))
     print(describe(read Token.End))
 
-    // The names of a pattern do not leak, and an outer name comes back after the block.
-    var v = 100
+    // The names of a pattern do not leak: after the block, `v` may name another variable.
     var token = Token.Number(1)
     if token is Number(v) {
         print(v)
     }
+    var v = 100
     print(v)
 
     var i = 0

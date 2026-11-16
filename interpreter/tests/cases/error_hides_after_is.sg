@@ -1,0 +1,12 @@
+// The names of an `is not` are seen after the `if`, in its block; they cannot take the name of
+// a local of a block around it either.
+void main() {
+    var n = 100
+    if n > 0 {
+        if int.parse("8") is not Ok(n) {
+            return
+        }
+        print(n)
+    }
+    print(n)
+}

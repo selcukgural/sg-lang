@@ -64,7 +64,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Atomic values | `atomic T` for an integer, `bool`, `float`, `double` or `raw T`, made with `atomic 0` and written anywhere a value is (a field, a local, a list, an array `atomic uint[4] { ... }`, raw memory as `Memory.allocate<atomic long>(n)` or `(raw atomic int)p`); tasks share one as `new shared atomic 0` or in a `shared` struct, since its methods work through `read` and `shared`. `count.load()`, `count.store(v)`, `count.exchange(v)`, `count.compareExchange(expected, desired)` and `compareExchangeWeak` (a `Result<T, T>`: `Ok` with the value it wrote over, `Error` with the one it found), `count.fetchAdd(n)` and `fetchSub` on numbers (the value before; overflow is a panic in a debug build and wraps in a release build, `wrappingFetchAdd` wraps in both), `fetchAnd`, `fetchOr`, `fetchXor` on integers and `bool`. Each is sequentially consistent unless an order follows the values, written as a variant: `count.load(MemoryOrder.Acquire)`, `count.compareExchange(a, b, MemoryOrder.AcquireRelease, MemoryOrder.Relaxed)`; an order the operation cannot keep is a compile error. `Atomic.fence(order)`, `Atomic.compilerFence(order)`, `Atomic.spinLoop()`. `struct Pool : unsafe Sendable` goes to another task with its raw pointers, as its writer promises. `examples/queue` is a queue without locks for many producers and many consumers, with no `unsafe` |
 | `volatile` | `unsafe Memory.readVolatile(regs[0].status)` and `unsafe Memory.writeVolatile(regs[0].control, 1)`: a place in raw memory read or written once, where it is written, for the registers of a device; it orders nothing between tasks |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
-| Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
+| Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place. A name never hides another: a new local, the name of a `for` or of a pattern with the name of a local or a parameter of a block around it is a compile error, as in C#; blocks side by side, and code after a block has ended, may use one name |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
 | Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x`. On integers `& \| ^ ~ << >>`; they bind tighter than a comparison, so `flags & mask == 0` tests the masked value |
 | Numbers | `42`, `0xde`, `0b1010`, and `_` between digits: `1_000_000`, `0xdead_beef` |
@@ -881,7 +881,7 @@ Approved on 12 November 2026.
 6. **A `this` method called through a `T*` uses the pointer up.**
 
 Smaller placeholders: a panic exits with code 1; a variable may shadow one from an outer block but not one in
-the same block.
+the same block (since the ninety-second slice it may not shadow one from an outer block either: 886).
 
 ## Rules from the fourth slice
 
@@ -2670,7 +2670,7 @@ checker, interpreter and back end), approved on 14 November 2026:
      are declared in the scope that holds it, from there to its end, as a `var` would be. A name already
      declared in that scope is an error that points at both (`var value = 0` and then `if r is not
      Ok(value)`), with the hint to name the pattern's value otherwise; in an inner block it hides the outer
-     one, as a `var` does. They stay borrows of the tested value, so changing or moving that value while
+     one, as a `var` does (since the ninety-second slice, an error there as well: 886). They stay borrows of the tested value, so changing or moving that value while
      they are used later is the usual error (267).
 297. **A value with no name stays until the block ends**: after `if fetch() is not Text(body) { return }`,
      `body` borrows from a value that has no name. That value now stays until the block around the `if`
@@ -6054,6 +6054,43 @@ a value of SG given to C as Rust gives a `Box<T>` (A) rather than as a `void*` t
      on Linux in a container 0.528 s against 0.530 s, 1.00 times. The test for `NULL` at each call does
      not show. On Linux the run of every measurement stops at `case`, whose output differs from that of C
      there, before it reaches `library`, which was run on its own.
+
+Choices made in the ninety-second slice (a name that hides another), a small slice of the checker alone,
+decided on 17 November 2026 during the ninety-first, with C#'s rule (CS0136) rather than Rust's shadowing.
+886 to 894 were decided before it and approved on 17 November 2026, with a name free again after its block
+has ended (A) rather than refused in the whole block as C# does (B):
+
+886. **Where the rule holds**: every new name of a function or a test, a local declared with `var` or a type,
+     the name of a `for`, of a `match` arm and of an `is`, the names of an `is not` seen after the `if` or
+     `while` too, may not take the name of a local variable or a parameter (`this` among them) of a block
+     around it that is still open. A local of the function's body with the name of a parameter is one: the
+     parameters are the scope around the body.
+887. **Side by side**: two loops `for i` one after the other, `Ok(value)` in two arms of one `match`, a
+     `var label` in both branches of an `if` are not errors; C# allows them too.
+888. **After a block has ended** (A): `var total = 0` after a loop whose body had a `total` is not an error,
+     since in SG a name's scope starts where it is declared and no line sees both. C# refuses it, its scope
+     being the whole block whatever comes first (B).
+889. **`_` is not a name**: `for _` inside `for _`, and `_` in patterns, take nothing.
+890. **Other names stay as they were**: a local may still have the name of a function, a type, a module or a
+     variable of C (which it hides, 724); `Stdin`, `Stdout`, `Stderr` and `this` stay names no local takes.
+891. **The error**: ``error: `text` is already a parameter of `echo`, and a new name cannot hide it`` (or "a
+     local variable of a block around this one"), pointing at both, with the note that a name means one
+     thing in a function, as in C#, and the hint to give the new variable another name. It is checked where
+     the name is declared, so it is found in its order among the others.
+892. **What it found in the repository**: the `bind` of the language's `UdpSocket` named the address it
+     found `address`, the name of its parameter (now `found`); `examples/curl` had the `contentType` of the
+     response hide the `contentType` of the request it was given (now `responseType`); a test of
+     `examples/shutdown` read the answer into `text`, the name of the text it sent (now `echoed`). Four
+     tests that showed the old shadowing (`ok_is_after`, `ok_match`, `ok_range_variable`, `tests_loop_sum`)
+     now show a name taken again after its block or side by side, with the same output.
+893. **The tests passed**: `error_hides_local`, `error_hides_parameter`, `error_hides_with_for`,
+     `error_hides_with_match_arm`, `error_hides_with_is`, `error_hides_after_is`, `tests_error_hides`, and
+     `ok_names_side_by_side` for 887 to 889, in the interpreter and compiled.
+     `cargo test` passes on macOS: 348 of 1417 programs compile through C, 77 of them under the thread
+     sanitizer, and 25 of 31 programs of tests. Linux was not run, since no compiled code changed.
+894. **Documents**: the row "A name that hides another" of the decisions, a part of the syntax draft, and a
+     row of the Rust mapping (`let x = x.trim()` becomes `var trimmed = x.trim()`). Nothing is measured: no
+     compiled code changes.
 
 ## Slower than C, and could be better
 

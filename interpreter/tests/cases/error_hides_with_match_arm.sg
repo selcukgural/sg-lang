@@ -1,0 +1,11 @@
+// The name in a `match` arm is a new variable: it cannot take the name of the parameter.
+int orZero(int value, Result<int, string> parsed) {
+    match parsed {
+        Ok(value) => return value
+        Error(_) => return 0
+    }
+}
+
+void main() {
+    print(orZero(1, Ok(2)))
+}

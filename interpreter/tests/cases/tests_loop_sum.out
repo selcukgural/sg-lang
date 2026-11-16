@@ -8,32 +8,32 @@ ok    the loop's own variable is never a sum
 9223372036854775562
 FAIL  a sum that overflows after the rounds without the test
 panic: overflow: 9223372036854775562 + 255 does not fit in long
-  --> tests_loop_sum.sg:151:9
- 151 |         sum += b
+  --> tests_loop_sum.sg:157:9
+ 157 |         sum += b
      |         ^^^^^^^^
   hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
 FAIL  a count at the top of int
 panic: overflow: 2147483647 + 1 does not fit in int
-  --> tests_loop_sum.sg:158:9
- 158 |         count += 1
+  --> tests_loop_sum.sg:164:9
+ 164 |         count += 1
      |         ^^^^^^^^^^
   hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
 FAIL  taking below zero
 panic: overflow: 90 - 255 does not fit in ulong
-  --> tests_loop_sum.sg:167:9
- 167 |         left -= b
+  --> tests_loop_sum.sg:173:9
+ 173 |         left -= b
      |         ^^^^^^^^^
   hint: `trySubtract` gives `null` instead, and `wrappingSubtract` wraps around
 FAIL  a short that overflows past its rounds
 panic: overflow: 32600 + 200 does not fit in short
-  --> tests_loop_sum.sg:176:9
- 176 |         small += b
+  --> tests_loop_sum.sg:182:9
+ 182 |         small += b
      |         ^^^^^^^^^^
   hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
 FAIL  a negative sum that overflows
 panic: overflow: -9223372036854775808 + -1 does not fit in long
-  --> tests_loop_sum.sg:185:9
- 185 |         sum += x
+  --> tests_loop_sum.sg:191:9
+ 191 |         sum += x
      |         ^^^^^^^^
   hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around
 5 of 11 test(s) failed

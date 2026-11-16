@@ -1,0 +1,10 @@
+error: `v` is already a local variable of a block around this one, and a new name cannot hide it
+  a name means one thing in a function: SG does not let an inner block declare it again, as C# does not
+  --> error_hides_with_is.sg:10:24
+ 10 |     if token is Number(v) {
+    |                        ^
+  it is declared here:
+  --> error_hides_with_is.sg:8:9
+ 8 |     var v = 100
+   |         ^
+  hint: give the new variable another name

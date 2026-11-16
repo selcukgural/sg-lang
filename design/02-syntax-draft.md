@@ -686,6 +686,27 @@ if r is Ok(_) { print("a number") }              // so is `Ok(n)` with `n` unuse
 
 A value given to a variable after its last read (`n = 2` at the end) is not looked at yet.
 
+A name means one thing in a function. A new local variable, the name of a `for` or of a pattern may not take the name of
+a local variable or a parameter of a block around it that is still open, as in C#; Rust's shadowing, which makes a
+second variable of the same name, is not there. Blocks side by side may use one name, and so may the code after a
+block has ended:
+
+```
+string echo(read string text) {
+    var text = text.toUpper()                    // error: `text` is already a parameter of `echo`
+    ...
+}
+var total = 0
+for x in read xs {
+    var total = x * 2                            // error: `total` is already a local variable of a block around this one
+}
+if r is Ok(total) { }                            // the same error for the name of a pattern
+for i in 0..2 { }
+for i in 5..7 { }                                // another `i`: the first one has ended
+if token is Number(v) { print(v) }
+var v = 100                                      // so has the `v` of the pattern
+```
+
 ### Construction
 
 `new` puts the value on the heap and gives a `T*`; it does not mean creating an object:

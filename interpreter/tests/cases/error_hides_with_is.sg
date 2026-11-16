@@ -1,0 +1,14 @@
+// The name of an `is` cannot take the name of a local around it.
+enum Token {
+    Number(int value)
+    Plus
+}
+
+void main() {
+    var v = 100
+    var token = Token.Number(1)
+    if token is Number(v) {
+        print(v)
+    }
+    print(v)
+}

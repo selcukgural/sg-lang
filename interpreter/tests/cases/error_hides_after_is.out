@@ -1,0 +1,10 @@
+error: `n` is already a local variable of a block around this one, and a new name cannot hide it
+  a name means one thing in a function: SG does not let an inner block declare it again, as C# does not
+  --> error_hides_after_is.sg:6:37
+ 6 |         if int.parse("8") is not Ok(n) {
+   |                                     ^
+  it is declared here:
+  --> error_hides_after_is.sg:4:9
+ 4 |     var n = 100
+   |         ^
+  hint: give the new variable another name

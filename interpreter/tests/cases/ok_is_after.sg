@@ -131,13 +131,13 @@ void main() {
         total += n
     }
     print(total)
-    // A name of an inner block may be one of the block around it.
-    var n = 100
     if total > 0 {
         if int.parse("8") is not Ok(n) {
             return
         }
         print(n)
     }
+    // The name ends with the block it was seen in, so the code after it may take it again.
+    var n = 100
     print(n)
 }

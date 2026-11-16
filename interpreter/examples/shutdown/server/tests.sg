@@ -15,8 +15,8 @@ async Result<string, IoError> roundTrip(ref TcpStream conn, read string text) {
         }
         got += n
     }
-    var text = string.fromUtf8(buffer[0..got]) ?? "not text"
-    return Ok(text.clone())
+    var echoed = string.fromUtf8(buffer[0..got]) ?? "not text"
+    return Ok(echoed.clone())
 }
 
 // A client that talks, has the signal sent in the middle, and talks on.

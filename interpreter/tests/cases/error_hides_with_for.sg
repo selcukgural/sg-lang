@@ -1,0 +1,9 @@
+// A loop's own variable cannot take the name of one still in scope.
+void main() {
+    long sum = 0
+    var xs = int[3] { 1, 2, 3 }
+    for sum in xs {
+        print(sum)
+    }
+    print(sum)
+}

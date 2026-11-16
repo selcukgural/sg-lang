@@ -1,0 +1,41 @@
+// One name may be used in blocks side by side, by loops one after another, by the arms of one
+// `match`, and after the block that held it has ended: it never means two things at one place.
+enum Shape {
+    Circle(int radius)
+    Square(int side)
+}
+
+int side(read Shape shape) {
+    match shape {
+        Circle(size) => return size * 2
+        Square(size) => return size
+    }
+}
+
+void main() {
+    for i in 0..2 {
+        print(i)
+    }
+    for i in 5..7 {
+        print(i)
+    }
+    if side(read Shape.Circle(3)) > 5 {
+        var label = "wide"
+        print(label)
+    } else {
+        var label = "narrow"
+        print(label)
+    }
+    for word in "a b".split(" ") {
+        var total = word.length()
+        print(total)
+    }
+    var total = 10
+    print(total)
+    for _ in 0..1 {
+        for _ in 0..1 {
+            print("inner")
+        }
+    }
+    print(side(read Shape.Square(4)))
+}

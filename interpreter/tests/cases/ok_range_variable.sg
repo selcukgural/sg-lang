@@ -8,11 +8,11 @@ void main() {
         print(i)
     }
     print(sum)
-    // A variable of the loop with the name of one before it is another variable.
+    // A loop after it may name its variable `i` again: the first `i` has ended.
     var ys = int[3] { 3, 4, 5 }
-    for sum in ys {
-        sum += 1
-        print(sum)
+    for i in ys {
+        i += 1
+        print(i)
     }
     print(sum)
 }

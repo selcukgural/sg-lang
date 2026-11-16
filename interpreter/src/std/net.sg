@@ -226,7 +226,7 @@ public struct UdpSocket : Disposable {
             at = SocketAddress { high = 0, low = 0x7f000001, v6 = false, number = port }
         } else if host.length() > 0 {
             match SocketAddress.numeric(host, port) {
-                Ok(address) => at = address
+                Ok(found) => at = found
                 Error(_) => return Error(IoError.HostNotFound)
             }
         }

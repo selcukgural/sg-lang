@@ -1,0 +1,10 @@
+// The local `text` would hide the parameter for the rest of the function: the request and the
+// answer would have one name.
+string echo(read string text) {
+    var text = text.toUpper()
+    return text
+}
+
+void main() {
+    print(echo("hi"))
+}

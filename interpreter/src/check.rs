@@ -2807,8 +2807,31 @@ impl<'a> Checker<'a> {
         if let Some(what) = std_stream(name) {
             return Err(Diag::error(span, format!("`{name}` is {what} of the program, so a variable cannot have its name")));
         }
+        self.not_hiding(name, span)?;
         self.seen.locals.insert(span.start, (name.to_string(), ty.clone(), span));
         self.declare(name, ty, span)
+    }
+
+    /// A name never hides another: a new local may not take the name of a local or a parameter
+    /// of a scope around it that is still open (C#'s rule, not Rust's shadowing). Blocks side by
+    /// side may use one name, and so may code after a block has ended. `_` is not a name.
+    fn not_hiding(&self, name: &str, span: Span) -> Res<()> {
+        if name == "_" {
+            return Ok(());
+        }
+        let outer = &self.scopes[..self.scopes.len() - 1];
+        let Some(var) = outer.iter().rev().find_map(|scope| scope.vars.iter().rev().find(|var| var.name == name)) else {
+            return Ok(());
+        };
+        let what = if var.param {
+            format!("a parameter of `{}`", self.func_name)
+        } else {
+            "a local variable of a block around this one".to_string()
+        };
+        Err(Diag::error(span, format!("`{name}` is already {what}, and a new name cannot hide it"))
+            .related(var.at, "it is declared here")
+            .note("a name means one thing in a function: SG does not let an inner block declare it again, as C# does not")
+            .hint("give the new variable another name"))
     }
 
     /// `Stdin`, `Stdout` and `Stderr`: every function and test has them, as `ref` parameters
