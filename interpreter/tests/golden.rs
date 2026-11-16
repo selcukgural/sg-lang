@@ -690,7 +690,7 @@ fn compiled_small_pools() {
     std::fs::create_dir_all(&work).unwrap();
     let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
     let mut failures = Vec::new();
-    for stem in ["ok_net_wakes_from_thread", "ok_net_echo", "ok_net_cancel", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel"] {
+    for stem in ["ok_net_wakes_from_thread", "ok_net_echo", "ok_net_cancel", "ok_net_slots", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel"] {
         let source = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.sg"))).unwrap();
         let expected = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.out"))).unwrap();
         let c_file = work.join(format!("{stem}.c"));

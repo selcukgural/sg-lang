@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 16 November 2026, the eighty-first slice.
+Last brought up to date: 16 November 2026, the eighty-second slice.
 
 ## Functions and variables
 
@@ -245,7 +245,7 @@ Last brought up to date: 16 November 2026, the eighty-first slice.
 | `writer.write_all(b).await`, `writer.flush().await` | `await writer.writeLineAsync(x)`, `writeAsync`, `writeBytesAsync`, `flushAsync()` | built | What the block of 64 KB can take is written in place, as tokio's `BufWriter` does; a full block goes out on a thread of input and output. On `Stdout` and `Stderr` too, in order with `print` |
 | `writer.shutdown().await` | `try await writer.closeAsync()` | built | Takes the writer; a local writer left open is a compile error (`Closable`), as without async |
 | a `BufWriter` dropped without `flush` (what it holds is lost) | a writer dropped in an async function | built | Written and closed on a thread of input and output, awaited where it is dropped: Rust has no async drop |
-| tokio, async-std, smol | one built-in runtime | built | A pool of threads, one for each core, and a clock for delays; only a program with tasks carries them. Input and output the async way runs on threads of their own, started as they are needed (up to 512, as tokio's blocking threads), and the network on epoll or kqueue, waited on by a thread of the pool that has nothing to do, one at a time, as tokio's driver; one idle thread at a time is woken to look for work, as in tokio. Not yet as tokio: a queue for each thread with stealing, and a socket put on the loop once |
+| tokio, async-std, smol | one built-in runtime | built | A pool of threads, one for each core, and a clock for delays; only a program with tasks carries them. Input and output the async way runs on threads of their own, started as they are needed (up to 512, as tokio's blocking threads), and the network on epoll or kqueue, waited on by a thread of the pool that has nothing to do, one at a time, as tokio's driver; one idle thread at a time is woken to look for work, as in tokio; a socket goes on the loop once, edge-triggered, and its tasks wait in its slot, as tokio's registration. Not yet as tokio: a queue for each thread with stealing |
 
 ## Modules
 

@@ -373,7 +373,8 @@ together: a list of tasks has a group that its tasks tell as they end (441-452).
 list and closed on a thread of input and output where the task awaits it (453-465). So was the
 sixty-fifth (the network: `TcpListener` and `TcpStream`, and a cancel that ends a wait for a socket or for
 the input): one thread waits for every socket a task waits for, with epoll or kqueue (466-479; since the
-eighty-first slice that thread is one of the pool, 667-677). So was the
+eighty-first slice that thread is one of the pool, 667-677, and since the eighty-second a socket goes on
+the loop once, 678-688). So was the
 sixty-sixth (lines over a connection): `conn.reader()` is a `StreamReader` that borrows the connection
 and keeps what has come in its block until a read can take all it needs, `send` goes through a `read`
 borrow, and `readSome` gives what is there (480-490). The sixty-seventh made no new feature: it checks the
@@ -437,7 +438,7 @@ hand with no checks):
 | `asynclines`: `lines` the async way, the two million lines read with `await Stdin.readLineAsync` in an async `main` (the C is that of `lines`) | 0.113 s | 0.114 s | 0.088 s | 1.28 |
 | `tasklist`: in each of 200,000 rounds, eight async tasks for Collatz lengths taken with `Task.whenAll` and eight with `Task.whenAny`; none has to wait (the C keeps each result in a block it allocates, in an array for the list) | 0.476 s | 0.689 s | 0.384 s | 1.24 |
 | `asynccopy`: `copy` the async way, the log read with `await reader.readLineAsync` and written with `await writer.writeLineAsync` in an async `main` (the C is that of `copy`) | 0.283 s | 0.284 s | 0.271 s | 1.04 |
-| `echo`: an echo server and eight clients in one async program over the loopback, each client sending 64 bytes and waiting for them to come back 20,000 times (the C blocks, with a thread for each connection and each client) | 1.373 s | 1.384 s | 1.135 s | 1.21 |
+| `echo`: an echo server and eight clients in one async program over the loopback, each client sending 64 bytes and waiting for them to come back 20,000 times (the C blocks, with a thread for each connection and each client) | 1.142 s | 1.174 s | 1.108 s | 1.03 |
 | `echosync`: `echo` without async, the server's connections and the clients on threads of `Task.run` (the C is that of `echo`) | 1.108 s | 1.118 s | 1.115 s | 0.99 |
 | `echowork`: `echo` with work in it, the server going through 300,000 steps of arithmetic for each message before it sends it back, and each client sending 300 (the C is that of `echo`, with the same work) | 0.376 s | 0.372 s | 0.369 s | 1.02 |
 | `netlines`: the two million lines of `lines` sent over the loopback by one task and read line by line by another with `await reader.readLineAsync(ref line)` (the C blocks, with `getline` from a `FILE` over the socket, which checks nothing) | 0.092 s | 0.089 s | 0.081 s | 1.14 |
@@ -3679,7 +3680,8 @@ on 15 November 2026:
      ends a wait sets `settled` last. A listener is waited for through a copy of its socket (`dup`), since
      several tasks may wait on one `shared` listener. The thread starts when the first async call has to
      wait. A host written as a number is not looked up; any other is looked up on a thread of input and
-     output, which a cancel leaves (the thread frees what it found).
+     output, which a cancel leaves (the thread frees what it found). Since the eighty-second slice a
+     socket goes on once, edge-triggered, its tasks wait in its slot, and there is no copy (678-683).
 476. **A socket blocks until an async call uses it**: a call without `Async` is then one call of the
      system, and an async call makes the socket non-blocking once; every call still waits with `poll` when
      its socket is not ready, so the two kinds of call can share a socket. Sockets that never blocked took
@@ -4898,7 +4900,8 @@ All were approved the same day:
 656. **Every method goes through a `read` borrow**, decided before the slice: a `shared` socket is used by
      several tasks at once, which UDP allows, since each message is whole. From the slice: an async call
      waits for the socket on the loop through a copy of its own (`dup`), as a listener is waited for, since
-     several tasks may wait for one socket.
+     several tasks may wait for one socket (since the eighty-second slice, in the slot of the socket, with
+     no copy, 681, and the socket stops blocking on its first async call, 689).
 657. **No `close`**, decided before the slice: a datagram is handed to the system whole, so nothing is left to
      lose; the socket is closed where it ends (it is `Disposable` inside the module), and `close()` is an
      error whose note says so, as for a `TcpStream`.
@@ -5017,6 +5020,67 @@ numbers from the slice; 676 and 677 come from the slice. All were approved the s
      reads the number from a variable of the environment (`TOKIO_WORKER_THREADS`) and Go from `GOMAXPROCS`;
      whether SG gets one is a question for later.
 
+Choices made in the eighty-second slice (a socket goes on the loop of the network once; compiled code
+alone). 678 to 688 were decided before it on 16 November 2026, with the numbers from the slice; 689 comes
+from the slice. All were approved the same day:
+
+678. **Where a socket is kept on the loop**: in a table by the number the system gave it, in blocks of 1,024
+     that never move, made as they are needed, so the loop reads a slot without a lock on the table. A
+     record of its own for each socket was the other way, as Tokio has: a `TcpStream` is a value that moves,
+     so its place in memory changes, a `UdpSocket` is a number in SG, and several tasks may hold one
+     listener; the number is the same for all three.
+679. **When it goes on**: the first time a task waits for it, for reading and writing at once, edge-triggered
+     (`EPOLLET` on Linux, `EV_CLEAR` with kqueue, which takes the two filters one at a time, since a pipe may
+     not have both). It stays on until it is closed. A socket only code without async uses never goes on, as
+     before.
+680. **A wait is no call of the system**: the loop writes into the slot what is ready and counts its events
+     (Tokio's tick), and wakes the tasks waiting there. A task tries the call first; when it finds the socket
+     not ready, it waits in the slot, unless the count changed while it tried, in which case it tries again.
+     Before, a socket was put on the loop again for each wait: one `epoll_ctl` or `kevent` each time, four
+     calls for a listener and a datagram socket (a copy made, put on, taken off, closed).
+681. **Several tasks may wait for one socket** (a `shared` listener or `UdpSocket`): readers and writers wait
+     on two lists in the slot, and an event wakes all of the list, as in Tokio; the one that finds something
+     takes it, the others wait again. The copy of the socket that each wait made (656) is gone.
+682. **A cancel**: the task is taken out of the slot under its lock and goes on at once. Whoever takes it
+     out, the loop or the cancel, wakes it, so it is woken once. The loop no longer has to be woken for a
+     cancel, nor hold the waits it ended until its round is over; the end of a program waited for the async
+     way (628) still is, since its event names the wait.
+683. **Closing**: the slot of a socket is let go of before the socket is closed, and its generation goes
+     up; an event carries the number and the generation, so one that comes for a closed socket after its
+     number went to another is dropped. Every way a socket is closed goes through that: a connection, a
+     listener, `UdpSocket.dispose` and the pipe of a program read the async way.
+684. **The locks**: 256 locks shared by the slots, chosen by the number, instead of one for each slot; a slot
+     keeps two numbers, two bits and two lists.
+685. **What stays**: the end of a program is waited for once, as before (`EPOLLONESHOT`, `EV_ONESHOT`), and
+     input and output on threads and the `poll` of code without async do not change.
+686. **Compiled code alone**: nothing a program writes or sees changes, nor the checker; the interpreter
+     runs every task on one thread and waits with `poll`, as before.
+687. **The tests**: `ok_net_slots`: three tasks wait to accept on one `shared` listener and four to receive
+     on one `shared` `UdpSocket`, one of which gives up and is cancelled while the other three wait on, and
+     twenty rounds close a connection and two datagram sockets and open new ones, which get the same numbers.
+     Without letting the slot go when a socket is closed (683) the rounds never end: the new socket is
+     taken to be on the loop already. It is in `compiled_small_pools` too, with a pool of one thread and of
+     two under the thread sanitizer. `cargo test` passes on macOS and on Linux in a container, where it
+     compiles 303 of 1234 programs, 63 of them under the thread sanitizer, and 15 of 20 programs of tests.
+688. **Measured** (`echo`): 1.142 s against 1.108 s for C, 1.03 times on macOS (1.174 s checked; 1.373 s,
+     1.23 times, before the slice, measured beside it); on Linux in a container 1.382 s against 0.078 s, 17.7 times,
+     as before (17.2). The calls of `epoll_ctl` went from 320,019 to 18 (counted with `strace`), but the
+     time on Linux is in the queue of the pool: the calls of `futex` the threads wake each other with,
+     about a million. That is the next slice. `udpecho`: 1.09 times C on macOS (1.158 s against 1.063 s), as
+     before, and from 1.54 to 1.16 on Linux (0.811 s against 0.697 s, after 689). The others take the time they took: `echowork`, `netlines`,
+     `pipesasync`, `asynccopy`, `echosync` and `udpechosync`, within the noise. Not measured: a
+     server with thousands of connections, where a wait with no call of the system counts most.
+689. **A datagram socket stops blocking on its first async call** (from the slice): an async call of a
+     `UdpSocket` used to try the socket with `MSG_DONTWAIT`, which leaves the socket blocking for the calls
+     without async. On macOS that flag gives `EAGAIN` while another thread is receiving from the socket,
+     though a datagram is there: the call does not wait for the other thread. With a socket put on the
+     loop once, nothing comes after to tell of that datagram, and in `ok_net_slots` two tasks waited for
+     ever with two datagrams in the socket, about one run in four. The same in C, without SG, does it too,
+     while one thread alone, a socket that does not block, or Linux never do. So the socket now stops
+     blocking the first time an async call uses it, as a `TcpStream` does (476), and the async calls go
+     without the flag. A call without async on such a socket still waits with `poll` when it is not ready,
+     which then costs a call of the system more; a socket only code without async uses blocks, as before.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -5068,20 +5132,18 @@ check off.
   it ends and once when it is taken. Candidates: no group for a list whose tasks had all ended when they
   were added (a count is enough), a group kept from a list that ended for the next one, and room for the
   tasks reserved at once when the list is filled in a loop.
-- **Waiting for the network the async way** (`echo`, 1.21 times C on macOS and 17 times on Linux in a
-  container, choices 478 and 674; 1.02 and 1.04 without async): since the eighty-first slice the thread
-  the system wakes for a socket runs the task, but every task that can run is still on one queue behind
-  one lock, so the threads of the pool hand tasks to each other through it, and a socket is put on the loop
-  again for each wait (a call of `epoll_ctl` or `kevent` each time). Tokio does neither: each thread has a
-  queue of its own that idle threads steal from, the task just woken runs next on the thread that woke it,
-  and a socket is put on the loop once and woken by its edges. Its echo takes 0.42 s on Linux and 0.97 s on
-  macOS, against 1.37 s on both for SG. The next two slices are those two: the socket put on the loop once,
-  then a queue for each thread. Most of the distance from C on Linux is the C's: blocking threads woken by
-  the system directly are cheap there (0.079 s), and Tokio is 5.5 times C too.
-- **Datagrams the async way** (`udpecho`, 1.11 times C on macOS and 1.49 on Linux, choices 664 and 674;
-  1.00 without async): what is left of `echo`, and a copy of the socket made (`dup`) and closed for each
-  wait, since several tasks may wait for one socket; waiting without it saved 3% on Linux. Candidates:
-  those of `echo`; a socket put on the loop once needs no copy.
+- **Waiting for the network the async way** (`echo`, 1.03 times C on macOS and 17.7 times on Linux in a
+  container, choices 478, 674 and 688; 1.02 and 1.04 without async): since the eighty-first slice the
+  thread the system wakes for a socket runs the task, and since the eighty-second a socket goes on the loop
+  once, but every task that can run is still on one queue behind one lock, so the threads of the pool hand
+  tasks to each other through it, about a million calls of `futex` on Linux. Tokio has a queue for each
+  thread that idle threads steal from, and the task just woken runs next on the thread that woke it. Its
+  echo takes 0.42 s on Linux and 0.97 s on macOS, against 1.38 s and 1.14 s for SG. The next slice is that
+  one. Most of the distance from C on Linux is the C's: blocking threads woken by the system directly are
+  cheap there (0.078 s), and Tokio is 5.5 times C too.
+- **Datagrams the async way** (`udpecho`, 1.09 times C on macOS and 1.16 on Linux, choices 664, 674 and
+  688; 1.00 without async): what is left of `echo`. The copy of the socket made for each wait is gone
+  since the eighty-second slice. Candidates: those of `echo`.
 - **Handing a buffer to C across calls** (`deflate`, 1.04 times C, choice 543): zlib reads its input
   between calls, and `buffer.pointer()` lasts only for one (523), so the `Deflater` copies each piece into
   raw memory a byte at a time, and copies what zlib wrote back the same way. Candidates: `Memory.copy`
@@ -5299,8 +5361,8 @@ log line by line the async way takes 1.04 times the same program in C. The netwo
 `TcpListener` takes connections and a `TcpStream` receives and sends bytes, without async and with it;
 compiled, a thread of the pool with nothing to do waits for every socket a task waits for, with epoll or
 kqueue, and a cancel ends a wait for a socket, or for a line of the input, at once. An echo server with
-eight clients takes 1.21 times the same program in C with blocking threads the async way, and the time of C
-without async; with work in each message, the time of C. A connection
+eight clients takes the time of the same program in C with blocking threads the async way on macOS (1.03
+times), and the time of C without async; with work in each message, the time of C. A connection
 is read line by line through a `StreamReader` of its own (`conn.reader()`), which borrows it while it
 goes on sending, and a line longer than 64 KB is an error; reading two million lines sent over the
 loopback takes 1.14 times `getline` in C, which does not check that they are text (0.89 times without the

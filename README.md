@@ -180,7 +180,7 @@ interpreter and in compiled code, where an async function becomes a machine whos
 frame, run by a pool of threads, and input and output the async way runs on threads of its own. TCP
 connections (`TcpListener`, `TcpStream`, with and without async) run in both too: compiled, a thread of
 the pool with nothing to do waits for every socket a task waits for, with epoll or kqueue, as Tokio's
-driver, and a cancel ends a wait for a socket or for a line of the input at once. A connection is read line by line through a `StreamReader` that borrows it
+driver, each socket put on the loop once, and a cancel ends a wait for a socket or for a line of the input at once. A connection is read line by line through a `StreamReader` that borrows it
 while it goes on sending, and a line longer than 64 KB is an error, not memory without end. Raw memory is
 there for what the checker cannot follow (`raw T`, `Memory.allocate<T>(n)`, `p[i]` inside `unsafe { }`):
 the interpreter checks every item against the block it came from, and compiled code checks nothing. C is

@@ -1,0 +1,103 @@
+// Several tasks wait for one socket at once, and each is woken: a `shared` listener and a `shared`
+// `UdpSocket`. A cancel takes one waiting task out while the others go on waiting for the same
+// socket. Sockets closed and opened again, which the system gives the numbers of the last ones,
+// are waited for afresh.
+async Result<nint, IoError> take(shared TcpListener listener) {
+    var conn = try await listener.acceptAsync()
+    var buffer = byte[16](0)
+    var n = try await conn.receiveAsync(ref buffer)
+    return Ok(n)
+}
+
+async Result<nint, IoError> hear(shared UdpSocket socket) {
+    var buffer = byte[64]
+    var got = try await socket.receiveFromAsync(ref buffer)
+    return Ok(got.count)
+}
+
+async Result<string, IoError> giveUp(shared UdpSocket socket) {
+    var buffer = byte[64]
+    var soon = CancellationSource.after(20)
+    var said = "received"
+    match await socket.receiveFromAsync(ref buffer, read soon.token()) {
+        Ok(_) => said = "received"
+        Error(cause) => said = $"receiveFrom: {cause}".toString()
+    }
+    return Ok(said)
+}
+
+async Result<void, IoError> later(TcpStream conn, int round) {
+    await Task.delay(2)
+    try await conn.sendAsync($"round {round}".toString().asBytes())
+    return Ok()
+}
+
+async Result<void, IoError> laterTo(UdpSocket from, SocketAddress to, int round) {
+    await Task.delay(2)
+    try await from.sendToAsync($"datagram {round}".toString().asBytes(), to)
+    return Ok()
+}
+
+async Result<void, IoError> main() {
+    // Three tasks wait to accept on one listener; three connections come.
+    var listener = new shared (try TcpListener.bind("127.0.0.1:0"))
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var takers = List<Task<Result<nint, IoError>>>()
+    for _ in 0..3 {
+        takers.add(take(share listener))
+    }
+    await Task.delay(20)
+    var clients = List<TcpStream>()
+    for i in 0..3 {
+        var client = try await TcpStream.connectAsync(read address)
+        try await client.sendAsync("seventeen"[..3 * i + 3].asBytes())
+        clients.add(client)
+    }
+    nint taken = 0
+    while takers.length() > 0 {
+        taken += try await Task.whenAny(ref takers)
+    }
+    print($"{taken} bytes taken by three tasks")
+
+    // Four tasks wait to receive on one socket; one gives up, and three datagrams come.
+    var server = new shared (try UdpSocket.bind("127.0.0.1:0"))
+    var to = server.localAddress()
+    var hearers = List<Task<Result<nint, IoError>>>()
+    for _ in 0..3 {
+        hearers.add(hear(share server))
+    }
+    var quitter = giveUp(share server)
+    print(try await quitter)
+    var client = try UdpSocket.bind("127.0.0.1:0")
+    for i in 1..4 {
+        try await client.sendToAsync("ccc"[..i].asBytes(), to)
+    }
+    nint heard = 0
+    while hearers.length() > 0 {
+        heard += try await Task.whenAny(ref hearers)
+    }
+    print($"{heard} bytes heard by three tasks")
+
+    // Each round closes its sockets, and the next round's are given the same numbers.
+    var again = try TcpListener.bind("127.0.0.1:0")
+    var at = $"127.0.0.1:{again.port()}".toString()
+    var buffer = byte[32](0)
+    var rounds = 0
+    for round in 0..20 {
+        var near = try await TcpStream.connectAsync(read at)
+        var far = try await again.acceptAsync()
+        var sending = later(far, round)
+        var n = try await near.receiveAsync(ref buffer)
+        try await sending
+        var quiet = try UdpSocket.bind("127.0.0.1:0")
+        var loud = try UdpSocket.bind("127.0.0.1:0")
+        var datagram = laterTo(loud, quiet.localAddress(), round)
+        var got = try await quiet.receiveFromAsync(ref buffer[n..])
+        try await datagram
+        if (string.fromUtf8(buffer[..n + got.count]) ?? "") == $"round {round}datagram {round}".toString() {
+            rounds += 1
+        }
+    }
+    print($"{rounds} rounds")
+    return Ok()
+}

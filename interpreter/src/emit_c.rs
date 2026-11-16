@@ -25,7 +25,7 @@
 //! `await`, `Task.delay`, cancellation and lists of tasks with `Task.whenAll` and `Task.whenAny` (see
 //! `TASK_RUNTIME`), input and output the async way (see `ASYNC_IO_RUNTIME`), and the network,
 //! `TcpListener` and `TcpStream`, without async (see `NET_RUNTIME`) and with it, on a loop of epoll or
-//! kqueue (see `NET_ASYNC_RUNTIME`), and the reader of a connection, a `StreamReader` that borrows it
+//! kqueue that each socket goes on once (see `NET_ASYNC_RUNTIME`), and the reader of a connection, a `StreamReader` that borrows it
 //! (see `sg_reader` in `IO_RUNTIME`), and raw memory: a `raw T` is a `T*`, an item of it is reached
 //! where it is with nothing checked, and `Memory.allocate` is `calloc` behind the tests of its count
 //! (see `RAW_RUNTIME`), and the functions of C an `extern` block declares, called directly through an
@@ -2389,13 +2389,21 @@ const NET_RUNTIME: &str = r#"
 /* A listener and a connection are a socket of the system, -1 once moved or closed. A socket
    blocks until an async call first uses it (`nb`), so a call of code that is not async is one
    call of the system; every call still waits with `poll` when the socket is not ready, so the
-   two kinds of call can share a socket. `armed`: the socket is on the loop of the network (see
-   `NET_ASYNC_RUNTIME`). Several tasks may hold one listener (`shared`), so its `nb` is atomic. */
+   two kinds of call can share a socket. Several tasks may hold one listener (`shared`), so its
+   `nb` is atomic. */
 typedef struct { int fd; int nb; } sg_listener;
-typedef struct sg_socket_s { int fd; bool armed; bool nb; } sg_socket;
-static inline void sg_drop_listener(sg_listener* l) { if (l->fd >= 0) close(l->fd); l->fd = -1; }
+typedef struct sg_socket_s { int fd; bool nb; } sg_socket;
+/* A socket that may be on the loop of the network is closed: the loop lets go of it first (see
+   `sg_slot_forget`), once a task has opened the loop. */
+static void (*sg_net_forget)(int) = NULL;
+static inline void sg_net_close(int fd) {
+    void (*forget)(int) = __atomic_load_n(&sg_net_forget, __ATOMIC_ACQUIRE);
+    if (forget) forget(fd);
+    close(fd);
+}
+static inline void sg_drop_listener(sg_listener* l) { if (l->fd >= 0) sg_net_close(l->fd); l->fd = -1; }
 static inline sg_listener sg_move_listener(sg_listener* l) { sg_listener out = *l; l->fd = -1; return out; }
-static inline void sg_drop_socket(sg_socket* s) { if (s->fd >= 0) close(s->fd); s->fd = -1; }
+static inline void sg_drop_socket(sg_socket* s) { if (s->fd >= 0) sg_net_close(s->fd); s->fd = -1; }
 static inline sg_socket sg_move_socket(sg_socket* s) { sg_socket out = *s; s->fd = -1; return out; }
 /* A socket that is not handed to programs this one starts, gives an error instead of a signal
    when the other side has gone, and does not block if `nb`. */
@@ -2538,7 +2546,7 @@ static int sg_net_accept(const sg_listener* l, sg_socket* out) {
     for (;;) {
         int fd;
         int code = sg_net_accept_now(l->fd, &fd, false);
-        if (!code) { *out = (sg_socket){ fd, false, false }; return 0; }
+        if (!code) { *out = (sg_socket){ fd, false }; return 0; }
         if (sg_net_again(code, true)) continue;
         if (code != EAGAIN) return code;
         if ((code = sg_net_poll(l->fd, false))) return code;
@@ -2614,7 +2622,7 @@ static int sg_net_connect(sg_str address, sg_socket* out) {
         }
         if (!code) {
             freeaddrinfo(list);
-            *out = (sg_socket){ fd, false, false };
+            *out = (sg_socket){ fd, false };
             return 0;
         }
         if (fd >= 0) close(fd);
@@ -2623,9 +2631,9 @@ static int sg_net_connect(sg_str address, sg_socket* out) {
     return code;
 }
 /* A datagram socket of `UdpSocket` is a number of the system, as the language's own module keeps
-   it. It blocks, so a call that is not async is one call of the system; an async call never waits
-   in the system (`MSG_DONTWAIT`) and waits on the loop instead, so the two kinds of call share a
-   socket. An address comes as the module gives it: whether it is v6, the high and the low 64 bits
+   it. It blocks until an async call first uses it (see `sg_udp_nonblock`), so a call that is not
+   async is one call of the system; every call still waits with `poll` when the socket is not
+   ready, so the two kinds of call share a socket. An address comes as the module gives it: whether it is v6, the high and the low 64 bits
    of the host (a v4 host is the last 32 of `low`), and the port. */
 static inline socklen_t sg_udp_at(bool v6, uint64_t high, uint64_t low, int32_t port, struct sockaddr_storage* at) {
     memset(at, 0, sizeof *at);
@@ -2841,9 +2849,11 @@ static bool sg_udp_lookup_ready(sg_io_lookup* x) {
 "#;
 
 /// The network for async tasks: a thread of the pool that has nothing to do waits for every
-/// socket a task waits for, with epoll (Linux) or kqueue, and wakes the task when it is ready; a cancel takes the socket off and
-/// wakes the task through the loop, once the loop is done with the events it holds. A name is
-/// looked up on a thread of input and output, which a cancel leaves. After `ASYNC_IO_RUNTIME`.
+/// socket a task waits for, with epoll (Linux) or kqueue, and wakes the task when it is ready.
+/// A socket goes on the loop once, the first time a task waits for it, and a wait after is no
+/// call of the system: the loop writes what is ready into the slot of the socket, where its tasks
+/// wait. A cancel takes the task out of the slot and wakes it. A name is looked up on a thread of
+/// input and output, which a cancel leaves. After `ASYNC_IO_RUNTIME`.
 const NET_ASYNC_RUNTIME: &str = r#"
 #if defined(__linux__)
 #include <sys/epoll.h>
@@ -2854,9 +2864,134 @@ static pthread_mutex_t sg_loop_lock = PTHREAD_MUTEX_INITIALIZER;
 static int sg_loop_open_now = 0;
 static int sg_loop = -1;
 static int sg_loop_pipe[2];
+/* The waits for the end of a program that a cancel ended (see `sg_proc_cut`). */
 static sg_wait* sg_loop_cut = NULL;
-/* The socket is ready: the task goes on, unless a cancel ended the wait first. */
+/* The sockets on the loop, by their number. A socket goes on the loop once, for reading and
+   writing, edge-triggered (`EPOLLET`, kqueue's `EV_CLEAR`), the first time a task waits for it,
+   and stays on until it is closed. The loop writes what is ready into its slot (`ready`, and
+   `tick` one up) and wakes the tasks that wait there; a task that finds the socket not ready
+   waits in the slot, with no call of the system. `gen` goes up when the socket is closed, and an
+   event names the number and `gen`, so one that comes after is let go of. The slots are in blocks
+   that never move, and a slot is looked at under the lock of its number (`sg_slot_locks`). */
+#define SG_SLOT_BLOCK 1024
+#define SG_SLOT_BLOCKS 16384
+#define SG_SLOT_LOCKS 256
+/* The socket became ready while the task tried it: the call is tried again. */
+#define SG_AGAIN (-7)
+typedef struct {
+    uint32_t gen;
+    uint32_t tick;
+    uint8_t on;
+    uint8_t ready;
+    /* A datagram socket that no longer blocks (see `sg_udp_nonblock`). */
+    uint8_t nb;
+    sg_wait* waits[2];
+} sg_slot;
+static sg_slot* sg_slots[SG_SLOT_BLOCKS];
+static pthread_mutex_t sg_slot_locks[SG_SLOT_LOCKS];
+static inline pthread_mutex_t* sg_slot_lock(int fd) { return &sg_slot_locks[fd & (SG_SLOT_LOCKS - 1)]; }
+/* The slot of socket `fd`, NULL when its block is not made yet. */
+static inline sg_slot* sg_slot_at(int fd) {
+    if (fd < 0 || fd >= SG_SLOT_BLOCK * SG_SLOT_BLOCKS) return NULL;
+    sg_slot* block = __atomic_load_n(&sg_slots[fd / SG_SLOT_BLOCK], __ATOMIC_ACQUIRE);
+    return block ? &block[fd % SG_SLOT_BLOCK] : NULL;
+}
+/* How many times the loop has seen socket `fd` ready: read before a call of the system tries
+   the socket, and given to `sg_wait_start` when the call finds it not ready. */
+static inline uint32_t sg_slot_tick(int fd) {
+    sg_slot* s = sg_slot_at(fd);
+    return s ? __atomic_load_n(&s->tick, __ATOMIC_ACQUIRE) : 0;
+}
+static sg_slot* sg_slot_make(int fd) {
+    sg_slot* s = sg_slot_at(fd);
+    if (s || fd < 0 || fd >= SG_SLOT_BLOCK * SG_SLOT_BLOCKS) return s;
+    pthread_mutex_lock(&sg_loop_lock);
+    sg_slot* block = __atomic_load_n(&sg_slots[fd / SG_SLOT_BLOCK], __ATOMIC_RELAXED);
+    if (!block) {
+        block = calloc(SG_SLOT_BLOCK, sizeof *block);
+        if (!block) abort();
+        __atomic_store_n(&sg_slots[fd / SG_SLOT_BLOCK], block, __ATOMIC_RELEASE);
+    }
+    pthread_mutex_unlock(&sg_loop_lock);
+    return &block[fd % SG_SLOT_BLOCK];
+}
+/* Socket `fd` is closed (see `sg_net_close`): its slot is let go of first, so a socket that then
+   gets its number goes on the loop afresh. No task waits for it: its owner is closing it. */
+static void sg_slot_forget(int fd) {
+    sg_slot* s = sg_slot_at(fd);
+    if (!s) return;
+    pthread_mutex_t* m = sg_slot_lock(fd);
+    pthread_mutex_lock(m);
+    s->gen++;
+    s->on = 0;
+    s->ready = 0;
+    __atomic_store_n(&s->nb, 0, __ATOMIC_RELAXED);
+    pthread_mutex_unlock(m);
+}
+/* A datagram socket stops blocking the first time an async call uses it, as a connection does,
+   and the async calls try it without `MSG_DONTWAIT`: macOS gives `EAGAIN` to that flag while
+   another thread is receiving from the socket or sending through it, though a datagram is
+   there, and the edge that told of it has been taken already. Without the flag the call waits
+   for the other thread, and `EAGAIN` means the socket is not ready. */
+static inline void sg_udp_nonblock(int fd) {
+    sg_slot* s = sg_slot_make(fd);
+    if (s && !__atomic_load_n(&s->nb, __ATOMIC_ACQUIRE)) {
+        sg_net_nonblock(fd);
+        __atomic_store_n(&s->nb, 1, __ATOMIC_RELEASE);
+    }
+}
+/* The socket is ready, and the wait was taken out of its slot: the task goes on. A cancel that
+   came after found it out of the slot and left it to be woken here, cancelled. */
 static void sg_wait_ready(sg_wait* w) {
+    sg_task* job = w->d.job;
+    if (w->told) {
+        pthread_mutex_lock(&sg_clock_lock);
+        if (w->d.state == SG_WAITING) {
+            sg_wait_unlink(w);
+            __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
+        }
+        pthread_mutex_unlock(&sg_clock_lock);
+    } else {
+        __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
+    }
+    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    sg_wake(job);
+}
+/* An event of the loop for socket `fd` (`bits`: 1 it can be read, 2 written): what is ready goes
+   into its slot, and the tasks that wait for it there are woken. */
+static void sg_slot_event(uint64_t tag, int bits) {
+    int fd = (int)((uint32_t)tag >> 1);
+    sg_slot* s = sg_slot_at(fd);
+    if (!s || !bits) return;
+    pthread_mutex_t* m = sg_slot_lock(fd);
+    pthread_mutex_lock(m);
+    sg_wait* woken = NULL;
+    if (s->gen == (uint32_t)(tag >> 32)) {
+        s->ready |= (uint8_t)bits;
+        __atomic_store_n(&s->tick, s->tick + 1, __ATOMIC_RELEASE);
+        for (int i = 0; i < 2; i++) {
+            if (!(bits & (1 << i))) continue;
+            sg_wait* w = s->waits[i];
+            s->waits[i] = NULL;
+            while (w) {
+                sg_wait* next = w->after;
+                w->listed = false;
+                w->after = woken;
+                woken = w;
+                w = next;
+            }
+        }
+    }
+    pthread_mutex_unlock(m);
+    /* A task woken may end its wait at once: the next is read first. */
+    while (woken) {
+        sg_wait* next = woken->after;
+        sg_wait_ready(woken);
+        woken = next;
+    }
+}
+/* The end of a program is ready: the task goes on, unless a cancel ended the wait first. */
+static void sg_proc_ready(sg_wait* w) {
     (void)__atomic_load_n(&w->posted, __ATOMIC_ACQUIRE);
     sg_task* job = w->d.job;
     if (w->told) {
@@ -2876,8 +3011,10 @@ static void sg_wait_ready(sg_wait* w) {
     sg_wake(job);
 }
 /* One round of the loop, on the thread of the pool that waits on it (see `TASK_RUNTIME`): it
-   sleeps until a socket is ready or the pipe is written, and wakes the tasks. One thread at a
-   time does, so the waits a cancel ended are let go of after the events that could name them. */
+   sleeps until a socket is ready or the pipe is written, and wakes the tasks. An event names a
+   socket (an odd tag: its number and `gen`), the end of a program (the wait itself, see
+   `PROCESS_ASYNC_RUNTIME`), or the pipe (0). One thread at a time waits on the loop, so the waits
+   for a program that a cancel ended are let go of after the events that could name them. */
 static void sg_loop_round(void) {
 #if defined(__linux__)
     struct epoll_event events[64];
@@ -2892,16 +3029,21 @@ static void sg_loop_round(void) {
     }
     for (int i = 0; i < n; i++) {
 #if defined(__linux__)
-        void* p = events[i].data.ptr;
+        uint64_t tag = events[i].data.u64;
+        uint32_t ev = events[i].events;
+        int bits = ((ev & (EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR)) ? 1 : 0) | ((ev & (EPOLLOUT | EPOLLHUP | EPOLLERR)) ? 2 : 0);
 #else
-        void* p = events[i].udata;
+        uint64_t tag = (uint64_t)(uintptr_t)events[i].udata;
+        int bits = events[i].filter == EVFILT_READ ? 1 : events[i].filter == EVFILT_WRITE ? 2 : 0;
 #endif
-        if (!p) {
+        if (tag & 1) {
+            sg_slot_event(tag, bits);
+        } else if (tag) {
+            sg_proc_ready((sg_wait*)(uintptr_t)tag);
+        } else {
             char drained[64];
             while (read(sg_loop_pipe[0], drained, sizeof drained) > 0) {}
-            continue;
         }
-        sg_wait_ready((sg_wait*)p);
     }
     /* The waits a cancel ended: the events above were the last that could name them. */
     pthread_mutex_lock(&sg_loop_lock);
@@ -2916,8 +3058,8 @@ static void sg_loop_round(void) {
         w = next;
     }
 }
-/* The thread waiting on the loop is woken: a cancel, or a task that a thread outside the pool
-   woke while every thread of the pool was busy. */
+/* The thread waiting on the loop is woken: a cancel of a wait for a program, or a task that a
+   thread outside the pool woke while every thread of the pool was busy. */
 static void sg_loop_kick(void) {
     char one = 1;
     while (write(sg_loop_pipe[1], &one, 1) < 0 && errno == EINTR) {}
@@ -2936,8 +3078,9 @@ static void sg_loop_open(const char* loc) {
             fcntl(sg_loop_pipe[i], F_SETFL, fcntl(sg_loop_pipe[i], F_GETFL) | O_NONBLOCK);
             fcntl(sg_loop_pipe[i], F_SETFD, FD_CLOEXEC);
         }
+        for (int i = 0; i < SG_SLOT_LOCKS; i++) pthread_mutex_init(&sg_slot_locks[i], NULL);
 #if defined(__linux__)
-        struct epoll_event e = { .events = EPOLLIN, .data.ptr = NULL };
+        struct epoll_event e = { .events = EPOLLIN, .data.u64 = 0 };
         epoll_ctl(sg_loop, EPOLL_CTL_ADD, sg_loop_pipe[0], &e);
 #else
         fcntl(sg_loop, F_SETFD, FD_CLOEXEC);
@@ -2945,95 +3088,89 @@ static void sg_loop_open(const char* loc) {
         EV_SET(&k, sg_loop_pipe[0], EVFILT_READ, EV_ADD, 0, 0, NULL);
         kevent(sg_loop, &k, 1, NULL, 0, NULL);
 #endif
+        __atomic_store_n(&sg_net_forget, sg_slot_forget, __ATOMIC_RELEASE);
         sg_pool_drive(sg_loop_round, sg_loop_kick, loc);
         __atomic_store_n(&sg_loop_open_now, 1, __ATOMIC_RELEASE);
     }
     pthread_mutex_unlock(&sg_loop_lock);
 }
-/* The socket goes on the loop until it is ready, once. */
-static int sg_loop_arm(sg_wait* w, bool* armed) {
+/* Socket `fd` goes on the loop for `bit` (1 reading, 2 writing), under the lock of its slot: both
+   at once on Linux; one filter at a time with kqueue, which a pipe may not have both of. */
+static int sg_slot_arm(int fd, sg_slot* s, int bit) {
+    uint64_t tag = ((uint64_t)s->gen << 32) | ((uint64_t)(uint32_t)fd << 1) | 1;
 #if defined(__linux__)
-    struct epoll_event e = { .events = (w->write ? EPOLLOUT : EPOLLIN) | EPOLLONESHOT, .data.ptr = w };
-    if (armed && *armed) {
-        if (epoll_ctl(sg_loop, EPOLL_CTL_MOD, w->on.fd, &e) == 0) return 0;
-        if (errno != ENOENT) return sg_os_error();
-    }
-    if (epoll_ctl(sg_loop, EPOLL_CTL_ADD, w->on.fd, &e) != 0) return sg_os_error();
-    if (armed) *armed = true;
+    (void)bit;
+    struct epoll_event e = { .events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET, .data.u64 = tag };
+    if (epoll_ctl(sg_loop, EPOLL_CTL_ADD, fd, &e) != 0 && (errno != EEXIST || epoll_ctl(sg_loop, EPOLL_CTL_MOD, fd, &e) != 0)) return sg_os_error();
+    s->on = 3;
+#else
+    struct kevent k;
+    EV_SET(&k, fd, bit == 1 ? EVFILT_READ : EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, (void*)(uintptr_t)tag);
+    if (kevent(sg_loop, &k, 1, NULL, 0, NULL) != 0) return sg_os_error();
+    s->on |= (uint8_t)bit;
+#endif
     return 0;
-#else
-    (void)armed;
-    struct kevent k;
-    if (w->proc) EV_SET(&k, w->on.fd, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, w);
-    else EV_SET(&k, w->on.fd, w->write ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, w);
-    return kevent(sg_loop, &k, 1, NULL, 0, NULL) == 0 ? 0 : sg_os_error();
-#endif
 }
-static void sg_loop_disarm(sg_wait* w) {
-#if defined(__linux__)
-    epoll_ctl(sg_loop, EPOLL_CTL_DEL, w->on.fd, NULL);
-#else
-    struct kevent k;
-    EV_SET(&k, w->on.fd, w->proc ? EVFILT_PROC : w->write ? EVFILT_WRITE : EVFILT_READ, EV_DELETE, 0, 0, NULL);
-    kevent(sg_loop, &k, 1, NULL, 0, NULL);
-#endif
-}
-/* A cancel, under the clock's lock: the socket comes off the loop, and the loop wakes the task. */
+/* A cancel, under the clock's lock: a task still in the slot is taken out and goes on. One the
+   loop took out already is woken by the loop. */
 static void sg_wait_cut(sg_delay* d) {
     sg_wait* w = (sg_wait*)d;
-    sg_loop_disarm(w);
-    pthread_mutex_lock(&sg_loop_lock);
-    w->cut = sg_loop_cut;
-    sg_loop_cut = w;
-    pthread_mutex_unlock(&sg_loop_lock);
-    sg_loop_kick();
+    pthread_mutex_t* m = sg_slot_lock(w->on.fd);
+    pthread_mutex_lock(m);
+    bool mine = w->listed;
+    if (mine) {
+        sg_wait** at = &sg_slot_at(w->on.fd)->waits[w->write ? 1 : 0];
+        while (*at != w) at = &(*at)->after;
+        *at = w->after;
+        w->listed = false;
+    }
+    pthread_mutex_unlock(m);
+    if (mine) {
+        sg_task* job = d->job;
+        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        sg_wake(job);
+    }
 }
-/* The task running now waits for the socket to be ready (`write`: to take bytes): SG_WAITING,
-   SG_CANCELLED, or the code the system gave. A socket that others may wait for at the same time
-   (`armed` NULL: a listener, which `shared` lets several tasks hold) is waited for through a
-   copy of its own. */
-static int sg_wait_start(sg_wait* w, int fd, bool write, bool* armed, sg_cancel* token, const char* loc) {
+/* The task running now waits for socket `fd` to be ready (`write`: to take bytes), after a call
+   of the system found it not ready; `seen` is what `sg_slot_tick` gave before that call. If the
+   loop has seen the socket ready since, the call is tried again (SG_AGAIN); otherwise the task
+   waits in the slot (SG_WAITING). Or SG_CANCELLED, or the code the system gave. Several tasks may
+   wait for one socket (a `shared` listener or `UdpSocket`): all of them are woken. */
+static int sg_wait_start(sg_wait* w, int fd, bool write, uint32_t seen, sg_cancel* token, const char* loc) {
     sg_wait_init(w, sg_wait_cut);
     w->write = write;
-    w->dup = armed == NULL;
     w->told = token != NULL;
+    w->on.fd = fd;
     if (sg_cancelled(token)) return SG_CANCELLED;
     sg_loop_open(loc);
-    if (w->dup && (fd = fcntl(fd, F_DUPFD_CLOEXEC, 0)) < 0) return sg_os_error();
-    w->on.fd = fd;
-    __atomic_store_n(&w->posted, 1, __ATOMIC_RELEASE);
+    sg_slot* s = sg_slot_make(fd);
+    if (!s) return EMFILE;
+    int bit = write ? 2 : 1;
     int code = 0;
     if (token) {
         pthread_mutex_lock(&sg_clock_lock);
         if (token->cancelled) {
-            code = -1;
-        } else {
-            sg_wait_link(w, token);
-            code = sg_loop_arm(w, armed);
-            if (code) sg_wait_unlink(w);
+            pthread_mutex_unlock(&sg_clock_lock);
+            return SG_CANCELLED;
         }
-        pthread_mutex_unlock(&sg_clock_lock);
-    } else {
-        code = sg_loop_arm(w, armed);
     }
-    if (code) {
-        if (w->dup) close(fd);
-        return code < 0 ? SG_CANCELLED : code;
+    pthread_mutex_t* m = sg_slot_lock(fd);
+    pthread_mutex_lock(m);
+    if (!(s->on & bit)) code = sg_slot_arm(fd, s, bit);
+    if (!code) {
+        if ((s->ready & bit) && __atomic_load_n(&s->tick, __ATOMIC_RELAXED) != seen) {
+            code = SG_AGAIN;
+        } else {
+            s->ready &= (uint8_t)~bit;
+            w->after = s->waits[bit - 1];
+            s->waits[bit - 1] = w;
+            w->listed = true;
+            if (token) sg_wait_link(w, token);
+        }
     }
-    return SG_WAITING;
-}
-/* The wait is settled: SG_OVER or SG_CANCELLED. The copy of a listener is let go of. */
-static int sg_wait_end(sg_wait* w, bool* armed) {
-    int state = sg_wait_state(w);
-    if (w->dup) {
-#if defined(__linux__)
-        epoll_ctl(sg_loop, EPOLL_CTL_DEL, w->on.fd, NULL);
-#endif
-        close(w->on.fd);
-    } else if (state == SG_CANCELLED && armed) {
-        *armed = false;
-    }
-    return state;
+    pthread_mutex_unlock(m);
+    if (token) pthread_mutex_unlock(&sg_clock_lock);
+    return code ? code : SG_WAITING;
 }
 
 /* A name looked up on a thread of input and output. */
@@ -3058,8 +3195,8 @@ typedef struct {
     int kind;
     int phase;
     int fd;
-    bool* armed;
-    bool own_armed;
+    /* What `sg_slot_tick` gave before the call of the system last tried the socket. */
+    uint32_t seen;
     sg_cancel* token;
     const char* loc;
     uint8_t* to;
@@ -3082,7 +3219,7 @@ static inline sg_net_op sg_net_accept_op(sg_listener* l, sg_cancel* token, const
         sg_net_nonblock(l->fd);
         __atomic_store_n(&l->nb, 1, __ATOMIC_RELEASE);
     }
-    return (sg_net_op){ .kind = SG_ACCEPT, .fd = l->fd, .armed = NULL, .token = token, .loc = loc, .out = -1 };
+    return (sg_net_op){ .kind = SG_ACCEPT, .fd = l->fd, .token = token, .loc = loc, .out = -1 };
 }
 static inline void sg_socket_nonblock(sg_socket* s) {
     if (!s->nb) {
@@ -3092,21 +3229,23 @@ static inline void sg_socket_nonblock(sg_socket* s) {
 }
 static inline sg_net_op sg_net_receive_op(sg_socket* s, uint8_t* to, int64_t len, sg_cancel* token, const char* loc) {
     sg_socket_nonblock(s);
-    return (sg_net_op){ .kind = SG_RECEIVE, .fd = s->fd, .armed = &s->armed, .token = token, .loc = loc, .to = to, .len = len, .out = -1 };
+    return (sg_net_op){ .kind = SG_RECEIVE, .fd = s->fd, .token = token, .loc = loc, .to = to, .len = len, .out = -1 };
 }
 static inline sg_net_op sg_net_send_op(sg_socket* s, const uint8_t* from, int64_t len, sg_cancel* token, const char* loc) {
     sg_socket_nonblock(s);
-    return (sg_net_op){ .kind = SG_SEND, .fd = s->fd, .armed = &s->armed, .token = token, .loc = loc, .from = from, .len = len, .out = -1 };
+    return (sg_net_op){ .kind = SG_SEND, .fd = s->fd, .token = token, .loc = loc, .from = from, .len = len, .out = -1 };
 }
-/* A datagram socket may be waited for by several tasks at once (a `shared` `UdpSocket`), so it is
-   waited for through a copy of its own, as a listener is. */
+/* A datagram socket may be waited for by several tasks at once (a `shared` `UdpSocket`), as a
+   listener may. */
 static inline sg_net_op sg_net_udp_send_op(int64_t fd, const uint8_t* from, int64_t len, bool to, bool v6, uint64_t high, uint64_t low, int32_t port, sg_cancel* token, const char* loc) {
-    sg_net_op op = { .kind = SG_UDP_SEND, .fd = (int)fd, .armed = NULL, .token = token, .loc = loc, .from = from, .len = len, .out = -1 };
+    sg_udp_nonblock((int)fd);
+    sg_net_op op = { .kind = SG_UDP_SEND, .fd = (int)fd, .token = token, .loc = loc, .from = from, .len = len, .out = -1 };
     if (to) op.at_len = sg_udp_at(v6, high, low, port, &op.at);
     return op;
 }
 static inline sg_net_op sg_net_udp_receive_op(int64_t fd, uint8_t* to, int64_t len, sg_cancel* token, const char* loc) {
-    return (sg_net_op){ .kind = SG_UDP_RECEIVE, .fd = (int)fd, .armed = NULL, .token = token, .loc = loc, .to = to, .len = len, .out = -1 };
+    sg_udp_nonblock((int)fd);
+    return (sg_net_op){ .kind = SG_UDP_RECEIVE, .fd = (int)fd, .token = token, .loc = loc, .to = to, .len = len, .out = -1 };
 }
 static sg_net_op sg_net_connect_op(sg_str address, sg_cancel* token, const char* loc) {
     sg_net_op op = { .kind = SG_CONNECT, .fd = -1, .token = token, .loc = loc, .out = -1 };
@@ -3128,12 +3267,18 @@ static bool sg_net_connect_next(sg_net_op* op) {
         int code = sg_net_try(a, &op->fd, true);
         if (!code) { op->out = op->fd; return sg_net_finish(op, 0); }
         if (code == EINPROGRESS) {
-            op->own_armed = false;
-            int st = sg_wait_start(&op->w, op->fd, true, &op->own_armed, op->token, op->loc);
+            int st = sg_wait_start(&op->w, op->fd, true, sg_slot_tick(op->fd), op->token, op->loc);
             if (st == SG_WAITING) { op->phase = SG_NET_CONNECT; return false; }
-            close(op->fd);
-            if (st == SG_CANCELLED) return sg_net_finish(op, SG_CUT);
-            code = st;
+            if (st == SG_AGAIN) {
+                code = sg_net_made(op->fd);
+                if (!code) { op->out = op->fd; return sg_net_finish(op, 0); }
+            } else if (st == SG_CANCELLED) {
+                sg_net_close(op->fd);
+                return sg_net_finish(op, SG_CUT);
+            } else {
+                code = st;
+            }
+            sg_net_close(op->fd);
         }
         op->code = code;
     }
@@ -3166,14 +3311,15 @@ static bool sg_net_go(sg_net_op* op) {
     }
     for (;;) {
         int code = 0;
+        op->seen = sg_slot_tick(op->fd);
         if (op->kind == SG_ACCEPT) {
             code = sg_net_accept_now(op->fd, &op->out, true);
         } else if (op->kind == SG_RECEIVE) {
             code = sg_net_recv_now(op->fd, op->to, op->len, &op->done);
         } else if (op->kind == SG_UDP_SEND) {
-            code = sg_udp_send_now(op->fd, op->from, op->len, op->at_len ? &op->at : NULL, op->at_len, MSG_DONTWAIT);
+            code = sg_udp_send_now(op->fd, op->from, op->len, op->at_len ? &op->at : NULL, op->at_len, 0);
         } else if (op->kind == SG_UDP_RECEIVE) {
-            code = sg_udp_recv_now(op->fd, op->to, op->len, &op->at, &op->done, MSG_DONTWAIT);
+            code = sg_udp_recv_now(op->fd, op->to, op->len, &op->at, &op->done, 0);
         } else {
             while (op->done < op->len) {
                 int64_t sent = 0;
@@ -3184,8 +3330,9 @@ static bool sg_net_go(sg_net_op* op) {
         if (!code) return sg_net_finish(op, 0);
         if (sg_net_again(code, op->kind == SG_ACCEPT)) continue;
         if (code != EAGAIN) return sg_net_finish(op, code);
-        int st = sg_wait_start(&op->w, op->fd, op->kind == SG_SEND || op->kind == SG_UDP_SEND, op->armed, op->token, op->loc);
+        int st = sg_wait_start(&op->w, op->fd, op->kind == SG_SEND || op->kind == SG_UDP_SEND, op->seen, op->token, op->loc);
         if (st == SG_WAITING) return false;
+        if (st == SG_AGAIN) continue;
         return sg_net_finish(op, st == SG_CANCELLED ? SG_CUT : st);
     }
 }
@@ -3205,15 +3352,13 @@ static bool sg_net_more(sg_net_op* op) {
         return sg_net_connect_next(op);
     }
     if (op->phase == SG_NET_CONNECT) {
-        sg_wait_end(&op->w, &op->own_armed);
-        if (state == SG_CANCELLED) { close(op->fd); return sg_net_finish(op, SG_CUT); }
+        if (state == SG_CANCELLED) { sg_net_close(op->fd); return sg_net_finish(op, SG_CUT); }
         int code = sg_net_made(op->fd);
         if (!code) { op->out = op->fd; return sg_net_finish(op, 0); }
-        close(op->fd);
+        sg_net_close(op->fd);
         op->code = code;
         return sg_net_connect_next(op);
     }
-    sg_wait_end(&op->w, op->armed);
     if (state == SG_CANCELLED) return sg_net_finish(op, SG_CUT);
     return sg_net_go(op);
 }
@@ -3235,6 +3380,7 @@ static int sg_reader_net(sg_reader* r, int need, int64_t want, sg_wait* w, sg_ca
         if (n >= 0) return SG_OVER;
         sg_sock_room(r);
         int64_t got = 0;
+        uint32_t seen = sg_slot_tick(s->fd);
         int c = sg_net_recv_now(s->fd, r->block + r->len, r->cap - r->len, &got);
         if (!c) {
             if (got == 0) r->ended = true;
@@ -3243,7 +3389,8 @@ static int sg_reader_net(sg_reader* r, int need, int64_t want, sg_wait* w, sg_ca
         }
         if (sg_net_again(c, false)) continue;
         if (c != EAGAIN) { *code = c; return SG_OVER; }
-        int st = sg_wait_start(w, s->fd, false, &s->armed, token, loc);
+        int st = sg_wait_start(w, s->fd, false, seen, token, loc);
+        if (st == SG_AGAIN) continue;
         if (st == SG_WAITING || st == SG_CANCELLED) return st;
         *code = st;
         return SG_OVER;
@@ -3264,7 +3411,7 @@ static sg_reader sg_proc_reader(int64_t fd) {
     sg_socket* s = malloc(sizeof *s);
     uint8_t* block = malloc(65536);
     if (!s || !block) abort();
-    *s = (sg_socket){ (int)fd, false, false };
+    *s = (sg_socket){ (int)fd, false };
     return (sg_reader){ (int)fd, block, 0, 0, 0, false, s, 65536, INT64_MAX, false, 0, true };
 }
 "#;
@@ -3287,11 +3434,39 @@ static void sg_proc_far_run(sg_far* f) {
 /* The wait in the frame of the task: on the loop (`pidfd` on Linux, -1 on macOS), or on a thread
    (`far`). `state`: SG_WAITING, SG_OVER or SG_CANCELLED. */
 typedef struct { sg_wait w; int state; int pidfd; bool far; } sg_io_proc;
+/* The end of the program goes on the loop, once: the event names the wait (see `sg_loop_round`). */
+static int sg_proc_arm(sg_wait* w) {
+#if defined(__linux__)
+    struct epoll_event e = { .events = EPOLLIN | EPOLLONESHOT, .data.u64 = (uint64_t)(uintptr_t)w };
+    return epoll_ctl(sg_loop, EPOLL_CTL_ADD, w->on.fd, &e) == 0 ? 0 : sg_os_error();
+#else
+    struct kevent k;
+    EV_SET(&k, w->on.fd, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, w);
+    return kevent(sg_loop, &k, 1, NULL, 0, NULL) == 0 ? 0 : sg_os_error();
+#endif
+}
+/* A cancel, under the clock's lock: the program comes off the loop, and the loop wakes the task
+   once it is done with the events that could name the wait. */
+static void sg_proc_cut(sg_delay* d) {
+    sg_wait* w = (sg_wait*)d;
+#if defined(__linux__)
+    epoll_ctl(sg_loop, EPOLL_CTL_DEL, w->on.fd, NULL);
+#else
+    struct kevent k;
+    EV_SET(&k, w->on.fd, EVFILT_PROC, EV_DELETE, 0, 0, NULL);
+    kevent(sg_loop, &k, 1, NULL, 0, NULL);
+#endif
+    pthread_mutex_lock(&sg_loop_lock);
+    w->cut = sg_loop_cut;
+    sg_loop_cut = w;
+    pthread_mutex_unlock(&sg_loop_lock);
+    sg_loop_kick();
+}
 /* The task running now waits for the end of program `pid`. */
 static void sg_proc_wait_start(sg_io_proc* x, int64_t pid, sg_cancel* token, const char* loc) {
     x->pidfd = -1;
     x->far = false;
-    sg_wait_init(&x->w, sg_wait_cut);
+    sg_wait_init(&x->w, sg_proc_cut);
     if (sg_cancelled(token)) { x->state = SG_CANCELLED; return; }
     int on = (int)pid;
 #if defined(__linux__) && defined(SYS_pidfd_open)
@@ -3312,7 +3487,6 @@ static void sg_proc_wait_start(sg_io_proc* x, int64_t pid, sg_cancel* token, con
     sg_loop_open(loc);
     x->w.proc = true;
     x->w.write = false;
-    x->w.dup = false;
     x->w.told = token != NULL;
     x->w.on.fd = on;
     __atomic_store_n(&x->w.posted, 1, __ATOMIC_RELEASE);
@@ -3323,12 +3497,12 @@ static void sg_proc_wait_start(sg_io_proc* x, int64_t pid, sg_cancel* token, con
             code = -1;
         } else {
             sg_wait_link(&x->w, token);
-            code = sg_loop_arm(&x->w, NULL);
+            code = sg_proc_arm(&x->w);
             if (code) sg_wait_unlink(&x->w);
         }
         pthread_mutex_unlock(&sg_clock_lock);
     } else {
-        code = sg_loop_arm(&x->w, NULL);
+        code = sg_proc_arm(&x->w);
     }
     /* macOS gives ESRCH for a program that has ended and was not waited for: its end has come. */
     x->state = code < 0 ? SG_CANCELLED : code ? SG_OVER : SG_WAITING;
@@ -4340,8 +4514,15 @@ static int sg_open_reader(sg_str path, sg_reader* out) {
     return 0;
 }
 /* The reader of a pipe closes it and frees the socket it reads it through. */
+#if SG_NET
+static inline void sg_net_close(int fd);
+#endif
 static inline void sg_drop_owned_sock(sg_reader* r) {
+#if SG_NET
+    sg_net_close(r->fd);
+#else
     close(r->fd);
+#endif
     free(r->sock);
 }
 static inline void sg_drop_reader(sg_reader* r) {
@@ -4662,8 +4843,10 @@ typedef struct sg_wait {
     bool write;
     /* The end of a program (`fd` its number on macOS, its pidfd on Linux), see `PROCESS_ASYNC_RUNTIME`. */
     bool proc;
-    bool dup;
     bool told;
+    /* In the slot of its socket, where the loop and a cancel take it out (see `NET_ASYNC_RUNTIME`). */
+    bool listed;
+    struct sg_wait* after;
     int settled;
     /* Set last before the socket goes on the loop, and read first by the loop: what was written
        of the wait before is seen there (the sanitizer does not see it through the system). */
@@ -4682,6 +4865,8 @@ static void sg_wait_init(sg_wait* w, void (*over)(sg_delay*)) {
     w->settled = 0;
     w->cut = NULL;
     w->proc = false;
+    w->listed = false;
+    w->after = NULL;
 }
 /* The clock's lock is held: the wait is put on the list of its token. */
 static void sg_wait_link(sg_wait* w, sg_cancel* token) {
@@ -10456,7 +10641,7 @@ impl<'a> Emitter<'a> {
                         vec![Ty::Read(Box::new(Ty::Socket)), Ty::Bool, bits()],
                         "return sg_udp_name(a0->fd, a1, a2.ptr, a2.len);".to_string(),
                     ),
-                    SystemCall::CloseSocket => ("sg_system_close_socket", vec![fd()], "(void)close((int)a0);".to_string()),
+                    SystemCall::CloseSocket => ("sg_system_close_socket", vec![fd()], "sg_net_close((int)a0);".to_string()),
                     _ => (
                         "sg_system_lookup",
                         vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Ulong)))))],
@@ -10832,8 +11017,8 @@ impl<'a> Emitter<'a> {
                 result(self, format!("({wait}.state == SG_CANCELLED ? ({ctype}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }} : ({ctype}){{ .tag = 0 }})"))
             }
             // `await System.udpSendAsync(...)` and `await System.udpReceiveAsync(...)`: a call of the
-            // network in the frame (`sg_net_op`), as `stream.receiveAsync` is; the socket is waited
-            // for through a copy of its own, since several tasks may wait for one.
+            // network in the frame (`sg_net_op`), as `stream.receiveAsync` is; several tasks may wait
+            // for one socket, in its slot on the loop.
             ExprKind::Method { args, callee: Callee::System(call @ (SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync)), .. } => {
                 self.made.extend(["net", "udp", "net async", "async io", "tasks"].map(str::to_string));
                 self.io_error(inner.span)?;
@@ -11053,8 +11238,7 @@ impl<'a> Emitter<'a> {
         self.pre.push(format!("if (!sg_net_more(&{op})) return false;"));
         let failed = format!("({gives}){{ .tag = 1, .u.v1 = {{ {op}.code == SG_CUT ? sg_io_cancelled() : sg_io_error({op}.code) }} }}");
         let ok = match call {
-            NetCall::Accept => format!("({gives}){{ .tag = 0, .u.v0 = {{ (sg_socket){{ {op}.out, false, true }} }} }}"),
-            NetCall::Connect => format!("({gives}){{ .tag = 0, .u.v0 = {{ (sg_socket){{ {op}.out, {op}.own_armed, true }} }} }}"),
+            NetCall::Accept | NetCall::Connect => format!("({gives}){{ .tag = 0, .u.v0 = {{ (sg_socket){{ {op}.out, true }} }} }}"),
             NetCall::Receive => format!("({gives}){{ .tag = 0, .u.v0 = {{ {op}.done }} }}"),
             _ => format!("({gives}){{ .tag = 0 }}"),
         };
@@ -11206,10 +11390,6 @@ impl<'a> Emitter<'a> {
                 ),
                 None => String::new(),
             };
-            let ended = match &reader {
-                Some(_) => "\n#if SG_NET\n if (x->mode == 2) sg_wait_end(&x->w, &x->a0->sock->armed);\n#endif\n",
-                None => "",
-            };
             let now = match &reader {
                 Some(_) => format!(
                     " for (;;) {{ if (!sg_reader_try(x->a0)) break; if ({fname}_n({gets}, &x->r)) {{ SG_IN_GIVE(x->a0); x->io.done = 1; return; }} \
@@ -11224,7 +11404,7 @@ impl<'a> Emitter<'a> {
                  if (x->cancelled) {{ {cancelled} }}{net}{now} \
                  sg_io_start(&x->io, sg_io_run_{fname}, loc); }}\n\
                  static bool sg_io_ready_{fname}(sg_io_{fname}* x, const char* loc) {{ if (x->mode == 0) return sg_io_done(&x->io); \
-                 if (!sg_wait_settled(&x->w)) return false;{ended} \
+                 if (!sg_wait_settled(&x->w)) return false; \
                  if (sg_wait_state(&x->w) == SG_CANCELLED) {{ x->mode = 0; x->r = ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }}; x->io.done = 1; return true; }} \
                  x->cancelled = sg_cancelled(x->tk); sg_io_go_{fname}(x, loc); return x->mode == 0 && sg_io_done(&x->io); }}"
             );
