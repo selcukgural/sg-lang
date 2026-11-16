@@ -1,0 +1,62 @@
+{
+    "$schema": "https://fundingjson.org/schema/v1.1.0.json",
+    "version": "v1.1.0",
+    "entity": {
+        "type": "individual",
+        "role": "owner",
+        "name": "Selçuk Güral",
+        "email": "funding@sg-lang.org",
+        "description": "Designer and maintainer of SG, a small systems programming language. SG is a non-profit open source project that lives on donations.",
+        "webpageUrl": {
+            "url": "https://github.com/selcukgural"
+        }
+    },
+    "projects": [
+        {
+            "guid": "sg-lang",
+            "name": "SG",
+            "description": "SG is a small systems programming language: about as small and as fast as C, memory safe like Rust, and written in a notation that reads like C#. The project includes the language design, a checker, an interpreter and a back end that compiles through C.",
+            "webpageUrl": {
+                "url": "https://sg-lang.org",
+                "wellKnown": "https://sg-lang.org/.well-known/funding-manifest-urls"
+            },
+            "repositoryUrl": {
+                "url": "https://github.com/selcukgural/sg-lang"
+            },
+            "licenses": ["spdx:MIT", "spdx:Apache-2.0"],
+            "tags": ["programming-language", "compiler", "interpreter", "memory-safety", "systems-programming"]
+        }
+    ],
+    "funding": {
+        "channels": [
+            {
+                "guid": "github-sponsors",
+                "type": "payment-provider",
+                "address": "https://github.com/sponsors/selcukgural",
+                "description": "One-time or monthly sponsorship through GitHub Sponsors."
+            }
+        ],
+        "plans": [
+            {
+                "guid": "monthly-support",
+                "status": "active",
+                "name": "Monthly support",
+                "description": "Recurring support for development and infrastructure (CI, playground, package hosting). Any amount.",
+                "amount": 0,
+                "currency": "USD",
+                "frequency": "monthly",
+                "channels": ["github-sponsors"]
+            },
+            {
+                "guid": "one-time",
+                "status": "active",
+                "name": "One-time donation",
+                "description": "A single donation of any amount.",
+                "amount": 0,
+                "currency": "USD",
+                "frequency": "one-time",
+                "channels": ["github-sponsors"]
+            }
+        ]
+    }
+}
