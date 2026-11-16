@@ -1,0 +1,23 @@
+// While a listener of a signal lives, the signal does not end the program; once the last one
+// ends, the signal does what it did before the first: here it ends the program. What was printed
+// goes out before the signal is sent.
+void listenAWhile() {
+    var inner = Signals.listen(read List<Signal> { Signal.Terminate })
+    Signals.raise(Signal.Terminate)
+    print($"inner got {inner.next()}")
+}
+
+void letGo(SignalListener listener) {
+}
+
+void main() {
+    var outer = Signals.listen(read List<Signal> { Signal.Terminate, Signal.Hangup })
+    listenAWhile()
+    print($"outer got {outer.next()}")
+    Signals.raise(Signal.Terminate)
+    print($"outer got {outer.next()} again")
+    letGo(outer)
+    print("no listener of Terminate is left")
+    Signals.raise(Signal.Terminate)
+    print("never printed")
+}

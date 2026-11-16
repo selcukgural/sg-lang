@@ -1,0 +1,55 @@
+// The tests start the server as a task and play its client over the loopback. The signal is
+// `User2`, sent with `Signals.raise`, so that a test never sends Ctrl-C to the program that runs it;
+// a second signal, which cuts the open connections, is sent from outside by the tests of the
+// repository, which can wait to see the first taken.
+
+// Sends `text` and reads it back.
+async Result<string, IoError> roundTrip(ref TcpStream conn, read string text) {
+    try await conn.sendAsync(text.asBytes())
+    var buffer = byte[64](0)
+    nint got = 0
+    while got < text.length() {
+        var n = try await conn.receiveAsync(ref buffer[got..])
+        if n == 0 {
+            return Error(IoError.ConnectionReset)
+        }
+        got += n
+    }
+    var text = string.fromUtf8(buffer[0..got]) ?? "not text"
+    return Ok(text.clone())
+}
+
+// A client that talks, has the signal sent in the middle, and talks on.
+async Result<string, IoError> client(string address) {
+    var conn = try await TcpStream.connectAsync(read address)
+    var first = try await roundTrip(ref conn, "hello")
+    Signals.raise(Signal.User2)
+    var second = try await roundTrip(ref conn, "still served")
+    return Ok($"{first} / {second}".toString())
+}
+
+async Result<string, IoError> openThenSignal() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = serve(listener, Signals.listen(read List<Signal> { Signal.User2 }))
+    var talked = try await client(address)
+    var served = try await server
+    return Ok($"{talked}; {served} served".toString())
+}
+
+async Result<int, IoError> idleThenSignal() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var server = serve(listener, Signals.listen(read List<Signal> { Signal.User2 }))
+    Signals.raise(Signal.User2)
+    return await server
+}
+
+test "a signal stops new connections, and the open one is served to its end" {
+    var said = openThenSignal().wait()
+    assert(said is Ok(text) && text == "hello / still served; 1 served")
+}
+
+test "a server with no connection stops at once" {
+    var served = idleThenSignal().wait()
+    assert(served is Ok(0))
+}

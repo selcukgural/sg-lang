@@ -1654,6 +1654,26 @@ var status = try await process.waitAsync(read source.token())
 A method can be async too: `public async int total(read this) { ... }`. One that lends `this` is awaited where it
 is written; one that takes `this` by value may start as a task of its own.
 
+### Signals
+
+A program does not write a handler of its own, which would run between any two steps of any thread. It listens
+for some signals and takes them one at a time, as in Go and Tokio; while a listener lives, its signals do not
+end the program:
+
+```
+var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })
+var first = signals.next()                     // waits: Signal.Interrupt when Ctrl-C is pressed
+var next = await signals.nextAsync(read token) // Result<Signal, Cancelled>, without holding the thread
+Signals.raise(Signal.User1)                    // to this program, as C's raise
+waiting.signal(Signal.Hangup)                  // to a program started with Command
+```
+
+Several signals of one kind before a call are one, kinds come in the order they came, and every listener of a kind
+gets it. Once the last listener of a kind ends, the kind does what it did before, so the next Ctrl-C ends the
+program again. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`, with no
+numbers, since they differ between systems. A server that stops cleanly cancels its accepts on the first signal
+and waits for the connections it has (`examples/shutdown`).
+
 ### The network
 
 A `TcpListener` takes connections and a `TcpStream` receives and sends bytes; an address is one text,

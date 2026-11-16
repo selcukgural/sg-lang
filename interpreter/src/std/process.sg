@@ -415,6 +415,12 @@ public struct Process : Disposable {
         System.signal(this.pid, 15)
     }
 
+    // Sends the program a signal: `Signal.Interrupt` is what Ctrl-C at a terminal sends it. Once it
+    // has ended, nothing.
+    public void signal(read this, Signal signal) {
+        System.signal(this.pid, signalNumber(signal))
+    }
+
     // Waits for the program to end and gives how it ended. The input it still holds is closed
     // first, and the readers it still holds are let go of, so that a program that reads to the
     // end of its input, or writes more than a pipe holds, does not wait for this one forever.

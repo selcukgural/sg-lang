@@ -1,0 +1,104 @@
+// Signals of the system: a program listens for some of them and waits for the next one, as in Go
+// and Tokio, instead of a handler of its own that would run between any two steps of any thread.
+// While a listener of a signal lives, that signal does not end the program; once the last ends,
+// the signal does what it did before. Written in SG and brought along by the language; only the
+// calls of the system under it (`System.signalListen`, `signalNext`, `signalNextAsync`,
+// `signalStop`, `signalRaise`, `signalNumber`) are the compiler's own, and only this module can
+// call them.
+
+// A signal a program can listen for. Their numbers are not given: `User1` is 30 on macOS and 10 on
+// Linux.
+public enum Signal : Copyable, Equatable, Hashable, Formattable {
+    // Ctrl-C at a terminal: SIGINT.
+    Interrupt
+    // The polite stop, `kill` without a number: SIGTERM.
+    Terminate
+    // The terminal went away; daemons take it as "read your settings again": SIGHUP.
+    Hangup
+    // Ctrl-\ at a terminal: SIGQUIT.
+    Quit
+    // Left to programs: SIGUSR1.
+    User1
+    // Left to programs: SIGUSR2.
+    User2
+    // The terminal changed its size: SIGWINCH.
+    WindowChange
+}
+
+// The place of a signal among the kinds, as the system calls take it.
+int signalKind(Signal signal) {
+    match signal {
+        Interrupt => return 0
+        Terminate => return 1
+        Hangup => return 2
+        Quit => return 3
+        User1 => return 4
+        User2 => return 5
+        WindowChange => return 6
+    }
+}
+
+// The signal at a place among the kinds.
+Signal signalOf(long kind) {
+    match kind {
+        0 => return Signal.Interrupt
+        1 => return Signal.Terminate
+        2 => return Signal.Hangup
+        3 => return Signal.Quit
+        4 => return Signal.User1
+        5 => return Signal.User2
+        _ => return Signal.WindowChange
+    }
+}
+
+// The number of a signal on this system, for a program started with `Command`.
+int signalNumber(Signal signal) {
+    return System.signalNumber(signalKind(signal))
+}
+
+public struct Signals {
+    // Starts listening for the signals: from now on they do not end the program, and each one that
+    // comes is kept for `next` or `nextAsync`. No signal at all is a panic.
+    public SignalListener listen(read Signal[] signals) {
+        if signals.length() == 0 {
+            panic("`Signals.listen` is given no signal to listen for")
+        }
+        var mask = 0
+        for signal in signals {
+            mask = mask | (1 << signalKind(signal))
+        }
+        return SignalListener { id = System.signalListen(mask) }
+    }
+
+    // Sends the signal to this program, as `raise` does in C: a listener of it gets it, and without
+    // one it does what it does by default, ending the program at once for most of them.
+    public void raise(Signal signal) {
+        System.signalRaise(signalKind(signal))
+    }
+}
+
+// What `Signals.listen` gives: the signals it listens for that came and were not taken yet, in the
+// order they came. Several of one kind before a `next` are one, as the system does not count them
+// either. Every listener of a signal gets it. When the listener ends, it no longer keeps the
+// signals from ending the program, unless another listener of them lives.
+public struct SignalListener : Disposable {
+    // The listener of the system.
+    long id
+
+    // Waits for the next signal and gives it; one that came before is given at once.
+    public Signal next(ref this) {
+        return signalOf(System.signalNext(this.id))
+    }
+
+    // `next` without holding the thread, for an async function. A cancel ends the wait; a signal
+    // that comes later stays for the next call.
+    public async Result<Signal, Cancelled> nextAsync(ref this, read CancellationToken token) {
+        var kind = long[1]
+        try await System.signalNextAsync(this.id, read token, ref kind)
+        return Ok(signalOf(kind[0]))
+    }
+
+    void dispose(ref this) {
+        System.signalStop(this.id)
+    }
+}

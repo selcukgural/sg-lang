@@ -86,6 +86,12 @@ fn exit_line(code: Option<i32>) -> String {
 fn run_file(path: &Path) -> String {
     let src = std::fs::read_to_string(path).unwrap();
     let name = path.file_name().unwrap().to_string_lossy();
+    // A signal reaches the whole process, and one no listener is left for ends it: a program
+    // that sends signals runs in a process of its own, as compiled code does.
+    if name.contains("signals") {
+        let run = std::process::Command::new(env!("CARGO_BIN_EXE_sg")).arg(&*name).current_dir(path.parent().unwrap()).stdin(std::process::Stdio::null()).output().unwrap();
+        return format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let given = given(path, &root.join("target").join("io").join("interpreted"));
     let mut out = Vec::new();
@@ -224,6 +230,7 @@ fn modules() {
     entries.push(root.join("examples/zlib"));
     entries.push(root.join("examples/sqlite"));
     entries.push(root.join("examples/curl"));
+    entries.push(root.join("examples/shutdown"));
     entries.sort();
     for path in entries {
         if path.extension().is_some_and(|ext| ext == "sg") {
@@ -324,6 +331,7 @@ fn compiled() {
     programs.push(root.join("examples/zlib"));
     programs.push(root.join("examples/sqlite"));
     programs.push(root.join("examples/curl"));
+    programs.push(root.join("examples/shutdown"));
     programs.sort();
     programs.retain(|path| path.extension().is_some_and(|ext| ext == "sg") || path.join("main.sg").exists());
     let total = files.len() + programs.len();
@@ -335,6 +343,7 @@ fn compiled() {
     let mut raced = 0;
     let mut compiled = 0;
     let mut ended_in_panic = 0;
+    let mut ended_by_signal = 0;
     let mut failures = Vec::new();
     // The programs to look at for leaks: the name, the program, the program under the sanitizers.
     // The programs to look at for leaks: the name, the program, the program under the
@@ -376,8 +385,9 @@ fn compiled() {
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         let stem = if with_modules { format!("modules-{stem}") } else { stem };
         let (c_file, binary) = (work.join(format!("{stem}.c")), work.join(&stem));
-        // A program with tasks or `locked` values runs on several threads.
-        let threads = code.contains("#define SG_THREADS 1");
+        // A program with tasks or `locked` values runs on several threads, and so does one that
+        // listens for signals (their relay is a thread).
+        let threads = code.contains("#define SG_THREADS 1") || code.contains("#define SG_SIGNALS_ASYNC");
         std::fs::write(&c_file, &code).unwrap();
         let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-ffp-contract=off"]).args(warnings(&stem)).arg("-o").arg(&binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).arg("-lm").arg("-pthread").output().unwrap();
         if !cc.status.success() {
@@ -462,8 +472,11 @@ fn compiled() {
                 // is given back by the system, not freed, so it is not looked at for leaks.
                 // Whether a pointer to it is still in a register when the process ends is up to
                 // the C compiler, and a leak tool would judge that.
+                // One that a signal ended did not end at all, as far as its memory goes.
                 if String::from_utf8_lossy(&run.stderr).lines().any(|line| line.starts_with("panic: ")) {
                     ended_in_panic += 1;
+                } else if run.status.code().is_none() {
+                    ended_by_signal += 1;
                 } else {
                     built.push((name.clone(), binary.clone(), checked_binary, given.args.clone(), path.with_extension("in")));
                 }
@@ -531,10 +544,13 @@ fn compiled() {
     }
     assert!(failures.is_empty(), "{} compiled program(s) differ:\n{}", failures.len(), failures.join("\n"));
     assert!(compiled >= 10, "only {compiled} programs were compiled: the back end skips too much");
-    assert!(!sanitizers || leak_free + ended_in_panic == compiled, "only {leak_free} of {compiled} compiled programs were looked at for leaks ({ended_in_panic} ended in a panic)");
+    assert!(
+        !sanitizers || leak_free + ended_in_panic + ended_by_signal == compiled,
+        "only {leak_free} of {compiled} compiled programs were looked at for leaks ({ended_in_panic} ended in a panic, {ended_by_signal} by a signal)"
+    );
     assert!(!sanitizers || raced > 0, "no program on several threads ran under the thread sanitizer");
     eprintln!(
-        "{compiled} of {total} programs compiled through C and gave the same output; {sanitized} also ran clean under the sanitizers, {raced} on several threads under the thread sanitizer; {leak_free} of those that did not end in a panic left no memory behind ({ended_in_panic} ended in one)"
+        "{compiled} of {total} programs compiled through C and gave the same output; {sanitized} also ran clean under the sanitizers, {raced} on several threads under the thread sanitizer; {leak_free} of those that did not end in a panic or by a signal left no memory behind ({ended_in_panic} ended in a panic, {ended_by_signal} by a signal)"
     );
 }
 
@@ -766,6 +782,7 @@ fn compiled_tests() {
     folders.push(root.join("examples/zlib"));
     folders.push(root.join("examples/sqlite"));
     folders.push(root.join("examples/curl"));
+    folders.push(root.join("examples/shutdown"));
     folders.sort();
     for path in folders {
         if path.join("tests.out").exists() {
@@ -994,4 +1011,117 @@ void main() {
     assert!(cc.status.success(), "the C compiler rejected it:\n{}", String::from_utf8_lossy(&cc.stderr));
     let run = std::process::Command::new(&binary).current_dir(&work).env("PATH", path).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&run.stdout), EXPECTED, "compiled: {}", String::from_utf8_lossy(&run.stderr));
+}
+
+/// `examples/shutdown` sent real signals from outside, as Ctrl-C and `kill` send them, interpreted
+/// and compiled (also under the thread sanitizer): with no connection, the first signal ends it;
+/// with one open, it stops taking connections and serves that one to its end; a second signal cuts
+/// it. Each time it says how many it served and ends with 0. Each signal is sent once the line that
+/// shows the last one taken is seen, so none is folded into another.
+#[test]
+fn shutdown_on_signals() {
+    use std::io::{BufRead, Read, Write};
+    extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    const INTERRUPT: i32 = 2;
+    const TERMINATE: i32 = 15;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let example = root.join("examples/shutdown");
+    let work = root.join("target").join("shutdown");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+
+    // How the server is started: interpreted, then compiled if there is a C compiler.
+    let mut ways: Vec<(String, Vec<std::ffi::OsString>)> = vec![("interpreted".to_string(), vec![env!("CARGO_BIN_EXE_sg").into(), example.join("main.sg").into()])];
+    if std::process::Command::new("cc").arg("--version").output().is_ok() {
+        let sources = sg::load(&example, false).unwrap();
+        let code = sg::emit_c_sources(&sources, true).unwrap();
+        let c_file = work.join("shutdown.c");
+        std::fs::write(&c_file, &code).unwrap();
+        for (name, flags) in [("compiled", &["-O1"][..]), ("compiled under the thread sanitizer", &["-O1", "-g", "-fsanitize=thread"][..])] {
+            let binary = work.join(name.replace(' ', "-"));
+            let cc = std::process::Command::new("cc").arg("-std=c11").args(flags).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).arg("-lm").arg("-pthread").output().unwrap();
+            assert!(cc.status.success(), "the C compiler rejected examples/shutdown ({name}):\n{}", String::from_utf8_lossy(&cc.stderr));
+            ways.push((name.to_string(), vec![binary.into()]));
+        }
+    } else {
+        eprintln!("no C compiler (`cc`) found: examples/shutdown is not compiled");
+    }
+
+    for (way, command) in &ways {
+        for scenario in ["idle", "one open", "cut"] {
+            let mut child = std::process::Command::new(&command[0])
+                .args(&command[1..])
+                .arg("127.0.0.1:0")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let pid = child.id() as i32;
+            let send = |signal: i32| {
+                // SAFETY: the child has not been waited for, so the number is still its own.
+                assert_eq!(unsafe { kill(pid, signal) }, 0, "{way}, {scenario}: the signal could not be sent");
+            };
+            // The lines come through a thread, so a server that says nothing fails the test
+            // instead of holding it.
+            let (lines, heard) = std::sync::mpsc::channel();
+            let stdout = child.stdout.take().unwrap();
+            std::thread::spawn(move || {
+                for line in std::io::BufReader::new(stdout).lines() {
+                    if lines.send(line.unwrap()).is_err() {
+                        break;
+                    }
+                }
+            });
+            let next = || heard.recv_timeout(std::time::Duration::from_secs(20)).unwrap_or_else(|_| panic!("{way}, {scenario}: the server said nothing more"));
+            let first = next();
+            let port: u16 = first.strip_prefix("listening on port ").and_then(|port| port.parse().ok()).unwrap_or_else(|| panic!("{way}, {scenario}: {first}"));
+            let mut said = vec![first];
+            let talk = |conn: &mut std::net::TcpStream, text: &str| {
+                conn.write_all(text.as_bytes()).unwrap();
+                let mut back = vec![0u8; text.len()];
+                conn.read_exact(&mut back).unwrap();
+                assert_eq!(back, text.as_bytes(), "{way}, {scenario}: the echo");
+            };
+            match scenario {
+                "idle" => send(INTERRUPT),
+                "one open" => {
+                    let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                    talk(&mut conn, "hello");
+                    send(INTERRUPT);
+                    said.push(next());
+                    talk(&mut conn, "still served");
+                }
+                _ => {
+                    let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                    talk(&mut conn, "hello");
+                    send(TERMINATE);
+                    said.push(next());
+                    send(TERMINATE);
+                    said.push(next());
+                    let mut rest = Vec::new();
+                    conn.set_read_timeout(Some(std::time::Duration::from_secs(20))).unwrap();
+                    assert_eq!(conn.read_to_end(&mut rest).unwrap(), 0, "{way}, {scenario}: the connection was not cut");
+                }
+            }
+            let status = child.wait().unwrap();
+            said.extend(heard.iter());
+            let mut errors = String::new();
+            child.stderr.take().unwrap().read_to_string(&mut errors).unwrap();
+            let expected: &[&str] = match scenario {
+                "idle" => &["Interrupt: no new connections, waiting for the open ones", "stopped cleanly after 0 connection(s)"],
+                "one open" => &["Interrupt: no new connections, waiting for the open ones", "stopped cleanly after 1 connection(s)"],
+                _ => &[
+                    "Terminate: no new connections, waiting for the open ones",
+                    "Terminate again: cutting the open connections",
+                    "a connection was cut",
+                    "stopped cleanly after 1 connection(s)",
+                ],
+            };
+            assert_eq!(&said[1..], expected, "{way}, {scenario}; standard error: {errors}");
+            assert_eq!(status.code(), Some(0), "{way}, {scenario}: {errors}");
+            assert!(errors.is_empty(), "{way}, {scenario}: {errors}");
+        }
+    }
 }

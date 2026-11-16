@@ -4880,6 +4880,12 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
         if matches!(
             call,
+            SystemCall::SignalListen | SystemCall::SignalNext | SystemCall::SignalNextAsync | SystemCall::SignalStop | SystemCall::SignalRaise | SystemCall::SignalNumber
+        ) {
+            return self.signals(call, args, frame);
+        }
+        if matches!(
+            call,
             SystemCall::UdpBind
                 | SystemCall::UdpConnect
                 | SystemCall::UdpSend
@@ -5028,7 +5034,13 @@ impl<'a, 'e> Interp<'a, 'e> {
             | SystemCall::StreamName
             | SystemCall::CloseSocket
             | SystemCall::Lookup
-            | SystemCall::LookupAsync => unreachable!("done above"),
+            | SystemCall::LookupAsync
+            | SystemCall::SignalListen
+            | SystemCall::SignalNext
+            | SystemCall::SignalNextAsync
+            | SystemCall::SignalStop
+            | SystemCall::SignalRaise
+            | SystemCall::SignalNumber => unreachable!("done above"),
             SystemCall::Variable => {
                 let name = text(0);
                 // A name with `=` or a zero byte in it is no variable's name.
@@ -5171,6 +5183,66 @@ impl<'a, 'e> Interp<'a, 'e> {
             ok(Value::Void)
         };
         Ok(self.ended_task(value, at))
+    }
+
+    /// The calls of the system under `Signals` and `SignalListener` (see `signals.rs`). A wait for
+    /// a signal is a piece of work the relay of the signals tells the scheduler of, so the other
+    /// tasks run meanwhile, with `next` as with `nextAsync`; a cancel ends the wait, and a signal
+    /// that comes later stays for the next call.
+    fn signals(&mut self, call: SystemCall, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
+        let at = args[0].span;
+        let Value::Int(_, number) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes it a number") };
+        match call {
+            SystemCall::SignalListen => match crate::signals::listen(number as u32) {
+                Ok(id) => Ok(Value::Int(IntTy::Long, i128::from(id))),
+                Err(error) => Err(Diag::panic(at, format!("the system refused to listen for signals: {error}")).into()),
+            },
+            SystemCall::SignalStop => {
+                crate::signals::stop(number as u64);
+                Ok(Value::Void)
+            }
+            SystemCall::SignalRaise => {
+                // What was printed goes out first: a signal that ends the program does not lose it.
+                self.flush_out()?;
+                crate::signals::raise_kind(number as usize);
+                Ok(Value::Void)
+            }
+            SystemCall::SignalNumber => Ok(Value::Int(IntTy::Int, i128::from(crate::signals::number(number as usize)))),
+            _ => {
+                let id = number as u64;
+                let source = match call {
+                    SystemCall::SignalNextAsync => self.token(&args[1], frame)?,
+                    _ => None,
+                };
+                let kind = loop {
+                    if source.as_ref().is_some_and(|source| source.borrow().cancelled) {
+                        break None;
+                    }
+                    let (work, done) = self.work(at)?;
+                    if let Some(kind) = crate::signals::take_or_wait(id, work, done) {
+                        break Some(kind);
+                    }
+                    if self.wait_for(Outside::Work(work), source.as_ref(), at)? {
+                        crate::signals::forget_waiter(id);
+                        break None;
+                    }
+                };
+                if call == SystemCall::SignalNext {
+                    return Ok(Value::Int(IntTy::Long, i128::from(kind.expect("only a token cancels"))));
+                }
+                let value = match kind {
+                    Some(kind) => {
+                        let into = owned(self.expr(&args[2], frame)?);
+                        if let Some(slot) = cells_of(&into).first() {
+                            *slot.borrow_mut() = Value::Int(IntTy::Long, i128::from(kind));
+                        }
+                        ok(Value::Void)
+                    }
+                    None => failed(cancelled()),
+                };
+                Ok(self.ended_task(value, at))
+            }
+        }
     }
 
     /// The calls of the system under `UdpSocket` and `SocketAddress`. A socket is the number of a

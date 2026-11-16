@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 16 November 2026, the eighty-seventh slice.
+Last brought up to date: 16 November 2026, the eighty-eighth slice.
 
 ## Functions and variables
 
@@ -323,6 +323,20 @@ Last brought up to date: 16 November 2026, the eighty-seventh slice.
 | `child.try_wait()` | none | designed | A wait with a time limit is `waitAsync` with a token of `CancellationSource.after(ms)` |
 | `tokio::process::Command::status().await` | `await git.statusAsync()`, `runAsync()`, `outputAsync()` | built | A token may come last; a cancel stops the program, as Go's `CommandContext` |
 | `child.wait().await` | `await process.waitAsync()` | built | Waits on the loop, as tokio does: the pidfd on Linux, `EVFILT_PROC` on macOS; a cancel stops the program |
+| `nix::sys::signal::kill(pid, Signal::SIGINT)` | `process.signal(Signal.Interrupt)` | built | Only to a program started with `Command`, by the signal's name; it gives nothing, as `kill()` |
+
+## Signals
+
+| Rust | SG | Status | Note |
+|---|---|---|---|
+| `tokio::signal::unix::signal(SignalKind::interrupt())?` | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt })` | built | One listener may take several kinds; while it lives they do not end the program. Once the last listener of a kind ends, the kind does what it did before, where Tokio keeps its handler for good |
+| `sig.recv().await` | `await signals.nextAsync(read token)` | built | Gives `Result<Signal, Cancelled>`; a cancel ends the wait, and a signal that comes later stays. Several of one kind before a call are one, as in Tokio |
+| `signal_hook::iterator::Signals::new([SIGINT, SIGTERM])?`, `.forever()` | `signals.next()` in a loop | built | Waits on the thread, which an async function does not do |
+| `tokio::signal::ctrl_c().await` | `var ctrlC = Signals.listen(read List<Signal> { Signal.Interrupt })`, then `await ctrlC.nextAsync()` | built | Listening starts at `listen`, so a Ctrl-C that comes before the `await` is not lost |
+| `ctrlc::set_handler(move \|\| ...)` | a task that awaits `nextAsync`, then cancels a source | built | No handler of the program's own; `examples/shutdown` stops its server that way |
+| `libc::raise(libc::SIGUSR1)` | `Signals.raise(Signal.User1)` | built | What was printed is written out first |
+| `libc::sigaction` with a handler of one's own | an `export` function given to `sigaction` inside `unsafe` | built | Nothing is checked inside it; when it and a listener take one signal, the last one set wins |
+| `SIGSEGV`, `SIGCHLD`, `SIGALRM`, job control, real-time signals | none | not in SG | `Signal` has the kinds a program asks for; the others are the runtime's, or later |
 
 ## Network
 

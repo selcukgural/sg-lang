@@ -441,6 +441,21 @@ pub enum SystemCall {
     /// `System.signal(pid, number)`: `kill`. The program is not taken away before it is waited
     /// for, so the number names no other program.
     Signal,
+    /// `System.signalListen(mask)`: a listener of the signals whose kinds are the bits of `mask`;
+    /// gives its number. A kind is the place of a `Signal` among its variants.
+    SignalListen,
+    /// `System.signalNext(listener)`: waits for the next signal of the listener; gives its kind.
+    SignalNext,
+    /// `System.signalNextAsync(listener, read token, ref kind)`: the same without holding the
+    /// thread. A cancel ends the wait; the signal that comes later stays for the next call.
+    SignalNextAsync,
+    /// `System.signalStop(listener)`: the listener ends; a kind no listener is left for does what
+    /// it did before the first.
+    SignalStop,
+    /// `System.signalRaise(kind)`: the signal to this program, as C's `raise`.
+    SignalRaise,
+    /// `System.signalNumber(kind)`: the number of the signal on this system.
+    SignalNumber,
     /// `System.reader(end)`: the reader of the end of a pipe made by `start`, which it owns.
     PipeReader,
     /// `System.writer(end)`: the writer of the end of a pipe made by `start`, which it owns.

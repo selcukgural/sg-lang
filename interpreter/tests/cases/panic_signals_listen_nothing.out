@@ -1,0 +1,4 @@
+panic: `Signals.listen` is given no signal to listen for
+  --> panic_signals_listen_nothing.sg:4:20
+ 4 |     var listener = Signals.listen(read none)
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+// `next` holds its thread until a signal comes; an async function awaits `nextAsync` instead.
+async void main() {
+    var listener = Signals.listen(read List<Signal> { Signal.Interrupt })
+    print(listener.next())
+}

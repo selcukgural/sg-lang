@@ -1,0 +1,6 @@
+// A listener of no signal at all would wait for nothing.
+void main() {
+    var none = List<Signal>()
+    var listener = Signals.listen(read none)
+    print(listener.next())
+}

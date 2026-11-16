@@ -1,0 +1,15 @@
+// A hundred thousand signals sent to this program and taken, one at a time: `Signals.raise`, then
+// `next()`. The handler of the runtime writes the signal into a pipe, and a thread of the runtime
+// reads it and hands it to the listener, which wakes the program. The C is the classic self-pipe:
+// its handler writes into a pipe that the program reads itself.
+void main() {
+    var listener = Signals.listen(read List<Signal> { Signal.User1 })
+    long taken = 0
+    for _ in 0..100000 {
+        Signals.raise(Signal.User1)
+        if listener.next() == Signal.User1 {
+            taken += 1
+        }
+    }
+    print(taken)
+}

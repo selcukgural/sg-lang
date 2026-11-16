@@ -8221,6 +8221,16 @@ impl<'a> Checker<'a> {
                 Ty::Task(Box::new(io(Ty::Void))),
             ),
             "signal" => (SystemCall::Signal, vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)], Ty::Void),
+            "signalListen" => (SystemCall::SignalListen, vec![Ty::Int(IntTy::Int)], Ty::Int(IntTy::Long)),
+            "signalNext" => (SystemCall::SignalNext, vec![Ty::Int(IntTy::Long)], Ty::Int(IntTy::Long)),
+            "signalNextAsync" => (
+                SystemCall::SignalNextAsync,
+                vec![Ty::Int(IntTy::Long), Ty::Read(Box::new(Ty::Token)), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                Ty::Task(Box::new(Ty::Result(Box::new(Ty::Void), Box::new(Ty::Struct(CANCELLED.to_string()))))),
+            ),
+            "signalStop" => (SystemCall::SignalStop, vec![Ty::Int(IntTy::Long)], Ty::Void),
+            "signalRaise" => (SystemCall::SignalRaise, vec![Ty::Int(IntTy::Int)], Ty::Void),
+            "signalNumber" => (SystemCall::SignalNumber, vec![Ty::Int(IntTy::Int)], Ty::Int(IntTy::Int)),
             "reader" => (SystemCall::PipeReader, vec![Ty::Int(IntTy::Long)], Ty::Reader(false)),
             "writer" => (SystemCall::PipeWriter, vec![Ty::Int(IntTy::Long)], Ty::Writer),
             "udpBind" | "udpConnect" | "udpSend" | "udpSendAsync" | "udpReceive" | "udpReceiveAsync" | "socketAddress" | "streamAddress" | "closeSocket" | "lookup" | "lookupAsync" => {
@@ -8249,7 +8259,7 @@ impl<'a> Checker<'a> {
             _ => return Err(Diag::error(span, format!("`System` has no function `{name}`"))),
         };
         self.args(name, args, &params, span)?;
-        if matches!(call, SystemCall::WaitAsync | SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync | SystemCall::LookupAsync) {
+        if matches!(call, SystemCall::WaitAsync | SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync | SystemCall::LookupAsync | SystemCall::SignalNextAsync) {
             if !self.is_async {
                 return Err(Diag::error(span, format!("`System.{name}` is awaited in an async function")));
             }

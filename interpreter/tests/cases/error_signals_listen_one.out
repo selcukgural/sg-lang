@@ -1,0 +1,4 @@
+error: expected `read Signal[]`, found `Signal`
+  --> error_signals_listen_one.sg:3:35
+ 3 |     var listener = Signals.listen(Signal.Interrupt)
+   |                                   ^^^^^^^^^^^^^^^^

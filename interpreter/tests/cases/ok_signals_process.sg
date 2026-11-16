@@ -1,0 +1,27 @@
+// A program started with `Command` is sent a signal by its name, whatever its number is on this
+// system.
+Result<void, ProcessError> main() {
+    var sleep = Command("sleep")
+    sleep.arg("10")
+    var interrupted = try sleep.start()
+    interrupted.signal(Signal.Interrupt)
+    print(try interrupted.wait())
+    var stopped = try sleep.start()
+    stopped.signal(Signal.Terminate)
+    print(try stopped.wait())
+
+    // A shell that catches `Hangup`, once it says it is ready for it.
+    var sh = Command("sh")
+    sh.args(read List<string> { "-c", "trap 'echo caught; kill $!; exit 3' HUP; echo ready; sleep 10 & wait" })
+    sh.pipeOutput()
+    var shell = try sh.start()
+    var output = shell.takeOutput() ?? panic("the output was asked for")
+    var line = ""
+    _ = try output.readLine(ref line)
+    print(line)
+    shell.signal(Signal.Hangup)
+    _ = try output.readLine(ref line)
+    print(line)
+    print(try shell.wait())
+    return Ok()
+}

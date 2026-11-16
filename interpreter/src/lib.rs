@@ -15,6 +15,7 @@ pub mod net;
 pub mod parser;
 pub mod raw;
 pub mod shortest;
+pub mod signals;
 pub mod source;
 pub mod opening;
 pub mod sums;

@@ -1,0 +1,38 @@
+// Signals a program listens for are kept for it until it takes them: several of one kind before
+// a `next` are one, different kinds come in the order they came, and every listener of a kind
+// gets it. `Signals.raise` sends the signal to this program, which has handled it once the call
+// returns.
+Signal nextOf(SignalListener listener) {
+    return listener.next()
+}
+
+void main() {
+    var users = Signals.listen(read List<Signal> { Signal.User1, Signal.User2 })
+    Signals.raise(Signal.User1)
+    Signals.raise(Signal.User1)
+    Signals.raise(Signal.User1)
+    Signals.raise(Signal.User2)
+    print(users.next())
+    print(users.next())
+
+    Signals.raise(Signal.User2)
+    Signals.raise(Signal.User1)
+    print(users.next())
+    print(users.next())
+
+    // Both listeners of `User1` get it; `User2` goes to the one that listens for it alone.
+    var first = Signals.listen(read List<Signal> { Signal.User1, Signal.User1 })
+    Signals.raise(Signal.User2)
+    Signals.raise(Signal.User1)
+    print($"{users.next()}, {users.next()}; {first.next()}")
+
+    // A listener given to a task waits there while the program goes on.
+    var waiting = Task.run(nextOf, first)
+    Signals.raise(Signal.User1)
+    print($"the task got {waiting.wait()}")
+    print(users.next())
+
+    print(Signal.WindowChange)
+    print(Signal.Interrupt == Signal.Interrupt)
+    print(Signal.Quit != Signal.Hangup)
+}

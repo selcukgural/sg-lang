@@ -258,7 +258,7 @@ fn inner_hold(name: &str, waits: &HashMap<String, Why>) -> Option<String> {
 
 /// The methods of the language's own module that hold the thread and have an async version,
 /// named with `Async` after them.
-const ASYNC_METHODS: [&str; 8] = [
+const ASYNC_METHODS: [&str; 9] = [
     "std.Command.run",
     "std.Command.output",
     "std.Command.status",
@@ -267,6 +267,7 @@ const ASYNC_METHODS: [&str; 8] = [
     "std.UdpSocket.receiveFrom",
     "std.UdpSocket.send",
     "std.UdpSocket.receive",
+    "std.SignalListener.next",
 ];
 
 /// The functions of the language's own module that hold the thread and have an async version.
@@ -287,6 +288,10 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         }
         ExprKind::Call { callee: Callee::System(SystemCall::Wait), name_span, .. } | ExprKind::Method { callee: Callee::System(SystemCall::Wait), name_span, .. } => {
             Some((*name_span, "`System.wait`".to_string()))
+        }
+        // `SignalListener.next` waits for a signal.
+        ExprKind::Call { callee: Callee::System(SystemCall::SignalNext), name_span, .. } | ExprKind::Method { callee: Callee::System(SystemCall::SignalNext), name_span, .. } => {
+            Some((*name_span, "`System.signalNext`".to_string()))
         }
         // `UdpSocket` and `SocketAddress.lookup` wait for the network.
         ExprKind::Call { callee: Callee::System(call @ (SystemCall::UdpSend | SystemCall::UdpReceive | SystemCall::Lookup)), name_span, .. }

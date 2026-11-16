@@ -1,0 +1,5 @@
+// `Signals.listen` takes the signals as a list, even one.
+void main() {
+    var listener = Signals.listen(Signal.Interrupt)
+    print(listener.next())
+}

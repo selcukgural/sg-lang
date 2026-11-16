@@ -1,0 +1,5 @@
+User2: no new connections, waiting for the open ones
+ok    server: a signal stops new connections, and the open one is served to its end
+User2: no new connections, waiting for the open ones
+ok    server: a server with no connection stops at once
+2 test(s) passed

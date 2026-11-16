@@ -57,7 +57,8 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. All three are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into). `Path.join(a, b)` gives a new path; `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
-| Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(byte code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
+| Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(byte code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `signal(Signal.Interrupt)` sends it a signal by its name, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
+| Signals | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })`: while the listener lives, those signals do not end the program; `signals.next()` waits for the next and gives it, `await signals.nextAsync(read token)` without holding the thread. Several of one kind before a call are one; every listener gets each signal it listens for. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`. `Signals.raise(signal)` sends one to this program. Written in SG in the module `std`; the handler only writes into a pipe, and a thread hands each signal on |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -275,9 +276,9 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (301 of 1232 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (327 of 1319 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
-what the program owned (382). A
+what the program owned (382); nor is one that a signal ends (797). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
 threads reach the same memory without a lock between them; before the first of them, the thread sanitizer
 is tried on a C program that races on purpose, and a check that does not see that race fails the test.
@@ -398,6 +399,8 @@ the eighty-sixth (a varying count of arguments): each list of types a function t
 with gets an adapter of its own, which calls C as C calls it (750-760). So was the eighty-seventh (libcurl):
 `Memory.view` is a pointer and a count, checked once, and the adapters of `...` are made per list of the
 types of SG, since a `read CString` and a `raw byte` are one type of C but go over differently (761-778).
+So was the eighty-eighth (signals): the handler of the runtime only writes into a pipe, and a thread hands
+each signal to its listeners, in compiled code and in the interpreter alike (779-799).
 What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
@@ -466,6 +469,7 @@ hand with no checks):
 | `callback`: ten million numbers sorted by C's `qsort` with a comparator written in SG (`export int compareInts(raw void a, raw void b)`), which C calls through the pointer it is given (the C is the same sort with the comparator in C) | 0.904 s | 0.907 s | 0.902 s | 1.00 |
 | `sqlite`: a million rows put into an SQLite database in memory with one prepared statement in one transaction, each text made by `snprintf` (which takes `...`), then read back with another (the C is the same program through SQLite's header) | 0.320 s | 0.321 s | 0.321 s | 1.00 |
 | `curl`: a thousand fetches of a body of one megabyte over the loopback with libcurl, on one kept connection, from a server that is a task of the program; each piece of the body added to a list by an `export` callback through `Memory.view` (the C is the same program through libcurl's header, its server a thread, each piece copied with `memcpy`) | 0.163 s | 0.161 s | 0.160 s | 1.02 |
+| `signals`: a hundred thousand rounds of `Signals.raise(Signal.User1)` and `listener.next()` (the C is a handler that writes into a pipe the program reads itself, after each `raise`) | 0.318 s | 0.313 s | 0.250 s | 1.27 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -801,6 +805,8 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/std/files.sg`, `src/std/path.sg`, `src/std/environment.sg` | The same module's folders (`Directory`, `DirectoryEntry`, `FileInfo`, `FileKind`, and the work of `File.info` and `File.exists`), paths (`Path`) and variables of the environment (`Environment`, `VariableError`). Only they call `System.list`, `System.status` and the other calls of the system; a file of `std` that names a type of another brings it along (a `FileInfo` holds a `DateTime`) |
 | `src/std/process.sg` | The same module's other programs (`Command`, `Process`, `ExitStatus`, `ProcessError`): the search in `PATH`, the checks of what the system cannot take, the pipes taken out of a running program, its stop when it is not waited for, and the reading of how a program ended, over `System.run`, `System.start`, `System.wait`, `System.waitAsync`, `System.signal`, `System.reader`, `System.writer` and `System.executable` |
 | `src/std/net.sg` | The same module's datagrams and addresses (`UdpSocket`, `SocketAddress`, `Received`): reading and printing a v4 and a v6 address, and the two ends of a `TcpStream`. Only it calls the sockets of the system (`System.udpBind`, `System.udpSend`, `System.udpReceive`, `System.lookup` and the others) |
+| `src/std/signals.sg` | The same module's signals (`Signal`, `Signals`, `SignalListener`). Only it calls `System.signalListen`, `System.signalNext` and the other calls of the signals |
+| `src/signals.rs` | For the interpreter: the signals of the process, a handler that writes the kind into a pipe and a thread that hands each to its listeners, waking the fiber that waits through the scheduler |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
 
 It is a library with a thin command line on top, so that a language server can later reuse the parser and the
@@ -5514,11 +5520,123 @@ to 778 come from the slice. All were approved the same day:
      off as one that sends a body without end. A line of the headers that is not UTF-8 is left out of
      `headers`, and each status line starts the headers again, so they are those of the last response.
 
+Choices made in the eighty-eighth slice (signals), the fifth of the slices that bring SG to what C
+reaches. 779 to 793 were decided before it on 16 November 2026; 794 to 799 come from the slice. All were
+approved the same day:
+
+779. **`Signal`**, decided before the slice: a built-in enum of the signals a program may listen for,
+     `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` and `WindowChange`; `Copyable`,
+     `Formattable`, `Equatable`, `Hashable`, and written in SG in the module `std`. No numbers are given:
+     `User1` is 30 on macOS and 10 on Linux. Left out: the signals of faults (SIGSEGV, SIGBUS, SIGFPE,
+     SIGILL), those that cannot be caught (SIGKILL, SIGSTOP), SIGPIPE, which the runtime deals with,
+     SIGCHLD, which `Process` uses, and SIGALRM and the signals of job control, for later.
+     `ExitStatus.Signal(int)` keeps its number, since a program may end by any signal.
+780. **`Signals.listen(read Signal[] signals)`**, decided before the slice: gives a `SignalListener`, which
+     is not `Copyable` and may be given to another task. No signal at all is a panic; a signal written
+     twice is one. While a listener of a signal lives, the signal does not end the program; once its last
+     listener ends, it does what it did before (Go's `signal.Stop`; Tokio keeps its handler for good).
+781. **`listener.next()`**, decided before the slice: takes `ref this` and gives a `Signal`. A signal that
+     came after `listen` and before the call is kept; several of one kind before a call are one (the
+     system does not count them either, and Tokio folds them too); kinds come in the order they came;
+     every listener of a kind gets it. In the interpreter the other tasks run while it waits.
+782. **`listener.nextAsync(read token)`**, decided before the slice: a `Task<Result<Signal, Cancelled>>`,
+     awaited where it is written; the token may be left out (627). A cancel ends the
+     wait, and a signal that comes later stays for the next call. `next()` in an async function is an
+     error whose hint is `nextAsync`, as for the calls of 608.
+783. **`Signals.raise(signal)`**, decided before the slice: the signal to this program, for tests and for a
+     program that cleans up and then ends the way the signal asks. Without a listener the signal does
+     what it does by default, so the program ends at once, as in C. It is C's `raise` (794).
+784. **`process.signal(signal)`**, decided before the slice: a `Process` started with `Command` is sent a
+     signal by its name; it gives nothing, as `kill()` does, since a program not waited for keeps its
+     number. There is no way to send a signal to any number.
+785. **How it works in C**, decided before the slice: the handler, set with `sigaction` and `SA_RESTART`,
+     only writes the kind into a pipe that does not block and is closed on `exec`, and keeps `errno`. The
+     first `listen` starts a thread that waits for the pipe (`poll`) and hands each signal, under a lock, to
+     the listeners of its kind; the pipe is read only under that lock (794). `next` waits on a condition of
+     its listener, and an awaiting task is woken as one that waits for a thread of input and output is. A
+     program that never listens pays nothing.
+     `SA_RESTART` keeps a read of `Stdin` or an `accept` from failing with `EINTR`. `sigwait` was left out:
+     the mask would have to be set before any thread starts, and a program started with `Command` gets it.
+786. **The interpreter**, decided before the slice: the same way (`signals.rs`), the handler set with
+     `signal` through `extern "C"`, no library added. A wait is a piece of work the relay tells the
+     scheduler of, so a fiber that waits gives the turn away, with `next` as with `nextAsync`.
+787. **A handler of C**, decided before the slice: one can still be set inside `unsafe`, through `export`
+     and `CFunc`. When it and a listener are set for one signal, the last one set wins; this is written
+     here, not checked.
+788. **Programs started with `Command`**, decided before the slice: `exec` gives back to them what a
+     signal does by default, so a listener of this program is not theirs. Ctrl-C at a terminal reaches
+     every program of the group, those started by this one too.
+789. **A listener nothing reads**, decided before the slice: `var quiet = Signals.listen(...)`, kept only
+     so that Ctrl-C does not end the program, is not the error of a variable nothing reads; a
+     `SignalListener` is `Disposable`, and those are left out of that rule (590).
+790. **`examples/shutdown`**, decided before the slice: an echo server over TCP, async, that ends cleanly:
+     the first `Interrupt` or `Terminate` cancels the source of its accepts, so it takes no more
+     connections and waits for those that are open; a second cancels the source of the open ones. It then
+     says how many it served and ends with 0. Its module `server` has two tests, which send `User2`
+     with `Signals.raise`; the test `shutdown_on_signals` of `cargo test` starts the program interpreted,
+     compiled and compiled under the thread sanitizer, and sends it real `SIGINT` and `SIGTERM` from
+     outside, with no connection, with one served to its end, and with one cut by a second signal.
+791. **The tests**, decided before the slice: `ok_signals_next` (several of one kind are one, the order of
+     kinds, every listener, a listener given to a task), `ok_signals_async` (a cancel, a cancelled token,
+     two tasks each with a listener), `ok_signals_default` (the program ends by the signal once its last
+     listener has ended), `ok_signals_kept` (789), `ok_signals_process` (`Interrupt` and `Terminate` to
+     `sleep`, `Hangup` to a shell that catches it), `panic_signals_listen_nothing`,
+     `error_signals_next_in_async` and `error_signals_listen_one`; `examples/shutdown` with its two tests
+     and `shutdown_on_signals` (790). `cargo test` passes on macOS, where it compiles 327 of 1319 programs,
+     73 of them under the thread sanitizer, and 21 of 26 programs of tests, the tests of
+     `examples/shutdown` among them, and on Linux in a container with the same counts. Every compiled program is checked for leaks as before,
+     except `ok_signals_default`, which a signal ends (797).
+792. **Measured** (`signals`), decided before the slice: a hundred thousand rounds of `Signals.raise` and
+     `next()` take 0.318 to 0.326 s against 0.250 to 0.254 s for C's self-pipe, whose program reads the pipe
+     itself, 1.27 to 1.28 times on macOS (0.313 to 0.323 s checked), and 0.265 to 0.268 s against 0.112 to
+     0.115 s, 2.36 times, on Linux in a container (0.255 to 0.267 s checked). The relay wakes for each
+     signal although `raise` has handed it on: without that wake the program takes 0.253 s on macOS, the
+     time of C, and 0.131 s on Linux, where waking a thread costs more. It is in "Slower than C".
+793. **The documents**, decided before the slice: this list, the table at the top, "Not here yet", the
+     paragraph on the back end and the row of the measurement; 04, 02 and 06 and the README of the
+     repository.
+794. **`raise` gives the listeners the signal before it returns** (from the slice; 783 said
+     `kill(getpid())`): C's `raise` sends the signal to the thread that calls it, so its handler has written
+     the kind into the pipe when the call returns; sent to the process, it may be handled by another thread
+     later. Then `raise` reads the pipe itself, under the lock the relay reads it under, and hands on what
+     it holds, so a kind the relay took is handed on too by the time the lock is free. Before this, a
+     thread under the sanitizers took the first of three `User1` before the relay had handed on the other
+     two, so three were two and the order of kinds came out wrong; and a `raise` that waited for the relay
+     took 3.0 times C in `signals`, against 1.27 now (792). What was printed goes out before, as it does
+     before `Command` runs a program (605), so a signal that ends the program does not lose it.
+795. **What a signal did before comes back** (from the slice; 780 said the default): the first listener of
+     a kind keeps what the kind did, and its last listener sets that again. A program started with
+     `SIGHUP` ignored (`nohup`) ignores it again once it stops listening, as Go does.
+796. **A signal that came as its last listener ended** (from the slice): its kind may still be in the pipe
+     when a new listener of it starts, and that listener then gets it. Telling them apart would need a
+     count shared with the handler; the case is written here, not dealt with.
+797. **The tests that send signals run in a process of their own** (from the slice): a signal reaches the
+     whole process, and one that no listener is left for ends it, so the interpreter runs a program of
+     `tests/cases` with `signals` in its name as `sg file.sg`, not inside `cargo test`; the tests of
+     `examples/shutdown`, which run inside it, send `User2` only while it is listened for. A compiled
+     program that a signal ends is not looked at for leaks, as one that ends in a panic is not (382), and
+     a compiled program that awaits a signal runs under the thread sanitizer, since the relay is a thread.
+798. **A server says what it does at once** (from the slice): the output of a program into a pipe is
+     written out a block at a time, so a line that says the server took a signal could wait in the block
+     while the test waits for it. `examples/shutdown` writes each line with `say`, which prints and then
+     calls `Stdout.flush()`.
+799. **The type of `listen` stays a list** (from the slice): `Signals.listen(Signal.Interrupt)` is the
+     error `expected read Signal[], found Signal`, with no hint of its own; a list of one is written
+     `read List<Signal> { Signal.Interrupt }`.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
 here to be talked over when their time comes; none of them breaks a program, and none is fixed by turning a
 check off.
+
+- **A signal raised by the program wakes the relay** (`signals`, 1.27 times on macOS and 2.36 on Linux,
+  choice 792): the handler writes each signal into the pipe, so the thread that waits for the pipe wakes
+  and takes the lock even when `raise` has handed the signal on itself; without that wake the program
+  takes the time of C on macOS and 1.16 times it on Linux. Candidate:
+  the handler of a signal the thread raises itself keeps the kind in a variable of the thread, which
+  `raise` hands on, so the pipe is left to signals from outside. Whether a handler may write a variable
+  of the thread in every case is to be checked first.
 
 - **Bytes read one index at a time** (`hash`, choice 136): `data[at] | data[at + 1] << 8 | ...` checks
   each index, the C compiler cannot join the reads, and the program takes 3.5 times the time of C. Cutting
@@ -5601,7 +5719,8 @@ check off.
 - **Of other programs**: two programs joined by a pipe (`a | b`), an output sent straight into a file, a
   look at whether a program has ended without waiting (`try_wait`; a wait with a time limit is
   `waitAsync` with a token of `CancellationSource.after(ms)`), a program left to go on after this one
-  (`detach`), groups of processes, signals other than 9 and 15, a terminal of its own (pty). A program
+  (`detach`), groups of processes, a signal to a program that is not one's own, a terminal of its own
+  (pty). A program
   run by the interpreter sees a pipe for its output and standard error (609), and what a started one
   writes there comes out when it is waited for (629). A `Process` named by `is Ok(process)` is lent, so
   the rule that it is waited for does not see it; it is stopped where the value it is lent from ends.
@@ -5623,6 +5742,11 @@ check off.
   when the tests run them in one process (`opterr`). A C file does not call an `export` function that
   takes or gives a struct by value by its name (747);
   the interpreter runs a function C calls only on a thread that is in a call of C (736).
+- **Of signals**: the signals of faults (SIGSEGV and the others), SIGALRM, SIGCHLD and those of job control
+  (SIGTSTP, SIGCONT, SIGTTIN, SIGTTOU); real-time signals and the value they carry; how many of one kind
+  came (796 for one that comes as the last listener of its kind ends); a signal to a group of processes.
+  A handler of C set inside `unsafe` and a listener of the same signal are not checked against each
+  other (787).
 - **Of `examples/curl`**: async requests (libcurl's multi interface on the loop of the network),
   cookies, a proxy, uploads from a file, a choice of HTTP/2, decompressing a body, and a way to turn the
   check of certificates off (there is none, on purpose). The numbers of libcurl's options are written in
@@ -5858,4 +5982,6 @@ type being an error there, and SQLite is wrapped in a module whose users write n
 (750-760). The eighty-seventh is written: libcurl is wrapped the same way, with safe defaults (only
 `http` and `https`, certificates always checked, a limit on what a response brings), `Memory.view` gives
 the bytes C hands a callback to a list in one copy, and a call of C no longer holds up the other tasks in
-the interpreter (761-778).
+the interpreter (761-778). The eighty-eighth is written: a program listens for signals and takes them one
+at a time (`Signals.listen`, `next`, `nextAsync`), with no handler of its own, and `examples/shutdown` is a
+server that ends cleanly on Ctrl-C or `kill`, tested with real signals sent from outside (779-799).

@@ -3075,6 +3075,238 @@ static inline int64_t sg_udp_found(const struct addrinfo* list, uint64_t* out) {
 }
 "#;
 
+/// `Signals.listen` and a `SignalListener`: a handler that only writes the kind of the signal into
+/// a pipe, which a handler may do, and a thread, started by the first listener, that waits for the
+/// pipe and hands each signal to the listeners of its kind; `raise` hands on the pipe itself. A listener keeps the kinds that came once
+/// each, in the order they came; `next` waits on its condition, and an awaiting task (with
+/// `SG_SIGNALS_ASYNC`) is woken as one waiting for a thread is. A kind whose last listener ends does
+/// what it did before the first. Added after the async runtimes.
+const SIGNALS_RUNTIME: &str = r#"
+#include <fcntl.h>
+#include <poll.h>
+#include <pthread.h>
+#include <signal.h>
+#define SG_SIG_KINDS 7
+/* The kinds, in the order of the variants of `Signal`. */
+static const int sg_sig_numbers[SG_SIG_KINDS] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2, SIGWINCH };
+#if SG_SIGNALS_ASYNC
+struct sg_sig_wait;
+#endif
+typedef struct sg_sig_listener {
+    struct sg_sig_listener* prev;
+    struct sg_sig_listener* next;
+    int mask;
+    int count;
+    uint8_t pending[SG_SIG_KINDS];
+    pthread_cond_t came;
+#if SG_SIGNALS_ASYNC
+    /* The task that awaits a signal: under the clock's lock. */
+    struct sg_sig_wait* waiter;
+#endif
+} sg_sig_listener;
+static pthread_mutex_t sg_sig_lock = PTHREAD_MUTEX_INITIALIZER;
+static sg_sig_listener* sg_sig_first = NULL;
+static int sg_sig_counts[SG_SIG_KINDS];
+static struct sigaction sg_sig_before[SG_SIG_KINDS];
+/* Neither end blocks. The read end is read only under `sg_sig_lock`, so a kind read from it has been
+   handed on once the lock is free. */
+static int sg_sig_read_end = -1;
+static int sg_sig_write_end = -1;
+/* The handler: the kind goes into the pipe, which does not block; a full pipe drops it, which
+   loses nothing that counts, since a listener keeps each kind once. */
+static void sg_sig_handler(int number) {
+    int saved = errno;
+    int end = __atomic_load_n(&sg_sig_write_end, __ATOMIC_ACQUIRE);
+    for (uint8_t k = 0; k < SG_SIG_KINDS; k++) {
+        if (sg_sig_numbers[k] == number) {
+            ssize_t written = write(end, &k, 1);
+            (void)written;
+            break;
+        }
+    }
+    errno = saved;
+}
+static int sg_sig_pop(sg_sig_listener* l) {
+    int k = l->pending[0];
+    l->count--;
+    memmove(l->pending, l->pending + 1, (size_t)l->count);
+    return k;
+}
+#if SG_SIGNALS_ASYNC
+static void sg_sig_tell(sg_sig_listener* l);
+#endif
+/* `sg_sig_lock` is held: what the pipe holds goes to the listeners of each kind. */
+static void sg_sig_hand_on(void) {
+    uint8_t got[64];
+    for (;;) {
+        ssize_t n = read(sg_sig_read_end, got, sizeof got);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return;
+        for (ssize_t i = 0; i < n; i++) {
+            int k = got[i];
+            for (sg_sig_listener* l = sg_sig_first; l; l = l->next) {
+                if (!(l->mask & (1 << k))) continue;
+                bool kept = false;
+                for (int j = 0; j < l->count; j++) kept = kept || l->pending[j] == k;
+                if (!kept) l->pending[l->count++] = (uint8_t)k;
+                pthread_cond_broadcast(&l->came);
+#if SG_SIGNALS_ASYNC
+                sg_sig_tell(l);
+#endif
+            }
+        }
+        /* Fewer than asked for: the pipe was empty after them. */
+        if (n < (ssize_t)sizeof got) return;
+    }
+}
+/* The relay: it waits for the pipe, then hands on what it holds, which `raise` may have done first. */
+static void* sg_sig_relay(void* unused) {
+    (void)unused;
+    struct pollfd p = { sg_sig_read_end, POLLIN, 0 };
+    for (;;) {
+        if (poll(&p, 1, -1) < 0 && errno != EINTR) return NULL;
+        pthread_mutex_lock(&sg_sig_lock);
+        sg_sig_hand_on();
+        pthread_mutex_unlock(&sg_sig_lock);
+    }
+}
+/* `System.signalListen(mask)`: the first listener makes the pipe and starts the thread. */
+static int64_t sg_sig_listen(int32_t mask) {
+    sg_sig_listener* l = calloc(1, sizeof *l);
+    if (!l) abort();
+    pthread_cond_init(&l->came, NULL);
+    l->mask = mask;
+    pthread_mutex_lock(&sg_sig_lock);
+    if (sg_sig_read_end < 0) {
+        int ends[2];
+        if (pipe(ends) != 0) sg_panicf("", "the system refused a pipe for the signals: %s (os error %d)\n", strerror(errno), errno);
+        fcntl(ends[0], F_SETFD, FD_CLOEXEC);
+        fcntl(ends[1], F_SETFD, FD_CLOEXEC);
+        fcntl(ends[0], F_SETFL, O_NONBLOCK);
+        fcntl(ends[1], F_SETFL, O_NONBLOCK);
+        sg_sig_read_end = ends[0];
+        __atomic_store_n(&sg_sig_write_end, ends[1], __ATOMIC_RELEASE);
+        pthread_attr_t attr;
+        pthread_t thread;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        int code = pthread_create(&thread, &attr, sg_sig_relay, NULL);
+        pthread_attr_destroy(&attr);
+        if (code) sg_panicf("", "the system refused a thread for the signals: %s (os error %d)\n", strerror(code), code);
+    }
+    for (int k = 0; k < SG_SIG_KINDS; k++) {
+        if ((mask & (1 << k)) && sg_sig_counts[k]++ == 0) {
+            struct sigaction a;
+            memset(&a, 0, sizeof a);
+            a.sa_handler = sg_sig_handler;
+            sigemptyset(&a.sa_mask);
+            a.sa_flags = SA_RESTART;
+            sigaction(sg_sig_numbers[k], &a, &sg_sig_before[k]);
+        }
+    }
+    l->next = sg_sig_first;
+    if (sg_sig_first) sg_sig_first->prev = l;
+    sg_sig_first = l;
+    pthread_mutex_unlock(&sg_sig_lock);
+    return (int64_t)(intptr_t)l;
+}
+/* `System.signalStop(listener)`. */
+static void sg_sig_stop(int64_t id) {
+    sg_sig_listener* l = (sg_sig_listener*)(intptr_t)id;
+    pthread_mutex_lock(&sg_sig_lock);
+    if (l->prev) l->prev->next = l->next;
+    else sg_sig_first = l->next;
+    if (l->next) l->next->prev = l->prev;
+    for (int k = 0; k < SG_SIG_KINDS; k++) {
+        if ((l->mask & (1 << k)) && --sg_sig_counts[k] == 0) sigaction(sg_sig_numbers[k], &sg_sig_before[k], NULL);
+    }
+    pthread_mutex_unlock(&sg_sig_lock);
+    pthread_cond_destroy(&l->came);
+    free(l);
+}
+/* `System.signalRaise(kind)`: C's `raise`, to this thread, so the handler has written the kind when
+   it returns; then the pipe is handed on here, so the listeners have it. What was printed goes out
+   first. */
+static void sg_sig_raise(int32_t kind) {
+    fflush(stdout);
+    (void)raise(sg_sig_numbers[kind]);
+    pthread_mutex_lock(&sg_sig_lock);
+    if (sg_sig_read_end >= 0) sg_sig_hand_on();
+    pthread_mutex_unlock(&sg_sig_lock);
+}
+/* `System.signalNext(listener)`. */
+static int64_t sg_sig_next(int64_t id) {
+    sg_sig_listener* l = (sg_sig_listener*)(intptr_t)id;
+    pthread_mutex_lock(&sg_sig_lock);
+    while (l->count == 0) pthread_cond_wait(&l->came, &sg_sig_lock);
+    int k = sg_sig_pop(l);
+    pthread_mutex_unlock(&sg_sig_lock);
+    return k;
+}
+#if SG_SIGNALS_ASYNC
+/* `await System.signalNextAsync(listener, read token, ref kind)`, in the frame of the task:
+   `state` is SG_WAITING, SG_OVER (`kind` then the kind) or SG_CANCELLED. */
+typedef struct sg_sig_wait { sg_wait w; sg_sig_listener* l; int state; int kind; } sg_sig_wait;
+/* `sg_sig_lock` is held, and a signal came: the task that awaits one goes on. */
+static void sg_sig_tell(sg_sig_listener* l) {
+    pthread_mutex_lock(&sg_clock_lock);
+    sg_sig_wait* x = l->waiter;
+    sg_task* job = NULL;
+    if (x) {
+        l->waiter = NULL;
+        sg_wait_unlink(&x->w);
+        __atomic_store_n(&x->w.d.state, SG_OVER, __ATOMIC_RELEASE);
+        job = x->w.d.job;
+        __atomic_store_n(&x->w.settled, 1, __ATOMIC_RELEASE);
+    }
+    pthread_mutex_unlock(&sg_clock_lock);
+    if (job) sg_wake(job);
+}
+/* A cancel, under the clock's lock: the task goes on, and the signal that comes later stays. */
+static void sg_sig_cut(sg_delay* d) {
+    sg_sig_wait* x = (sg_sig_wait*)d;
+    x->l->waiter = NULL;
+    sg_task* job = d->job;
+    __atomic_store_n(&x->w.settled, 1, __ATOMIC_RELEASE);
+    sg_wake(job);
+}
+static void sg_sig_wait_start(sg_sig_wait* x, int64_t id, sg_cancel* token) {
+    x->l = (sg_sig_listener*)(intptr_t)id;
+    x->kind = -1;
+    sg_wait_init(&x->w, sg_sig_cut);
+    if (sg_cancelled(token)) { x->state = SG_CANCELLED; return; }
+    pthread_mutex_lock(&sg_sig_lock);
+    if (x->l->count > 0) {
+        x->kind = sg_sig_pop(x->l);
+        x->state = SG_OVER;
+    } else {
+        pthread_mutex_lock(&sg_clock_lock);
+        if (token && token->cancelled) {
+            x->state = SG_CANCELLED;
+        } else {
+            if (token) sg_wait_link(&x->w, token);
+            x->l->waiter = x;
+            x->state = SG_WAITING;
+        }
+        pthread_mutex_unlock(&sg_clock_lock);
+    }
+    pthread_mutex_unlock(&sg_sig_lock);
+}
+static bool sg_sig_wait_ready(sg_sig_wait* x) {
+    if (x->state == SG_WAITING) {
+        if (!sg_wait_settled(&x->w)) return false;
+        x->state = sg_wait_state(&x->w);
+    }
+    if (x->state == SG_OVER && x->kind < 0) {
+        pthread_mutex_lock(&sg_sig_lock);
+        x->kind = sg_sig_pop(x->l);
+        pthread_mutex_unlock(&sg_sig_lock);
+    }
+    return true;
+}
+#endif
+"#;
+
 /// `System.lookupAsync`: the name is looked up on a thread of input and output, as for
 /// `connectAsync`, and a cancel leaves it to the thread. After `NET_ASYNC_RUNTIME`.
 const UDP_ASYNC_RUNTIME: &str = r#"
@@ -5621,7 +5853,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     let _ = writeln!(out, "#define SG_THREADS {}", u8::from(threads));
     // `accept4` and the flags of `socket` are GNU's on Linux, and so are `renameat2`, `d_type`
     // and `mkdtemp` in strict C11.
-    if emitter.made.contains("net") || emitter.made.contains("files") {
+    if emitter.made.contains("net") || emitter.made.contains("files") || emitter.made.contains("signals") {
         out.insert_str(0, "#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n");
     }
     // An async function that may drop a writer has it closed on a thread (`sg_closing_put`).
@@ -5686,6 +5918,10 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     if emitter.made.contains("udp async") {
         out.push_str(UDP_ASYNC_RUNTIME);
+    }
+    if emitter.made.contains("signals") {
+        let _ = writeln!(out, "\n#define SG_SIGNALS_ASYNC {}", u8::from(emitter.made.contains("signals async")));
+        out.push_str(SIGNALS_RUNTIME);
     }
     if tests {
         out.push_str(TEST_SUPPORT);
@@ -11026,6 +11262,18 @@ impl<'a> Emitter<'a> {
                 self.made.insert("process".to_string());
                 ("sg_system_signal", vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)], "(void)kill((pid_t)a0, a1);".to_string())
             }
+            SystemCall::SignalListen | SystemCall::SignalNext | SystemCall::SignalStop | SystemCall::SignalRaise | SystemCall::SignalNumber => {
+                self.made.insert("signals".to_string());
+                let int = Ty::Int(IntTy::Int);
+                let long = Ty::Int(IntTy::Long);
+                match call {
+                    SystemCall::SignalListen => ("sg_system_signal_listen", vec![int], "return sg_sig_listen(a0);".to_string()),
+                    SystemCall::SignalNext => ("sg_system_signal_next", vec![long], "return sg_sig_next(a0);".to_string()),
+                    SystemCall::SignalStop => ("sg_system_signal_stop", vec![long], "sg_sig_stop(a0);".to_string()),
+                    SystemCall::SignalRaise => ("sg_system_signal_raise", vec![int], "sg_sig_raise(a0);".to_string()),
+                    _ => ("sg_system_signal_number", vec![int], "return sg_sig_numbers[a0];".to_string()),
+                }
+            }
             SystemCall::PipeReader => {
                 self.made.extend(["process".to_string(), "net".to_string(), "process pipes".to_string()]);
                 ("sg_system_reader", vec![Ty::Int(IntTy::Long)], "return sg_proc_reader(a0);".to_string())
@@ -11034,7 +11282,7 @@ impl<'a> Emitter<'a> {
                 self.made.insert("process".to_string());
                 ("sg_system_writer", vec![Ty::Int(IntTy::Long)], "return sg_proc_writer(a0);".to_string())
             }
-            SystemCall::WaitAsync | SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync | SystemCall::LookupAsync => {
+            SystemCall::WaitAsync | SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync | SystemCall::LookupAsync | SystemCall::SignalNextAsync => {
                 unreachable!("the checker has the async calls of `System` awaited where they are written")
             }
             SystemCall::UdpBind | SystemCall::UdpConnect | SystemCall::UdpSend | SystemCall::UdpReceive | SystemCall::SocketName | SystemCall::StreamName | SystemCall::CloseSocket | SystemCall::Lookup => {
@@ -11497,6 +11745,21 @@ impl<'a> Emitter<'a> {
                 result(self, format!(
                     "({wait}.state == SG_CANCELLED ? ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }} : {wait}.code ? ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_error({wait}.code) }} }} : ({gives}){{ .tag = 0 }})"
                 ))
+            }
+            // `await System.signalNextAsync(listener, read token, ref kind)`: the task waits until the
+            // relay of the signals hands its listener one, or the token is cancelled.
+            ExprKind::Method { args, callee: Callee::System(SystemCall::SignalNextAsync), .. } => {
+                self.made.extend(["signals", "signals async", "async io", "tasks"].map(str::to_string));
+                let id = self.value_as(&args[0], &Ty::Int(IntTy::Long))?;
+                let token = format!("(*{})", self.value(&args[1])?);
+                let kind = self.value(&args[2])?;
+                let wait = self.temp();
+                self.pre.push(format!("sg_sig_wait {wait}; sg_sig_wait_start(&{wait}, {id}, {token});"));
+                self.resume_point(expr.span);
+                self.pre.push(format!("if (!sg_sig_wait_ready(&{wait})) return false;"));
+                self.pre.push(format!("if ({wait}.state == SG_OVER && ({kind}).len > 0) ({kind}).ptr[0] = {wait}.kind;"));
+                let ctype = self.ctype(&expr.ty, expr.span)?;
+                result(self, format!("({wait}.state == SG_CANCELLED ? ({ctype}){{ .tag = 1 }} : ({ctype}){{ .tag = 0 }})"))
             }
             ExprKind::Method { args, callee: Callee::Delay(told), .. } => {
                 let delay = self.temp();

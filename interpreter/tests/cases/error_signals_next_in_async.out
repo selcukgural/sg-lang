@@ -1,0 +1,7 @@
+error: `next` holds the thread until it is done, and an async function does not hold its thread
+  `next` does `System.signalNext`
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_signals_next_in_async.sg:4:20
+ 4 |     print(listener.next())
+   |                    ^^^^
+  hint: `await listener.nextAsync()` does the same work without holding the thread

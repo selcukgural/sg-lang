@@ -1,0 +1,46 @@
+// `nextAsync` waits for a signal without holding the thread: a token ends the wait, and a signal
+// that comes later stays for the next call; a token cancelled already takes nothing.
+async void ring(int ms) {
+    await Task.delay(ms)
+    print("ringing")
+    Signals.raise(Signal.Hangup)
+}
+
+async Result<void, Cancelled> main() {
+    var listener = Signals.listen(read List<Signal> { Signal.Hangup, Signal.Quit })
+    var soon = CancellationSource.after(30)
+    match await listener.nextAsync(read soon.token()) {
+        Ok(signal) => print($"got {signal}")
+        Error(_) => print("cancelled: nothing came")
+    }
+
+    var ringing = ring(50)
+    var rung = try await listener.nextAsync()
+    print($"got {rung}")
+    await ringing
+
+    var gone = CancellationSource()
+    gone.cancel()
+    Signals.raise(Signal.Quit)
+    match await listener.nextAsync(read gone.token()) {
+        Ok(signal) => print($"got {signal}")
+        Error(_) => print("cancelled: the signal stays")
+    }
+    var kept = try await listener.nextAsync()
+    print($"got {kept}")
+
+    // Two tasks, each with a listener of its own, both get the one signal.
+    var a = waitOne(Signals.listen(read List<Signal> { Signal.User1 }), "a")
+    var b = waitOne(Signals.listen(read List<Signal> { Signal.User1 }), "b")
+    await Task.delay(30)
+    Signals.raise(Signal.User1)
+    await a
+    await b
+    return Ok()
+}
+
+async void waitOne(SignalListener listener, string name) {
+    if await listener.nextAsync() is Ok(signal) {
+        print($"{name} got {signal}")
+    }
+}

@@ -1,0 +1,8 @@
+// A listener kept only so that Ctrl-C does not end the program is never read, and is not an error:
+// it does its work by being there, as a `Disposable` value does.
+void main() {
+    var quiet = Signals.listen(read List<Signal> { Signal.Interrupt })
+    Signals.raise(Signal.Interrupt)
+    Signals.raise(Signal.Interrupt)
+    print("still here")
+}

@@ -1,0 +1,19 @@
+// A server that ends cleanly on Ctrl-C or `kill`: `sg examples/shutdown/main.sg 127.0.0.1:7000`
+// echoes what each connection sends. The first Ctrl-C (or SIGTERM) stops it taking connections
+// and waits for those that are open; a second cuts them. It then says how many it served and
+// ends with 0.
+use server
+
+async Result<void, IoError> main(List<string> args) {
+    if args.length() != 1 {
+        _ = Stderr.writeLine("usage: main <host:port>")
+        exit(2)
+    }
+    var listener = try TcpListener.bind(args[0])
+    // Listening starts before the port is shown: a signal sent once it is seen is never missed.
+    var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })
+    say($"listening on port {listener.port()}".toString())
+    var served = try await serve(listener, signals)
+    say($"stopped cleanly after {served} connection(s)".toString())
+    return Ok()
+}
