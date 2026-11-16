@@ -376,6 +376,25 @@ pub enum SystemCall {
     /// What it wrote is kept in `output` when it is UTF-8; `ended` gets how it ended and where
     /// the first byte that is not UTF-8 is, or -1.
     Run,
+    /// `System.start(path, read words, read folder, clear, read names, read values, read kept,
+    /// input, read text, output, error, ref made)`: starts a program and goes on. Its input is
+    /// this program's (`input` 0), nothing (1), `text` written by a thread (2) or a pipe (3); its
+    /// output and its standard error are pipes when asked for. `made` gets the number of the
+    /// program, then the ends of the pipes kept here, or -1.
+    Start,
+    /// `System.wait(pid, ref ended)`: waits for the program to end and takes it away; `ended` gets
+    /// 0 and the code, or 1 and the signal that stopped it.
+    Wait,
+    /// `System.waitAsync(pid, read token, ref ended)`: the same without holding the thread. A
+    /// cancel ends the wait and leaves the program to be stopped.
+    WaitAsync,
+    /// `System.signal(pid, number)`: `kill`. The program is not taken away before it is waited
+    /// for, so the number names no other program.
+    Signal,
+    /// `System.reader(end)`: the reader of the end of a pipe made by `start`, which it owns.
+    PipeReader,
+    /// `System.writer(end)`: the writer of the end of a pipe made by `start`, which it owns.
+    PipeWriter,
 }
 
 impl IoCall {

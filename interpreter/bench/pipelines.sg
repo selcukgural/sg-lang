@@ -1,0 +1,25 @@
+// The log of two million lines (125 MB) read line by line from the output of `cat`, started with
+// `start` and read through a pipe while it runs: what reading another program's output costs, the
+// check that each line is UTF-8 included. The lines, their bytes and the lines that start with
+// `ERROR` are counted, as in `lines`.
+Result<void, ProcessError> main() {
+    var cat = Command("cat")
+    cat.arg("target/bench/lines.in")
+    cat.pipeOutput()
+    var process = try cat.start()
+    var output = process.takeOutput() ?? panic("the output was asked for")
+    string line = ""
+    long lines = 0
+    long bytes = 0
+    long errors = 0
+    while try output.readLine(ref line) {
+        lines += 1
+        bytes += line.length()
+        if line.startsWith("ERROR") {
+            errors += 1
+        }
+    }
+    var status = try process.wait()
+    print($"{lines} lines, {bytes} bytes, {errors} errors, {status}")
+    return Ok()
+}

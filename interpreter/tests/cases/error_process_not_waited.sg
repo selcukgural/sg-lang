@@ -1,0 +1,5 @@
+Result<void, IoError> main() {
+    var process = try Command("true").start()
+    print(process.id())
+    return Ok()
+}

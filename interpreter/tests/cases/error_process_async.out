@@ -4,4 +4,4 @@ error: `run` holds the thread until it is done, and an async function does not h
   --> error_process_async.sg:3:14
  3 |     try list.run()
    |              ^^^
-  hint: a function that does it runs on a thread of its own with `await Task.run(work, x)`
+  hint: `await list.runAsync()` does the same work without holding the thread

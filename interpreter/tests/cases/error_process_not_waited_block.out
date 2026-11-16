@@ -1,0 +1,6 @@
+error: the program in `started` is not waited for before its block ends
+  a program that is not waited for is stopped where its `Process` ends, with the signal 9
+  --> error_process_not_waited_block.sg:4:13
+ 4 |         var started = try cat.start()
+   |             ^^^^^^^
+  hint: `var status = try started.wait()`; to stop it first, `started.kill()`

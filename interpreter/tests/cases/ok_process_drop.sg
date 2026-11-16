@@ -1,0 +1,38 @@
+// A `Process` that ends without being waited for stops its program with the signal 9: on a way
+// out with an error, and in a field of a struct that ends. Had the shells gone on, they would
+// write after a third of a second.
+struct Holder {
+    Process process
+}
+
+Command late(read string word) {
+    var sh = Command("sh")
+    sh.args(read List<string> { "-c", $"sleep 0.3; echo {word} survived".toString() })
+    return sh
+}
+
+Result<void, IoError> leave() {
+    var process = try late("the first").start()
+    print(process.id() > 0)
+    _ = try File.readText("/no/such/file")
+    _ = try process.wait()
+    return Ok()
+}
+
+void main() {
+    match leave() {
+        Ok => print("read")
+        Error(cause) => print($"left: {cause}")
+    }
+    match late("the second").start() {
+        Ok(process) => {
+            var holder = Holder { process = process }
+            print(holder.process.id() > 0)
+        }
+        Error(cause) => print($"{cause}")
+    }
+    var pause = Command("sleep")
+    pause.arg("0.6")
+    _ = pause.status()
+    print("done")
+}

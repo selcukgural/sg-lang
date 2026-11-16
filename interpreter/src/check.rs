@@ -880,6 +880,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     }
 
     disposal_rules(prog, &structs, &copyable)?;
+    async_method_rules(prog)?;
 
     let mut sigs: HashMap<String, FuncSig> = HashMap::new();
     for func in &prog.funcs {
@@ -1123,6 +1124,13 @@ fn points_at_opaque(ty: &Ty, structs: &HashMap<String, StructInfo>) -> bool {
 
 /// Whether a local of this type is closed before it ends: `None` for a `StreamWriter`, the
 /// short name of a struct written with `: Closable`.
+/// A `Process` of the language's own module: a program that runs until it is waited for.
+fn is_process(ty: &Ty) -> bool {
+    matches!(ty, Ty::Struct(name) if name == PROCESS)
+}
+
+const PROCESS: &str = "std.Process";
+
 fn closable<'s>(ty: &'s Ty, structs: &HashMap<String, StructInfo>) -> Option<Option<&'s str>> {
     match ty {
         Ty::Writer => Some(None),
@@ -1175,6 +1183,47 @@ fn disposal_rules(prog: &Program, structs: &HashMap<String, StructInfo>, copyabl
                 let diag = Diag::error(span, format!("`{short}` is `Closable`, so it has a `close` that takes the value and says how closing went"));
                 return Err(diag.hint(format!("`Result<void, E> close(this) {{ ... }}`, with the error type `{short}` gives")));
             }
+        }
+    }
+    Ok(())
+}
+
+/// A function or a method of the language's own module whose last parameter is `read
+/// CancellationToken` may be called without it, as a built-in async function is (choice 404):
+/// the token that is never cancelled is put there. `owner` is the full name of the function, or
+/// of the type of the method.
+fn fill_token(owner: &str, sig: &FuncSig, args: &mut Vec<Expr>, span: Span) {
+    let in_std = owner == STD_MODULE || owner.starts_with(&format!("{STD_MODULE}."));
+    if !in_std || args.len() + 1 != sig.params.len() || sig.params.last() != Some(&Ty::Read(Box::new(Ty::Token))) {
+        return;
+    }
+    let at = Span::new(span.end, span.end);
+    let made = |kind: ExprKind| Expr { kind, span: at, ty: Ty::Void, moved: false };
+    let none = made(ExprKind::Field { recv: Box::new(made(ExprKind::Var("CancellationToken".to_string()))), name: "None".to_string(), name_span: at, index: 0 });
+    args.push(made(ExprKind::Borrow { mutable: false, expr: Box::new(none) }));
+}
+
+/// The methods the language calls by itself are not async: it calls them where it does not
+/// await (`T(...)`, `print`, `==`, `sort`, a key of a map). `dispose` and `close` say so where
+/// their shapes are checked.
+fn async_method_rules(prog: &Program) -> Res<()> {
+    let typed = prog.structs.iter().map(|decl| (&decl.interfaces, &decl.methods)).chain(prog.enums.iter().map(|decl| (&decl.interfaces, &decl.methods)));
+    for (interfaces, methods) in typed {
+        let said = |interface: &str| interfaces.iter().any(|(name, _)| name == interface);
+        for method in methods.iter().filter(|method| method.is_async) {
+            let used_by = match method.name.as_str() {
+                "create" => "`T(...)`",
+                "format" if said("Formattable") => "`print` and `$\"...\"`",
+                "equals" if said("Equatable") => "`==` and `!=`",
+                "hash" if said("Hashable") => "a `HashMap` and a `HashSet`",
+                "compare" if said("Comparable") => "`<` and `sort`",
+                _ => continue,
+            };
+            let diag = Diag::error(method.name_span, format!("`{}` is called by {used_by} without `await`, so it cannot be async", method.name));
+            return Err(match method.name.as_str() {
+                "create" => diag.hint("an async function of the type gives one when it is awaited: `public async T load(...)`, then `await T.load(...)`"),
+                _ => diag,
+            });
         }
     }
     Ok(())
@@ -2518,6 +2567,9 @@ impl<'a> Checker<'a> {
             if keeps_tasks(&var.declared) {
                 return Err(self.unwaited(var, exit));
             }
+            if is_process(&var.declared) && var.name != "this" {
+                return Err(self.unwaited_program(var, exit));
+            }
             let Some(own) = closable(&var.declared, self.structs) else { continue };
             // The type's own methods are what closes it.
             if var.name == "this" {
@@ -2555,6 +2607,28 @@ impl<'a> Checker<'a> {
         let text = &self.src[span.start..span.end];
         Diag::error(span, "what a `shared locked` value holds is reached only inside a `lock` block, where no other task reaches it")
             .hint(format!("`lock {text} as name {{ ... }}`"))
+    }
+
+    /// A program started with `start`, kept in `var`, is not waited for where its scope ends: it
+    /// would be stopped there.
+    fn unwaited_program(&self, var: &Var, exit: Option<(Span, &str)>) -> Diag {
+        let name = &var.name;
+        let ends = if var.param { "the function ends" } else { "its block ends" };
+        let diag = match (exit, var.moved.whole.is_some()) {
+            (_, true) => Diag::error(var.at, format!("the program in `{name}` is waited for on some paths but not on all of them"))
+                .note("wait for it on every path, or once where the paths meet"),
+            (Some((span, word)), false) => Diag::error(span, format!("the program in `{name}` is not waited for at this `{word}`"))
+                .related(var.at, "it is started here"),
+            (None, false) => Diag::error(var.at, format!("the program in `{name}` is not waited for before {ends}")),
+        };
+        let diag = match exit {
+            Some((_, "exit")) => diag.note("`exit` ends this program at once, and leaves the other one running"),
+            _ => diag.note("a program that is not waited for is stopped where its `Process` ends, with the signal 9"),
+        };
+        diag.hint(match self.is_async {
+            true => format!("`var status = try await {name}.waitAsync()`; to stop it first, `{name}.kill()`"),
+            false => format!("`var status = try {name}.wait()`; to stop it first, `{name}.kill()`"),
+        })
     }
 
     /// A task kept in `var` is not waited for where its scope ends.
@@ -3621,6 +3695,13 @@ impl<'a> Checker<'a> {
                             return Err(Diag::error(target.span, format!("`{name}` is given another task while the one it holds is not waited for"))
                                 .related(var.at, "it is declared here")
                                 .hint(format!("wait for it first: `{name}.wait()`")));
+                        }
+                        let var = self.var(name, target.span)?;
+                        if is_process(&var.declared) && (var.moved.whole.is_none() || var.moved.partly) {
+                            let wait = if is_async { format!("try await {name}.waitAsync()") } else { format!("try {name}.wait()") };
+                            return Err(Diag::error(target.span, format!("`{name}` is given another program while the one it holds is not waited for"))
+                                .related(var.at, "it is declared here")
+                                .hint(format!("wait for it first: `var status = {wait}`")));
                         }
                         let structs = self.structs;
                         let var = self.var(name, target.span)?;
@@ -6800,7 +6881,7 @@ impl<'a> Checker<'a> {
         self.lent_twice(None, args)
     }
 
-    fn call(&mut self, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+    fn call(&mut self, name: &str, name_span: Span, args: &mut Vec<Expr>, callee: &mut Callee, span: Span) -> Res<Ty> {
         let awaited = std::mem::take(&mut self.awaiting);
         let arity = |count: usize| {
             if args.len() == count {
@@ -6902,7 +6983,7 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(name_span, format!("`{name}` has no `create` function, so `{name}(...)` cannot build it"))
                         .hint(format!("write the fields: `{name} {{ ... }}`, or add a `create` function to the struct")));
                 }
-                self.static_call(name, "create", name_span, args, callee, span)
+                self.static_call(name, "create", name_span, args, callee, span, awaited)
             }
             _ => {
                 let sigs = self.sigs;
@@ -6923,6 +7004,7 @@ impl<'a> Checker<'a> {
                 if sig.foreign {
                     return self.foreign_call(name, args, sig, callee, span);
                 }
+                fill_token(name, sig, args, span);
                 if !sig.is_async {
                     self.args(name, args, &sig.params, span)?;
                     return Ok(sig.ret.clone());
@@ -6931,18 +7013,8 @@ impl<'a> Checker<'a> {
                 // run on another thread while this one goes on: what it takes and gives follows
                 // the thread rule, as with `Task.run`.
                 if !awaited {
-                    for (position, param) in sig.params.iter().enumerate().take(args.len()) {
-                        if let Some((part, at)) = stays(param, self.structs, self.enums, self.names, &mut Vec::new()) {
-                            let what = if part == *param { String::new() } else { format!(", which holds a `{part}`{at}") };
-                            let text = &self.src[span.start..span.end];
-                            let diag = Diag::error(args[position].span, format!("`{}` takes a `{param}` here{what}, and a call without `await` starts it as a task of its own, which this cannot go to: {}", short_name(name), why_it_stays(&part, self.names)));
-                            return Err(match &part {
-                                Ty::Read(_) | Ty::Ref(_) if self.is_async => diag.hint(format!("`await {text}` runs it as part of this task, where it can borrow")),
-                                Ty::Read(inner) | Ty::Ref(inner) => diag.hint(format!("give the task a value of its own: a `{inner}` to own, or a `shared {inner}` that both keep")),
-                                _ => diag.note(THREAD_RULE),
-                            });
-                        }
-                    }
+                    let given: Vec<(Ty, Span)> = sig.params.iter().cloned().zip(args.iter().map(|arg| arg.span)).collect();
+                    self.unawaited(short_name(name), &given, span)?;
                 }
                 self.args(name, args, &sig.params, span)?;
                 Ok(Ty::Task(Box::new(sig.ret.clone())))
@@ -7055,15 +7127,50 @@ impl<'a> Checker<'a> {
         Ok(result)
     }
 
+    /// What an async function or method takes when it is called without `await`, and so starts
+    /// as a task of its own: each value, `this` first, must be able to go to another thread.
+    fn unawaited(&self, shown: &str, given: &[(Ty, Span)], span: Span) -> Res<()> {
+        for (param, at_span) in given {
+            if let Some((part, at)) = stays(param, self.structs, self.enums, self.names, &mut Vec::new()) {
+                let what = if part == *param { String::new() } else { format!(", which holds a `{part}`{at}") };
+                let text = &self.src[span.start..span.end];
+                let diag = Diag::error(*at_span, format!("`{shown}` takes a `{param}` here{what}, and a call without `await` starts it as a task of its own, which this cannot go to: {}", why_it_stays(&part, self.names)));
+                return Err(match &part {
+                    Ty::Read(_) | Ty::Ref(_) if self.is_async => diag.hint(format!("`await {text}` runs it as part of this task, where it can borrow")),
+                    Ty::Read(inner) | Ty::Ref(inner) => diag.hint(format!("give the task a value of its own: a `{inner}` to own, or a `shared {inner}` that both keep")),
+                    _ => diag.note(THREAD_RULE),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// What a method gives: an async one a task, after the check of what a call without
+    /// `await` takes (`this` is the value the method is called on, as it is taken).
+    #[allow(clippy::too_many_arguments)]
+    fn method_gives(&self, name: &str, sig: &FuncSig, this: Option<(Ty, Span)>, args: &[Expr], span: Span, awaited: bool) -> Res<Ty> {
+        if !sig.is_async {
+            return Ok(sig.ret.clone());
+        }
+        if !awaited {
+            let mut given: Vec<(Ty, Span)> = this.into_iter().collect();
+            given.extend(sig.params.iter().cloned().zip(args.iter().map(|arg| arg.span)));
+            self.unawaited(name, &given, span)?;
+        }
+        Ok(Ty::Task(Box::new(sig.ret.clone())))
+    }
+
     /// `Stack.create(args)`: a function of the struct that does not take `this`.
+    #[allow(clippy::too_many_arguments)]
     fn static_call(
         &mut self,
         owner: &str,
         name: &str,
         name_span: Span,
-        args: &mut [Expr],
+        args: &mut Vec<Expr>,
         callee: &mut Callee,
         span: Span,
+        awaited: bool,
     ) -> Res<Ty> {
         let methods = self.methods_of(owner);
         let Some(sig) = methods.get(name) else {
@@ -7084,12 +7191,13 @@ impl<'a> Checker<'a> {
                 .hint(format!("call it on a `{owner}` value: `value.{name}(...)`")));
         }
         let bits = owner == format!("{STD_MODULE}.SecureRandom") && name == "nextLong" && args.is_empty();
+        fill_token(owner, sig, args, span);
         self.args(name, args, &sig.params, span).map_err(|diag| match bits {
             true => diag.hint("`SecureRandom.nextUlong()` gives 64 random bits; `nextLong(low, high)` a number in a range"),
             false => diag,
         })?;
         *callee = Callee::Static { owner: owner.to_string(), name: name.to_string() };
-        Ok(sig.ret.clone())
+        self.method_gives(name, sig, None, args, span, awaited)
     }
 
     /// `ulong.fromLittleEndian(bytes)`: the integer that exactly as many bytes as the type
@@ -7551,7 +7659,7 @@ impl<'a> Checker<'a> {
 
     /// `System.list(path, ref names, ref kinds)` and the other calls of the system that the
     /// language's own module builds `Directory`, `FileInfo` and `Environment` on.
-    fn system_call(&mut self, name: &str, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+    fn system_call(&mut self, name: &str, args: &mut [Expr], callee: &mut Callee, span: Span, awaited: bool) -> Res<Ty> {
         let text = || Ty::Read(Box::new(Ty::Str));
         let io = |ok: Ty| Ty::Result(Box::new(ok), Box::new(Ty::Enum(IO_ERROR.to_string())));
         let (call, params, ret) = match name {
@@ -7589,9 +7697,45 @@ impl<'a> Checker<'a> {
                     io(Ty::Void),
                 )
             }
+            "start" => {
+                let texts = || Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))));
+                (
+                    SystemCall::Start,
+                    vec![
+                        text(),
+                        texts(),
+                        text(),
+                        Ty::Bool,
+                        texts(),
+                        texts(),
+                        Ty::Read(Box::new(Ty::List(Box::new(Ty::Bool)))),
+                        Ty::Int(IntTy::Long),
+                        text(),
+                        Ty::Bool,
+                        Ty::Bool,
+                        Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long))))),
+                    ],
+                    io(Ty::Void),
+                )
+            }
+            "wait" => (SystemCall::Wait, vec![Ty::Int(IntTy::Long), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], Ty::Void),
+            "waitAsync" => (
+                SystemCall::WaitAsync,
+                vec![Ty::Int(IntTy::Long), Ty::Read(Box::new(Ty::Token)), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                Ty::Task(Box::new(io(Ty::Void))),
+            ),
+            "signal" => (SystemCall::Signal, vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)], Ty::Void),
+            "reader" => (SystemCall::PipeReader, vec![Ty::Int(IntTy::Long)], Ty::Reader(false)),
+            "writer" => (SystemCall::PipeWriter, vec![Ty::Int(IntTy::Long)], Ty::Writer),
             _ => return Err(Diag::error(span, format!("`System` has no function `{name}`"))),
         };
         self.args(name, args, &params, span)?;
+        if call == SystemCall::WaitAsync {
+            if !self.is_async {
+                return Err(Diag::error(span, "`System.waitAsync` is awaited in an async function"));
+            }
+            self.awaited_here("System.waitAsync", awaited, args, span)?;
+        }
         *callee = Callee::System(call);
         Ok(ret)
     }
@@ -7830,7 +7974,7 @@ impl<'a> Checker<'a> {
         recv: &mut Expr,
         name: &str,
         name_span: Span,
-        args: &mut [Expr],
+        args: &mut Vec<Expr>,
         callee: &mut Callee,
         span: Span,
     ) -> Res<Ty> {
@@ -7872,7 +8016,7 @@ impl<'a> Checker<'a> {
         if let ExprKind::Var(owner) = &recv.kind {
             if self.find(owner).is_none() && owner != "this" {
                 if self.structs.contains_key(owner.as_str()) || self.enums.contains_key(owner.as_str()) {
-                    return self.static_call(owner, name, name_span, args, callee, span);
+                    return self.static_call(owner, name, name_span, args, callee, span, awaited);
                 }
                 if owner == "File" {
                     return self.io_call(owner, name, name_span, args, callee, span, awaited);
@@ -7889,7 +8033,7 @@ impl<'a> Checker<'a> {
                 // The calls of the file system and of the environment that only the language's own
                 // module makes; `Directory`, `FileInfo` and `Environment` are built on them.
                 if owner == "System" && self.names.module(span) == STD_MODULE {
-                    return self.system_call(name, args, callee, span);
+                    return self.system_call(name, args, callee, span, awaited);
                 }
                 // The random bytes of the system, which only the language's own module reads.
                 if owner == "Entropy" && self.names.module(span) == STD_MODULE && name == "fill" {
@@ -8136,12 +8280,18 @@ impl<'a> Checker<'a> {
                         }
                         _ => {}
                     }
+                    fill_token(owner, sig, args, span);
                     self.args(name, args, &sig.params, span)?;
                     if is_place && this == This::Read {
                         self.lent_twice(Some((recv, false)), args)?;
                     }
                     *callee = Callee::Method { owner: owner.clone(), this, whole: true };
-                    return Ok(sig.ret.clone());
+                    let this_ty = match this {
+                        This::Value => holder.clone(),
+                        This::Read => Ty::Read(Box::new(holder.clone())),
+                        This::Ref => Ty::Ref(Box::new(holder.clone())),
+                    };
+                    return self.method_gives(name, sig, Some((this_ty, recv.span)), args, span, awaited);
                 }
                 match this {
                     This::Read => {}
@@ -8172,6 +8322,7 @@ impl<'a> Checker<'a> {
                     This::Value => {}
                 }
                 let bits = owner == &format!("{STD_MODULE}.Random") && name == "nextLong" && args.is_empty();
+                fill_token(owner, sig, args, span);
                 self.args(name, args, &sig.params, span).map_err(|diag| match bits {
                     true => diag.hint("`nextUlong()` gives 64 random bits; `nextLong(low, high)` a number in a range"),
                     false => diag,
@@ -8180,7 +8331,12 @@ impl<'a> Checker<'a> {
                     self.lent_twice(Some((recv, this == This::Ref)), args)?;
                 }
                 *callee = Callee::Method { owner: owner.clone(), this, whole: false };
-                return Ok(sig.ret.clone());
+                let this_ty = match this {
+                    This::Value => target.clone(),
+                    This::Read => Ty::Read(Box::new(target.clone())),
+                    This::Ref => Ty::Ref(Box::new(target.clone())),
+                };
+                return self.method_gives(name, sig, Some((this_ty, recv.span)), args, span, awaited);
             }
         }
         // A function value kept in a field: `this.test(order)`.

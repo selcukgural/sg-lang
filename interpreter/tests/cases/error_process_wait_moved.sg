@@ -1,0 +1,6 @@
+Result<void, IoError> main() {
+    var process = try Command("true").start()
+    _ = try process.wait()
+    process.kill()
+    return Ok()
+}

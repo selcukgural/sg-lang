@@ -1,0 +1,9 @@
+output: hello async
+status: exited with code 3
+run: the program exited with code 3
+run writes here
+output: the program exited with code 2
+output: InvalidText(2)
+a b c 
+exited with code 6
+missing: NotFound

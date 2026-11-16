@@ -445,7 +445,8 @@ impl<'a> Parser<'a> {
                 return Err(self.unexpected("`}`"));
             }
             let public = self.eat(&Tok::Public);
-            self.no_async_method()?;
+            let async_span = self.span();
+            let is_async = self.eat_async();
             let readonly_span = self.span();
             let readonly = self.eat(&Tok::Readonly);
             let ty = self.type_expr()?;
@@ -456,8 +457,12 @@ impl<'a> Parser<'a> {
                 }
                 let mut method = self.func(ty, member, span, true)?;
                 method.public = public;
+                method.is_async = is_async;
                 methods.push(method);
             } else {
+                if is_async {
+                    return Err(Diag::error(async_span, "`async` is written in front of a function, not of a field"));
+                }
                 fields.push(FieldDecl { public, readonly, ty, name: member, span });
             }
             if *self.peek() != Tok::RBrace {
@@ -522,7 +527,7 @@ impl<'a> Parser<'a> {
                 && matches!(self.peek_at(1), Tok::LParen | Tok::Newline | Tok::RBrace | Tok::Comma | Tok::Eof);
             if !variant_line {
                 let public = self.eat(&Tok::Public);
-                self.no_async_method()?;
+                let is_async = self.eat_async();
                 let ty = self.type_expr()?;
                 let (member, span) = self.ident("a method name")?;
                 if *self.peek() != Tok::LParen {
@@ -531,6 +536,7 @@ impl<'a> Parser<'a> {
                 }
                 let mut method = self.func(ty, member, span, true)?;
                 method.public = public;
+                method.is_async = is_async;
                 methods.push(method);
                 if *self.peek() != Tok::RBrace {
                     self.expect(Tok::Newline, "end of line")?;
@@ -651,13 +657,13 @@ impl<'a> Parser<'a> {
         Ok(Func { public: false, is_async: false, ret, name, name_span, this, this_ty, params, from, body, foreign: None })
     }
 
-    /// An async method is not here yet: `async` is written in front of a function only.
-    fn no_async_method(&self) -> Res<()> {
+    /// `async` in front of a method, as in front of a function at the top level.
+    fn eat_async(&mut self) -> bool {
         if self.at_word("async") {
-            return Err(Diag::error(self.span(), "an `async` method is not in the interpreter yet")
-                .hint("write it as an async function that takes the value: `async int count(read Store store)`"));
+            self.bump();
+            return true;
         }
-        Ok(())
+        false
     }
 
     fn open_brace(&mut self) -> Res<()> {

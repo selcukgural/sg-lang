@@ -1,0 +1,73 @@
+// Programs started with `start`, which go on while this one does: the pipes `pipeInput`,
+// `pipeOutput` and `pipeError` asked for are taken out of the `Process` once, `wait` gives how the
+// program ended, and the input it still holds is closed first.
+void show(read string what, Result<Process, IoError> started) {
+    match started {
+        Ok(process) => {
+            match process.wait() {
+                Ok(status) => print($"{what}: {status}")
+                Error(cause) => print($"{what}: {cause}")
+            }
+        }
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+Result<void, ProcessError> main() {
+    // A pipe for the input and one for the output; each is taken out once.
+    var cat = Command("cat")
+    cat.pipeInput()
+    cat.pipeOutput()
+    var process = try cat.start()
+    var input = process.takeInput() ?? panic("the input was asked for")
+    var output = process.takeOutput() ?? panic("the output was asked for")
+    print(process.takeInput() is null)
+    print(process.takeOutput() is null)
+    print(process.takeError() is null)
+    try input.writeLine("one")
+    try input.write("two\n")
+    try input.close()
+    var line = ""
+    while try output.readLine(ref line) {
+        print($"cat: {line}")
+    }
+    print(try process.wait())
+
+    // The input left in the `Process` is closed by `wait`, so `cat` sees its end.
+    var waiting = try cat.start()
+    print(try waiting.wait())
+
+    // A text of `input` is written while the program runs, and the output is read whole.
+    var sort = Command("sort")
+    sort.input("pear\napple\nfig\n")
+    sort.pipeOutput()
+    var sorting = try sort.start()
+    var sorted = sorting.takeOutput() ?? panic("the output was asked for")
+    var text = try sorted.readText()
+    print(text.replaceAll("\n", " "))
+    print(try sorting.wait())
+
+    // The standard error through a pipe; the output stays this program's.
+    var sh = Command("sh")
+    sh.args(read List<string> { "-c", "echo to the output; echo to the error >&2; exit 4" })
+    sh.pipeError()
+    var both = try sh.start()
+    var errors = both.takeError() ?? panic("the standard error was asked for")
+    var said = try errors.readText()
+    var status = try both.wait()
+    print($"error: {said.trim()}, {status}")
+
+    // A reader taken out reads what is left after the program was waited for.
+    var printf = Command("printf")
+    printf.arg("left\\n")
+    printf.pipeOutput()
+    var printing = try printf.start()
+    var left = printing.takeOutput() ?? panic("the output was asked for")
+    print(try printing.wait())
+    print(try left.readText())
+
+    // What cannot start is the error of `start`.
+    show("true", Command("true").start())
+    show("missing", Command("no-such-program-anywhere").start())
+    return Ok()
+}

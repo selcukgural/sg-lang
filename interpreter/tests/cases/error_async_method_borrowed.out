@@ -1,0 +1,5 @@
+error: `total` takes a `read Store` here, and a call without `await` starts it as a task of its own, which this cannot go to: a `read Store` is a borrow, and the task could outlive what it borrows from
+  --> error_async_method_borrowed.sg:12:16
+ 12 |     var task = store.total()
+    |                ^^^^^
+  hint: `await store.total()` runs it as part of this task, where it can borrow

@@ -1,0 +1,61 @@
+// Async methods: on a struct and on an enum, taking `this` lent, changed and by value, and an async
+// function of a type. Awaited where they are written, or started as tasks and awaited later when
+// what they take can go to another task.
+struct Store {
+    List<int> items
+
+    public async Store load(int first) {
+        await Task.delay(1)
+        var items = List<int>()
+        items.add(first)
+        return Store { items = items }
+    }
+
+    public async int total(read this) {
+        await Task.delay(2)
+        var sum = 0
+        for item in read this.items {
+            sum = sum + item
+        }
+        return sum
+    }
+
+    public async void add(ref this, int n) {
+        await Task.delay(1)
+        this.items.add(n)
+    }
+
+    public async nint count(this) {
+        await Task.delay(3)
+        return this.items.length()
+    }
+}
+
+enum Light {
+    Red
+    Green
+
+    public async string name(this) {
+        await Task.delay(1)
+        match this {
+            Red => return "red"
+            Green => return "green"
+        }
+    }
+}
+
+async void main() {
+    var store = await Store.load(4)
+    await store.add(3)
+    await store.add(5)
+    print(await store.total())
+    var later = Store.load(10)
+    var red = Light.Red.name()
+    var green = Light.Green.name()
+    var other = await later
+    var counted = other.count()
+    print(await green)
+    print(await red)
+    print(await counted)
+    print(await store.count())
+}

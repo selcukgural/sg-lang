@@ -1,0 +1,4 @@
+error: `format` is called by `print` and `$"..."` without `await`, so it cannot be async
+  --> error_async_method_format.sg:4:23
+ 4 |     public async void format(read this, ref Formatter f) {
+   |                       ^^^^^^

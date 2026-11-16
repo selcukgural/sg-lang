@@ -1,0 +1,10 @@
+error: the program in `process` is not waited for at this `return`
+  a program that is not waited for is stopped where its `Process` ends, with the signal 9
+  --> error_process_not_waited.sg:4:5
+ 4 |     return Ok()
+   |     ^^^^^^^^^^^
+  it is started here:
+  --> error_process_not_waited.sg:2:9
+ 2 |     var process = try Command("true").start()
+   |         ^^^^^^^
+  hint: `var status = try process.wait()`; to stop it first, `process.kill()`

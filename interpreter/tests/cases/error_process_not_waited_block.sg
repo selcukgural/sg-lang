@@ -1,0 +1,8 @@
+Result<void, IoError> main() {
+    var cat = Command("cat")
+    if true {
+        var started = try cat.start()
+        started.kill()
+    }
+    return Ok()
+}

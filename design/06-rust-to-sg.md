@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 16 November 2026, the seventy-seventh slice.
+Last brought up to date: 16 November 2026, the seventy-eighth slice.
 
 ## Functions and variables
 
@@ -223,6 +223,7 @@ Last brought up to date: 16 November 2026, the seventy-seventh slice.
 | `block_on(f())` | `f().wait()` in code that is not async | built | `wait` in an async function is an error |
 | `spawn_blocking(work)` | `await Task.run(work, x)` | built | A call that holds the thread in an async function is an error, followed through the calls |
 | `Box::pin(f(n - 1)).await` | `var t = f(n - 1)`, then `await t` | built | An async function that awaits itself is an error |
+| `async fn` in an `impl` | `async int total(read this)` | built | A method that lends `this` is awaited where it is written; one that takes `this` by value may start as a task. `create`, `format`, `equals`, `hash` and `compare` are not async |
 | `CancellationToken::new()` (tokio-util) | `CancellationSource()` | built | The source cancels, its tokens look; `CancellationSource.after(ms)` cancels itself |
 | `token.child_token()`, `token.clone()` | `source.token()`, `token.clone()` | built | A token cannot cancel; a source has one owner, or is `shared` to be cancelled from another task |
 | `token.cancel()` | `source.cancel()` | built | Through a `read` borrow, as `cancel(&self)` |
@@ -291,7 +292,18 @@ Last brought up to date: 16 November 2026, the seventy-seventh slice.
 | `.status()?` | `try git.status()` | built | Every end is a value: `ExitStatus.Code(code)` or `ExitStatus.Signal(number)`, where Rust has `code()` and `signal()` |
 | `.output()?`, `String::from_utf8(out.stdout)?` | `try git.output()` | built | The output as a `string` (`InvalidText` if it is not UTF-8); the standard error goes to ours, not into the value, and an end with anything but 0 is an error |
 | `.stdin(Stdio::piped())`, writing in a thread | `git.input(read text)` | built | Written while the output is read, so neither waits for the other; a program that stops reading is no error |
-| `.spawn()?`, `child.wait()?`, `child.kill()?` | none yet | designed | The next slice: a running program, its pipes as streams, stopping it, and the async versions |
+| `.spawn()?` | `var process = try git.start()` | built | Gives a `Process`, which runs while this program goes on |
+| `.stdin(Stdio::piped())`, `.stdout(...)`, `.stderr(...)` | `git.pipeInput()`, `git.pipeOutput()`, `git.pipeError()` | built | Only `start` looks at them; a stream not asked for is ours, as Rust's default for `spawn` |
+| `child.stdin.take().unwrap()` | `process.takeInput() ?? panic("...")` | built | `takeInput` gives a `StreamWriter?`, `takeOutput` and `takeError` a `StreamReader?`: `null` once taken, or when not asked for. The streams are owned and go to other tasks |
+| `drop(stdin)` to send the end of the input | `try input.close()` | built | The writer is `Closable`; writing after the program stopped reading gives `IoError.ConnectionReset`, never the signal |
+| `child.wait()?` | `try process.wait()` | built | Takes the `Process`, closing the input it still holds first, as Rust's `wait` does, and letting go of its readers |
+| a `Child` dropped (the program goes on, a zombie once it ends) | a compile error; on a way out with an error, the program is stopped | built | A `Process` in a local variable is waited for on every path; one that ends without that (an error, a field) is stopped with the signal 9 and waited for, as tokio's `kill_on_drop(true)` |
+| `child.kill()?` | `process.kill()` | built | Gives nothing: a program not waited for keeps its number, so the signal cannot reach another one |
+| `libc::kill(pid, SIGTERM)` | `process.terminate()` | built | The polite stop, which the program may catch |
+| `child.id()` | `process.id()` | built | |
+| `child.try_wait()` | none | designed | A wait with a time limit is `waitAsync` with a token of `CancellationSource.after(ms)` |
+| `tokio::process::Command::status().await` | `await git.statusAsync()`, `runAsync()`, `outputAsync()` | built | A token may come last; a cancel stops the program, as Go's `CommandContext` |
+| `child.wait().await` | `await process.waitAsync()` | built | Waits on the loop, as tokio does: the pidfd on Linux, `EVFILT_PROC` on macOS; a cancel stops the program |
 
 ## Network
 

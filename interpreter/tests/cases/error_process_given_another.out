@@ -1,0 +1,9 @@
+error: `process` is given another program while the one it holds is not waited for
+  --> error_process_given_another.sg:4:5
+ 4 |     process = try done.start()
+   |     ^^^^^^^
+  it is declared here:
+  --> error_process_given_another.sg:3:9
+ 3 |     var process = try done.start()
+   |         ^^^^^^^
+  hint: wait for it first: `var status = try process.wait()`

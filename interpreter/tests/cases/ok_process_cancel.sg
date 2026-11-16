@@ -1,0 +1,32 @@
+// A cancel stops the program it ends the wait for: `statusAsync`, `outputAsync` and `waitAsync`
+// give `Cancelled`, and the program ends by the signal 9. With a token cancelled before the call,
+// the program does not start.
+async Result<void, ProcessError> main() {
+    var sleep = Command("sleep")
+    sleep.arg("10")
+    var soon = CancellationSource.after(100)
+    if await sleep.statusAsync(read soon.token()) is Error(cause) {
+        print($"status: {cause}")
+    }
+    var later = CancellationSource.after(100)
+    if await sleep.outputAsync(read later.token()) is Error(cause) {
+        print($"output: {cause}")
+    }
+    var other = CancellationSource.after(100)
+    var process = try sleep.start()
+    if await process.waitAsync(read other.token()) is Error(cause) {
+        print($"wait: {cause}")
+    }
+
+    var before = CancellationSource()
+    before.cancel()
+    var marker = Command("sh")
+    marker.args(read List<string> { "-c", "echo started" })
+    if await marker.runAsync(read before.token()) is Error(cause) {
+        print($"run: {cause}")
+    }
+    var never = CancellationSource.after(10000)
+    var status = try await Command("true").statusAsync(read never.token())
+    print(status)
+    return Ok()
+}

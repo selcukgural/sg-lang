@@ -532,6 +532,16 @@ struct Shared<'e> {
     sched: Sched,
     /// The functions of C the program calls (see `ffi`).
     ffi: crate::ffi::Library,
+    /// The programs `System.start` started and that have not been waited for, by number.
+    children: RefCell<HashMap<i64, Kid>>,
+}
+
+/// A program `System.start` started. What it writes to an output it shares with the run is read
+/// by a thread of its own and written out to the run's when it is waited for, since the run's
+/// output need not be the stream of the process (`copies`, with whether it is the standard error).
+struct Kid {
+    child: std::process::Child,
+    copies: Vec<(std::thread::JoinHandle<Vec<u8>>, bool)>,
 }
 
 /// What a thread keeps of the program running on it, taken to the thread a task runs on
@@ -1244,6 +1254,8 @@ fn executable(path: &str) -> i128 {
 
 extern "C" {
     fn access(path: *const std::ffi::c_char, mode: std::ffi::c_int) -> std::ffi::c_int;
+    fn kill(pid: std::ffi::c_int, signal: std::ffi::c_int) -> std::ffi::c_int;
+    fn waitid(idtype: std::ffi::c_int, id: std::ffi::c_uint, info: *mut u8, options: std::ffi::c_int) -> std::ffi::c_int;
     fn fcntl(fd: std::ffi::c_int, cmd: std::ffi::c_int, ...) -> std::ffi::c_int;
     fn sysconf(name: std::ffi::c_int) -> std::ffi::c_long;
     #[cfg(target_os = "linux")]
@@ -1276,6 +1288,92 @@ fn cloexec_from_3(last: std::ffi::c_int) {
     for fd in 3..last {
         // SAFETY: setting the flag of a descriptor that is not open fails and does nothing.
         unsafe { fcntl(fd, F_SETFD, FD_CLOEXEC) };
+    }
+}
+
+/// The command of `System.run` and `System.start`: the program at the path, the words, the
+/// folder and the environment; and where its input comes from (the number the call was given).
+/// Only the input, the output and the standard error reach the program: a descriptor the process
+/// was handed open (a test runner's pipe) is marked close-on-exec in the child, before the
+/// program runs. Marked, not closed, so that Rust's own pipe, which tells the parent why the
+/// start failed, still works.
+fn command_of(values: &[Value]) -> (std::process::Command, i128) {
+    use std::os::unix::process::CommandExt;
+    let text = |at: usize| match &values[at] {
+        Value::Str(text) => text.to_string(),
+        _ => unreachable!("the checker makes it text"),
+    };
+    let items = |at: usize| match &values[at] {
+        Value::List(items) => items.borrow().iter().map(|item| item.borrow().clone()).collect::<Vec<Value>>(),
+        _ => unreachable!("the checker makes it a list"),
+    };
+    let texts = |at: usize| {
+        items(at)
+            .into_iter()
+            .map(|item| match item {
+                Value::Str(text) => text.to_string(),
+                _ => unreachable!("the checker makes it a list of texts"),
+            })
+            .collect::<Vec<String>>()
+    };
+    let words = texts(1);
+    let mut command = std::process::Command::new(text(0));
+    command.arg0(&words[0]).args(&words[1..]);
+    let folder = text(2);
+    if !folder.is_empty() {
+        command.current_dir(folder);
+    }
+    if matches!(values[3], Value::Bool(true)) {
+        command.env_clear();
+    }
+    let kept = items(6);
+    for ((name, value), kept) in texts(4).iter().zip(texts(5)).zip(kept) {
+        match kept {
+            Value::Bool(true) => command.env(name, value),
+            _ => command.env_remove(name),
+        };
+    }
+    let input = match &values[7] {
+        Value::Int(_, input) => *input,
+        _ => unreachable!("the checker makes it a number"),
+    };
+    let last = open_max();
+    // SAFETY: between `fork` and `exec` the closure only calls `fcntl` and the system call of
+    // `close_range`, which are safe there, and allocates nothing.
+    unsafe {
+        command.pre_exec(move || {
+            cloexec_from_3(last);
+            Ok(())
+        });
+    }
+    (command, input)
+}
+
+/// Waits until program `pid` has ended, without taking it away (`waitid` with `WNOWAIT`): its
+/// number names no other program until it is waited for.
+fn wait_unreaped(pid: i64) {
+    const P_PID: std::ffi::c_int = 1;
+    const WEXITED: std::ffi::c_int = 4;
+    const WNOWAIT: std::ffi::c_int = if cfg!(target_os = "linux") { 0x0100_0000 } else { 0x20 };
+    const EINTR: i32 = 4;
+    let mut info = [0u8; 256];
+    loop {
+        // SAFETY: `info` has room for a `siginfo_t` on both systems (128 and 104 bytes).
+        let done = unsafe { waitid(P_PID, pid as std::ffi::c_uint, info.as_mut_ptr(), WEXITED | WNOWAIT) };
+        if done == 0 || std::io::Error::last_os_error().raw_os_error() != Some(EINTR) {
+            return;
+        }
+    }
+}
+
+/// How a program ended, as `System.run` and `System.wait` give it: 0 and the code, or 1 and the
+/// signal that stopped it.
+fn ended_as(status: std::process::ExitStatus) -> (i64, i64) {
+    use std::os::unix::process::ExitStatusExt;
+    match (status.code(), status.signal()) {
+        (Some(code), _) => (0, i64::from(code)),
+        (None, Some(signal)) => (1, i64::from(signal)),
+        (None, None) => (0, 0),
     }
 }
 
@@ -1798,7 +1896,7 @@ impl Frame {
 fn shared<'a>(out: &'a mut dyn Write, mut world: World<'a>, ffi: crate::ffi::Library) -> Shared<'a> {
     let source = std::mem::replace(&mut world.input, Box::new(std::io::empty()));
     let input = crate::input::Input::new(source, world.input_waits);
-    Shared { out: RefCell::new(out), world: RefCell::new(world), input: RefCell::new(input), test_err: RefCell::new(String::new()), sched: Sched::new(), ffi }
+    Shared { out: RefCell::new(out), world: RefCell::new(world), input: RefCell::new(input), test_err: RefCell::new(String::new()), sched: Sched::new(), ffi, children: RefCell::new(HashMap::new()) }
 }
 
 pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, world: World<'a>) -> Result<(), Stop> {
@@ -2033,7 +2131,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 TaskState::Lazy(name, args) => {
                     task.borrow_mut().waiters.push(self.me);
                     let func = self.funcs[&*name];
-                    self.start_fiber(task, func, args, false)?;
+                    self.start_fiber(task, func, None, args, false)?;
                 }
                 TaskState::Running => {
                     task.borrow_mut().waiters.push(self.me);
@@ -2091,7 +2189,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     let TaskState::Lazy(name, args) = std::mem::replace(&mut task.borrow_mut().state, TaskState::Running) else { unreachable!("just seen") };
                     task.borrow_mut().waiters.push(self.me);
                     let func = self.funcs[&*name];
-                    self.start_fiber(task, func, args, false)
+                    self.start_fiber(task, func, None, args, false)
                 }
                 None => self.io.sched.block(self.me, at),
             };
@@ -2105,12 +2203,44 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
     }
 
+    /// `x.m(args)` of a method of the program. An async method called without `await` (`here`
+    /// false) starts as a task, as an async function does.
+    #[allow(clippy::too_many_arguments)]
+    fn method_call(&mut self, expr: &'a Expr, recv: &'a Expr, owner: &str, name: &str, this: This, whole: bool, args: &'a [Expr], frame: &mut Frame, here: bool) -> Res<Value> {
+        let func = self.methods[owner][name];
+        // The receiver is lent or handed over without `read` / `ref` at the call.
+        let mark = self.guards.len();
+        let mut target = self.place(recv, frame)?;
+        // `read FolderRef this`: the method takes the value that holds the struct.
+        loop {
+            let next = match &*target.borrow() {
+                Value::Shared(_) if whole => None,
+                value => behind(value),
+            };
+            let Some(inner) = next else { break };
+            target = inner;
+        }
+        let lent = self.guards.len();
+        let this = match this {
+            // A receiver handed over leaves its place empty, as an argument does.
+            This::Value if recv.moved && matches!(&*target.borrow(), Value::Struct(..)) => target.replace(Value::Null),
+            This::Value => fresh(&target.borrow()),
+            This::Read | This::Ref => Value::Borrow(target),
+        };
+        let values = self.values(args, frame)?;
+        self.change_reserved(mark..lent)?;
+        match func.is_async && !here {
+            true => self.start_async(func, Some(this), values, expr.span),
+            false => self.call(func, Some(this), values, expr.span),
+        }
+    }
+
     /// `f(x)` of an async function `f`, without `await`: the task starts now and runs until it
     /// first waits, then this fiber goes on, as in C#.
-    fn start_async(&mut self, func: &'a Func, args: Vec<Value>, at: Span) -> Res<Value> {
+    fn start_async(&mut self, func: &'a Func, this: Option<Value>, args: Vec<Value>, at: Span) -> Res<Value> {
         let task = Rc::new(RefCell::new(Task { state: TaskState::Running, started: at, waiters: Vec::new() }));
         self.started.push(task.clone());
-        self.start_fiber(&task, func, args, true)?;
+        self.start_fiber(&task, func, this, args, true)?;
         Ok(Value::Task(task))
     }
 
@@ -2190,7 +2320,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 let TaskState::Lazy(name, args) = std::mem::replace(&mut task.borrow_mut().state, TaskState::Running) else { unreachable!("just seen") };
                 let func = self.funcs[&*name];
-                self.start_fiber(&task, func, args, true)?;
+                self.start_fiber(&task, func, None, args, true)?;
             }
         }
         if let Some(source) = source {
@@ -2419,7 +2549,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// Runs `func(args)` for `task` on a fiber of its own, which gets the turn now. With
     /// `caller_ready` this fiber is next once the new one waits; otherwise this one waits for
     /// the task and goes on when it ends.
-    fn start_fiber(&mut self, task: &Rc<RefCell<Task>>, func: &'a Func, args: Vec<Value>, caller_ready: bool) -> Res<()> {
+    fn start_fiber(&mut self, task: &Rc<RefCell<Task>>, func: &'a Func, this: Option<Value>, args: Vec<Value>, caller_ready: bool) -> Res<()> {
         let started = task.borrow().started;
         let id = {
             let mut state = self.io.sched.lock();
@@ -2457,7 +2587,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             let begun = Sched::resume(&mut state, id);
             drop(state);
             let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let result = begun.and_then(|()| inner.call(func, None, args, started));
+                let result = begun.and_then(|()| inner.call(func, this, args, started));
                 drop(inner);
                 // A panic that already shows a second place keeps it: the line of a task
                 // started inside this one, or the borrow it met.
@@ -3255,6 +3385,19 @@ impl<'a, 'e> Interp<'a, 'e> {
                         return self.call(func, None, values, inner.span);
                     }
                 }
+                // `await x.load()` of an async method runs it here too.
+                if let ExprKind::Method { recv, name, args, callee: Callee::Method { owner, this, whole }, .. } = &inner.kind {
+                    if self.methods[owner.as_str()][name.as_str()].is_async {
+                        return self.method_call(inner, recv, owner, name, *this, *whole, args, frame, true);
+                    }
+                }
+                if let ExprKind::Call { args, callee: Callee::Static { owner, name }, .. } = &inner.kind {
+                    let func = self.methods[owner.as_str()][name.as_str()];
+                    if func.is_async {
+                        let values = self.values(args, frame)?;
+                        return self.call(func, None, values, inner.span);
+                    }
+                }
                 let Value::Task(task) = strip(self.expr(inner, frame)?) else { unreachable!("the checker lets only a task be awaited") };
                 self.await_task(&task, expr.span)
             }
@@ -3316,33 +3459,12 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Callee::Static { owner, name } => {
                     let func = self.methods[owner.as_str()][name.as_str()];
                     let values = self.values(args, frame)?;
-                    self.call(func, None, values, expr.span)
-                }
-                Callee::Method { owner, this, whole } => {
-                    let func = self.methods[owner.as_str()][name.as_str()];
-                    // The receiver is lent or handed over without `read` / `ref` at the call.
-                    let mark = self.guards.len();
-                    let mut target = self.place(recv, frame)?;
-                    // `read FolderRef this`: the method takes the value that holds the struct.
-                    loop {
-                        let next = match &*target.borrow() {
-                            Value::Shared(_) if *whole => None,
-                            value => behind(value),
-                        };
-                        let Some(inner) = next else { break };
-                        target = inner;
+                    match func.is_async {
+                        true => self.start_async(func, None, values, expr.span),
+                        false => self.call(func, None, values, expr.span),
                     }
-                    let lent = self.guards.len();
-                    let this = match this {
-                        // A receiver handed over leaves its place empty, as an argument does.
-                        This::Value if recv.moved && matches!(&*target.borrow(), Value::Struct(..)) => target.replace(Value::Null),
-                        This::Value => fresh(&target.borrow()),
-                        This::Read | This::Ref => Value::Borrow(target),
-                    };
-                    let values = self.values(args, frame)?;
-                    self.change_reserved(mark..lent)?;
-                    self.call(func, Some(this), values, expr.span)
                 }
+                Callee::Method { owner, this, whole } => self.method_call(expr, recv, owner, name, *this, *whole, args, frame, false),
                 Callee::FieldValue(index) => {
                     let Value::Struct(_, fields) = owned(self.place(recv, frame)?.borrow().clone()) else {
                         unreachable!("the checker only lets a field of a struct be called")
@@ -4043,7 +4165,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let func = self.funcs[name];
                 let values = self.values(args, frame)?;
                 match func.is_async {
-                    true => self.start_async(func, values, expr.span),
+                    true => self.start_async(func, None, values, expr.span),
                     false => self.call(func, None, values, expr.span),
                 }
             }
@@ -4394,6 +4516,9 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// the environment beyond reading and writing a file. Each asks the system what compiled code
     /// asks it, so the two give the same answers.
     fn system(&mut self, call: SystemCall, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
+        if call == SystemCall::WaitAsync {
+            return self.wait_async(args, frame);
+        }
         let mut values = Vec::new();
         for (at, arg) in args.iter().enumerate() {
             let value = self.expr(arg, frame)?;
@@ -4420,6 +4545,37 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
         if call == SystemCall::Run {
             return self.run_child(values);
+        }
+        let number = |at: usize| match &values[at] {
+            Value::Int(_, number) => *number,
+            _ => unreachable!("the checker makes it a number"),
+        };
+        match call {
+            SystemCall::Start => return self.start_child(values),
+            SystemCall::Wait => {
+                let ended = self.reap(number(0) as i64);
+                for (slot, value) in cells_of(&values[1]).iter().zip([ended.0, ended.1]) {
+                    *slot.borrow_mut() = Value::Int(IntTy::Long, i128::from(value));
+                }
+                return Ok(Value::Void);
+            }
+            SystemCall::Signal => {
+                // SAFETY: `kill` only sends a signal; the program is not taken away before it
+                // is waited for, so the number is still its own.
+                unsafe { kill(number(0) as std::ffi::c_int, number(1) as std::ffi::c_int) };
+                return Ok(Value::Void);
+            }
+            SystemCall::PipeReader => {
+                // SAFETY: the end of the pipe was made by `System.start` and is owned by nothing else.
+                let file = unsafe { <std::fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(number(0) as i32) };
+                return Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(std::io::BufReader::with_capacity(STREAM_BUFFER, file)), net: None, done: 0 }))));
+            }
+            SystemCall::PipeWriter => {
+                // SAFETY: as above.
+                let file = unsafe { <std::fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(number(0) as i32) };
+                return Ok(Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None }))));
+            }
+            _ => {}
         }
         if call != SystemCall::Variable && (0..paths).any(|at| text(at).contains('\0')) {
             return Ok(not_found());
@@ -4479,7 +4635,9 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Err(error) => done(Err(error)),
             },
             SystemCall::MakeTemp => done(make_temp(&text(0)).map(|folder| Value::Str(Rc::new(folder)))),
-            SystemCall::Executable | SystemCall::Run => unreachable!("done above"),
+            SystemCall::Executable | SystemCall::Run | SystemCall::Start | SystemCall::Wait | SystemCall::WaitAsync | SystemCall::Signal | SystemCall::PipeReader | SystemCall::PipeWriter => {
+                unreachable!("done above")
+            }
             SystemCall::Variable => {
                 let name = text(0);
                 // A name with `=` or a zero byte in it is no variable's name.
@@ -4500,6 +4658,130 @@ impl<'a, 'e> Interp<'a, 'e> {
         })
     }
 
+    /// `System.start`: starts the program and goes on. Its input is the run's, nothing, the text
+    /// (written by a thread of its own) or a pipe whose end the program keeps; its output and its
+    /// standard error are pipes it keeps when asked for, and otherwise pipes read by threads and
+    /// written out to the run's when it is waited for (see `Kid`).
+    fn start_child(&mut self, values: Vec<Value>) -> Res<Value> {
+        use std::io::Read;
+        use std::os::unix::io::IntoRawFd;
+        use std::process::Stdio;
+        let (mut command, input) = command_of(&values);
+        let flag = |at: usize| matches!(values[at], Value::Bool(true));
+        let (out, err) = (flag(9), flag(10));
+        command.stdin(match input {
+            0 => Stdio::inherit(),
+            1 => Stdio::null(),
+            _ => Stdio::piped(),
+        });
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        self.flush_out()?;
+        let _ = self.io.world.borrow_mut().err.flush();
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => return Ok(failed(io_cause(Some(&error), error.raw_os_error()))),
+        };
+        let mut made = [i128::from(child.id()), -1, -1, -1];
+        if let Some(feed) = child.stdin.take() {
+            match input {
+                2 => {
+                    let Value::Str(text) = &values[8] else { unreachable!("the checker makes it text") };
+                    let text = text.to_string();
+                    let mut feed = feed;
+                    // A program that ends before it reads all of it is no error.
+                    std::thread::spawn(move || {
+                        let _ = feed.write_all(text.as_bytes());
+                    });
+                }
+                _ => made[1] = i128::from(feed.into_raw_fd()),
+            }
+        }
+        let mut copies = Vec::new();
+        let output = child.stdout.take().expect("piped");
+        match out {
+            true => made[2] = i128::from(output.into_raw_fd()),
+            false => {
+                let mut output = output;
+                copies.push((std::thread::spawn(move || {
+                    let mut kept = Vec::new();
+                    let _ = output.read_to_end(&mut kept);
+                    kept
+                }), false));
+            }
+        }
+        let error = child.stderr.take().expect("piped");
+        match err {
+            true => made[3] = i128::from(error.into_raw_fd()),
+            false => {
+                let mut error = error;
+                copies.push((std::thread::spawn(move || {
+                    let mut kept = Vec::new();
+                    let _ = error.read_to_end(&mut kept);
+                    kept
+                }), true));
+            }
+        }
+        self.io.children.borrow_mut().insert(made[0] as i64, Kid { child, copies });
+        for (slot, value) in cells_of(&values[11]).iter().zip(made) {
+            *slot.borrow_mut() = Value::Int(IntTy::Long, value);
+        }
+        Ok(ok(Value::Void))
+    }
+
+    /// `System.wait`: waits for the program and takes it away; what it wrote to an output it
+    /// shares with the run goes out there now. 0 and the code, or 1 and the signal.
+    fn reap(&mut self, pid: i64) -> (i64, i64) {
+        let Some(mut kid) = self.io.children.borrow_mut().remove(&pid) else { return (0, 0) };
+        let ended = kid.child.wait().map_or((0, 0), ended_as);
+        for (copy, err) in kid.copies {
+            let bytes = copy.join().unwrap_or_default();
+            if bytes.is_empty() {
+                continue;
+            }
+            match err {
+                true => {
+                    let mut world = self.io.world.borrow_mut();
+                    let _ = world.err.write_all(&bytes).and_then(|()| world.err.flush());
+                }
+                false => {
+                    let mut out = self.io.out.borrow_mut();
+                    let _ = out.write_all(&bytes).and_then(|()| out.flush());
+                }
+            }
+        }
+        ended
+    }
+
+    /// `await System.waitAsync(pid, read token, ref ended)`: a thread waits for the end of the
+    /// program without taking it away while this fiber gives the turn away; a cancel ends the
+    /// wait, and leaves the program to whoever stops it.
+    fn wait_async(&mut self, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
+        let at = args[0].span;
+        let Value::Int(_, pid) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes it a number") };
+        let source = self.token(&args[1], frame)?;
+        let ended = owned(self.expr(&args[2], frame)?);
+        let value = 'waited: {
+            if source.as_ref().is_some_and(|source| source.borrow().cancelled) {
+                break 'waited failed(io_cancelled());
+            }
+            let (id, done) = self.work(at)?;
+            let pid = pid as i64;
+            std::thread::spawn(move || {
+                wait_unreaped(pid);
+                done.tell(id);
+            });
+            if self.wait_for(Outside::Work(id), source.as_ref(), at)? {
+                break 'waited failed(io_cancelled());
+            }
+            let (kind, number) = self.reap(pid);
+            for (slot, value) in cells_of(&ended).iter().zip([kind, number]) {
+                *slot.borrow_mut() = Value::Int(IntTy::Long, i128::from(value));
+            }
+            ok(Value::Void)
+        };
+        Ok(self.ended_task(value, at))
+    }
+
     /// `System.run`: starts the program at the path and waits for it to end. What was printed
     /// goes out first. The program writes into pipes whose bytes are copied, as they come, to
     /// the output and the standard error of the run (or into the text, for its output when it
@@ -4507,66 +4789,19 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// process, nothing, or the text, written by a thread of its own while the output is read.
     fn run_child(&mut self, values: Vec<Value>) -> Res<Value> {
         use std::io::Read;
-        use std::os::unix::process::{CommandExt, ExitStatusExt};
         use std::process::Stdio;
         let text = |at: usize| match &values[at] {
             Value::Str(text) => text.to_string(),
             _ => unreachable!("the checker makes it text"),
         };
-        let items = |at: usize| match &values[at] {
-            Value::List(items) => items.borrow().iter().map(|item| item.borrow().clone()).collect::<Vec<Value>>(),
-            _ => unreachable!("the checker makes it a list"),
-        };
-        let texts = |at: usize| {
-            items(at)
-                .into_iter()
-                .map(|item| match item {
-                    Value::Str(text) => text.to_string(),
-                    _ => unreachable!("the checker makes it a list of texts"),
-                })
-                .collect::<Vec<String>>()
-        };
         let flag = |at: usize| matches!(values[at], Value::Bool(true));
-        let words = texts(1);
-        let mut command = std::process::Command::new(text(0));
-        command.arg0(&words[0]).args(&words[1..]);
-        let folder = text(2);
-        if !folder.is_empty() {
-            command.current_dir(folder);
-        }
-        if flag(3) {
-            command.env_clear();
-        }
-        let kept = items(6);
-        for ((name, value), kept) in texts(4).iter().zip(texts(5)).zip(kept) {
-            match kept {
-                Value::Bool(true) => command.env(name, value),
-                _ => command.env_remove(name),
-            };
-        }
-        let input = match &values[7] {
-            Value::Int(_, input) => *input,
-            _ => unreachable!("the checker makes it a number"),
-        };
+        let (mut command, input) = command_of(&values);
         command.stdin(match input {
             0 => Stdio::inherit(),
             1 => Stdio::null(),
             _ => Stdio::piped(),
         });
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        // Only the input, the output and the standard error reach the program: a descriptor the
-        // process was handed open (a test runner's pipe) is marked close-on-exec in the child,
-        // before the program runs. Marked, not closed, so that Rust's own pipe, which tells the
-        // parent why the start failed, still works.
-        let last = open_max();
-        // SAFETY: between `fork` and `exec` the closure only calls `fcntl` and the system call
-        // of `close_range`, which are safe there, and allocates nothing.
-        unsafe {
-            command.pre_exec(move || {
-                cloexec_from_3(last);
-                Ok(())
-            });
-        }
         let fed = text(8);
         let capture = flag(9);
         self.flush_out()?;
@@ -4626,11 +4861,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Err(error) => bad = i64::try_from(error.utf8_error().valid_up_to()).unwrap_or(i64::MAX),
             }
         }
-        let (kind, number) = match (ended.code(), ended.signal()) {
-            (Some(code), _) => (0, i64::from(code)),
-            (None, Some(signal)) => (1, i64::from(signal)),
-            (None, None) => (0, 0),
-        };
+        let (kind, number) = ended_as(ended);
         let fields = cells_of(&values[11]);
         for (slot, value) in fields.iter().zip([kind, number, bad]) {
             *slot.borrow_mut() = Value::Int(IntTy::Long, i128::from(value));

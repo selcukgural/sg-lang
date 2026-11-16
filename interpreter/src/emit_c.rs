@@ -37,7 +37,9 @@
 //! table is drawn with too). So are folders, paths and the environment (`Directory`, `FileInfo`,
 //! `Path`, `Environment`); the calls of the system under them, and `File.delete`, `File.move`,
 //! `File.replace` and `File.copy`, are C (see `FILES_RUNTIME`), and so is the running of another
-//! program under `Command` (see `PROCESS_RUNTIME`). A function of the module takes the
+//! program under `Command` and `Process` (see `PROCESS_RUNTIME`, with the reader of a pipe in
+//! `PROCESS_PIPES_RUNTIME` and the async wait in `PROCESS_ASYNC_RUNTIME`). An async method is
+//! an async function with `this` in front of its parameters. A function of the module takes the
 //! place of its call as one more parameter, so a panic inside it is shown at the program's line
 //! (see `Emitter::tracked`). A type
 //! alias is the type it names. Anything else is an error
@@ -2415,7 +2417,8 @@ static int sg_net_accept_now(int lfd, int* out, bool nb) {
     return 0;
 }
 static int sg_net_recv_now(int fd, uint8_t* to, int64_t len, int64_t* got) {
-    ssize_t n = recv(fd, to, (size_t)len, 0);
+    /* `read`, which is `recv` without flags on a socket, and reads a pipe too. */
+    ssize_t n = read(fd, to, (size_t)len);
     if (n < 0) return errno == EWOULDBLOCK ? EAGAIN : sg_os_error();
     *got = n;
     return 0;
@@ -2529,7 +2532,7 @@ static sg_reader sg_net_reader(sg_socket* s, int64_t limit, const char* loc) {
     }
     uint8_t* block = malloc(65536);
     if (!block) abort();
-    return (sg_reader){ s->fd, block, 0, 0, 0, false, s, 65536, limit, false, 0 };
+    return (sg_reader){ s->fd, block, 0, 0, 0, false, s, 65536, limit, false, 0, false };
 }
 "#;
 
@@ -2657,7 +2660,8 @@ static int sg_loop_arm(sg_wait* w, bool* armed) {
 #else
     (void)armed;
     struct kevent k;
-    EV_SET(&k, w->on.fd, w->write ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, w);
+    if (w->proc) EV_SET(&k, w->on.fd, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, w);
+    else EV_SET(&k, w->on.fd, w->write ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, w);
     return kevent(sg_loop, &k, 1, NULL, 0, NULL) == 0 ? 0 : sg_os_error();
 #endif
 }
@@ -2666,7 +2670,7 @@ static void sg_loop_disarm(sg_wait* w) {
     epoll_ctl(sg_loop, EPOLL_CTL_DEL, w->on.fd, NULL);
 #else
     struct kevent k;
-    EV_SET(&k, w->on.fd, w->write ? EVFILT_WRITE : EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    EV_SET(&k, w->on.fd, w->proc ? EVFILT_PROC : w->write ? EVFILT_WRITE : EVFILT_READ, EV_DELETE, 0, 0, NULL);
     kevent(sg_loop, &k, 1, NULL, 0, NULL);
 #endif
 }
@@ -2933,6 +2937,93 @@ static int sg_reader_net(sg_reader* r, int need, int64_t want, sg_wait* w, sg_ca
 /// The calls of the file system beyond reading and writing a file (`File.delete`, `File.move`,
 /// `Directory.list` and the others), and the variables of the environment. Added only to such a
 /// program, after `IO_RUNTIME`.
+/// The reader of a pipe from another program: a reader of a connection that owns its socket and
+/// has no longest line, so that it reads, waits and is cancelled as one. After `NET_RUNTIME`.
+const PROCESS_PIPES_RUNTIME: &str = r#"
+static sg_reader sg_proc_reader(int64_t fd) {
+    sg_socket* s = malloc(sizeof *s);
+    uint8_t* block = malloc(65536);
+    if (!s || !block) abort();
+    *s = (sg_socket){ (int)fd, false, false };
+    return (sg_reader){ (int)fd, block, 0, 0, 0, false, s, 65536, INT64_MAX, false, 0, true };
+}
+"#;
+
+/// `System.waitAsync`: the end of the program is waited for on the loop of the network, as a socket
+/// is: its pidfd on Linux (`pidfd_open`, 5.3 and later), kqueue's `EVFILT_PROC` on macOS. Neither
+/// takes the program away, so its number names no other program until it is waited for; the task
+/// takes it away once the loop has woken it. Where Linux has no pidfd, a thread of input and output
+/// waits instead (`waitid` with `WNOWAIT`). After `NET_ASYNC_RUNTIME`.
+const PROCESS_ASYNC_RUNTIME: &str = r#"
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
+typedef struct { sg_far far; pid_t pid; } sg_proc_far;
+static void sg_proc_far_run(sg_far* f) {
+    siginfo_t info;
+    memset(&info, 0, sizeof info);
+    while (waitid(P_PID, (id_t)((sg_proc_far*)f)->pid, &info, WEXITED | WNOWAIT) < 0 && errno == EINTR) {}
+}
+/* The wait in the frame of the task: on the loop (`pidfd` on Linux, -1 on macOS), or on a thread
+   (`far`). `state`: SG_WAITING, SG_OVER or SG_CANCELLED. */
+typedef struct { sg_wait w; int state; int pidfd; bool far; } sg_io_proc;
+/* The task running now waits for the end of program `pid`. */
+static void sg_proc_wait_start(sg_io_proc* x, int64_t pid, sg_cancel* token, const char* loc) {
+    x->pidfd = -1;
+    x->far = false;
+    sg_wait_init(&x->w, sg_wait_cut);
+    if (sg_cancelled(token)) { x->state = SG_CANCELLED; return; }
+    int on = (int)pid;
+#if defined(__linux__) && defined(SYS_pidfd_open)
+    x->pidfd = (int)syscall(SYS_pidfd_open, (pid_t)pid, 0);
+    on = x->pidfd;
+#endif
+#if defined(__linux__)
+    if (x->pidfd < 0) {
+        sg_proc_far* f = calloc(1, sizeof *f);
+        if (!f) abort();
+        f->far.run = sg_proc_far_run;
+        f->pid = (pid_t)pid;
+        x->far = true;
+        x->state = sg_far_start(&f->far, &x->w, token, loc);
+        return;
+    }
+#endif
+    sg_loop_open(loc);
+    x->w.proc = true;
+    x->w.write = false;
+    x->w.dup = false;
+    x->w.told = token != NULL;
+    x->w.on.fd = on;
+    __atomic_store_n(&x->w.posted, 1, __ATOMIC_RELEASE);
+    int code = 0;
+    if (token) {
+        pthread_mutex_lock(&sg_clock_lock);
+        if (token->cancelled) {
+            code = -1;
+        } else {
+            sg_wait_link(&x->w, token);
+            code = sg_loop_arm(&x->w, NULL);
+            if (code) sg_wait_unlink(&x->w);
+        }
+        pthread_mutex_unlock(&sg_clock_lock);
+    } else {
+        code = sg_loop_arm(&x->w, NULL);
+    }
+    /* macOS gives ESRCH for a program that has ended and was not waited for: its end has come. */
+    x->state = code < 0 ? SG_CANCELLED : code ? SG_OVER : SG_WAITING;
+    if (x->state != SG_WAITING && x->pidfd >= 0) { close(x->pidfd); x->pidfd = -1; }
+}
+/* Whether the wait is over: then `state` is SG_OVER, or SG_CANCELLED. */
+static bool sg_proc_wait_ready(sg_io_proc* x) {
+    if (x->state != SG_WAITING) return true;
+    if (!sg_wait_settled(&x->w)) return false;
+    x->state = sg_wait_state(&x->w);
+    if (x->pidfd >= 0) { close(x->pidfd); x->pidfd = -1; }
+    return true;
+}
+"#;
+
 const PROCESS_RUNTIME: &str = r#"
 #include <poll.h>
 #include <pthread.h>
@@ -3075,15 +3166,15 @@ static int sg_proc_pump(int in, sg_str text, int out, sg_string* kept) {
 #endif
     return code;
 }
-/* `System.run`: starts the program at `path` with `posix_spawn` and waits for it to end. Its
-   input is this program's (`input` 0), nothing (1) or `text` (2); its output is a pipe read into
-   `output` when it is given, otherwise this program's; its standard error is this program's. What
-   was printed goes out first. Only 0, 1 and 2 reach the program: every other descriptor of the
-   runtime is opened close-on-exec, and on macOS the spawn closes every descriptor it is not told
-   to keep. `ended` gets 0 and the code, or 1 and the signal that stopped it. */
-static int sg_proc_run(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
-                       const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
-                       int64_t input, sg_str text, sg_string* output, int64_t* ended) {
+/* Starts the program at `path` with `posix_spawn`. Its input is this program's (`input` 0),
+   nothing (1) or a pipe (2); its output and its standard error are pipes when `out` and `err` say
+   so, otherwise this program's. `ends` gets the ends of the pipes this program keeps (the input,
+   the output, the standard error), or -1. What was printed goes out first. Only 0, 1 and 2 reach
+   the program: every other descriptor of the runtime is opened close-on-exec, and on macOS the
+   spawn closes every descriptor it is not told to keep. */
+static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
+                         const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
+                         int64_t input, bool out, bool err, pid_t* child, int ends[3]) {
     char* program = sg_proc_text(path.ptr, path.len);
     char** argv = malloc(sizeof(char*) * (size_t)(count + 1));
     if (!argv) abort();
@@ -3093,11 +3184,11 @@ static int sg_proc_run(sg_str path, const sg_string* words, int64_t count, sg_st
     char** made = NULL;
     int64_t fresh = 0;
     char** envp = sg_proc_environment(clear, names, values, kept, changes, &made, &fresh);
-    int in_pipe[2] = { -1, -1 }, out_pipe[2] = { -1, -1 };
+    int pipes[3][2] = { { -1, -1 }, { -1, -1 }, { -1, -1 } };
+    bool asked[3] = { input == 2, out, err };
     int code = 0;
-    if (input == 2) code = sg_proc_pipe(in_pipe);
-    if (!code && output) code = sg_proc_pipe(out_pipe);
-    pid_t child = 0;
+    for (int i = 0; i < 3 && !code; i++)
+        if (asked[i]) code = sg_proc_pipe(pipes[i]);
     if (!code) {
         posix_spawn_file_actions_t actions;
         posix_spawnattr_t attr;
@@ -3116,8 +3207,9 @@ static int sg_proc_run(sg_str path, const sg_string* words, int64_t count, sg_st
         posix_spawnattr_setsigmask(&attr, &none);
         posix_spawnattr_setsigdefault(&attr, &plain);
         if (input == 1) posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
-        if (input == 2) posix_spawn_file_actions_adddup2(&actions, in_pipe[0], 0);
-        if (output) posix_spawn_file_actions_adddup2(&actions, out_pipe[1], 1);
+        if (input == 2) posix_spawn_file_actions_adddup2(&actions, pipes[0][0], 0);
+        if (out) posix_spawn_file_actions_adddup2(&actions, pipes[1][1], 1);
+        if (err) posix_spawn_file_actions_adddup2(&actions, pipes[2][1], 2);
         /* POSIX named it without `_np` in 2024; macOS 26 has only that name left undeprecated. */
 #if defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && __MAC_OS_X_VERSION_MIN_REQUIRED >= 260000
         if (dir) posix_spawn_file_actions_addchdir(&actions, dir);
@@ -3131,26 +3223,18 @@ static int sg_proc_run(sg_str path, const sg_string* words, int64_t count, sg_st
 #endif
         fflush(stdout);
         fflush(stderr);
-        code = posix_spawn(&child, program, &actions, &attr, argv, envp);
+        code = posix_spawn(child, program, &actions, &attr, argv, envp);
         posix_spawn_file_actions_destroy(&actions);
         posix_spawnattr_destroy(&attr);
     }
-    if (in_pipe[0] >= 0) close(in_pipe[0]);
-    if (out_pipe[1] >= 0) close(out_pipe[1]);
-    if (code) {
-        if (in_pipe[1] >= 0) close(in_pipe[1]);
-        if (out_pipe[0] >= 0) close(out_pipe[0]);
-    } else {
-        int pumped = (in_pipe[1] >= 0 || out_pipe[0] >= 0) ? sg_proc_pump(in_pipe[1], text, out_pipe[0], output) : 0;
-        int status = 0;
-        while (waitpid(child, &status, 0) < 0) {
-            if (errno != EINTR) { code = sg_os_error(); break; }
-        }
-        if (!code) code = pumped;
-        if (!code) {
-            ended[0] = WIFSIGNALED(status) ? 1 : 0;
-            ended[1] = WIFSIGNALED(status) ? WTERMSIG(status) : WEXITSTATUS(status);
-        }
+    /* The ends the program has are closed here; the others are kept, or closed when it did not start. */
+    if (pipes[0][0] >= 0) close(pipes[0][0]);
+    if (pipes[1][1] >= 0) close(pipes[1][1]);
+    if (pipes[2][1] >= 0) close(pipes[2][1]);
+    int kept_ends[3] = { pipes[0][1], pipes[1][0], pipes[2][0] };
+    for (int i = 0; i < 3; i++) {
+        if (code && kept_ends[i] >= 0) close(kept_ends[i]);
+        ends[i] = code ? -1 : kept_ends[i];
     }
     free(program);
     for (int64_t i = 0; i < count; i++) free(argv[i]);
@@ -3160,6 +3244,85 @@ static int sg_proc_run(sg_str path, const sg_string* words, int64_t count, sg_st
     free(made);
     free(envp);
     return code;
+}
+/* Waits for the program to end and takes it away: `ended` gets 0 and the code, or 1 and the signal
+   that stopped it. */
+static int sg_proc_reap(pid_t child, int64_t* ended) {
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR) return sg_os_error();
+    }
+    ended[0] = WIFSIGNALED(status) ? 1 : 0;
+    ended[1] = WIFSIGNALED(status) ? WTERMSIG(status) : WEXITSTATUS(status);
+    return 0;
+}
+/* `System.run`: starts the program and waits for it to end. Its input is this program's (`input`
+   0), nothing (1) or `text` (2); its output is a pipe read into `output` when it is given,
+   otherwise this program's; its standard error is this program's. */
+static int sg_proc_run(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
+                       const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
+                       int64_t input, sg_str text, sg_string* output, int64_t* ended) {
+    pid_t child = 0;
+    int ends[3];
+    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, input, output != NULL, false, &child, ends);
+    if (code) return code;
+    int pumped = (ends[0] >= 0 || ends[1] >= 0) ? sg_proc_pump(ends[0], text, ends[1], output) : 0;
+    code = sg_proc_reap(child, ended);
+    return code ? code : pumped;
+}
+/* The text `input` gave a program that `start` started, written into its input by a thread of
+   its own while the program runs, which then closes the pipe. A program that ends before it read
+   all of it is no error. */
+typedef struct { int fd; uint8_t* text; int64_t len; } sg_proc_feed;
+static void* sg_proc_feed_main(void* p) {
+    sg_proc_feed* f = p;
+    (void)sg_write_pipe(f->fd, f->text, f->len);
+    close(f->fd);
+    free(f->text);
+    free(f);
+    return NULL;
+}
+/* `System.start`: starts the program and goes on. Its input is this program's (`input` 0),
+   nothing (1), `text` (2) or a pipe kept here (3); its output and its standard error are pipes kept
+   here when `out` and `err` say so. `made` gets the number of the program and the ends kept here
+   (the input, the output, the standard error), or -1. */
+static int sg_proc_start(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
+                         const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
+                         int64_t input, sg_str text, bool out, bool err, int64_t* made) {
+    pid_t child = 0;
+    int ends[3];
+    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, input >= 2 ? 2 : input, out, err, &child, ends);
+    if (code) return code;
+    if (input == 2) {
+#ifdef F_SETNOSIGPIPE
+        fcntl(ends[0], F_SETNOSIGPIPE, 1);
+#endif
+        sg_proc_feed* f = malloc(sizeof *f);
+        uint8_t* copy = malloc((size_t)text.len + 1);
+        if (!f || !copy) abort();
+        if (text.len > 0) memcpy(copy, text.ptr, (size_t)text.len);
+        *f = (sg_proc_feed){ ends[0], copy, text.len };
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        pthread_t thread;
+        if (pthread_create(&thread, &attr, sg_proc_feed_main, f) != 0) {
+            fprintf(stderr, "the system refused a thread to write the input of a program\n");
+            abort();
+        }
+        pthread_attr_destroy(&attr);
+        ends[0] = -1;
+    }
+    made[0] = child;
+    for (int i = 0; i < 3; i++) made[i + 1] = ends[i];
+    return 0;
+}
+/* The writer of the input of a program that `start` started. */
+static sg_writer sg_proc_writer(int64_t fd) {
+#ifdef F_SETNOSIGPIPE
+    fcntl((int)fd, F_SETNOSIGPIPE, 1);
+#endif
+    return (sg_writer){ (int)fd, 0, 0, { (uint8_t*)"", 0, 0 }, 1 };
 }
 "#;
 
@@ -3443,6 +3606,8 @@ static const char* sg_env_variable(sg_str name, int64_t* len) {
 const IO_RUNTIME: &str = r#"
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -3537,11 +3702,14 @@ static int sg_write_file(sg_str path, const uint8_t* bytes, int64_t len, bool ap
    holds what the read needs. A line, or a text, longer than `limit` is an error, and so is every
    read after it (`too_long`).
    `checked`: how far, counted as `done` counts, the bytes are known to be UTF-8 (see
-   `sg_block_bad`). */
+   `sg_block_bad`).
+   The reader of a pipe from another program (`Process`, see `PROCESS_PIPES_RUNTIME`) is read as
+   a connection is, so that an async read waits on the loop and a cancel ends the wait; it owns
+   its `sock` (`own`), and has no longest line. */
 struct sg_socket_s;
-typedef struct { int fd; uint8_t* block; int64_t at, len, done; bool ended; struct sg_socket_s* sock; int64_t cap, limit; bool too_long; int64_t checked; } sg_reader;
+typedef struct { int fd; uint8_t* block; int64_t at, len, done; bool ended; struct sg_socket_s* sock; int64_t cap, limit; bool too_long; int64_t checked; bool own; } sg_reader;
 static uint8_t sg_in_block[65536];
-static sg_reader sg_stdin = { 0, sg_in_block, 0, 0, 0, false, NULL, 65536, 0, false, 0 };
+static sg_reader sg_stdin = { 0, sg_in_block, 0, 0, 0, false, NULL, 65536, 0, false, 0, false };
 /* Where the first byte that is not UTF-8 lies in the bytes `from` to `to` of the block, from
    `from`, or -1. A line is checked with the rest of the block, at once, from where the check
    stands: the lines after it inside the part known to be text cost nothing, where a check of
@@ -3846,12 +4014,18 @@ static int sg_open_reader(sg_str path, sg_reader* out) {
     if (fstat(fd, &info) == 0 && S_ISDIR(info.st_mode)) { close(fd); return EISDIR; }
     uint8_t* block = malloc(65536);
     if (!block) abort();
-    *out = (sg_reader){ fd, block, 0, 0, 0, false, NULL, 65536, 0, false, 0 };
+    *out = (sg_reader){ fd, block, 0, 0, 0, false, NULL, 65536, 0, false, 0, false };
     return 0;
+}
+/* The reader of a pipe closes it and frees the socket it reads it through. */
+static inline void sg_drop_owned_sock(sg_reader* r) {
+    close(r->fd);
+    free(r->sock);
 }
 static inline void sg_drop_reader(sg_reader* r) {
     if (!r->block) return;
-    if (!r->sock) close(r->fd);
+    if (r->own) sg_drop_owned_sock(r);
+    else if (!r->sock) close(r->fd);
     free(r->block);
     r->block = NULL;
 }
@@ -3862,10 +4036,11 @@ typedef struct { sg_reader* r; bool done; } sg_read_lines;
 /* A file written through a block of 64 KB, or the output and the standard error (`std` 1 and
    2), written through C's `stdout` and `stderr` so that they keep their order with `print`.
    `failed`: the first error, which every later call gives again. A writer that was moved or
-   closed has `fd` -1. */
-typedef struct { int fd; int std; int failed; sg_string buf; } sg_writer;
-static sg_writer sg_stdout __attribute__((unused)) = { 1, 1, 0, { (uint8_t*)"", 0, 0 } };
-static sg_writer sg_stderr __attribute__((unused)) = { 2, 2, 0, { (uint8_t*)"", 0, 0 } };
+   closed has `fd` -1. `pipe`: the input of another program, written without the signal of a
+   pipe nobody reads (see `sg_write_pipe`). */
+typedef struct { int fd; int std; int failed; sg_string buf; int pipe; } sg_writer;
+static sg_writer sg_stdout __attribute__((unused)) = { 1, 1, 0, { (uint8_t*)"", 0, 0 }, 0 };
+static sg_writer sg_stderr __attribute__((unused)) = { 2, 2, 0, { (uint8_t*)"", 0, 0 }, 0 };
 static int sg_write_all(int fd, const uint8_t* bytes, int64_t len) {
     while (len > 0) {
         ssize_t put = write(fd, bytes, (size_t)len);
@@ -3875,8 +4050,36 @@ static int sg_write_all(int fd, const uint8_t* bytes, int64_t len) {
     }
     return 0;
 }
+/* Writing into a pipe that nobody reads any more gives EPIPE, not the signal that would end the
+   program: macOS leaves the signal out for the pipe (`F_SETNOSIGPIPE`, set where the writer is
+   made); Linux has the thread hold it back while it writes, and takes away the one it raised. */
+static int sg_write_pipe(int fd, const uint8_t* bytes, int64_t len) {
+#ifdef F_SETNOSIGPIPE
+    return sg_write_all(fd, bytes, len);
+#else
+    sigset_t pipe_signal, before, pending;
+    sigemptyset(&pipe_signal);
+    sigaddset(&pipe_signal, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &pipe_signal, &before);
+    sigpending(&pending);
+    bool held = sigismember(&pending, SIGPIPE);
+    int code = sg_write_all(fd, bytes, len);
+    if (code == EPIPE && !held) {
+        sigpending(&pending);
+        if (sigismember(&pending, SIGPIPE)) {
+            int taken;
+            sigwait(&pipe_signal, &taken);
+        }
+    }
+    pthread_sigmask(SIG_SETMASK, &before, NULL);
+    return code;
+#endif
+}
+static inline int sg_writer_put(sg_writer* w, const uint8_t* bytes, int64_t len) {
+    return w->pipe ? sg_write_pipe(w->fd, bytes, len) : sg_write_all(w->fd, bytes, len);
+}
 static int sg_writer_out(sg_writer* w) {
-    int code = sg_write_all(w->fd, w->buf.ptr, w->buf.len);
+    int code = sg_writer_put(w, w->buf.ptr, w->buf.len);
     w->buf.len = 0;
     if (code) w->failed = code;
     return code;
@@ -3927,7 +4130,7 @@ static int sg_writer_close(sg_writer* w) {
 }
 /* A writer that ends without `close` writes its block and closes, and the error is lost. */
 static void sg_drop_writer_now(sg_writer* w) {
-    if (!w->failed) (void)sg_write_all(w->fd, w->buf.ptr, w->buf.len);
+    if (!w->failed) (void)sg_writer_put(w, w->buf.ptr, w->buf.len);
     close(w->fd);
     w->fd = -1;
     sg_drop_string(&w->buf);
@@ -3992,7 +4195,7 @@ static int sg_writer_bytes(sg_writer* w, const uint8_t* bytes, int64_t len) {
     }
     int code = sg_writer_out(w);
     if (code) return code;
-    code = sg_write_all(w->fd, bytes, len);
+    code = sg_writer_put(w, bytes, len);
     if (code) w->failed = code;
     return code;
 }
@@ -4005,7 +4208,7 @@ static int sg_open_writer(sg_str path, bool append, sg_writer* out) {
     int fd = open(name, O_WRONLY | O_CREAT | O_CLOEXEC | (append ? O_APPEND : O_TRUNC), 0666);
     free(name);
     if (fd < 0) return sg_os_error();
-    *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 } };
+    *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 }, 0 };
     return 0;
 }
 "#;
@@ -4135,6 +4338,8 @@ typedef struct sg_wait {
     sg_delay d;
     union { int fd; struct sg_far* far; } on;
     bool write;
+    /* The end of a program (`fd` its number on macOS, its pidfd on Linux), see `PROCESS_ASYNC_RUNTIME`. */
+    bool proc;
     bool dup;
     bool told;
     int settled;
@@ -4154,6 +4359,7 @@ static void sg_wait_init(sg_wait* w, void (*over)(sg_delay*)) {
     w->d.state = SG_WAITING;
     w->settled = 0;
     w->cut = NULL;
+    w->proc = false;
 }
 /* The clock's lock is held: the wait is put on the list of its token. */
 static void sg_wait_link(sg_wait* w, sg_cancel* token) {
@@ -4308,7 +4514,7 @@ static void sg_io_run_writer(sg_io* io) {
     if (!x->w) { x->r = sg_writer_close(&x->held); return; }
     int code = x->w->failed ? x->w->failed : sg_writer_out(x->w);
     if (!code && x->len > 0) {
-        code = sg_write_all(x->w->fd, x->bytes, x->len);
+        code = sg_writer_put(x->w, x->bytes, x->len);
         if (code) x->w->failed = code;
     }
     x->r = code;
@@ -4469,6 +4675,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         sites: Vec::new(),
         funcs: prog.funcs.iter().filter(|func| !func.is_async && func.foreign.is_none()).map(|func| func.name.as_str()).collect(),
         asyncs: prog.funcs.iter().filter(|func| func.is_async).map(|func| func.name.as_str()).collect(),
+        async_methods: HashSet::new(),
         awaits: None,
         exit_blocks: Vec::new(),
         frames: Vec::new(),
@@ -4519,6 +4726,16 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     for (owner, methods) in typed() {
         for method in methods {
             let params = method.params.iter().map(|param| emitter.written(&param.ty)).collect::<Res<Vec<Ty>>>()?;
+            // An async method is called as an async function is, with `this` in front.
+            if method.is_async {
+                let name = cname(&format!("{owner}.{}", method.name));
+                let _ = writeln!(emitter.types, "typedef struct F_{name} F_{name};");
+                emitter.made.insert("tasks".to_string());
+                emitter.async_methods.insert(format!("{owner}.{}", method.name));
+                emitter.sigs.insert(format!("a_init_{name}"), params.clone());
+                emitter.sigs.insert(format!("a_start_{name}"), params);
+                continue;
+            }
             if tracks(&method.name, Some(owner)) {
                 emitter.tracked.insert(format!("f_{}_{}", cname(owner), method.name));
             }
@@ -4540,13 +4757,16 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
             continue;
         }
         match func.is_async {
-            true => emitter.async_func(func, &mut protos, &mut bodies)?,
+            true => emitter.async_func(func, None, &mut protos, &mut bodies)?,
             false => emitter.func(func, None, &mut protos, &mut bodies)?,
         }
     }
     for (owner, methods) in typed() {
         for method in methods {
-            emitter.func(method, Some(owner), &mut protos, &mut bodies)?;
+            match method.is_async {
+                true => emitter.async_func(method, Some(owner), &mut protos, &mut bodies)?,
+                false => emitter.func(method, Some(owner), &mut protos, &mut bodies)?,
+            }
         }
     }
 
@@ -4647,11 +4867,17 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     if emitter.made.contains("net") {
         out.push_str(NET_RUNTIME);
     }
+    if emitter.made.contains("process pipes") {
+        out.push_str(PROCESS_PIPES_RUNTIME);
+    }
     if emitter.made.contains("async io") {
         out.push_str(ASYNC_IO_RUNTIME);
     }
     if emitter.made.contains("net async") {
         out.push_str(NET_ASYNC_RUNTIME);
+    }
+    if emitter.made.contains("process async") {
+        out.push_str(PROCESS_ASYNC_RUNTIME);
     }
     if tests {
         out.push_str(TEST_SUPPORT);
@@ -5410,6 +5636,8 @@ struct Emitter<'a> {
     funcs: Vec<&'a str>,
     /// The async functions of the program, by name.
     asyncs: HashSet<&'a str>,
+    /// The async methods, under `owner.name`.
+    async_methods: HashSet<String>,
     /// While an async function is written: where each `await` stands, found again by the number
     /// in its `SG_RESUME` mark. The first is the function's name, for a task awaited on a way out
     /// (see `drops`).
@@ -7295,6 +7523,26 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
+    /// The type of `this` in a method that takes it: the struct or the enum, or the value that
+    /// holds it (`read FolderRef this`), lent or by value.
+    fn this_param(&mut self, func: &Func, owner: Option<&str>) -> Res<Option<Ty>> {
+        let (Some(this), Some(owner)) = (func.this, owner) else { return Ok(None) };
+        let owner_ty = match self.structs.contains_key(owner) {
+            true => Ty::Struct(owner.to_string()),
+            false => Ty::Enum(owner.to_string()),
+        };
+        // `read FolderRef this`: the `shared` value that holds the struct.
+        let owner_ty = match &func.this_ty {
+            Some(written) => self.written(written)?,
+            None => owner_ty,
+        };
+        Ok(Some(match this {
+            This::Value => owner_ty,
+            This::Read => Ty::Read(Box::new(owner_ty)),
+            This::Ref => Ty::Ref(Box::new(owner_ty)),
+        }))
+    }
+
     fn func(&mut self, func: &'a Func, owner: Option<&str>, protos: &mut String, bodies: &mut String) -> Res<()> {
         let ret = self.written(&func.ret)?;
         let name = match owner {
@@ -7303,21 +7551,7 @@ impl<'a> Emitter<'a> {
         };
         let mut params = Vec::new();
         let mut scope = streams();
-        if let (Some(this), Some(owner)) = (func.this, owner) {
-            let owner_ty = match self.structs.contains_key(owner) {
-                true => Ty::Struct(owner.to_string()),
-                false => Ty::Enum(owner.to_string()),
-            };
-            // `read FolderRef this`: the `shared` value that holds the struct.
-            let owner_ty = match &func.this_ty {
-                Some(written) => self.written(written)?,
-                None => owner_ty,
-            };
-            let ty = match this {
-                This::Value => owner_ty,
-                This::Read => Ty::Read(Box::new(owner_ty)),
-                This::Ref => Ty::Ref(Box::new(owner_ty)),
-            };
+        if let Some(ty) = self.this_param(func, owner)? {
             params.push(format!("{} v_this", self.ctype(&ty, func.name_span)?));
             scope.push(Local { name: "this".to_string(), cname: "v_this".to_string(), ty, gone: false, drop: None });
         }
@@ -7365,11 +7599,18 @@ impl<'a> Emitter<'a> {
     /// `SG_RESUME` mark, see `hoisted`), and the function starts with a jump to the place it
     /// stopped at. `a_init_f` puts the arguments in a frame; `a_start_f` makes a task of a frame
     /// and starts it (see `sg_job_start`).
-    fn async_func(&mut self, func: &'a Func, protos: &mut String, bodies: &mut String) -> Res<()> {
+    fn async_func(&mut self, func: &'a Func, owner: Option<&str>, protos: &mut String, bodies: &mut String) -> Res<()> {
         let ret = self.written(&func.ret)?;
-        let name = cname(&func.name);
+        let name = match owner {
+            Some(owner) => cname(&format!("{owner}.{}", func.name)),
+            None => cname(&func.name),
+        };
         let mut params = Vec::new();
         let mut scope = streams();
+        if let Some(ty) = self.this_param(func, owner)? {
+            params.push((self.ctype(&ty, func.name_span)?, "v_this".to_string()));
+            scope.push(Local { name: "this".to_string(), cname: "v_this".to_string(), ty, gone: false, drop: None });
+        }
         for param in &func.params {
             let ty = self.written(&param.ty)?;
             params.push((self.ctype(&ty, param.ty.span)?, format!("v_{}", param.name)));
@@ -9091,21 +9332,96 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// A function called with its arguments, each shaped for its parameter.
+    /// What a method of the program is given as `this`: the address of the value it is called
+    /// on, or the value itself, as the method takes it.
+    fn method_receiver(&mut self, recv: &'a Expr, owner: &str, this: This, whole: bool) -> Res<Part> {
+        let this = &this;
+        if whole {
+            let holder = recv.ty.strip_borrow().clone();
+            let before = self.mark();
+            let (receiver, this_ty) = match this {
+                This::Value => (self.value(recv)?, holder.clone()),
+                _ if recv.ty.is_borrow() && !recv.is_place() => (self.value(recv)?, Ty::Read(Box::new(holder.clone()))),
+                _ => (self.address(recv)?, Ty::Read(Box::new(holder.clone()))),
+            };
+            return Ok(self.part(recv, &this_ty, receiver, before));
+        }
+        let held = recv.ty.strip_borrow().clone();
+        let before = self.mark();
+        let receiver = match (this, &held) {
+            // A value that has no name: it is used up, or kept until the statement ends.
+            _ if !recv.is_place() => match (this, &held) {
+                // `this` by value: the value leaves the heap and the box is freed.
+                (This::Value, Ty::Ptr(inner)) if !recv.ty.is_borrow() && !matches!(**inner, Ty::Ptr(_)) => {
+                    let (value, ctype, temp) = (self.value(recv)?, self.ctype(inner, recv.span)?, self.temp());
+                    format!("({{ {ctype}* {temp} = {value}; {ctype} {temp}v = *{temp}; free({temp}); {temp}v; }})")
+                }
+                (This::Value, Ty::Ptr(_)) => return Err(not_yet(recv.span, "a method that takes `this` called on a pointer that has no name").hint("give it a name first")),
+                // The box is kept until the statement ends; the method goes along the pointer.
+                (_, Ty::Ptr(_) | Ty::Shared(..)) => {
+                    let mut place = self.look(recv)?;
+                    let mut ty = &held;
+                    while let Some(inner) = pointee(ty) {
+                        place = format!("(*{place})");
+                        ty = inner;
+                    }
+                    format!("(&{place})")
+                }
+                (This::Value, _) => self.value(recv)?,
+                _ if recv.ty.is_borrow() => self.value(recv)?,
+                _ => format!("(&{})", self.look(recv)?),
+            },
+            // `this` by value on a `T*`: the value leaves the heap and the box is freed.
+            (This::Value, Ty::Ptr(inner)) if recv.moved => {
+                let (place, ctype, temp) = (self.lvalue(recv)?, self.ctype(inner, recv.span)?, self.temp());
+                format!("({{ {ctype}* {temp} = {}; {ctype} {temp}v = *{temp}; free({temp}); {temp}v; }})", self.move_of(&held, &place))
+            }
+            (This::Value, Ty::Ptr(_)) => format!("(*{})", self.lvalue(recv)?),
+            (This::Value, _) if recv.moved && self.droppable(&held) => {
+                let place = self.lvalue(recv)?;
+                self.move_of(&held, &place)
+            }
+            (This::Value, _) => self.lvalue(recv)?,
+            // A method of `T` called on a `T*`: along the pointer.
+            (This::Read | This::Ref, _) => {
+                let mut address = self.address(recv)?;
+                let mut ty = &held;
+                while let Some(inner) = pointee(ty) {
+                    address = format!("(*{address})");
+                    ty = inner;
+                }
+                address
+            }
+        };
+        let this_ty = match this {
+            This::Value => Ty::Struct(owner.to_string()),
+            This::Read => Ty::Read(Box::new(Ty::Struct(owner.to_string()))),
+            This::Ref => Ty::Ref(Box::new(Ty::Struct(owner.to_string()))),
+        };
+        Ok(self.part(recv, &this_ty, receiver, before))
+    }
+
     /// A call of a function of the program, written at `site`.
     fn call_at(&mut self, site: Span, name: String, receiver: Option<Part>, args: &'a [Expr], head: bool, gives: &Ty) -> Res<String> {
         self.site = Some(site);
         self.call(name, receiver, args, head, gives)
     }
 
+    /// A function called with its arguments, each shaped for its parameter.
     fn call(&mut self, name: String, receiver: Option<Part>, args: &'a [Expr], head: bool, gives: &Ty) -> Res<String> {
+        self.call_with(name, receiver.into_iter().collect(), args, head, gives)
+    }
+
+    /// A call with the parts that come before the arguments (a receiver, or the site of a task
+    /// and the `this` of an async method).
+    fn call_with(&mut self, name: String, leading: Vec<Part>, args: &'a [Expr], head: bool, gives: &Ty) -> Res<String> {
         let site = self.site.take();
         // The receiver was lent to read while the arguments are computed (`Opening::Reserve`).
         let reserved = self.reserving.take();
         let params = self.sigs.get(&name).cloned().unwrap_or_default();
         // An argument can leave the function for as long as no argument before it owns anything.
-        let mut taking = Taking { head: head && receiver.is_none(), handed: Vec::new() };
-        let mut parts: Vec<Part> = receiver.into_iter().collect();
+        let mut taking = Taking { head: head && leading.is_empty(), handed: Vec::new() };
+        let mut parts: Vec<Part> = leading;
         for (position, arg) in args.iter().enumerate() {
             let before = self.mark();
             let (value, ty) = match params.get(position) {
@@ -9729,6 +10045,54 @@ impl<'a> Emitter<'a> {
                     ),
                 )
             }
+            SystemCall::Start => {
+                self.made.insert("process".to_string());
+                let texts = || Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))));
+                (
+                    "sg_system_start",
+                    vec![
+                        text(),
+                        texts(),
+                        text(),
+                        Ty::Bool,
+                        texts(),
+                        texts(),
+                        Ty::Read(Box::new(Ty::List(Box::new(Ty::Bool)))),
+                        Ty::Int(IntTy::Long),
+                        text(),
+                        Ty::Bool,
+                        Ty::Bool,
+                        Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long))))),
+                    ],
+                    format!(
+                        "int64_t made[4] = {{ 0, -1, -1, -1 }}; \
+                         int code = sg_proc_start(a0, a1->ptr, a1->len, a2, a3, a4->ptr, a5->ptr, a6->ptr, a4->len, a7, a8, a9, a10, made); \
+                         if (code) {} for (int64_t i = 0; i < 4 && i < a11.len; i++) a11.ptr[i] = made[i]; return ({gives}){{ .tag = 0 }};",
+                        failed("sg_io_error(code)")
+                    ),
+                )
+            }
+            SystemCall::Wait => {
+                self.made.insert("process".to_string());
+                (
+                    "sg_system_wait",
+                    vec![Ty::Int(IntTy::Long), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
+                    "int64_t ended[2] = { 0, 0 }; (void)sg_proc_reap((pid_t)a0, ended); for (int64_t i = 0; i < 2 && i < a1.len; i++) a1.ptr[i] = ended[i];".to_string(),
+                )
+            }
+            SystemCall::Signal => {
+                self.made.insert("process".to_string());
+                ("sg_system_signal", vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)], "(void)kill((pid_t)a0, a1);".to_string())
+            }
+            SystemCall::PipeReader => {
+                self.made.extend(["process".to_string(), "net".to_string(), "process pipes".to_string()]);
+                ("sg_system_reader", vec![Ty::Int(IntTy::Long)], "return sg_proc_reader(a0);".to_string())
+            }
+            SystemCall::PipeWriter => {
+                self.made.insert("process".to_string());
+                ("sg_system_writer", vec![Ty::Int(IntTy::Long)], "return sg_proc_writer(a0);".to_string())
+            }
+            SystemCall::WaitAsync => unreachable!("the checker has `System.waitAsync` awaited where it is written"),
             SystemCall::Variable => (
                 "sg_system_variable",
                 vec![text(), bytes()],
@@ -10032,25 +10396,60 @@ impl<'a> Emitter<'a> {
             this.pre.push(format!("{ctype} {temp} = {value};"));
             Ok(temp)
         };
+        // An async function or method awaited here runs in a frame of this one: its arguments
+        // are put in the frame, then it runs until it waits, and again each time this resumes.
+        let awaited = match &inner.kind {
+            ExprKind::Call { name, args, callee: Callee::Plain, .. } if self.asyncs.contains(name.as_str()) => Some((cname(name), None, args)),
+            ExprKind::Call { args, callee: Callee::Static { owner, name }, .. } if self.async_methods.contains(&format!("{owner}.{name}")) => {
+                Some((cname(&format!("{owner}.{name}")), None, args))
+            }
+            ExprKind::Method { recv, name, args, callee: Callee::Method { owner, this, whole }, .. } if self.async_methods.contains(&format!("{owner}.{name}")) => {
+                Some((cname(&format!("{owner}.{name}")), Some((&**recv, owner, *this, *whole)), args))
+            }
+            _ => None,
+        };
+        if let Some((name, method, args)) = awaited {
+            let frame = self.temp();
+            self.pre.push(format!("F_{name} {frame};"));
+            let mut leading = vec![Part {
+                ctype: format!("F_{name}*"),
+                value: format!("(&{frame})"),
+                effect: Effect::Reads,
+                settled: true,
+                pre: (self.pre.len(), self.pre.len()),
+                leaves: false,
+                span: inner.span,
+            }];
+            if let Some((recv, owner, this, whole)) = method {
+                leading.push(self.method_receiver(recv, owner, this, whole)?);
+            }
+            let init = self.call_with(format!("a_init_{name}"), leading, args, head, &Ty::Void)?;
+            self.pre.push(format!("{init};"));
+            self.resume_point(expr.span);
+            self.pre.push(format!("if (!a_poll_{name}(&{frame})) return false;"));
+            return result(self, if matches!(expr.ty, Ty::Void | Ty::Never) { String::new() } else { format!("{frame}.sg_ret") });
+        }
         match &inner.kind {
-            ExprKind::Call { name, args, callee: Callee::Plain, .. } if self.asyncs.contains(name.as_str()) => {
-                let name = cname(name);
-                let frame = self.temp();
-                self.pre.push(format!("F_{name} {frame};"));
-                let receiver = Part {
-                    ctype: format!("F_{name}*"),
-                    value: format!("(&{frame})"),
-                    effect: Effect::Reads,
-                    settled: true,
-                    pre: (self.pre.len(), self.pre.len()),
-                    leaves: false,
-                    span: inner.span,
-                };
-                let init = self.call(format!("a_init_{name}"), Some(receiver), args, head, &Ty::Void)?;
-                self.pre.push(format!("{init};"));
+            // `await System.waitAsync(pid, read token, ref ended)`: a thread waits for the end of
+            // the program while the task waits for the thread; the program is then taken away
+            // here, at once.
+            ExprKind::Method { args, callee: Callee::System(SystemCall::WaitAsync), .. } => {
+                self.made.extend(["process".to_string(), "process async".to_string(), "async io".to_string(), "tasks".to_string(), "net".to_string()]);
+                self.io_error(inner.span)?;
+                let pid = self.value_as(&args[0], &Ty::Int(IntTy::Long))?;
+                let token = format!("(*{})", self.value(&args[1])?);
+                let ended = self.value(&args[2])?;
+                let (wait, loc) = (self.temp(), self.loc(inner.span));
+                self.pre.push(format!("sg_io_proc {wait}; sg_proc_wait_start(&{wait}, {pid}, {token}, {loc});"));
                 self.resume_point(expr.span);
-                self.pre.push(format!("if (!a_poll_{name}(&{frame})) return false;"));
-                result(self, if matches!(expr.ty, Ty::Void | Ty::Never) { String::new() } else { format!("{frame}.sg_ret") })
+                self.pre.push(format!("if (!sg_proc_wait_ready(&{wait})) return false;"));
+                let ctype = self.ctype(&expr.ty, expr.span)?;
+                let reaped = self.temp();
+                self.pre.push(format!(
+                    "int64_t {reaped}[2]; {reaped}[0] = {reaped}[1] = 0; if ({wait}.state != SG_CANCELLED) {{ (void)sg_proc_reap((pid_t)({pid}), {reaped}); \
+                     for (int64_t i = 0; i < 2 && i < ({ended}).len; i++) ({ended}).ptr[i] = {reaped}[i]; }}"
+                ));
+                result(self, format!("({wait}.state == SG_CANCELLED ? ({ctype}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }} : ({ctype}){{ .tag = 0 }})"))
             }
             ExprKind::Method { args, callee: Callee::Delay(told), .. } => {
                 let delay = self.temp();
@@ -11537,6 +11936,10 @@ impl<'a> Emitter<'a> {
                 Callee::Plain => self.call_at(expr.span, format!("f_{}", cname(name)), None, args, head, &expr.ty),
                 // A function of C, through the adapter `foreign_func` wrote.
                 Callee::Extern => self.call(format!("sg_x_{}", cname(name)), None, args, head, &expr.ty),
+                Callee::Static { owner, name } if self.async_methods.contains(&format!("{owner}.{name}")) => {
+                    let site = self.site(c_string(name), expr.span);
+                    self.call(format!("a_start_{}", cname(&format!("{owner}.{name}"))), Some(site), args, head, &expr.ty)
+                }
                 Callee::Static { owner, name } => self.call_at(expr.span, format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
                 // A call through a function value kept in a variable.
                 Callee::Value => {
@@ -11603,74 +12006,22 @@ impl<'a> Emitter<'a> {
                     let task = self.first(recv, head)?;
                     Ok(format!("sg_wait_{}({task})", mangle(recv.ty.strip_borrow()).expect("a task has a C name")))
                 }
+                Callee::Static { owner, name } if self.async_methods.contains(&format!("{owner}.{name}")) => {
+                    let site = self.site(c_string(name), expr.span);
+                    self.call(format!("a_start_{}", cname(&format!("{owner}.{name}"))), Some(site), args, head, &expr.ty)
+                }
                 Callee::Static { owner, name } => self.call_at(expr.span, format!("f_{}_{name}", cname(owner)), None, args, head, &expr.ty),
                 // `read FolderRef this`: the method borrows the owner, not what it holds (it is not
-                // opened); `FolderRef this` takes an owner of its own.
-                Callee::Method { whole: true, owner, this } => {
-                    let holder = recv.ty.strip_borrow().clone();
-                    let before = self.mark();
-                    let (receiver, this_ty) = match this {
-                        This::Value => (self.value(recv)?, holder.clone()),
-                        _ if recv.ty.is_borrow() && !recv.is_place() => (self.value(recv)?, Ty::Read(Box::new(holder.clone()))),
-                        _ => (self.address(recv)?, Ty::Read(Box::new(holder.clone()))),
-                    };
-                    let receiver = self.part(recv, &this_ty, receiver, before);
-                    self.call_at(expr.span, format!("f_{}_{name}", cname(owner)), Some(receiver), args, false, &expr.ty)
-                }
-                Callee::Method { owner, this, .. } => {
-                    let held = recv.ty.strip_borrow().clone();
-                    let before = self.mark();
-                    let receiver = match (this, &held) {
-                        // A value that has no name: it is used up, or kept until the statement ends.
-                        _ if !recv.is_place() => match (this, &held) {
-                            // `this` by value: the value leaves the heap and the box is freed.
-                            (This::Value, Ty::Ptr(inner)) if !recv.ty.is_borrow() && !matches!(**inner, Ty::Ptr(_)) => {
-                                let (value, ctype, temp) = (self.value(recv)?, self.ctype(inner, recv.span)?, self.temp());
-                                format!("({{ {ctype}* {temp} = {value}; {ctype} {temp}v = *{temp}; free({temp}); {temp}v; }})")
-                            }
-                            (This::Value, Ty::Ptr(_)) => return Err(not_yet(recv.span, "a method that takes `this` called on a pointer that has no name").hint("give it a name first")),
-                            // The box is kept until the statement ends; the method goes along the pointer.
-                            (_, Ty::Ptr(_) | Ty::Shared(..)) => {
-                                let mut place = self.look(recv)?;
-                                let mut ty = &held;
-                                while let Some(inner) = pointee(ty) {
-                                    place = format!("(*{place})");
-                                    ty = inner;
-                                }
-                                format!("(&{place})")
-                            }
-                            (This::Value, _) => self.value(recv)?,
-                            _ if recv.ty.is_borrow() => self.value(recv)?,
-                            _ => format!("(&{})", self.look(recv)?),
-                        },
-                        // `this` by value on a `T*`: the value leaves the heap and the box is freed.
-                        (This::Value, Ty::Ptr(inner)) if recv.moved => {
-                            let (place, ctype, temp) = (self.lvalue(recv)?, self.ctype(inner, recv.span)?, self.temp());
-                            format!("({{ {ctype}* {temp} = {}; {ctype} {temp}v = *{temp}; free({temp}); {temp}v; }})", self.move_of(&held, &place))
-                        }
-                        (This::Value, Ty::Ptr(_)) => format!("(*{})", self.lvalue(recv)?),
-                        (This::Value, _) if recv.moved && self.droppable(&held) => {
-                            let place = self.lvalue(recv)?;
-                            self.move_of(&held, &place)
-                        }
-                        (This::Value, _) => self.lvalue(recv)?,
-                        // A method of `T` called on a `T*`: along the pointer.
-                        (This::Read | This::Ref, _) => {
-                            let mut address = self.address(recv)?;
-                            let mut ty = &held;
-                            while let Some(inner) = pointee(ty) {
-                                address = format!("(*{address})");
-                                ty = inner;
-                            }
-                            address
-                        }
-                    };
-                    let this_ty = match this {
-                        This::Value => Ty::Struct(owner.clone()),
-                        This::Read => Ty::Read(Box::new(Ty::Struct(owner.clone()))),
-                        This::Ref => Ty::Ref(Box::new(Ty::Struct(owner.clone()))),
-                    };
-                    let receiver = self.part(recv, &this_ty, receiver, before);
+                // opened); `FolderRef this` takes an owner of its own. An async method called
+                // without `await` starts as a task, with `this` in front of its arguments.
+                Callee::Method { owner, this, whole } => {
+                    let full = format!("{owner}.{name}");
+                    if self.async_methods.contains(&full) {
+                        let site = self.site(c_string(name), expr.span);
+                        let receiver = self.method_receiver(recv, owner, *this, *whole)?;
+                        return self.call_with(format!("a_start_{}", cname(&full)), vec![site, receiver], args, false, &expr.ty);
+                    }
+                    let receiver = self.method_receiver(recv, owner, *this, *whole)?;
                     self.call_at(expr.span, format!("f_{}_{name}", cname(owner)), Some(receiver), args, false, &expr.ty)
                 }
                 // A call through a function value kept in a field.

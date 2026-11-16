@@ -1,0 +1,7 @@
+error: `wait` holds the thread until it is done, and an async function does not hold its thread
+  `wait` waits for another program to end
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_process_wait_async.sg:3:21
+ 3 |     _ = try process.wait()
+   |                     ^^^^
+  hint: `await process.waitAsync()` does the same work without holding the thread

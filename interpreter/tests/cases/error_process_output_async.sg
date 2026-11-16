@@ -1,0 +1,6 @@
+async Result<void, ProcessError> main() {
+    var date = Command("date")
+    var now = try date.output()
+    print(now)
+    return Ok()
+}

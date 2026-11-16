@@ -1,0 +1,14 @@
+// `spawn` the async way: five thousand runs of `true`, each looked for in `PATH`, started and
+// awaited with `statusAsync`, whose wait for the end is done on a thread of input and output.
+async Result<void, IoError> main() {
+    var program = Command("true")
+    long ran = 0
+    for _ in 0..5000 {
+        var status = try await program.statusAsync()
+        if status.success() {
+            ran += 1
+        }
+    }
+    print(ran)
+    return Ok()
+}

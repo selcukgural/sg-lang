@@ -1,0 +1,28 @@
+// A program talked to while it runs: one task writes the input of `cat` while `main` reads its
+// output, each through a stream of its own, the async way.
+async Result<void, IoError> feed(StreamWriter input, int count) {
+    var i = 0
+    while i < count {
+        try await input.writeLineAsync($"line {i}")
+        i = i + 1
+    }
+    try await input.closeAsync()
+    return Ok()
+}
+
+async Result<void, ProcessError> main() {
+    var cat = Command("cat")
+    cat.pipeInput()
+    cat.pipeOutput()
+    var process = try cat.start()
+    var input = process.takeInput() ?? panic("the input was asked for")
+    var output = process.takeOutput() ?? panic("the output was asked for")
+    var fed = feed(input, 5)
+    var line = ""
+    while try await output.readLineAsync(ref line) {
+        print($"cat: {line}")
+    }
+    try await fed
+    print(try await process.waitAsync())
+    return Ok()
+}

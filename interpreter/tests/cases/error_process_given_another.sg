@@ -1,0 +1,7 @@
+Result<void, IoError> main() {
+    var done = Command("true")
+    var process = try done.start()
+    process = try done.start()
+    _ = try process.wait()
+    return Ok()
+}

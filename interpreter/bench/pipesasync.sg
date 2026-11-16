@@ -1,0 +1,23 @@
+// `pipelines` the async way: the output of `cat` read with `readLineAsync`, which waits for the
+// pipe on the loop of the network when the block holds no whole line.
+async Result<void, ProcessError> main() {
+    var cat = Command("cat")
+    cat.arg("target/bench/lines.in")
+    cat.pipeOutput()
+    var process = try cat.start()
+    var output = process.takeOutput() ?? panic("the output was asked for")
+    string line = ""
+    long lines = 0
+    long bytes = 0
+    long errors = 0
+    while try await output.readLineAsync(ref line) {
+        lines += 1
+        bytes += line.length()
+        if line.startsWith("ERROR") {
+            errors += 1
+        }
+    }
+    var status = try await process.waitAsync()
+    print($"{lines} lines, {bytes} bytes, {errors} errors, {status}")
+    return Ok()
+}

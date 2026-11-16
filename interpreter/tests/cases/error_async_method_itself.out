@@ -1,0 +1,10 @@
+error: the async function `down` awaits itself around: `down` awaits `again` awaits `down`
+  an awaited call runs inside the task of its caller, so a task that holds itself would have no end
+  --> error_async_method_itself.sg:9:27
+ 9 |         return await next.again()
+   |                           ^^^^^
+  `again` awaits `down` here:
+  --> error_async_method_itself.sg:13:27
+ 13 |         return await this.down()
+    |                           ^^^^
+  hint: keep the call's task in a variable, which gives it a task of its own: `var task = f(x)`, then `await task`

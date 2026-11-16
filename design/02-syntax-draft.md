@@ -1490,8 +1490,43 @@ var sorted = try sort.output()
 `PermissionDenied`, `InvalidInput` for a zero byte in a word) or wrote something that is not text, and
 `Failed(ExitStatus status)` when it ended with anything but 0. `status` takes no end for an error and gives the
 `ExitStatus`: `Code(byte code)` or `Signal(int number)`. A program started while files are open gets none of them.
-These calls wait, so an async function does not make them; starting a program and talking to it while it runs,
-stopping it, and the async versions come later.
+
+`start` starts the program and goes on. The streams asked for with `pipeInput`, `pipeOutput` and `pipeError` are
+taken out of the `Process` it gives, once each, and `wait` gives how the program ended:
+
+```
+var sort = Command("sort")
+sort.pipeInput()
+sort.pipeOutput()
+var process = try sort.start()                 // Result<Process, IoError>
+var input = process.takeInput() ?? panic("asked for")   // StreamWriter?: null once taken
+var output = process.takeOutput() ?? panic("asked for") // StreamReader?
+try input.writeLine("pear")
+try input.close()                              // the program sees the end of its input
+var line = ""
+while try output.readLine(ref line) { }
+var status = try process.wait()                // takes the Process
+
+var sleep = Command("sleep")
+sleep.arg("60")
+var waiting = try sleep.start()
+print(waiting.id())                            // the number the system knows it by
+waiting.kill()                                 // the signal 9; terminate() sends 15
+var ended = try waiting.wait()                 // ExitStatus.Signal(9)
+```
+
+A `Process` in a local variable is waited for on every path, or it is a compile error; one that ends without
+being waited for (a way out with an error, a field that ends) stops its program with the signal 9. These calls
+wait, so an async function writes the async versions, which take a token that may come last; a cancel stops the
+program:
+
+```
+var subject = try await git.outputAsync()      // also runAsync(), statusAsync()
+var status = try await process.waitAsync(read source.token())
+```
+
+A method can be async too: `public async int total(read this) { ... }`. One that lends `this` is awaited where it
+is written; one that takes `this` by value may start as a task of its own.
 
 ### Modules and visibility
 

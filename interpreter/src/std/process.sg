@@ -1,9 +1,10 @@
-// Running another program and waiting for it to end: `Command`, how a program ended (`ExitStatus`)
-// and why it did not do its work (`ProcessError`). No shell reads the words: each argument reaches
-// the program as it is written, so a text from outside never becomes a command of its own. Written
-// in SG and brought along by the language; only the starting of a program (`System.run`) and the
-// question whether a file can be run (`System.executable`) are the compiler's own, and only this
-// module can call them.
+// Running another program: `Command`, which runs it and waits for it or starts it and goes on, the
+// program that runs (`Process`), how a program ended (`ExitStatus`) and why it did not do its work
+// (`ProcessError`). No shell reads the words: each argument reaches the program as it is written, so
+// a text from outside never becomes a command of its own. Written in SG and brought along by the
+// language; only the calls of the system under it (`System.run`, `System.start`, `System.wait`,
+// `System.signal`, the streams of the pipes and the question whether a file can be run) are the
+// compiler's own, and only this module can call them.
 
 // How a program ended.
 public enum ExitStatus : Copyable, Equatable, Hashable, Formattable {
@@ -63,6 +64,10 @@ public struct Command {
     // What the program reads as its input, when `input` gave it one.
     bool fed
     string text
+    // The streams of a program `start` starts that are pipes kept by this one.
+    bool inPipe
+    bool outPipe
+    bool errPipe
 
     // The program to run. A name without `/` is looked for in the folders of `PATH` when it runs,
     // leaving out an empty folder and one that does not start with `/`, so a file of the folder this
@@ -73,7 +78,8 @@ public struct Command {
         words.add(program.clone())
         return Command {
             program = program.clone(), words = words, folder = "", clear = false,
-            names = List<string>(), values = List<string>(), kept = List<bool>(), fed = false, text = ""
+            names = List<string>(), values = List<string>(), kept = List<bool>(), fed = false, text = "",
+            inPipe = false, outPipe = false, errPipe = false
         }
     }
 
@@ -120,7 +126,43 @@ public struct Command {
     // for the other. A program that ends before it read all of it is no error.
     public void input(ref this, read string text) {
         this.fed = true
+        this.inPipe = false
         this.text = text.clone()
+    }
+
+    // The program `start` starts reads what this one writes to the `StreamWriter` that
+    // `takeInput` gives; in place of a text of `input`. Only `start` looks at it.
+    public void pipeInput(ref this) {
+        this.inPipe = true
+        this.fed = false
+        this.text = ""
+    }
+
+    // What the program `start` starts writes to its output is read from the `StreamReader` that
+    // `takeOutput` gives. Only `start` looks at it.
+    public void pipeOutput(ref this) {
+        this.outPipe = true
+    }
+
+    // What the program `start` starts writes to its standard error is read from the
+    // `StreamReader` that `takeError` gives. Only `start` looks at it.
+    public void pipeError(ref this) {
+        this.errPipe = true
+    }
+
+    // Starts the program and goes on while it runs. Its input, output and standard error are
+    // pipes where `pipeInput`, `pipeOutput` and `pipeError` asked for them, and those of this
+    // program otherwise; a text of `input` is written into its input while it runs. The
+    // `Process` it gives is waited for (`wait`, `waitAsync`); one that ends without that stops
+    // the program.
+    public Result<Process, IoError> start(read this) {
+        long input = 0
+        if this.fed {
+            input = 2
+        } else if this.inPipe {
+            input = 3
+        }
+        return this.begin(input, this.outPipe, this.errPipe)
     }
 
     // Runs the program and waits for it to end. It reads the input of this program, unless `input`
@@ -128,7 +170,7 @@ public struct Command {
     // anything but 0 is `Failed`.
     public Result<void, ProcessError> run(read this) {
         var nothing = ""
-        match this.start(false, ref nothing) {
+        match this.runWaiting(false, ref nothing) {
             Ok(status) => {
                 if status.success() {
                     return Ok()
@@ -144,7 +186,7 @@ public struct Command {
     // read. An end with anything but 0 is `Failed`, whatever it wrote.
     public Result<string, ProcessError> output(read this) {
         var text = ""
-        match this.start(true, ref text) {
+        match this.runWaiting(true, ref text) {
             Ok(status) => {
                 if !status.success() {
                     return Error(ProcessError.Failed(status))
@@ -159,13 +201,84 @@ public struct Command {
     // for a program whose code says something, as `grep` ends with 1 when it found nothing.
     public Result<ExitStatus, IoError> status(read this) {
         var nothing = ""
-        return this.start(false, ref nothing)
+        return this.runWaiting(false, ref nothing)
+    }
+
+    // `run` without holding the thread, for an async function. A cancel stops the program; with a
+    // token cancelled before, it does not start.
+    public async Result<void, ProcessError> runAsync(read this, read CancellationToken token) {
+        try Command.unless(read token)
+        var status = try await this.statusAsync(read token)
+        if status.success() {
+            return Ok()
+        }
+        return Error(ProcessError.Failed(status))
+    }
+
+    // `output` without holding the thread, for an async function. A cancel stops the program; with
+    // a token cancelled before, it does not start.
+    public async Result<string, ProcessError> outputAsync(read this, read CancellationToken token) {
+        try Command.unless(read token)
+        long input = 1
+        if this.fed {
+            input = 2
+        }
+        var process = try this.begin(input, true, false)
+        var reader = process.takeOutput() ?? panic("the output of the program is a pipe")
+        var written = await reader.readTextAsync(read token)
+        var status = try await process.waitAsync(read token)
+        if !status.success() {
+            return Error(ProcessError.Failed(status))
+        }
+        var text = try written
+        return Ok(text)
+    }
+
+    // `status` without holding the thread, for an async function. A cancel stops the program; with
+    // a token cancelled before, it does not start.
+    public async Result<ExitStatus, IoError> statusAsync(read this, read CancellationToken token) {
+        try token.check()
+        long input = 0
+        if this.fed {
+            input = 2
+        }
+        var process = try this.begin(input, false, false)
+        return await process.waitAsync(read token)
+    }
+
+    // `IoError.Cancelled` when the token is cancelled already, so that the program does not start.
+    Result<void, IoError> unless(read CancellationToken token) {
+        try token.check()
+        return Ok()
+    }
+
+    // Starts the program with its input from `input` (this program's, nothing, the text or a pipe)
+    // and its output and standard error pipes where asked for.
+    Result<Process, IoError> begin(read this, long input, bool output, bool error) {
+        try this.valid()
+        var path = try this.found()
+        var made = long[4]
+        try System.start(
+            read path, read this.words, read this.folder, this.clear, read this.names, read this.values, read this.kept,
+            input, read this.text, output, error, ref made
+        )
+        var process = Process { pid = made[0], input = null, output = null, error = null, ended = false }
+        if made[1] >= 0 {
+            process.input = System.writer(made[1])
+        }
+        if made[2] >= 0 {
+            process.output = System.reader(made[2])
+        }
+        if made[3] >= 0 {
+            process.error = System.reader(made[3])
+        }
+        return Ok(process)
     }
 
     // Starts the program, gives it its input, puts what it writes into `output` when `capture`, and
     // waits for it to end. What it wrote must be UTF-8, unless it did not end with 0, when what it
     // wrote does not count.
-    Result<ExitStatus, IoError> start(read this, bool capture, ref string output) {
+    Result<ExitStatus, IoError> runWaiting(read this, bool capture, ref string output) {
         try this.valid()
         var path = try this.found()
         // Where its input comes from: this program's input, nothing, or the text of `input`.
@@ -251,5 +364,99 @@ public struct Command {
             return Error(IoError.PermissionDenied)
         }
         return Error(IoError.NotFound)
+    }
+}
+
+// A program `start` started, which runs while this one goes on. It is waited for with `wait` or
+// `waitAsync`, which give how it ended; one that ends without being waited for (an error that
+// leaves the function, a field or an item that ends) is stopped with the signal 9 and waited for
+// there. The pipes `Command` asked for are taken out of it as streams of their own.
+public struct Process : Disposable {
+    // The number the system knows the program by.
+    long pid
+    // The pipes not taken out yet.
+    StreamWriter? input
+    StreamReader? output
+    StreamReader? error
+    // It has been waited for.
+    bool ended
+
+    // The number the system knows the program by, as `ps` shows it.
+    public int id(read this) {
+        return (int)this.pid
+    }
+
+    // The writer of the input of the program, when `pipeInput` asked for it; `null` when it did not,
+    // or when it was taken already. Closing it tells the program that its input has ended.
+    public StreamWriter? takeInput(ref this) {
+        return this.input.take()
+    }
+
+    // The reader of the output of the program, when `pipeOutput` asked for it; `null` when it did
+    // not, or when it was taken already.
+    public StreamReader? takeOutput(ref this) {
+        return this.output.take()
+    }
+
+    // The reader of the standard error of the program, when `pipeError` asked for it; `null` when it
+    // did not, or when it was taken already.
+    public StreamReader? takeError(ref this) {
+        return this.error.take()
+    }
+
+    // Stops the program at once: the signal 9, which it cannot catch. It is still waited for, and
+    // ends with `ExitStatus.Signal(9)` unless it had ended before. Once it has ended, nothing.
+    public void kill(read this) {
+        System.signal(this.pid, 9)
+    }
+
+    // Asks the program to stop: the signal 15, which it may catch to end in its own way.
+    public void terminate(read this) {
+        System.signal(this.pid, 15)
+    }
+
+    // Waits for the program to end and gives how it ended. The input it still holds is closed
+    // first, and the readers it still holds are let go of, so that a program that reads to the
+    // end of its input, or writes more than a pipe holds, does not wait for this one forever.
+    public Result<ExitStatus, IoError> wait(this) {
+        this.leave()
+        var ended = long[2]
+        System.wait(this.pid, ref ended)
+        this.ended = true
+        return Ok(Process.status(read ended))
+    }
+
+    // `wait` without holding the thread, for an async function. A cancel stops the program.
+    public async Result<ExitStatus, IoError> waitAsync(this, read CancellationToken token) {
+        this.leave()
+        var ended = long[2]
+        try await System.waitAsync(this.pid, read token, ref ended)
+        this.ended = true
+        return Ok(Process.status(read ended))
+    }
+
+    // The pipes it still holds end: the input is written out and closed, the readers let go of.
+    void leave(ref this) {
+        this.input = null
+        this.output = null
+        this.error = null
+    }
+
+    // How it ended, from what the system said: 0 and the code, or 1 and the signal.
+    ExitStatus status(read long[] ended) {
+        if ended[0] == 0 {
+            return ExitStatus.Code((byte)ended[1])
+        }
+        return ExitStatus.Signal((int)ended[1])
+    }
+
+    // A program that was not waited for is stopped, and waited for so that it does not stay as a
+    // process that has ended and was never asked how.
+    void dispose(ref this) {
+        if !this.ended {
+            System.signal(this.pid, 9)
+            var ended = long[2]
+            System.wait(this.pid, ref ended)
+        }
     }
 }

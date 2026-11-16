@@ -1,0 +1,10 @@
+struct Price : Formattable {
+    int cents
+
+    public async void format(read this, ref Formatter f) {
+        f.write($"{this.cents}")
+    }
+}
+
+void main() {
+}

@@ -1,0 +1,5 @@
+error: `create` is called by `T(...)` without `await`, so it cannot be async
+  --> error_async_method_create.sg:4:24
+ 4 |     public async Store create(int count) {
+   |                        ^^^^^^
+  hint: an async function of the type gives one when it is awaited: `public async T load(...)`, then `await T.load(...)`

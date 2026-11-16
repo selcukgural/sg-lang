@@ -1,0 +1,8 @@
+error: `process` was moved and can no longer be used
+  --> error_process_wait_moved.sg:4:5
+ 4 |     process.kill()
+   |     ^^^^^^^
+  it was moved here:
+  --> error_process_wait_moved.sg:3:13
+ 3 |     _ = try process.wait()
+   |             ^^^^^^^

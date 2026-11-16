@@ -1,0 +1,40 @@
+// The async versions: `runAsync`, `outputAsync` and `statusAsync` of a `Command`, and `waitAsync`
+// of a `Process`, which do the work of those without `Async` without holding the thread.
+Command shell(read string script) {
+    var sh = Command("sh")
+    sh.arg("-c")
+    sh.arg(script)
+    return sh
+}
+
+async Result<void, ProcessError> main() {
+    var echo = Command("echo")
+    echo.args(read List<string> { "hello", "async" })
+    var said = try await echo.outputAsync()
+    print($"output: {said.trim()}")
+
+    var status = try await shell("exit 3").statusAsync()
+    print($"status: {status}")
+    if await shell("exit 3").runAsync() is Error(cause) {
+        print($"run: {cause}")
+    }
+    try await shell("echo run writes here").runAsync()
+    if await shell("echo some; exit 2").outputAsync() is Error(cause) {
+        print($"output: {cause}")
+    }
+    if await shell("printf 'ab\\377'").outputAsync() is Error(cause) {
+        print($"output: {cause}")
+    }
+
+    var sort = Command("sort")
+    sort.input("b\na\nc\n")
+    var sorted = try await sort.outputAsync()
+    print(sorted.replaceAll("\n", " "))
+
+    var process = try shell("exit 6").start()
+    print(try await process.waitAsync())
+    if await Command("no-such-program-anywhere").statusAsync() is Error(cause) {
+        print($"missing: {cause}")
+    }
+    return Ok()
+}

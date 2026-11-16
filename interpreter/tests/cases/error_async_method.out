@@ -1,5 +1,0 @@
-error: an `async` method is not in the interpreter yet
-  --> error_async_method.sg:4:5
- 4 |     async int total(read this) {
-   |     ^^^^^
-  hint: write it as an async function that takes the value: `async int count(read Store store)`

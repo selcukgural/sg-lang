@@ -129,7 +129,12 @@ pub fn check(prog: &Program) -> Res<()> {
 
     // Which functions hold their thread, found the same way. An async function never does
     // (that is refused below), and its call only starts a task.
-    let asyncs: HashMap<&str, &Func> = prog.funcs.iter().filter(|func| func.is_async).map(|func| (func.name.as_str(), func)).collect();
+    // The async functions and methods, under the name a call reaches them by.
+    let mut async_bodies: Vec<(String, &Block)> = prog.funcs.iter().filter(|func| func.is_async).map(|func| (func.name.clone(), &func.body)).collect();
+    for (owner, methods) in prog.structs.iter().map(|decl| (&decl.name, &decl.methods)).chain(prog.enums.iter().map(|decl| (&decl.name, &decl.methods))) {
+        async_bodies.extend(methods.iter().filter(|method| method.is_async).map(|method| (format!("{owner}.{}", method.name), &method.body)));
+    }
+    let asyncs: std::collections::HashSet<&str> = async_bodies.iter().map(|(name, _)| name.as_str()).collect();
     let mut holds: HashMap<String, Why> = HashMap::new();
     for (name, scan) in &scans {
         if let Some((span, what)) = &scan.holds {
@@ -139,7 +144,7 @@ pub fn check(prog: &Program) -> Res<()> {
     loop {
         let mut found = Vec::new();
         for (name, scan) in &scans {
-            if holds.contains_key(*name) || asyncs.contains_key(name) {
+            if holds.contains_key(*name) || asyncs.contains(name) {
                 continue;
             }
             if let Some((callee, _)) = scan.calls.iter().find(|(callee, _)| holds.contains_key(callee)) {
@@ -153,11 +158,11 @@ pub fn check(prog: &Program) -> Res<()> {
         }
         holds.extend(found);
     }
-    for func in prog.funcs.iter().filter(|func| func.is_async) {
-        held_in(&func.body, &holds, &taken)?;
+    for (_, body) in &async_bodies {
+        held_in(body, &holds, &taken)?;
     }
-    for func in prog.funcs.iter().filter(|func| func.is_async) {
-        awaits_itself(func, &scans, &asyncs)?;
+    for (name, _) in &async_bodies {
+        awaits_itself(name, &scans, &asyncs)?;
     }
     Ok(())
 }
@@ -187,7 +192,17 @@ fn held_in(body: &Block, holds: &HashMap<String, Why>, taken: &[(String, usize, 
                         None => diag.hint(RUN_APART),
                     })
                 }
-                ExprKind::Method { name, name_span, callee: Callee::Method { owner, .. }, .. } => call(&format!("{owner}.{name}"), *name_span),
+                // `cmd.run()` and `process.wait()` have async versions of the same name.
+                ExprKind::Method { recv, name, name_span, callee: Callee::Method { owner, .. }, args } => {
+                    let full = format!("{owner}.{name}");
+                    call(&full, *name_span).map(|diag| match (ASYNC_METHODS.contains(&full.as_str()), short_reader(recv)) {
+                        (true, Some(recv)) => {
+                            let shown: Vec<String> = args.iter().map(written_arg).collect();
+                            diag.hint(format!("`await {recv}.{name}Async({})` does the same work without holding the thread", shown.join(", ")))
+                        }
+                        _ => diag,
+                    })
+                }
                 ExprKind::Call { callee: Callee::Static { owner, name }, name_span, .. } => call(&format!("{owner}.{name}"), *name_span),
                 ExprKind::Call { name, name_span, callee: Callee::Plain, .. } => call(name, *name_span),
                 ExprKind::Call { args, name_span, callee: Callee::Value | Callee::FieldValue(_), .. }
@@ -220,6 +235,10 @@ fn inner_hold(name: &str, waits: &HashMap<String, Why>) -> Option<String> {
     None
 }
 
+/// The methods of the language's own module that hold the thread and have an async version,
+/// named with `Async` after them.
+const ASYNC_METHODS: [&str; 4] = ["std.Command.run", "std.Command.output", "std.Command.status", "std.Process.wait"];
+
 const NO_HOLD: &str = "the tasks of async functions share a few threads: one that holds its thread keeps the others from running";
 const RUN_APART: &str = "a function that does it runs on a thread of its own with `await Task.run(work, x)`";
 
@@ -232,6 +251,9 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         // Inside the language's own module: `Command.run` and the others wait for the program.
         ExprKind::Call { callee: Callee::System(SystemCall::Run), name_span, .. } | ExprKind::Method { callee: Callee::System(SystemCall::Run), name_span, .. } => {
             Some((*name_span, "`System.run`".to_string()))
+        }
+        ExprKind::Call { callee: Callee::System(SystemCall::Wait), name_span, .. } | ExprKind::Method { callee: Callee::System(SystemCall::Wait), name_span, .. } => {
+            Some((*name_span, "`System.wait`".to_string()))
         }
         ExprKind::Call { callee: Callee::Io(call), name_span, .. } | ExprKind::Method { callee: Callee::Io(call), name_span, .. } => {
             Some((*name_span, format!("`File.{}`", call.name())))
@@ -306,8 +328,7 @@ fn stream_name(expr: &Expr) -> Option<&str> {
 }
 
 /// Refuses an async function that awaits itself, directly or through other async functions.
-fn awaits_itself(func: &Func, scans: &HashMap<&str, Body>, asyncs: &HashMap<&str, &Func>) -> Res<()> {
-    let start = func.name.as_str();
+fn awaits_itself(start: &str, scans: &HashMap<&str, Body>, asyncs: &std::collections::HashSet<&str>) -> Res<()> {
     // Breadth first, with the way back to `start` for the message.
     let mut came_from: HashMap<&str, (&str, Span)> = HashMap::new();
     let mut queue: Vec<&str> = vec![start];
@@ -316,9 +337,9 @@ fn awaits_itself(func: &Func, scans: &HashMap<&str, Body>, asyncs: &HashMap<&str
         let name = queue[at];
         at += 1;
         for (callee, span) in &scans[name].awaits {
-            if !asyncs.contains_key(callee.as_str()) {
+            let Some(callee_name) = asyncs.get(callee.as_str()) else {
                 continue;
-            }
+            };
             if callee == start {
                 // The chain from `start` to here.
                 let mut chain = vec![(name, *span)];
@@ -344,7 +365,7 @@ fn awaits_itself(func: &Func, scans: &HashMap<&str, Body>, asyncs: &HashMap<&str
                     .note("an awaited call runs inside the task of its caller, so a task that holds itself would have no end")
                     .hint("keep the call's task in a variable, which gives it a task of its own: `var task = f(x)`, then `await task`"));
             }
-            let callee = asyncs[callee.as_str()].name.as_str();
+            let callee = *callee_name;
             if !came_from.contains_key(callee) && callee != start {
                 came_from.insert(callee, (name, *span));
                 queue.push(callee);
@@ -372,8 +393,12 @@ fn look(expr: &Expr, scan: &mut Body, taken: &mut Vec<(String, usize, Ty)>) {
         }
         ExprKind::Await(inner) => {
             scan.itself.get_or_insert((expr.span, How::Await));
-            if let ExprKind::Call { name, name_span, callee: Callee::Plain, .. } = &inner.kind {
-                scan.awaits.push((name.clone(), *name_span));
+            match &inner.kind {
+                ExprKind::Call { name, name_span, callee: Callee::Plain, .. } => scan.awaits.push((name.clone(), *name_span)),
+                ExprKind::Method { name, name_span, callee: Callee::Method { owner, .. }, .. } | ExprKind::Call { name_span, callee: Callee::Static { owner, name }, .. } => {
+                    scan.awaits.push((format!("{owner}.{name}"), *name_span))
+                }
+                _ => {}
             }
         }
         ExprKind::Method { name, name_span, callee: Callee::Method { owner, .. }, .. } => scan.calls.push((format!("{owner}.{name}"), *name_span)),
@@ -581,7 +606,7 @@ fn explained(diag: Diag, name: &str, waits: &HashMap<String, Why>) -> Diag {
         // says what it does, at the call the program wrote.
         if at.starts_with(STD_PREFIX) {
             let what = match inner_hold(&at, waits).as_deref() {
-                Some("`System.run`") => "waits for another program to end".to_string(),
+                Some("`System.run`" | "`System.wait`") => "waits for another program to end".to_string(),
                 Some(what) => format!("does {what}"),
                 None => "waits".to_string(),
             };

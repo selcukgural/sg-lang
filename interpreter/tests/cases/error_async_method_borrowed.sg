@@ -1,0 +1,14 @@
+struct Store {
+    int count
+
+    public async int total(read this) {
+        await Task.delay(1)
+        return this.count
+    }
+}
+
+async void main() {
+    var store = Store { count = 1 }
+    var task = store.total()
+    print(await task)
+}

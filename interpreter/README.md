@@ -48,7 +48,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
 | Raw memory | `raw T` is an address that owns nothing and may be `null`; it points at plain data (numbers, `bool`, `char`, raw pointers, and arrays and structs of them), laid out as C lays it, or is a `raw void`. `Memory.allocate<T>(n)` gives room for `n` items, all zero (C's `calloc`, in the interpreter too). `p[i]` reads and writes an item (`p[i] = v`, `p[i].x += 1`), `p + n` and `p - n` move by items, `(raw byte)p` reads the memory as another type, `Memory.copy(source, target, count)` copies items (also over itself) and `Memory.free(p)` gives the block back, or memory C gave with `malloc`; each of them is written inside `unsafe { ... }`, or with `unsafe` in front of a value (`var first = unsafe p[0]`), and an `unsafe` that nothing needs is an error. `p == q` and `p == null` need no `unsafe`. The interpreter checks every item against the block it came from and panics outside it, after `Memory.free` and through `null`; compiled code checks nothing, and a `raw T` is a `T*`. A raw pointer does not go to another task |
 | Calling C | `extern "z" { int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen) }` declares functions of C, a block for each library (linked as `-lz`; `extern { }` is the C library itself), each called inside `unsafe`. A C function takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data (C's `T*` and `const T*`, for the time of the call; `ref raw T` is `T**`), a struct of plain data by value, laid out as C lays it out, and `read CString`, and gives a number, a `bool`, a `raw T`, a struct of plain data or nothing. `struct sqlite3` without a body in an `extern` block is a type of C that SG only points at (`raw sqlite3`). `CString.from(text)` gives a `Result<CString, TextError>`, an error for a zero byte inside; `unsafe string.fromCString(p)` copies what C ended with a zero byte and checks that it is UTF-8. `buffer.pointer()` on a list, an array or a slice of plain data is written only as an argument of a C function. The functions are private to their module unless `public` is written on one, so a module can hide a library behind a safe interface, and a `Disposable` type gives back what C made when it ends (`examples/zlib`, whose `Deflater` holds zlib's stream). The interpreter builds a small library of wrappers with `cc` and opens it with `dlopen`; compiled code calls C directly |
-| Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads |
+| Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads. A method is async too (`public async int total(read this)`): one that lends `this` is awaited where it is written, one that takes it by value may start as a task; `create`, `format`, `equals`, `hash` and `compare` are not async |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
 | Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`, on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`, `readSomeAsync(ref buffer)`, and on a writer (`Stdout` and `Stderr` too) `writeAsync(x)`, `writeLineAsync(x)`, `writeBytesAsync(bytes)`, `flushAsync()` and `closeAsync()`: the work of the function without `Async`, as a task, with a token that may come last (`read token`; not for `closeAsync`). A call given a borrow, and `closeAsync`, is awaited where it is written. A writer an async function drops without `closeAsync` is written and closed the async way, awaited where it is dropped. In the interpreter the work is done when it is called; the token is looked at first. Compiled too: the work is done on a thread of input and output while the task waits, and what the block of a reader or a writer can do is done in place. A read of an input that can make the program wait (a pipe, a terminal) waits on a thread in both, and a cancel ends the wait; what comes later stays for the next read |
@@ -56,7 +56,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. All three are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into). `Path.join(a, b)` gives a new path; `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
-| Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(byte code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std` |
+| Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(byte code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -273,7 +273,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (286 of 1199 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (293 of 1215 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -779,7 +779,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/std/time.sg` | The language's own module `std`, written in SG: `Duration`, `Instant`, `DateTime` and the calendar. Only it calls the two readings of the clock, `Clock.monotonic()` and `Clock.wall()` |
 | `src/std/random.sg` | The same module's random numbers: `Random` (xoshiro256\*\* seeded with SplitMix64) and `SecureRandom`. Only it calls `Entropy.fill`, the random bytes of the system. A program gets each file of `std` when it names one of its types. A panic inside the module is shown at the program's call that led there (`Interp::call`; in compiled code `Emitter::tracked`) |
 | `src/std/files.sg`, `src/std/path.sg`, `src/std/environment.sg` | The same module's folders (`Directory`, `DirectoryEntry`, `FileInfo`, `FileKind`, and the work of `File.info` and `File.exists`), paths (`Path`) and variables of the environment (`Environment`, `VariableError`). Only they call `System.list`, `System.status` and the other calls of the system; a file of `std` that names a type of another brings it along (a `FileInfo` holds a `DateTime`) |
-| `src/std/process.sg` | The same module's other programs (`Command`, `ExitStatus`, `ProcessError`): the search in `PATH`, the checks of what the system cannot take, and the reading of how a program ended, over `System.run` and `System.executable` |
+| `src/std/process.sg` | The same module's other programs (`Command`, `Process`, `ExitStatus`, `ProcessError`): the search in `PATH`, the checks of what the system cannot take, the pipes taken out of a running program, its stop when it is not waited for, and the reading of how a program ended, over `System.run`, `System.start`, `System.wait`, `System.waitAsync`, `System.signal`, `System.reader`, `System.writer` and `System.executable` |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
 
 It is a library with a thin command line on top, so that a language server can later reuse the parser and the
@@ -4655,6 +4655,110 @@ every call. All were approved the same day:
      `error_unused_set_add`, `error_unused_extern` and `ok_std_value_dropped`. `cargo test` compiles
      286 of 1199 programs, 45 of them under the thread sanitizer, and 15 of 20 programs of tests.
 
+
+Choices made in the seventy-eighth slice (a program started and talked to while it runs, stopped, and waited
+for the async way; in the checker, the interpreter and compiled code). 617 to 625, 628 and 630 were decided before
+it on 16 November 2026, with the parts marked as coming from the slice; 626 and 627 were chosen by the user
+during it, 628 was confirmed by the user during it, and 629 comes from the slice. All were approved the same day:
+
+617. **`cmd.start()` gives a `Result<Process, IoError>`** and goes on while the program runs, as Rust's
+     `spawn`: a program can only fail to start, so the error is an `IoError` (`NotFound`, `PermissionDenied`,
+     `InvalidInput`), as that of `status`. What was printed goes out first (605).
+618. **`pipeInput()`, `pipeOutput()` and `pipeError()` ask for pipes**, and only `start` looks at them; a
+     stream not asked for is this program's, so a pipe nobody reads never makes a program wait. A text of
+     `input` is written into the input of a started program by a thread while it runs (Go's way), and
+     `input` and `pipeInput` take each other's place, the last one written counting. `run`, `output` and
+     `status` keep what they did.
+619. **The streams are taken out of the `Process` once**: `takeInput()` gives a `StreamWriter?`, `takeOutput()`
+     and `takeError()` a `StreamReader?`, each `null` once taken or when it was not asked for (Rust's
+     `child.stdout.take()`); `process.takeOutput() ?? panic("...")` is the usual way to write it. What is
+     taken out is owned, every method of a reader and a writer works on it, and it goes to another task.
+620. **The input is a `StreamWriter`**, `Closable` as any writer: closing it is how the program learns that its
+     input has ended. Writing to a program that no longer reads gives `IoError.ConnectionReset`, as for a
+     connection (469), never the signal: macOS leaves the signal out for the pipe (`F_SETNOSIGPIPE`), Linux
+     has the writing thread hold it back and take it away (`sg_write_pipe`). No variant of `IoError` is new.
+621. **`wait()` takes the `Process`** and gives a `Result<ExitStatus, IoError>`. It first closes the input the
+     `Process` still holds (as Rust's `wait`) and lets go of the readers it still holds, so that a program
+     that reads to the end of its input, or writes more than a pipe holds, does not wait for this one
+     forever. A reader taken out before reads what is left after the wait (`ok_process_start`).
+622. **A `Process` is waited for**: one in a local variable that is not waited for on every path is a compile
+     error, as a task is ("the program in `p` is not waited for before its block ends", with the hint `var
+     status = try p.wait()`; giving the variable another program too). One that ends without being waited
+     for (a way out with an error, a field or an item that ends) stops its program with the signal 9 and
+     waits for it there, so no program is left running or as a process that ended and was never asked
+     how (Rust leaves both; tokio's `kill_on_drop(true)` and Go's `CommandContext` stop it). From the slice:
+     a name of `is Ok(process)` is lent, so the rule does not see it, and the program stops where the
+     value it is lent from ends.
+623. **`kill()` sends the signal 9 and `terminate()` the signal 15**, which a program may catch; both give
+     nothing. A program is taken away only by a wait, so its number names no other program until then,
+     and a signal to a program that has ended does nothing (`ok_process_kill`). `id()` gives the number,
+     an `int`. A killed program is still waited for, and ends with `ExitStatus.Signal(9)`.
+624. **The async versions**: `runAsync()`, `outputAsync()` and `statusAsync()` of a `Command` and
+     `waitAsync()` of a `Process`, each with a token that may come last (404). A `Command` is lent, so
+     they are awaited where they are written (409). In an async function `cmd.run()` and the others are
+     still errors, and the hint now names the async version (`await list.runAsync()`).
+625. **A cancel stops the program**, with the signal 9, and the call gives `IoError.Cancelled(...)` (or
+     `ProcessError.Io(Cancelled(...))`): `waitAsync` takes the `Process`, so after a cancel nothing would
+     be left to stop it with, as with Go's `CommandContext`; C# only stops waiting. From the slice: with a
+     token cancelled before the call, the program does not start.
+626. **A method can be async**, chosen by the user during the slice, which needed it to write the async
+     versions in SG: `public async int total(read this)`, on a struct or an enum, and an async function of a
+     type (`await Store.load(4)`). One that lends `this` is awaited where it is written, as an async
+     function given a borrow is (388); one that takes `this` by value may start as a task of its own, under
+     the thread rule. `create`, `format`, `equals`, `hash` and `compare` are called by the language without
+     `await`, so they are not async (`error_async_method_format`, `error_async_method_create`); a method that
+     awaits itself around is the error it is for functions. In compiled code an async method is an async
+     function with `this` in front of its parameters (`a_init_`, `a_start_` and the frame `F_` of
+     `Owner.name`).
+627. **A function or a method of the language's own module may leave out a last `read CancellationToken`**,
+     chosen by the user with 626: `CancellationToken.None` is put there, so `await cmd.runAsync()` and
+     `await cmd.runAsync(read token)` are one method, as the built-in async functions are (404). A function
+     of the program still takes what it declares.
+628. **The end of a program is waited for on the loop of the network**, as decided before the slice and
+     confirmed by the user during it, after a first version that waited on a thread of input and output
+     held for each program (Go's way, which a server waiting for many long programs would have filled the
+     512 threads of input and output with). Linux puts the pidfd of the program on epoll (`pidfd_open`,
+     5.3 and later), macOS puts `EVFILT_PROC` with `NOTE_EXIT` on kqueue (as tokio does on Linux); neither
+     takes the program away, so it is taken away where the task goes on, and its number names no other
+     program before. A program that has ended already is ready at once (macOS gives `ESRCH` for it). A cancel
+     takes the wait off the loop. Where Linux has no pidfd, a thread of input and output waits with
+     `waitid(..., WEXITED | WNOWAIT)` instead. The readers of the pipes are read on the loop as the reader
+     of a connection is (480 to 487, without a longest line), so a cancel ends a wait for a line and loses
+     nothing; the receive of the loop is now `read`, which reads a socket and a pipe alike.
+629. **In the interpreter** a program is started with Rust's `std::process::Command`, kept in a table of the
+     run until it is waited for. An output it shares with this program is a pipe read by a thread and
+     written out to the run's output when the program is waited for, since the run's output need not be
+     the stream of the process (609): what a started program writes there comes out at its wait, in
+     compiled code as it writes. `waitAsync` has a thread wait with `waitid` and tell the scheduler through
+     its pair of sockets, as a connect does (473). The reads of a pipe are done when they are called (412):
+     an async read waits there, and a cancel does not end it.
+630. **A `Process` goes to another task**: it owns the number of the program and its pipes.
+631. **Measured** (`pipelines`, a new program): the log of `lines` (two million lines, 125 MB) read line by
+     line from the output of `cat`, started with `start`: 0.078 s (0.081 s checked) against 0.092 s
+     for C, `popen` of `cat` and `getline`, which does not check that a line is text: 0.85 times. The reader
+     takes 64 KB of the pipe at a time; `getline` goes through the 4 KB buffer of a `FILE`.
+632. **Measured** (`pipesasync`, a new program): the same, read with `readLineAsync` and waited for with
+     `waitAsync`: 0.093 s against the same 0.090 s of C, which
+     has no async: 1.03 times. Almost every line is in the block already, so a read is done in place;
+     when it is empty, the task waits for the pipe on the loop.
+633. **Measured** (`spawnasync`, a new program): five thousand runs of `true` with `statusAsync`:
+     3.778 s against 5.312 s for C's
+     `posix_spawnp` and `waitpid`: 0.71 times, as `spawn` (0.72 on the same run). The end of each program is
+     waited for on the loop (pidfd, `EVFILT_PROC`), so no thread is held for it.
+634. **The tests**: `ok_process_start` (the pipes, each taken once, a stream not asked for, the input closed
+     by `wait`, a text of `input` and the output read whole, the standard error through a pipe, a reader read
+     after the wait, a program that does not start), `ok_process_kill` (9, 15, a program that had ended, a
+     shell that catches 15), `ok_process_talk` (a task writes the input of `cat` while `main` reads its
+     output, the async way), `ok_process_async` (every async version, an end with a code, output that is not
+     UTF-8, a program not found), `ok_process_cancel` (a cancel of each async wait, a token cancelled before
+     the call), `ok_process_drop` (a program stopped on a way out with an error and in a field) and
+     `ok_async_method`; the checker refuses `error_process_not_waited`, `error_process_not_waited_block`,
+     `error_process_wait_moved`, `error_process_wait_async`, `error_process_output_async`,
+     `error_process_given_another` and `error_async_method_borrowed`, `_format`, `_create` and `_itself`
+     (`error_async_method`, which said an async method was not here yet, is gone). `cargo test` compiles
+     293 of 1215 programs, 57 of them under the thread sanitizer, and 15 of 20 programs of tests; on Linux
+     too, in a container, with the same counts, where the sanitizer found a field of the wait that was read
+     before it was written (the direction of a wait on epoll), now set.
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -4728,9 +4832,13 @@ check off.
 
 ## Not here yet
 
-- **Of other programs**: a program started and talked to while it runs (its input and output as streams),
-  stopping it, waiting for it in an async function, and a cancel that stops it: the next slice. A program
-  run by the interpreter sees a pipe for its output and standard error (609).
+- **Of other programs**: two programs joined by a pipe (`a | b`), an output sent straight into a file, a
+  look at whether a program has ended without waiting (`try_wait`; a wait with a time limit is
+  `waitAsync` with a token of `CancellationSource.after(ms)`), a program left to go on after this one
+  (`detach`), groups of processes, signals other than 9 and 15, a terminal of its own (pty). A program
+  run by the interpreter sees a pipe for its output and standard error (609), and what a started one
+  writes there comes out when it is waited for (629). A `Process` named by `is Ok(process)` is lent, so
+  the rule that it is waited for does not see it; it is stopped where the value it is lent from ends.
 - **Of raw memory**: a place in it lent (`read p[i]`, `ref p[i]`, a method called on `p[i]`, 511); items that
   own memory (the design's `put`, `take` and `moveItems`); `Memory.resize`; the difference and the order of
   two pointers (`p - q`, `p < q`); the address of a variable.
@@ -4761,7 +4869,7 @@ check off.
 - Channels; the task of `Task.whenAll` kept in a variable to be awaited later (`var all =
   Task.whenAll(tasks)`), and a `for` over a list of tasks (a `break` would leave tasks); a method or a function of a struct
   started as a task (a `Func` is a function written at the top level). Of async: `linesAsync` (a `for`
-  that awaits), an `async` method, an async function kept as a `Func`. A token cancelled while a file is
+  that awaits), an async function or method kept as a `Func`. A token cancelled while a file is
   read or written does not stop the work (433); one cancelled while a task waits for the network or for a
   line of the input that can make the program wait does (471, 472). Of the network: a stream received from
   by one task and sent to by another (and so `send` through a `shared` stream), the reader of a connection
@@ -4946,4 +5054,7 @@ of `readdir` and `stat` in C. Another program is run and waited for (`Command`, 
 `status`), with no shell, a table of the environment of its own, an input of its own written while its
 output is read, and no descriptor of ours handed to it; starting a program takes 0.70 times
 `posix_spawnp` in C, and keeping its output 1.49 times reading the pipe, all of it the check that it is text. The other places in "Slower than C"
-wait; next is talking to a program while it runs, then Unicode tables and UDP.
+wait. A program is also started and talked to while it runs (`start`, its pipes taken out of the
+`Process` as a writer and readers, `wait`, `kill`, `terminate`), and one that is not waited for is a
+compile error, or stopped where it ends; the async versions take a token, and a cancel stops the program.
+A method can be async. Reading the output of a started program line by line takes 0.85 times `popen` and `getline` in C. Next are the Unicode tables, then UDP.
