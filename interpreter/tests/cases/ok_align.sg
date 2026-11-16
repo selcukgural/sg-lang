@@ -1,0 +1,49 @@
+// `align(64)`: a value of the type lies at a multiple of 64 bytes wherever it is kept, on the
+// stack, behind `new`, in a list, in a `shared` value, in raw memory and in a task.
+align(64) struct Slot : Copyable {
+    long count
+}
+
+struct Holder {
+    byte tag
+    Slot slot
+}
+
+bool aligned(raw Slot p) {
+    return (nuint)p % 64 == 0
+}
+
+Slot bump(Slot slot) {
+    var local = slot
+    local.count += 1
+    return local
+}
+
+void main() {
+    print(Memory.sizeOf<Slot>())
+    print(Memory.alignOf<Slot>())
+    print(Memory.sizeOf<Holder>())
+    var boxed = new Slot { count = 1 }
+    boxed.count += 1
+    print(boxed.count)
+    var slots = List<Slot>()
+    for i in 0..20 {
+        slots.add(Slot { count = i })
+    }
+    print(slots[19].count)
+    var owned = new shared checked Slot { count = 5 }
+    owned.count += 1
+    print(owned.count)
+    var holders = List<Holder>()
+    holders.add(Holder { tag = 1, slot = Slot { count = 9 } })
+    print(holders[0].slot.count)
+    var task = Task.run(bump, Slot { count = 41 })
+    print(task.wait().count)
+    unsafe {
+        var many = Memory.allocate<Slot>(3)
+        print(aligned(many))
+        many[2].count = 3
+        print(many[2].count)
+        Memory.free(many)
+    }
+}

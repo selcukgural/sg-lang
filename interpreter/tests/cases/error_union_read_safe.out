@@ -1,0 +1,5 @@
+error: a field of a union is read as its own type, whichever field was written last, so it is written inside `unsafe`
+  --> error_union_read_safe.sg:9:11
+ 9 |     print(bits.word)
+   |           ^^^^^^^^^
+  hint: `unsafe bits.word`, or `unsafe { ... }` around several statements

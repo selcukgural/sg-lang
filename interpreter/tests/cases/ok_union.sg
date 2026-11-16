@@ -1,0 +1,45 @@
+// A union holds one of its fields at a time, in the same bytes: built with one field, written
+// whole, read inside `unsafe` as whichever field is asked for.
+union Bits : Copyable {
+    uint word
+    float number
+    byte[4] bytes
+}
+
+struct Pair : Copyable {
+    short low
+    short high
+}
+
+union Word : Copyable {
+    int whole
+    Pair halves
+}
+
+void main() {
+    var bits = Bits { number = 1.0 }
+    print(unsafe bits.word)
+    print(unsafe bits.bytes[3])
+    bits.word = 0x40490fdb
+    print(unsafe bits.number)
+    bits.bytes = byte[4] { 1, 0, 0, 0 }
+    print(unsafe bits.word)
+    // The bytes the field does not cover are zero.
+    var word = Word { halves = Pair { low = -1, high = 2 } }
+    print(unsafe word.whole)
+    var copy = word
+    copy.whole = 7
+    print(unsafe word.halves.low)
+    print(unsafe copy.halves.low)
+    print(Memory.sizeOf<Bits>())
+    print(Memory.alignOf<Word>())
+    // A union in raw memory is read and written as any item there.
+    unsafe {
+        var many = Memory.allocate<Bits>(2)
+        many[1] = bits
+        many[0].number = 2.5
+        print(many[1].word)
+        print(many[0].word)
+        Memory.free(many)
+    }
+}

@@ -1,0 +1,5 @@
+error: union `Nothing` has no fields
+  a union holds one of its fields at a time, and C has no union of none
+  --> error_union_empty.sg:2:7
+ 2 | union Nothing {
+   |       ^^^^^^^

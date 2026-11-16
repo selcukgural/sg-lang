@@ -1,0 +1,38 @@
+// A `packed` struct has no padding: a `uint` may lie at any byte. Its fields are copied out,
+// never lent, and `fromBytes` reads it from the bytes of a file as they are.
+packed struct BmpHeader : Copyable, Formattable, Equatable {
+    ushort kind
+    uint size
+    ushort reserved1
+    ushort reserved2
+    uint offset
+}
+
+packed struct Record : Copyable {
+    byte tag
+    BmpHeader header
+    double weight
+}
+
+void main() {
+    print(Memory.sizeOf<BmpHeader>())
+    print(Memory.alignOf<BmpHeader>())
+    print(Memory.sizeOf<Record>())
+    var bytes = List<byte> { 0x42, 0x4d, 0x36, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00, 0x00 }
+    var header = BmpHeader.fromBytes(read bytes)
+    print(header)
+    header.size += 1
+    print(header.size)
+    print(header == BmpHeader.fromBytes(read bytes))
+    var record = Record { tag = 1, header = header, weight = 0.5 }
+    record.weight *= 3.0
+    print(record.weight)
+    print(record.header.offset)
+    unsafe {
+        var many = Memory.allocate<Record>(3)
+        many[1] = record
+        print(many[1].header.size)
+        print(((raw byte)many)[Memory.sizeOf<Record>()])
+        Memory.free(many)
+    }
+}

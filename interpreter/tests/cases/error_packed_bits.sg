@@ -1,0 +1,8 @@
+// A `packed` struct has no bit fields.
+packed struct Header {
+    byte kind : 4
+    uint size
+}
+
+void main() {
+}

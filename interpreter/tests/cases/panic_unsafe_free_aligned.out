@@ -1,0 +1,4 @@
+panic: `Memory.free` is given a block made for a type aligned to 64 bytes through a `raw byte`: a block is given back through a pointer to the type it was made for
+  --> panic_unsafe_free_aligned.sg:10:9
+ 10 |         Memory.free((raw byte)slots)
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

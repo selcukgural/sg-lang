@@ -1,0 +1,6 @@
+// A union has at least one field.
+union Nothing {
+}
+
+void main() {
+}

@@ -1,0 +1,4 @@
+// `Memory.sizeOf` names the type it measures.
+void main() {
+    print(Memory.sizeOf())
+}

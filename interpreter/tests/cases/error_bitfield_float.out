@@ -1,0 +1,4 @@
+error: a bit field is an integer or a `bool`, and this is `float`
+  --> error_bitfield_float.sg:3:17
+ 3 |     float ratio : 8
+   |                 ^^^

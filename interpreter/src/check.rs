@@ -46,6 +46,9 @@ struct StructInfo {
     closable: bool,
     /// A type of C declared in an `extern` block, seen only behind a raw pointer.
     opaque: bool,
+    /// How C lays it out: `union`, `packed`, `align(N)`, bit fields and the bits left empty.
+    /// Its `fields` are filled in once the struct is found to hold plain data.
+    shape: crate::raw::Plain,
 }
 
 struct EnumInfo {
@@ -306,7 +309,7 @@ fn is_text_value(ty: &Ty) -> bool {
 /// the change is what they are called for.
 fn gives_only(name: &str, callee: &Callee) -> bool {
     match callee {
-        Callee::Join | Callee::WithCapacity | Callee::FromBytes { .. } => true,
+        Callee::Join | Callee::WithCapacity | Callee::FromBytes { .. } | Callee::StructFromBytes(_) => true,
         Callee::Cancel(call) => *call != CancelCall::Cancel && *call != CancelCall::Check,
         Callee::Net(NetCall::Port | NetCall::Reader) => true,
         Callee::Plain => !matches!(name, "removeLast" | "add" | "remove" | "getOrAdd" | "next"),
@@ -390,8 +393,8 @@ fn text_error() -> StructDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
     let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, raw: 0, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
-    let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere };
-    StructDecl { public: true, name: TEXT_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: vec![position], methods: Vec::new(), opaque: false }
+    let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere, bits: None };
+    StructDecl { public: true, name: TEXT_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: vec![position], methods: Vec::new(), opaque: false, layout: LayoutDecl::default() }
 }
 
 /// What `int.parse` and the other `parse` functions give when the text is not a number.
@@ -404,7 +407,7 @@ fn number_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
     let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, raw: 0, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
-    let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere };
+    let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere, bits: None };
     let variants = vec![
         VariantDecl { name: "Invalid".to_string(), span: nowhere, fields: vec![position] },
         VariantDecl { name: "OutOfRange".to_string(), span: nowhere, fields: Vec::new() },
@@ -420,7 +423,7 @@ const CANCELLED: &str = "Cancelled";
 fn cancelled() -> StructDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
-    StructDecl { public: true, name: CANCELLED.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: Vec::new(), methods: Vec::new(), opaque: false }
+    StructDecl { public: true, name: CANCELLED.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: Vec::new(), methods: Vec::new(), opaque: false, layout: LayoutDecl::default() }
 }
 
 /// What reading or writing a file, or the input of the program, gives when it fails.
@@ -447,7 +450,7 @@ fn io_error() -> EnumDecl {
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
     let field = |ty: &str, name: &str| {
         let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, raw: 0, name: ty.to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
-        FieldDecl { public: true, readonly: true, ty, name: name.to_string(), span: nowhere }
+        FieldDecl { public: true, readonly: true, ty, name: name.to_string(), span: nowhere, bits: None }
     };
     let variant = |name: &str, fields: Vec<FieldDecl>| VariantDecl { name: name.to_string(), span: nowhere, fields };
     let variants = vec![
@@ -813,8 +816,17 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         let readonly = decl.fields.iter().map(|field| field.readonly).collect();
         let said = |interface: &str| decl.interfaces.iter().any(|(name, _)| name == interface);
         let (disposable, closable, opaque) = (said("Disposable"), said("Closable"), decl.opaque);
-        structs.insert(decl.name.clone(), StructInfo { fields, open, readonly, methods, disposable, closable, opaque });
+        let shape = crate::raw::Plain {
+            fields: Vec::new(),
+            bits: decl.fields.iter().map(|field| field.bits.map(|(width, _)| width as u32)).collect(),
+            gaps: decl.layout.gaps.iter().map(|gap| Ok((gap.before, resolve_type(&gap.ty, &names, false)?, gap.bits as u32))).collect::<Res<_>>()?,
+            union: decl.layout.union,
+            packed: decl.layout.packed.is_some(),
+            align: decl.layout.align.map_or(0, |(align, _)| align as usize),
+        };
+        structs.insert(decl.name.clone(), StructInfo { fields, open, readonly, methods, disposable, closable, opaque, shape });
     }
+    layout_rules(prog, &structs)?;
 
     let mut enums: HashMap<String, EnumInfo> = HashMap::new();
     for decl in &prog.enums {
@@ -1140,6 +1152,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             awaiting: false,
             unsafe_at: None,
             writing: false,
+            written: Vec::new(),
             extern_arg: false,
             seen: crate::unread::Seen::default(),
         };
@@ -1212,11 +1225,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     thread_rule_of_locked(&structs, &enums, &names)?;
     raw_rule(&structs)?;
     // What lies in raw memory is laid out from the types of the fields.
-    for (name, info) in &structs {
-        if not_plain(&Ty::Struct(name.clone()), &structs).is_none() {
-            prog.plain.insert(name.clone(), info.fields.iter().map(|(_, ty)| ty.clone()).collect());
-        }
-    }
+    prog.plain = plain_types(&structs);
     crate::waits::check(prog)?;
     let bodies = prog.funcs.iter().filter(|func| func.foreign.is_none()).map(|func| &func.body);
     let methods = prog.structs.iter().flat_map(|decl| &decl.methods).chain(prog.enums.iter().flat_map(|decl| &decl.methods)).map(|method| &method.body);
@@ -1410,6 +1419,7 @@ fn check_tests(
             awaiting: false,
             unsafe_at: None,
             writing: false,
+            written: Vec::new(),
             extern_arg: false,
             seen: crate::unread::Seen::default(),
         };
@@ -2488,6 +2498,10 @@ struct Checker<'a> {
     /// The place being checked is the target of an assignment: an `unsafe` it lacks is asked
     /// for as a block.
     writing: bool,
+    /// The place an assignment writes and the places it is reached through, the place first,
+    /// while it is found: a field of a union written whole needs no `unsafe`, one written into is
+    /// an error, and an index inside them is read.
+    written: Vec<Span>,
     /// The expression being checked is an argument of a function of C: `buffer.pointer()` may
     /// be written there.
     extern_arg: bool,
@@ -3185,13 +3199,14 @@ impl<'a> Checker<'a> {
                 if matches!(callee, Callee::Take | Callee::Replace) {
                     return self.loans_of(recv, mutable);
                 }
-                // `Memory.view(p, n)` looks through the variable that holds `p`.
-                if matches!(callee, Callee::Memory(MemoryCall::View)) {
+                // `Memory.view(p, n)` looks through the variable that holds `p`, and
+                // `Memory.viewRef(p, n)` writes through it.
+                if let Callee::Memory(call @ (MemoryCall::View | MemoryCall::ViewRef)) = callee {
                     let pointer = match &args[0].kind {
                         ExprKind::Load(inner) => &**inner,
                         _ => &args[0],
                     };
-                    return self.place_loans(pointer, false, expr.span);
+                    return self.place_loans(pointer, *call == MemoryCall::ViewRef, expr.span);
                 }
                 // A part that an iterator gives borrows the text, not the iterator: after
                 // `var word = words.next()` the `words` is free to go on.
@@ -3754,8 +3769,10 @@ impl<'a> Checker<'a> {
                     }
                     _ => {
                         self.writing = true;
+                        self.written = written_path(target);
                         let found = self.place_unchecked(target);
                         self.writing = false;
+                        self.written.clear();
                         let Some((ty, writable)) = found? else {
                             return Err(Diag::error(target.span, "a variant of an enum is a value, not a place to write to"));
                         };
@@ -3766,6 +3783,19 @@ impl<'a> Checker<'a> {
                         }
                         if let Some(diag) = self.readonly(target) {
                             return Err(diag);
+                        }
+                        // A field of a union is written whole, and nothing is written inside it:
+                        // that would read the field first.
+                        if let Some((field, direct)) = union_field(target, self.structs) {
+                            let text = &self.src[field.start..field.end];
+                            if !direct {
+                                return Err(Diag::error(target.span, "a field of a union is written whole: what lies inside it is not written on its own")
+                                    .hint(format!("read it, change the copy and write it back: `var part = unsafe {text}`, then `{text} = part`")));
+                            }
+                            if op.is_some() {
+                                return Err(Diag::error(target.span, "a field of a union is read inside `unsafe`, so it is not changed in place")
+                                    .hint(format!("`{text} = unsafe {text} + ...`")));
+                            }
                         }
                         if !writable && self.is_entry_key(target) {
                             return Err(Diag::error(target.span, "the key of an entry cannot be changed: the map found the entry by it")
@@ -3822,6 +3852,12 @@ impl<'a> Checker<'a> {
                     }
                     _ => {
                         self.typed(value, &target_ty)?;
+                    }
+                }
+                // A number written in the program that does not fit a bit field.
+                if let (None, ExprKind::Field { recv, index, .. }) = (*op, &target.kind) {
+                    if let Some(width) = struct_of(&recv.ty).and_then(|name| self.structs.get(name)).and_then(|info| info.shape.bits.get(*index).copied().flatten()) {
+                        fits_bits(value, &target_ty, width)?;
                     }
                 }
                 for (_, at) in &mut self.borrows.uses[place_uses] {
@@ -4922,6 +4958,24 @@ impl<'a> Checker<'a> {
                 if !info.open[position] && !self.inside(&struct_name) {
                     return Err(self.not_public(name, &struct_name, *name_span));
                 }
+                // A field of a union is read as its own type, whichever field was written last;
+                // written whole, it needs no `unsafe`.
+                if info.shape.union && self.written.first() != Some(&span) {
+                    // A field of a union that an assignment writes into: written whole, or not.
+                    if self.written.contains(&span) {
+                        let text = &self.src[span.start..span.end];
+                        return Err(Diag::error(span, "a field of a union is written whole: what lies inside it is not written on its own")
+                            .hint(format!("read it, change the copy and write it back: `var part = unsafe {text}`, then `{text} = part`")));
+                    }
+                    let field = (fields[position].1.clone(), writable && !info.readonly[position]);
+                    *index = position;
+                    // Read, even inside the place an assignment writes.
+                    let writing = std::mem::replace(&mut self.writing, false);
+                    let needed = self.needs_unsafe(span, "a field of a union is read as its own type, whichever field was written last");
+                    self.writing = writing;
+                    needed?;
+                    return Ok(Some(field));
+                }
                 *index = position;
                 Ok(Some((fields[position].1.clone(), writable && !info.readonly[position])))
             }
@@ -5367,6 +5421,24 @@ impl<'a> Checker<'a> {
                 unwrap_unsafe(expr);
                 Ok(ty)
             }
+            // `Memory.sizeOf<T>()`, `Memory.alignOf<T>()`: what C has for a type of plain data.
+            ExprKind::SizeOf { item, align, of } => {
+                let call = if *align { "Memory.alignOf" } else { "Memory.sizeOf" };
+                if let Some(full) = self.names.full(&item.name, item.span)?.filter(|full| self.names.opaque.contains(full) && item.raw == 0 && item.suffixes.is_empty()) {
+                    return Err(Diag::error(item.span, format!("`{}` is a type of C whose size SG does not know", short_name(&full))));
+                }
+                if item.mode.is_some() {
+                    return Err(Diag::error(item.span, format!("`{call}` takes a type of plain data, not a borrow")));
+                }
+                let ty = resolve_type(item, self.names, false)?;
+                if let Some(part) = not_plain(&ty, self.structs) {
+                    let diag = Diag::error(item.span, format!("`{call}` takes a type of plain data, and `{ty}` is not"));
+                    let diag = if part == ty { diag } else { diag.note(format!("it holds a `{part}`")) };
+                    return Err(diag.note("plain data is laid out as C lays it out, so its size is that of C; the size of another value is not part of the language"));
+                }
+                *of = ty;
+                Ok(Ty::Int(IntTy::Nint))
+            }
             // `Memory.allocate<int>(n)`: room for `n` items, all zero.
             ExprKind::Allocate { item, args } => {
                 if let Some(full) = self.names.full(&item.name, item.span)?.filter(|full| self.names.opaque.contains(full) && item.raw == 0 && item.suffixes.is_empty()) {
@@ -5746,6 +5818,19 @@ impl<'a> Checker<'a> {
                     }
                     init.index = position;
                     self.typed(&mut init.value, &info.fields[position].1)?;
+                    if let Some(width) = info.shape.bits[position] {
+                        fits_bits(&init.value, &info.fields[position].1, width)?;
+                    }
+                }
+                if info.shape.union {
+                    let short = short_name(name);
+                    return match fields.len() {
+                        1 => Ok(Ty::Struct(name.clone())),
+                        0 => Err(Diag::error(span, format!("a union is built with one of its fields: `{short} {{ {} = ... }}`", info.fields[0].0))
+                            .note("the bytes the field does not cover are zero")),
+                        _ => Err(Diag::error(fields[1].span, format!("a union is built with one of its fields, and this gives {}", fields.len()))
+                            .note("a union holds one field at a time: they all start where it starts")),
+                    };
                 }
                 let missing: Vec<String> = info
                     .fields
@@ -5892,6 +5977,9 @@ impl<'a> Checker<'a> {
                         true => diag.hint(format!("write it where it is: `unsafe {{ {text} = ... }}`")),
                         false => diag.hint(format!("copy it out: `var item = unsafe {text}`")),
                     });
+                }
+                if let Some(diag) = not_lent(inner, self.structs, self.src) {
+                    return Err(diag);
                 }
                 if matches!(ty, Ty::Void | Ty::Never) {
                     return Err(Diag::error(inner.span, "there is no value here to borrow"));
@@ -7579,6 +7667,10 @@ impl<'a> Checker<'a> {
         awaited: bool,
     ) -> Res<Ty> {
         let methods = self.methods_of(owner);
+        // `Header.fromBytes(bytes)`, unless the struct has a function of that name.
+        if name == "fromBytes" && !methods.contains_key(name) && self.structs.contains_key(owner) {
+            return self.struct_from_bytes(owner, name_span, args, callee, span);
+        }
         let Some(sig) = methods.get(name) else {
             let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
             if owner == format!("{STD_MODULE}.Environment") && matches!(name, "set" | "remove" | "unset" | "add") {
@@ -7653,6 +7745,37 @@ impl<'a> Checker<'a> {
         }
         *callee = Callee::FromBytes { ty: int, big: name == "fromBigEndian" };
         Ok(ty.clone())
+    }
+
+    /// `Header.fromBytes(bytes)`: a struct of plain data that every pattern of bits is a value of,
+    /// read out of exactly as many bytes as it takes. Needs no `unsafe`: whatever the bytes are,
+    /// the value is one of its type.
+    fn struct_from_bytes(&mut self, owner: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+        let short = short_name(owner);
+        let ty = Ty::Struct(owner.to_string());
+        if let Some(part) = not_plain(&ty, self.structs) {
+            return Err(Diag::error(name_span, format!("`{short}.fromBytes` reads plain data out of bytes, and `{short}` holds a `{part}`")));
+        }
+        if let Some(part) = not_any_bits(&ty, self.structs) {
+            let why = match part {
+                Ty::Bool => "a `bool` is 0 or 1",
+                Ty::Char => "a `char` is a code of Unicode",
+                _ => "an address made of any bytes is no address C gave",
+            };
+            return Err(Diag::error(name_span, format!("`{short}.fromBytes` takes any bytes, and `{short}` holds a `{part}`, which not every pattern of bits is"))
+                .note(why)
+                .hint("read the bytes into a struct of integers, and make the field of it from one"));
+        }
+        let bytes = Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+        self.args("fromBytes", args, &[bytes], span)?;
+        let (size, _) = crate::raw::layout(&ty, &plain_types(self.structs));
+        if let Some(given) = known_width(self.src, &args[0]) {
+            if given != size as i128 {
+                return Err(Diag::error(args[0].span, format!("`{short}.fromBytes` reads {size} bytes, and this window has {given}")));
+            }
+        }
+        *callee = Callee::StructFromBytes(owner.to_string());
+        Ok(ty)
     }
 
     /// `Task.run(work, a, b)`: starts `work(a, b)` as a task of its own. The arguments are
@@ -7982,6 +8105,7 @@ impl<'a> Checker<'a> {
         };
         match name {
             "allocate" => Err(Diag::error(name_span, "`Memory.allocate` names the type of what it makes room for").hint("`Memory.allocate<int>(count)`")),
+            "sizeOf" | "alignOf" => Err(Diag::error(name_span, format!("`Memory.{name}` names the type it measures")).hint(format!("`Memory.{name}<int>()`"))),
             "free" => {
                 if args.len() != 1 {
                     return Err(Diag::error(span, format!("`free` takes 1 argument(s), {} given", args.len())));
@@ -8042,11 +8166,13 @@ impl<'a> Checker<'a> {
             }
             // `Memory.view(p, count)`: the items C put at `p`, as a window that looks at them
             // where they lie. It borrows the variable that holds the pointer, so it does not
-            // outlive it.
-            "view" => {
+            // outlive it. `Memory.viewRef(p, count)` writes them, and borrows it as `ref`.
+            "view" | "viewRef" => {
+                let writes = name == "viewRef";
+                let call = format!("Memory.{name}");
                 if args.len() != 2 {
-                    return Err(Diag::error(span, format!("`view` takes 2 argument(s), {} given", args.len()))
-                        .note("`Memory.view(p, count)` looks at `count` items from `p`"));
+                    return Err(Diag::error(span, format!("`{name}` takes 2 argument(s), {} given", args.len()))
+                        .note(format!("`{call}(p, count)` {} `count` items from `p`", if writes { "writes" } else { "looks at" })));
                 }
                 let named = |expr: &Expr| {
                     let mut at = expr;
@@ -8060,26 +8186,60 @@ impl<'a> Checker<'a> {
                 };
                 if !named(&args[0]) {
                     let text = &self.src[args[0].span.start..args[0].span.end];
-                    return Err(Diag::error(args[0].span, "`Memory.view` takes the pointer from a variable or a field, which the window borrows")
-                        .hint(format!("`var at = {text}` first, then `Memory.view(at, count)`"))
+                    return Err(Diag::error(args[0].span, format!("`{call}` takes the pointer from a variable or a field, which the window borrows"))
+                        .hint(format!("`var at = {text}` first, then `{call}(at, count)`"))
                         .note("the window borrows the variable that holds its pointer, and does not outlive it"));
                 }
-                let item = pointer(self, &mut args[0], "what `Memory.view` looks at")?;
+                let item = pointer(self, &mut args[0], &format!("what `{call}` {}", if writes { "writes" } else { "looks at" }))?;
                 let Ty::Raw(item) = item else { unreachable!("`pointer` gives a raw pointer") };
                 if *item == Ty::Void {
-                    return Err(Diag::error(args[0].span, "a `raw void` points at memory of no known type, so `Memory.view` cannot count its items")
+                    return Err(Diag::error(args[0].span, format!("a `raw void` points at memory of no known type, so `{call}` cannot count its items"))
                         .hint("say what lies there with a cast: `(raw byte)p`"));
                 }
                 self.index(&mut args[1], "a count of items")?;
-                self.needs_unsafe(span, "`Memory.view` reads raw memory, whose size the checker does not know")?;
-                *callee = Callee::Memory(MemoryCall::View);
-                Ok(Ty::Read(Box::new(Ty::Slice(item))))
+                let verb = if writes { "writes" } else { "reads" };
+                self.needs_unsafe(span, &format!("`{call}` {verb} raw memory, whose size the checker does not know"))?;
+                Ok(match writes {
+                    true => {
+                        *callee = Callee::Memory(MemoryCall::ViewRef);
+                        Ty::Ref(Box::new(Ty::Slice(item)))
+                    }
+                    false => {
+                        *callee = Callee::Memory(MemoryCall::View);
+                        Ty::Read(Box::new(Ty::Slice(item)))
+                    }
+                })
+            }
+            // `Memory.readUnaligned(p)` and `Memory.writeUnaligned(p, value)`: an item at an
+            // address that need not be a multiple of its alignment.
+            "readUnaligned" | "writeUnaligned" => {
+                let writes = name == "writeUnaligned";
+                let wanted = if writes { 2 } else { 1 };
+                if args.len() != wanted {
+                    let diag = Diag::error(span, format!("`{name}` takes {wanted} argument(s), {} given", args.len()));
+                    return Err(diag.note(if writes { "`Memory.writeUnaligned(p, value)` writes the item at `p`" } else { "`Memory.readUnaligned(p)` reads the item at `p`" }));
+                }
+                let found = pointer(self, &mut args[0], &format!("what `Memory.{name}` {}", if writes { "writes" } else { "reads" }))?;
+                let Ty::Raw(item) = found else { unreachable!("`pointer` gives a raw pointer") };
+                if *item == Ty::Void {
+                    return Err(Diag::error(args[0].span, format!("a `raw void` points at memory of no known type, so `Memory.{name}` does not know what lies there"))
+                        .hint("say what lies there with a cast: `(raw uint)p`"));
+                }
+                if writes {
+                    let given = self.expr(&mut args[1], Some(&item))?;
+                    self.coerce(&mut args[1], given, &item)?;
+                }
+                self.needs_unsafe(span, &format!("`Memory.{name}` {} raw memory, which the checker does not follow", if writes { "writes" } else { "reads" }))?;
+                *callee = Callee::Memory(if writes { MemoryCall::WriteUnaligned } else { MemoryCall::ReadUnaligned });
+                Ok(if writes { Ty::Void } else { *item })
             }
             _ => {
                 let diag = Diag::error(name_span, format!("`Memory` has no function `{name}`"));
-                Err(match nearest(name, ["allocate", "free", "copy", "addressOf", "view"].into_iter()) {
+                let all = ["allocate", "free", "copy", "addressOf", "view", "viewRef", "readUnaligned", "writeUnaligned", "sizeOf", "alignOf"];
+                Err(match nearest(name, all.into_iter()) {
+                    Some(close @ ("sizeOf" | "alignOf")) => diag.hint(format!("`Memory.{close}<int>()`")),
                     Some(close) => diag.hint(format!("`{close}`")),
-                    None => diag.note("functions for now: allocate, free, copy, addressOf, view"),
+                    None => diag.note(format!("functions for now: {}", all.join(", "))),
                 })
             }
         }
@@ -8709,6 +8869,11 @@ impl<'a> Checker<'a> {
             let text = &self.src[recv.span.start..recv.span.end];
             return Err(Diag::error(recv.span, "a place in raw memory is not lent yet, and a method is lent the value it is called on")
                 .hint(format!("copy it out first: `var item = unsafe {text}`, then `item.{name}(...)`")));
+        }
+        if is_place && matches!(recv_ty.strip_borrow(), Ty::Struct(_) | Ty::Array(..)) {
+            if let Some(diag) = not_lent(recv, self.structs, self.src) {
+                return Err(diag.note("a method is lent the value it is called on"));
+            }
         }
         // `buffer.pointer()`: the address of the items, for C.
         if name == "pointer" {
@@ -9944,6 +10109,7 @@ fn parts(expr: &Expr) -> Vec<Part<'_>> {
         | ExprKind::Str(_)
         | ExprKind::Char(_)
         | ExprKind::Null
+        | ExprKind::SizeOf { .. }
         | ExprKind::Var(_)
         | ExprKind::FuncRef(_)
         | ExprKind::CVar(_)
@@ -10242,6 +10408,251 @@ fn not_plain(ty: &Ty, structs: &HashMap<String, StructInfo>) -> Option<Ty> {
         Ty::Struct(name) if structs.get(name).is_some_and(|info| info.disposable || info.opaque) => Some(ty.clone()),
         Ty::Struct(name) => structs.get(name).and_then(|info| info.fields.iter().find_map(|(_, field)| not_plain(field, structs))),
         other => Some(other.clone()),
+    }
+}
+
+/// The structs and unions of plain data, laid out as C lays them out.
+fn plain_types(structs: &HashMap<String, StructInfo>) -> crate::raw::PlainTypes {
+    let mut plain = crate::raw::PlainTypes::new();
+    for (name, info) in structs {
+        if not_plain(&Ty::Struct(name.clone()), structs).is_none() {
+            let fields = info.fields.iter().map(|(_, ty)| ty.clone()).collect();
+            plain.insert(name.clone(), crate::raw::Plain { fields, ..info.shape.clone() });
+        }
+    }
+    plain
+}
+
+/// What a struct may say about how C lays it out: a union, a `packed` struct and a struct with
+/// bit fields hold plain data; a bit field is an integer or a `bool` that fits its bits; a union
+/// has no bit fields and is neither compared, hashed, ordered nor written out by its fields;
+/// `align(N)` is a power of two that makes the alignment larger.
+fn layout_rules(prog: &Program, structs: &HashMap<String, StructInfo>) -> Res<()> {
+    for decl in prog.structs.iter().filter(|decl| !decl.opaque) {
+        let info = &structs[&decl.name];
+        let short = short_name(&decl.name);
+        let bits_written = decl.fields.iter().find_map(|field| field.bits.map(|(_, span)| span)).or(decl.layout.gaps.first().map(|gap| gap.span));
+        if decl.layout.union && decl.fields.is_empty() {
+            return Err(Diag::error(decl.name_span, format!("union `{short}` has no fields")).note("a union holds one of its fields at a time, and C has no union of none"));
+        }
+        if let (true, Some(span)) = (decl.layout.union, bits_written) {
+            return Err(Diag::error(span, "a union has no bit fields").note("a struct of bit fields can be a field of the union"));
+        }
+        if let (Some(_), Some(span)) = (decl.layout.packed, bits_written) {
+            return Err(Diag::error(span, "a `packed` struct has no bit fields: the compilers of C lay the two out in different ways")
+                .note("on Windows bit fields are packed by units of their type, elsewhere bit by bit"));
+        }
+        let named = match (decl.layout.union, decl.layout.packed.is_some(), bits_written.is_some()) {
+            (true, _, _) => Some("a union"),
+            (_, true, _) => Some("a `packed` struct"),
+            (_, _, true) => Some("a struct with bit fields"),
+            _ => None,
+        };
+        if let Some(named) = named {
+            if let Some((_, span)) = decl.sources.first() {
+                return Err(Diag::error(*span, format!("{named} holds plain data, and plain data borrows nothing")));
+            }
+            for (field, (_, ty)) in decl.fields.iter().zip(&info.fields) {
+                if let Some(part) = not_plain(ty, structs) {
+                    let diag = Diag::error(field.ty.span, format!("{named} holds plain data, and `{part}` is not"));
+                    return Err(diag.note("plain data is numbers, `bool`, `char`, raw pointers, `CFunc`, and arrays, structs and unions of them: what C lays out"));
+                }
+            }
+            for (interface, span) in &decl.interfaces {
+                if matches!(interface.as_str(), "Disposable" | "Closable") {
+                    return Err(Diag::error(*span, format!("{named} holds plain data, which has nothing to give back when it ends")));
+                }
+            }
+        }
+        if decl.layout.union {
+            for field in &decl.fields {
+                if field.readonly {
+                    return Err(Diag::error(field.span, "a field of a union is not `readonly`: writing another field changes its bytes"));
+                }
+            }
+            for (interface, span) in &decl.interfaces {
+                let why = match interface.as_str() {
+                    "Equatable" | "Hashable" | "Comparable" => "a union does not know which of its fields it holds, so it is not compared by them",
+                    "Formattable" if !decl.methods.iter().any(|method| method.name == "format") => "a union does not know which of its fields it holds, so its text is not made from them",
+                    _ => continue,
+                };
+                let diag = Diag::error(*span, format!("union `{short}` cannot be `{interface}`")).note(why);
+                return Err(match interface.as_str() {
+                    "Formattable" => diag.hint("write its own `void format(read this, ref Formatter f)`, which reads the field it holds inside `unsafe`"),
+                    _ => diag.hint("read the field it holds inside `unsafe` and compare that"),
+                });
+            }
+        }
+        // Each bit field, and each run of bits left empty.
+        let fields = decl.fields.iter().zip(&info.fields).filter_map(|(field, (_, ty))| field.bits.map(|(width, span)| (true, ty.clone(), width, span)));
+        let gaps = decl.layout.gaps.iter().zip(&info.shape.gaps).map(|(gap, (_, ty, _))| (false, ty.clone(), gap.bits, gap.span));
+        for (named, ty, width, span) in fields.chain(gaps) {
+            let most = match &ty {
+                Ty::Int(int) => int.bits() as u64,
+                Ty::Bool => 1,
+                other => return Err(Diag::error(span, format!("a bit field is an integer or a `bool`, and this is `{other}`"))),
+            };
+            if width > most {
+                let diag = Diag::error(span, format!("a `{ty}` has {most} bit(s), and this asks for {width}"));
+                return Err(match ty {
+                    Ty::Bool => diag.note("a `bool` bit field takes 1 bit"),
+                    _ => diag,
+                });
+            }
+            if width == 0 && named {
+                return Err(Diag::error(span, "a bit field has at least 1 bit").note("`uint _ : 0`, without a name, starts the next field at a new unit of its type"));
+            }
+        }
+        if let Some((align, span)) = decl.layout.align {
+            if !align.is_power_of_two() || align > 4096 {
+                return Err(Diag::error(span, format!("an alignment is a power of two up to 4096, and this is {align}")));
+            }
+        }
+    }
+    // The alignment `align(N)` asks for is not below the one the fields ask for, and a `packed`
+    // struct holds no type with an alignment of its own: Windows keeps it, the others do not.
+    let plain = plain_types(structs);
+    for decl in prog.structs.iter().filter(|decl| plain.contains_key(&decl.name)) {
+        if let Some((align, span)) = decl.layout.align {
+            let mut without = plain.clone();
+            without.get_mut(&decl.name).expect("a struct of plain data").align = 0;
+            let natural = crate::raw::layout(&Ty::Struct(decl.name.clone()), &without).1;
+            if (align as usize) < natural {
+                return Err(Diag::error(span, format!("`align({align})` asks for less than the {natural} bytes its fields ask for"))
+                    .note("`align(N)` makes the alignment larger; `packed` makes it 1"));
+            }
+        }
+        if decl.layout.packed.is_some() {
+            for (field, ty) in decl.fields.iter().zip(&plain[&decl.name].fields) {
+                if let Some(inner) = holds_aligned(ty, &plain) {
+                    return Err(Diag::error(field.ty.span, format!("a `packed` struct holds no `{inner}`, which is `align(N)`"))
+                        .note("Windows keeps that alignment inside a packed struct, the other systems do not"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The first part of a type of plain data that not every pattern of bits is a value of: a
+/// `bool` (but a bit field of one), a `char`, a raw pointer or a `CFunc`.
+fn not_any_bits(ty: &Ty, structs: &HashMap<String, StructInfo>) -> Option<Ty> {
+    match ty {
+        Ty::Int(_) | Ty::Float(_) => None,
+        Ty::Array(item, _) => not_any_bits(item, structs),
+        Ty::Struct(name) => {
+            let info = &structs[name];
+            info.fields.iter().zip(&info.shape.bits).find_map(|((_, field), bits)| match (field, bits) {
+                (Ty::Bool, Some(_)) => None,
+                _ => not_any_bits(field, structs),
+            })
+        }
+        other => Some(other.clone()),
+    }
+}
+
+/// The first type in `ty` written with `align(N)`.
+fn holds_aligned(ty: &Ty, plain: &crate::raw::PlainTypes) -> Option<String> {
+    match ty {
+        Ty::Array(item, _) => holds_aligned(item, plain),
+        Ty::Struct(name) if plain[name].align > 0 => Some(short_name(name).to_string()),
+        Ty::Struct(name) => plain[name].fields.iter().find_map(|field| holds_aligned(field, plain)),
+        _ => None,
+    }
+}
+
+/// A number written in the program that does not fit a bit field of `width` bits is an error.
+fn fits_bits(value: &Expr, ty: &Ty, width: u32) -> Res<()> {
+    let number = match &value.kind {
+        ExprKind::Int(number, _) => *number,
+        ExprKind::Unary(UnOp::Neg, inner) => match inner.kind {
+            ExprKind::Int(number, _) => -number,
+            _ => return Ok(()),
+        },
+        _ => return Ok(()),
+    };
+    let Ty::Int(int) = ty else { return Ok(()) };
+    let (low, high) = if int.signed() { (-(1i128 << (width - 1)), (1i128 << (width - 1)) - 1) } else { (0, (1i128 << width) - 1) };
+    if number < low || number > high {
+        return Err(Diag::error(value.span, format!("{number} does not fit in a bit field of {width} bit(s), which holds {low} to {high}")));
+    }
+    Ok(())
+}
+
+/// The place an assignment writes and each place it is reached through, the place first.
+fn written_path(target: &Expr) -> Vec<Span> {
+    let mut path = vec![target.span];
+    let mut at = target;
+    while let ExprKind::Field { recv, .. } | ExprKind::Index { recv, .. } = &at.kind {
+        path.push(recv.span);
+        at = recv;
+    }
+    path
+}
+
+/// The struct a field is reached in, behind pointers and borrows.
+fn struct_of(ty: &Ty) -> Option<&str> {
+    match ty {
+        Ty::Read(inner) | Ty::Ref(inner) | Ty::Ptr(inner) | Ty::Shared(inner, _) => struct_of(inner),
+        Ty::Struct(name) => Some(name),
+        _ => None,
+    }
+}
+
+/// Whether a place is reached through a field of a union: the field (its whole place), and
+/// whether the place is that field itself.
+fn union_field(place: &Expr, structs: &HashMap<String, StructInfo>) -> Option<(Span, bool)> {
+    let mut at = place;
+    let mut found = None;
+    loop {
+        match &at.kind {
+            ExprKind::Field { recv, .. } => {
+                if struct_of(&recv.ty).is_some_and(|name| structs.get(name).is_some_and(|info| info.shape.union)) {
+                    found = Some((at.span, std::ptr::eq(at, place)));
+                }
+                at = recv;
+            }
+            ExprKind::Index { recv, .. } => at = recv,
+            _ => return found,
+        }
+    }
+}
+
+/// Why a place is not lent: a field of a union (which field it holds is not known), a bit
+/// field (it has no address), or a field of a `packed` struct whose type needs an alignment
+/// the field may not have. `None` when it is lent.
+fn not_lent(place: &Expr, structs: &HashMap<String, StructInfo>, src: &str) -> Option<Diag> {
+    let text = &src[place.span.start..place.span.end];
+    if let Some((field, _)) = union_field(place, structs) {
+        let field = &src[field.start..field.end];
+        return Some(Diag::error(place.span, "a field of a union is not lent: the checker does not know that the union holds it")
+            .hint(format!("copy it out: `var part = unsafe {field}`")));
+    }
+    let mut at = place;
+    let mut plain = None;
+    loop {
+        match &at.kind {
+            ExprKind::Field { recv, index, .. } => {
+                if let Some(info) = struct_of(&recv.ty).and_then(|name| structs.get(name)) {
+                    if std::ptr::eq(at, place) && info.shape.bits.get(*index).copied().flatten().is_some() {
+                        return Some(Diag::error(place.span, "a bit field is not lent: it has no address of its own")
+                            .hint(format!("copy it out: `var part = {text}`")));
+                    }
+                    if info.shape.packed {
+                        let plain = plain.get_or_insert_with(|| plain_types(structs));
+                        let (_, align) = crate::raw::layout(&info.fields[*index].1, plain);
+                        if align > 1 {
+                            let field = &src[at.span.start..at.span.end];
+                            return Some(Diag::error(place.span, format!("a field of a `packed` struct is not lent: `{field}` may lie where a `{}` cannot be reached", info.fields[*index].1))
+                                .hint(format!("copy it out: `var part = {field}`, and write it back whole")));
+                        }
+                    }
+                }
+                at = recv;
+            }
+            ExprKind::Index { recv, .. } => at = recv,
+            _ => return None,
+        }
     }
 }
 

@@ -1,0 +1,12 @@
+// A signed bit field of 3 bits holds -4 to 3.
+struct Step {
+    int delta : 3
+}
+
+void main() {
+    int value = 3
+    var step = Step { delta = value }
+    print(step.delta)
+    step = Step { delta = value + 1 }
+    print(step.delta)
+}

@@ -1,0 +1,5 @@
+error: a `raw void` points at memory of no known type, so `Memory.readUnaligned` does not know what lies there
+  --> error_read_unaligned_void.sg:6:36
+ 6 |         print(Memory.readUnaligned(at))
+   |                                    ^^
+  hint: say what lies there with a cast: `(raw uint)p`

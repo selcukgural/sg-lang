@@ -163,6 +163,24 @@ const RUNTIME: &str = r#"#include <math.h>
    would otherwise read as success to the code that asked, with what it was to fill unset. */
 static inline int sg_os_error(void) { return errno ? errno : EIO; }
 
+/* `align(N)` on a type: Microsoft's compiler writes it in front, the others as an attribute. */
+#ifndef SG_ALIGNED
+#ifdef _MSC_VER
+#define SG_ALIGNED(n) __declspec(align(n))
+#else
+#define SG_ALIGNED(n) __attribute__((aligned(n)))
+#endif
+#endif
+/* Room for a value of a type aligned beyond what `malloc` gives (16 bytes on the machines the
+   language runs on): C11's `aligned_alloc`, whose size is a multiple of the alignment and whose
+   block `free` gives back. On Windows it will be `_aligned_malloc`, whose block only
+   `_aligned_free` gives back (`sg_aligned_free`). */
+static inline void* sg_alloc(size_t size, size_t align) {
+    if (align <= 16) return malloc(size);
+    return aligned_alloc(align, (size + align - 1) & ~(align - 1));
+}
+static inline void sg_aligned_free(void* p) { free(p); }
+
 /* The generated code puts every operation in parentheses. */
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wparentheses-equality"
@@ -758,6 +776,18 @@ SG_COLD static _Noreturn void sg_panicf(const char* loc, const char* format, ...
     fputc('\n', stderr);
     sg_die(loc);
 }
+/* A value given to a bit field in a debug build: it must fit the bits (a release build keeps
+   the lowest of them, as C does). */
+static inline int64_t sg_bits_s(int64_t v, int width, const char* loc) {
+    int64_t high = (int64_t)(((uint64_t)1 << (width - 1)) - 1), low = -high - 1;
+    if (v < low || v > high) sg_panicf(loc, "%lld does not fit in a bit field of %d bit(s), which holds %lld to %lld", (long long)v, width, (long long)low, (long long)high);
+    return v;
+}
+static inline uint64_t sg_bits_u(uint64_t v, int width, const char* loc) {
+    uint64_t high = width == 64 ? UINT64_MAX : ((uint64_t)1 << width) - 1;
+    if (v > high) sg_panicf(loc, "%llu does not fit in a bit field of %d bit(s), which holds 0 to %llu", (unsigned long long)v, width, (unsigned long long)high);
+    return v;
+}
 /* The random bytes of the system: `arc4random_buf` on macOS and the BSDs, `getrandom` on Linux,
    which waits only until the system has gathered enough at boot and then never fails short of a
    broken system. If it ever did, the program ends rather than go on with bytes someone could
@@ -823,20 +853,29 @@ static inline uint64_t sg_hash_word(uint64_t h, uint64_t word) {
     return v0 ^ v1 ^ v2 ^ v3;
 }
 /* A list that is full gets room for twice as many items. */
-static void* sg_grow(void* items, int64_t* cap, size_t size) {
+/* Items aligned beyond what `malloc` gives are moved to a new block; the others grow in place
+   when they can. */
+static void* sg_realloc(void* items, int64_t cap, int64_t room, size_t size, size_t align) {
+    if (align <= 16) return realloc(items, (size_t)room * size);
+    void* grown = sg_alloc((size_t)room * size, align);
+    if (grown && items) memcpy(grown, items, (size_t)cap * size);
+    if (grown) sg_aligned_free(items);
+    return grown;
+}
+static void* sg_grow(void* items, int64_t* cap, size_t size, size_t align) {
     int64_t room = *cap ? *cap * 2 : 4;
-    void* grown = realloc(items, (size_t)room * size);
+    void* grown = sg_realloc(items, *cap, room, size, align);
     if (!grown) abort();
     *cap = room;
     return grown;
 }
 /* Room for at least `need` items: twice as many as there was room for, or `need` if that is
    more, so that adding many items one call at a time still grows the block only now and then. */
-static void* sg_reserve(void* items, int64_t* cap, int64_t need, size_t size) {
+static void* sg_reserve(void* items, int64_t* cap, int64_t need, size_t size, size_t align) {
     int64_t room = *cap ? *cap * 2 : 4;
     if (room < need) room = need;
     if ((uint64_t)room > PTRDIFF_MAX / size) abort();
-    void* grown = realloc(items, (size_t)room * size);
+    void* grown = sg_realloc(items, *cap, room, size, align);
     if (!grown) abort();
     *cap = room;
     return grown;
@@ -1266,7 +1305,9 @@ SG_COLD static _Noreturn void sg_assert_fail_t(const char* text, sg_str l, sg_st
 static void sg_sort(void* items, int64_t count, size_t size, int (*compare)(const void*, const void*)) {
     if (count < 2) return;
     uint8_t* from = items;
-    uint8_t* to = malloc((size_t)count * size);
+    /* The size of an item is a multiple of its alignment. */
+    size_t align = size & -size;
+    uint8_t* to = sg_alloc((size_t)count * size, align > 4096 ? 4096 : align);
     if (!to) abort();
     for (int64_t width = 1; width < count; width *= 2) {
         for (int64_t low = 0; low < count; low += 2 * width) {
@@ -1320,21 +1361,34 @@ SG_COLD static _Noreturn void sg_assert_fail_s(const char* text, sg_str l, sg_st
 /// inside `unsafe` (the interpreter checks reads and writes against its blocks, compiled code
 /// leaves them to the sanitizers).
 const RAW_RUNTIME: &str = r#"
-static void* sg_raw_alloc(int64_t n, size_t size, const char* ty, const char* loc) {
+static void* sg_raw_alloc(int64_t n, size_t size, size_t align, const char* ty, const char* loc) {
     if (n < 0) sg_panicf(loc, "`Memory.allocate` is given a count below 0: %lld", (long long)n);
-    if (size != 0 && (uint64_t)n > (uint64_t)(PTRDIFF_MAX - 16) / size)
+    if (size != 0 && (uint64_t)n > (uint64_t)(PTRDIFF_MAX - (align > 16 ? align : 16)) / size)
         sg_panicf(loc, "`Memory.allocate` is asked for more memory than an address can count: %lld items of `%s`", (long long)n, ty);
-    void* p = calloc(n ? (size_t)n : 1, size ? size : 1);
+    size_t bytes = (n ? (size_t)n : 1) * (size ? size : 1);
+    void* p = align <= 16 ? calloc(1, bytes) : sg_alloc(bytes, align);
     if (!p) sg_panicf(loc, "`Memory.allocate` found no memory for %lld items of `%s`", (long long)n, ty);
+    if (align > 16) memset(p, 0, bytes);
     return p;
 }
-static inline void sg_raw_copy(const void* source, void* target, int64_t n, size_t size, const char* loc) {
-    if (n < 0) sg_panicf(loc, "`Memory.copy` is given a count below 0: %lld", (long long)n);
-    if (n) memmove(target, source, (size_t)n * size);
+/* In a debug build an item of raw memory is reached only where its type may lie. */
+static inline void* sg_raw_aligned(const void* at, size_t align, const char* ty, const char* loc) {
+    uintptr_t off = (uintptr_t)at & (align - 1);
+    if (off) sg_panicf(loc, "raw memory is reached %llu byte(s) past a multiple of %llu, the alignment of `%s`: `Memory.readUnaligned` reads it there", (unsigned long long)off, (unsigned long long)align, ty);
+    return (void*)at;
 }
-static inline int64_t sg_raw_view(const void* at, int64_t n, const char* loc) {
-    if (n < 0) sg_panicf(loc, "`Memory.view` is given a count below 0: %lld", (long long)n);
-    if (n && !at) sg_panicf(loc, "`Memory.view` is given `null` and a count of %lld", (long long)n);
+static inline void sg_raw_copy(const void* source, void* target, int64_t n, size_t size, size_t align, const char* ty, const char* loc) {
+    if (n < 0) sg_panicf(loc, "`Memory.copy` is given a count below 0: %lld", (long long)n);
+    if (!n) return;
+    sg_raw_aligned(source, align, ty, loc);
+    sg_raw_aligned(target, align, ty, loc);
+    memmove(target, source, (size_t)n * size);
+}
+/* `Memory.view` and `Memory.viewRef` (`call`). */
+static inline int64_t sg_raw_view(const void* at, int64_t n, size_t align, const char* call, const char* ty, const char* loc) {
+    if (n < 0) sg_panicf(loc, "`%s` is given a count below 0: %lld", call, (long long)n);
+    if (n && !at) sg_panicf(loc, "`%s` is given `null` and a count of %lld", call, (long long)n);
+    if (n) sg_raw_aligned(at, align, ty, loc);
     return n;
 }
 "#;
@@ -1392,7 +1446,7 @@ static void sg_place_@N(sg_@N* m, int64_t entry) {
 static void sg_room_@N(sg_@N* m) {
     if (m->len == m->cap) {
         if (m->len >= 0x7fffffff) abort();
-        m->entries = sg_grow(m->entries, &m->cap, sizeof(sg_E_@N));
+        m->entries = sg_grow(m->entries, &m->cap, sizeof(sg_E_@N), _Alignof(sg_E_@N));
     }
     if (!m->slots || (m->len + 1) * 4 > (m->mask + 1) * 3) {
         int64_t size = m->slots ? (m->mask + 1) * 2 : 8;
@@ -1526,16 +1580,22 @@ typedef struct { char none; } __attribute__((aligned(16))) sg_mutex;
 static inline sg_rc* sg_rc_of(void* p) { return (sg_rc*)p - 1; }
 static inline sg_lock* sg_lock_of(void* p) { return (sg_lock*)sg_rc_of(p) - 1; }
 static inline sg_mutex* sg_mutex_of(void* p) { return (sg_mutex*)sg_rc_of(p) - 1; }
-static inline size_t sg_front(int how) { return sizeof(sg_rc) + (how == 1 ? sizeof(sg_lock) : how == 2 ? sizeof(sg_mutex) : 0) + (SG_TRACK ? sizeof(sg_live) : 0); }
+/* `how` says what lies in front of the value (bits 0 and 1), and from bit 2 the alignment of a
+   value aligned beyond 16 bytes, which the front is made a multiple of. */
+static inline size_t sg_front(int how) {
+    size_t front = sizeof(sg_rc) + ((how & 3) == 1 ? sizeof(sg_lock) : (how & 3) == 2 ? sizeof(sg_mutex) : 0) + (SG_TRACK ? sizeof(sg_live) : 0);
+    size_t align = (size_t)how >> 2;
+    return align ? (front + align - 1) & ~(align - 1) : front;
+}
 static void* sg_rc_new(size_t size, int how, const sg_kind* kind, const char* made) {
     size_t front = sg_front(how);
-    char* block = malloc(front + size);
+    char* block = sg_alloc(front + size, (size_t)how >> 2);
     if (!block) abort();
     void* p = block + front;
     *sg_rc_of(p) = (sg_rc){ 1, 1 };
-    if (how == 1) *sg_lock_of(p) = (sg_lock){ NULL, NULL };
+    if ((how & 3) == 1) *sg_lock_of(p) = (sg_lock){ NULL, NULL };
 #if SG_THREADS
-    if (how == 2 && pthread_mutex_init(&sg_mutex_of(p)->m, NULL) != 0) abort();
+    if ((how & 3) == 2 && pthread_mutex_init(&sg_mutex_of(p)->m, NULL) != 0) abort();
 #endif
 #if SG_TRACK
     sg_live* live = (sg_live*)block;
@@ -1573,9 +1633,10 @@ static inline void sg_rc_unweak(void* p, int how) {
     if (__atomic_fetch_sub(&sg_rc_of(p)->weak, 1, __ATOMIC_RELEASE) != 1) return;
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
 #if SG_THREADS
-    if (how == 2) pthread_mutex_destroy(&sg_mutex_of(p)->m);
+    if ((how & 3) == 2) pthread_mutex_destroy(&sg_mutex_of(p)->m);
 #endif
-    free((char*)p - sg_front(how));
+    if (how >> 2) sg_aligned_free((char*)p - sg_front(how));
+    else free((char*)p - sg_front(how));
 }
 /* `share w`: an owner while one is left, otherwise `null`. */
 static inline void* sg_rc_upgrade(void* p) {
@@ -2526,7 +2587,7 @@ static void sg_clock_put(sg_delay* d, int64_t ms, const char* loc) {
     }
     d->due = sg_now() + ms * 1000000;
     d->order = sg_clock_order++;
-    if (sg_heap_len == sg_heap_cap) sg_heap = sg_grow(sg_heap, &sg_heap_cap, sizeof *sg_heap);
+    if (sg_heap_len == sg_heap_cap) sg_heap = sg_grow(sg_heap, &sg_heap_cap, sizeof *sg_heap, _Alignof(__typeof__(*sg_heap)));
     sg_heap_set(sg_heap_len, d);
     sg_heap_len++;
     sg_heap_up(sg_heap_len - 1);
@@ -4513,7 +4574,7 @@ static int sg_fs_list(sg_str path, sg_fs_entry** out, int64_t* count) {
             struct stat info;
             kind = fstatat(dirfd(folder), d, &info, AT_SYMLINK_NOFOLLOW) == 0 ? sg_fs_kind(info.st_mode) : 3;
         }
-        if (n == cap) entries = sg_grow(entries, &cap, sizeof *entries);
+        if (n == cap) entries = sg_grow(entries, &cap, sizeof *entries, _Alignof(__typeof__(*entries)));
         int64_t len = (int64_t)strlen(d);
         char* copy = malloc((size_t)len + 1);
         if (!copy) abort();
@@ -5700,7 +5761,8 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     // Every struct and enum is named first, so that a type can point at itself or at a later
     // one. Then the types themselves, each after the types it holds by value.
     for decl in &prog.structs {
-        let _ = writeln!(emitter.types, "typedef struct S_{0} S_{0};", cname(&decl.name));
+        let kind = if decl.layout.union { "union" } else { "struct" };
+        let _ = writeln!(emitter.types, "typedef {kind} S_{0} S_{0};", cname(&decl.name));
     }
     for decl in &prog.enums {
         let _ = writeln!(emitter.types, "typedef struct E_{0} E_{0};", cname(&decl.name));
@@ -6362,6 +6424,12 @@ fn held_how<'t>(inner: &'t Ty, checked: bool, made: &mut HashSet<String>) -> (&'
     }
 }
 
+/// Whether a field is copied out before a helper is given its address: a bit field has none,
+/// and a field of a `packed` struct may lie where its type is not reached through a pointer.
+fn copied(decl: &StructDecl, field: &FieldDecl) -> bool {
+    decl.layout.packed.is_some() || field.bits.is_some()
+}
+
 /// A full name inside a C name. A name of the root is written as it is. A name of a module has
 /// each folder in front, with its length: `shop.parts.Part` is `4shop_5parts_Part`. No name
 /// of the root starts with a digit, so the two never meet, and the lengths keep two modules
@@ -6397,7 +6465,7 @@ fn may_leave(expr: &Expr) -> bool {
         ExprKind::Try { .. } | ExprKind::Return(_) | ExprKind::Match { .. } => true,
         ExprKind::Await(inner) | ExprKind::Unsafe(inner) | ExprKind::RawCast { expr: inner, .. } => may_leave(inner),
         ExprKind::Allocate { args, .. } => any(&mut args.iter()),
-        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } => false,
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::SizeOf { .. } => false,
         ExprKind::Array { args, items, .. } => any(&mut args.iter().chain(items.iter().flatten())),
         ExprKind::AsSlice(inner) => may_leave(inner),
         ExprKind::Field { recv: inner, .. }
@@ -7065,7 +7133,7 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(self.glue, "static inline {list} sg_move_{name}({list}* v) {{ {list} out = *v; *v = ({list}){{ 0 }}; return out; }}");
         let _ = writeln!(
             self.glue,
-            "static inline void sg_add_{name}({list}* v, {held} item) {{ if (__builtin_expect(v->len == v->cap, 0)) v->ptr = sg_grow(v->ptr, &v->cap, sizeof({held})); v->ptr[v->len++] = item; sg_group_add(&v->group, &item->head); }}"
+            "static inline void sg_add_{name}({list}* v, {held} item) {{ if (__builtin_expect(v->len == v->cap, 0)) v->ptr = sg_grow(v->ptr, &v->cap, sizeof({held}), _Alignof({held})); v->ptr[v->len++] = item; sg_group_add(&v->group, &item->head); }}"
         );
         self.sigs.insert(format!("sg_add_{name}"), vec![item.clone()]);
         // What the tasks gave, as a list in the order of theirs.
@@ -7078,7 +7146,7 @@ impl<'a> Emitter<'a> {
                 (
                     values_c.clone(),
                     format!("sg_add_{values_name}(&out, sg_wait_{task}(v->ptr[i]));"),
-                    format!("{values_c} out = {{ 0 }}; if (v->len) out.ptr = sg_reserve(NULL, &out.cap, v->len, sizeof(*out.ptr)); "),
+                    format!("{values_c} out = {{ 0 }}; if (v->len) out.ptr = sg_reserve(NULL, &out.cap, v->len, sizeof(*out.ptr), _Alignof(__typeof__(*out.ptr))); "),
                 )
             }
         };
@@ -7150,7 +7218,7 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(self.glue_protos, "static inline void sg_drop_{name}({target}** v);");
                 let _ = writeln!(
                     self.glue,
-                    "static inline {target}* sg_new_{name}({target} value) {{\n    {target}* p = malloc(sizeof({target}));\n    if (!p) abort();\n    *p = value;\n    return p;\n}}"
+                    "static inline {target}* sg_new_{name}({target} value) {{\n    {target}* p = sg_alloc(sizeof({target}), _Alignof({target}));\n    if (!p) abort();\n    *p = value;\n    return p;\n}}"
                 );
                 let _ = writeln!(self.glue, "static inline {target}* sg_move_{name}({target}** v) {{ {target}* out = *v; *v = NULL; return out; }}");
                 // A struct with one pointer to its own kind is a chain: it is freed in a loop,
@@ -7190,6 +7258,8 @@ impl<'a> Emitter<'a> {
                 self.made.insert("shared".to_string());
                 let (inner, checked) = held_how(inner, *checked, &mut self.made);
                 let target = self.ctype(inner, span)?;
+                // A value aligned beyond 16 bytes: its alignment goes with `how`.
+                let checked = format!("({checked} | (_Alignof({target}) > 16 ? (int)_Alignof({target}) << 2 : 0))");
                 let drop_inner = match self.droppable(inner) {
                     true => format!("sg_drop_{}(p); ", mangle(inner).expect("it has a C type")),
                     false => String::new(),
@@ -7213,6 +7283,8 @@ impl<'a> Emitter<'a> {
                 self.made.insert("shared".to_string());
                 let (inner, checked) = held_how(inner, *checked, &mut self.made);
                 let target = self.ctype(inner, span)?;
+                // A value aligned beyond 16 bytes: its alignment goes with `how`.
+                let checked = format!("({checked} | (_Alignof({target}) > 16 ? (int)_Alignof({target}) << 2 : 0))");
                 let _ = writeln!(self.glue_protos, "static inline {target}* sg_move_{name}({target}** v);");
                 let _ = writeln!(self.glue_protos, "static inline void sg_drop_{name}({target}** v);");
                 let _ = writeln!(self.glue, "static inline {target}* sg_move_{name}({target}** v) {{ {target}* out = *v; *v = NULL; return out; }}");
@@ -7392,7 +7464,7 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(self.glue, "static inline {list} sg_move_{name}({list}* v) {{ {list} out = *v; *v = ({list}){{ 0 }}; return out; }}");
                 let _ = writeln!(
                     self.glue,
-                    "static inline void sg_add_{name}({list}* v, {held} item) {{ if (__builtin_expect(v->len == v->cap, 0)) v->ptr = sg_grow(v->ptr, &v->cap, sizeof({held})); v->ptr[v->len++] = item; }}"
+                    "static inline void sg_add_{name}({list}* v, {held} item) {{ if (__builtin_expect(v->len == v->cap, 0)) v->ptr = sg_grow(v->ptr, &v->cap, sizeof({held}), _Alignof({held})); v->ptr[v->len++] = item; }}"
                 );
                 // An item, as the place it is in. The index is checked in every build.
                 let _ = writeln!(
@@ -7735,6 +7807,21 @@ impl<'a> Emitter<'a> {
         })
     }
 
+    /// The width and the type of the bit field a place is, if it is an integer one.
+    fn bit_field(&self, place: &Expr) -> Option<(u64, IntTy)> {
+        let ExprKind::Field { recv, index, .. } = &place.kind else { return None };
+        let mut ty = recv.ty.strip_borrow();
+        while let Some(inner) = pointee(ty) {
+            ty = inner;
+        }
+        let Ty::Struct(name) = ty else { return None };
+        let field = &self.structs.get(name.as_str())?.fields[*index];
+        match (field.bits, &place.ty) {
+            (Some((width, _)), Ty::Int(int)) => Some((width, *int)),
+            _ => None,
+        }
+    }
+
     /// Whether a value of this type owns something that is freed when it ends.
     fn droppable(&self, ty: &Ty) -> bool {
         match ty {
@@ -7917,7 +8004,13 @@ impl<'a> Emitter<'a> {
                     for (position, field) in decl.fields.iter().enumerate() {
                         let field_ty = self.written(&field.ty)?;
                         let text = format!("{}{} = ", if position == 0 { "" } else { ", " }, field.name);
-                        let _ = write!(body, " {} {}", put_text(&text), self.show_at(&field_ty, &format!("v->m_{}", field.name), span)?);
+                        // A bit field has no address, and a field of a `packed` struct may lie
+                        // where its type cannot be reached through a pointer: a copy of it is.
+                        let shown = match copied(decl, field) {
+                            true => format!("{{ {} f = v->m_{}; {} }}", self.ctype(&field_ty, span)?, field.name, self.show_at(&field_ty, "f", span)?),
+                            false => self.show_at(&field_ty, &format!("v->m_{}", field.name), span)?,
+                        };
+                        let _ = write!(body, " {} {shown}", put_text(&text));
                     }
                     body.push_str(" sg_put(out, \" }\", 2);");
                 }
@@ -8044,7 +8137,16 @@ impl<'a> Emitter<'a> {
                 let decl: &'a StructDecl = self.structs[owner.as_str()];
                 for field in &decl.fields {
                     let field_ty = self.written(&field.ty)?;
-                    let _ = write!(body, "if (!{}) return false; ", self.same_at(&field_ty, &format!("a->m_{}", field.name), &format!("b->m_{}", field.name), span)?);
+                    match copied(decl, field) {
+                        true => {
+                            let held = self.ctype(&field_ty, span)?;
+                            let same = self.same_at(&field_ty, "fa", "fb", span)?;
+                            let _ = write!(body, "{{ {held} fa = a->m_{0}, fb = b->m_{0}; if (!{same}) return false; }} ", field.name);
+                        }
+                        false => {
+                            let _ = write!(body, "if (!{}) return false; ", self.same_at(&field_ty, &format!("a->m_{}", field.name), &format!("b->m_{}", field.name), span)?);
+                        }
+                    }
                 }
                 body.push_str("return true;");
             }
@@ -8258,7 +8360,14 @@ impl<'a> Emitter<'a> {
                 let decl: &'a StructDecl = self.structs[owner.as_str()];
                 for field in &decl.fields {
                     let field_ty = self.written(&field.ty)?;
-                    let _ = write!(body, "h = {}(&v->m_{}, h); ", self.hasher(&field_ty, span)?, field.name);
+                    match copied(decl, field) {
+                        true => {
+                            let _ = write!(body, "{{ {} f = v->m_{}; h = {}(&f, h); }} ", self.ctype(&field_ty, span)?, field.name, self.hasher(&field_ty, span)?);
+                        }
+                        false => {
+                            let _ = write!(body, "h = {}(&v->m_{}, h); ", self.hasher(&field_ty, span)?, field.name);
+                        }
+                    }
                 }
                 body.push_str("return h;");
             }
@@ -8438,7 +8547,7 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(
                     self.glue,
                     "static inline void {helper}({list_c}* v, {window} items) {{ if (items.len == 0) return; \
-                     if (items.len > v->cap - v->len) v->ptr = sg_reserve(v->ptr, &v->cap, v->len + items.len, sizeof({held})); \
+                     if (items.len > v->cap - v->len) v->ptr = sg_reserve(v->ptr, &v->cap, v->len + items.len, sizeof({held}), _Alignof({held})); \
                      memcpy(v->ptr + v->len, items.ptr, (size_t)items.len * sizeof({held})); v->len += items.len; }}"
                 );
                 self.sigs.insert(helper.clone(), vec![Ty::Read(Box::new(slice))]);
@@ -8521,14 +8630,29 @@ impl<'a> Emitter<'a> {
         // A field that borrows is a pointer (or, for text, a pointer and a length) to what
         // someone else owns: it is never freed here. The checker has seen that it does not
         // outlive its owner.
-        for field in &decl.fields {
+        // `uint _ : 4`: bits C leaves empty, before the field they are written in front of.
+        let mut gaps: Vec<(usize, String)> = Vec::new();
+        for gap in &decl.layout.gaps {
+            let ty = self.written(&gap.ty)?;
+            gaps.push((gap.before, format!("    {} : {};\n", self.ctype(&ty, gap.ty.span)?, gap.bits)));
+        }
+        let gaps_before = |at: usize| gaps.iter().filter(|(before, _)| *before == at).map(|(_, text)| text.as_str()).collect::<String>();
+        for (position, field) in decl.fields.iter().enumerate() {
             let ty = self.written(&field.ty)?;
             let mut held = Vec::new();
             held_types(&ty, &mut held);
             for inner in held {
                 self.type_decl(inner, done)?;
             }
-            let _ = writeln!(fields, "    {} m_{};", self.ctype(&ty, field.ty.span)?, field.name);
+            fields.push_str(&gaps_before(position));
+            match field.bits {
+                Some((width, _)) => {
+                    let _ = writeln!(fields, "    {} m_{} : {width};", self.ctype(&ty, field.ty.span)?, field.name);
+                }
+                None => {
+                    let _ = writeln!(fields, "    {} m_{};", self.ctype(&ty, field.ty.span)?, field.name);
+                }
+            }
             if self.droppable(&ty) {
                 let place = format!("v->m_{}", field.name);
                 let _ = writeln!(drops, "    {}", self.drop_of(&ty, &place));
@@ -8543,7 +8667,18 @@ impl<'a> Emitter<'a> {
             drops.insert_str(0, &format!("    if (v->sg_gone) return;\n    v->sg_gone = 1;\n    f_{name}_dispose(v);\n"));
             let _ = writeln!(forgets, "    v->sg_gone = 1;");
         }
-        let _ = writeln!(self.types, "struct S_{name} {{\n{fields}}};");
+        fields.push_str(&gaps_before(decl.fields.len()));
+        // A union, `align(N)` and `packed`, as every compiler of C reads them.
+        let kind = if decl.layout.union { "union" } else { "struct" };
+        let aligned = decl.layout.align.map(|(align, _)| format!(" SG_ALIGNED({align})")).unwrap_or_default();
+        match decl.layout.packed {
+            Some(_) => {
+                let _ = writeln!(self.types, "#pragma pack(push, 1)\n{kind}{aligned} S_{name} {{\n{fields}}};\n#pragma pack(pop)");
+            }
+            None => {
+                let _ = writeln!(self.types, "{kind}{aligned} S_{name} {{\n{fields}}};");
+            }
+        }
         // What frees the struct, and what takes it out of a place and leaves that place empty.
         if !drops.is_empty() {
             let _ = writeln!(self.glue_protos, "static inline void sg_drop_S_{name}(S_{name}* v);\nstatic inline S_{name} sg_move_S_{name}(S_{name}* v);");
@@ -8883,7 +9018,7 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(bodies, "static bool a_run_{name}(sg_task* t) {{ {job}* j = ({job}*)t; if (!a_poll_{name}(&j->frame)) return false;{result} return true; }}");
         let _ = writeln!(
             bodies,
-            "{start} {{\n    {job}* j = malloc(sizeof *j);\n    if (!j) abort();\n    a_init_{name}(&j->frame{gives});\n    sg_job_start(&j->base.head, a_run_{name}, site->name, site->at);\n    return &j->base;\n}}"
+            "{start} {{\n    {job}* j = sg_alloc(sizeof *j, _Alignof({job}));\n    if (!j) abort();\n    a_init_{name}(&j->frame{gives});\n    sg_job_start(&j->base.head, a_run_{name}, site->name, site->at);\n    return &j->base;\n}}"
         );
         bodies.push_str(&defines);
         let _ = writeln!(bodies, "{poll} {{");
@@ -9338,6 +9473,15 @@ impl<'a> Emitter<'a> {
                     Some(variable) => variable,
                     None => self.slot(target)?,
                 };
+                // A bit field takes only what fits its bits, in a debug build.
+                let fits = |emitter: &mut Self, value: String| match emitter.bit_field(target) {
+                    Some((width, ty)) if emitter.checked => {
+                        let loc = emitter.loc(stmt.span);
+                        format!("({})sg_bits_{}({value}, {width}, {loc})", int_ctype(ty), if ty.signed() { "s" } else { "u" })
+                    }
+                    _ => value,
+                };
+                let new = if op.is_none() { fits(self, new) } else { new };
                 self.flush_pre(&pad, out);
                 match op {
                     // The new value is ready before the old one is dropped: it may be made from it.
@@ -9361,6 +9505,7 @@ impl<'a> Emitter<'a> {
                             Ty::Float(ty) => fractional(*op, ty, &place, &new),
                             _ => return Err(not_yet(stmt.span, "this assignment")),
                         };
+                        let operation = fits(self, operation);
                         let _ = writeln!(out, "{pad}{place} = {operation};");
                     }
                 }
@@ -10679,7 +10824,7 @@ impl<'a> Emitter<'a> {
         let of = |inner: &Expr| self.effect(inner);
         let all = |list: &mut dyn Iterator<Item = &Expr>| list.map(|inner| self.effect(inner)).max().unwrap_or(Effect::Reads);
         match &expr.kind {
-            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } => Effect::Reads,
+            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::SizeOf { .. } => Effect::Reads,
             ExprKind::Field { recv: inner, .. }
             | ExprKind::New(inner)
             | ExprKind::NewShared { value: inner, .. }
@@ -11173,8 +11318,8 @@ impl<'a> Emitter<'a> {
                     "sg_fs_entry* e = NULL; int64_t n = 0; int code = sg_fs_list(a0, &e, &n); if (code) {} \
                      for (int64_t i = 0; i < n; i++) {{ int64_t bad = sg_utf8_bad((const uint8_t*)e[i].name, e[i].len); \
                      if (bad >= 0) {{ for (int64_t j = 0; j < n; j++) free(e[j].name); free(e); {} }} }} \
-                     if (n > 0) {{ if (a1->len + n > a1->cap) a1->ptr = sg_reserve(a1->ptr, &a1->cap, a1->len + n, sizeof *a1->ptr); \
-                     if (a2->len + n > a2->cap) a2->ptr = sg_reserve(a2->ptr, &a2->cap, a2->len + n, sizeof *a2->ptr); }} \
+                     if (n > 0) {{ if (a1->len + n > a1->cap) a1->ptr = sg_reserve(a1->ptr, &a1->cap, a1->len + n, sizeof *a1->ptr, _Alignof(__typeof__(*a1->ptr))); \
+                     if (a2->len + n > a2->cap) a2->ptr = sg_reserve(a2->ptr, &a2->cap, a2->len + n, sizeof *a2->ptr, _Alignof(__typeof__(*a2->ptr))); }} \
                      for (int64_t i = 0; i < n; i++) {{ a1->ptr[a1->len++] = (sg_string){{ (uint8_t*)e[i].name, e[i].len, e[i].len + 1 }}; a2->ptr[a2->len++] = e[i].kind; }} \
                      free(e); return ({gives}){{ .tag = 0 }};",
                     failed("sg_io_error(code)"),
@@ -11318,7 +11463,7 @@ impl<'a> Emitter<'a> {
                             "char host[256]; if (!sg_udp_host(a0, host)) {} \
                              struct addrinfo* list = NULL; int code = sg_net_lookup(host, \"0\", false, &list); if (code) {} \
                              int64_t n = sg_udp_found(list, NULL); \
-                             if (n > 0) {{ if (a1->len + n > a1->cap) a1->ptr = sg_reserve(a1->ptr, &a1->cap, a1->len + n, sizeof *a1->ptr); \
+                             if (n > 0) {{ if (a1->len + n > a1->cap) a1->ptr = sg_reserve(a1->ptr, &a1->cap, a1->len + n, sizeof *a1->ptr, _Alignof(__typeof__(*a1->ptr))); \
                              (void)sg_udp_found(list, a1->ptr + a1->len); a1->len += n; }} \
                              freeaddrinfo(list); return ({gives}){{ .tag = 0 }};",
                             failed("sg_io_error(SG_HOST_NOT_FOUND)"),
@@ -11331,7 +11476,7 @@ impl<'a> Emitter<'a> {
                 "sg_system_variable",
                 vec![text(), bytes()],
                 "int64_t n = 0; const char* v = sg_env_variable(a0, &n); if (!v) return false; \
-                 if (n > 0) { if (a1->len + n > a1->cap) a1->ptr = sg_reserve(a1->ptr, &a1->cap, a1->len + n, 1); memcpy(a1->ptr + a1->len, v, (size_t)n); a1->len += n; } \
+                 if (n > 0) { if (a1->len + n > a1->cap) a1->ptr = sg_reserve(a1->ptr, &a1->cap, a1->len + n, 1, 1); memcpy(a1->ptr + a1->len, v, (size_t)n); a1->len += n; } \
                  return true;"
                     .to_string(),
             ),
@@ -11739,7 +11884,7 @@ impl<'a> Emitter<'a> {
                 self.pre.push(format!("if (!sg_udp_lookup_ready(&{wait})) return false;"));
                 self.pre.push(format!(
                     "if ({wait}.state != SG_CANCELLED && !{wait}.code) {{ int64_t {wait}n = sg_udp_found({wait}.list, NULL); \
-                     if ({wait}n > 0) {{ if ({wait}o->len + {wait}n > {wait}o->cap) {wait}o->ptr = sg_reserve({wait}o->ptr, &{wait}o->cap, {wait}o->len + {wait}n, sizeof *{wait}o->ptr); \
+                     if ({wait}n > 0) {{ if ({wait}o->len + {wait}n > {wait}o->cap) {wait}o->ptr = sg_reserve({wait}o->ptr, &{wait}o->cap, {wait}o->len + {wait}n, sizeof *{wait}o->ptr, _Alignof(__typeof__(*{wait}o->ptr))); \
                      (void)sg_udp_found({wait}.list, {wait}o->ptr + {wait}o->len); {wait}o->len += {wait}n; }} freeaddrinfo({wait}.list); }}"
                 ));
                 result(self, format!(
@@ -12140,7 +12285,7 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(self.glue, "static void sg_go_{name}(sg_task* task) {{ {run}* r = ({run}*)task; {body} }}");
         let _ = writeln!(
             self.glue,
-            "static {task}* {starter}(const sg_site* site, {fctype} f{takes}) {{\n    {run}* r = malloc(sizeof *r);\n    if (!r) abort();\n    r->f = f;{puts}\n    \
+            "static {task}* {starter}(const sg_site* site, {fctype} f{takes}) {{\n    {run}* r = sg_alloc(sizeof *r, _Alignof({run}));\n    if (!r) abort();\n    r->f = f;{puts}\n    \
              sg_task_start(&r->base.head, sg_go_{name}, site->name ? site->name : sg_func_name((void (*)(void))f), site->at);\n    return &r->base;\n}}"
         );
         Ok(starter)
@@ -12349,7 +12494,13 @@ impl<'a> Emitter<'a> {
             // An item of raw memory, where it is: nothing is checked (it is written inside `unsafe`).
             ExprKind::Index { recv, index, kind: IndexKind::Raw } => {
                 let once = self.effect(index).max(self.effect(recv)) >= Effect::Acts;
-                let pointer = self.look(recv)?;
+                let mut pointer = self.look(recv)?;
+                // A debug build tests that the pointer lies where its type may.
+                if self.checked {
+                    let (held, loc) = (self.ctype(&expr.ty, expr.span)?, self.loc(expr.span));
+                    self.made.insert("raw".to_string());
+                    pointer = format!("(({held}*)sg_raw_aligned({pointer}, _Alignof({held}), {}, {loc}))", c_string(&expr.ty.to_string()));
+                }
                 let at = self.value(index)?;
                 if !once {
                     return Ok(format!("({pointer}[{at}])"));
@@ -13090,7 +13241,12 @@ impl<'a> Emitter<'a> {
                 let count = self.first(&args[0], head)?;
                 self.made.insert("raw".to_string());
                 let loc = self.loc(expr.span);
-                Ok(format!("(({ctype}*)sg_raw_alloc({count}, sizeof({ctype}), {}, {loc}))", c_string(&item.to_string())))
+                Ok(format!("(({ctype}*)sg_raw_alloc({count}, sizeof({ctype}), _Alignof({ctype}), {}, {loc}))", c_string(&item.to_string())))
+            }
+            // `Memory.sizeOf<T>()`, `Memory.alignOf<T>()`: what the compiler of C has.
+            ExprKind::SizeOf { align, of, .. } => {
+                let ctype = self.ctype(of, expr.span)?;
+                Ok(format!("(({})({}({ctype})))", int_ctype(IntTy::Nint), if *align { "_Alignof" } else { "sizeof" }))
             }
             // A borrow of a list or of an array, used as a window onto all of it.
             ExprKind::AsSlice(inner) => self.window(inner),
@@ -13255,7 +13411,17 @@ impl<'a> Emitter<'a> {
                     parts.push(self.taken(&field.value, value, &want, before, later, &mut taking)?);
                 }
                 let (values, names) = self.in_order(parts)?;
-                let inits: Vec<String> = fields.iter().zip(values).map(|(field, value)| format!(".m_{} = {value}", field.name)).collect();
+                let mut inits: Vec<String> = Vec::new();
+                for (field, value) in fields.iter().zip(values) {
+                    let value = match (decl.fields[field.index].bits, self.checked, self.written(&decl.fields[field.index].ty)?) {
+                        (Some((width, _)), true, Ty::Int(ty)) => {
+                            let loc = self.loc(field.value.span);
+                            format!("({})sg_bits_{}({value}, {width}, {loc})", int_ctype(ty), if ty.signed() { "s" } else { "u" })
+                        }
+                        _ => value,
+                    };
+                    inits.push(format!(".m_{} = {value}", field.name));
+                }
                 let made = self.handed_over(format!("((S_{}){{ {} }})", cname(name), inits.join(", ")), &expr.ty, &taking.handed, expr.span)?;
                 Ok(sequence(&names, made))
             }
@@ -13676,7 +13842,36 @@ impl<'a> Emitter<'a> {
                 Callee::Io(call) => self.io(*call, args, head, expr),
                 Callee::System(call) => self.system(*call, args, head, expr),
                 // `Memory.free(p)` is C's `free`; `Memory.copy` is `memmove` behind a test of the count.
-                Callee::Memory(MemoryCall::Free) => Ok(format!("free({})", self.first(&args[0], head)?)),
+                // A block aligned beyond 16 bytes is given back as it was made (`sg_alloc`).
+                Callee::Memory(MemoryCall::Free) => {
+                    let pointer = self.first(&args[0], head)?;
+                    match args[0].ty.strip_borrow() {
+                        Ty::Raw(item) if **item != Ty::Void => {
+                            let ctype = self.ctype(item, expr.span)?;
+                            Ok(format!("(_Alignof({ctype}) > 16 ? sg_aligned_free({pointer}) : free({pointer}))"))
+                        }
+                        _ => Ok(format!("free({pointer})")),
+                    }
+                }
+                // `Memory.readUnaligned(p)` and `Memory.writeUnaligned(p, value)`: the bytes, copied.
+                Callee::Memory(call @ (MemoryCall::ReadUnaligned | MemoryCall::WriteUnaligned)) => {
+                    let Ty::Raw(item) = args[0].ty.strip_borrow() else { unreachable!("the checker gives a raw pointer") };
+                    let ctype = self.ctype(item, expr.span)?;
+                    let mut parts = Vec::new();
+                    let mut head = head;
+                    for arg in args {
+                        let before = self.mark();
+                        let value = self.first(arg, head)?;
+                        head = false;
+                        parts.push(self.part(arg, &arg.ty, value, before));
+                    }
+                    let (values, names) = self.in_order(parts)?;
+                    let temp = self.temp();
+                    Ok(sequence(&names, match call {
+                        MemoryCall::ReadUnaligned => format!("({{ {ctype} {temp}; memcpy(&{temp}, (const unsigned char*)({}), sizeof {temp}); {temp}; }})", values[0]),
+                        _ => format!("({{ {ctype} {temp} = {}; memcpy((unsigned char*)({}), &{temp}, sizeof {temp}); }})", values[1], values[0]),
+                    }))
+                }
                 // `errno` as C has it: nothing of the runtime runs between a call of C and the
                 // statements after it that changes it.
                 Callee::Memory(MemoryCall::Errno) => Ok("((int32_t)errno)".to_string()),
@@ -13721,11 +13916,14 @@ impl<'a> Emitter<'a> {
                     let (values, names) = self.in_order(parts)?;
                     self.made.insert("raw".to_string());
                     let loc = self.loc(expr.span);
-                    Ok(sequence(&names, format!("sg_raw_copy({}, {}, {}, sizeof({ctype}), {loc})", values[0], values[1], values[2])))
+                    let align = if self.checked { format!("_Alignof({ctype})") } else { "1".to_string() };
+                    let name = c_string(&item.to_string());
+                    Ok(sequence(&names, format!("sg_raw_copy({}, {}, {}, sizeof({ctype}), {align}, {name}, {loc})", values[0], values[1], values[2])))
                 }
                 // `Memory.view(p, n)`: the pointer and the count, after the count is checked.
-                Callee::Memory(MemoryCall::View) => {
+                Callee::Memory(call @ (MemoryCall::View | MemoryCall::ViewRef)) => {
                     let Ty::Raw(item) = args[0].ty.strip_borrow() else { unreachable!("the checker gives `Memory.view` a raw pointer") };
+                    let named = if *call == MemoryCall::View { "\"Memory.view\"" } else { "\"Memory.viewRef\"" };
                     let ctype = self.ctype(item, expr.span)?;
                     let window = self.ctype(&expr.ty, expr.span)?;
                     let mut parts = Vec::new();
@@ -13740,13 +13938,34 @@ impl<'a> Emitter<'a> {
                     self.made.insert("raw".to_string());
                     let loc = self.loc(expr.span);
                     let temp = self.temp();
-                    Ok(sequence(&names, format!("({{ {ctype}* {temp} = {}; int64_t {temp}n = sg_raw_view({temp}, {}, {loc}); ({window}){{ {temp}, {temp}n }}; }})", values[0], values[1])))
+                    let align = if self.checked { format!("_Alignof({ctype})") } else { "1".to_string() };
+                    let name = c_string(&item.to_string());
+                    Ok(sequence(&names, format!("({{ {ctype}* {temp} = {}; int64_t {temp}n = sg_raw_view({temp}, {}, {align}, {named}, {name}, {loc}); ({window}){{ {temp}, {temp}n }}; }})", values[0], values[1])))
                 }
                 Callee::Stream(call) => self.stream(*call, recv, args, head, expr),
                 Callee::Net(call) => self.net(*call, recv, args, head, expr),
                 // `ulong.fromLittleEndian(bytes)`: the count is checked, then the bytes are one
                 // load. Where the window was cut with a constant width just before, the C
                 // compiler sees that the check never fails.
+                // `Header.fromBytes(bytes)`: the count is checked, then the bytes are copied.
+                Callee::StructFromBytes(owner) => {
+                    let ty = Ty::Struct(owner.clone());
+                    let fname = format!("sg_from_bytes_{}", cname(owner));
+                    let bytes = Ty::Read(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+                    let (given, held) = (self.ctype(&bytes, expr.span)?, self.ctype(&ty, expr.span)?);
+                    if self.made.insert(fname.clone()) {
+                        let what = c_string(&format!("{}.fromBytes", short_name(owner)));
+                        let _ = writeln!(
+                            self.glue,
+                            "static inline {held} {fname}({given} bytes, const char* loc) {{ \
+                             if (__builtin_expect(bytes.len != (int64_t)sizeof({held}), 0)) sg_bytes_fail({what}, (int64_t)sizeof({held}), bytes.len, loc); \
+                             {held} v; memcpy(&v, bytes.ptr, sizeof v); return v; }}"
+                        );
+                    }
+                    let value = self.value_as(&args[0], &bytes)?;
+                    let loc = self.loc(expr.span);
+                    Ok(format!("{fname}({value}, {loc})"))
+                }
                 Callee::FromBytes { ty, big } => {
                     let (bits, size) = (ty.bits(), ty.bits() / 8);
                     let fname = format!("sg_from_{}_{}", if *big { "be" } else { "le" }, int_name(*ty));

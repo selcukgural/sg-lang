@@ -1,0 +1,5 @@
+error: a field of a union is read inside `unsafe`, so it is not changed in place
+  --> error_union_compound.sg:9:5
+ 9 |     bits.word += 1
+   |     ^^^^^^^^^
+  hint: `bits.word = unsafe bits.word + ...`

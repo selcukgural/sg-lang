@@ -151,7 +151,7 @@ pub fn variadic_key(name: &str, params: &[Ty], ret: &Ty) -> String {
 }
 
 /// What calls a function of C of these types through its address, numbered `number`.
-fn through_text(params: &[Ty], ret: &Ty, number: usize, plain: &HashMap<String, Vec<Ty>>, types: &mut BTreeSet<String>, head: &mut String, text: &mut String) {
+fn through_text(params: &[Ty], ret: &Ty, number: usize, plain: &crate::raw::PlainTypes, types: &mut BTreeSet<String>, head: &mut String, text: &mut String) {
     for ty in params.iter().chain([ret]) {
         type_text(ty, plain, types, head);
     }
@@ -184,7 +184,7 @@ pub fn declared_to_c(params: &[Ty], ret: &Ty) -> bool {
 /// What C calls for an `export` function: a function of its name and types that hands the
 /// addresses of its arguments to the interpreter, numbered `number`.
 #[allow(clippy::too_many_arguments)]
-fn export_text(name: &str, params: &[Ty], ret: &Ty, number: usize, plain: &HashMap<String, Vec<Ty>>, types: &mut BTreeSet<String>, head: &mut String, text: &mut String) {
+fn export_text(name: &str, params: &[Ty], ret: &Ty, number: usize, plain: &crate::raw::PlainTypes, types: &mut BTreeSet<String>, head: &mut String, text: &mut String) {
     for ty in params.iter().chain([ret]) {
         type_text(ty, plain, types, head);
     }
@@ -258,6 +258,7 @@ impl Library {
         let (libs, files) = links(prog, &used);
         // As in compiled code: the declarations, then the C files, then what reaches into them.
         let mut head = String::from("#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n");
+        head.push_str(crate::raw::C_ALIGNED);
         head.push_str("#include <stdint.h>\n#include <errno.h>\n#ifdef __APPLE__\n#define SG_C(name) __asm__(\"_\" name)\n#else\n#define SG_C(name) __asm__(name)\n#endif\n");
         // The structs and the types of functions C is given or gives, each defined once.
         let mut types: BTreeSet<String> = BTreeSet::new();
@@ -505,7 +506,7 @@ fn each_expr<'p>(prog: &'p Program, tests: bool, each: &mut dyn FnMut(&'p crate:
 /// at, and a struct is the one `struct_text` writes.
 fn c_type(ty: &Ty) -> String {
     match ty {
-        Ty::Struct(name) => format!("struct sg_s_{}", c_struct_name(name)),
+        Ty::Struct(name) => format!("sg_s_{}", c_struct_name(name)),
         Ty::CFunc(..) => format!("sg_ft_{}", func_type_name(ty)),
         Ty::Char => "uint32_t".to_string(),
         other => scalar_type(other).to_string(),
@@ -532,7 +533,7 @@ fn func_type_name(ty: &Ty) -> String {
 
 /// Defines what the C type of `ty` needs, before it is used: a struct, or the type of a
 /// function of C, after those they hold.
-fn type_text(ty: &Ty, plain: &HashMap<String, Vec<Ty>>, done: &mut BTreeSet<String>, text: &mut String) {
+fn type_text(ty: &Ty, plain: &crate::raw::PlainTypes, done: &mut BTreeSet<String>, text: &mut String) {
     match ty {
         Ty::CFunc(params, ret) => {
             let name = c_type(ty);
@@ -559,7 +560,7 @@ fn c_struct_name(name: &str) -> String {
 
 /// Defines the struct `ty` is, if it is one, after those it holds, as C lays out a struct of
 /// plain data: the fields in their order, each of its C type.
-fn struct_text(ty: &Ty, plain: &HashMap<String, Vec<Ty>>, done: &mut BTreeSet<String>, text: &mut String) {
+fn struct_text(ty: &Ty, plain: &crate::raw::PlainTypes, done: &mut BTreeSet<String>, text: &mut String) {
     let item = match ty {
         Ty::Array(item, _) => item,
         other => other,
@@ -568,18 +569,11 @@ fn struct_text(ty: &Ty, plain: &HashMap<String, Vec<Ty>>, done: &mut BTreeSet<St
     if !done.insert(name.clone()) {
         return;
     }
-    let fields = &plain[name];
-    for field in fields {
+    let decl = &plain[name];
+    for field in &decl.fields {
         type_text(field, plain, done, text);
     }
-    let mut members = String::new();
-    for (at, field) in fields.iter().enumerate() {
-        match field {
-            Ty::Array(item, length) => members.push_str(&format!(" {} m{at}[{length}];", c_type(item))),
-            other => members.push_str(&format!(" {} m{at};", c_type(other))),
-        }
-    }
-    text.push_str(&format!("struct sg_s_{} {{{members} }};\n", c_struct_name(name)));
+    text.push_str(&crate::raw::c_definition(&format!("sg_s_{}", c_struct_name(name)), decl, &|ty: &Ty| c_type(ty), &|at| format!("m{at}")));
 }
 
 fn scalar_type(ty: &Ty) -> &'static str {

@@ -1,0 +1,8 @@
+// A union is not compared by its fields.
+union Bits : Equatable {
+    uint word
+    float number
+}
+
+void main() {
+}

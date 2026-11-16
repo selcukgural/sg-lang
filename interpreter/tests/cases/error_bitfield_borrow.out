@@ -1,0 +1,5 @@
+error: a bit field is not lent: it has no address of its own
+  --> error_bitfield_borrow.sg:13:14
+ 13 |     bump(ref flags.version)
+    |              ^^^^^^^^^^^^^
+  hint: copy it out: `var part = flags.version`

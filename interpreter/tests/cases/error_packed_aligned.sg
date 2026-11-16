@@ -1,0 +1,12 @@
+// A `packed` struct holds no type written with `align(N)`.
+align(16) struct Block {
+    long a
+}
+
+packed struct Header {
+    byte kind
+    Block block
+}
+
+void main() {
+}

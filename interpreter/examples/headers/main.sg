@@ -1,0 +1,130 @@
+// Binary headers read as C lays them out: a BMP file header, which is `packed` (its `uint`
+// fields lie at bytes 2 and 10), and an IPv4 header, whose first byte holds two numbers of four
+// bits each and whose addresses are a union of a number and four bytes. `fromBytes` reads each
+// out of the bytes as they are, with no `unsafe`. The C file beside the program declares the
+// same headers as C does, and C reads what SG wrote into memory.
+// Run it with `sg examples/headers/main.sg`, its tests with `sg test examples/headers`.
+extern "./native.c" {
+    nint c_size(int which)
+    uint c_bmp_offset(raw void header)
+    int c_ip_version(raw void header)
+    uint c_ip_source(raw void header)
+}
+
+packed struct BmpFileHeader : Copyable, Formattable {
+    ushort kind
+    uint fileSize
+    ushort reserved1
+    ushort reserved2
+    uint dataOffset
+}
+
+struct BmpInfoHeader : Copyable, Formattable {
+    uint headerSize
+    int width
+    int height
+    ushort planes
+    ushort bitsPerPixel
+    uint compression
+    uint imageSize
+    int xPixelsPerMeter
+    int yPixelsPerMeter
+    uint colorsUsed
+    uint colorsImportant
+}
+
+// An address of IPv4, as its four bytes or as one number that holds them.
+union Address : Copyable {
+    uint value
+    byte[4] octets
+}
+
+// The header of an IPv4 packet. On the machines the language runs on the bits of a byte are
+// laid out from the lowest one, so the length of the header comes before the version.
+struct Ipv4 : Copyable {
+    byte headerLength : 4
+    byte version : 4
+    byte service
+    ushort totalLength
+    ushort id
+    ushort fragment
+    byte timeToLive
+    byte protocol
+    ushort checksum
+    Address source
+    Address target
+}
+
+string dotted(Address address) {
+    var octets = unsafe address.octets
+    return $"{octets[0]}.{octets[1]}.{octets[2]}.{octets[3]}".toString()
+}
+
+string protocolName(byte protocol) {
+    return match protocol {
+        1 => "ICMP"
+        6 => "TCP"
+        17 => "UDP"
+        _ => "other"
+    }
+}
+
+void main() {
+    // The first 54 bytes of a BMP file of 2 by 2 pixels, 24 bits each.
+    var bmp = List<byte> {
+        0x42, 0x4d, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00, 0x00,
+        0x28, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00,
+        0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x13, 0x0b, 0x00, 0x00,
+        0x13, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    }
+    var file = BmpFileHeader.fromBytes(bmp[..14])
+    var info = BmpInfoHeader.fromBytes(bmp[14..54])
+    print(file)
+    print($"{info.width} x {info.height} pixels, {info.bitsPerPixel} bits each, the pixels at byte {file.dataOffset}")
+
+    // The header of a UDP packet from 192.168.1.10 to 8.8.8.8, as it went over the wire.
+    var packet = List<byte> {
+        0x45, 0x00, 0x00, 0x3c, 0x1c, 0x46, 0x40, 0x00, 0x40, 0x11,
+        0xb1, 0xe6, 0xc0, 0xa8, 0x01, 0x0a, 0x08, 0x08, 0x08, 0x08
+    }
+    var ip = Ipv4.fromBytes(read packet)
+    // The numbers of more than one byte go over the wire with the highest byte first.
+    var length = ushort.fromBigEndian(packet[2..4])
+    print($"IPv{ip.version}, a header of {ip.headerLength * 4} bytes, {length} bytes in all")
+    print($"{protocolName(ip.protocol)} from {dotted(ip.source)} to {dotted(ip.target)}, {ip.timeToLive} hops to live")
+    print($"the source as one number: {unsafe ip.source.value:x8}")
+
+    // C reads what SG wrote into memory, laid out as C lays it out.
+    print(unsafe c_size(0) == Memory.sizeOf<BmpFileHeader>() && unsafe c_size(1) == Memory.sizeOf<Ipv4>())
+    unsafe {
+        var files = Memory.allocate<BmpFileHeader>(1)
+        var ips = Memory.allocate<Ipv4>(1)
+        files[0] = file
+        ips[0] = ip
+        print(c_bmp_offset((raw void)files) == file.dataOffset)
+        print(c_ip_version((raw void)ips) == (int)ip.version)
+        print(c_ip_source((raw void)ips) == ip.source.value)
+        Memory.free(ips)
+        Memory.free(files)
+    }
+}
+
+test "a BMP file header has no padding" {
+    assert(Memory.sizeOf<BmpFileHeader>() == 14)
+    assert(Memory.alignOf<BmpFileHeader>() == 1)
+}
+
+test "the length of the header and the version share the first byte" {
+    var bytes = byte[20]
+    bytes[0] = 0x46
+    var ip = Ipv4.fromBytes(bytes[..])
+    assert(ip.version == 4)
+    assert(ip.headerLength == 6)
+}
+
+test "an address is the four bytes of its number" {
+    var address = Address { octets = byte[4] { 10, 0, 0, 1 } }
+    assert(unsafe address.value == 0x0100000a)
+    address.value = 0x08080808
+    assert(dotted(address) == "8.8.8.8")
+}

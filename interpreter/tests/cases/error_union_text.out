@@ -1,0 +1,5 @@
+error: a union holds plain data, and `string` is not
+  plain data is numbers, `bool`, `char`, raw pointers, `CFunc`, and arrays, structs and unions of them: what C lays out
+  --> error_union_text.sg:3:5
+ 3 |     string text
+   |     ^^^^^^

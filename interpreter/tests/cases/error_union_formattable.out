@@ -1,0 +1,6 @@
+error: union `Bits` cannot be `Formattable`
+  a union does not know which of its fields it holds, so its text is not made from them
+  --> error_union_formattable.sg:2:14
+ 2 | union Bits : Formattable {
+   |              ^^^^^^^^^^^
+  hint: write its own `void format(read this, ref Formatter f)`, which reads the field it holds inside `unsafe`

@@ -1,0 +1,10 @@
+// A union is built with one of its fields, not with none.
+union Bits {
+    uint word
+    float number
+}
+
+void main() {
+    var bits = Bits { }
+    print(unsafe bits.word)
+}

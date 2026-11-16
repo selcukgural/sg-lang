@@ -1,0 +1,8 @@
+// A union holds plain data.
+union Name {
+    string text
+    int code
+}
+
+void main() {
+}

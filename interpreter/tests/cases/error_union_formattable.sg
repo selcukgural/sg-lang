@@ -1,0 +1,8 @@
+// A union that is `Formattable` writes its own `format`.
+union Bits : Formattable {
+    uint word
+    float number
+}
+
+void main() {
+}

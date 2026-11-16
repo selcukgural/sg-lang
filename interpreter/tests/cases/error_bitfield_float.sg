@@ -1,0 +1,7 @@
+// A bit field is an integer or a `bool`.
+struct Flags {
+    float ratio : 8
+}
+
+void main() {
+}

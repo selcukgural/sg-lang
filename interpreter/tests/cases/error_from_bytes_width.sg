@@ -1,0 +1,11 @@
+// `fromBytes` reads exactly as many bytes as the struct takes.
+struct Pair {
+    int low
+    int high
+}
+
+void main() {
+    var bytes = byte[16]
+    var pair = Pair.fromBytes(bytes[0..4])
+    print(pair.low)
+}

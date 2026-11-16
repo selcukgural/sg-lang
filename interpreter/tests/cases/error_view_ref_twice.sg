@@ -1,0 +1,11 @@
+// A window that writes borrows the variable of its pointer as `ref`: one at a time.
+void main() {
+    unsafe {
+        var block = Memory.allocate<byte>(8)
+        var first = Memory.viewRef(block, 4)
+        var second = Memory.viewRef(block, 4)
+        first[0] = 1
+        second[0] = 2
+        Memory.free(block)
+    }
+}

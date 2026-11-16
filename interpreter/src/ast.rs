@@ -16,7 +16,7 @@ pub struct Program {
     /// The types of the fields of each struct that holds only plain data (numbers, `bool`,
     /// `char`, raw pointers, and arrays and structs of them), in the order they are declared:
     /// what lies in raw memory, laid out as C lays it out. Filled in by the checker.
-    pub plain: std::collections::HashMap<String, Vec<Ty>>,
+    pub plain: crate::raw::PlainTypes,
     /// What each function of C takes and gives, under its full name. Filled in by the checker.
     pub foreign: std::collections::HashMap<String, (Vec<Ty>, Ty)>,
     /// The variables of C declared in `extern` blocks (`extern { int opterr }`).
@@ -89,6 +89,30 @@ pub struct StructDecl {
     /// Declared without a body in an `extern` block: a type of C whose insides SG does not
     /// see, used only behind a raw pointer (`raw sqlite3`).
     pub opaque: bool,
+    /// How C lays it out: `union`, `packed`, `align(N)`, and the bits left empty.
+    pub layout: LayoutDecl,
+}
+
+/// What a struct says about how C lays it out, beyond the types of its fields.
+#[derive(Default)]
+pub struct LayoutDecl {
+    /// Written `union Bits { ... }`: every field starts where the value starts.
+    pub union: bool,
+    /// Written `packed struct Header { ... }`: no padding, an alignment of 1.
+    pub packed: Option<Span>,
+    /// Written `align(64) struct Slot { ... }`: at least that alignment.
+    pub align: Option<(u64, Span)>,
+    /// `uint _ : 4`: bits C leaves empty, before the field at `before` (the count of fields
+    /// for those after the last one).
+    pub gaps: Vec<Gap>,
+}
+
+/// `uint _ : 4`, or `uint _ : 0`, which starts the next field at a new unit of its type.
+pub struct Gap {
+    pub before: usize,
+    pub ty: TypeExpr,
+    pub bits: u64,
+    pub span: Span,
 }
 
 impl StructDecl {
@@ -124,6 +148,8 @@ pub struct FieldDecl {
     pub ty: TypeExpr,
     pub name: String,
     pub span: Span,
+    /// `uint version : 4`: a field of that many bits, as C has it.
+    pub bits: Option<(u64, Span)>,
 }
 
 pub struct Func {
@@ -227,6 +253,9 @@ pub enum Callee {
     /// `ulong.fromLittleEndian(bytes)`, `ushort.fromBigEndian(bytes)`: the integer that exactly
     /// as many bytes as the type takes write, the first byte the lowest (or the highest).
     FromBytes { ty: IntTy, big: bool },
+    /// `Header.fromBytes(bytes)`: a struct or a union of plain data that every pattern of bits
+    /// is a value of, out of exactly as many bytes as it takes, as they lie in memory.
+    StructFromBytes(String),
     /// `File.readText(path)`, `File.openText(path)` and the other functions of `File`.
     Io(IoCall),
     /// `File.readTextAsync(path)` and the other async functions of `File`: a task that gives
@@ -305,6 +334,12 @@ pub enum MemoryCall {
     AddressOf,
     /// `Memory.view(p, count)`: a `read T[]` that looks at `count` items from `p`.
     View,
+    /// `Memory.viewRef(p, count)`: a `ref T[]` that writes the `count` items from `p`.
+    ViewRef,
+    /// `Memory.readUnaligned(p)`: the item at `p`, which may lie at any address.
+    ReadUnaligned,
+    /// `Memory.writeUnaligned(p, value)`: writes the item at `p`, which may lie at any address.
+    WriteUnaligned,
 }
 
 /// The functions of a `CancellationSource` and a `CancellationToken`.
@@ -708,6 +743,9 @@ pub enum ExprKind {
     /// `Memory.allocate<T>(n)`: room for `n` items of `T`, all zero, as a `raw T`. `args` holds
     /// what was written between the parentheses.
     Allocate { item: TypeExpr, args: Vec<Expr> },
+    /// `Memory.sizeOf<T>()`, or with `align` `Memory.alignOf<T>()`: a `nint` known when the
+    /// program is compiled. The checker fills in `ty` with the type it names.
+    SizeOf { item: TypeExpr, align: bool, of: Ty },
     /// `(raw byte)p`: a raw pointer read as a pointer to another type.
     RawCast { ty: TypeExpr, expr: Box<Expr> },
     /// The address of a variable of C, by its full name, as a `raw T`: the checker turns a use

@@ -1,0 +1,11 @@
+// A field of a union is not changed in place: that reads it first.
+union Bits {
+    uint word
+    float number
+}
+
+void main() {
+    var bits = Bits { word = 1 }
+    bits.word += 1
+    print(unsafe bits.word)
+}

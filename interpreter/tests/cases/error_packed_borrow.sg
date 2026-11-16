@@ -1,0 +1,14 @@
+// A field of a `packed` struct is not lent: it may lie where its type cannot be reached.
+packed struct Header {
+    byte kind
+    uint size
+}
+
+void show(read uint size) {
+    print(size)
+}
+
+void main() {
+    var header = Header { kind = 1, size = 2 }
+    show(read header.size)
+}

@@ -1,0 +1,14 @@
+// In a release build a bit field keeps the lowest bits of what it is given, as C does.
+struct Flags {
+    uint version : 4
+    int delta : 3
+}
+
+void main() {
+    uint big = 20
+    var flags = Flags { version = 1, delta = 0 }
+    flags.version = big
+    print(flags.version)
+    flags.delta += 5
+    print(flags.delta)
+}

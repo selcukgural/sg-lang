@@ -1,0 +1,5 @@
+error: `align(2)` asks for less than the 8 bytes its fields ask for
+  `align(N)` makes the alignment larger; `packed` makes it 1
+  --> error_align_lower.sg:2:1
+ 2 | align(2) struct Slot {
+   | ^^^^^^^^

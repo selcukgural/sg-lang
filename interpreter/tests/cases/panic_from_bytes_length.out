@@ -1,0 +1,5 @@
+2
+panic: `Pair.fromBytes` reads 8 bytes, and it was given 9
+  --> panic_from_bytes_length.sg:11:9
+ 11 |     _ = Pair.fromBytes(read bytes)
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^

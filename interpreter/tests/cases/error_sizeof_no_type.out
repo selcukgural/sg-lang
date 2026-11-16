@@ -1,0 +1,5 @@
+error: `Memory.sizeOf` names the type it measures
+  --> error_sizeof_no_type.sg:3:18
+ 3 |     print(Memory.sizeOf())
+   |                  ^^^^^^
+  hint: `Memory.sizeOf<int>()`

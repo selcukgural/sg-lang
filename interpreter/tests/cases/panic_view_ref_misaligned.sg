@@ -1,0 +1,10 @@
+// A window lies where its items may.
+void main() {
+    unsafe {
+        var block = Memory.allocate<byte>(16)
+        var words = (raw int)(block + 1)
+        var window = Memory.viewRef(words, 2)
+        window[0] = 1
+        Memory.free(block)
+    }
+}

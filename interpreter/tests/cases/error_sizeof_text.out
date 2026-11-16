@@ -1,0 +1,5 @@
+error: `Memory.sizeOf` takes a type of plain data, and `string` is not
+  plain data is laid out as C lays it out, so its size is that of C; the size of another value is not part of the language
+  --> error_sizeof_text.sg:3:25
+ 3 |     print(Memory.sizeOf<string>())
+   |                         ^^^^^^

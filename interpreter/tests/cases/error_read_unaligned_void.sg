@@ -1,0 +1,9 @@
+// `Memory.readUnaligned` reads a type it knows.
+void main() {
+    unsafe {
+        var block = Memory.allocate<byte>(8)
+        var at = (raw void)block
+        print(Memory.readUnaligned(at))
+        Memory.free(block)
+    }
+}

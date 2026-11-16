@@ -1,0 +1,6 @@
+error: union `Bits` cannot be `Equatable`
+  a union does not know which of its fields it holds, so it is not compared by them
+  --> error_union_equatable.sg:2:14
+ 2 | union Bits : Equatable {
+   |              ^^^^^^^^^
+  hint: read the field it holds inside `unsafe` and compare that

@@ -1,0 +1,7 @@
+// A bit field with a name has at least 1 bit.
+struct Flags {
+    uint version : 0
+}
+
+void main() {
+}

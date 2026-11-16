@@ -1,0 +1,6 @@
+error: `Entry.fromBytes` takes any bytes, and `Entry` holds a `bool`, which not every pattern of bits is
+  a `bool` is 0 or 1
+  --> error_from_bytes_bool.sg:9:23
+ 9 |     var entry = Entry.fromBytes(read bytes)
+   |                       ^^^^^^^^^
+  hint: read the bytes into a struct of integers, and make the field of it from one

@@ -1,0 +1,12 @@
+// A block is given back through a pointer to the type it was made for: Windows gives a block
+// aligned beyond 16 bytes back in its own way.
+align(64) struct Slot {
+    long count
+}
+
+void main() {
+    unsafe {
+        var slots = Memory.allocate<Slot>(2)
+        Memory.free((raw byte)slots)
+    }
+}

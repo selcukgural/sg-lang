@@ -1,0 +1,4 @@
+error: 16 does not fit in a bit field of 4 bit(s), which holds 0 to 15
+  --> error_bitfield_constant.sg:8:21
+ 8 |     flags.version = 16
+   |                     ^^

@@ -1,0 +1,9 @@
+// A signed bit field of 3 bits holds -4 to 3.
+struct Flags {
+    int delta : 3
+}
+
+void main() {
+    var flags = Flags { delta = -5 }
+    print(flags.delta)
+}

@@ -1,0 +1,10 @@
+// An item of raw memory lies where its type may; `Memory.readUnaligned` reads one anywhere.
+void main() {
+    unsafe {
+        var block = Memory.allocate<byte>(16)
+        var word = (raw uint)(block + 2)
+        print(Memory.readUnaligned(word))
+        print(word[0])
+        Memory.free(block)
+    }
+}

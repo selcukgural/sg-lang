@@ -1,0 +1,5 @@
+error: a `bool` has 1 bit(s), and this asks for 2
+  a `bool` bit field takes 1 bit
+  --> error_bitfield_bool_wide.sg:3:16
+ 3 |     bool ready : 2
+   |                ^^^

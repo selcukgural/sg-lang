@@ -1,0 +1,4 @@
+error: `Pair.fromBytes` reads 8 bytes, and this window has 4
+  --> error_from_bytes_width.sg:9:31
+ 9 |     var pair = Pair.fromBytes(bytes[0..4])
+   |                               ^^^^^^^^^^^

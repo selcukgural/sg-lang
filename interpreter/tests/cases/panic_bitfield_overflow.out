@@ -1,0 +1,5 @@
+14
+panic: 17 does not fit in a bit field of 4 bit(s), which holds 0 to 15
+  --> panic_bitfield_overflow.sg:12:5
+ 12 |     flags.length += 3
+    |     ^^^^^^^^^^^^^^^^^

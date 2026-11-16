@@ -1,0 +1,5 @@
+error: a bit field has at least 1 bit
+  `uint _ : 0`, without a name, starts the next field at a new unit of its type
+  --> error_bitfield_zero_named.sg:3:18
+ 3 |     uint version : 0
+   |                  ^^^

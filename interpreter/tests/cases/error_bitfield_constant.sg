@@ -1,0 +1,10 @@
+// A number written in the program that does not fit a bit field.
+struct Flags {
+    uint version : 4
+}
+
+void main() {
+    var flags = Flags { version = 4 }
+    flags.version = 16
+    print(flags.version)
+}

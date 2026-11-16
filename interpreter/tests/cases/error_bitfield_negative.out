@@ -1,0 +1,4 @@
+error: -5 does not fit in a bit field of 3 bit(s), which holds -4 to 3
+  --> error_bitfield_negative.sg:7:33
+ 7 |     var flags = Flags { delta = -5 }
+   |                                 ^^

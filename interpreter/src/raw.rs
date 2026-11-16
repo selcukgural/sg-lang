@@ -26,6 +26,49 @@ extern "C" {
     fn c_free(p: *mut c_void);
 }
 
+// Memory aligned beyond what `malloc` gives: with `posix_memalign`, which `free` gives back, and
+// on Windows with `_aligned_malloc`, which only `_aligned_free` gives back. Either way only SG
+// gives such a block back, by the type it was made for.
+#[cfg(not(windows))]
+extern "C" {
+    fn posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> i32;
+}
+#[cfg(windows)]
+extern "C" {
+    fn _aligned_malloc(size: usize, align: usize) -> *mut c_void;
+    fn _aligned_free(p: *mut c_void);
+}
+
+/// `bytes` bytes aligned to `align`, a power of two above `BLOCK_ALIGN`; null when there is no
+/// memory. The bytes are not cleared.
+fn aligned_alloc(bytes: usize, align: usize) -> *mut c_void {
+    #[cfg(not(windows))]
+    {
+        let mut out = std::ptr::null_mut();
+        // SAFETY: `align` is a power of two and a multiple of the size of a pointer.
+        match unsafe { posix_memalign(&mut out, align, bytes) } {
+            0 => out,
+            _ => std::ptr::null_mut(),
+        }
+    }
+    #[cfg(windows)]
+    // SAFETY: `align` is a power of two.
+    unsafe {
+        _aligned_malloc(bytes, align)
+    }
+}
+
+/// Gives back what `aligned_alloc` gave.
+///
+/// # Safety
+/// `p` came from `aligned_alloc` and is given back once.
+unsafe fn aligned_free(p: *mut c_void) {
+    #[cfg(not(windows))]
+    c_free(p);
+    #[cfg(windows)]
+    _aligned_free(p);
+}
+
 /// An address and the block it was made from, if the interpreter knows it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RawPtr {
@@ -46,6 +89,8 @@ struct Block {
     base: usize,
     size: usize,
     live: bool,
+    /// The alignment it was made with, when that is more than `BLOCK_ALIGN`.
+    aligned: Option<usize>,
 }
 
 #[derive(Default)]
@@ -68,19 +113,30 @@ pub enum AllocError {
     OutOfMemory,
 }
 
-/// `count` items of `size` bytes, all zero.
-pub fn allocate(count: usize, size: usize) -> Result<RawPtr, AllocError> {
-    let bytes = count.checked_mul(size).filter(|bytes| *bytes <= isize::MAX as usize - BLOCK_ALIGN).ok_or(AllocError::TooLarge)?;
-    // SAFETY: `calloc` takes any size; at least one byte is asked for, so that each block has
-    // an address of its own.
-    let base = unsafe { calloc(bytes.max(1), 1) } as usize;
+/// `count` items of `size` bytes and alignment `align`, all zero.
+pub fn allocate(count: usize, size: usize, align: usize) -> Result<RawPtr, AllocError> {
+    let bytes = count.checked_mul(size).filter(|bytes| *bytes <= isize::MAX as usize - BLOCK_ALIGN.max(align)).ok_or(AllocError::TooLarge)?;
+    let aligned = (align > BLOCK_ALIGN).then_some(align);
+    let base = match aligned {
+        // SAFETY: `calloc` takes any size; at least one byte is asked for, so that each block
+        // has an address of its own.
+        None => (unsafe { calloc(bytes.max(1), 1) }) as usize,
+        Some(align) => {
+            let base = aligned_alloc(bytes.max(1), align);
+            if !base.is_null() {
+                // SAFETY: the block holds at least this many bytes.
+                unsafe { std::ptr::write_bytes(base.cast::<u8>(), 0, bytes.max(1)) };
+            }
+            base as usize
+        }
+    };
     if base == 0 {
         return Err(AllocError::OutOfMemory);
     }
     let mut blocks = BLOCKS.lock().unwrap();
     let id = blocks.next;
     blocks.next += 1;
-    blocks.by_id.insert(id, Block { base, size: bytes, live: true });
+    blocks.by_id.insert(id, Block { base, size: bytes, live: true, aligned });
     blocks.live.insert(base, id);
     Ok(RawPtr { addr: base, block: Some(id) })
 }
@@ -91,10 +147,15 @@ pub enum FreeError {
     Twice,
     /// The address lies inside a block, not where it starts.
     Inside,
+    /// The block was made for a type aligned beyond `BLOCK_ALIGN` and is given back through a
+    /// pointer to one that is not, or the other way round: compiled code on Windows gives the two
+    /// back in two ways. The alignment it was made with, if beyond `BLOCK_ALIGN`.
+    Aligned { made: Option<usize> },
 }
 
-/// Gives back the block that `p` is the start of; `null` is let be.
-pub fn free(p: RawPtr) -> Result<(), FreeError> {
+/// Gives back the block that `p` is the start of; `null` is let be. `align` is the alignment of
+/// the type `p` points at.
+pub fn free(p: RawPtr, align: usize) -> Result<(), FreeError> {
     if p.addr == 0 {
         return Ok(());
     }
@@ -116,12 +177,20 @@ pub fn free(p: RawPtr) -> Result<(), FreeError> {
     if block.base != p.addr {
         return Err(FreeError::Inside);
     }
+    let given = (align > BLOCK_ALIGN).then_some(align);
+    if block.aligned != given {
+        return Err(FreeError::Aligned { made: block.aligned });
+    }
     block.live = false;
-    let (base, size) = (block.base, block.size);
+    let base = block.base;
     blocks.live.remove(&base);
-    let _ = size;
-    // SAFETY: the block came from `calloc` and has not been given back.
-    unsafe { c_free(base as *mut c_void) };
+    // SAFETY: the block came from `calloc` or `aligned_alloc`, and has not been given back.
+    unsafe {
+        match given {
+            None => c_free(base as *mut c_void),
+            Some(_) => aligned_free(base as *mut c_void),
+        }
+    }
     Ok(())
 }
 
@@ -210,9 +279,84 @@ pub fn block_at(addr: usize) -> Option<u64> {
     (addr < block.base + block.size.max(1)).then_some(*id)
 }
 
-/// The size and the alignment of a value of plain data, as C has them. `plain` holds the types
-/// of the fields of each struct of plain data.
-pub fn layout(ty: &Ty, plain: &HashMap<String, Vec<Ty>>) -> (usize, usize) {
+/// How C lays out a struct or a union of plain data, beyond the types of its fields.
+#[derive(Clone, Debug, Default)]
+pub struct Plain {
+    /// The types of the fields, in the order they are declared.
+    pub fields: Vec<Ty>,
+    /// For each field, its width in bits when it is a bit field (`uint version : 4`).
+    pub bits: Vec<Option<u32>>,
+    /// Bits left empty (`uint _ : 4`): before which field, of which type, how many.
+    pub gaps: Vec<(usize, Ty, u32)>,
+    /// `union`: every field starts where the value starts.
+    pub union: bool,
+    /// `packed`: no padding, an alignment of 1.
+    pub packed: bool,
+    /// `align(N)`: at least this alignment; 0 when none is written.
+    pub align: usize,
+}
+
+/// The structs and unions of plain data of a program, by full name.
+pub type PlainTypes = HashMap<String, Plain>;
+
+/// The rules by which a C compiler lays out bit fields. The rest of a layout is the same on
+/// every machine the language runs on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Abi {
+    /// macOS, and Linux on x86-64: a bit field goes where the bits before it end, unless it
+    /// would cross a unit of its type; bits left empty do not change the alignment.
+    Unix,
+    /// Linux on 64-bit Arm (AAPCS64): as `Unix`, but bits left empty count for the alignment of
+    /// the struct as a field of their type does.
+    Arm,
+    /// Windows, with every compiler there: a bit field starts a new unit of its type unless the
+    /// one before it has the same size and room left.
+    Microsoft,
+}
+
+/// The rules of the machine the interpreter runs on, which compiled code meets in C.
+pub const HOST: Abi = if cfg!(windows) {
+    Abi::Microsoft
+} else if cfg!(all(target_arch = "aarch64", not(target_vendor = "apple"))) {
+    Abi::Arm
+} else {
+    Abi::Unix
+};
+
+/// Where a field lies in the value that holds it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Place {
+    /// At this many bytes from the start.
+    Bytes(usize),
+    /// A bit field: `width` bits from bit `at` of the value, counted from the lowest bit of its
+    /// first byte (the machines the language runs on are little-endian).
+    Bits { at: usize, width: u32 },
+}
+
+impl Place {
+    /// The byte the field starts in.
+    pub fn byte(self) -> usize {
+        match self {
+            Place::Bytes(at) => at,
+            Place::Bits { at, .. } => at / 8,
+        }
+    }
+}
+
+/// The size, the alignment and where each field lies, of a struct or a union of plain data.
+pub struct Shape {
+    pub size: usize,
+    pub align: usize,
+    pub places: Vec<Place>,
+}
+
+/// The size and the alignment of a value of plain data, as C has them on this machine.
+pub fn layout(ty: &Ty, plain: &PlainTypes) -> (usize, usize) {
+    layout_for(ty, plain, HOST)
+}
+
+/// The size and the alignment of a value of plain data under the rules of `abi`.
+pub fn layout_for(ty: &Ty, plain: &PlainTypes, abi: Abi) -> (usize, usize) {
     match ty {
         Ty::Int(int) => {
             let bytes = (int.bits() / 8) as usize;
@@ -224,35 +368,136 @@ pub fn layout(ty: &Ty, plain: &HashMap<String, Vec<Ty>>) -> (usize, usize) {
         Ty::Char => (4, 4),
         Ty::Raw(_) | Ty::CFunc(..) => (std::mem::size_of::<usize>(), std::mem::align_of::<usize>()),
         Ty::Array(item, length) => {
-            let (size, align) = layout(item, plain);
+            let (size, align) = layout_for(item, plain, abi);
             (size * length, align)
         }
         Ty::Struct(name) => {
-            let (mut size, mut align) = (0usize, 1usize);
-            for field in &plain[name] {
-                let (field_size, field_align) = layout(field, plain);
-                size = size.next_multiple_of(field_align) + field_size;
-                align = align.max(field_align);
-            }
-            (size.next_multiple_of(align), align)
+            let shape = shape_for(name, plain, abi);
+            (shape.size, shape.align)
         }
         other => unreachable!("the checker lets a raw pointer point only at plain data, not at `{other}`"),
     }
 }
 
-/// Where each field of a struct of plain data lies, from its start.
-pub fn offsets(name: &str, plain: &HashMap<String, Vec<Ty>>) -> Vec<usize> {
-    let mut size = 0usize;
-    plain[name]
-        .iter()
-        .map(|field| {
-            let (field_size, field_align) = layout(field, plain);
-            let at = size.next_multiple_of(field_align);
-            size = at + field_size;
-            at
-        })
-        .collect()
+/// Where each field of a struct or a union of plain data lies, on this machine.
+pub fn places(name: &str, plain: &PlainTypes) -> Vec<Place> {
+    shape_for(name, plain, HOST).places
 }
+
+/// The layout of a struct or a union of plain data under the rules of `abi`.
+pub fn shape_for(name: &str, plain: &PlainTypes, abi: Abi) -> Shape {
+    let decl = &plain[name];
+    // The fields and the bits left empty, in the order C sees them: `None` for a gap.
+    let mut items: Vec<(Option<usize>, &Ty, Option<u32>)> = Vec::new();
+    for (index, field) in decl.fields.iter().enumerate() {
+        items.extend(decl.gaps.iter().filter(|gap| gap.0 == index).map(|gap| (None, &gap.1, Some(gap.2))));
+        items.push((Some(index), field, decl.bits[index]));
+    }
+    items.extend(decl.gaps.iter().filter(|gap| gap.0 == decl.fields.len()).map(|gap| (None, &gap.1, Some(gap.2))));
+    let mut places = vec![Place::Bytes(0); decl.fields.len()];
+    let mut align = 1usize;
+    // Bits used so far.
+    let mut end = 0usize;
+    // Microsoft: the unit a bit field was put in, by its first bit, its size in bits and the
+    // bits it has used.
+    let mut unit: Option<(usize, usize, usize)> = None;
+    for (index, ty, width) in items {
+        let (size, natural) = layout_for(ty, plain, abi);
+        let type_align = if decl.packed { 1 } else { natural };
+        let at = match width {
+            _ if decl.union => {
+                align = align.max(type_align);
+                end = end.max(size * 8);
+                match width {
+                    Some(width) => Place::Bits { at: 0, width },
+                    None => Place::Bytes(0),
+                }
+            }
+            None => {
+                unit = None;
+                let at = end.next_multiple_of(type_align * 8);
+                end = at + size * 8;
+                align = align.max(type_align);
+                Place::Bytes(at / 8)
+            }
+            Some(width) => {
+                let width = width as usize;
+                match abi {
+                    Abi::Unix | Abi::Arm => {
+                        let unit_bits = size * 8;
+                        let at = if width == 0 || (end % unit_bits) + width > unit_bits { end.next_multiple_of(type_align * 8) } else { end };
+                        end = at + width;
+                        if index.is_some() || abi == Abi::Arm {
+                            align = align.max(type_align);
+                        }
+                        Place::Bits { at, width: width as u32 }
+                    }
+                    Abi::Microsoft => {
+                        let at = match unit {
+                            // A gap of no bits closes the unit before it, and is let be where
+                            // no bit field comes before it.
+                            _ if width == 0 => {
+                                if unit.take().is_some() {
+                                    end = end.next_multiple_of(type_align * 8);
+                                    align = align.max(type_align);
+                                }
+                                end
+                            }
+                            Some((start, bits, used)) if bits == size * 8 && used + width <= bits => {
+                                unit = Some((start, bits, used + width));
+                                start + used
+                            }
+                            _ => {
+                                let start = end.next_multiple_of(type_align * 8);
+                                end = start + size * 8;
+                                unit = Some((start, size * 8, width));
+                                align = align.max(type_align);
+                                start
+                            }
+                        };
+                        Place::Bits { at, width: width as u32 }
+                    }
+                }
+            }
+        };
+        if let Some(index) = index {
+            places[index] = at;
+        }
+    }
+    let align = align.max(decl.align);
+    Shape { size: end.div_ceil(8).next_multiple_of(align), align, places }
+}
+
+/// The definition of a struct or a union of plain data in C, a type named `name` (a `typedef`
+/// of the tag of that name), as the compiler of C lays it out
+/// on every machine: `name` is its C name, `c_type` the C type of a field (an array gives the type
+/// of its items), `member` the C name of the field at an index. `SG_ALIGNED` is defined where
+/// this is used: `__declspec(align(n))` with Microsoft's compiler, `__attribute__((aligned(n)))`
+/// with the others.
+pub fn c_definition(name: &str, decl: &Plain, c_type: &dyn Fn(&Ty) -> String, member: &dyn Fn(usize) -> String) -> String {
+    let mut members = String::new();
+    let gap = |gap: &(usize, Ty, u32)| format!(" {} : {};", c_type(&gap.1), gap.2);
+    for (index, field) in decl.fields.iter().enumerate() {
+        members.extend(decl.gaps.iter().filter(|found| found.0 == index).map(gap));
+        let named = member(index);
+        members.push_str(&match (field, decl.bits[index]) {
+            (_, Some(width)) => format!(" {} {named} : {width};", c_type(field)),
+            (Ty::Array(item, length), None) => format!(" {} {named}[{length}];", c_type(item)),
+            (other, None) => format!(" {} {named};", c_type(other)),
+        });
+    }
+    members.extend(decl.gaps.iter().filter(|found| found.0 == decl.fields.len()).map(gap));
+    let kind = if decl.union { "union" } else { "struct" };
+    let aligned = if decl.align > 0 { format!(" SG_ALIGNED({})", decl.align) } else { String::new() };
+    let text = format!("typedef {kind}{aligned} {name} {{{members} }} {name};\n");
+    match decl.packed {
+        true => format!("#pragma pack(push, 1)\n{text}#pragma pack(pop)\n"),
+        false => text,
+    }
+}
+
+/// What a C file that holds `c_definition`s needs before them.
+pub const C_ALIGNED: &str = "#ifndef SG_ALIGNED\n#ifdef _MSC_VER\n#define SG_ALIGNED(n) __declspec(align(n))\n#else\n#define SG_ALIGNED(n) __attribute__((aligned(n)))\n#endif\n#endif\n";
 
 /// The integer of type `ty` that lies at `addr`.
 ///

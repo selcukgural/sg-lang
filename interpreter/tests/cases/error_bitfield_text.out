@@ -1,0 +1,5 @@
+error: a struct with bit fields holds plain data, and `string` is not
+  plain data is numbers, `bool`, `char`, raw pointers, `CFunc`, and arrays, structs and unions of them: what C lays out
+  --> error_bitfield_text.sg:4:5
+ 4 |     string name
+   |     ^^^^^^

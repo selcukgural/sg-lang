@@ -1,0 +1,5 @@
+error: a field of a union is not lent: the checker does not know that the union holds it
+  --> error_union_borrow.sg:14:19
+ 14 |         show(read bits.word)
+    |                   ^^^^^^^^^
+  hint: copy it out: `var part = unsafe bits.word`

@@ -1,0 +1,5 @@
+error: a `packed` struct holds no `Block`, which is `align(N)`
+  Windows keeps that alignment inside a packed struct, the other systems do not
+  --> error_packed_aligned.sg:8:5
+ 8 |     Block block
+   |     ^^^^^

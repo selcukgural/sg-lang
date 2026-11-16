@@ -1,0 +1,5 @@
+error: a field of a union is written whole: what lies inside it is not written on its own
+  --> error_union_inner_write.sg:14:5
+ 14 |     word.halves.low = 1
+    |     ^^^^^^^^^^^
+  hint: read it, change the copy and write it back: `var part = unsafe word.halves`, then `word.halves = part`

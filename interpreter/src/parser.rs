@@ -339,7 +339,7 @@ impl<'a> Parser<'a> {
                     self.skip_newlines();
                     continue;
                 }
-            } else if *self.peek() == Tok::Struct {
+            } else if *self.peek() == Tok::Struct || self.at_layout() {
                 let mut decl = self.struct_decl()?;
                 decl.public = public;
                 program.structs.push(decl);
@@ -408,7 +408,7 @@ impl<'a> Parser<'a> {
                     return Err(Diag::error(self.span(), "a type of C declared in an `extern` block has no body: SG does not see what it holds")
                         .hint(format!("a struct whose fields SG reads is written outside the `extern` block: `struct {name} {{ ... }}`")));
                 }
-                let decl = StructDecl { public, name, name_span, sources: Vec::new(), interfaces: Vec::new(), fields: Vec::new(), methods: Vec::new(), opaque: true };
+                let decl = StructDecl { public, name, name_span, sources: Vec::new(), interfaces: Vec::new(), fields: Vec::new(), methods: Vec::new(), opaque: true, layout: LayoutDecl::default() };
                 program.structs.push(decl);
                 if *self.peek() != Tok::RBrace {
                     self.expect(Tok::Newline, "end of line")?;
@@ -477,9 +477,62 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Whether a struct or a union laid out as C lays it out begins here: `union Bits {`,
+    /// `packed struct Header {`, `align(64) struct Slot {`. The words are names elsewhere.
+    fn at_layout(&self) -> bool {
+        let union_at = |n: usize| matches!(self.peek_at(n), Tok::Ident(word) if word == "union") && matches!(self.peek_at(n + 1), Tok::Ident(_));
+        let mut at = 0;
+        let mut marked = false;
+        loop {
+            match self.peek_at(at) {
+                Tok::Ident(word) if word == "packed" => at += 1,
+                Tok::Ident(word) if word == "align" && *self.peek_at(at + 1) == Tok::LParen && matches!(self.peek_at(at + 2), Tok::Int(_)) && *self.peek_at(at + 3) == Tok::RParen => at += 4,
+                _ => break,
+            }
+            marked = true;
+        }
+        union_at(at) || (marked && *self.peek_at(at) == Tok::Struct)
+    }
+
+    /// `struct Name { ... }`, `union Name { ... }`, with `packed` or `align(N)` in front.
     fn struct_decl(&mut self) -> Res<StructDecl> {
-        self.bump();
-        let (name, name_span) = self.ident("a struct name")?;
+        let mut layout = LayoutDecl::default();
+        loop {
+            if self.at_word("packed") {
+                let span = self.bump().span;
+                if layout.packed.is_some() {
+                    return Err(Diag::error(span, "`packed` is written once"));
+                }
+                layout.packed = Some(span);
+            } else if self.at_word("align") && *self.peek_at(1) == Tok::LParen {
+                let start = self.bump().span.start;
+                self.bump();
+                let Tok::Int(value) = *self.peek() else { return Err(self.unexpected("a number of bytes")) };
+                self.bump();
+                self.expect(Tok::RParen, "`)`")?;
+                let span = Span::new(start, self.prev_end());
+                if layout.align.is_some() {
+                    return Err(Diag::error(span, "`align` is written once"));
+                }
+                layout.align = Some((value, span));
+            } else {
+                break;
+            }
+        }
+        if let (Some(packed), Some((_, align))) = (layout.packed, layout.align) {
+            return Err(Diag::error(Span::new(packed.start.min(align.start), packed.end.max(align.end)), "a type is `packed` or `align(N)`, not both")
+                .note("`packed` takes the padding out and makes the alignment 1; `align` makes it larger"));
+        }
+        if self.at_word("union") {
+            layout.union = true;
+            self.bump();
+        } else if *self.peek() == Tok::Struct {
+            self.bump();
+        } else {
+            return Err(self.unexpected("`struct` or `union`"));
+        }
+        let what = if layout.union { "a union name" } else { "a struct name" };
+        let (name, name_span) = self.ident(what)?;
         let sources = self.sources()?;
         let interfaces = self.interfaces()?;
         self.open_brace()?;
@@ -509,7 +562,29 @@ impl<'a> Parser<'a> {
                 if is_async {
                     return Err(Diag::error(async_span, "`async` is written in front of a function, not of a field"));
                 }
-                fields.push(FieldDecl { public, readonly, ty, name: member, span });
+                // `uint version : 4`: a field of that many bits.
+                let bits = if *self.peek() == Tok::Colon {
+                    let start = self.bump().span.start;
+                    let Tok::Int(width) = *self.peek() else {
+                        return Err(self.unexpected("a number of bits").hint(format!("`{} {member} : 4`", &self.src[ty.span.start..ty.span.end])));
+                    };
+                    self.bump();
+                    Some((width, Span::new(start, self.prev_end())))
+                } else {
+                    None
+                };
+                if member == "_" {
+                    // `uint _ : 4`: bits left empty, which have no name to reach them by.
+                    let Some((width, _)) = bits else {
+                        return Err(Diag::error(span, "a field without a name is a number of bits left empty").hint(format!("`{} _ : 4`", &self.src[ty.span.start..ty.span.end])));
+                    };
+                    if public || readonly {
+                        return Err(Diag::error(span, "bits left empty have no name, so they are neither `public` nor `readonly`"));
+                    }
+                    layout.gaps.push(Gap { before: fields.len(), ty, bits: width, span: Span::new(span.start, self.prev_end()) });
+                } else {
+                    fields.push(FieldDecl { public, readonly, ty, name: member, span, bits });
+                }
             }
             if *self.peek() != Tok::RBrace {
                 self.expect(Tok::Newline, "end of line")?;
@@ -517,7 +592,7 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         }
         self.bump();
-        Ok(StructDecl { public: false, name, name_span, sources, interfaces, fields, methods, opaque: false })
+        Ok(StructDecl { public: false, name, name_span, sources, interfaces, fields, methods, opaque: false, layout })
     }
 
     /// `<from source>` after the name of a struct or an enum that carries a borrow.
@@ -597,7 +672,7 @@ impl<'a> Parser<'a> {
                 while *self.peek() != Tok::RParen {
                     let ty = self.type_expr()?;
                     let (field, span) = self.ident("a field name")?;
-                    fields.push(FieldDecl { public: true, readonly: false, ty, name: field, span });
+                    fields.push(FieldDecl { public: true, readonly: false, ty, name: field, span, bits: None });
                     if !self.eat(&Tok::Comma) {
                         break;
                     }
@@ -1500,6 +1575,18 @@ impl<'a> Parser<'a> {
                     expr = Expr { ty: Ty::Void, moved: false, kind, span: Span::new(start, self.prev_end()) };
                     continue;
                 }
+            }
+            // `Memory.sizeOf<int>()`, `Memory.alignOf<int>()`: what C has for the type.
+            if (name == "sizeOf" || name == "alignOf") && *self.peek() == Tok::Lt && matches!(&expr.kind, ExprKind::Var(owner) if owner == "Memory") {
+                let start = expr.span.start;
+                self.bump();
+                let item = self.type_expr()?;
+                self.expect(Tok::Gt, "`>`")?;
+                self.expect(Tok::LParen, "`(`")?;
+                self.expect(Tok::RParen, "`)`")?;
+                let kind = ExprKind::SizeOf { item, align: name == "alignOf", of: Ty::Void };
+                expr = Expr { ty: Ty::Void, moved: false, kind, span: Span::new(start, self.prev_end()) };
+                continue;
             }
             // `Memory.allocate<int>(n)`: the type of the items is written after the name.
             if name == "allocate" && *self.peek() == Tok::Lt && matches!(&expr.kind, ExprKind::Var(owner) if owner == "Memory") {

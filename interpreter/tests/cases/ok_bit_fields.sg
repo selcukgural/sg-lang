@@ -1,0 +1,51 @@
+// Bit fields lie as C lays them out on this machine: from the lowest bit, packed into units of
+// their type. A field takes only what fits its bits.
+struct Flags : Copyable, Formattable, Equatable, Hashable {
+    uint version : 4
+    uint length : 4
+    bool urgent : 1
+    uint _ : 7
+    ushort port
+}
+
+struct Signed : Formattable {
+    int delta : 3
+    int rest : 29
+}
+
+struct Gapped {
+    byte first : 3
+    byte _ : 0
+    byte second : 3
+}
+
+void main() {
+    var flags = Flags { version = 4, length = 5, urgent = true, port = 80 }
+    print(flags)
+    flags.length += 3
+    print(flags.length)
+    print(flags == Flags { version = 4, length = 8, urgent = true, port = 80 })
+    var seen = HashSet<Flags>()
+    _ = seen.add(flags)
+    print(seen.contains(flags))
+    var signed = Signed { delta = -4, rest = 1 }
+    signed.delta += 7
+    print(signed)
+    print(Memory.sizeOf<Flags>())
+    print(Memory.sizeOf<Gapped>())
+    unsafe {
+        var p = Memory.allocate<Flags>(1)
+        p[0] = flags
+        var bytes = (raw byte)p
+        print(bytes[0])
+        print(bytes[1])
+        p[0].version = 9
+        print(bytes[0])
+        print(p[0].length)
+        var g = Memory.allocate<Gapped>(1)
+        g[0].second = 5
+        print(((raw byte)g)[1])
+        Memory.free(g)
+        Memory.free(p)
+    }
+}

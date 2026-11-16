@@ -1,0 +1,8 @@
+// A struct with bit fields holds plain data.
+struct Record {
+    uint kind : 4
+    string name
+}
+
+void main() {
+}

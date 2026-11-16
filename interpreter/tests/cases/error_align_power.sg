@@ -1,0 +1,7 @@
+// An alignment is a power of two.
+align(24) struct Slot {
+    long count
+}
+
+void main() {
+}

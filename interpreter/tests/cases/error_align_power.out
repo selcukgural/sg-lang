@@ -1,0 +1,4 @@
+error: an alignment is a power of two up to 4096, and this is 24
+  --> error_align_power.sg:2:1
+ 2 | align(24) struct Slot {
+   | ^^^^^^^^^

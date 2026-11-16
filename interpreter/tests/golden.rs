@@ -230,6 +230,7 @@ fn modules() {
     entries.push(root.join("examples/zlib"));
     entries.push(root.join("examples/sqlite"));
     entries.push(root.join("examples/curl"));
+    entries.push(root.join("examples/headers"));
     entries.push(root.join("examples/shutdown"));
     entries.sort();
     for path in entries {
@@ -331,6 +332,7 @@ fn compiled() {
     programs.push(root.join("examples/zlib"));
     programs.push(root.join("examples/sqlite"));
     programs.push(root.join("examples/curl"));
+    programs.push(root.join("examples/headers"));
     programs.push(root.join("examples/shutdown"));
     programs.sort();
     programs.retain(|path| path.extension().is_some_and(|ext| ext == "sg") || path.join("main.sg").exists());
@@ -782,6 +784,7 @@ fn compiled_tests() {
     folders.push(root.join("examples/zlib"));
     folders.push(root.join("examples/sqlite"));
     folders.push(root.join("examples/curl"));
+    folders.push(root.join("examples/headers"));
     folders.push(root.join("examples/shutdown"));
     folders.sort();
     for path in folders {

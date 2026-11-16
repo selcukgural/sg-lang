@@ -46,8 +46,9 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Changed through several owners | `new shared checked x` gives a `shared checked T`: what it points to is changed through any of its owners (`a.count += 1`, `a.items.add(x)`, a method that takes `ref this`, `ref a` where a `ref T` goes), and each access is checked against the borrows of it in progress, one that changes it or any number that read it. A read or a write borrows nothing after it; a value lent to a call is borrowed until the call returns, the head of a `for` for the loop, a `match` and an `is` with names for the statement. `read x as n { ... }` and `ref x as n { ... }` lend it for a block. A conflict through the same variable is a compile error, one through another variable a panic that shows both lines. A method can take the owner itself, `read FolderRef this`, so that it can write `share this` and `weak this`. The `shared` values still alive when a program or a test ends hold each other up and are reported (`leak: ...`; in compiled code by a debug build) |
 | Tasks | `Task.run(work, x, share total)` starts `work(x, share total)` as a task and gives a `Task<R>`, `R` being what `work` returns; a `Func` can be started too. `t.wait()` waits for it and gives that value (`try t.wait()` passes its error on). A task that is not waited for on every path is a compile error, and so is `Task.run(...)` alone or dropped with `_ =`. What a task is given and gives back owns all it holds: no borrow, no `shared checked` value, no `Task` (the thread rule, also inside fields). In the interpreter a task runs on a thread of its own when it is waited for, so the output is the same on every run; compiled code starts a thread of the system for it at once. A panic inside one names the line that started it |
 | Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
-| Raw memory | `raw T` is an address that owns nothing and may be `null`; it points at plain data (numbers, `bool`, `char`, raw pointers, and arrays and structs of them), laid out as C lays it, or is a `raw void`. `Memory.allocate<T>(n)` gives room for `n` items, all zero (C's `calloc`, in the interpreter too). `p[i]` reads and writes an item (`p[i] = v`, `p[i].x += 1`), `p + n` and `p - n` move by items, `(raw byte)p` reads the memory as another type, `Memory.copy(source, target, count)` copies items (also over itself), `Memory.view(p, count)` looks at `count` items as a `read T[]` (C's memory added to a list in one copy, read as text where it lies) and `Memory.free(p)` gives the block back, or memory C gave with `malloc`; each of them is written inside `unsafe { ... }`, or with `unsafe` in front of a value (`var first = unsafe p[0]`), and an `unsafe` that nothing needs is an error. `p == q` and `p == null` need no `unsafe`, nor do `p < q` and `p - q` (the order of two addresses, and the count of items between them) and `(nuint)p` (an address as a number); `unsafe (raw T)n` makes a pointer out of a `nint` or a `nuint` (`(raw void)(nint)-1`). The interpreter checks every item against the block it came from and panics outside it, after `Memory.free` and through `null`; compiled code checks nothing, and a `raw T` is a `T*`. A window of `Memory.view` borrows the variable or the field that holds its pointer, so it does not outlive it; a count below 0, and `null` with items, are panics in both. A raw pointer does not go to another task |
+| Raw memory | `raw T` is an address that owns nothing and may be `null`; it points at plain data (numbers, `bool`, `char`, raw pointers, and arrays and structs of them), laid out as C lays it, or is a `raw void`. `Memory.allocate<T>(n)` gives room for `n` items, all zero (C's `calloc`, in the interpreter too). `p[i]` reads and writes an item (`p[i] = v`, `p[i].x += 1`), `p + n` and `p - n` move by items, `(raw byte)p` reads the memory as another type, `Memory.copy(source, target, count)` copies items (also over itself), `Memory.view(p, count)` looks at `count` items as a `read T[]` (C's memory added to a list in one copy, read as text where it lies), `Memory.viewRef(p, count)` writes them as a `ref T[]` (a buffer C wants filled), `Memory.readUnaligned(p)` and `Memory.writeUnaligned(p, v)` reach an item at any address, and `Memory.free(p)` gives the block back, or memory C gave with `malloc`; each of them is written inside `unsafe { ... }`, or with `unsafe` in front of a value (`var first = unsafe p[0]`), and an `unsafe` that nothing needs is an error. `p == q` and `p == null` need no `unsafe`, nor do `p < q` and `p - q` (the order of two addresses, and the count of items between them) and `(nuint)p` (an address as a number); `unsafe (raw T)n` makes a pointer out of a `nint` or a `nuint` (`(raw void)(nint)-1`). The interpreter checks every item against the block it came from and panics outside it, after `Memory.free` and through `null`; compiled code checks nothing of that, and a `raw T` is a `T*`. An item reached at an address that is not a multiple of the alignment of its type is a panic in the interpreter and in a debug build, and costs nothing in a release build. `Memory.sizeOf<T>()` and `Memory.alignOf<T>()` give what C has for a type of plain data. A window of `Memory.view` borrows the variable or the field that holds its pointer, so it does not outlive it; a count below 0, and `null` with items, are panics in both. A raw pointer does not go to another task |
 | Calling C | `extern "z" { int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen) }` declares functions of C, a block for each library (linked as `-lz`; `extern { }` is the C library itself), each called inside `unsafe`. A C function takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data (C's `T*` and `const T*`, for the time of the call; `ref raw T` is `T**`), a struct of plain data by value, laid out as C lays it out, and `read CString`, and gives a number, a `bool`, a `raw T`, a struct of plain data or nothing. `struct sqlite3` without a body in an `extern` block is a type of C that SG only points at (`raw sqlite3`). `CString.from(text)` gives a `Result<CString, TextError>`, an error for a zero byte inside; `unsafe string.fromCString(p)` copies what C ended with a zero byte and checks that it is UTF-8. `buffer.pointer()` on a list, an array or a slice of plain data is written only as an argument of a C function. The functions are private to their module unless `public` is written on one, so a module can hide a library behind a safe interface, and a `Disposable` type gives back what C made when it ends (`examples/zlib`, whose `Deflater` holds zlib's stream). `extern "./native.c" { ... }` names a C file of the module's folder in place of a library: it is compiled with the program, in the same unit, so its macros, `static inline` functions, builtins and assembly are reached through functions it declares, and an inline one is inlined; a library block of the module (`extern "z" { }`, also empty) links what the file needs. `int opterr` in an `extern` block, without parentheses, is a variable of C, read and written inside `unsafe` (`unsafe opterr`, `unsafe { opterr = 0 }`, `unsafe { origin.y = 4 }`) as an item of raw memory. `C.errno()` gives what the last call of C left in `errno`, read right after it, `C.setErrno(n)` sets what the next one finds, and `IoError.fromCode(n)` makes an `IoError` of it. `int snprintf(raw byte s, nuint n, read CString format, ...)` declares a function that takes a varying count of arguments: each value after the parameters says the type C reads, so a `byte`, a `bool` or a `float` there, and a number or `null` written without a type, are errors whose hint is the cast (`(long)30`). The interpreter builds a small library of wrappers with `cc` and opens it with `dlopen`; compiled code calls C directly. While a call of C waits, the other tasks run, in the interpreter too. `examples/sqlite` and `examples/curl` wrap SQLite and libcurl in modules whose users write no `unsafe` |
+| The layout of C | `union Bits { uint word` / `float number }` holds one field at a time in the same bytes: built with one (`Bits { number = 1.5 }`), written whole (`bits.word = 3`), read inside `unsafe` (`unsafe bits.word`), never lent. `uint version : 4` is a bit field of a struct, signed or not, `bool` too, and `uint _ : 4` leaves bits empty; a value that does not fit is a panic, as overflow is (the lowest bits in a release build). `packed struct Header { ... }` has no padding, and its fields are copied out, not lent. `align(64) struct Slot { ... }` lies at a multiple of 64 bytes wherever it is kept, on the heap too. Each is laid out as C lays it out on the machine, Windows' rules for bit fields included. `Header.fromBytes(bytes)` reads a struct of integers, fractions, bit fields and unions out of exactly as many bytes as it takes, with no `unsafe` (`examples/headers`: a BMP header and an IPv4 header) |
 | C calling SG | `export int compareInts(raw void a, raw void b) { ... }` is a function C calls by the name written, without its module: it takes and gives only the types C has (integers, `float`, `double`, `bool`, `raw T`, `CFunc`, structs of plain data by value), and SG calls it by its name too. `CFunc<raw void, raw void, int>` is a pointer to a function as C calls it, plain data that may be `null`: the name of an `export` function or of a function of C is one (`unsafe qsort((raw void)items, n, 4, compareInts)`, `CFunc<int, int> f = abs`), `unsafe (CFunc<int, int>)p` takes one from a `raw void` (`dlsym`), `(raw void)f` gives it back, and every call through one is inside `unsafe`; calling a `null` one is a panic. The state a callback reaches goes through C's `void*`: `unsafe Memory.addressOf(ref state)` gives the address of a variable or a field, and `unsafe (ref State)data` (or `read`) lends it again inside the callback; the interpreter keeps the addresses it gave and panics on a wrong type, a value that ended or moved, or an address it did not give. A C file of the program calls an `export` function by its name. A panic inside one ends the process with its message, since nothing unwinds through C; the interpreter runs one only on a thread that is in a call of C, and compiled code on any thread. A `lock` block does not call C when an `export` function waits |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads, each with a queue of its own that the others steal from. A method is async too (`public async int total(read this)`): one that lends `this` is awaited where it is written, one that takes it by value may start as a task; `create`, `format`, `equals`, `hash` and `compare` are not async |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
@@ -400,7 +401,10 @@ with gets an adapter of its own, which calls C as C calls it (750-760). So was t
 `Memory.view` is a pointer and a count, checked once, and the adapters of `...` are made per list of the
 types of SG, since a `read CString` and a `raw byte` are one type of C but go over differently (761-778).
 So was the eighty-eighth (signals): the handler of the runtime only writes into a pipe, and a thread hands
-each signal to its listeners, in compiled code and in the interpreter alike (779-799).
+each signal to its listeners, in compiled code and in the interpreter alike (779-799). So was the
+eighty-ninth (the layout of C): unions, bit fields, `packed` and `align` are written as C has them, and C
+places them; the interpreter places them by the rules of the machine it runs on, which a test compares
+with C for every system (800-829).
 What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
@@ -470,6 +474,7 @@ hand with no checks):
 | `sqlite`: a million rows put into an SQLite database in memory with one prepared statement in one transaction, each text made by `snprintf` (which takes `...`), then read back with another (the C is the same program through SQLite's header) | 0.320 s | 0.321 s | 0.321 s | 1.00 |
 | `curl`: a thousand fetches of a body of one megabyte over the loopback with libcurl, on one kept connection, from a server that is a task of the program; each piece of the body added to a list by an `export` callback through `Memory.view` (the C is the same program through libcurl's header, its server a thread, each piece copied with `memcpy`) | 0.163 s | 0.161 s | 0.160 s | 1.02 |
 | `signals`: a hundred thousand rounds of `Signals.raise(Signal.User1)` and `listener.next()` (the C is a handler that writes into a pipe the program reads itself, after each `raise`) | 0.318 s | 0.313 s | 0.250 s | 1.27 |
+| `bitfields`: four million pixels of 16 bits in bit fields of 5, 6 and 5 made brighter field by field, five hundred times, then four thousand IPv4 headers (bit fields of 4) read out of their bytes with `fromBytes`, twenty thousand times (the C is the same bit fields and `memcpy`) | 0.326 s | 0.323 s | 0.358 s | 0.91 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -5624,6 +5629,158 @@ approved the same day:
      error `expected read Signal[], found Signal`, with no hint of its own; a list of one is written
      `read List<Signal> { Signal.Interrupt }`.
 
+Choices made in the eighty-ninth slice (the layout of C), the sixth of the slices that bring SG to what C
+reaches. 800 to 816 were decided before it on 16 November 2026, with what Windows asks of them (805, 808,
+810 and 816 were changed for it the same day: the language is to run on Windows, Linux and macOS, Linux
+and macOS first, and nothing is to be built in a way Windows cannot take later); 817 to 829 come from the
+slice. All were approved the same day:
+
+800. **`union Bits { uint word` / `float number }`**, decided before the slice: a type whose fields all
+     start where it starts, written as a struct is, one field to a line. It holds plain data only (numbers,
+     `bool`, `char`, raw pointers, `CFunc`, and arrays, structs and unions of them), and has the size and
+     the alignment C gives it. `public`, `: Copyable` and methods are as for a struct.
+801. **A union is built with one field**, decided before the slice: `Bits { number = 1.5 }`; the bytes that
+     field does not cover are zero. None, or two, is an error.
+802. **A field of a union is read inside `unsafe`**, decided before the slice (and in "The layout of C"
+     before that): it is read as its own type, whichever field was written last. Writing one whole needs
+     no `unsafe` (`bits.word = 3`), as in Rust. A field of a union is not lent (`read bits.word` is an
+     error whose hint copies it out), as a place in raw memory is not (511).
+803. **A union is not compared, hashed, ordered or written out by its fields**, decided before the slice:
+     `: Equatable`, `: Hashable` and `: Comparable` are errors, and so is `: Formattable` without a
+     `format` of its own; there is no `match` on one. The hint reads the field it holds inside `unsafe`.
+804. **`uint version : 4`**, decided before the slice: a bit field of a struct, of an integer type (signed
+     ones too: `int delta : 3` holds -4 to 3) or of `bool` (1 bit). It has at least 1 bit and at most as
+     many as its type. `uint _ : 4`, without a name, leaves bits empty, and `uint _ : 0` starts the next
+     field at a new unit of its type. A struct with bit fields holds plain data; a union has none.
+805. **Laid out as C lays it out on the machine**, decided before the slice and changed the same day for
+     Windows: the back end writes C's bit fields and C places them. The interpreter places them itself
+     (`raw.rs`), by one of three rules: macOS and Linux on x86-64 put a field where the bits before it end,
+     unless it would cross a unit of its type; Linux on 64-bit Arm does the same, but bits left empty count
+     for the alignment of the struct (AAPCS64); Windows, with every compiler there (MSVC, clang-cl and
+     MinGW), starts a new unit of its type unless the one before has the same size and room left. The
+     test `layouts` of `cargo test` compares eighteen structs and unions with what C gives (829).
+806. **A value that does not fit its bits**, decided before the slice: the rule of overflow (a panic in
+     the interpreter and in a debug build, the lowest bits in a release build, as C keeps them), for `=`,
+     for `+=` and the others, and where the struct is built. A number written in the program that does not
+     fit is an error of the checker: `16 does not fit in a bit field of 4 bit(s), which holds 0 to 15`.
+807. **A bit field has no address**, decided before the slice: `read flags.version`, `ref flags.version`,
+     `Memory.addressOf` of one, and one lent to C are errors; reading one copies it.
+808. **`packed struct Header { ... }`**, decided before the slice and changed the same day for Windows: no
+     padding, an alignment of 1, plain data only. It has no bit fields, since GCC and Clang pack them bit
+     by bit and Windows by units of their type, and it holds no type written with `align(N)`, whose
+     alignment Windows keeps inside it and the others do not. The C is written between
+     `#pragma pack(push, 1)` and `#pragma pack(pop)`, which every compiler of C reads. `packed(2)` waits.
+809. **A field of a `packed` struct is not lent**, decided before the slice: one whose type has an
+     alignment above 1 may lie where that type cannot be reached through a pointer, so `read h.size`, a
+     method of a struct field called on it, and one lent to C are errors whose hint copies it out (Rust's
+     error E0793). The struct itself is lent as any other.
+810. **`align(64) struct Slot { ... }`**, decided before the slice and changed the same day for Windows:
+     the alignment of the type is at least that (a power of two up to 4096, not below the one its fields
+     ask for), and its size a multiple of it. Any struct may have it. Wherever a value of it is kept it lies
+     at a multiple of it: on the stack and inside other values as C places it, and on the heap through one
+     function of the runtime (`sg_alloc`, 821). `packed` and `align` are not written on one type. An
+     alignment written on one field waits.
+811. **`Memory.sizeOf<T>()` and `Memory.alignOf<T>()`**, decided before the slice: the size and the
+     alignment C has for a type of plain data, as a `nint`, with no `unsafe` (`qsort(..., Memory.sizeOf<int>(), ...)`).
+     Another type is an error. `offsetOf` waits.
+812. **An item of raw memory lies where its type may**, decided before the slice (and on 16 November, after
+     the eighty-seventh slice): `p[i]`, `Memory.view`, `Memory.viewRef` and `Memory.copy` at an address
+     that is not a multiple of the alignment of their type are a panic in the interpreter and in a debug
+     build: `raw memory is reached 2 byte(s) past a multiple of 4, the alignment of uint: Memory.readUnaligned reads it there`.
+     A cast does not panic, as in Rust; a release build tests nothing, so the access costs what it costs
+     in C (the rule of overflow, and Rust's checks of a debug build).
+813. **`Memory.readUnaligned(p)` and `Memory.writeUnaligned(p, value)`**, decided before the slice: an
+     item at any address, inside `unsafe`, copied byte by byte (Rust's `read_unaligned`).
+814. **`Memory.viewRef(p, count)`**, decided before the slice (and on 16 November, after the
+     eighty-seventh slice): a window that writes, a `ref T[]`, for a buffer C wants filled. It borrows the
+     variable or the field that holds the pointer as `ref`, so while it is used the pointer is not read
+     and no second window is made from it; two pointers to the same memory are the program's to keep apart,
+     inside `unsafe`. The rules of a count below 0 and of `null` are those of `Memory.view`.
+815. **`Header.fromBytes(bytes)`**, decided before the slice: a struct or a union of plain data out of
+     exactly as many bytes as it takes, as they lie in memory, with no `unsafe`. Only a type that every
+     pattern of bits is a value of has it: integers, `float`, `double`, bit fields (a `bool` one too), and
+     arrays, structs and unions of them; a `bool`, a `char`, a raw pointer or a `CFunc` is an error. A
+     window of another length is a panic, `Pair.fromBytes reads 8 bytes, and it was given 9`, and a
+     length the checker sees is an error (the rule of `int.fromLittleEndian`). A struct of the program with
+     a function `fromBytes` keeps its own. `toBytes` waits: the padding of a struct has no value.
+816. **`examples/headers`**, decided before the slice: a BMP file header (`packed`, its `uint` fields at
+     bytes 2 and 10) and its info header, and an IPv4 header (the length and the version in four bits each,
+     the addresses a union of a `uint` and four bytes) read out of their bytes with `fromBytes`; the C file
+     beside it declares the same headers as C does (with `#pragma pack`, and the bit fields of Linux's
+     `struct iphdr`) and reads what SG wrote into raw memory. Three tests. It is the program of the
+     threshold that reads a binary header with a union and bit fields.
+817. **A field of a union is written whole** (from the slice): `word.halves.low = 1` and `bits.word += 1`
+     would read the field first, so they are errors whose hints read it, change the copy and write it
+     back. Only the place an assignment writes is free of `unsafe`: `xs[bits.word] = 5` reads it.
+818. **A union in the interpreter is its bytes** (from the slice): a value of one keeps the bytes C would
+     keep, and a field is read out of them as that field and written over them. A bit field is a field of
+     its own; the bits are placed only where a struct is written into raw memory or read out of it.
+819. **A window that writes, in the interpreter** (from the slice): its items are cells of their own, kept
+     in step with the memory: what the program wrote into the window goes to the memory before raw memory
+     is reached again, a call of C among it, and what was written into the memory, by C or through a
+     pointer, comes back into the window after; each side writes only the items it changed. Over memory C
+     gave (not `Memory.allocate`'s), what C writes there afterwards is not seen through the window, since
+     C may have given that memory back; a new window sees it.
+820. **What is tested first** (from the slice): a pointer is tested against its block before its
+     alignment, as in the interpreter's other panics; `Memory.copy` tests where it copies from before where
+     it copies to; `Memory.view` and `Memory.viewRef` test `null` and the count before the alignment, and a
+     window of no items tests nothing.
+821. **Memory aligned beyond 16 bytes on the heap** (from the slice): `new`, a `List`, a `HashMap`, a
+     `shared` value (whose counts in front are moved so that the value lies at a multiple), the frame of an
+     async function and of a task, the buffer of `sort` and `Memory.allocate` all take it from `sg_alloc`,
+     which is `malloc` up to 16 bytes and C11's `aligned_alloc` above; on Windows it will be `_aligned_malloc`.
+     A `List` of such items that grows is copied to a new block, since `realloc` keeps only what `malloc`
+     gives. On Linux and macOS `free` gives every block back; on Windows the blocks of `_aligned_malloc`
+     need `_aligned_free`, which the slice of Windows will call where the back end frees them.
+822. **A block of `Memory.allocate` is given back through a pointer to its type** (from the slice):
+     `Memory.free` gives one aligned beyond 16 bytes back with `sg_aligned_free`, by the type of the
+     pointer it is given. The interpreter remembers the alignment of each block and panics when it is given
+     back through a pointer to a type of another (`panic_unsafe_free_aligned`), so a program that would go
+     wrong on Windows goes wrong on macOS and Linux too. Memory C gave with `malloc` is given back through a
+     pointer to a type aligned to 16 bytes or less.
+823. **The helpers of the back end copy a field they cannot point at** (from the slice): writing a struct
+     out, `==` and the hash of a key are made of one function for each type, given the address of each
+     field. A bit field has no address and a field of a `packed` struct may lie where its type is not
+     reached through a pointer (C warns of it, and the build turns warnings into errors), so such a field
+     is copied first.
+824. **A struct by value to a function of the program's own C file** (from the slice): C sees the struct
+     the C file declares and SG the one it declares, two types of one layout, and the C compiler takes
+     them as different. `examples/headers` hands its headers to C through raw memory (`raw void`), which
+     is what a test of the layout wants anyway. A function of a library takes a struct by value as before.
+     In "Not here yet".
+825. **The keywords stay names** (from the slice): `union`, `packed` and `align` are words only in front of
+     a declaration of a type (`union Bits {`, `packed struct`, `align(8) struct`), so a variable or a
+     function may still be named `align`.
+826. **The C of Windows** (from the slice): the C the back end writes uses statement expressions and
+     `__builtin_` functions, which Clang and GCC read and Microsoft's `cl` does not; on Windows the
+     program will be compiled by Clang (`clang-cl` or MinGW), whose layout is Windows' (805). `SG_ALIGNED`
+     is `__declspec(align(n))` for `cl` and `__attribute__((aligned(n)))` for the others.
+827. **The tests**: `ok_union`, `ok_bit_fields`, `ok_packed`, `ok_align` (a value of `align(64)` behind
+     `new`, in a list, in a `shared checked` value, in a struct in a list, given to a task and given back,
+     and in raw memory), `ok_raw_windows`; `panic_bitfield_overflow`, `panic_bitfield_signed`,
+     `panic_raw_misaligned`, `panic_view_ref_misaligned`, `panic_from_bytes_length`,
+     `panic_unsafe_free_aligned` (the interpreter only), and `bitfield_wraps` in `tests/release`; 32
+     errors (`error_union_*`, `error_bitfield_*`, `error_packed_*`, `error_align_*`, `error_sizeof_*`,
+     `error_from_bytes_*`, `error_view_ref_twice`, `error_read_unaligned_void`); `examples/headers` with its
+     three tests. `cargo test` passes on macOS, where it compiles 339 of 1364 programs, 74 of them under
+     the thread sanitizer, and 22 of 27 programs of tests, and on Linux in a container with the same
+     counts. A first run on Linux found that glibc does not declare `posix_memalign` under `-std=c11`;
+     the runtime takes C11's `aligned_alloc` instead (821).
+828. **Measured** (`bitfields`): four million pixels of 16 bits in bit fields of 5, 6 and 5 made brighter
+     field by field five hundred times, then four thousand IPv4 headers read with `fromBytes` twenty
+     thousand times, take 0.326 to 0.330 s against 0.358 to 0.361 s for C with the same bit fields and
+     `memcpy`, 0.91 times, and 0.323 to 0.326 s in a debug build optimised as the others: the tests that a
+     value fits its bits cost nothing that shows here. A bit field is C's own, and
+     `fromBytes` is one test of the length and a `memcpy`. Why SG is a little faster was not looked into.
+829. **The test of layouts** (from the slice): `tests/layouts.rs` builds eighteen structs and unions (the
+     bit fields of every kind, bits left empty with and without a size, a union of a struct, a `packed`
+     struct holding a struct, `align(64)` and `align(32)` on a union) with the C the back end writes for
+     them, and compares where each field lies, the size and the alignment with what C gives: on this
+     machine from a program built with `cc` that prints them, and, where `clang` is, for macOS on Arm and
+     x86-64, Linux on x86-64, 64-bit Arm and RISC-V, and Windows with MSVC on x86-64 and Arm and with
+     MinGW, from the layouts `clang` dumps. Linux in its container has no `clang`, and tests its own
+     layout there. Given the wrong rule for a system, it fails with what differs.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -5726,12 +5883,13 @@ check off.
   the rule that it is waited for does not see it; it is stopped where the value it is lent from ends.
 - **Of raw memory**: a place in it lent (`read p[i]`, `ref p[i]`, a method called on `p[i]`, 511); items that
   own memory (the design's `put`, `take` and `moveItems`); `Memory.resize`; the address of a variable (85,
-  `Memory.addressOf`). Two are decided and will be done (16 November 2026): a check of alignment, so that a
-  `raw T` cast to a type it is not aligned for is a panic where `p[i]` or `Memory.view` reads it, in the
-  interpreter and in checked compiled code, as Zig's `@alignCast` and Rust's debug checks do; and a window
-  that writes, a `ref T[]` over raw memory (Rust's `slice::from_raw_parts_mut`), for a buffer C wants
-  filled. Their slice and their details are decided before they are written.
-- **Of calling C**: unions, bit fields, `packed` structs and alignment; a `va_list` (`vprintf`), a function
+  `Memory.addressOf`). In the interpreter a window of `Memory.viewRef` over memory C gave does not see what
+  C writes there after it was made (819). On Windows, the blocks the runtime aligns beyond 16 bytes are to
+  be given back with `_aligned_free` where the back end frees them (821).
+- **Of the layout of C**: `packed(2)` and the other packings of `#pragma pack`; an alignment written on one
+  field; `Memory.offsetOf`; `toBytes`; bit fields in a union, and in a `packed` struct (808); a union or a
+  struct without a name inside another; a struct by value to a function of the program's own C file (824).
+- **Of calling C**: a `va_list` (`vprintf`), a function
   of SG that takes `...`, and a `CFunc` to a function that takes it (753); the address of a `CString`
   kept by C, `sg build -L path` for a library the C compiler does not find by itself, `pkg-config`,
   frameworks of macOS, Windows. A C function whose name the C library gives another symbol (`stat` on

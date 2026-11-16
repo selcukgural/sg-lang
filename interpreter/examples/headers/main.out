@@ -1,0 +1,9 @@
+BmpFileHeader { kind = 19778, fileSize = 70, reserved1 = 0, reserved2 = 0, dataOffset = 54 }
+2 x 2 pixels, 24 bits each, the pixels at byte 54
+IPv4, a header of 20 bytes, 60 bytes in all
+UDP from 192.168.1.10 to 8.8.8.8, 64 hops to live
+the source as one number: 0a01a8c0
+true
+true
+true
+true

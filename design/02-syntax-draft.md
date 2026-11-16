@@ -1504,6 +1504,49 @@ The window borrows `data`, so it does not outlive the variable that holds the po
 there is the program's promise, inside `unsafe`. While a call of C waits (`curl_easy_perform`), the other
 tasks of the program run, in the interpreter too.
 
+What C lays out, SG writes as C has it. A `union` holds one of its fields at a time in the same bytes: it is
+built with one, a field is written whole, and read inside `unsafe`, since which field it holds is not known.
+A bit field takes a number of bits of its type; a value that does not fit is the rule of overflow, and it has
+no address, so it is copied, never lent. A `packed` struct has no padding, and its fields are copied out.
+`align(N)` puts a type at a multiple of N wherever it is kept. Each is laid out as C lays it out on the
+machine, Windows' rule for bit fields too. A struct that every pattern of bits is a value of is read out of
+bytes with no `unsafe`:
+
+```
+union Address {                                  // one of its fields at a time, in the same bytes
+    uint value
+    byte[4] octets
+}
+
+struct Ipv4 {
+    byte headerLength : 4                        // a bit field: four bits of a byte
+    byte version : 4
+    byte service
+    ushort totalLength
+    uint _ : 0                                   // bits left empty, up to the next unit of a uint
+    Address source
+}
+
+packed struct BmpHeader {                        // no padding: `size` lies at byte 2
+    ushort kind
+    uint size
+}
+
+align(64) struct Counter {                       // at a multiple of 64 bytes, on the heap too
+    long count
+}
+
+var address = Address { octets = byte[4] { 10, 0, 0, 1 } }
+print(unsafe address.value)                      // which field it holds is not known
+address.value = 0x08080808                       // written whole: no unsafe
+var ip = Ipv4.fromBytes(read packet)             // the bytes as they are; a wrong length is a panic
+var header = BmpHeader.fromBytes(bytes[..6])
+var size = header.size                           // copied out; `read header.size` is an error
+print(Memory.sizeOf<BmpHeader>())                // 6, what C has
+var window = unsafe Memory.viewRef(buffer, 64)   // a ref byte[] over raw memory, for C to read
+var word = unsafe Memory.readUnaligned((raw uint)(buffer + 1))   // `p[0]` there is a panic in a debug build
+```
+
 ### The clock
 
 Three types come with the language: `Instant` for measuring, `Duration` for a span of time, `DateTime` for the

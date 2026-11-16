@@ -1,0 +1,5 @@
+0
+panic: raw memory is reached 2 byte(s) past a multiple of 4, the alignment of `uint`: `Memory.readUnaligned` reads it there
+  --> panic_raw_misaligned.sg:7:15
+ 7 |         print(word[0])
+   |               ^^^^^^^

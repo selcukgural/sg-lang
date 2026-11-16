@@ -1,0 +1,5 @@
+error: a `packed` struct has no bit fields: the compilers of C lay the two out in different ways
+  on Windows bit fields are packed by units of their type, elsewhere bit by bit
+  --> error_packed_bits.sg:3:15
+ 3 |     byte kind : 4
+   |               ^^^

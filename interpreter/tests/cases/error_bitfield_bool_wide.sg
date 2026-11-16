@@ -1,0 +1,7 @@
+// A `bool` bit field takes 1 bit.
+struct Flags {
+    bool ready : 2
+}
+
+void main() {
+}

@@ -1,0 +1,29 @@
+// A window that writes (`Memory.viewRef`) and items at any address (`readUnaligned`,
+// `writeUnaligned`): what one writes, the others read.
+void fill(ref byte[] window, byte from) {
+    for i in 0..window.length() {
+        window[i] = from + (byte)i
+    }
+}
+
+void main() {
+    unsafe {
+        var block = Memory.allocate<byte>(16)
+        var window = Memory.viewRef(block, 8)
+        fill(ref window, 10)
+        print(block[7])
+        block[0] = 99
+        print(Memory.view(block, 2))
+        var word = (raw uint)(block + 1)
+        print(Memory.readUnaligned(word))
+        Memory.writeUnaligned(word, 0x01020304)
+        print(Memory.view(block, 6))
+        var numbers = Memory.allocate<int>(4)
+        var all = Memory.viewRef(numbers, 4)
+        all.sort()
+        all[3] = 40
+        print(numbers[3])
+        Memory.free(numbers)
+        Memory.free(block)
+    }
+}

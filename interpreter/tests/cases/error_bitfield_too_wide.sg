@@ -1,0 +1,7 @@
+// A bit field has no more bits than its type.
+struct Flags {
+    byte kind : 9
+}
+
+void main() {
+}

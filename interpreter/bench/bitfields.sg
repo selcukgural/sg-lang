@@ -1,0 +1,60 @@
+// Bit fields. Four million pixels of 16 bits (5 bits of red, 6 of green, 5 of blue) in a
+// list, each made brighter field by field, five hundred times; then the headers of four thousand
+// packets read out of their bytes with `fromBytes`, twenty thousand times, their fields added up.
+struct Pixel : Copyable {
+    ushort red : 5
+    ushort green : 6
+    ushort blue : 5
+}
+
+struct Ipv4 : Copyable {
+    byte headerLength : 4
+    byte version : 4
+    byte service
+    ushort totalLength
+    ushort id
+    ushort fragment
+    byte timeToLive
+    byte protocol
+    ushort checksum
+    uint source
+    uint target
+}
+
+void main() {
+    var pixels = List<Pixel>()
+    for i in 0..4000000 {
+        pixels.add(Pixel { red = (ushort)(i & 31), green = (ushort)(i >> 5 & 63), blue = (ushort)(i >> 11 & 31) })
+    }
+    for _ in 0..500 {
+        for i in 0..pixels.length() {
+            var pixel = pixels[i]
+            if pixel.red < 31 {
+                pixel.red += 1
+            }
+            if pixel.green < 62 {
+                pixel.green += 2
+            }
+            pixel.blue = pixel.blue >> 1
+            pixels[i] = pixel
+        }
+    }
+    long sum = 0
+    for pixel in pixels {
+        sum += (long)pixel.red + (long)pixel.green + (long)pixel.blue
+    }
+    print(sum)
+
+    var packets = List<byte>()
+    for k in 0..4000 * 20 {
+        packets.add((byte)(k * 7 + k / 20 & 0xff))
+    }
+    long total = 0
+    for _ in 0..20000 {
+        for k in 0..4000 {
+            var ip = Ipv4.fromBytes(packets[k * 20..k * 20 + 20])
+            total += (long)ip.version + (long)ip.headerLength + (long)ip.timeToLive + (long)(ip.source & 0xff)
+        }
+    }
+    print(total)
+}

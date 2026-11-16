@@ -242,6 +242,7 @@ pub(crate) fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
         | ExprKind::Str(_)
         | ExprKind::Char(_)
         | ExprKind::Null
+        | ExprKind::SizeOf { .. }
         | ExprKind::Var(_)
         | ExprKind::Constant { .. }
         | ExprKind::FuncRef(_)

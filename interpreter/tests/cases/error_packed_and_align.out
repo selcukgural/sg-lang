@@ -1,0 +1,5 @@
+error: a type is `packed` or `align(N)`, not both
+  `packed` takes the padding out and makes the alignment 1; `align` makes it larger
+  --> error_packed_and_align.sg:2:1
+ 2 | packed align(8) struct Header {
+   | ^^^^^^^^^^^^^^^

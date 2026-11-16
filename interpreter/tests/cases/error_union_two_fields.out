@@ -1,0 +1,5 @@
+error: a union is built with one of its fields, and this gives 2
+  a union holds one field at a time: they all start where it starts
+  --> error_union_two_fields.sg:8:33
+ 8 |     var bits = Bits { word = 1, number = 2.0 }
+   |                                 ^^^^^^

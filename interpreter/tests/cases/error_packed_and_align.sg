@@ -1,0 +1,7 @@
+// A type is `packed` or `align(N)`, not both.
+packed align(8) struct Header {
+    byte kind
+}
+
+void main() {
+}

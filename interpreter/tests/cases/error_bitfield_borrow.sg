@@ -1,0 +1,15 @@
+// A bit field is not lent: it has no address.
+struct Flags {
+    uint version : 4
+    uint length : 4
+}
+
+void bump(ref uint n) {
+    n += 1
+}
+
+void main() {
+    var flags = Flags { version = 4, length = 5 }
+    bump(ref flags.version)
+    print(flags.version)
+}

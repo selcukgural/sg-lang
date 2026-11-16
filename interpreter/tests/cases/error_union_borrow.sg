@@ -1,0 +1,16 @@
+// A field of a union is not lent.
+union Bits {
+    uint word
+    float number
+}
+
+void show(read uint word) {
+    print(word)
+}
+
+void main() {
+    var bits = Bits { number = 1.0 }
+    unsafe {
+        show(read bits.word)
+    }
+}

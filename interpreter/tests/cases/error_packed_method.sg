@@ -1,0 +1,19 @@
+// A method is lent the value it is called on, and a field of a `packed` struct is not lent.
+struct Pair {
+    int low
+    int high
+
+    int sum(read this) {
+        return this.low + this.high
+    }
+}
+
+packed struct Header {
+    byte kind
+    Pair pair
+}
+
+void main() {
+    var header = Header { kind = 1, pair = Pair { low = 1, high = 2 } }
+    print(header.pair.sum())
+}

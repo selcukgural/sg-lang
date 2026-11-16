@@ -1,0 +1,8 @@
+// A union has no bit fields.
+union Bits {
+    uint word : 4
+    float number
+}
+
+void main() {
+}

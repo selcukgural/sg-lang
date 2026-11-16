@@ -1,0 +1,11 @@
+// `fromBytes` takes any bytes, and not every byte is a `bool`.
+struct Entry {
+    int key
+    bool live
+}
+
+void main() {
+    var bytes = byte[8]
+    var entry = Entry.fromBytes(read bytes)
+    print(entry.key)
+}

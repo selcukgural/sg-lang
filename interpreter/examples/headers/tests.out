@@ -1,0 +1,4 @@
+ok    a BMP file header has no padding
+ok    the length of the header and the version share the first byte
+ok    an address is the four bytes of its number
+3 test(s) passed

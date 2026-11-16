@@ -1,0 +1,5 @@
+error: a union is built with one of its fields: `Bits { word = ... }`
+  the bytes the field does not cover are zero
+  --> error_union_no_field.sg:8:16
+ 8 |     var bits = Bits { }
+   |                ^^^^^^^^

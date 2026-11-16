@@ -1,0 +1,6 @@
+error: a field of a `packed` struct is not lent: `header.pair` may lie where a `Pair` cannot be reached
+  a method is lent the value it is called on
+  --> error_packed_method.sg:18:11
+ 18 |     print(header.pair.sum())
+    |           ^^^^^^^^^^^
+  hint: copy it out: `var part = header.pair`, and write it back whole

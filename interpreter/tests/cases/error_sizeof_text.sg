@@ -1,0 +1,4 @@
+// `Memory.sizeOf` takes a type of plain data.
+void main() {
+    print(Memory.sizeOf<string>())
+}

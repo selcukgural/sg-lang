@@ -1,0 +1,7 @@
+// `align(N)` makes the alignment larger.
+align(2) struct Slot {
+    long count
+}
+
+void main() {
+}
