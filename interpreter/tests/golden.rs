@@ -678,7 +678,8 @@ fn interpreted_input_cancel() {
 /// Async programs on the network, on processes and on threads, compiled with a pool of one
 /// thread and of two (`SG_POOL_MOST`, which no program sets): the thread that waits on the loop
 /// of the network is then soon the only one, and a task that a thread outside the pool wakes
-/// meanwhile has to wake the loop to run. Under the thread sanitizer when it is there.
+/// meanwhile has to wake the loop to run; and a thousand tasks woken at once fill the queue of a
+/// thread (`ok_pool_queues`). Under the thread sanitizer when it is there.
 #[test]
 fn compiled_small_pools() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -690,7 +691,7 @@ fn compiled_small_pools() {
     std::fs::create_dir_all(&work).unwrap();
     let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
     let mut failures = Vec::new();
-    for stem in ["ok_net_wakes_from_thread", "ok_net_echo", "ok_net_cancel", "ok_net_slots", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel"] {
+    for stem in ["ok_net_wakes_from_thread", "ok_pool_queues", "ok_net_echo", "ok_net_cancel", "ok_net_slots", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel"] {
         let source = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.sg"))).unwrap();
         let expected = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.out"))).unwrap();
         let c_file = work.join(format!("{stem}.c"));

@@ -1,0 +1,47 @@
+// The queues of the pool in compiled code: a cancel on a thread of the pool wakes a thousand
+// tasks, more than the ring of one thread holds, and the other threads take them; a chain of
+// tasks, each awaited by the one above it, runs through the slot of a thread three at a time.
+// What the program prints does not depend on the threads.
+async int sleeper(int n, CancellationToken token) {
+    var woke = await Task.delay(100000000, read token)
+    int sum = 0
+    for i in 0..2000 {
+        sum = (sum + i * n) % 1000003
+    }
+    if woke is Error(_) {
+        return sum
+    }
+    return -1
+}
+
+async int chain(int depth) {
+    if depth == 0 {
+        await Task.delay(1)
+        return 0
+    }
+    var below = chain(depth - 1)
+    return await below + 1
+}
+
+async void main() {
+    var source = CancellationSource()
+    var tasks = List<Task<int>>()
+    for n in 0..1000 {
+        tasks.add(sleeper(n, source.token()))
+    }
+    // After a delay this task runs on a thread of the pool, which the cancel wakes them from.
+    await Task.delay(1)
+    source.cancel()
+    var sums = await Task.whenAll(tasks)
+    long total = 0
+    for sum in read sums {
+        total += (long)sum
+    }
+    print($"{sums.length()} woke, {total}")
+
+    var chains = List<Task<int>>()
+    for _ in 0..4 {
+        chains.add(chain(500))
+    }
+    print(await Task.whenAll(chains))
+}

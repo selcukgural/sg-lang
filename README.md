@@ -177,7 +177,7 @@ C# (`async`, `await`, `Task.delay`, waiting the wrong way a compile error), canc
 task looks at where it chooses, lists of tasks waited for all at once or as they end (`Task.whenAll`,
 `Task.whenAny`), and async reading and writing of files and the input, streams included, run in the
 interpreter and in compiled code, where an async function becomes a machine whose variables live in a
-frame, run by a pool of threads, and input and output the async way runs on threads of its own. TCP
+frame, run by a pool of threads that each keep a queue of tasks and steal from the others when they have none, as Tokio's do, and input and output the async way runs on threads of its own. TCP
 connections (`TcpListener`, `TcpStream`, with and without async) run in both too: compiled, a thread of
 the pool with nothing to do waits for every socket a task waits for, with epoll or kqueue, as Tokio's
 driver, each socket put on the loop once, and a cancel ends a wait for a socket or for a line of the input at once. A connection is read line by line through a `StreamReader` that borrows it
