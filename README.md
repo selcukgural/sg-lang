@@ -260,7 +260,10 @@ Licensed under either of
 
 at your option. This is the way Rust is licensed. It covers the design documents, the
 interpreter and the back end, and the C that `sg build` writes into a compiled program: a
-program written in SG is yours, under whatever license you choose.
+program written in SG is yours, under whatever license you choose. The same license covers the
+picture of Pasha, the mascot (`brand/pasha.png`). The Unicode tables
+(`interpreter/src/unicode_tables.rs`) are made from the Unicode Character Database, under the
+Unicode License v3, whose notice is at the top of that file.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
 in this work by you, as defined in the Apache-2.0 license, shall be dual licensed as above,
