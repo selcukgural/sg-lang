@@ -1,0 +1,6 @@
+error: `printf` takes `...`, and a `CFunc` points at a function that takes a fixed count of arguments
+  C calls a function that takes `...` by a type that says so, and SG has none
+  --> error_varargs_cfunc.sg:7:30
+ 7 |     CFunc<raw byte, int> f = printf
+   |                              ^^^^^^
+  hint: call `printf` from an `export` function of your own, and use that

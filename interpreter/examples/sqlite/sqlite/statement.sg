@@ -1,0 +1,133 @@
+// A prepared statement: bound, stepped through its rows, reset and run again. It is
+// finalized when it ends.
+
+extern "sqlite3" {
+    struct sqlite3_stmt
+    int sqlite3_prepare_v2(raw sqlite3 db, read CString sql, int bytes, ref raw sqlite3_stmt stmt, raw raw byte tail)
+    int sqlite3_finalize(raw sqlite3_stmt stmt)
+    int sqlite3_reset(raw sqlite3_stmt stmt)
+    int sqlite3_clear_bindings(raw sqlite3_stmt stmt)
+    int sqlite3_step(raw sqlite3_stmt stmt)
+    int sqlite3_bind_int64(raw sqlite3_stmt stmt, int index, long value)
+    int sqlite3_bind_double(raw sqlite3_stmt stmt, int index, double value)
+    int sqlite3_bind_text(raw sqlite3_stmt stmt, int index, raw byte text, int bytes, CFunc<raw void, void> destructor)
+    int sqlite3_bind_null(raw sqlite3_stmt stmt, int index)
+    int sqlite3_column_count(raw sqlite3_stmt stmt)
+    int sqlite3_column_type(raw sqlite3_stmt stmt, int column)
+    long sqlite3_column_int64(raw sqlite3_stmt stmt, int column)
+    double sqlite3_column_double(raw sqlite3_stmt stmt, int column)
+    raw byte sqlite3_column_text(raw sqlite3_stmt stmt, int column)
+    int sqlite3_column_bytes(raw sqlite3_stmt stmt, int column)
+}
+
+public struct Statement : Disposable {
+    raw sqlite3_stmt handle
+    raw sqlite3 db
+
+    Result<Statement, SqliteError> prepare(raw sqlite3 db, read string sql) {
+        var text = try cText(sql)
+        raw sqlite3_stmt stmt = null
+        var code = unsafe sqlite3_prepare_v2(db, read text, -1, ref stmt, null)
+        if code != 0 {
+            return Error(lastError(db, code))
+        }
+        if stmt == null {
+            return Error(SqliteError { code = 1, message = "no statement in the text" })
+        }
+        return Ok(Statement { handle = stmt, db = db })
+    }
+
+    // Binds `value` to the parameter at `index`, from 1 (`?1`, or the first `?`).
+    public Result<void, SqliteError> bindLong(ref this, int index, long value) {
+        return this.failed(unsafe sqlite3_bind_int64(this.handle, index, value))
+    }
+
+    public Result<void, SqliteError> bindDouble(ref this, int index, double value) {
+        return this.failed(unsafe sqlite3_bind_double(this.handle, index, value))
+    }
+
+    // SQLite copies the text (SQLITE_TRANSIENT), so it may end after the call.
+    public Result<void, SqliteError> bindText(ref this, int index, read string value) {
+        if value.length() > (nint)int.MaxValue {
+            return Error(codeError(18))
+        }
+        // SQLITE_TRANSIENT: `(sqlite3_destructor_type)-1`, a pointer no function lies at.
+        nint minusOne = -1
+        var transient = unsafe (CFunc<raw void, void>)(raw void)minusOne
+        var bytes = value.asBytes()
+        return this.failed(unsafe sqlite3_bind_text(this.handle, index, bytes.pointer(), (int)value.length(), transient))
+    }
+
+    public Result<void, SqliteError> bindNull(ref this, int index) {
+        return this.failed(unsafe sqlite3_bind_null(this.handle, index))
+    }
+
+    // Runs the statement to its next row: `true` when there is one to read, `false` when it
+    // is done.
+    public Result<bool, SqliteError> step(ref this) {
+        var code = unsafe sqlite3_step(this.handle)
+        if code == 100 {
+            return Ok(true)
+        }
+        if code == 101 {
+            return Ok(false)
+        }
+        return Error(lastError(this.db, code))
+    }
+
+    // Back to its start, to run again; the values bound stay, unless `clear` is true.
+    public void reset(ref this, bool clear) {
+        // What `reset` gives is the error of the last step, which `step` gave already.
+        _ = unsafe sqlite3_reset(this.handle)
+        if clear {
+            _ = unsafe sqlite3_clear_bindings(this.handle)
+        }
+    }
+
+    public int columnCount(read this) {
+        return unsafe sqlite3_column_count(this.handle)
+    }
+
+    // Whether the column of the row is NULL.
+    public bool isNull(read this, int column) {
+        // 5: SQLITE_NULL.
+        return unsafe sqlite3_column_type(this.handle, column) == 5
+    }
+
+    public long columnLong(read this, int column) {
+        return unsafe sqlite3_column_int64(this.handle, column)
+    }
+
+    public double columnDouble(read this, int column) {
+        return unsafe sqlite3_column_double(this.handle, column)
+    }
+
+    // The column as a text, `null` for NULL. Its bytes are copied: SQLite's own are good only
+    // until the next step.
+    public Result<string?, SqliteError> columnText(read this, int column) {
+        var p = unsafe sqlite3_column_text(this.handle, column)
+        if p == null {
+            return Ok(null)
+        }
+        nint count = unsafe sqlite3_column_bytes(this.handle, column)
+        var bytes = List<byte>()
+        for i in 0..count {
+            bytes.add(unsafe p[i])
+        }
+        if string.fromUtf8(read bytes) is Ok(text) {
+            return Ok(text.clone())
+        }
+        return Error(SqliteError { code = 20, message = "a column that is not UTF-8 text" })
+    }
+
+    Result<void, SqliteError> failed(read this, int code) {
+        if code == 0 {
+            return Ok()
+        }
+        return Error(lastError(this.db, code))
+    }
+
+    void dispose(ref this) {
+        _ = unsafe sqlite3_finalize(this.handle)
+    }
+}

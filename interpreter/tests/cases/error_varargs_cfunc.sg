@@ -1,0 +1,9 @@
+// A function of C that takes `...` is no `CFunc`: its type says it takes a fixed count.
+extern {
+    int printf(read CString format, ...)
+}
+
+void main() {
+    CFunc<raw byte, int> f = printf
+    print(f == null)
+}

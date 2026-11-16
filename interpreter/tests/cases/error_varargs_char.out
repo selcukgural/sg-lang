@@ -1,0 +1,6 @@
+error: a `char` does not go to C after `...`
+  a `char` of SG is a Unicode character of 32 bits, and C has no type of it
+  --> error_varargs_char.sg:9:36
+ 9 |     _ = unsafe printf(read format, c)
+   |                                    ^
+  hint: `(uint)c`

@@ -1,0 +1,5 @@
+error: a function of SG takes a fixed count of arguments: only a function of C, declared in an `extern` block, takes `...`
+  --> error_varargs_sg_function.sg:2:20
+ 2 | int sum(int first, ...) {
+   |                    ^^^
+  hint: several values of one type are given as a slice: `read int[] values`

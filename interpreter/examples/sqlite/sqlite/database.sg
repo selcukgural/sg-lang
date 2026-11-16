@@ -1,0 +1,177 @@
+// SQLite behind a safe interface: the functions of C stay inside this module, and the code
+// that uses it writes no `unsafe`. A `Database` gives its connection back when it ends; so
+// does a `Statement`, also one that outlives its database (SQLite keeps the connection until
+// its last statement is finalized).
+
+extern "sqlite3" {
+    struct sqlite3
+    int sqlite3_open_v2(read CString filename, ref raw sqlite3 db, int flags, raw byte vfs)
+    int sqlite3_close_v2(raw sqlite3 db)
+    raw byte sqlite3_errmsg(raw sqlite3 db)
+    raw byte sqlite3_errstr(int code)
+    int sqlite3_exec(raw sqlite3 db, read CString sql, CFunc<raw void, int, raw raw byte, raw raw byte, int> callback, raw void data, ref raw byte errmsg)
+    int sqlite3_changes(raw sqlite3 db)
+    long sqlite3_last_insert_rowid(raw sqlite3 db)
+    void sqlite3_free(raw void p)
+    int sqlite3_db_config(raw sqlite3 db, int op, ...)
+    raw byte sqlite3_mprintf(read CString format, ...)
+}
+
+// What SQLite says went wrong: its code (`SQLITE_ERROR` is 1, `SQLITE_CONSTRAINT` 19) and
+// its message.
+public struct SqliteError : Formattable {
+    public int code
+    public string message
+
+    void format(read this, ref Formatter f) {
+        f.write($"{this.message} (code {this.code})")
+    }
+}
+
+// The message of SQLite's connection, as an error with `code`.
+SqliteError lastError(raw sqlite3 db, int code) {
+    var text = unsafe string.fromCString(sqlite3_errmsg(db)) ?? "a message that is not UTF-8"
+    return SqliteError { code = code, message = text.clone() }
+}
+
+// SQLite's message for a code alone, when there is no connection to ask.
+SqliteError codeError(int code) {
+    var text = unsafe string.fromCString(sqlite3_errstr(code)) ?? "a message that is not UTF-8"
+    return SqliteError { code = code, message = text.clone() }
+}
+
+// A text for C; one with a zero byte inside is no SQL.
+Result<CString, SqliteError> cText(read string text) {
+    var made = CString.from(text) ?? return Error(SqliteError { code = 1, message = "a zero byte inside the text" })
+    return Ok(made)
+}
+
+// What the callback of `rows` fills in, through the address SQLite hands back to it.
+struct Collected {
+    List<List<string?>> rows
+    bool notText
+}
+
+// Called by SQLite for each row `rows` reads: the texts of its columns, `null` for NULL.
+// Giving back 1 stops the query.
+export int collectRow(raw void data, int count, raw raw byte values, raw raw byte names) {
+    var collected = unsafe (ref Collected)data
+    var row = List<string?>()
+    for i in 0..count {
+        raw byte value = unsafe values[i]
+        if value == null {
+            row.add(null)
+            continue
+        }
+        if unsafe string.fromCString(value) is Ok(text) {
+            row.add(text.clone())
+        } else {
+            collected.notText = true
+            return 1
+        }
+    }
+    collected.rows.add(row)
+    return 0
+}
+
+// A connection to a database: a file, or `:memory:` for one that lives as long as it does.
+public struct Database : Disposable {
+    raw sqlite3 handle
+
+    // Opens the database at `path`, made if it is not there. The connection is defensive:
+    // SQL cannot write what SQLite keeps for itself (a corrupt schema is no way into memory).
+    public Result<Database, SqliteError> open(read string path) {
+        var name = try cText(path)
+        raw sqlite3 db = null
+        // 6: SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE.
+        var code = unsafe sqlite3_open_v2(read name, ref db, 6, null)
+        if code != 0 {
+            if db == null {
+                return Error(codeError(code))
+            }
+            // SQLite makes a connection even when it cannot open, to say why.
+            var error = lastError(db, code)
+            _ = unsafe sqlite3_close_v2(db)
+            return Error(error)
+        }
+        // 1010: SQLITE_DBCONFIG_DEFENSIVE, which takes an `int` and an `int*` after `...`.
+        raw int unused = null
+        code = unsafe sqlite3_db_config(db, 1010, (int)1, unused)
+        if code != 0 {
+            var error = lastError(db, code)
+            _ = unsafe sqlite3_close_v2(db)
+            return Error(error)
+        }
+        return Ok(Database { handle = db })
+    }
+
+    // Runs `sql`, one statement or several separated by `;`, and keeps no rows.
+    public Result<void, SqliteError> execute(read this, read string sql) {
+        var text = try cText(sql)
+        raw byte message = null
+        var code = unsafe sqlite3_exec(this.handle, read text, null, null, ref message)
+        return this.failed(code, message)
+    }
+
+    // Runs `sql` and gives the rows it reads, each column as a text or `null`.
+    public Result<List<List<string?>>, SqliteError> rows(read this, read string sql) {
+        var text = try cText(sql)
+        var collected = Collected { rows = List<List<string?>>(), notText = false }
+        raw byte message = null
+        var code = unsafe sqlite3_exec(this.handle, read text, collectRow, Memory.addressOf(ref collected), ref message)
+        if collected.notText {
+            unsafe sqlite3_free((raw void)message)
+            return Error(SqliteError { code = 20, message = "a column that is not UTF-8 text" })
+        }
+        try this.failed(code, message)
+        return Ok(collected.rows.replace(List<List<string?>>()))
+    }
+
+    // Prepares one statement, to be run with `step`, as often as it is reset.
+    public Result<Statement, SqliteError> prepare(read this, read string sql) {
+        return Statement.prepare(this.handle, sql)
+    }
+
+    // How many rows the last INSERT, UPDATE or DELETE changed.
+    public int changes(read this) {
+        return unsafe sqlite3_changes(this.handle)
+    }
+
+    // The rowid of the last row inserted.
+    public long lastInsertId(read this) {
+        return unsafe sqlite3_last_insert_rowid(this.handle)
+    }
+
+    // The error of a call of `sqlite3_exec`, whose message SQLite made with its own allocator.
+    Result<void, SqliteError> failed(read this, int code, raw byte message) {
+        if code == 0 {
+            return Ok()
+        }
+        if message == null {
+            return Error(lastError(this.handle, code))
+        }
+        var text = unsafe string.fromCString(message) ?? "a message that is not UTF-8"
+        var error = SqliteError { code = code, message = text.clone() }
+        unsafe sqlite3_free((raw void)message)
+        return Error(error)
+    }
+
+    void dispose(ref this) {
+        _ = unsafe sqlite3_close_v2(this.handle)
+    }
+}
+
+// `text` as an SQL literal, between single quotes, each quote inside doubled: `O'Brien` is
+// `'O''Brien'`. SQLite's own `%Q`, through `sqlite3_mprintf`, which takes `...`.
+public Result<string, SqliteError> quote(read string text) {
+    var value = try cText(text)
+    var format = try cText("%Q")
+    var made = unsafe sqlite3_mprintf(read format, read value)
+    if made == null {
+        return Error(codeError(7))
+    }
+    var quoted = unsafe string.fromCString(made) ?? "a text that is not UTF-8"
+    var copy = quoted.clone()
+    unsafe sqlite3_free((raw void)made)
+    return Ok(copy)
+}

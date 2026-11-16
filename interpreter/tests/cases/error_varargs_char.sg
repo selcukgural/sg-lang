@@ -1,0 +1,10 @@
+// A `char` of SG has no type in C.
+extern {
+    int printf(read CString format, ...)
+}
+
+void main() {
+    var format = CString.from("%c\n") ?? panic("no zero byte")
+    var c = (char)97
+    _ = unsafe printf(read format, c)
+}

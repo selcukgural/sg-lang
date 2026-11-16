@@ -1,0 +1,4 @@
+error: `...` is written last: what C takes after it has no names
+  --> error_varargs_not_last.sg:3:35
+ 3 |     int scan(read CString format, ..., int count)
+   |                                   ^^^

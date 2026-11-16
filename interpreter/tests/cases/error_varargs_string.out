@@ -1,0 +1,5 @@
+error: a `string` does not go to C after `...`
+  --> error_varargs_string.sg:9:36
+ 9 |     _ = unsafe printf(read format, name)
+   |                                    ^^^^
+  hint: a text goes to C as `read CString`: `CString.from(text)` makes one

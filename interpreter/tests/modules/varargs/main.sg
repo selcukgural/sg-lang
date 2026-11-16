@@ -1,0 +1,50 @@
+// Functions of a C file that take `...`: numbers of each width, an `export` function and a
+// `CFunc` after `...`, places lent with `ref`, and texts lent with `read`.
+extern "./native.c" {
+    long sum_longs(int count, ...)
+    double mean(int count, ...)
+    int call_each(int count, ...)
+    void number_each(int count, ...)
+    int shift_points(int count, ...)
+    long lengths(int count, ...)
+}
+
+struct Point {
+    int x
+    int y
+}
+
+export int triple(int n) {
+    return n * 3
+}
+
+export int square(int n) {
+    return n * n
+}
+
+void main() {
+    long a = 5000000000
+    long b = -2
+    print(unsafe sum_longs(2, a, b))
+    print(unsafe sum_longs(3, (long)1, (long)2, (long)3))
+    print(unsafe sum_longs(0))
+    double x = 1.5
+    print(unsafe mean(3, x, (double)2, (double)4.5))
+
+    CFunc<int, int> f = square
+    print(unsafe call_each(2, triple, (int)4, f, (int)5))
+
+    int first = 0
+    int second = 0
+    unsafe number_each(2, ref first, ref second)
+    print($"{first} {second}")
+
+    var p = Point { x = 1, y = 2 }
+    var q = Point { x = 10, y = 20 }
+    print(unsafe shift_points(2, ref p, ref q))
+    print($"{p.x} {p.y} {q.x} {q.y}")
+
+    var tea = CString.from("tea") ?? panic("no zero byte")
+    var coffee = CString.from("coffee") ?? panic("no zero byte")
+    print(unsafe lengths(2, read tea, read coffee))
+}

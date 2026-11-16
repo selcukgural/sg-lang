@@ -47,7 +47,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Tasks | `Task.run(work, x, share total)` starts `work(x, share total)` as a task and gives a `Task<R>`, `R` being what `work` returns; a `Func` can be started too. `t.wait()` waits for it and gives that value (`try t.wait()` passes its error on). A task that is not waited for on every path is a compile error, and so is `Task.run(...)` alone or dropped with `_ =`. What a task is given and gives back owns all it holds: no borrow, no `shared checked` value, no `Task` (the thread rule, also inside fields). In the interpreter a task runs on a thread of its own when it is waited for, so the output is the same on every run; compiled code starts a thread of the system for it at once. A panic inside one names the line that started it |
 | Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
 | Raw memory | `raw T` is an address that owns nothing and may be `null`; it points at plain data (numbers, `bool`, `char`, raw pointers, and arrays and structs of them), laid out as C lays it, or is a `raw void`. `Memory.allocate<T>(n)` gives room for `n` items, all zero (C's `calloc`, in the interpreter too). `p[i]` reads and writes an item (`p[i] = v`, `p[i].x += 1`), `p + n` and `p - n` move by items, `(raw byte)p` reads the memory as another type, `Memory.copy(source, target, count)` copies items (also over itself) and `Memory.free(p)` gives the block back, or memory C gave with `malloc`; each of them is written inside `unsafe { ... }`, or with `unsafe` in front of a value (`var first = unsafe p[0]`), and an `unsafe` that nothing needs is an error. `p == q` and `p == null` need no `unsafe`, nor do `p < q` and `p - q` (the order of two addresses, and the count of items between them) and `(nuint)p` (an address as a number); `unsafe (raw T)n` makes a pointer out of a `nint` or a `nuint` (`(raw void)(nint)-1`). The interpreter checks every item against the block it came from and panics outside it, after `Memory.free` and through `null`; compiled code checks nothing, and a `raw T` is a `T*`. A raw pointer does not go to another task |
-| Calling C | `extern "z" { int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen) }` declares functions of C, a block for each library (linked as `-lz`; `extern { }` is the C library itself), each called inside `unsafe`. A C function takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data (C's `T*` and `const T*`, for the time of the call; `ref raw T` is `T**`), a struct of plain data by value, laid out as C lays it out, and `read CString`, and gives a number, a `bool`, a `raw T`, a struct of plain data or nothing. `struct sqlite3` without a body in an `extern` block is a type of C that SG only points at (`raw sqlite3`). `CString.from(text)` gives a `Result<CString, TextError>`, an error for a zero byte inside; `unsafe string.fromCString(p)` copies what C ended with a zero byte and checks that it is UTF-8. `buffer.pointer()` on a list, an array or a slice of plain data is written only as an argument of a C function. The functions are private to their module unless `public` is written on one, so a module can hide a library behind a safe interface, and a `Disposable` type gives back what C made when it ends (`examples/zlib`, whose `Deflater` holds zlib's stream). `extern "./native.c" { ... }` names a C file of the module's folder in place of a library: it is compiled with the program, in the same unit, so its macros, `static inline` functions, builtins and assembly are reached through functions it declares, and an inline one is inlined; a library block of the module (`extern "z" { }`, also empty) links what the file needs. `int opterr` in an `extern` block, without parentheses, is a variable of C, read and written inside `unsafe` (`unsafe opterr`, `unsafe { opterr = 0 }`, `unsafe { origin.y = 4 }`) as an item of raw memory. `C.errno()` gives what the last call of C left in `errno`, read right after it, `C.setErrno(n)` sets what the next one finds, and `IoError.fromCode(n)` makes an `IoError` of it. The interpreter builds a small library of wrappers with `cc` and opens it with `dlopen`; compiled code calls C directly |
+| Calling C | `extern "z" { int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen) }` declares functions of C, a block for each library (linked as `-lz`; `extern { }` is the C library itself), each called inside `unsafe`. A C function takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data (C's `T*` and `const T*`, for the time of the call; `ref raw T` is `T**`), a struct of plain data by value, laid out as C lays it out, and `read CString`, and gives a number, a `bool`, a `raw T`, a struct of plain data or nothing. `struct sqlite3` without a body in an `extern` block is a type of C that SG only points at (`raw sqlite3`). `CString.from(text)` gives a `Result<CString, TextError>`, an error for a zero byte inside; `unsafe string.fromCString(p)` copies what C ended with a zero byte and checks that it is UTF-8. `buffer.pointer()` on a list, an array or a slice of plain data is written only as an argument of a C function. The functions are private to their module unless `public` is written on one, so a module can hide a library behind a safe interface, and a `Disposable` type gives back what C made when it ends (`examples/zlib`, whose `Deflater` holds zlib's stream). `extern "./native.c" { ... }` names a C file of the module's folder in place of a library: it is compiled with the program, in the same unit, so its macros, `static inline` functions, builtins and assembly are reached through functions it declares, and an inline one is inlined; a library block of the module (`extern "z" { }`, also empty) links what the file needs. `int opterr` in an `extern` block, without parentheses, is a variable of C, read and written inside `unsafe` (`unsafe opterr`, `unsafe { opterr = 0 }`, `unsafe { origin.y = 4 }`) as an item of raw memory. `C.errno()` gives what the last call of C left in `errno`, read right after it, `C.setErrno(n)` sets what the next one finds, and `IoError.fromCode(n)` makes an `IoError` of it. `int snprintf(raw byte s, nuint n, read CString format, ...)` declares a function that takes a varying count of arguments: each value after the parameters says the type C reads, so a `byte`, a `bool` or a `float` there, and a number or `null` written without a type, are errors whose hint is the cast (`(long)30`). The interpreter builds a small library of wrappers with `cc` and opens it with `dlopen`; compiled code calls C directly |
 | C calling SG | `export int compareInts(raw void a, raw void b) { ... }` is a function C calls by the name written, without its module: it takes and gives only the types C has (integers, `float`, `double`, `bool`, `raw T`, `CFunc`, structs of plain data by value), and SG calls it by its name too. `CFunc<raw void, raw void, int>` is a pointer to a function as C calls it, plain data that may be `null`: the name of an `export` function or of a function of C is one (`unsafe qsort((raw void)items, n, 4, compareInts)`, `CFunc<int, int> f = abs`), `unsafe (CFunc<int, int>)p` takes one from a `raw void` (`dlsym`), `(raw void)f` gives it back, and every call through one is inside `unsafe`; calling a `null` one is a panic. The state a callback reaches goes through C's `void*`: `unsafe Memory.addressOf(ref state)` gives the address of a variable or a field, and `unsafe (ref State)data` (or `read`) lends it again inside the callback; the interpreter keeps the addresses it gave and panics on a wrong type, a value that ended or moved, or an address it did not give. A C file of the program calls an `export` function by its name. A panic inside one ends the process with its message, since nothing unwinds through C; the interpreter runs one only on a thread that is in a call of C, and compiled code on any thread. A `lock` block does not call C when an `export` function waits |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads, each with a queue of its own that the others steal from. A method is async too (`public async int total(read this)`): one that lends `this` is awaited where it is written, one that takes it by value may start as a task; `create`, `format`, `equals`, `hash` and `compare` are not async |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
@@ -393,7 +393,9 @@ the C file is taken into the unit of the program at its end, and a function of i
 from an adapter written after it, so it is inlined (719-730). So was the eighty-fifth (functions of SG that
 C calls, `CFunc`, the state of a callback): an `export` function is a function of C's types and of its
 own name that calls the function of SG, and the interpreter writes one into its wrappers that hands the
-addresses of the arguments to the interpreter running the call of C on that thread (731-749).
+addresses of the arguments to the interpreter running the call of C on that thread (731-749). So was
+the eighty-sixth (a varying count of arguments): each list of types a function that takes `...` is called
+with gets an adapter of its own, which calls C as C calls it (750-760).
 What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
@@ -460,6 +462,7 @@ hand with no checks):
 | `status`: a million `File.info` of one file, its kind, size and time of the last write (the C calls `stat`) | 0.618 s | 0.627 s | 0.619 s | 1.00 |
 | `inline`: a function of a C file beside the program (`extern "./inline_helpers.c"`, a step of a hash written `static inline`) called five hundred million times in a loop (the C is the same loop with the function in its own file) | 1.072 s | 1.059 s | 1.044 s | 1.03 |
 | `callback`: ten million numbers sorted by C's `qsort` with a comparator written in SG (`export int compareInts(raw void a, raw void b)`), which C calls through the pointer it is given (the C is the same sort with the comparator in C) | 0.904 s | 0.907 s | 0.902 s | 1.00 |
+| `sqlite`: a million rows put into an SQLite database in memory with one prepared statement in one transaction, each text made by `snprintf` (which takes `...`), then read back with another (the C is the same program through SQLite's header) | 0.320 s | 0.321 s | 0.321 s | 1.00 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -5348,6 +5351,66 @@ decided before it on 16 November 2026; 747 to 749 come from the slice. All were 
      for what holds the thread in an async function. Otherwise a callback could wait while its caller
      holds a lock, the deadlock the rule of 364 keeps out.
 
+Choices made in the eighty-sixth slice (functions of C that take a varying count of arguments, and SQLite
+behind a safe module), the third of the slices that bring SG to what C reaches. 750 to 758 were decided
+before it on 16 November 2026; 759 and 760 come from the slice. All were approved the same day:
+
+750. **`...` after the parameters**, decided before the slice: only in an `extern` block, written last, and
+     after one named parameter at least, as C11 asks (`int sum(...)` is an error); a function of SG and an
+     `export` one do not take it, and there is no `va_list`, so `vprintf` and its kin are not declared.
+751. **What goes after `...`**, decided before the slice: the type of each value is the type C reads, so
+     the types C widens without a word are errors with the cast as the hint, as in Rust: `sbyte`, `byte`,
+     `short` and `ushort` (`(int)b`), `float` (`(double)f`), and `bool` (the hint asks for an `int`, since
+     SG has no cast from `bool`); `char` too (`(uint)c`), which C has no type of. A struct by value, a
+     `string`, an owned `CString` and a `Func` are errors with their hints. `int`, `uint`, `long`, `ulong`,
+     `nint`, `nuint`, `double`, `raw T`, `CFunc`, `ref T` and `read T` of plain data (C's `T*`, written back
+     after the call) and `read CString` go.
+752. **A number without a type is an error there**, decided before the slice: `30`, `-1.5` and `null` after
+     `...` are errors whose hint is `(int)30` or `(long)30`, `(double)1.5`, and a variable of the pointer
+     type. C would take `30` as an `int`; libcurl's `CURLOPT_TIMEOUT` reads a `long`, and on Apple's arm64,
+     where each argument after `...` lies in eight bytes of the stack, the half C reads beyond the `int` is
+     whatever lay there.
+753. **A function that takes `...` is no `CFunc`**, decided before the slice: its name where a `CFunc` is
+     expected is an error whose hint is an `export` function of one's own that calls it, since C calls such
+     a function by a type that says `...`, and `CFunc` has none.
+754. **How a call is made**, decided before the slice: the interpreter writes a wrapper into its library for
+     each list of C types a function that takes `...` is called with, which calls it with its declaration
+     of `...`; compiled code writes an adapter for each list the same way, a `static inline` function that
+     the C compiler joins with the call.
+755. **The format is not looked at**, decided before the slice: what a `printf` reads after `...` is the
+     program's to match, inside the `unsafe` the call is written in; the C compiler's `-Wformat` does not
+     see it either, since SG declares the function itself.
+756. **`examples/sqlite`**, decided before the slice: a module whose users write no `unsafe`. `Database.open`
+     (`sqlite3_open_v2`, then `sqlite3_db_config` with `SQLITE_DBCONFIG_DEFENSIVE` after `...`, so SQL cannot
+     write the schema SQLite keeps), `execute`, `rows` (`sqlite3_exec`, whose callback is an `export`
+     function that adds each row to a list it reaches through the address C gives back), `prepare`,
+     `changes` and `lastInsertId`; a `Statement` with `bindLong`, `bindDouble`, `bindText` (copied by SQLite:
+     `SQLITE_TRANSIENT` is made in SG from the number -1), `bindNull`, `step`, `reset`, `isNull` and the
+     columns, a text column copied with its length; `quote` through `sqlite3_mprintf("%Q", ...)`; and
+     `SqliteError` with SQLite's code and message. Both types are `Disposable`.
+757. **The tests**, decided before the slice: `ok_c_varargs` (`snprintf` with no value after the format, with
+     an `int`, a `long`, a `double`, a text, a `uint` and a `nuint`, with a `byte` and a `float` cast, with a
+     `null` pointer, and `sscanf` writing three places lent with `ref`), the program `tests/modules/varargs`
+     (functions of a C file that read their arguments with `va_arg`: `long`s, `double`s, pairs of a function
+     and a number where the function is an `export` function or a `CFunc`, places of `int` and of a struct
+     lent with `ref`, texts), 16 `error_varargs_` programs, and `examples/sqlite` with eight tests, run in
+     the interpreter and compiled, one of which fails when the connection is not defensive. `cargo test` passes
+     on macOS and on Linux in a container, where it compiles 314 of 1297 programs, 64 of them under the thread
+     sanitizer, and 19 of 24 programs of tests; `error_extern_variadic` is gone. Every compiled program is checked for leaks as before, and the
+     interpreter itself leaks nothing under `leaks` on the new programs.
+758. **Measured** (`sqlite`), decided before the slice: a million rows put into a database in memory with one
+     prepared statement, each text made by `snprintf`, and read back, take 0.320 s against 0.321 s in C,
+     1.00 times on macOS (0.321 s checked), and 0.295 to 0.311 s against 0.304 to 0.312 s, 0.97 to 1.00 times, on Linux in a container (0.296 to 0.318 s checked). Nearly all of it is SQLite's.
+759. **The name of an `export` function after `...` is its `CFunc`** (from the slice): there is no type
+     expected there, where a name of a function would otherwise be a `Func`, which does not go to C; so
+     `call_each(2, triple, (int)4)` hands C the address of `triple`. libcurl's write callback is given this
+     way (`CURLOPT_WRITEFUNCTION`).
+760. **A `Statement` may outlive its `Database`** (from the slice): `Database` closes its connection with
+     `sqlite3_close_v2`, which SQLite keeps alive until its last statement is finalized, so a statement
+     holds no borrow of the database, and one returned from a function whose database ended still steps.
+     A borrow would forbid what SQLite allows, and a statement could not be kept in a struct beside its
+     database.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -5442,8 +5505,8 @@ check off.
 - **Of raw memory**: a place in it lent (`read p[i]`, `ref p[i]`, a method called on `p[i]`, 511); items that
   own memory (the design's `put`, `take` and `moveItems`); `Memory.resize`; the address of a variable (85,
   `Memory.addressOf`).
-- **Of calling C**: unions, bit fields, `packed` structs and alignment; functions with a varying count
-  of arguments (`printf`), the address of a `CString`
+- **Of calling C**: unions, bit fields, `packed` structs and alignment; a `va_list` (`vprintf`), a function
+  of SG that takes `...`, and a `CFunc` to a function that takes it (753); the address of a `CString`
   kept by C, `sg build -L path` for a library the C compiler does not find by itself, `pkg-config`,
   frameworks of macOS, Windows. A C function whose name the C library gives another symbol (`stat` on
   some systems) is bound to the plain name. A variable of C is lent to nothing (`ref opterr`), and its
@@ -5678,4 +5741,7 @@ time of the same loop in C, the variables of C are read and written inside `unsa
 call and made an `IoError`, and an address is a number when it has to be (719-730). The eighty-fifth is
 written: C calls functions of SG (`export`), pointers to functions go both ways (`CFunc`), and a callback
 reaches its state through the `void*` C gives back; ten million numbers sorted by `qsort` with a
-comparator of SG take the time of the same sort with a comparator of C (731-749).
+comparator of SG take the time of the same sort with a comparator of C (731-749). The eighty-sixth is
+written: a function of C that takes `...` is called with the types each value says, a number without a
+type being an error there, and SQLite is wrapped in a module whose users write no `unsafe`, as fast as C
+(750-760).

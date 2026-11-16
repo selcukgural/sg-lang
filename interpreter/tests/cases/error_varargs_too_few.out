@@ -1,0 +1,4 @@
+error: `snprintf` takes at least 3 argument(s), 2 given
+  --> error_varargs_too_few.sg:8:16
+ 8 |     _ = unsafe snprintf(buffer.pointer(), 8)
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

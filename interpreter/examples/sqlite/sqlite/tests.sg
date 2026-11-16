@@ -1,0 +1,96 @@
+Result<Database, SqliteError> withTable() {
+    var db = try Database.open(":memory:")
+    try db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, word TEXT, n INTEGER)")
+    return Ok(db)
+}
+
+// A statement whose database ends first: SQLite keeps the connection until the statement is
+// finalized.
+Result<Statement, SqliteError> outliving() {
+    var db = try Database.open(":memory:")
+    var statement = try db.prepare("SELECT 6 * 7")
+    return Ok(statement)
+}
+
+test "rows come back as texts, with null for NULL" {
+    var db = try withTable()
+    try db.execute("INSERT INTO t (word, n) VALUES ('one', 1), (NULL, 2)")
+    var rows = try db.rows("SELECT word, n FROM t ORDER BY id")
+    assert(rows.length() == 2)
+    assert((rows[0][0] ?? "") == "one")
+    assert((rows[0][1] ?? "") == "1")
+    assert(rows[1][0] is null)
+    assert(db.changes() == 2)
+    assert(db.lastInsertId() == 2)
+}
+
+test "a bound text comes back the same, a zero byte inside too" {
+    var db = try withTable()
+    var insert = try db.prepare("INSERT INTO t (word) VALUES (?1)")
+    var text = "çay, O'Brien\u{0}and more"
+    try insert.bindText(1, read text)
+    var more = try insert.step()
+    assert(!more)
+    var select = try db.prepare("SELECT word FROM t")
+    var row = try select.step()
+    assert(row)
+    var back = try select.columnText(0)
+    assert((back ?? "") == text)
+    row = try select.step()
+    assert(!row)
+}
+
+test "a statement is reset and run again" {
+    var db = try withTable()
+    var insert = try db.prepare("INSERT INTO t (n) VALUES (?1)")
+    for n in 0..100 {
+        try insert.bindLong(1, (long)n)
+        _ = try insert.step()
+        insert.reset(false)
+    }
+    var sum = try db.prepare("SELECT sum(n), count(*) FROM t")
+    var row = try sum.step()
+    assert(row)
+    assert(sum.columnLong(0) == 4950)
+    assert(sum.columnLong(1) == 100)
+    assert(!sum.isNull(0))
+}
+
+test "an error carries the message of SQLite" {
+    var db = try withTable()
+    var wrong = db.execute("SELEKT 1")
+    assert(wrong is Error(error) && error.code == 1 && error.message.contains("syntax error"))
+    var missing = db.prepare("SELECT * FROM nowhere")
+    assert(missing is Error(error) && error.message == "no such table: nowhere")
+}
+
+test "a column that is not UTF-8 is an error, not a text" {
+    var db = try withTable()
+    try db.execute("INSERT INTO t (word) VALUES (X'FF00')")
+    var select = try db.prepare("SELECT word FROM t")
+    var row = try select.step()
+    assert(row)
+    assert(select.columnText(0) is Error(error) && error.code == 20)
+    assert(db.rows("SELECT word FROM t") is Error(error) && error.code == 20)
+}
+
+test "quote doubles the quotes inside" {
+    var name = try quote("O'Brien")
+    assert(name == "'O''Brien'")
+    var empty = try quote("")
+    assert(empty == "''")
+}
+
+test "a statement may outlive its database" {
+    var statement = try outliving()
+    var row = try statement.step()
+    assert(row)
+    assert(statement.columnLong(0) == 42)
+}
+
+test "the schema of SQLite cannot be written from SQL" {
+    var db = try withTable()
+    try db.execute("PRAGMA writable_schema = ON")
+    var changed = db.execute("UPDATE sqlite_schema SET sql = 'x' WHERE name = 't'")
+    assert(changed is Error(_))
+}

@@ -500,6 +500,8 @@ struct FuncSig {
     foreign: bool,
     /// Written with `export`: C calls it, and its name is a `CFunc`.
     export: bool,
+    /// A function of C declared with `...`: it takes more arguments after `params`.
+    variadic: bool,
 }
 
 /// What `Stdin`, `Stdout` and `Stderr` are, for messages; `None` for any other name.
@@ -633,7 +635,7 @@ fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
         }
         sources = borrowed;
     }
-    Ok(FuncSig { public: func.public, is_async: func.is_async, this: func.this, holder, params, param_names, ret, sources, foreign: func.foreign.is_some(), export: func.export })
+    Ok(FuncSig { public: func.public, is_async: func.is_async, this: func.this, holder, params, param_names, ret, sources, foreign: func.foreign.is_some(), export: func.export, variadic: func.variadic })
 }
 
 /// With `tests` the `test` blocks are checked too and `main` may be missing: that is what the
@@ -933,6 +935,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     for func in prog.funcs.iter().filter(|func| func.foreign.is_some()) {
         foreign_sig(func, &sigs[&func.name], &structs)?;
         prog.foreign.insert(func.name.clone(), (sigs[&func.name].params.clone(), sigs[&func.name].ret.clone()));
+        if func.variadic {
+            prog.variadic.insert(func.name.clone());
+        }
         let c_name = short_name(&func.name);
         if let Some(other) = by_c_name.insert(c_name, func) {
             let (mine, theirs) = (&sigs[&func.name], &sigs[&other.name]);
@@ -5247,6 +5252,11 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(expr.span, format!("C cannot call `{short}`: it is a function of SG"))
                         .hint(format!("a function C calls is written with `export`: `export {} {short}(...)`", sig.ret)));
                 }
+                if sig.variadic {
+                    return Err(Diag::error(expr.span, format!("`{short}` takes `...`, and a `CFunc` points at a function that takes a fixed count of arguments"))
+                        .note("C calls a function that takes `...` by a type that says so, and SG has none")
+                        .hint(format!("call `{short}` from an `export` function of your own, and use that")));
+                }
                 if sig.params != *params || sig.ret != **ret {
                     let found = Ty::CFunc(sig.params.clone(), Box::new(sig.ret.clone()));
                     return Err(Diag::error(expr.span, format!("expected `{}`, found `{found}`", Ty::CFunc(params.clone(), ret.clone()))));
@@ -7312,6 +7322,21 @@ impl<'a> Checker<'a> {
     /// items for the time of the call, as it is given a `ref` borrow.
     fn foreign_call(&mut self, name: &str, args: &mut [Expr], sig: &FuncSig, callee: &mut Callee, span: Span) -> Res<Ty> {
         let short = short_name(name);
+        if sig.variadic {
+            if args.len() < sig.params.len() {
+                return Err(Diag::error(span, format!("`{short}` takes at least {} argument(s), {} given", sig.params.len(), args.len())));
+            }
+            self.needs_unsafe(span, &format!("`{short}` is a function of C, and the checker cannot see what it does"))?;
+            let (fixed, more) = args.split_at_mut(sig.params.len());
+            self.c_typed(fixed, &sig.params)?;
+            let mut params = sig.params.clone();
+            for arg in more.iter_mut() {
+                params.push(self.variadic_arg(arg)?);
+            }
+            self.lent_twice(None, args)?;
+            *callee = Callee::Variadic(params);
+            return Ok(sig.ret.clone());
+        }
         if args.len() != sig.params.len() {
             return Err(Diag::error(span, format!("`{short}` takes {} argument(s), {} given", sig.params.len(), args.len())));
         }
@@ -7332,6 +7357,80 @@ impl<'a> Checker<'a> {
 
     /// The arguments of a call of C: `buffer.pointer()` is allowed among them.
     fn c_args(&mut self, args: &mut [Expr], params: &[Ty]) -> Res<()> {
+        self.c_typed(args, params)?;
+        self.lent_twice(None, args)
+    }
+
+    /// One argument given after the parameters of a function of C declared with `...`: C
+    /// reads it as the type it has, which it says itself. C would widen a small integer, a
+    /// `bool` and a `float`, and guess `int` for a number written without a type; here both
+    /// are written out.
+    fn variadic_arg(&mut self, arg: &mut Expr) -> Res<Ty> {
+        let text = self.src[arg.span.start..arg.span.end].trim().to_string();
+        let literal = match &arg.kind {
+            ExprKind::Unary(UnOp::Neg, inner) => &inner.kind,
+            other => other,
+        };
+        let untyped = |diag: Diag| diag.note("C reads each value after `...` as the type the function looks for, and only the call says what it gives");
+        match literal {
+            ExprKind::Int(..) | ExprKind::Char(_) => {
+                return Err(untyped(Diag::error(arg.span, "this number has no type of its own, and C reads it after `...` as whatever it looks for"))
+                    .hint(format!("say what C reads: `(int){text}`, or `(long){text}` where C takes a `long`")));
+            }
+            ExprKind::Float(..) => {
+                return Err(untyped(Diag::error(arg.span, "this number has no type of its own, and C reads it after `...` as whatever it looks for"))
+                    .hint(format!("`(double){text}`: C reads a fractional number after `...` as a `double`")));
+            }
+            ExprKind::Null => {
+                return Err(untyped(Diag::error(arg.span, "`null` has no type of its own, and C reads it after `...` as whatever it looks for"))
+                    .hint("a variable of the pointer C reads: `raw void none = null`, then `none`"));
+            }
+            _ => {}
+        }
+        let pointer = |expr: &Expr| matches!(&expr.kind, ExprKind::Method { name, .. } if name == "pointer");
+        self.extern_arg = match &arg.kind {
+            ExprKind::RawCast { expr, .. } => pointer(expr),
+            _ => pointer(arg),
+        };
+        // The name of an `export` function is its address, as C takes it.
+        let export = match &arg.kind {
+            ExprKind::Var(name) if self.find(name).is_none() => {
+                let full = self.names.full(name, arg.span)?.unwrap_or_else(|| name.clone());
+                self.sigs.get(full.as_str()).filter(|sig| sig.export).map(|sig| Ty::CFunc(sig.params.clone(), Box::new(sig.ret.clone())))
+            }
+            _ => None,
+        };
+        let ty = self.operand(arg, export.as_ref());
+        self.extern_arg = false;
+        let ty = ty?;
+        let structs = self.structs;
+        let fine = match &ty {
+            Ty::Int(int) => !matches!(int, IntTy::Sbyte | IntTy::Byte | IntTy::Short | IntTy::Ushort),
+            Ty::Float(float) => *float == FloatTy::Double,
+            Ty::Raw(_) | Ty::CFunc(..) => true,
+            Ty::Read(inner) if **inner == Ty::CString => true,
+            Ty::Read(inner) | Ty::Ref(inner) => not_plain(inner, structs).is_none() && !matches!(**inner, Ty::Array(..)),
+            _ => false,
+        };
+        if fine {
+            return Ok(ty);
+        }
+        let diag = Diag::error(arg.span, format!("a `{ty}` does not go to C after `...`"));
+        Err(match &ty {
+            Ty::Int(_) => diag.note("C reads it there as an `int`, made wider without a word").hint(format!("`(int){text}`")),
+            Ty::Bool => diag.note("C reads it there as an `int`, made wider without a word").hint("give C an `int`: 1 for `true`, 0 for `false`"),
+            Ty::Float(_) => diag.note("C reads it there as a `double`, made wider without a word").hint(format!("`(double){text}`")),
+            Ty::Char => diag.note("a `char` of SG is a Unicode character of 32 bits, and C has no type of it").hint(format!("`(uint){text}`")),
+            Ty::Struct(_) => diag.note("C is given a struct by value only where it declares one").hint(format!("its address, if C reads that: `ref {text}`")),
+            Ty::Str => diag.hint("a text goes to C as `read CString`: `CString.from(text)` makes one"),
+            Ty::CString => diag.hint(format!("a `CString` is lent to C: `read {text}`")),
+            Ty::Func(..) => diag.hint("C calls a function of SG written with `export`"),
+            _ => diag.note("after `...` C takes `int`, `uint`, `long`, `ulong`, `nint`, `nuint`, `double`, `raw T`, `CFunc`, `ref T` and `read T` of plain data, and `read CString`"),
+        })
+    }
+
+    /// The arguments of a call of C, each as its parameter takes it.
+    fn c_typed(&mut self, args: &mut [Expr], params: &[Ty]) -> Res<()> {
         for (arg, param) in args.iter_mut().zip(params) {
             let pointer = |expr: &Expr| matches!(&expr.kind, ExprKind::Method { name, .. } if name == "pointer");
             self.extern_arg = match &arg.kind {
@@ -7342,7 +7441,7 @@ impl<'a> Checker<'a> {
             self.extern_arg = false;
             checked?;
         }
-        self.lent_twice(None, args)
+        Ok(())
     }
 
     /// `buffer.pointer()`: the address of the items of a list, an array or a slice of plain

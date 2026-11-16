@@ -1,0 +1,6 @@
+error: a `float` does not go to C after `...`
+  C reads it there as a `double`, made wider without a word
+  --> error_varargs_float.sg:9:36
+ 9 |     _ = unsafe printf(read format, f)
+   |                                    ^
+  hint: `(double)f`

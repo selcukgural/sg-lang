@@ -1,0 +1,6 @@
+error: a `Point` does not go to C after `...`
+  C is given a struct by value only where it declares one
+  --> error_varargs_struct.sg:14:36
+ 14 |     _ = unsafe printf(read format, p)
+    |                                    ^
+  hint: its address, if C reads that: `ref p`

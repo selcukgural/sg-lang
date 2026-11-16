@@ -1,0 +1,5 @@
+error: `printf` is a function of C, and the checker cannot see what it does, so it is written inside `unsafe`
+  --> error_varargs_unsafe.sg:8:9
+ 8 |     _ = printf(read format, (int)1)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `unsafe printf(read format, (int)1)`, or `unsafe { ... }` around several statements

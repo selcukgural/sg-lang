@@ -70,7 +70,7 @@ pub type Slot = u64;
 /// What wraps one function of C (or gives the address of one variable), in the C file of the
 /// wrappers.
 #[allow(clippy::too_many_arguments)]
-fn wrapper_text(prog: &Program, name: &str, number: usize, addressed: bool, types: &mut BTreeSet<String>, declared: &mut BTreeSet<String>, head: &mut String, text: &mut String) {
+fn wrapper_text(prog: &Program, name: &str, number: usize, addressed: bool, call: Option<&[Ty]>, types: &mut BTreeSet<String>, declared: &mut BTreeSet<String>, head: &mut String, text: &mut String) {
     let in_file = foreign_of(prog, name).path.is_some();
     let c_name = short_name(name);
     if let Some(ty) = prog.cvar_types.get(name) {
@@ -93,21 +93,27 @@ fn wrapper_text(prog: &Program, name: &str, number: usize, addressed: bool, type
         text.push_str(&format!("void *sg_v{number}(void) {{ return (void*)&{place}; }}\n"));
         return;
     }
-    let (params, ret) = &prog.foreign[name];
+    let (declared_params, ret) = &prog.foreign[name];
+    // A function declared with `...` is called with the types of one call.
+    let params = call.unwrap_or(declared_params);
     for ty in params.iter().chain([ret]) {
         type_text(ty, &prog.plain, types, head);
     }
-    let types: Vec<String> = params.iter().map(c_type).collect();
     let callee = match in_file {
         true => c_name.to_string(),
         false => {
             if declared.insert(format!("f {c_name}")) {
-                let list = if types.is_empty() { "void".to_string() } else { types.join(", ") };
+                let mut list: Vec<String> = declared_params.iter().map(c_type).collect();
+                if prog.variadic.contains(name) {
+                    list.push("...".to_string());
+                }
+                let list = if list.is_empty() { "void".to_string() } else { list.join(", ") };
                 head.push_str(&format!("{} sg_c_{c_name}({list}) SG_C(\"{c_name}\");\n", c_type(ret)));
             }
             format!("sg_c_{c_name}")
         }
     };
+    let types: Vec<String> = params.iter().map(c_type).collect();
     // A struct given by value lies elsewhere, and its slot holds its address; so does the room
     // for one given back, in the slot after the arguments.
     let args: Vec<String> = types
@@ -136,6 +142,12 @@ fn wrapper_text(prog: &Program, name: &str, number: usize, addressed: bool, type
 pub fn through_key(params: &[Ty], ret: &Ty) -> String {
     let types: Vec<String> = params.iter().map(c_type).collect();
     format!("{}({})", c_type(ret), types.join(","))
+}
+
+/// What names the wrapper of one call of a function of C declared with `...`: its name and
+/// the C types the call gives it.
+pub fn variadic_key(name: &str, params: &[Ty], ret: &Ty) -> String {
+    format!("{name}#{}", through_key(params, ret))
 }
 
 /// What calls a function of C of these types through its address, numbered `number`.
@@ -252,9 +264,17 @@ impl Library {
         // A C function declared in two modules is one function of C.
         let mut declared: BTreeSet<String> = BTreeSet::new();
         let (mut before, mut after) = (String::new(), String::new());
-        for (number, name) in used.iter().enumerate() {
+        // A function declared with `...` has a wrapper for each list of types it is called with,
+        // numbered after the others.
+        let calls = variadic_calls(prog, tests);
+        let fixed: Vec<&String> = used.iter().filter(|name| !prog.variadic.contains(*name)).collect();
+        for (number, name) in fixed.iter().enumerate() {
             let text = if foreign_of(prog, name).path.is_some() { &mut after } else { &mut before };
-            wrapper_text(prog, name, number, values.addressed.contains(name), &mut types, &mut declared, &mut head, text);
+            wrapper_text(prog, name, number, values.addressed.contains(*name), None, &mut types, &mut declared, &mut head, text);
+        }
+        for (number, (name, params)) in calls.values().enumerate() {
+            let text = if foreign_of(prog, name).path.is_some() { &mut after } else { &mut before };
+            wrapper_text(prog, name, fixed.len() + number, false, Some(params), &mut types, &mut declared, &mut head, text);
         }
         for (number, (params, ret)) in values.throughs.values().enumerate() {
             through_text(params, ret, number, &prog.plain, &mut types, &mut head, &mut after);
@@ -322,15 +342,16 @@ impl Library {
             // SAFETY: written with this signature; it keeps the entry for the stubs.
             unsafe { std::mem::transmute::<*mut c_void, SetEnter>(found)(crate::interp::enter) };
         }
-        for (number, name) in used.iter().enumerate().filter(|(_, name)| values.addressed.contains(*name)) {
+        for (number, name) in fixed.iter().enumerate().filter(|(_, name)| values.addressed.contains(**name)) {
             let found = symbol_of(format!("sg_f{number}"))?;
             // SAFETY: each address function was written with this signature.
             let address = unsafe { std::mem::transmute::<*mut c_void, Address>(found) };
             // SAFETY: it takes nothing and gives the address of the function.
-            library.addresses.insert(name.clone(), unsafe { address() } as usize);
+            library.addresses.insert((*name).clone(), unsafe { address() } as usize);
         }
-        for (number, name) in used.iter().enumerate() {
-            let is_var = prog.cvar_types.contains_key(name);
+        let keys = fixed.iter().map(|name| (*name).clone()).chain(calls.keys().cloned());
+        for (number, name) in keys.enumerate() {
+            let is_var = prog.cvar_types.contains_key(&name);
             let symbol = CString::new(format!("sg_{}{number}", if is_var { 'v' } else { 'w' })).expect("no zero byte");
             // SAFETY: `handle` is open and `symbol` ends in a zero byte.
             let found = unsafe { dlsym(handle, symbol.as_ptr()) };
@@ -341,10 +362,10 @@ impl Library {
                 // SAFETY: each address function was written with this signature.
                 let address = unsafe { std::mem::transmute::<*mut c_void, Address>(found) };
                 // SAFETY: it takes nothing and gives the address of the variable.
-                library.vars.insert(name.clone(), unsafe { address() } as usize);
+                library.vars.insert(name, unsafe { address() } as usize);
             } else {
                 // SAFETY: each wrapper was written with this signature.
-                library.calls.insert(name.clone(), unsafe { std::mem::transmute::<*mut c_void, Wrapper>(found) });
+                library.calls.insert(name, unsafe { std::mem::transmute::<*mut c_void, Wrapper>(found) });
             }
         }
         // The library stays open until the process ends: a pointer C gave may point into it.
@@ -356,8 +377,9 @@ impl Library {
         self.vars[name]
     }
 
-    /// The wrapper of the function of C named `name`, to be called with no borrow of the
-    /// interpreter held: C may call back into it (see `call_wrapper`).
+    /// The wrapper of the function of C named `name` (by `variadic_key` for one declared with
+    /// `...`), to be called with no borrow of the interpreter held: C may call back into it
+    /// (see `call_wrapper`).
     pub fn wrapper(&self, name: &str) -> Wrapper {
         self.calls[name]
     }
@@ -388,7 +410,7 @@ pub fn called(prog: &Program, tests: bool) -> Vec<String> {
 pub fn used(prog: &Program, tests: bool) -> Vec<String> {
     let mut found: BTreeSet<String> = BTreeSet::new();
     let mut each = |expr: &crate::ast::Expr| match &expr.kind {
-        ExprKind::Call { name, callee: Callee::Extern, .. } | ExprKind::CVar(name) => {
+        ExprKind::Call { name, callee: Callee::Extern | Callee::Variadic(_), .. } | ExprKind::CVar(name) => {
             found.insert(name.clone());
         }
         // The address of a function of C, as a `CFunc`.
@@ -399,6 +421,20 @@ pub fn used(prog: &Program, tests: bool) -> Vec<String> {
     };
     each_expr(prog, tests, &mut each);
     found.into_iter().collect()
+}
+
+/// Each call of a function of C declared with `...`, by `variadic_key`: its name and the
+/// types it gives, those of the parameters and then those of the arguments after them.
+pub fn variadic_calls(prog: &Program, tests: bool) -> std::collections::BTreeMap<String, (String, Vec<Ty>)> {
+    let mut found = std::collections::BTreeMap::new();
+    let mut each = |expr: &crate::ast::Expr| {
+        if let ExprKind::Call { name, callee: Callee::Variadic(params), .. } = &expr.kind {
+            let ret = &prog.foreign[name].1;
+            found.insert(variadic_key(name, params, ret), (name.clone(), params.clone()));
+        }
+    };
+    each_expr(prog, tests, &mut each);
+    found
 }
 
 /// What a program does with pointers to functions of C: the functions of C whose names it

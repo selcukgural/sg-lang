@@ -1,0 +1,10 @@
+// C widens a `byte` after `...` to an `int` without a word: SG has it written.
+extern {
+    int printf(read CString format, ...)
+}
+
+void main() {
+    var format = CString.from("%d\n") ?? panic("no zero byte")
+    byte b = 7
+    _ = unsafe printf(read format, b)
+}

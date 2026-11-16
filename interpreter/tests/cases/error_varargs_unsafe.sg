@@ -1,0 +1,9 @@
+// A call of C that takes `...` is inside `unsafe`, as every call of C is.
+extern {
+    int printf(read CString format, ...)
+}
+
+void main() {
+    var format = CString.from("%d\n") ?? panic("no zero byte")
+    _ = printf(read format, (int)1)
+}

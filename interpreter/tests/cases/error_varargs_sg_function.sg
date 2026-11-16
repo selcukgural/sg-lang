@@ -1,0 +1,8 @@
+// Only a function of C takes `...`.
+int sum(int first, ...) {
+    return first
+}
+
+void main() {
+    print(sum(1))
+}

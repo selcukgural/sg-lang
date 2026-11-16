@@ -1,0 +1,13 @@
+// A function of SG that is not `export` is no function C can call.
+extern {
+    int printf(read CString format, ...)
+}
+
+int twice(int n) {
+    return n * 2
+}
+
+void main() {
+    var format = CString.from("%p\n") ?? panic("no zero byte")
+    _ = unsafe printf(read format, twice)
+}

@@ -1,0 +1,10 @@
+// C widens a `float` after `...` to a `double`.
+extern {
+    int printf(read CString format, ...)
+}
+
+void main() {
+    var format = CString.from("%f\n") ?? panic("no zero byte")
+    float f = 0.5
+    _ = unsafe printf(read format, f)
+}

@@ -211,6 +211,7 @@ fn modules() {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().path()).collect();
     entries.push(root.join("examples/shop"));
     entries.push(root.join("examples/zlib"));
+    entries.push(root.join("examples/sqlite"));
     entries.sort();
     for path in entries {
         if path.extension().is_some_and(|ext| ext == "sg") {
@@ -309,6 +310,7 @@ fn compiled() {
     let mut programs: Vec<PathBuf> = std::fs::read_dir(&modules).unwrap().map(|entry| entry.unwrap().path()).collect();
     programs.push(root.join("examples/shop"));
     programs.push(root.join("examples/zlib"));
+    programs.push(root.join("examples/sqlite"));
     programs.sort();
     programs.retain(|path| path.extension().is_some_and(|ext| ext == "sg") || path.join("main.sg").exists());
     let total = files.len() + programs.len();
@@ -749,6 +751,7 @@ fn compiled_tests() {
     let mut folders: Vec<PathBuf> = std::fs::read_dir(root.join("tests/modules")).unwrap().map(|entry| entry.unwrap().path()).collect();
     folders.push(root.join("examples/shop"));
     folders.push(root.join("examples/zlib"));
+    folders.push(root.join("examples/sqlite"));
     folders.sort();
     for path in folders {
         if path.join("tests.out").exists() {

@@ -1,0 +1,7 @@
+// `...` is written last.
+extern {
+    int scan(read CString format, ..., int count)
+}
+
+void main() {
+}

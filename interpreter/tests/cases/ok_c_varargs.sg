@@ -1,0 +1,57 @@
+// Functions of C that take `...`: each call gives the types after the parameters, and each
+// list of types is a call of its own (`snprintf` with an `int`, then with a `long` and a
+// `double`). `sscanf` is given the places it writes, with `ref`.
+extern {
+    int snprintf(raw byte s, nuint n, read CString format, ...)
+    int sscanf(read CString text, read CString format, ...)
+}
+
+string formatted(read CString format, int n) {
+    var buffer = byte[64]
+    var count = unsafe snprintf(buffer.pointer(), 64, read format, n)
+    var text = string.fromUtf8(buffer[..(nint)count]) ?? "not text"
+    return text.clone()
+}
+
+void main() {
+    var buffer = byte[128]
+    var plain = CString.from("no arguments after the format") ?? panic("no zero byte")
+    var count = unsafe snprintf(buffer.pointer(), 128, read plain)
+    print(count)
+    print(string.fromUtf8(buffer[..(nint)count]) ?? "not text")
+
+    var format = CString.from("%d|%ld|%.3f|%s|%u|%zu") ?? panic("no zero byte")
+    var word = CString.from("tea") ?? panic("no zero byte")
+    long big = 5000000000
+    double third = 1.0 / 3.0
+    nuint size = 42
+    count = unsafe snprintf(buffer.pointer(), 128, read format, (int)-7, big, third, read word, uint.MaxValue, size)
+    print(count)
+    print(string.fromUtf8(buffer[..(nint)count]) ?? "not text")
+
+    // A small integer and a `float` are written out as C reads them.
+    byte b = 200
+    float f = 2.5
+    var widened = CString.from("%d %.1f") ?? panic("no zero byte")
+    count = unsafe snprintf(buffer.pointer(), 128, read widened, (int)b, (double)f)
+    print(string.fromUtf8(buffer[..(nint)count]) ?? "not text")
+
+    // A pointer, as an address: null is written by a variable of its type.
+    raw void none = null
+    var pointer = CString.from("%p") ?? panic("no zero byte")
+    count = unsafe snprintf(buffer.pointer(), 128, read pointer, none)
+    var shown = string.fromUtf8(buffer[..(nint)count]) ?? "not text"
+    print(shown == "0x0" || shown == "(nil)")
+
+    var hex = CString.from("%08x") ?? panic("no zero byte")
+    print(formatted(read hex, 48879))
+
+    // `sscanf` writes into what it is lent.
+    var input = CString.from("12 4096 0.25") ?? panic("no zero byte")
+    var scan = CString.from("%d %ld %lf") ?? panic("no zero byte")
+    int a = 0
+    long l = 0
+    double d = 0
+    var found = unsafe sscanf(read input, read scan, ref a, ref l, ref d)
+    print($"{found}: {a} {l} {d}")
+}

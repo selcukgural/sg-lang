@@ -466,7 +466,7 @@ fn look(expr: &Expr, scan: &mut Body, taken: &mut Vec<(String, usize, Ty)>) {
 /// Where the expression calls C, if it does: a function of C, or one through a `CFunc`.
 fn calls_c(expr: &Expr) -> Option<Span> {
     match &expr.kind {
-        ExprKind::Call { name_span, callee: Callee::Extern | Callee::CValue(_), .. } | ExprKind::Method { name_span, callee: Callee::CFieldValue(..), .. } => Some(*name_span),
+        ExprKind::Call { name_span, callee: Callee::Extern | Callee::Variadic(_) | Callee::CValue(_), .. } | ExprKind::Method { name_span, callee: Callee::CFieldValue(..), .. } => Some(*name_span),
         _ => None,
     }
 }

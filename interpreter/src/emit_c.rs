@@ -5450,6 +5450,8 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         asyncs: prog.funcs.iter().filter(|func| func.is_async).map(|func| func.name.as_str()).collect(),
         foreign: prog.funcs.iter().filter_map(|func| func.foreign.as_ref().map(|foreign| (func.name.as_str(), foreign))).collect(),
         addressed: std::collections::BTreeSet::new(),
+        variadic: Default::default(),
+        foreign_rets: prog.foreign.iter().map(|(name, (_, ret))| (name.clone(), ret.clone())).collect(),
         async_methods: HashSet::new(),
         awaits: None,
         exit_blocks: Vec::new(),
@@ -5482,6 +5484,14 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         let name = cname(&func.name);
         if func.foreign.is_some() {
             emitter.sigs.insert(format!("sg_x_{name}"), params);
+            if func.variadic {
+                let calls: Vec<(String, Vec<Ty>)> = crate::ffi::variadic_calls(prog, tests).into_iter().filter(|(_, (called, _))| *called == func.name).map(|(key, (_, params))| (key, params)).collect();
+                for (key, params) in calls {
+                    let number = emitter.variadic.len();
+                    emitter.sigs.insert(format!("sg_x_{name}_v{number}"), params.clone());
+                    emitter.variadic.insert(key, (func.name.clone(), number, params));
+                }
+            }
         } else if func.is_async {
             let _ = writeln!(emitter.types, "typedef struct F_{name} F_{name};");
             emitter.made.insert("tasks".to_string());
@@ -6448,6 +6458,11 @@ struct Emitter<'a> {
     foreign: HashMap<&'a str, &'a Foreign>,
     /// The functions of C whose names are taken as `CFunc` values.
     addressed: std::collections::BTreeSet<String>,
+    /// Each call of a function of C declared with `...`, by `ffi::variadic_key`: the function,
+    /// the number of its adapter, and the types the call gives.
+    variadic: std::collections::BTreeMap<String, (String, usize, Vec<Ty>)>,
+    /// What each function of C gives, by its full name.
+    foreign_rets: HashMap<String, Ty>,
     /// The async methods, under `owner.name`.
     async_methods: HashSet<String>,
     /// While an async function is written: where each `await` stands, found again by the number
@@ -6580,6 +6595,11 @@ impl<'a> Emitter<'a> {
         format!("(({place}) ? (void)0 : sg_panic({text}, {loc}), {place})")
     }
 
+    /// What the function of C named `name` gives.
+    fn foreign_ret(&self, name: &str) -> Ty {
+        self.foreign_rets[name].clone()
+    }
+
     /// Where the function of C named `name` is declared, if it is one.
     fn foreign_of(&self, name: &str) -> Option<&'a Foreign> {
         self.foreign.get(name).copied()
@@ -6605,34 +6625,65 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    fn foreign_func(&mut self, func: &Func, prog: &Program, protos: &mut String, after_c: &mut String) -> Res<()> {
-        self.made.insert("ffi".to_string());
-        let (params, ret) = &prog.foreign[&func.name];
-        let c_name = short_name(&func.name);
-        let in_file = func.foreign.as_ref().is_some_and(|foreign| foreign.path.is_some());
+    /// What a function of C is declared with, what its adapter takes, and what the adapter
+    /// hands it: a `read CString` is the text it lends.
+    fn c_params(&mut self, params: &[Ty], span: Span) -> Res<(Vec<String>, Vec<String>, Vec<String>)> {
         let mut c_types = Vec::new();
         let mut sg_types = Vec::new();
         let mut passed = Vec::new();
         for (position, param) in params.iter().enumerate() {
             let c_type = match param {
                 Ty::Read(inner) if **inner == Ty::CString => "const char*".to_string(),
-                Ty::Read(inner) => format!("{} const*", self.ctype(inner, func.name_span)?),
-                _ => self.ctype(param, func.name_span)?,
+                Ty::Read(inner) => format!("{} const*", self.ctype(inner, span)?),
+                _ => self.ctype(param, span)?,
             };
-            sg_types.push(format!("{} a{position}", self.ctype(param, func.name_span)?));
+            sg_types.push(format!("{} a{position}", self.ctype(param, span)?));
             passed.push(match param {
                 Ty::Read(inner) if **inner == Ty::CString => format!("(const char*)*a{position}"),
                 _ => format!("a{position}"),
             });
             c_types.push(c_type);
         }
+        Ok((c_types, sg_types, passed))
+    }
+
+    fn foreign_func(&mut self, func: &Func, prog: &Program, protos: &mut String, after_c: &mut String) -> Res<()> {
+        self.made.insert("ffi".to_string());
+        let (params, ret) = &prog.foreign[&func.name];
+        let c_name = short_name(&func.name);
+        let in_file = func.foreign.as_ref().is_some_and(|foreign| foreign.path.is_some());
+        let (mut c_types, sg_types, passed) = self.c_params(params, func.name_span)?;
         let ret_type = self.ctype(ret, func.name_span)?;
+        if func.variadic {
+            c_types.push("...".to_string());
+        }
         if !in_file && self.made.insert(format!("extern {c_name}")) {
             let list = if c_types.is_empty() { "void".to_string() } else { c_types.join(", ") };
             let _ = writeln!(protos, "extern {ret_type} sg_c_{c_name}({list}) SG_C({});", c_string(c_name));
         }
-        let list = if sg_types.is_empty() { "void".to_string() } else { sg_types.join(", ") };
         let callee = if in_file { c_name.to_string() } else { format!("sg_c_{c_name}") };
+        // One taking `...` has an adapter for each list of types it is called with.
+        if func.variadic {
+            let calls: Vec<(usize, Vec<Ty>)> = self.variadic.values().filter(|(name, _, _)| *name == func.name).map(|(_, number, params)| (*number, params.clone())).collect();
+            for (number, params) in calls {
+                let (_, sg_types, passed) = self.c_params(&params, func.name_span)?;
+                let list = if sg_types.is_empty() { "void".to_string() } else { sg_types.join(", ") };
+                let call = format!("{callee}({})", passed.join(", "));
+                let body = if *ret == Ty::Void { format!("{call};") } else { format!("return {call};") };
+                let adapter = format!("static inline {ret_type} sg_x_{}_v{number}({list})", cname(&func.name));
+                match in_file {
+                    true => {
+                        let _ = writeln!(protos, "{adapter};");
+                        let _ = writeln!(after_c, "{adapter} {{ {body} }}");
+                    }
+                    false => {
+                        let _ = writeln!(protos, "{adapter} {{ {body} }}");
+                    }
+                }
+            }
+            return Ok(());
+        }
+        let list = if sg_types.is_empty() { "void".to_string() } else { sg_types.join(", ") };
         let call = format!("{callee}({})", passed.join(", "));
         let body = if *ret == Ty::Void { format!("{call};") } else { format!("return {call};") };
         let adapter = format!("static inline {ret_type} sg_x_{}({list})", cname(&func.name));
@@ -12989,6 +13040,12 @@ impl<'a> Emitter<'a> {
                 Callee::Plain => self.call_at(expr.span, format!("f_{}", cname(name)), None, args, head, &expr.ty),
                 // A function of C, through the adapter `foreign_func` wrote.
                 Callee::Extern => self.call(format!("sg_x_{}", cname(name)), None, args, head, &expr.ty),
+                // One declared with `...`, through the adapter of the types of this call.
+                Callee::Variadic(params) => {
+                    let key = crate::ffi::variadic_key(name, params, &self.foreign_ret(name));
+                    let number = self.variadic[&key].1;
+                    self.call(format!("sg_x_{}_v{number}", cname(name)), None, args, head, &expr.ty)
+                }
                 Callee::Static { owner, name } if self.async_methods.contains(&format!("{owner}.{name}")) => {
                     let site = self.site(c_string(name), expr.span);
                     self.call(format!("a_start_{}", cname(&format!("{owner}.{name}"))), Some(site), args, head, &expr.ty)
@@ -13356,7 +13413,7 @@ impl<'a> Emitter<'a> {
                         _ => format!("(({ctype}*){place}.ptr)"),
                     })
                 }
-                Callee::Extern => unreachable!("a function of C is called by its name"),
+                Callee::Extern | Callee::Variadic(_) => unreachable!("a function of C is called by its name"),
                 Callee::Io(call) => self.io(*call, args, head, expr),
                 Callee::System(call) => self.system(*call, args, head, expr),
                 // `Memory.free(p)` is C's `free`; `Memory.copy` is `memmove` behind a test of the count.

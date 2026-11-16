@@ -1,0 +1,9 @@
+// A number without a type of its own does not go after `...`: C would read whatever it looks for.
+extern {
+    int printf(read CString format, ...)
+}
+
+void main() {
+    var format = CString.from("%ld\n") ?? panic("no zero byte")
+    _ = unsafe printf(read format, 30)
+}

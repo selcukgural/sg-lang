@@ -1,0 +1,6 @@
+error: a `bool` does not go to C after `...`
+  C reads it there as an `int`, made wider without a word
+  --> error_varargs_bool.sg:9:36
+ 9 |     _ = unsafe printf(read format, yes)
+   |                                    ^^^
+  hint: give C an `int`: 1 for `true`, 0 for `false`

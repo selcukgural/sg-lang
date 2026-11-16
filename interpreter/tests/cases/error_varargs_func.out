@@ -1,0 +1,5 @@
+error: a `Func<int, int>` does not go to C after `...`
+  --> error_varargs_func.sg:12:36
+ 12 |     _ = unsafe printf(read format, twice)
+    |                                    ^^^^^
+  hint: C calls a function of SG written with `export`

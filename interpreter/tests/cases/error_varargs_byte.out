@@ -1,0 +1,6 @@
+error: a `byte` does not go to C after `...`
+  C reads it there as an `int`, made wider without a word
+  --> error_varargs_byte.sg:9:36
+ 9 |     _ = unsafe printf(read format, b)
+   |                                    ^
+  hint: `(int)b`

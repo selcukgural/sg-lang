@@ -1,0 +1,15 @@
+// A struct goes to C by value only where C declares one.
+extern {
+    int printf(read CString format, ...)
+}
+
+struct Point {
+    int x
+    int y
+}
+
+void main() {
+    var format = CString.from("%d\n") ?? panic("no zero byte")
+    var p = Point { x = 1, y = 2 }
+    _ = unsafe printf(read format, p)
+}

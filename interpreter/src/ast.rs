@@ -29,6 +29,9 @@ pub struct Program {
     /// What each `export` function takes and gives, under its full name. Filled in by the
     /// checker.
     pub exported: std::collections::BTreeMap<String, (Vec<Ty>, Ty)>,
+    /// The full names of the functions of C declared with `...` after their parameters:
+    /// each call gives what follows them as the types of its own arguments.
+    pub variadic: std::collections::BTreeSet<String>,
 }
 
 /// One file: where its text lies, the module it belongs to (empty for the root, otherwise the
@@ -145,6 +148,9 @@ pub struct Func {
     pub body: Block,
     /// Declared in an `extern` block: a function of C, with no body.
     pub foreign: Option<Foreign>,
+    /// Declared with `...` after its parameters: a function of C that takes more arguments,
+    /// of the types each call gives (`int snprintf(raw byte s, nuint n, read CString f, ...)`).
+    pub variadic: bool,
 }
 
 /// Where a C function comes from: `extern "z" { ... }` names the library `z` (linked as
@@ -209,6 +215,9 @@ pub enum Callee {
     ToCString,
     /// A function declared in an `extern` block: a function of C.
     Extern,
+    /// A function of C declared with `...`: what this call gives it, the parameters it
+    /// declares and then the types of the arguments after them.
+    Variadic(Vec<Ty>),
     /// `buffer.pointer()`, written only as an argument of a C function: the address of the
     /// items of a list, an array or a slice.
     Pointer,

@@ -1,0 +1,50 @@
+// A library of C behind a safe module: `sqlite/database.sg` and `sqlite/statement.sg` declare
+// the functions of SQLite and call them inside `unsafe`; this file does not. Run it with
+// `sg examples/sqlite/main.sg`, its tests with `sg test examples/sqlite`.
+use sqlite
+
+Result<void, SqliteError> main() {
+    var db = try Database.open(":memory:")
+    try db.execute("CREATE TABLE tea (id INTEGER PRIMARY KEY, name TEXT NOT NULL, grams REAL, origin TEXT)")
+
+    // One statement, bound and run for each row, in one transaction.
+    try db.execute("BEGIN")
+    var insert = try db.prepare("INSERT INTO tea (name, grams, origin) VALUES (?1, ?2, ?3)")
+    var names = List<string> { "Darjeeling", "Rize", "Lapsang souchong", "Gyokuro" }
+    var grams = List<double> { 2.5, 3, 2.25, 4 }
+    var origins = List<string?> { "India", "Türkiye", null, "Japan" }
+    for i in 0..names.length() {
+        try insert.bindText(1, read names[i])
+        try insert.bindDouble(2, grams[i])
+        match origins[i] {
+            null => try insert.bindNull(3)
+            var origin => try insert.bindText(3, read origin)
+        }
+        _ = try insert.step()
+        insert.reset(true)
+    }
+    try db.execute("COMMIT")
+    print($"{names.length()} rows, the last one {db.lastInsertId()}")
+
+    // Rows read by a callback of SQLite, an `export` function of the module.
+    for row in try db.rows("SELECT name, origin FROM tea ORDER BY name") {
+        print($"{row[0] ?? "?"} from {row[1] ?? "nowhere known"}")
+    }
+
+    // Columns read by their types.
+    var heavy = try db.prepare("SELECT name, grams FROM tea WHERE grams >= ?1 ORDER BY grams DESC")
+    try heavy.bindDouble(1, 2.5)
+    while try heavy.step() {
+        var name = try heavy.columnText(0)
+        print($"{name ?? "?"}: {heavy.columnDouble(1)} g")
+    }
+
+    // A quote inside a text is doubled by SQLite's own quoting, which takes `...`.
+    print(try quote("O'Brien's blend"))
+    try db.execute("UPDATE tea SET grams = grams + 1 WHERE origin IS NULL")
+    print($"{db.changes()} row changed")
+
+    // An error of SQLite comes back with its message: exit code 1.
+    try db.execute("INSERT INTO tea (grams) VALUES (1)")
+    return Ok()
+}

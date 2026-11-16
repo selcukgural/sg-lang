@@ -26,7 +26,7 @@ pub fn parse(src: &str) -> Res<Program> {
 /// belongs to. What a module defines gets its full name here: `Product` in the folder `stock`
 /// is `stock.Product`.
 pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> {
-    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default() };
+    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default() };
     for (start, end, module) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
         let mut parser = Parser { src, toks, i: 0, struct_literals: true };
@@ -436,12 +436,19 @@ impl<'a> Parser<'a> {
             }
             self.expect(Tok::LParen, "`(`")?;
             let mut params: Vec<Param> = Vec::new();
+            // `...` after the parameters: each call gives more arguments, of their own types.
+            let mut variadic = false;
             while *self.peek() != Tok::RParen {
-                if *self.peek() == Tok::DotDot {
-                    let span = self.span();
-                    let span = if *self.peek_at(1) == Tok::Dot { span.to(self.toks[self.i + 1].span) } else { span };
-                    return Err(Diag::error(span, "a C function that takes a varying count of arguments is not in the interpreter yet")
-                        .note("declare it with the arguments one call gives, or call a function that takes a fixed count"));
+                if let Some(span) = self.ellipsis() {
+                    if params.is_empty() {
+                        return Err(Diag::error(span, "a C function takes at least one parameter before `...`, as C asks")
+                            .note("C reads what follows from where the last named parameter ends"));
+                    }
+                    if *self.peek() != Tok::RParen {
+                        return Err(Diag::error(span, "`...` is written last: what C takes after it has no names"));
+                    }
+                    variadic = true;
+                    break;
                 }
                 let ty = self.type_expr()?;
                 if matches!(self.peek(), Tok::Comma | Tok::RParen) {
@@ -459,7 +466,7 @@ impl<'a> Parser<'a> {
                 return Err(Diag::error(self.span(), "a C function has no body: it is declared here, and C has it")
                     .hint("a function of your own is written outside the `extern` block"));
             }
-            let func = Func { public, is_async: false, export: false, ret, name, name_span, this: None, this_ty: None, params, from: Vec::new(), body: Vec::new(), foreign: Some(foreign.clone()) };
+            let func = Func { public, is_async: false, export: false, ret, name, name_span, this: None, this_ty: None, params, from: Vec::new(), body: Vec::new(), foreign: Some(foreign.clone()), variadic };
             program.funcs.push(func);
             if *self.peek() != Tok::RBrace {
                 self.expect(Tok::Newline, "end of line")?;
@@ -624,6 +631,10 @@ impl<'a> Parser<'a> {
         let mut params: Vec<Param> = Vec::new();
         while *self.peek() != Tok::RParen {
             let start = self.span();
+            if let Some(span) = self.ellipsis() {
+                return Err(Diag::error(span, "a function of SG takes a fixed count of arguments: only a function of C, declared in an `extern` block, takes `...`")
+                    .hint("several values of one type are given as a slice: `read int[] values`"));
+            }
             let is_this = |tok: &Tok| matches!(tok, Tok::Ident(word) if word == "this");
             let mode = match self.peek() {
                 tok if is_this(tok) => Some(This::Value),
@@ -693,7 +704,21 @@ impl<'a> Parser<'a> {
             }
         }
         let body = self.block()?;
-        Ok(Func { public: false, is_async: false, export: false, ret, name, name_span, this, this_ty, params, from, body, foreign: None })
+        Ok(Func { public: false, is_async: false, export: false, ret, name, name_span, this, this_ty, params, from, body, foreign: None, variadic: false })
+    }
+
+    /// `...` as a parameter, taken with its span: `..` and `.` written together.
+    fn ellipsis(&mut self) -> Option<Span> {
+        if *self.peek() != Tok::DotDot || *self.peek_at(1) != Tok::Dot {
+            return None;
+        }
+        let (first, second) = (self.toks[self.i].span, self.toks[self.i + 1].span);
+        if first.end != second.start {
+            return None;
+        }
+        self.bump();
+        self.bump();
+        Some(first.to(second))
     }
 
     /// `async` in front of a method, as in front of a function at the top level.

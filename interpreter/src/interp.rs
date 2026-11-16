@@ -3575,6 +3575,10 @@ impl<'a, 'e> Interp<'a, 'e> {
                     self.call(func, None, values, expr.span)
                 }
                 Callee::Extern => self.call_extern(name, args, expr, frame),
+                Callee::Variadic(params) => {
+                    let ret = self.foreign[name].1.clone();
+                    self.call_c(None, &crate::ffi::variadic_key(name, params, &ret), params, &ret, args, expr, frame)
+                }
                 Callee::CValue(params) => {
                     let target = raw_of(&strip(frame.slot(name).borrow().clone()));
                     if target.addr == 0 {
@@ -3586,7 +3590,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
                 Callee::System(call) => self.system(*call, args, frame),
-                Callee::Extern | Callee::Pointer => unreachable!("a function of C is called by its name, and `pointer()` is read by its call"),
+                Callee::Extern | Callee::Variadic(_) | Callee::Pointer => unreachable!("a function of C is called by its name, and `pointer()` is read by its call"),
                 // `string.fromCString(p)`: the bytes up to the zero byte, copied and checked.
                 Callee::FromCString => {
                     let pointer = raw_of(&strip(self.expr(&args[0], frame)?));

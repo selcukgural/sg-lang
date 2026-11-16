@@ -1,0 +1,6 @@
+error: this number has no type of its own, and C reads it after `...` as whatever it looks for
+  C reads each value after `...` as the type the function looks for, and only the call says what it gives
+  --> error_varargs_number.sg:8:36
+ 8 |     _ = unsafe printf(read format, 30)
+   |                                    ^^
+  hint: say what C reads: `(int)30`, or `(long)30` where C takes a `long`

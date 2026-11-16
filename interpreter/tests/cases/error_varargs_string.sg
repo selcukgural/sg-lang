@@ -1,0 +1,10 @@
+// A text goes to C as a `read CString`, after `...` too.
+extern {
+    int printf(read CString format, ...)
+}
+
+void main() {
+    var format = CString.from("%s\n") ?? panic("no zero byte")
+    var name = "tea"
+    _ = unsafe printf(read format, name)
+}

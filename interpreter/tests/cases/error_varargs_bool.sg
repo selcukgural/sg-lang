@@ -1,0 +1,10 @@
+// A `bool` after `...` is an `int` to C.
+extern {
+    int printf(read CString format, ...)
+}
+
+void main() {
+    var format = CString.from("%d\n") ?? panic("no zero byte")
+    var yes = true
+    _ = unsafe printf(read format, yes)
+}

@@ -1,0 +1,9 @@
+// A fractional number written without a type does not go after `...` either.
+extern {
+    int printf(read CString format, ...)
+}
+
+void main() {
+    var format = CString.from("%f\n") ?? panic("no zero byte")
+    _ = unsafe printf(read format, 1.5)
+}

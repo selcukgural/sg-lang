@@ -1,0 +1,9 @@
+ok    sqlite: rows come back as texts, with null for NULL
+ok    sqlite: a bound text comes back the same, a zero byte inside too
+ok    sqlite: a statement is reset and run again
+ok    sqlite: an error carries the message of SQLite
+ok    sqlite: a column that is not UTF-8 is an error, not a text
+ok    sqlite: quote doubles the quotes inside
+ok    sqlite: a statement may outlive its database
+ok    sqlite: the schema of SQLite cannot be written from SQL
+8 test(s) passed

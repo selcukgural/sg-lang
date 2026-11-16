@@ -1,0 +1,73 @@
+// A million rows put into an SQLite database in memory with one prepared statement, then read
+// back with another: each text made by `snprintf`, which takes `...`, as `sqlite.c` makes it.
+extern "sqlite3" {
+    struct sqlite3
+    struct sqlite3_stmt
+    int sqlite3_open(read CString filename, ref raw sqlite3 db)
+    int sqlite3_close(raw sqlite3 db)
+    int sqlite3_exec(raw sqlite3 db, read CString sql, CFunc<raw void, int, raw raw byte, raw raw byte, int> callback, raw void data, raw raw byte errmsg)
+    int sqlite3_prepare_v2(raw sqlite3 db, read CString sql, int bytes, ref raw sqlite3_stmt stmt, raw raw byte tail)
+    int sqlite3_bind_int64(raw sqlite3_stmt stmt, int index, long value)
+    int sqlite3_bind_text(raw sqlite3_stmt stmt, int index, raw byte text, int bytes, CFunc<raw void, void> destructor)
+    int sqlite3_step(raw sqlite3_stmt stmt)
+    int sqlite3_reset(raw sqlite3_stmt stmt)
+    long sqlite3_column_int64(raw sqlite3_stmt stmt, int column)
+    int sqlite3_column_bytes(raw sqlite3_stmt stmt, int column)
+    int sqlite3_finalize(raw sqlite3_stmt stmt)
+}
+extern {
+    int snprintf(raw byte s, nuint n, read CString format, ...)
+}
+
+int run(raw sqlite3 db, read string sql) {
+    var text = CString.from(sql) ?? panic("no zero byte")
+    return unsafe sqlite3_exec(db, read text, null, null, null)
+}
+
+raw sqlite3_stmt prepared(raw sqlite3 db, read string sql) {
+    var text = CString.from(sql) ?? panic("no zero byte")
+    raw sqlite3_stmt stmt = null
+    if unsafe sqlite3_prepare_v2(db, read text, -1, ref stmt, null) != 0 {
+        panic("not prepared")
+    }
+    return stmt
+}
+
+void main() {
+    var path = CString.from(":memory:") ?? panic("no zero byte")
+    raw sqlite3 db = null
+    if unsafe sqlite3_open(read path, ref db) != 0 {
+        panic("not opened")
+    }
+    _ = run(db, "CREATE TABLE t (n INTEGER, word TEXT)")
+    _ = run(db, "BEGIN")
+    var insert = prepared(db, "INSERT INTO t VALUES (?1, ?2)")
+    nint minusOne = -1
+    var transient = unsafe (CFunc<raw void, void>)(raw void)minusOne
+    var format = CString.from("item-%ld") ?? panic("no zero byte")
+    var word = byte[32]
+    for i in 0..1_000_000 {
+        long n = (long)i * 7 % 1000
+        var length = unsafe snprintf(word.pointer(), 32, read format, n)
+        unsafe {
+            _ = sqlite3_bind_int64(insert, 1, n)
+            _ = sqlite3_bind_text(insert, 2, word.pointer(), length, transient)
+            if sqlite3_step(insert) != 101 {
+                panic("not inserted")
+            }
+            _ = sqlite3_reset(insert)
+        }
+    }
+    _ = unsafe sqlite3_finalize(insert)
+    _ = run(db, "COMMIT")
+    var select = prepared(db, "SELECT n, word FROM t")
+    long total = 0
+    long bytes = 0
+    while unsafe sqlite3_step(select) == 100 {
+        total += unsafe sqlite3_column_int64(select, 0)
+        bytes += unsafe sqlite3_column_bytes(select, 1)
+    }
+    _ = unsafe sqlite3_finalize(select)
+    _ = unsafe sqlite3_close(db)
+    print($"{total} {bytes}")
+}

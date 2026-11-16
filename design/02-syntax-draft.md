@@ -1421,6 +1421,22 @@ nint count = q - p                               // the items between two pointe
 bool before = p < q                              // the order of two addresses
 ```
 
+A function of C that takes a varying count of arguments is declared with `...` after its parameters. What a
+call gives after them says the type C reads: a value C would widen without a word (a `byte`, a `bool`, a
+`float`) and a number written without a type are errors whose hint is the cast, since C reads there whatever
+it looks for.
+
+```
+extern {
+    int snprintf(raw byte s, nuint n, read CString format, ...)
+    int sscanf(read CString text, read CString format, ...)
+}
+
+var length = unsafe snprintf(buffer.pointer(), 64, read format, count, (double)ratio, read name)
+var found = unsafe sscanf(read input, read pattern, ref count, ref total)   // the places it writes
+_ = unsafe snprintf(buffer.pointer(), 64, read format, 30)    // error: (int)30, or (long)30 for %ld
+```
+
 A function of SG that C calls is written with `export`: it takes and gives only what C has, and C sees its
 name as it is written, without its module. Its name is a `CFunc`, a pointer to a function as C calls it;
 a `Func` does not go to C. A `CFunc` that comes from C (from `dlsym`, or kept in a struct) is called inside

@@ -1,0 +1,5 @@
+error: a C function takes at least one parameter before `...`, as C asks
+  C reads what follows from where the last named parameter ends
+  --> error_varargs_first.sg:3:13
+ 3 |     int sum(...)
+   |             ^^^

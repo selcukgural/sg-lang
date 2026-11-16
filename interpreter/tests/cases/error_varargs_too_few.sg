@@ -1,0 +1,9 @@
+// The parameters before `...` are given in every call.
+extern {
+    int snprintf(raw byte s, nuint n, read CString format, ...)
+}
+
+void main() {
+    var buffer = byte[8]
+    _ = unsafe snprintf(buffer.pointer(), 8)
+}

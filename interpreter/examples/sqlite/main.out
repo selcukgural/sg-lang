@@ -1,0 +1,11 @@
+4 rows, the last one 4
+Darjeeling from India
+Gyokuro from Japan
+Lapsang souchong from nowhere known
+Rize from Türkiye
+Gyokuro: 4 g
+Rize: 3 g
+Darjeeling: 2.5 g
+'O''Brien''s blend'
+1 row changed
+error: NOT NULL constraint failed: tea.name (code 19)

@@ -1,0 +1,7 @@
+// C reads what follows `...` from where the last named parameter ends.
+extern {
+    int sum(...)
+}
+
+void main() {
+}

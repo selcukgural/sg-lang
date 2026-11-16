@@ -1,0 +1,9 @@
+// `null` after `...`: C would read a pointer of the size it looks for.
+extern {
+    int printf(read CString format, ...)
+}
+
+void main() {
+    var format = CString.from("%p\n") ?? panic("no zero byte")
+    _ = unsafe printf(read format, null)
+}
