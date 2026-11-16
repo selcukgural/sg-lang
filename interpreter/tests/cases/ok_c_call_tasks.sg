@@ -1,0 +1,63 @@
+// A call of C that waits holds up only its own task: the other tasks run meanwhile, as they do
+// on threads of their own in compiled code. A function C calls back during it runs in its turn.
+extern {
+    int usleep(uint microseconds)
+    void qsort(raw void base, nuint count, nuint size, CFunc<raw void, raw void, int> compare)
+}
+
+export int compareInts(raw void a, raw void b) {
+    var x = unsafe ((raw int)a)[0]
+    var y = unsafe ((raw int)b)[0]
+    if x < y {
+        return -1
+    }
+    if x > y {
+        return 1
+    }
+    return 0
+}
+
+int twice(int n) {
+    print($"the task runs with {n}")
+    return n * 2
+}
+
+int square(int n) {
+    return n * n
+}
+
+// A task that waits in C, while the task beside it runs.
+int sleeper(int ms) {
+    _ = unsafe usleep((uint)ms * 1000)
+    print("the sleeper is back from C")
+    return ms
+}
+
+void main() {
+    var task = Task.run(twice, 21)
+    _ = unsafe usleep(100000)
+    print("main is back from C")
+    print(task.wait())
+
+    // Callbacks of `qsort` while another task is there.
+    var other = Task.run(square, 7)
+    var numbers = Memory.allocate<int>(5)
+    unsafe {
+        numbers[0] = 3
+        numbers[1] = 1
+        numbers[2] = 5
+        numbers[3] = 2
+        numbers[4] = 4
+        qsort((raw void)numbers, 5, 4, compareInts)
+    }
+    var sorted = List<int>()
+    sorted.addAll(unsafe Memory.view(numbers, 5))
+    print(sorted)
+    unsafe Memory.free(numbers)
+    print(other.wait())
+
+    var slow = Task.run(sleeper, 100)
+    var quick = Task.run(twice, 1)
+    print(slow.wait())
+    print(quick.wait())
+}

@@ -1332,6 +1332,11 @@ static inline void sg_raw_copy(const void* source, void* target, int64_t n, size
     if (n < 0) sg_panicf(loc, "`Memory.copy` is given a count below 0: %lld", (long long)n);
     if (n) memmove(target, source, (size_t)n * size);
 }
+static inline int64_t sg_raw_view(const void* at, int64_t n, const char* loc) {
+    if (n < 0) sg_panicf(loc, "`Memory.view` is given a count below 0: %lld", (long long)n);
+    if (n && !at) sg_panicf(loc, "`Memory.view` is given `null` and a count of %lld", (long long)n);
+    return n;
+}
 "#;
 
 /// The two clocks the language's own module reads (`Clock.monotonic()`, `Clock.wall()`): the
@@ -5451,7 +5456,6 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         foreign: prog.funcs.iter().filter_map(|func| func.foreign.as_ref().map(|foreign| (func.name.as_str(), foreign))).collect(),
         addressed: std::collections::BTreeSet::new(),
         variadic: Default::default(),
-        foreign_rets: prog.foreign.iter().map(|(name, (_, ret))| (name.clone(), ret.clone())).collect(),
         async_methods: HashSet::new(),
         awaits: None,
         exit_blocks: Vec::new(),
@@ -5485,7 +5489,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         if func.foreign.is_some() {
             emitter.sigs.insert(format!("sg_x_{name}"), params);
             if func.variadic {
-                let calls: Vec<(String, Vec<Ty>)> = crate::ffi::variadic_calls(prog, tests).into_iter().filter(|(_, (called, _))| *called == func.name).map(|(key, (_, params))| (key, params)).collect();
+                let calls: Vec<(String, Vec<Ty>)> = crate::ffi::adapter_calls(prog, tests).into_iter().filter(|(_, (called, _))| *called == func.name).map(|(key, (_, params))| (key, params)).collect();
                 for (key, params) in calls {
                     let number = emitter.variadic.len();
                     emitter.sigs.insert(format!("sg_x_{name}_v{number}"), params.clone());
@@ -6458,11 +6462,9 @@ struct Emitter<'a> {
     foreign: HashMap<&'a str, &'a Foreign>,
     /// The functions of C whose names are taken as `CFunc` values.
     addressed: std::collections::BTreeSet<String>,
-    /// Each call of a function of C declared with `...`, by `ffi::variadic_key`: the function,
+    /// Each call of a function of C declared with `...`, by `ffi::adapter_key`: the function,
     /// the number of its adapter, and the types the call gives.
     variadic: std::collections::BTreeMap<String, (String, usize, Vec<Ty>)>,
-    /// What each function of C gives, by its full name.
-    foreign_rets: HashMap<String, Ty>,
     /// The async methods, under `owner.name`.
     async_methods: HashSet<String>,
     /// While an async function is written: where each `await` stands, found again by the number
@@ -6593,11 +6595,6 @@ impl<'a> Emitter<'a> {
         let loc = self.loc(span);
         let text = c_string(&format!("`{name}` is called, and it is a `CFunc` that is `null`"));
         format!("(({place}) ? (void)0 : sg_panic({text}, {loc}), {place})")
-    }
-
-    /// What the function of C named `name` gives.
-    fn foreign_ret(&self, name: &str) -> Ty {
-        self.foreign_rets[name].clone()
     }
 
     /// Where the function of C named `name` is declared, if it is one.
@@ -13042,8 +13039,7 @@ impl<'a> Emitter<'a> {
                 Callee::Extern => self.call(format!("sg_x_{}", cname(name)), None, args, head, &expr.ty),
                 // One declared with `...`, through the adapter of the types of this call.
                 Callee::Variadic(params) => {
-                    let key = crate::ffi::variadic_key(name, params, &self.foreign_ret(name));
-                    let number = self.variadic[&key].1;
+                    let number = self.variadic[&crate::ffi::adapter_key(name, params)].1;
                     self.call(format!("sg_x_{}_v{number}", cname(name)), None, args, head, &expr.ty)
                 }
                 Callee::Static { owner, name } if self.async_methods.contains(&format!("{owner}.{name}")) => {
@@ -13463,6 +13459,25 @@ impl<'a> Emitter<'a> {
                     self.made.insert("raw".to_string());
                     let loc = self.loc(expr.span);
                     Ok(sequence(&names, format!("sg_raw_copy({}, {}, {}, sizeof({ctype}), {loc})", values[0], values[1], values[2])))
+                }
+                // `Memory.view(p, n)`: the pointer and the count, after the count is checked.
+                Callee::Memory(MemoryCall::View) => {
+                    let Ty::Raw(item) = args[0].ty.strip_borrow() else { unreachable!("the checker gives `Memory.view` a raw pointer") };
+                    let ctype = self.ctype(item, expr.span)?;
+                    let window = self.ctype(&expr.ty, expr.span)?;
+                    let mut parts = Vec::new();
+                    let mut head = head;
+                    for arg in args {
+                        let before = self.mark();
+                        let value = self.first(arg, head)?;
+                        head = false;
+                        parts.push(self.part(arg, &arg.ty, value, before));
+                    }
+                    let (values, names) = self.in_order(parts)?;
+                    self.made.insert("raw".to_string());
+                    let loc = self.loc(expr.span);
+                    let temp = self.temp();
+                    Ok(sequence(&names, format!("({{ {ctype}* {temp} = {}; int64_t {temp}n = sg_raw_view({temp}, {}, {loc}); ({window}){{ {temp}, {temp}n }}; }})", values[0], values[1])))
                 }
                 Callee::Stream(call) => self.stream(*call, recv, args, head, expr),
                 Callee::Net(call) => self.net(*call, recv, args, head, expr),

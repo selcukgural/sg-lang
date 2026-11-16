@@ -1488,6 +1488,22 @@ interpreter keeps the addresses it gave and panics on a wrong type, a value that
 moved. A panic inside a function C called ends the process with its message, since nothing unwinds through
 C. A C file of the program calls an `export` function by its name: SG declares it before the file.
 
+What C hands a callback is often a pointer and a length. `Memory.view` looks at it as a slice, so a list takes
+it in one copy, as libcurl's write callback in `examples/curl` does:
+
+```
+export nuint takeBody(raw byte data, nuint size, nuint count, raw void state) {
+    var received = unsafe (ref Received)state
+    var length = (nint)(size * count)
+    received.body.addAll(unsafe Memory.view(data, length))   // a read byte[] of the bytes C gave
+    return (nuint)length
+}
+```
+
+The window borrows `data`, so it does not outlive the variable that holds the pointer; that the memory is
+there is the program's promise, inside `unsafe`. While a call of C waits (`curl_easy_perform`), the other
+tasks of the program run, in the interpreter too.
+
 ### The clock
 
 Three types come with the language: `Instant` for measuring, `Duration` for a span of time, `DateTime` for the

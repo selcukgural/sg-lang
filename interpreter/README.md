@@ -46,8 +46,8 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Changed through several owners | `new shared checked x` gives a `shared checked T`: what it points to is changed through any of its owners (`a.count += 1`, `a.items.add(x)`, a method that takes `ref this`, `ref a` where a `ref T` goes), and each access is checked against the borrows of it in progress, one that changes it or any number that read it. A read or a write borrows nothing after it; a value lent to a call is borrowed until the call returns, the head of a `for` for the loop, a `match` and an `is` with names for the statement. `read x as n { ... }` and `ref x as n { ... }` lend it for a block. A conflict through the same variable is a compile error, one through another variable a panic that shows both lines. A method can take the owner itself, `read FolderRef this`, so that it can write `share this` and `weak this`. The `shared` values still alive when a program or a test ends hold each other up and are reported (`leak: ...`; in compiled code by a debug build) |
 | Tasks | `Task.run(work, x, share total)` starts `work(x, share total)` as a task and gives a `Task<R>`, `R` being what `work` returns; a `Func` can be started too. `t.wait()` waits for it and gives that value (`try t.wait()` passes its error on). A task that is not waited for on every path is a compile error, and so is `Task.run(...)` alone or dropped with `_ =`. What a task is given and gives back owns all it holds: no borrow, no `shared checked` value, no `Task` (the thread rule, also inside fields). In the interpreter a task runs on a thread of its own when it is waited for, so the output is the same on every run; compiled code starts a thread of the system for it at once. A panic inside one names the line that started it |
 | Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
-| Raw memory | `raw T` is an address that owns nothing and may be `null`; it points at plain data (numbers, `bool`, `char`, raw pointers, and arrays and structs of them), laid out as C lays it, or is a `raw void`. `Memory.allocate<T>(n)` gives room for `n` items, all zero (C's `calloc`, in the interpreter too). `p[i]` reads and writes an item (`p[i] = v`, `p[i].x += 1`), `p + n` and `p - n` move by items, `(raw byte)p` reads the memory as another type, `Memory.copy(source, target, count)` copies items (also over itself) and `Memory.free(p)` gives the block back, or memory C gave with `malloc`; each of them is written inside `unsafe { ... }`, or with `unsafe` in front of a value (`var first = unsafe p[0]`), and an `unsafe` that nothing needs is an error. `p == q` and `p == null` need no `unsafe`, nor do `p < q` and `p - q` (the order of two addresses, and the count of items between them) and `(nuint)p` (an address as a number); `unsafe (raw T)n` makes a pointer out of a `nint` or a `nuint` (`(raw void)(nint)-1`). The interpreter checks every item against the block it came from and panics outside it, after `Memory.free` and through `null`; compiled code checks nothing, and a `raw T` is a `T*`. A raw pointer does not go to another task |
-| Calling C | `extern "z" { int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen) }` declares functions of C, a block for each library (linked as `-lz`; `extern { }` is the C library itself), each called inside `unsafe`. A C function takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data (C's `T*` and `const T*`, for the time of the call; `ref raw T` is `T**`), a struct of plain data by value, laid out as C lays it out, and `read CString`, and gives a number, a `bool`, a `raw T`, a struct of plain data or nothing. `struct sqlite3` without a body in an `extern` block is a type of C that SG only points at (`raw sqlite3`). `CString.from(text)` gives a `Result<CString, TextError>`, an error for a zero byte inside; `unsafe string.fromCString(p)` copies what C ended with a zero byte and checks that it is UTF-8. `buffer.pointer()` on a list, an array or a slice of plain data is written only as an argument of a C function. The functions are private to their module unless `public` is written on one, so a module can hide a library behind a safe interface, and a `Disposable` type gives back what C made when it ends (`examples/zlib`, whose `Deflater` holds zlib's stream). `extern "./native.c" { ... }` names a C file of the module's folder in place of a library: it is compiled with the program, in the same unit, so its macros, `static inline` functions, builtins and assembly are reached through functions it declares, and an inline one is inlined; a library block of the module (`extern "z" { }`, also empty) links what the file needs. `int opterr` in an `extern` block, without parentheses, is a variable of C, read and written inside `unsafe` (`unsafe opterr`, `unsafe { opterr = 0 }`, `unsafe { origin.y = 4 }`) as an item of raw memory. `C.errno()` gives what the last call of C left in `errno`, read right after it, `C.setErrno(n)` sets what the next one finds, and `IoError.fromCode(n)` makes an `IoError` of it. `int snprintf(raw byte s, nuint n, read CString format, ...)` declares a function that takes a varying count of arguments: each value after the parameters says the type C reads, so a `byte`, a `bool` or a `float` there, and a number or `null` written without a type, are errors whose hint is the cast (`(long)30`). The interpreter builds a small library of wrappers with `cc` and opens it with `dlopen`; compiled code calls C directly |
+| Raw memory | `raw T` is an address that owns nothing and may be `null`; it points at plain data (numbers, `bool`, `char`, raw pointers, and arrays and structs of them), laid out as C lays it, or is a `raw void`. `Memory.allocate<T>(n)` gives room for `n` items, all zero (C's `calloc`, in the interpreter too). `p[i]` reads and writes an item (`p[i] = v`, `p[i].x += 1`), `p + n` and `p - n` move by items, `(raw byte)p` reads the memory as another type, `Memory.copy(source, target, count)` copies items (also over itself), `Memory.view(p, count)` looks at `count` items as a `read T[]` (C's memory added to a list in one copy, read as text where it lies) and `Memory.free(p)` gives the block back, or memory C gave with `malloc`; each of them is written inside `unsafe { ... }`, or with `unsafe` in front of a value (`var first = unsafe p[0]`), and an `unsafe` that nothing needs is an error. `p == q` and `p == null` need no `unsafe`, nor do `p < q` and `p - q` (the order of two addresses, and the count of items between them) and `(nuint)p` (an address as a number); `unsafe (raw T)n` makes a pointer out of a `nint` or a `nuint` (`(raw void)(nint)-1`). The interpreter checks every item against the block it came from and panics outside it, after `Memory.free` and through `null`; compiled code checks nothing, and a `raw T` is a `T*`. A window of `Memory.view` borrows the variable or the field that holds its pointer, so it does not outlive it; a count below 0, and `null` with items, are panics in both. A raw pointer does not go to another task |
+| Calling C | `extern "z" { int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen) }` declares functions of C, a block for each library (linked as `-lz`; `extern { }` is the C library itself), each called inside `unsafe`. A C function takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data (C's `T*` and `const T*`, for the time of the call; `ref raw T` is `T**`), a struct of plain data by value, laid out as C lays it out, and `read CString`, and gives a number, a `bool`, a `raw T`, a struct of plain data or nothing. `struct sqlite3` without a body in an `extern` block is a type of C that SG only points at (`raw sqlite3`). `CString.from(text)` gives a `Result<CString, TextError>`, an error for a zero byte inside; `unsafe string.fromCString(p)` copies what C ended with a zero byte and checks that it is UTF-8. `buffer.pointer()` on a list, an array or a slice of plain data is written only as an argument of a C function. The functions are private to their module unless `public` is written on one, so a module can hide a library behind a safe interface, and a `Disposable` type gives back what C made when it ends (`examples/zlib`, whose `Deflater` holds zlib's stream). `extern "./native.c" { ... }` names a C file of the module's folder in place of a library: it is compiled with the program, in the same unit, so its macros, `static inline` functions, builtins and assembly are reached through functions it declares, and an inline one is inlined; a library block of the module (`extern "z" { }`, also empty) links what the file needs. `int opterr` in an `extern` block, without parentheses, is a variable of C, read and written inside `unsafe` (`unsafe opterr`, `unsafe { opterr = 0 }`, `unsafe { origin.y = 4 }`) as an item of raw memory. `C.errno()` gives what the last call of C left in `errno`, read right after it, `C.setErrno(n)` sets what the next one finds, and `IoError.fromCode(n)` makes an `IoError` of it. `int snprintf(raw byte s, nuint n, read CString format, ...)` declares a function that takes a varying count of arguments: each value after the parameters says the type C reads, so a `byte`, a `bool` or a `float` there, and a number or `null` written without a type, are errors whose hint is the cast (`(long)30`). The interpreter builds a small library of wrappers with `cc` and opens it with `dlopen`; compiled code calls C directly. While a call of C waits, the other tasks run, in the interpreter too. `examples/sqlite` and `examples/curl` wrap SQLite and libcurl in modules whose users write no `unsafe` |
 | C calling SG | `export int compareInts(raw void a, raw void b) { ... }` is a function C calls by the name written, without its module: it takes and gives only the types C has (integers, `float`, `double`, `bool`, `raw T`, `CFunc`, structs of plain data by value), and SG calls it by its name too. `CFunc<raw void, raw void, int>` is a pointer to a function as C calls it, plain data that may be `null`: the name of an `export` function or of a function of C is one (`unsafe qsort((raw void)items, n, 4, compareInts)`, `CFunc<int, int> f = abs`), `unsafe (CFunc<int, int>)p` takes one from a `raw void` (`dlsym`), `(raw void)f` gives it back, and every call through one is inside `unsafe`; calling a `null` one is a panic. The state a callback reaches goes through C's `void*`: `unsafe Memory.addressOf(ref state)` gives the address of a variable or a field, and `unsafe (ref State)data` (or `read`) lends it again inside the callback; the interpreter keeps the addresses it gave and panics on a wrong type, a value that ended or moved, or an address it did not give. A C file of the program calls an `export` function by its name. A panic inside one ends the process with its message, since nothing unwinds through C; the interpreter runs one only on a thread that is in a call of C, and compiled code on any thread. A `lock` block does not call C when an `export` function waits |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads, each with a queue of its own that the others steal from. A method is async too (`public async int total(read this)`): one that lends `this` is awaited where it is written, one that takes it by value may start as a task; `create`, `format`, `equals`, `hash` and `compare` are not async |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
@@ -395,7 +395,9 @@ C calls, `CFunc`, the state of a callback): an `export` function is a function o
 own name that calls the function of SG, and the interpreter writes one into its wrappers that hands the
 addresses of the arguments to the interpreter running the call of C on that thread (731-749). So was
 the eighty-sixth (a varying count of arguments): each list of types a function that takes `...` is called
-with gets an adapter of its own, which calls C as C calls it (750-760).
+with gets an adapter of its own, which calls C as C calls it (750-760). So was the eighty-seventh (libcurl):
+`Memory.view` is a pointer and a count, checked once, and the adapters of `...` are made per list of the
+types of SG, since a `read CString` and a `raw byte` are one type of C but go over differently (761-778).
 What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
@@ -463,6 +465,7 @@ hand with no checks):
 | `inline`: a function of a C file beside the program (`extern "./inline_helpers.c"`, a step of a hash written `static inline`) called five hundred million times in a loop (the C is the same loop with the function in its own file) | 1.072 s | 1.059 s | 1.044 s | 1.03 |
 | `callback`: ten million numbers sorted by C's `qsort` with a comparator written in SG (`export int compareInts(raw void a, raw void b)`), which C calls through the pointer it is given (the C is the same sort with the comparator in C) | 0.904 s | 0.907 s | 0.902 s | 1.00 |
 | `sqlite`: a million rows put into an SQLite database in memory with one prepared statement in one transaction, each text made by `snprintf` (which takes `...`), then read back with another (the C is the same program through SQLite's header) | 0.320 s | 0.321 s | 0.321 s | 1.00 |
+| `curl`: a thousand fetches of a body of one megabyte over the loopback with libcurl, on one kept connection, from a server that is a task of the program; each piece of the body added to a list by an `export` callback through `Memory.view` (the C is the same program through libcurl's header, its server a thread, each piece copied with `memcpy`) | 0.163 s | 0.161 s | 0.160 s | 1.02 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -5411,6 +5414,106 @@ before it on 16 November 2026; 759 and 760 come from the slice. All were approve
      A borrow would forbid what SQLite allows, and a statement could not be kept in a struct beside its
      database.
 
+Choices made in the eighty-seventh slice (libcurl behind a safe module), the fourth of the slices that
+bring SG to what C reaches. 761 to 773 were decided before it on 16 November 2026, and 774 during it; 775
+to 778 come from the slice. All were approved the same day:
+
+761. **`examples/curl`**, decided before the slice: a module `curl` (`Client`, `Response`, `Header`,
+     `CurlError`) whose users write no `unsafe`, and `main.sg`, which fetches the URL it is given and
+     prints the status, the type, the count of headers and bytes, and the first lines of the body. libcurl's
+     multi interface, async requests, cookies, a proxy, uploads and a choice of HTTP/2 are left out.
+762. **The start of libcurl**, decided before the slice: SG has no global variable, so `Client.open()` calls
+     `curl_global_init`, which libcurl counts (and which may be called from any thread since 7.84), then
+     `curl_easy_init`; a `Client` is `Disposable`, and its end calls `curl_easy_cleanup` and
+     `curl_global_cleanup`. A request takes `ref this`: one handle is not used by two tasks at once, which
+     the borrow rules see. The connections of a client are kept from one request to the next.
+763. **`unsafe Memory.view(p, count)`**, decided before the slice: the `count` items at `p` as a `read T[]`,
+     Rust's `slice::from_raw_parts`, so a piece of a body is added to a list in one copy
+     (`body.addAll(unsafe Memory.view(data, n))`) instead of a loop over its bytes. `p` points at plain
+     data, not `raw void`; a count below 0, and `null` with a count above 0, are panics in both. The
+     interpreter checks the items against their block, as it checks `p[i]`, and reads them once; compiled
+     code is the pointer and the count.
+764. **A limit on what a response brings**, decided before the slice: `maxBytes`, 16 MB unless changed. A body
+     whose length the server says is larger is refused before it comes (`CURLOPT_MAXFILESIZE_LARGE`); one
+     that grows past it is stopped by the callback, which takes no more. Either is the code 63, and
+     `isTooLarge()` says so. A compressed body is not unpacked.
+765. **Safe defaults**, decided before the slice: only `http` and `https`, on the first request and on
+     every redirect (`CURLOPT_PROTOCOLS_STR`, `CURLOPT_REDIR_PROTOCOLS_STR`), so a redirect to `file://` is an
+     error; at most 5 redirects (`maxRedirects`); certificates always checked, with no way to turn that off,
+     and `caFile` for authorities of one's own; 30 s for a request (`timeoutMs`), 10 s to connect
+     (`connectTimeoutMs`); `CURLOPT_NOSIGNAL`, since a program has threads.
+766. **Errors**, decided before the slice: `CurlError { code, message }`, the message being what libcurl
+     wrote into its error buffer (it names the host, the protocol, the certificate), else its message for
+     the code; `isTimeout()` for the code 28. A 404 or a 500 is a `Response`, not an error, as in reqwest and
+     C#'s `HttpClient`.
+767. **`Response`**, decided before the slice: `status`, `contentType` (`string?`), `headers` (a list of
+     `Header { name, value }`, gathered by a second `export` callback), `body` (`List<byte>`), `text()`,
+     which checks UTF-8, and `header(name)`, which finds a header whatever the case of its letters.
+768. **`get` and `post`**, decided before the slice: `post(url, body, contentType)` sends the type as a
+     header in a `curl_slist`, held by a `Disposable` of the module; a line break in the type is an error
+     (code 43) before anything is sent, so it cannot become a header of its own.
+769. **Numbers in place of constants**, decided before the slice: libcurl's options are written as numbers,
+     each with its name in a comment (`// 10002: CURLOPT_URL`), as `examples/sqlite` does; they do not change
+     between versions of libcurl. A number option is a `long` cast where it is given (752).
+770. **No async**, decided before the slice: `curl_easy_perform` waits on the thread that calls it; an async
+     function gives the request to `Task.run`.
+771. **The tests**, decided before the slice: `examples/curl` with ten tests against servers of their own on
+     the loopback, nothing going out to the network: a page with its status, type, headers and body; a 404;
+     a redirect followed, with the headers of the last response; a redirect to `file://`, a loop of
+     redirects and `ftp://` refused; a body past `maxBytes`, said and not said; a server that does not
+     answer, a timeout; a post with its body and type, and a type with a line break refused; a body that is
+     not UTF-8; a zero byte in a URL and a closed port. The server is a task of the test, written in SG. The
+     test of HTTPS makes a certificate with `openssl req` and serves with `openssl s_server`, both started
+     with `Command`; the certificate is refused until it is given as `caFile`. Without `openssl` that test
+     fails. `main.sg` is run by `cargo test` without a URL, so it prints how it is used and ends with 2 (a
+     program of several files is now held to its standard error and its exit code, as one of one file
+     was); fetching
+     `https://example.com` was tried by hand on macOS and on Linux, interpreted and compiled. `cargo test`
+     passes on macOS and on Linux in a container, where it compiles 320 of 1310 programs, 66 of them under
+     the thread sanitizer, and 20 of 25 programs of tests, the tests of `examples/curl` among them; every
+     compiled program is checked for leaks as before. gcc on Linux warns of a read past the 256 bytes of
+     the server's buffer, which the check of the window rules out before it; it is listed with the program
+     as `ok_text_blocks`' is.
+772. **Measured** (`curl`), decided before the slice: a thousand fetches of a megabyte over the loopback, on
+     one kept connection, from a server that is a task of the program, take 0.160 to 0.165 s against 0.160 to
+     0.163 s in C, 1.01 to 1.02 times on macOS, and 0.118 to 0.142 s against 0.118 to 0.136 s, 0.99 to 1.12
+     times, on Linux in a container, where the runs vary more. The copy of each piece through `Memory.view`
+     takes the time of `memcpy`; the rest is libcurl's and the loopback's.
+773. **The documents**, decided before the slice: this list, the table at the top, "Not here yet", the
+     paragraph on the back end and the row of the measurement; 04, 02 and 06 and the README of the
+     repository.
+774. **A call of C lets the other tasks run in the interpreter** (decided during the slice): a call of C
+     that waits holds up only its own thread in compiled code, but in the interpreter, where one fiber runs at
+     a time, it held up every task, so a server task never answered the request its program was making. Now
+     a call of C made while there are other tasks gives the turn away for its time, as a wait for the
+     network does: the tasks of `Task.run` not started yet start, the others go on, and when nobody is
+     ready a thread of its own waits for the first that is. A function C calls back during the call
+     takes the turn while it runs, and gives it away again. A program with one task pays nothing. One that
+     comes back while the run ends after a panic of another task still runs, and its task unwinds when
+     the call of C returns. `ok_c_call_tasks` shows it: a task runs while `usleep` waits, `qsort` calls
+     back beside another task, and a task waits in C while the one beside it runs. Chosen by the user
+     among three ways (the other two were a server in C on a thread of its own, and a server in another
+     process), on 16 November 2026.
+775. **An adapter of `...` for each list of the types of SG** (from the slice; a mistake of 754 put right):
+     compiled code made one adapter for each list of C types, but a `read CString` and a `raw byte` are both
+     a pointer of C and go over differently, the text of the one and the address the other holds. A
+     `curl_easy_setopt` with a text and another with a `raw void` shared one adapter, and the URL went to
+     libcurl as the address of the `CString`. The interpreter was right, since its wrappers write each value
+     as C reads it. `ok_c_varargs` gives `snprintf` a `read CString` and a `raw byte` for one `%s`.
+776. **A window borrows its pointer** (from the slice): `Memory.view(p, n)` borrows the variable or the field
+     that holds `p`, so it is not returned from where `p` ends, not kept past a change of `p`, and given
+     back from a function only with `from p` on a `read raw T` parameter. A pointer that is not a variable
+     or a field (`p + 1`) is an error whose hint names it first.
+777. **What libcurl keeps past a call** (from the slice): an option that points at memory is read by libcurl
+     later, during the request, and the interpreter lends `buffer.pointer()` only for the time of a call. So
+     the error buffer is room of `Memory.allocate` that the `Client` holds as long as it lives, and the body of
+     a post is copied by libcurl when it is given (`CURLOPT_COPYPOSTFIELDS`). Each request starts with
+     `curl_easy_reset`, so the options of the last one (a body, its headers, the address of its state) never
+     reach the next; the connections stay.
+778. **Headers count toward `maxBytes`** (from the slice): a server that sends headers without end is cut
+     off as one that sends a body without end. A line of the headers that is not UTF-8 is left out of
+     `headers`, and each status line starts the headers again, so they are those of the last response.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -5504,7 +5607,11 @@ check off.
   the rule that it is waited for does not see it; it is stopped where the value it is lent from ends.
 - **Of raw memory**: a place in it lent (`read p[i]`, `ref p[i]`, a method called on `p[i]`, 511); items that
   own memory (the design's `put`, `take` and `moveItems`); `Memory.resize`; the address of a variable (85,
-  `Memory.addressOf`).
+  `Memory.addressOf`). Two are decided and will be done (16 November 2026): a check of alignment, so that a
+  `raw T` cast to a type it is not aligned for is a panic where `p[i]` or `Memory.view` reads it, in the
+  interpreter and in checked compiled code, as Zig's `@alignCast` and Rust's debug checks do; and a window
+  that writes, a `ref T[]` over raw memory (Rust's `slice::from_raw_parts_mut`), for a buffer C wants
+  filled. Their slice and their details are decided before they are written.
 - **Of calling C**: unions, bit fields, `packed` structs and alignment; a `va_list` (`vprintf`), a function
   of SG that takes `...`, and a `CFunc` to a function that takes it (753); the address of a `CString`
   kept by C, `sg build -L path` for a library the C compiler does not find by itself, `pkg-config`,
@@ -5516,6 +5623,10 @@ check off.
   when the tests run them in one process (`opterr`). A C file does not call an `export` function that
   takes or gives a struct by value by its name (747);
   the interpreter runs a function C calls only on a thread that is in a call of C (736).
+- **Of `examples/curl`**: async requests (libcurl's multi interface on the loop of the network),
+  cookies, a proxy, uploads from a file, a choice of HTTP/2, decompressing a body, and a way to turn the
+  check of certificates off (there is none, on purpose). The numbers of libcurl's options are written in
+  the module with their names in a comment, since SG has no constants of its own.
 - **What the borrow check does not do yet.** A type with more than one source (`struct Match<from text, from
   pattern>`); storing a borrow from outside into a value reached through `ref` (the design's
   `where r from name`); a `List<read T>`, and a borrow as the error of a `Result` (a list of a type that
@@ -5744,4 +5855,7 @@ reaches its state through the `void*` C gives back; ten million numbers sorted b
 comparator of SG take the time of the same sort with a comparator of C (731-749). The eighty-sixth is
 written: a function of C that takes `...` is called with the types each value says, a number without a
 type being an error there, and SQLite is wrapped in a module whose users write no `unsafe`, as fast as C
-(750-760).
+(750-760). The eighty-seventh is written: libcurl is wrapped the same way, with safe defaults (only
+`http` and `https`, certificates always checked, a limit on what a response brings), `Memory.view` gives
+the bytes C hands a callback to a list in one copy, and a call of C no longer holds up the other tasks in
+the interpreter (761-778).

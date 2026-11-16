@@ -1,0 +1,30 @@
+// A library of C behind a safe module: `curl/client.sg` declares the functions of libcurl and
+// calls them inside `unsafe`; this file does not. `sg examples/curl/main.sg https://example.com`
+// fetches a page; the tests, `sg test examples/curl`, run against servers of their own.
+use curl
+
+Result<void, CurlError> main(List<string> args) {
+    if args.length() != 1 {
+        _ = Stderr.writeLine("usage: main <url>")
+        exit(2)
+    }
+    var client = try Client.open()
+    var response = try client.get(args[0])
+    print($"status {response.status}")
+    print($"type {read response.contentType ?? "not given"}")
+    print($"{response.headers.length()} headers, {response.body.length()} bytes")
+    match response.text() {
+        Ok(text) => {
+            var lines = 0
+            for line in text.lines() {
+                print($"| {line}")
+                lines += 1
+                if lines == 5 {
+                    break
+                }
+            }
+        }
+        Error(_) => print("the body is not UTF-8")
+    }
+    return Ok()
+}

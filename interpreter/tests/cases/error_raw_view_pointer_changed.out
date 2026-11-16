@@ -1,0 +1,9 @@
+error: `p` cannot be changed here: `window` borrows from it and is used again later
+  --> error_raw_view_pointer_changed.sg:4:5
+ 4 |     p = null
+   |     ^
+  `window` borrowed it here:
+  --> error_raw_view_pointer_changed.sg:3:18
+ 3 |     var window = unsafe Memory.view(p, 4)
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: finish with `window` before this line: a borrow ends at its last use

@@ -1,0 +1,6 @@
+error: `Memory.view` takes the pointer from a variable or a field, which the window borrows
+  the window borrows the variable that holds its pointer, and does not outlive it
+  --> error_raw_view_unnamed.sg:3:30
+ 3 |     print(unsafe Memory.view(p + 1, 2).length())
+   |                              ^^^^^
+  hint: `var at = p + 1` first, then `Memory.view(at, count)`

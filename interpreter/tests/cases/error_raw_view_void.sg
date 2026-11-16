@@ -1,0 +1,5 @@
+void main() {
+    var p = Memory.allocate<int>(4)
+    var any = unsafe (raw void)p
+    print(unsafe Memory.view(any, 4).length())
+}

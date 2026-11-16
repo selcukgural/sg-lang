@@ -303,6 +303,8 @@ pub enum MemoryCall {
     IoErrorOf,
     /// `Memory.addressOf(ref x)`: the address of a value, for C to give back to a callback.
     AddressOf,
+    /// `Memory.view(p, count)`: a `read T[]` that looks at `count` items from `p`.
+    View,
 }
 
 /// The functions of a `CancellationSource` and a `CancellationToken`.

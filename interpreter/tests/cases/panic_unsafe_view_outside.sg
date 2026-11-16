@@ -1,0 +1,5 @@
+// The interpreter checks the window against the block, as it checks `p[i]`.
+void main() {
+    var p = Memory.allocate<int>(4)
+    print(unsafe Memory.view(p, 5).length())
+}

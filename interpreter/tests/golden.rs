@@ -51,7 +51,7 @@ fn warnings(stem: &str) -> Vec<String> {
 }
 
 /// gcc's warnings that are not true of the program they are listed with, and why.
-const GCC_SEES_WHAT_IS_NOT_THERE: [(&str, &str); 3] = [
+const GCC_SEES_WHAT_IS_NOT_THERE: [(&str, &str); 4] = [
     // `free` on the bytes of a constant text (`"y"`): a text is freed only when its capacity is
     // above 0, and a constant's is 0 (`SG_LIT`); gcc warns on the `free` behind the test.
     ("ok_disposable", "free-nonheap-object"),
@@ -61,6 +61,9 @@ const GCC_SEES_WHAT_IS_NOT_THERE: [(&str, &str); 3] = [
     // A read of more than 64 KB straight into the buffer, never taken for the 3-byte array
     // the program reads into: the length of the read is the buffer's.
     ("ok_text_blocks", "stringop-overflow"),
+    // The same read, in the server of the tests of `examples/curl`, into `buffer[0..length]` of a
+    // 256-byte array: a longer window is a panic before the read, which gcc does not follow.
+    ("curl", "stringop-overflow"),
 ];
 
 /// Whether `cc` is gcc (clang says so in its version).
@@ -113,15 +116,23 @@ fn run_file(path: &Path) -> String {
 fn run_program(path: &Path, tests: bool, within: &Path) -> String {
     let sources = sg::load(path, tests).unwrap();
     let mut out = Vec::new();
+    let mut err = Vec::new();
+    // What a program writes to its standard error, and the exit code it gives, are kept as
+    // for a program of one file, so that compiled code is held to the same.
     let result = match tests {
         true => sg::test_sources(&sources, &mut out).map(|_| ()),
-        false => sg::run_sources(&sources, &mut out),
+        false => {
+            let world = sg::World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err: &mut err };
+            sg::run_sources_in(&sources, &mut out, world)
+        }
     };
     let mut text = String::from_utf8(out).unwrap();
+    text.push_str(&String::from_utf8(err).unwrap());
     match result {
         Ok(()) => {}
         Err(sg::Stop::Diag(diag)) => text.push_str(&diag.render_in(&sources)),
         Err(sg::Stop::Failed(error)) => text.push_str(&format!("error: {error}\n")),
+        Err(sg::Stop::Exit(code)) => text.push_str(&exit_line(Some(code as i32))),
         Err(other) => text.push_str(&format!("{other:?}\n")),
     }
     text.replace(&format!("{}/", within.display()), "")
@@ -212,6 +223,7 @@ fn modules() {
     entries.push(root.join("examples/shop"));
     entries.push(root.join("examples/zlib"));
     entries.push(root.join("examples/sqlite"));
+    entries.push(root.join("examples/curl"));
     entries.sort();
     for path in entries {
         if path.extension().is_some_and(|ext| ext == "sg") {
@@ -311,6 +323,7 @@ fn compiled() {
     programs.push(root.join("examples/shop"));
     programs.push(root.join("examples/zlib"));
     programs.push(root.join("examples/sqlite"));
+    programs.push(root.join("examples/curl"));
     programs.sort();
     programs.retain(|path| path.extension().is_some_and(|ext| ext == "sg") || path.join("main.sg").exists());
     let total = files.len() + programs.len();
@@ -752,6 +765,7 @@ fn compiled_tests() {
     folders.push(root.join("examples/shop"));
     folders.push(root.join("examples/zlib"));
     folders.push(root.join("examples/sqlite"));
+    folders.push(root.join("examples/curl"));
     folders.sort();
     for path in folders {
         if path.join("tests.out").exists() {

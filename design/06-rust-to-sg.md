@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 16 November 2026, the eighty-sixth slice.
+Last brought up to date: 16 November 2026, the eighty-seventh slice.
 
 ## Functions and variables
 
@@ -197,6 +197,7 @@ Last brought up to date: 16 November 2026, the eighty-sixth slice.
 | `p as usize`, `n as *mut T`, `p.offset_from(q)`, `p < q` | `(nuint)p`, `unsafe (raw T)n`, `p - q`, `p < q` | built | Only `(raw T)n` inside `unsafe`; `p - q` counts items of one type and is defined for any two pointers in compiled code, while the interpreter panics for two blocks |
 | `alloc_zeroed(Layout::array::<T>(n))`, `dealloc` | `Memory.allocate<T>(n)`, `Memory.free(p)` | built | Zeroed memory; `free` inside `unsafe`. The interpreter catches an item outside its block, after `free`, and a block freed twice, as Miri does |
 | `ptr::copy(src, dst, n)` | `Memory.copy(source, target, count)` | built | Inside `unsafe`; the two may overlap |
+| `slice::from_raw_parts(p, n)` | `Memory.view(p, n)` | built | Inside `unsafe`; a `read T[]` that borrows the variable holding `p`, so it does not outlive it (Rust's lifetime there is unbounded). A count below 0 and `null` with items are panics |
 | `extern "C" { fn ... }`, `#[link(name = "z")]` | `extern "z" { ... }` | built | Every call inside `unsafe`; `extern { }` is the C library itself. C names as C writes them; private to the module unless `public` is written on a function |
 | `c_int`, `size_t`, `*const T`, `*mut T` in a signature | `int`, `nuint`, `read T` or `raw T`, `ref T` or `raw T` | built | `ref` and `read` last for the call; `raw T` when C keeps the address. No `char` (a byte is `byte`) |
 | `#[repr(C)] struct`, given and returned by value | a struct of plain data, given and returned by value | built | Every struct of plain data is laid out as C lays it out; no mark is written. No unions, bit fields or `packed` |
@@ -213,9 +214,11 @@ Last brought up to date: 16 November 2026, the eighty-sixth slice.
 | `CStr::from_ptr(p).to_str()?.to_owned()` | `try unsafe string.fromCString(p)` | built | Copies and checks the UTF-8 |
 | `v.as_mut_ptr()`, `v.as_ptr()` | `v.pointer()` | built | Only as an argument of a C function, on a list, an array or a slice of plain data; it counts as a `ref` of `v` for the call |
 | `libc::malloc` / `libc::free` beside `Box` | `Memory.allocate` / `Memory.free` | built | One allocator: what C gives with `malloc` goes back with `Memory.free` |
-| a safe wrapper module around a `-sys` crate | a module whose functions of C are private | built | `examples/zlib` and `examples/sqlite`: their users write no `unsafe` |
+| a safe wrapper module around a `-sys` crate | a module whose functions of C are private | built | `examples/zlib`, `examples/sqlite` and `examples/curl`: their users write no `unsafe` |
 | `extern "C" { fn printf(format: *const c_char, ...) -> c_int; }` | `extern { int printf(read CString format, ...) }` | built | As Rust: an `f32`, a small integer and a `bool` are errors after `...`, with the cast as the hint; a number written without a type is an error too, where Rust takes an `i32`. No `va_list` and no function of SG that takes `...` (Rust's `c_variadic` is unstable) |
 | `rusqlite::Connection::open(path)?`, `conn.execute(...)`, `conn.prepare(...)` | `Database.open(path)`, `db.execute(...)`, `db.prepare(...)` of `examples/sqlite` | built | An example module, not a library of the language; a `Statement` may outlive its `Database`, as SQLite allows with `sqlite3_close_v2` |
+| `curl::easy::Easy` with `write_function`, or `reqwest::blocking::get(url)?` | `Client.open()`, `client.get(url)`, `client.post(url, body, type)` of `examples/curl` | built | An example module; only `http` and `https`, certificates always checked, a limit on what a response brings. A 404 is a response, not an error. No async |
+| `spawn_blocking` around a call of C that waits | the call itself | built | A call of C holds up only its own thread; in the interpreter the other tasks run while it waits |
 
 ## Tasks and locks
 

@@ -43,6 +43,20 @@ void main() {
     var shown = string.fromUtf8(buffer[..(nint)count]) ?? "not text"
     print(shown == "0x0" || shown == "(nil)")
 
+    // A `read CString` and a `raw byte` are one type of C, and each goes over as itself: the
+    // text of the one, the address the other holds.
+    var string_format = CString.from("%s") ?? panic("no zero byte")
+    count = unsafe snprintf(buffer.pointer(), 128, read string_format, read word)
+    print(string.fromUtf8(buffer[..(nint)count]) ?? "not text")
+    var chars = Memory.allocate<byte>(3)
+    unsafe {
+        chars[0] = 111
+        chars[1] = 107
+    }
+    count = unsafe snprintf(buffer.pointer(), 128, read string_format, chars)
+    print(string.fromUtf8(buffer[..(nint)count]) ?? "not text")
+    unsafe Memory.free(chars)
+
     var hex = CString.from("%08x") ?? panic("no zero byte")
     print(formatted(read hex, 48879))
 

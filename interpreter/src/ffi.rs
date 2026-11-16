@@ -437,6 +437,26 @@ pub fn variadic_calls(prog: &Program, tests: bool) -> std::collections::BTreeMap
     found
 }
 
+/// What names the adapter compiled code calls one function of C declared with `...` through:
+/// its name and the types of SG the call gives it. Two lists of one C type are two adapters
+/// there (a `read CString` hands over its text, a `raw void` itself).
+pub fn adapter_key(name: &str, params: &[Ty]) -> String {
+    let types: Vec<String> = params.iter().map(Ty::to_string).collect();
+    format!("{name}#{}", types.join(","))
+}
+
+/// The calls of functions declared with `...`, by `adapter_key`.
+pub fn adapter_calls(prog: &Program, tests: bool) -> std::collections::BTreeMap<String, (String, Vec<Ty>)> {
+    let mut found = std::collections::BTreeMap::new();
+    let mut each = |expr: &crate::ast::Expr| {
+        if let ExprKind::Call { name, callee: Callee::Variadic(params), .. } = &expr.kind {
+            found.insert(adapter_key(name, params), (name.clone(), params.clone()));
+        }
+    };
+    each_expr(prog, tests, &mut each);
+    found
+}
+
 /// What a program does with pointers to functions of C: the functions of C whose names it
 /// takes as `CFunc` values, the types of its calls through a `CFunc` (by `through_key`), and
 /// whether it takes the name of an `export` function as one.

@@ -1,0 +1,309 @@
+// The tests run against a server of their own on the loopback: a task of this program for
+// HTTP, `openssl s_server` for HTTPS. Nothing goes out to the network.
+
+// What the server answers for a path. Each answer closes its connection.
+string answer(read string method, read string path, read string kind, read string body) {
+    if method == "POST" && path == "/echo" {
+        return $"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Type: {kind}\r\nContent-Length: {body.length()}\r\nConnection: close\r\n\r\n{body}".toString()
+    }
+    var text = match path {
+        "/hello" => "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nX-Tea: Rize\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
+        "/missing" => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "/moved" => "HTTP/1.1 302 Found\r\nLocation: /hello\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "/file" => "HTTP/1.1 302 Found\r\nLocation: file:///etc/passwd\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "/loop" => "HTTP/1.1 302 Found\r\nLocation: /loop\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "/said" => "HTTP/1.1 200 OK\r\nContent-Length: 2000\r\nConnection: close\r\n\r\n"
+        "/stop" => "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        _ => "HTTP/1.1 500 Unknown\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    }
+    return text.clone()
+}
+
+// A server for one test, on a task of its own: one request on each connection, until a request
+// for `/stop`.
+Result<void, IoError> serve(TcpListener listener) {
+    while true {
+        var conn = try listener.accept()
+        if try handle(ref conn) {
+            return Ok()
+        }
+    }
+    return Ok()
+}
+
+// Reads one request and answers it; gives whether it asked the server to stop. `/slow` is
+// never answered, `/long` sends a body without saying its length, and `/binary` one that is
+// not UTF-8. What the client stops reading, or never waits for, may fail to go out.
+Result<bool, IoError> handle(ref TcpStream conn) {
+    var reader = conn.reader()
+    var line = ""
+    if !(try reader.readLine(ref line)) {
+        return Ok(false)
+    }
+    var first = line.indexOf(' ') ?? return Ok(false)
+    var method = line[0..first].clone()
+    var rest = line[first + 1..].clone()
+    var second = rest.indexOf(' ') ?? return Ok(false)
+    var path = rest[0..second].clone()
+    nint length = 0
+    var kind = ""
+    while try reader.readLine(ref line) {
+        if line.length() == 0 {
+            break
+        }
+        var colon = line.indexOf(':') ?? return Ok(false)
+        var name = line[0..colon].trim()
+        var value = line[colon + 1..].trim()
+        if name.equalsIgnoreCase("Content-Length") {
+            length = nint.parse(value) ?? 0
+        } else if name.equalsIgnoreCase("Content-Type") {
+            kind = value.clone()
+        }
+    }
+    var buffer = byte[256](0)
+    var got = try reader.readBytes(ref buffer[0..length])
+    var body = (string.fromUtf8(buffer[0..got]) ?? "").clone()
+    if path == "/slow" {
+        while try reader.readLine(ref line) {
+        }
+    } else if path == "/long" {
+        _ = conn.send("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".asBytes())
+        var block = byte[500](65)
+        for _ in 0..4 {
+            _ = conn.send(block[..])
+        }
+    } else if path == "/binary" {
+        _ = conn.send("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n".asBytes())
+        var bytes = byte[2] { 255, 254 }
+        _ = conn.send(bytes[..])
+    } else {
+        var text = answer(read method, read path, read kind, read body)
+        _ = conn.send(text.asBytes())
+    }
+    return Ok(path == "/stop")
+}
+
+// A listener for a server, and the start of its URLs in `base`; `stop` ends the server.
+Result<TcpListener, IoError> listen(ref string base) {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    base = $"http://127.0.0.1:{listener.port()}".toString()
+    return Ok(listener)
+}
+
+Result<void, CurlError> stop(ref Client client, read string base) {
+    var url = $"{base}/stop".toString()
+    _ = try client.get(read url)
+    return Ok()
+}
+
+// A port that was free a moment ago: nothing listens there once the listener has ended.
+Result<int, IoError> freePort() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    return Ok(listener.port())
+}
+
+string at(read string base, read string path) {
+    return $"{base}{path}".toString()
+}
+
+test "a page comes back with its status, its type, its headers and its body" {
+    var base = ""
+    var listener = try listen(ref base)
+    var running = Task.run(serve, listener)
+    var client = try Client.open()
+    var response = try client.get(read at(read base, "/hello"))
+    assert(response.status == 200)
+    assert((read response.contentType ?? "") == "text/plain; charset=utf-8")
+    assert((response.header("x-tea") ?? "") == "Rize")
+    assert(response.header("x-coffee") is null)
+    var text = try response.text()
+    assert(text == "hello")
+    try stop(ref client, read base)
+    try running.wait()
+}
+
+test "a 404 is a response, not an error" {
+    var base = ""
+    var listener = try listen(ref base)
+    var running = Task.run(serve, listener)
+    var client = try Client.open()
+    var response = try client.get(read at(read base, "/missing"))
+    assert(response.status == 404)
+    assert(response.body.length() == 0)
+    try stop(ref client, read base)
+    try running.wait()
+}
+
+test "a redirect is followed, and the headers are those of the last response" {
+    var base = ""
+    var listener = try listen(ref base)
+    var running = Task.run(serve, listener)
+    var client = try Client.open()
+    var response = try client.get(read at(read base, "/moved"))
+    assert(response.status == 200)
+    assert(response.header("Location") is null)
+    var text = try response.text()
+    assert(text == "hello")
+    try stop(ref client, read base)
+    try running.wait()
+}
+
+test "a redirect to another protocol is refused, and so is a loop" {
+    var base = ""
+    var listener = try listen(ref base)
+    var running = Task.run(serve, listener)
+    var client = try Client.open()
+    match client.get(read at(read base, "/file")) {
+        Ok(_) => panic("file:// was followed")
+        Error(error) => assert(error.code == 1)
+    }
+    client.maxRedirects = 3
+    match client.get(read at(read base, "/loop")) {
+        Ok(_) => panic("the loop ended")
+        Error(error) => assert(error.code == 47)
+    }
+    match client.get("ftp://127.0.0.1/") {
+        Ok(_) => panic("ftp:// was fetched")
+        Error(error) => assert(error.code == 1)
+    }
+    try stop(ref client, read base)
+    try running.wait()
+}
+
+test "a body larger than maxBytes is cut off, said or not" {
+    var base = ""
+    var listener = try listen(ref base)
+    var running = Task.run(serve, listener)
+    var client = try Client.open()
+    client.maxBytes = 1000
+    match client.get(read at(read base, "/said")) {
+        Ok(_) => panic("a body larger than the limit came")
+        Error(error) => assert(error.isTooLarge())
+    }
+    match client.get(read at(read base, "/long")) {
+        Ok(_) => panic("a body larger than the limit came")
+        Error(error) => {
+            assert(error.isTooLarge())
+            assert(error.message == "the response is larger than 1000 bytes")
+        }
+    }
+    client.maxBytes = 3000
+    var response = try client.get(read at(read base, "/long"))
+    assert(response.body.length() == 2000)
+    assert(response.body[1999] == 65)
+    try stop(ref client, read base)
+    try running.wait()
+}
+
+test "a server that does not answer is a timeout" {
+    var base = ""
+    var listener = try listen(ref base)
+    var running = Task.run(serve, listener)
+    var client = try Client.open()
+    client.timeoutMs = 300
+    match client.get(read at(read base, "/slow")) {
+        Ok(_) => panic("the slow server answered")
+        Error(error) => assert(error.isTimeout())
+    }
+    client.timeoutMs = 30000
+    try stop(ref client, read base)
+    try running.wait()
+}
+
+test "a post sends its body and its type" {
+    var base = ""
+    var listener = try listen(ref base)
+    var running = Task.run(serve, listener)
+    var client = try Client.open()
+    var body = "tea=çay&n=2"
+    var response = try client.post(read at(read base, "/echo"), body.asBytes(), "application/x-www-form-urlencoded")
+    assert(response.status == 200)
+    var text = try response.text()
+    assert(text == body)
+    assert((response.header("X-Type") ?? "") == "application/x-www-form-urlencoded")
+    // A line break in the type would be a header of its own: it is refused before anything goes.
+    match client.post(read at(read base, "/echo"), body.asBytes(), "text/plain\r\nX-Evil: 1") {
+        Ok(_) => panic("a line break went into a header")
+        Error(error) => assert(error.code == 43)
+    }
+    try stop(ref client, read base)
+    try running.wait()
+}
+
+test "a body that is not UTF-8 comes as bytes" {
+    var base = ""
+    var listener = try listen(ref base)
+    var running = Task.run(serve, listener)
+    var client = try Client.open()
+    var response = try client.get(read at(read base, "/binary"))
+    assert(response.body.length() == 2)
+    assert(response.body[0] == 255)
+    assert(response.text() is Error(_))
+    try stop(ref client, read base)
+    try running.wait()
+}
+
+test "a zero byte in a URL and a closed port are errors" {
+    var client = try Client.open()
+    match client.get("http://127.0.0.1/a\u{0}b") {
+        Ok(_) => panic("a URL with a zero byte was fetched")
+        Error(error) => assert(error.code == 43)
+    }
+    var port = try freePort()
+    match client.get(read $"http://127.0.0.1:{port}/".toString()) {
+        Ok(_) => panic("a closed port answered")
+        Error(error) => assert(error.code == 7)
+    }
+}
+
+// A certificate of its own for `localhost` and 127.0.0.1, made by `openssl` in `work`.
+Result<void, ProcessError> certificate(read string work) {
+    var make = Command("openssl")
+    make.args(read List<string> {
+        "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+        "-keyout", "key.pem", "-out", "cert.pem", "-subj", "/CN=localhost",
+        "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"
+    })
+    make.directory(work)
+    // What it says while it works is not wanted, only that it ends well.
+    make.pipeError()
+    var running = try make.start()
+    var said = running.takeError() ?? panic("the errors were asked for")
+    _ = try said.readText()
+    var status = try running.wait()
+    assert(status is Code(0))
+    return Ok()
+}
+
+test "https: the certificate of an authority given is trusted, one not given is refused" {
+    var work = try Directory.createTemp()
+    try certificate(read work)
+    var port = try freePort()
+    var serving = Command("openssl")
+    serving.args(read List<string> { "s_server", "-accept", $"127.0.0.1:{port}".toString(), "-cert", "cert.pem", "-key", "key.pem", "-www" })
+    serving.directory(read work)
+    serving.pipeOutput()
+    serving.pipeError()
+    var process = try serving.start()
+    var output = process.takeOutput() ?? panic("the output was asked for")
+    var line = ""
+    while try output.readLine(ref line) {
+        if line == "ACCEPT" {
+            break
+        }
+    }
+    var url = $"https://localhost:{port}/".toString()
+    var client = try Client.open()
+    match client.get(read url) {
+        Ok(_) => panic("a certificate nobody vouched for was trusted")
+        Error(error) => assert(error.code == 60)
+    }
+    client.caFile = Path.join(read work, "cert.pem")
+    var response = try client.get(read url)
+    assert(response.status == 200)
+    var text = try response.text()
+    assert(text.contains("s_server"))
+    process.kill()
+    _ = try process.wait()
+    try Directory.deleteAll(read work)
+}

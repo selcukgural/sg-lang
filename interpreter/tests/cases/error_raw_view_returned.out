@@ -1,0 +1,5 @@
+error: this returns a borrow of `p`, and `p` is gone when the function returns
+  --> error_raw_view_returned.sg:3:12
+ 3 |     return unsafe Memory.view(p, count)
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: take `p` as `read`, so that the caller keeps it

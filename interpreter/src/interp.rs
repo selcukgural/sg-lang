@@ -578,6 +578,16 @@ const STREAM_BUFFER: usize = 65536;
 /// The longest line, or text, the reader of a connection gives unless told otherwise.
 const READER_LIMIT: usize = 65536;
 
+/// The turn given away for a call of C (`Interp::c_leave`): the work the scheduler waits
+/// for, and where its end is told.
+struct Leave {
+    id: u64,
+    done: std::sync::Arc<crate::net::Done>,
+}
+
+/// `State::running` while no fiber has the turn and a thread looks for the next.
+const NOBODY: usize = usize::MAX;
+
 /// What `Memory.addressOf` gave an address for: the cell of the value, and its type.
 type Given = (std::rc::Weak<RefCell<Value>>, Ty);
 
@@ -585,6 +595,9 @@ thread_local! {
     /// The interpreter that is in a call of C on this thread, for C to call an `export`
     /// function through (see `enter`); null when none is.
     static ENTERED: Flag<*mut std::ffi::c_void> = const { Flag::new(std::ptr::null_mut()) };
+    /// The turn the call of C on this thread gave away, for a function C calls back to take
+    /// it again (see `Interp::entered`).
+    static LEFT: RefCell<Option<Leave>> = const { RefCell::new(None) };
     /// The addresses `Memory.addressOf` gave on this thread: the cell of the value, and its
     /// type, for `(ref T)data` to find it again and check it.
     static ADDRESSES: RefCell<HashMap<usize, Given>> = RefCell::new(HashMap::new());
@@ -2160,6 +2173,47 @@ impl<'a, 'e> Interp<'a, 'e> {
     fn entered(&mut self, number: usize, args: *mut *mut std::ffi::c_void, ret: *mut std::ffi::c_void) {
         let (name, params, gives) = self.io.ffi.export(number).clone();
         let func = self.funcs[name.as_str()];
+        // The call of C gave the turn away: the function takes it back while it runs. One
+        // that comes while the run ends (another task stopped it) still runs: C cannot be
+        // unwound through, and the fiber unwinds when the call of C returns.
+        let left = LEFT.with(|cell| cell.borrow_mut().take());
+        if let Some(Leave { id, done }) = &left {
+            done.tell(*id);
+            let state = self.io.sched.lock();
+            let mut state = self.io.sched.wait_turn(state, self.me);
+            state.outside.remove(&self.me);
+            match Sched::resume(&mut state, self.me) {
+                Ok(()) | Err(Unwind::Abandon) => {}
+                Err(Unwind::Stop(stop)) => {
+                    drop(state);
+                    self.die(stop);
+                }
+                Err(_) => unreachable!("the turn comes back with a stop or the end of the run"),
+            }
+        }
+        self.run_entered(func, &params, &gives, args, ret);
+        let Some(left) = left else { return };
+        {
+            let mut state = self.io.sched.lock();
+            if state.ending {
+                // The fiber that ends the run gets the turn back at once; this one takes it
+                // again when the call of C returns, and unwinds.
+                state.thread = Some(Thread::take());
+                Sched::give(&mut state, 0);
+                LEFT.with(|cell| *cell.borrow_mut() = Some(left));
+                return;
+            }
+        }
+        match self.c_leave(func.name_span) {
+            Ok(left) => LEFT.with(|cell| *cell.borrow_mut() = left),
+            Err(Unwind::Stop(stop)) => self.die(stop),
+            Err(_) => unreachable!("giving the turn away stops the run or not"),
+        }
+    }
+
+    /// Runs the `export` function `func` for C: its arguments from `args`, what it gives into
+    /// `ret`.
+    fn run_entered(&mut self, func: &'a Func, params: &[Ty], gives: &Ty, args: *mut *mut std::ffi::c_void, ret: *mut std::ffi::c_void) {
         let mut values = Vec::new();
         for (position, ty) in params.iter().enumerate() {
             // SAFETY: the stub gives the address of each argument, as the C type of its parameter.
@@ -2171,8 +2225,8 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
         match self.call(func, None, values, func.name_span) {
             Ok(value) => {
-                if gives != Ty::Void {
-                    store(ret as usize, &gives, &value, self.plain);
+                if *gives != Ty::Void {
+                    store(ret as usize, gives, &value, self.plain);
                 }
             }
             Err(Unwind::Stop(stop)) => self.die(stop),
@@ -2397,21 +2451,13 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
     }
 
-    /// Fiber `me` waits outside the run for `what`, until it is ready or the token, if one is
-    /// given, is cancelled. Gives whether the wait was cut short by a cancel.
-    fn wait_for(&mut self, what: Outside, source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<bool> {
-        if let Some(source) = source {
-            if source.borrow().cancelled {
-                return Ok(true);
-            }
-        }
-        // What the network waits for may be another task of this run: a task of `Task.run`
-        // that has not run starts now, as it would on a thread of its own in compiled code,
-        // and runs until it waits.
+    /// The tasks of `Task.run` that have not run start now, as they would on threads of their
+    /// own in compiled code, and each runs until it waits.
+    fn start_lazy(&mut self) -> Res<()> {
         loop {
             let lazy = std::mem::take(&mut self.io.sched.lock().lazy);
             if lazy.is_empty() {
-                break;
+                return Ok(());
             }
             for task in lazy.iter().filter_map(std::rc::Weak::upgrade) {
                 if !matches!(task.borrow().state, TaskState::Lazy(..)) {
@@ -2422,6 +2468,69 @@ impl<'a, 'e> Interp<'a, 'e> {
                 self.start_fiber(&task, func, None, args, true)?;
             }
         }
+    }
+
+    /// Before a call of C, which may wait as long as it likes: in compiled code it holds up
+    /// only its own thread, so here the turn goes to the other fibers until it returns, as
+    /// for a wait outside the run. A fiber alone in the run keeps the turn, and pays nothing.
+    /// Gives what `c_back` takes the turn back with.
+    fn c_leave(&mut self, at: Span) -> Res<Option<Leave>> {
+        let alone = |state: &State, me: usize| me == 0 && state.fibers.is_empty() && state.lazy.iter().all(|task| task.upgrade().is_none_or(|task| !matches!(task.borrow().state, TaskState::Lazy(..))));
+        if alone(&self.io.sched.lock(), self.me) {
+            return Ok(None);
+        }
+        self.start_lazy()?;
+        let (id, done) = self.work(at)?;
+        let mut state = self.io.sched.lock();
+        state.outside.insert(self.me, Outside::Work(id));
+        state.thread = Some(Thread::take());
+        match state.ready.pop_front() {
+            Some(next) => Sched::give(&mut state, next),
+            None => {
+                // Nobody is ready: a thread of its own waits for the first that is, as the
+                // fiber that gives the turn away does when it waits outside.
+                state.running = NOBODY;
+                drop(state);
+                let sched = Baton(&self.io.sched as *const Sched);
+                let driven = std::thread::Builder::new().spawn_scoped(self.scope, move || {
+                    let sched = sched;
+                    // SAFETY: the scheduler lives as long as the scope of the run's threads.
+                    let sched = unsafe { &*sched.0 };
+                    let mut state = sched.lock();
+                    if state.running == NOBODY {
+                        let next = Sched::next(&mut state, at);
+                        Sched::give(&mut state, next);
+                    }
+                });
+                if let Err(error) = driven {
+                    return Err(Diag::panic(at, format!("the system refused a thread for the scheduler: {error}")).into());
+                }
+            }
+        }
+        Ok(Some(Leave { id, done }))
+    }
+
+    /// After a call of C that gave the turn away (`c_leave`): the scheduler is told the call
+    /// is over, and the fiber waits for its turn.
+    fn c_back(&mut self, left: Option<Leave>) -> Res<()> {
+        let Some(Leave { id, done }) = left else { return Ok(()) };
+        done.tell(id);
+        let state = self.io.sched.lock();
+        let mut state = self.io.sched.wait_turn(state, self.me);
+        state.outside.remove(&self.me);
+        Sched::resume(&mut state, self.me)
+    }
+
+    /// Fiber `me` waits outside the run for `what`, until it is ready or the token, if one is
+    /// given, is cancelled. Gives whether the wait was cut short by a cancel.
+    fn wait_for(&mut self, what: Outside, source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<bool> {
+        if let Some(source) = source {
+            if source.borrow().cancelled {
+                return Ok(true);
+            }
+        }
+        // What the network waits for may be another task of this run.
+        self.start_lazy()?;
         if let Some(source) = source {
             if source.borrow().cancelled {
                 return Ok(true);
@@ -4193,6 +4302,8 @@ impl<'a, 'e> Interp<'a, 'e> {
         let io = self.io;
         // C may call an `export` function back, which this interpreter runs: from here until
         // the call returns, nothing of it is touched but through `ENTERED`.
+        let left = self.c_leave(expr.span)?;
+        let left_before = LEFT.with(|cell| cell.replace(left));
         let me: *mut Self = self;
         let before = ENTERED.with(|entered| entered.replace(me.cast()));
         let room = (&mut returned as *mut crate::ffi::Slot).cast::<std::ffi::c_void>();
@@ -4206,6 +4317,8 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
         }
         ENTERED.with(|entered| entered.set(before));
+        let left = LEFT.with(|cell| cell.replace(left_before));
+        self.c_back(left)?;
         self.errno = errno;
         for (scratch, item, cells) in &lent {
             let (size, _) = raw::layout(item, self.plain);
@@ -4292,6 +4405,31 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let addr = Rc::as_ptr(&held) as usize;
                 ADDRESSES.with(|given| given.borrow_mut().insert(addr, (Rc::downgrade(&held), place.ty.strip_borrow().clone())));
                 Ok(Value::Raw(RawPtr { addr, block: None }))
+            }
+            // The items are read once, into cells of their own: the window only reads, and
+            // what lies there is the program's to keep still while it looks (`unsafe`).
+            MemoryCall::View => {
+                let at = raw_of(&strip(self.expr(&args[0], frame)?));
+                let count = self.int(&args[1], frame)?;
+                if count < 0 {
+                    return Err(Diag::panic(span, format!("`Memory.view` is given a count below 0: {count}")).into());
+                }
+                let Ty::Raw(item) = args[0].ty.strip_borrow() else { unreachable!("the checker gives `Memory.view` a raw pointer") };
+                let count = usize::try_from(count).unwrap_or(usize::MAX);
+                if count == 0 {
+                    return Ok(Value::Slice(Rc::new(Vec::new())));
+                }
+                if at.addr == 0 {
+                    return Err(Diag::panic(span, format!("`Memory.view` is given `null` and a count of {count}")).into());
+                }
+                self.reach(at, count, item, "read", span)?;
+                let (size, _) = raw::layout(item, self.plain);
+                let mut cells = Vec::with_capacity(count);
+                for position in 0..count {
+                    let value = load(at.addr + position * size, item, self.plain, span)?;
+                    cells.push(cell(value));
+                }
+                Ok(Value::Slice(Rc::new(cells)))
             }
             // A number that is no code of the system's, below 0, is kept as it is.
             MemoryCall::IoErrorOf => Ok(io_cause(None, Some(self.int(&args[0], frame)? as i32))),

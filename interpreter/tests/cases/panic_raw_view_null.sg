@@ -1,0 +1,4 @@
+void main() {
+    raw int none = null
+    print(unsafe Memory.view(none, 2).length())
+}

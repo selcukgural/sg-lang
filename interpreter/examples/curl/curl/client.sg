@@ -1,0 +1,315 @@
+// libcurl behind a safe interface: the functions of C stay inside this module, and the code
+// that uses it writes no `unsafe`. A `Client` keeps one handle of libcurl, whose connections
+// are used again from one request to the next, and gives it back when it ends.
+//
+// What a client fetches is held to safe defaults: only `http` and `https`, on the first
+// request and on each redirect; certificates are always checked; a response is cut off past
+// `maxBytes`, and a request past `timeoutMs`.
+
+extern "curl" {
+    struct CURL
+    struct curl_slist
+    int curl_global_init(long flags)
+    void curl_global_cleanup()
+    raw CURL curl_easy_init()
+    void curl_easy_cleanup(raw CURL handle)
+    void curl_easy_reset(raw CURL handle)
+    int curl_easy_setopt(raw CURL handle, int option, ...)
+    int curl_easy_getinfo(raw CURL handle, int info, ...)
+    int curl_easy_perform(raw CURL handle)
+    raw byte curl_easy_strerror(int code)
+    raw curl_slist curl_slist_append(raw curl_slist list, read CString text)
+    void curl_slist_free_all(raw curl_slist list)
+}
+
+// What libcurl says went wrong: its code (`CURLE_COULDNT_CONNECT` is 7,
+// `CURLE_OPERATION_TIMEDOUT` 28, `CURLE_PEER_FAILED_VERIFICATION` 60) and its message.
+public struct CurlError : Formattable {
+    public int code
+    public string message
+
+    // The request took longer than `timeoutMs`, or connecting longer than `connectTimeoutMs`.
+    public bool isTimeout(read this) {
+        return this.code == 28
+    }
+
+    // The response brought more than `maxBytes`.
+    public bool isTooLarge(read this) {
+        return this.code == 63
+    }
+
+    void format(read this, ref Formatter f) {
+        f.write($"{this.message} (code {this.code})")
+    }
+}
+
+// libcurl's message for a code alone.
+CurlError codeError(int code) {
+    var text = unsafe string.fromCString(curl_easy_strerror(code)) ?? "a message that is not UTF-8"
+    return CurlError { code = code, message = text.clone() }
+}
+
+// A code of libcurl as a result: 0 is no error.
+Result<void, CurlError> succeeded(int code) {
+    if code != 0 {
+        return Error(codeError(code))
+    }
+    return Ok()
+}
+
+// A text for C; one with a zero byte inside is no URL, no header and no path.
+Result<CString, CurlError> cText(read string text) {
+    // 43: CURLE_BAD_FUNCTION_ARGUMENT.
+    var made = CString.from(text) ?? return Error(CurlError { code = 43, message = "a zero byte inside a text for libcurl" })
+    return Ok(made)
+}
+
+// One line of the headers of a response, `name: value`.
+public struct Header {
+    public string name
+    public string value
+}
+
+// What came back: the status (a 404 is a response, not an error), the type of the body as
+// the server gave it, the headers of the last response (after the redirects), and the body.
+public struct Response {
+    public int status
+    public string? contentType
+    public List<Header> headers
+    public List<byte> body
+
+    // The body as text, if it is UTF-8.
+    public Result<string, TextError> text(read this) {
+        var text = try string.fromUtf8(read this.body)
+        return Ok(text.clone())
+    }
+
+    // The value of the first header named `name`, whatever the case of its letters.
+    public string? header(read this, read string name) {
+        for header in read this.headers {
+            if header.name.equalsIgnoreCase(name) {
+                return header.value.clone()
+            }
+        }
+        return null
+    }
+}
+
+// What the callbacks of a request fill in, through the address libcurl hands back to them.
+struct Received {
+    List<byte> body
+    List<Header> headers
+    // The bytes taken so far, headers and body, and the most there may be.
+    nint used
+    nint limit
+    bool tooLarge
+}
+
+// Called by libcurl with each piece of the body. Giving back less than it was given stops the
+// request, which is how a body larger than the limit is cut off.
+export nuint takeBody(raw byte data, nuint size, nuint count, raw void state) {
+    var received = unsafe (ref Received)state
+    var length = (nint)(size * count)
+    if length > received.limit - received.used {
+        received.tooLarge = true
+        return 0
+    }
+    received.used += length
+    received.body.addAll(unsafe Memory.view(data, length))
+    return (nuint)length
+}
+
+// Called by libcurl with each line of the headers, the status line and the empty line at the
+// end included. A status line starts the headers of a new response: the one a redirect led to.
+// A line that is not UTF-8 is left out.
+export nuint takeHeader(raw byte data, nuint size, nuint count, raw void state) {
+    var received = unsafe (ref Received)state
+    var length = (nint)(size * count)
+    if length > received.limit - received.used {
+        received.tooLarge = true
+        return 0
+    }
+    received.used += length
+    var bytes = unsafe Memory.view(data, length)
+    var line = string.fromUtf8(bytes) ?? return (nuint)length
+    if line.startsWith("HTTP/") {
+        received.headers.clear()
+        return (nuint)length
+    }
+    var colon = line.indexOf(':') ?? return (nuint)length
+    var name = line[0..colon].trim()
+    var value = line[colon + 1..].trim()
+    received.headers.add(Header { name = name.clone(), value = value.clone() })
+    return (nuint)length
+}
+
+// The header lines of a request, in a list libcurl made with its own allocator.
+struct HeaderList : Disposable {
+    raw curl_slist items
+
+    Result<void, CurlError> add(ref this, read string line) {
+        var text = try cText(line)
+        var longer = unsafe curl_slist_append(this.items, read text)
+        if longer == null {
+            // 27: CURLE_OUT_OF_MEMORY.
+            return Error(codeError(27))
+        }
+        this.items = longer
+        return Ok()
+    }
+
+    void dispose(ref this) {
+        unsafe curl_slist_free_all(this.items)
+    }
+}
+
+// A client of HTTP and HTTPS. Its fields may be changed between requests.
+public struct Client : Disposable {
+    raw CURL handle
+    // Where libcurl writes the message of an error, as long as the handle lives.
+    raw byte errors
+    // The most bytes a response may bring, headers and body together: 16 MB.
+    public nint maxBytes
+    // The most a request may take, and connecting to the server: 30 s and 10 s.
+    public int timeoutMs
+    public int connectTimeoutMs
+    // How many redirects are followed: 5.
+    public int maxRedirects
+    // A file of the certificates of the authorities to trust, in place of the system's.
+    public string? caFile
+
+    public Result<Client, CurlError> open() {
+        // 3: CURL_GLOBAL_DEFAULT. libcurl counts the calls, and does the work on the first.
+        try succeeded(unsafe curl_global_init((long)3))
+        raw CURL handle = unsafe curl_easy_init()
+        if handle == null {
+            unsafe curl_global_cleanup()
+            // 2: CURLE_FAILED_INIT.
+            return Error(codeError(2))
+        }
+        // 256: CURL_ERROR_SIZE.
+        var errors = Memory.allocate<byte>(256)
+        return Ok(Client {
+            handle = handle,
+            errors = errors,
+            maxBytes = 16777216,
+            timeoutMs = 30000,
+            connectTimeoutMs = 10000,
+            maxRedirects = 5,
+            caFile = null
+        })
+    }
+
+    // Fetches `url`.
+    public Result<Response, CurlError> get(ref this, read string url) {
+        return this.perform(url, false, "".asBytes(), "")
+    }
+
+    // Sends `body` to `url`, of the type `contentType`.
+    public Result<Response, CurlError> post(ref this, read string url, read byte[] body, read string contentType) {
+        return this.perform(url, true, body, contentType)
+    }
+
+    Result<Response, CurlError> perform(ref this, read string url, bool posting, read byte[] body, read string contentType) {
+        // Each request starts from the defaults; the connections stay.
+        unsafe curl_easy_reset(this.handle)
+        var target = try cText(url)
+        // 10002: CURLOPT_URL. libcurl copies the texts it is given.
+        try succeeded(unsafe curl_easy_setopt(this.handle, 10002, read target))
+        // 10318 and 10319: CURLOPT_PROTOCOLS_STR and CURLOPT_REDIR_PROTOCOLS_STR.
+        var protocols = try cText("http,https")
+        try succeeded(unsafe curl_easy_setopt(this.handle, 10318, read protocols))
+        try succeeded(unsafe curl_easy_setopt(this.handle, 10319, read protocols))
+        // 52: CURLOPT_FOLLOWLOCATION, 68: CURLOPT_MAXREDIRS; `long`, as every number option.
+        try succeeded(unsafe curl_easy_setopt(this.handle, 52, (long)1))
+        try succeeded(unsafe curl_easy_setopt(this.handle, 68, (long)this.maxRedirects))
+        // 155: CURLOPT_TIMEOUT_MS, 156: CURLOPT_CONNECTTIMEOUT_MS, 99: CURLOPT_NOSIGNAL (a
+        // timeout without a signal, as threads want).
+        try succeeded(unsafe curl_easy_setopt(this.handle, 155, (long)this.timeoutMs))
+        try succeeded(unsafe curl_easy_setopt(this.handle, 156, (long)this.connectTimeoutMs))
+        try succeeded(unsafe curl_easy_setopt(this.handle, 99, (long)1))
+        // 30117: CURLOPT_MAXFILESIZE_LARGE, a `curl_off_t`: a body whose length the server
+        // says is too large is refused before it comes.
+        try succeeded(unsafe curl_easy_setopt(this.handle, 30117, (long)this.maxBytes))
+        match read this.caFile {
+            null => {}
+            var file => {
+                var path = try cText(file)
+                // 10065: CURLOPT_CAINFO.
+                try succeeded(unsafe curl_easy_setopt(this.handle, 10065, read path))
+            }
+        }
+        unsafe { this.errors[0] = 0 }
+        // 10010: CURLOPT_ERRORBUFFER.
+        try succeeded(unsafe curl_easy_setopt(this.handle, 10010, this.errors))
+
+        var headers = HeaderList { items = null }
+        if posting {
+            if contentType.contains('\r') || contentType.contains('\n') {
+                return Error(CurlError { code = 43, message = "a line break inside the type of the body" })
+            }
+            var line = $"Content-Type: {contentType}".toString()
+            try headers.add(read line)
+            // 10023: CURLOPT_HTTPHEADER, read during the request.
+            try succeeded(unsafe curl_easy_setopt(this.handle, 10023, headers.items))
+            // 30120: CURLOPT_POSTFIELDSIZE_LARGE, then 10165: CURLOPT_COPYPOSTFIELDS, which
+            // copies the body at once.
+            try succeeded(unsafe curl_easy_setopt(this.handle, 30120, (long)body.length()))
+            try succeeded(unsafe curl_easy_setopt(this.handle, 10165, body.pointer()))
+        }
+
+        var received = Received { body = List<byte>(), headers = List<Header>(), used = 0, limit = this.maxBytes, tooLarge = false }
+        var state = unsafe Memory.addressOf(ref received)
+        // 20011 and 10001: CURLOPT_WRITEFUNCTION and CURLOPT_WRITEDATA; 20079 and 10029:
+        // CURLOPT_HEADERFUNCTION and CURLOPT_HEADERDATA.
+        try succeeded(unsafe curl_easy_setopt(this.handle, 20011, takeBody))
+        try succeeded(unsafe curl_easy_setopt(this.handle, 10001, state))
+        try succeeded(unsafe curl_easy_setopt(this.handle, 20079, takeHeader))
+        try succeeded(unsafe curl_easy_setopt(this.handle, 10029, state))
+
+        var code = unsafe curl_easy_perform(this.handle)
+        if received.tooLarge {
+            return Error(CurlError { code = 63, message = $"the response is larger than {this.maxBytes} bytes".toString() })
+        }
+        if code != 0 {
+            return Error(this.failed(code))
+        }
+        // 2097154: CURLINFO_RESPONSE_CODE, a `long`; 1048594: CURLINFO_CONTENT_TYPE, a text
+        // libcurl keeps, or `null`.
+        long status = 0
+        try succeeded(unsafe curl_easy_getinfo(this.handle, 2097154, ref status))
+        raw byte kind = null
+        try succeeded(unsafe curl_easy_getinfo(this.handle, 1048594, ref kind))
+        string? contentType = null
+        if kind != null {
+            if unsafe string.fromCString(kind) is Ok(text) {
+                contentType = text.clone()
+            }
+        }
+        return Ok(Response {
+            status = (int)status,
+            contentType = contentType,
+            headers = received.headers.replace(List<Header>()),
+            body = received.body.replace(List<byte>())
+        })
+    }
+
+    // The error of a request: the message libcurl wrote, which says more than the one of its
+    // code alone.
+    CurlError failed(read this, int code) {
+        if unsafe this.errors[0] != 0 {
+            if unsafe string.fromCString(this.errors) is Ok(text) {
+                return CurlError { code = code, message = text.clone() }
+            }
+        }
+        return codeError(code)
+    }
+
+    void dispose(ref this) {
+        unsafe {
+            curl_easy_cleanup(this.handle)
+            curl_global_cleanup()
+            Memory.free(this.errors)
+        }
+    }
+}

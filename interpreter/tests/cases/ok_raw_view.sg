@@ -1,0 +1,36 @@
+// `Memory.view(p, count)` looks at `count` items of raw memory as a `read T[]`: a list takes
+// them in one copy, and a text reads them where they lie. A count of 0 needs no memory.
+struct Point {
+    int x
+    int y
+}
+
+void main() {
+    var p = Memory.allocate<byte>(5)
+    unsafe {
+        for i in 0..5 {
+            p[i] = (byte)(104 + i)
+        }
+    }
+    var bytes = List<byte>()
+    bytes.addAll(unsafe Memory.view(p, 3))
+    print(bytes)
+    var window = unsafe Memory.view(p, 5)
+    print($"{window.length()} {window[0]} {window[4]}")
+    print(string.fromUtf8(window) ?? "not text")
+    unsafe { p[0] = 72 }
+    print(string.fromUtf8(unsafe Memory.view(p, 2)) ?? "not text")
+    unsafe Memory.free(p)
+
+    var points = Memory.allocate<Point>(2)
+    unsafe {
+        points[0] = Point { x = 1, y = 2 }
+        points[1] = Point { x = 3, y = 4 }
+    }
+    var shown = unsafe Memory.view(points, 2)
+    print($"{shown[1].x} {shown[1].y}")
+    unsafe Memory.free(points)
+
+    raw long none = null
+    print(unsafe Memory.view(none, 0).length())
+}

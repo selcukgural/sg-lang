@@ -1,0 +1,5 @@
+error: a `raw void` points at memory of no known type, so `Memory.view` cannot count its items
+  --> error_raw_view_void.sg:4:30
+ 4 |     print(unsafe Memory.view(any, 4).length())
+   |                              ^^^
+  hint: say what lies there with a cast: `(raw byte)p`

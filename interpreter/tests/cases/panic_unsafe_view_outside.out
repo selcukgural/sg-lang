@@ -1,0 +1,4 @@
+panic: raw memory is read outside its block: items 0 to 4, where the block holds 4 items of `int`
+  --> panic_unsafe_view_outside.sg:4:18
+ 4 |     print(unsafe Memory.view(p, 5).length())
+   |                  ^^^^^^^^^^^^^^^^^

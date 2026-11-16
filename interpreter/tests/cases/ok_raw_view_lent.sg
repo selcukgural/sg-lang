@@ -1,0 +1,17 @@
+// A window can be given back from where its pointer was lent: it then lives as long as the
+// caller's variable.
+read int[] look(read raw int p, nint count) from p {
+    return unsafe Memory.view(p, count)
+}
+
+void main() {
+    var p = Memory.allocate<int>(3)
+    unsafe {
+        p[0] = 7
+        p[1] = 8
+        p[2] = 9
+    }
+    var window = look(read p, 3)
+    print(window[2])
+    unsafe Memory.free(p)
+}

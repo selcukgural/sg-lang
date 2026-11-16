@@ -1,0 +1,11 @@
+ok    curl: a page comes back with its status, its type, its headers and its body
+ok    curl: a 404 is a response, not an error
+ok    curl: a redirect is followed, and the headers are those of the last response
+ok    curl: a redirect to another protocol is refused, and so is a loop
+ok    curl: a body larger than maxBytes is cut off, said or not
+ok    curl: a server that does not answer is a timeout
+ok    curl: a post sends its body and its type
+ok    curl: a body that is not UTF-8 comes as bytes
+ok    curl: a zero byte in a URL and a closed port are errors
+ok    curl: https: the certificate of an authority given is trusted, one not given is refused
+10 test(s) passed

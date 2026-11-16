@@ -1,0 +1,5 @@
+error: `Memory.view` reads raw memory, whose size the checker does not know, so it is written inside `unsafe`
+  --> error_raw_view_unsafe.sg:3:11
+ 3 |     print(Memory.view(p, 4).length())
+   |           ^^^^^^^^^^^^^^^^^
+  hint: `unsafe Memory.view(p, 4)`, or `unsafe { ... }` around several statements

@@ -1,0 +1,7 @@
+// The window borrows the variable that holds the pointer, which ends with the function.
+read int[] look(raw int p, nint count) {
+    return unsafe Memory.view(p, count)
+}
+
+void main() {
+}

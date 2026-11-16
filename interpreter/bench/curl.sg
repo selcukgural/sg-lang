@@ -1,0 +1,79 @@
+// A thousand fetches of a body of one megabyte over the loopback, with libcurl, on one kept
+// connection: the server is a task of this program, as in `curl.c` a thread. Each piece of the
+// body is added to a list by the callback, through `Memory.view`, as `curl.c` copies it with
+// `memcpy`.
+extern "curl" {
+    struct CURL
+    int curl_global_init(long flags)
+    void curl_global_cleanup()
+    raw CURL curl_easy_init()
+    void curl_easy_cleanup(raw CURL handle)
+    int curl_easy_setopt(raw CURL handle, int option, ...)
+    int curl_easy_perform(raw CURL handle)
+}
+
+struct Got {
+    List<byte> body
+}
+
+export nuint take(raw byte data, nuint size, nuint count, raw void state) {
+    var got = unsafe (ref Got)state
+    var length = (nint)(size * count)
+    got.body.addAll(unsafe Memory.view(data, length))
+    return (nuint)length
+}
+
+Result<void, IoError> serve(TcpListener listener, int count) {
+    var body = List<byte>()
+    for i in 0..1048576 {
+        body.add((byte)(i % 251))
+    }
+    var head = "HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n"
+    var conn = try listener.accept()
+    var reader = conn.reader()
+    var line = ""
+    for _ in 0..count {
+        while try reader.readLine(ref line) {
+            if line.length() == 0 {
+                break
+            }
+        }
+        try conn.send(head.asBytes())
+        try conn.send(read body)
+    }
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var count = 1000
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"http://127.0.0.1:{listener.port()}/".toString()
+    var url = CString.from(read address) ?? panic("no zero byte")
+    var server = Task.run(serve, listener, count)
+    _ = unsafe curl_global_init((long)3)
+    raw CURL handle = unsafe curl_easy_init()
+    var got = Got { body = List<byte>() }
+    unsafe {
+        // 10002: CURLOPT_URL, 20011: CURLOPT_WRITEFUNCTION, 10001: CURLOPT_WRITEDATA.
+        _ = curl_easy_setopt(handle, 10002, read url)
+        _ = curl_easy_setopt(handle, 20011, take)
+        _ = curl_easy_setopt(handle, 10001, Memory.addressOf(ref got))
+    }
+    long total = 0
+    long sum = 0
+    for _ in 0..count {
+        got.body.clear()
+        if unsafe curl_easy_perform(handle) != 0 {
+            panic("the fetch failed")
+        }
+        total += (long)got.body.length()
+        sum += (long)got.body[got.body.length() - 1]
+    }
+    unsafe {
+        curl_easy_cleanup(handle)
+        curl_global_cleanup()
+    }
+    try server.wait()
+    print($"{total} bytes, {sum}")
+    return Ok()
+}

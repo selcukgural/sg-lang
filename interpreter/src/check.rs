@@ -3185,6 +3185,14 @@ impl<'a> Checker<'a> {
                 if matches!(callee, Callee::Take | Callee::Replace) {
                     return self.loans_of(recv, mutable);
                 }
+                // `Memory.view(p, n)` looks through the variable that holds `p`.
+                if matches!(callee, Callee::Memory(MemoryCall::View)) {
+                    let pointer = match &args[0].kind {
+                        ExprKind::Load(inner) => &**inner,
+                        _ => &args[0],
+                    };
+                    return self.place_loans(pointer, false, expr.span);
+                }
                 // A part that an iterator gives borrows the text, not the iterator: after
                 // `var word = words.next()` the `words` is free to go on.
                 if matches!(recv.ty.strip_borrow(), Ty::TextIter(TextIter::ReadLines)) {
@@ -4279,7 +4287,7 @@ impl<'a> Checker<'a> {
         let value = result?;
         if !used {
             return Err(Diag::error(word, "nothing here needs `unsafe`")
-                .note("`unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers or from a number to one, `Memory.free`, `Memory.copy`, a call of a C function, a variable of C and `string.fromCString`")
+                .note("`unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers or from a number to one, `Memory.free`, `Memory.copy`, `Memory.view`, `Memory.addressOf`, a call of a C function, a variable of C and `string.fromCString`")
                 .hint("leave `unsafe` out"));
         }
         Ok(value)
@@ -8032,11 +8040,46 @@ impl<'a> Checker<'a> {
                 *callee = Callee::Memory(MemoryCall::AddressOf);
                 Ok(Ty::Raw(Box::new(Ty::Void)))
             }
+            // `Memory.view(p, count)`: the items C put at `p`, as a window that looks at them
+            // where they lie. It borrows the variable that holds the pointer, so it does not
+            // outlive it.
+            "view" => {
+                if args.len() != 2 {
+                    return Err(Diag::error(span, format!("`view` takes 2 argument(s), {} given", args.len()))
+                        .note("`Memory.view(p, count)` looks at `count` items from `p`"));
+                }
+                let named = |expr: &Expr| {
+                    let mut at = expr;
+                    loop {
+                        match &at.kind {
+                            ExprKind::Var(_) => return true,
+                            ExprKind::Field { recv, .. } => at = recv,
+                            _ => return false,
+                        }
+                    }
+                };
+                if !named(&args[0]) {
+                    let text = &self.src[args[0].span.start..args[0].span.end];
+                    return Err(Diag::error(args[0].span, "`Memory.view` takes the pointer from a variable or a field, which the window borrows")
+                        .hint(format!("`var at = {text}` first, then `Memory.view(at, count)`"))
+                        .note("the window borrows the variable that holds its pointer, and does not outlive it"));
+                }
+                let item = pointer(self, &mut args[0], "what `Memory.view` looks at")?;
+                let Ty::Raw(item) = item else { unreachable!("`pointer` gives a raw pointer") };
+                if *item == Ty::Void {
+                    return Err(Diag::error(args[0].span, "a `raw void` points at memory of no known type, so `Memory.view` cannot count its items")
+                        .hint("say what lies there with a cast: `(raw byte)p`"));
+                }
+                self.index(&mut args[1], "a count of items")?;
+                self.needs_unsafe(span, "`Memory.view` reads raw memory, whose size the checker does not know")?;
+                *callee = Callee::Memory(MemoryCall::View);
+                Ok(Ty::Read(Box::new(Ty::Slice(item))))
+            }
             _ => {
                 let diag = Diag::error(name_span, format!("`Memory` has no function `{name}`"));
-                Err(match nearest(name, ["allocate", "free", "copy", "addressOf"].into_iter()) {
+                Err(match nearest(name, ["allocate", "free", "copy", "addressOf", "view"].into_iter()) {
                     Some(close) => diag.hint(format!("`{close}`")),
-                    None => diag.note("functions for now: allocate, free, copy, addressOf"),
+                    None => diag.note("functions for now: allocate, free, copy, addressOf, view"),
                 })
             }
         }

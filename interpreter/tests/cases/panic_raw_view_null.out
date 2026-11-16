@@ -1,0 +1,4 @@
+panic: `Memory.view` is given `null` and a count of 2
+  --> panic_raw_view_null.sg:3:18
+ 3 |     print(unsafe Memory.view(none, 2).length())
+   |                  ^^^^^^^^^^^^^^^^^^^^
