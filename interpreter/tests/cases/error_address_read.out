@@ -1,0 +1,5 @@
+error: `Memory.addressOf` takes a variable or a field lent with `ref`
+  --> error_address_read.sg:3:40
+ 3 |     var data = unsafe Memory.addressOf(read count)
+   |                                        ^^^^^^^^^^
+  hint: `Memory.addressOf(ref count)`

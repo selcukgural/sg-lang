@@ -1,0 +1,5 @@
+before
+panic: `other` is called, and it is a `CFunc` that is `null`
+  --> panic_cfunc_null.sg:9:11
+ 9 |     print(unsafe hooks.other(2))
+   |           ^^^^^^^^^^^^^^^^^^^^^

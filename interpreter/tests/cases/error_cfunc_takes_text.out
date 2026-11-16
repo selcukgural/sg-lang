@@ -1,0 +1,5 @@
+error: a function of C cannot take or give a `string`
+  --> error_cfunc_takes_text.sg:2:5
+ 2 |     CFunc<string, int> f = null
+   |     ^^^^^^^^^^^^^^^^^^
+  hint: a text goes between C and SG as `raw byte`: `unsafe string.fromCString(p)` copies it

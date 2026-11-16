@@ -1,0 +1,6 @@
+export int register(int n) {
+    return n
+}
+
+void main() {
+}

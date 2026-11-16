@@ -1,0 +1,14 @@
+// An `export` function of a module: C sees it by its own name, without the module's.
+extern "./counter.c" {
+    int bump()
+    int count()
+}
+
+public export int scaled(int n) {
+    _ = unsafe bump()
+    return n * 10
+}
+
+public int calls() {
+    return unsafe count()
+}

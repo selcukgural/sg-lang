@@ -1,0 +1,5 @@
+error: a `CFunc` may be `null` as it is, as a pointer of C may be
+  --> error_cfunc_nullable.sg:2:5
+ 2 |     CFunc<int, int>? f = null
+   |     ^^^^^^^^^^^^^^^^
+  hint: `CFunc<int, int>`, compared with `null` before it is called

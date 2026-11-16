@@ -1,0 +1,5 @@
+error: this lends a `State` that the checker cannot see is there and still lives, so it is written inside `unsafe`
+  --> error_lend_outside_unsafe.sg:6:17
+ 6 |     var state = (ref State)data
+   |                 ^^^^^^^^^^^^^^^
+  hint: `unsafe (ref State)data`, or `unsafe { ... }` around several statements

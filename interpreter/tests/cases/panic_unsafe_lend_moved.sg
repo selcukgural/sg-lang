@@ -1,0 +1,13 @@
+// A value moved away is not at its address any more.
+struct State {
+    int count
+}
+
+void main() {
+    var state = State { count = 1 }
+    var data = unsafe Memory.addressOf(ref state)
+    var kept = state
+    print(kept.count)
+    var back = unsafe (ref State)data
+    back.count += 1
+}

@@ -1,0 +1,5 @@
+error: C cannot call `compare`: it is a function of SG
+  --> error_cfunc_not_export.sg:11:41
+ 11 |     unsafe qsort((raw void)items, 2, 4, compare)
+    |                                         ^^^^^^^
+  hint: a function C calls is written with `export`: `export int compare(...)`

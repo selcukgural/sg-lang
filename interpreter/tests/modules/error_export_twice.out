@@ -1,0 +1,9 @@
+error: C would see two functions named `scaled`
+  C sees the name of an `export` function as it is written, without its module
+  --> other/other.sg:2:19
+ 2 | public export int scaled(int n) {
+   |                   ^^^^^^
+  the other one:
+  --> error_export_twice.sg:3:12
+ 3 | export int scaled(int n) {
+   |            ^^^^^^

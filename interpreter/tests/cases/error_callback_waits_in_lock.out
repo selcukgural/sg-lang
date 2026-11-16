@@ -1,0 +1,9 @@
+error: this call of C may call `compareSlowly` back, which waits, and a `lock` block does not wait
+  a task that holds a lock never waits, so it always lets the lock go: locks and waits cannot deadlock
+  --> error_callback_waits_in_lock.sg:22:16
+ 22 |         unsafe qsort((raw void)items, 2, 4, compareSlowly)
+    |                ^^^^^
+  `compareSlowly` waits for a task here:
+  --> error_callback_waits_in_lock.sg:11:17
+ 11 |     return task.wait()
+    |                 ^^^^

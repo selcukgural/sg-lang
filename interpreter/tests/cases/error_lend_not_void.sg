@@ -1,0 +1,9 @@
+struct State {
+    int count
+}
+
+void main() {
+    var p = Memory.allocate<int>(1)
+    var state = unsafe (ref State)p
+    unsafe Memory.free(p)
+}

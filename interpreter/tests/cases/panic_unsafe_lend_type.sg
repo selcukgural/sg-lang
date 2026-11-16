@@ -1,0 +1,15 @@
+// An address is lent again as the type it was given as.
+struct State {
+    int count
+}
+
+struct Other {
+    long total
+}
+
+void main() {
+    var state = State { count = 1 }
+    var data = unsafe Memory.addressOf(ref state)
+    var other = unsafe (ref Other)data
+    print(other.total)
+}

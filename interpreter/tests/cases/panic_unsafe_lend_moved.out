@@ -1,0 +1,5 @@
+1
+panic: `(ref State)` is given the address of a value that was moved away
+  --> panic_unsafe_lend_moved.sg:11:16
+ 11 |     var back = unsafe (ref State)data
+    |                ^^^^^^^^^^^^^^^^^^^^^^

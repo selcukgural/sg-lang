@@ -1,0 +1,5 @@
+error: `main` is where the program starts, and C does not call it
+  --> error_export_main.sg:1:13
+ 1 | export void main() {
+   |             ^^^^
+  hint: give the function C calls a name of its own

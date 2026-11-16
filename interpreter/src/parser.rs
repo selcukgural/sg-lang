@@ -14,7 +14,7 @@ const NOT_YET: &[&str] = &[
 /// Words of the language that are read where they stand, not names: `shared T`, `weak T`,
 /// `shared checked T`, `shared locked T`, `share x`, `weak x`, `using Name = T`,
 /// `lock x as c { }`, `async int f()`, `await t`, `raw byte p`, `unsafe { }`.
-const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock", "async", "await", "raw", "unsafe", "extern"];
+const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock", "async", "await", "raw", "unsafe", "extern", "export"];
 
 type Res<T> = Result<T, Diag>;
 
@@ -26,7 +26,7 @@ pub fn parse(src: &str) -> Res<Program> {
 /// belongs to. What a module defines gets its full name here: `Product` in the folder `stock`
 /// is `stock.Product`.
 pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> {
-    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new() };
+    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default() };
     for (start, end, module) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
         let mut parser = Parser { src, toks, i: 0, struct_literals: true };
@@ -285,6 +285,17 @@ impl<'a> Parser<'a> {
             first = false;
             let public_span = self.span();
             let public = self.eat(&Tok::Public);
+            let export_span = self.span();
+            let export = self.at_word("export");
+            if export {
+                self.bump();
+                if matches!(self.peek(), Tok::Struct | Tok::Enum) || self.at_word("using") || self.at_word("extern") || (matches!(self.peek(), Tok::Ident(word) if word == "test") && matches!(self.peek_at(1), Tok::Str(_))) {
+                    return Err(Diag::error(export_span, "`export` is written in front of a function that C calls").hint("`export int compare(raw void a, raw void b) { ... }`"));
+                }
+                if self.at_word("async") {
+                    return Err(Diag::error(export_span, "a function that C calls is not async: C cannot wait for a task").hint("start the work with `Task.run` inside it, or call it from SG"));
+                }
+            }
             let async_span = self.span();
             let is_async = self.at_word("async");
             if is_async {
@@ -344,6 +355,7 @@ impl<'a> Parser<'a> {
                 let mut func = self.func(ret, name, name_span, false)?;
                 func.public = public;
                 func.is_async = is_async;
+                func.export = export;
                 program.funcs.push(func);
             }
             if *self.peek() != Tok::Eof {
@@ -447,7 +459,7 @@ impl<'a> Parser<'a> {
                 return Err(Diag::error(self.span(), "a C function has no body: it is declared here, and C has it")
                     .hint("a function of your own is written outside the `extern` block"));
             }
-            let func = Func { public, is_async: false, ret, name, name_span, this: None, this_ty: None, params, from: Vec::new(), body: Vec::new(), foreign: Some(foreign.clone()) };
+            let func = Func { public, is_async: false, export: false, ret, name, name_span, this: None, this_ty: None, params, from: Vec::new(), body: Vec::new(), foreign: Some(foreign.clone()) };
             program.funcs.push(func);
             if *self.peek() != Tok::RBrace {
                 self.expect(Tok::Newline, "end of line")?;
@@ -473,7 +485,7 @@ impl<'a> Parser<'a> {
             }
             let public = self.eat(&Tok::Public);
             let async_span = self.span();
-            let is_async = self.eat_async();
+            let is_async = self.eat_async()?;
             let readonly_span = self.span();
             let readonly = self.eat(&Tok::Readonly);
             let ty = self.type_expr()?;
@@ -554,7 +566,7 @@ impl<'a> Parser<'a> {
                 && matches!(self.peek_at(1), Tok::LParen | Tok::Newline | Tok::RBrace | Tok::Comma | Tok::Eof);
             if !variant_line {
                 let public = self.eat(&Tok::Public);
-                let is_async = self.eat_async();
+                let is_async = self.eat_async()?;
                 let ty = self.type_expr()?;
                 let (member, span) = self.ident("a method name")?;
                 if *self.peek() != Tok::LParen {
@@ -681,16 +693,20 @@ impl<'a> Parser<'a> {
             }
         }
         let body = self.block()?;
-        Ok(Func { public: false, is_async: false, ret, name, name_span, this, this_ty, params, from, body, foreign: None })
+        Ok(Func { public: false, is_async: false, export: false, ret, name, name_span, this, this_ty, params, from, body, foreign: None })
     }
 
     /// `async` in front of a method, as in front of a function at the top level.
-    fn eat_async(&mut self) -> bool {
+    fn eat_async(&mut self) -> Res<bool> {
+        if self.at_word("export") {
+            return Err(Diag::error(self.span(), "a method is not called by C: `export` is written on a function at the top level")
+                .hint("C reaches a value through the pointer it is given: `export void step(raw void data) { var s = unsafe (ref State)data ... }`"));
+        }
         if self.at_word("async") {
             self.bump();
-            return true;
+            return Ok(true);
         }
-        false
+        Ok(false)
     }
 
     fn open_brace(&mut self) -> Res<()> {
@@ -1379,8 +1395,9 @@ impl<'a> Parser<'a> {
                 let operand = self.unary()?;
                 Ok(wrap(ExprKind::Unsafe, operand))
             }
-            // `(raw byte)p`: a raw pointer read as one to another type.
-            Tok::LParen if matches!(self.peek_at(1), Tok::Ident(word) if word == "raw") => {
+            // `(raw byte)p`: a raw pointer read as one to another type; `(CFunc<int, int>)p`:
+            // an address as a function of C; `(ref State)data`: an address lent as a value.
+            Tok::LParen if matches!(self.peek_at(1), Tok::Ident(word) if word == "raw" || word == "CFunc") || self.lends_address() => {
                 self.bump();
                 let ty = self.type_expr()?;
                 self.expect(Tok::RParen, "`)`")?;
@@ -1418,6 +1435,16 @@ impl<'a> Parser<'a> {
             },
             _ => self.postfix(),
         }
+    }
+
+    /// `(ref State)data`, `(read State)data`: a type behind `ref` or `read` alone in
+    /// parentheses, with a value right after it.
+    fn lends_address(&self) -> bool {
+        if !matches!(self.peek_at(1), Tok::Read | Tok::Ref) {
+            return false;
+        }
+        let Some(n) = self.type_len(2) else { return false };
+        *self.peek_at(2 + n) == Tok::RParen && matches!(self.peek_at(3 + n), Tok::Ident(_) | Tok::LParen)
     }
 
     fn cast_type(&self) -> Option<Ty> {

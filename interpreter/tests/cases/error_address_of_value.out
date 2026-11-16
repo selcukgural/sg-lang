@@ -1,0 +1,5 @@
+error: `Memory.addressOf` takes a variable or a field lent with `ref`
+  the address must stay where the value is: a variable or a field keeps it, a value made in the call does not
+  --> error_address_of_value.sg:2:40
+ 2 |     var data = unsafe Memory.addressOf(ref 2 + 3)
+   |                                        ^^^^^^^^^

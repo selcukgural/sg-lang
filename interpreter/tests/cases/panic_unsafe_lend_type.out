@@ -1,0 +1,4 @@
+panic: `(ref Other)` is given the address of a `State`
+  --> panic_unsafe_lend_type.sg:13:17
+ 13 |     var other = unsafe (ref Other)data
+    |                 ^^^^^^^^^^^^^^^^^^^^^^

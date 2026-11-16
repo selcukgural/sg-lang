@@ -1,0 +1,4 @@
+panic: `(read State)` is given the address of a value that has ended
+  --> panic_unsafe_lend_ended.sg:13:17
+ 13 |     var state = unsafe (read State)data
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^

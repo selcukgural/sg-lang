@@ -1,0 +1,4 @@
+panic: `(ref State)` is given an address that `Memory.addressOf` did not give
+  --> panic_unsafe_lend_unknown.sg:8:17
+ 8 |     var state = unsafe (ref State)(raw void)block
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,4 @@
+void main() {
+    nint address = 4096
+    var f = unsafe (CFunc<int, int>)address
+}

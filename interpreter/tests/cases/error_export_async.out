@@ -1,0 +1,5 @@
+error: a function that C calls is not async: C cannot wait for a task
+  --> error_export_async.sg:1:1
+ 1 | export async int later(int n) {
+   | ^^^^^^
+  hint: start the work with `Task.run` inside it, or call it from SG

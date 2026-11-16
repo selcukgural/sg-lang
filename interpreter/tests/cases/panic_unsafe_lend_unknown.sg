@@ -1,0 +1,11 @@
+// An address `Memory.addressOf` did not give is not lent.
+struct State {
+    int count
+}
+
+void main() {
+    var block = Memory.allocate<State>(1)
+    var state = unsafe (ref State)(raw void)block
+    print(state.count)
+    unsafe Memory.free(block)
+}

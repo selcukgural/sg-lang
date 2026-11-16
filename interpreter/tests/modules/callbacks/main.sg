@@ -1,0 +1,39 @@
+// A C file that keeps a callback and its state between two calls, calls an `export` function
+// by its name, and is given the address of one of its own functions; and an `export` function
+// of a module.
+use stats
+
+extern "./native.c" {
+    void listen(CFunc<raw void, int, int, void> callback, raw void data)
+    int feed(read CString text)
+    int triple(int n)
+    int sum_scaled(int n)
+    int apply_twice(CFunc<int, int> f, int n)
+}
+
+struct Lengths {
+    List<int> each
+    int longest
+}
+
+export void heard(raw void data, int number, int length) {
+    var lengths = unsafe (ref Lengths)data
+    lengths.each.add(length)
+    if length > lengths.longest {
+        lengths.longest = length
+    }
+}
+
+void main() {
+    var lengths = Lengths { each = List<int>(), longest = 0 }
+    unsafe listen(heard, Memory.addressOf(ref lengths))
+    var text = CString.from("a callback reaches   its state") ?? panic("no zero byte in it")
+    var words = unsafe feed(read text)
+    print($"{words} words: {lengths.each}, the longest {lengths.longest}")
+    print(unsafe sum_scaled(4))
+    print(stats.calls())
+    CFunc<int, int> f = triple
+    print(unsafe apply_twice(f, 5))
+    print(unsafe apply_twice(stats.scaled, 5))
+    print(unsafe f(7))
+}

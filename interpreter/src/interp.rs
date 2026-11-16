@@ -534,6 +534,9 @@ struct Shared<'e> {
     ffi: crate::ffi::Library,
     /// The programs `System.start` started and that have not been waited for, by number.
     children: RefCell<HashMap<i64, Kid>>,
+    /// The files of the program, for a panic that must be shown where it happens: in a
+    /// function C called (see `Interp::die`).
+    sources: &'e crate::source::Sources,
 }
 
 /// A program `System.start` started. What it writes to an output it shares with the run is read
@@ -575,12 +578,44 @@ const STREAM_BUFFER: usize = 65536;
 /// The longest line, or text, the reader of a connection gives unless told otherwise.
 const READER_LIMIT: usize = 65536;
 
+/// What `Memory.addressOf` gave an address for: the cell of the value, and its type.
+type Given = (std::rc::Weak<RefCell<Value>>, Ty);
+
 thread_local! {
+    /// The interpreter that is in a call of C on this thread, for C to call an `export`
+    /// function through (see `enter`); null when none is.
+    static ENTERED: Flag<*mut std::ffi::c_void> = const { Flag::new(std::ptr::null_mut()) };
+    /// The addresses `Memory.addressOf` gave on this thread: the cell of the value, and its
+    /// type, for `(ref T)data` to find it again and check it.
+    static ADDRESSES: RefCell<HashMap<usize, Given>> = RefCell::new(HashMap::new());
     /// `Stdin`, `Stdout` and `Stderr` of the program running on this thread.
     static STREAMS: RefCell<Option<[Cell; 3]>> = const { RefCell::new(None) };
     /// The program is ending with a panic or `exit`: a writer that ends now does not write
     /// its buffer, as in compiled code, where nothing runs after them.
     static ENDING: Flag<bool> = const { Flag::new(false) };
+}
+
+/// What C calls for an `export` function of the program, through the stub the library of
+/// wrappers has for it: on a thread in a call of C, the interpreter of that call runs the
+/// function. C is not unwound through: a panic ends the process (see `Interp::die`).
+///
+/// # Safety
+///
+/// Called only by the stubs the library of wrappers was built with: `args` holds the address
+/// of each argument, as the C type of the parameter, and `ret` has room for what it gives.
+pub(crate) unsafe extern "C" fn enter(number: std::ffi::c_int, name: *const std::ffi::c_char, args: *mut *mut std::ffi::c_void, ret: *mut std::ffi::c_void) {
+    let me = ENTERED.with(|entered| entered.get());
+    if me.is_null() {
+        // SAFETY: the stub gives its name as a text that ends in a zero byte.
+        let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy();
+        eprintln!("error: C called `{name}` on a thread where the interpreter is in no call of C");
+        eprintln!("  = note: the interpreter runs a function C calls only during a call of C on the same thread; compiled code (`sg build`) takes it on any thread");
+        std::process::exit(1);
+    }
+    // SAFETY: `ENTERED` holds the interpreter that is in a call of C on this thread, and it
+    // touches nothing of itself until the call returns (see `Interp::call_c`).
+    let interp = unsafe { &mut *me.cast::<Interp<'static, 'static>>() };
+    interp.entered(number as usize, args, ret);
 }
 
 /// Makes `Stdin`, `Stdout` and `Stderr` for a program that starts.
@@ -1536,6 +1571,7 @@ fn load(addr: usize, ty: &Ty, plain: &HashMap<String, Vec<Ty>>, span: Span) -> R
                 let address = at.cast::<usize>().read_unaligned();
                 Value::Raw(RawPtr { addr: address, block: raw::block_at(address) })
             }
+            Ty::CFunc(..) => Value::Raw(RawPtr { addr: at.cast::<usize>().read_unaligned(), block: None }),
             Ty::Array(item, length) => {
                 let (size, _) = raw::layout(item, plain);
                 let items = (0..*length).map(|at| load(addr + at * size, item, plain, span).map(cell)).collect::<Result<Vec<Cell>, Diag>>()?;
@@ -1562,7 +1598,7 @@ fn store(addr: usize, ty: &Ty, value: &Value, plain: &HashMap<String, Vec<Ty>>) 
             (Ty::Float(FloatTy::Double), Value::Float(_, number)) => at.cast::<f64>().write_unaligned(*number),
             (Ty::Bool, Value::Bool(truth)) => at.write(u8::from(*truth)),
             (Ty::Char, Value::Char(found)) => at.cast::<u32>().write_unaligned(*found as u32),
-            (Ty::Raw(_), pointer) => at.cast::<usize>().write_unaligned(raw_of(pointer).addr),
+            (Ty::Raw(_) | Ty::CFunc(..), pointer) => at.cast::<usize>().write_unaligned(raw_of(pointer).addr),
             (Ty::Array(item, _), Value::Array(items)) => {
                 let (size, _) = raw::layout(item, plain);
                 for (position, held) in items.iter().enumerate() {
@@ -1899,13 +1935,14 @@ impl Frame {
 }
 
 /// What the fibers of a run share. The input is taken out of the world into a block of its own.
-fn shared<'a>(out: &'a mut dyn Write, mut world: World<'a>, ffi: crate::ffi::Library) -> Shared<'a> {
+fn shared<'a>(out: &'a mut dyn Write, mut world: World<'a>, ffi: crate::ffi::Library, sources: &'a crate::source::Sources) -> Shared<'a> {
     let source = std::mem::replace(&mut world.input, Box::new(std::io::empty()));
     let input = crate::input::Input::new(source, world.input_waits);
-    Shared { out: RefCell::new(out), world: RefCell::new(world), input: RefCell::new(input), test_err: RefCell::new(String::new()), sched: Sched::new(), ffi, children: RefCell::new(HashMap::new()) }
+    Shared { out: RefCell::new(out), world: RefCell::new(world), input: RefCell::new(input), test_err: RefCell::new(String::new()), sched: Sched::new(), ffi, children: RefCell::new(HashMap::new()), sources }
 }
 
-pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, world: World<'a>) -> Result<(), Stop> {
+pub fn run_program<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out: &'a mut dyn Write, world: World<'a>) -> Result<(), Stop> {
+    let src = sources.text.as_str();
     let funcs = prog.funcs.iter().map(|func| (func.name.as_str(), func)).collect();
     let mut methods: HashMap<&str, HashMap<&str, &Func>> = HashMap::new();
     for decl in &prog.structs {
@@ -1918,7 +1955,7 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
     let ffi = crate::ffi::Library::open(prog, false).map_err(Stop::Diag)?;
-    let io = shared(out, world, ffi);
+    let io = shared(out, world, ffi, sources);
     std::thread::scope(|scope| {
         let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: 0 };
         let result = run_main(&mut interp);
@@ -1979,7 +2016,7 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
     let ffi = crate::ffi::Library::open(prog, true).map_err(Stop::Diag)?;
-    let io = shared(out, world, ffi);
+    let io = shared(out, world, ffi, sources);
     std::thread::scope(|scope| {
         let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: 0 };
         run_each_test(&mut interp, prog, sources)
@@ -2118,6 +2155,58 @@ fn std_from(prog: &Program) -> usize {
 }
 
 impl<'a, 'e> Interp<'a, 'e> {
+    /// Runs the `export` function numbered `number` for C, with the arguments whose addresses
+    /// C gave, and writes what it gives where C has room for it.
+    fn entered(&mut self, number: usize, args: *mut *mut std::ffi::c_void, ret: *mut std::ffi::c_void) {
+        let (name, params, gives) = self.io.ffi.export(number).clone();
+        let func = self.funcs[name.as_str()];
+        let mut values = Vec::new();
+        for (position, ty) in params.iter().enumerate() {
+            // SAFETY: the stub gives the address of each argument, as the C type of its parameter.
+            let at = unsafe { *args.add(position) } as usize;
+            match load(at, ty, self.plain, func.name_span) {
+                Ok(value) => values.push(value),
+                Err(diag) => self.die(Stop::Diag(diag)),
+            }
+        }
+        match self.call(func, None, values, func.name_span) {
+            Ok(value) => {
+                if gives != Ty::Void {
+                    store(ret as usize, &gives, &value, self.plain);
+                }
+            }
+            Err(Unwind::Stop(stop)) => self.die(stop),
+            Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop"),
+        }
+    }
+
+    /// Ends the process from inside a function C called, where nothing can be unwound: what
+    /// was printed goes out, then the panic or the error, shown as at the end of a run.
+    fn die(&self, stop: Stop) -> ! {
+        ENDING.with(|ending| ending.set(true));
+        if let Ok(mut out) = self.io.out.try_borrow_mut() {
+            let _ = out.flush();
+        }
+        let code = match stop {
+            Stop::Diag(diag) => {
+                eprint!("{}", diag.render_in(self.io.sources));
+                1
+            }
+            Stop::Failed(text) => {
+                eprintln!("error: {text}");
+                1
+            }
+            Stop::OutputFailed(error) => {
+                eprintln!("error: cannot write output: {error}");
+                1
+            }
+            Stop::Exit(code) => i32::from(code),
+            Stop::OutputClosed => 0,
+            Stop::TestsFailed => 1,
+        };
+        std::process::exit(code)
+    }
+
     /// Waits for the tasks that nothing holds any more: a function that ended with an error
     /// left them (the checker lets every other exit go only after they are waited for). What
     /// they give is dropped; the error that ended the function is the one that counts.
@@ -3066,6 +3155,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let value = fresh(&self.place(expr, frame)?.borrow());
                 Ok(value)
             }
+            ExprKind::FuncRef(name) if matches!(expr.ty, Ty::CFunc(..)) => Ok(Value::Raw(RawPtr { addr: self.io.ffi.address(name), block: None })),
             ExprKind::FuncRef(name) => Ok(Value::Func(name.as_str().into())),
             // C owns the memory of its variable, so it is not checked as a block.
             ExprKind::CVar(name) => Ok(Value::Raw(RawPtr { addr: self.io.ffi.variable(name), block: None })),
@@ -3131,6 +3221,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Ok(Value::Raw(base.offset(count.wrapping_mul(size as i128))))
             }
             // Two addresses, or one and `null`.
+            ExprKind::Binary(op, left, right) if matches!(left.ty.strip_borrow(), Ty::CFunc(..)) || matches!(right.ty.strip_borrow(), Ty::CFunc(..)) => {
+                let left = raw_of(&strip(self.expr(left, frame)?));
+                let right = raw_of(&strip(self.expr(right, frame)?));
+                Ok(Value::Bool((left.addr == right.addr) == (*op == BinOp::Eq)))
+            }
             ExprKind::Binary(op, left, right) if matches!(left.ty.strip_borrow(), Ty::Raw(_)) || matches!(right.ty.strip_borrow(), Ty::Raw(_)) => {
                 let item = match left.ty.strip_borrow() {
                     Ty::Raw(item) => (**item).clone(),
@@ -3163,6 +3258,27 @@ impl<'a, 'e> Interp<'a, 'e> {
                 self.binary(*op, left, right, expr.span)
             }
             ExprKind::Unsafe(inner) => self.expr(inner, frame),
+            // `(ref State)data`: the value whose address `Memory.addressOf` gave, if it is
+            // still there and of that type.
+            ExprKind::RawCast { expr: inner, .. } if expr.ty.is_borrow() => {
+                let pointer = raw_of(&strip(self.expr(inner, frame)?));
+                let wanted = expr.ty.strip_borrow();
+                let lent = if matches!(expr.ty, Ty::Ref(_)) { "ref" } else { "read" };
+                let found = ADDRESSES.with(|given| given.borrow().get(&pointer.addr).cloned());
+                let why = match found {
+                    _ if pointer.addr == 0 => format!("`({lent} {wanted})` is given an address that is `null`"),
+                    None => format!("`({lent} {wanted})` is given an address that `Memory.addressOf` did not give"),
+                    Some((_, ty)) if ty != *wanted => format!("`({lent} {wanted})` is given the address of a `{ty}`"),
+                    Some((held, ty)) => match held.upgrade() {
+                        None => format!("`({lent} {wanted})` is given the address of a value that has ended"),
+                        Some(held) if matches!(*held.borrow(), Value::Null) && !matches!(ty, Ty::Nullable(_)) => {
+                            format!("`({lent} {wanted})` is given the address of a value that was moved away")
+                        }
+                        Some(held) => return Ok(Value::Borrow(held)),
+                    },
+                };
+                Err(Diag::panic(expr.span, why).into())
+            }
             ExprKind::RawCast { expr: inner, .. } => Ok(match strip(self.expr(inner, frame)?) {
                 Value::Null => Value::Null,
                 // A number made into a pointer finds its block again by its address.
@@ -3459,6 +3575,13 @@ impl<'a, 'e> Interp<'a, 'e> {
                     self.call(func, None, values, expr.span)
                 }
                 Callee::Extern => self.call_extern(name, args, expr, frame),
+                Callee::CValue(params) => {
+                    let target = raw_of(&strip(frame.slot(name).borrow().clone()));
+                    if target.addr == 0 {
+                        return Err(Diag::panic(expr.span, format!("`{name}` is called, and it is a `CFunc` that is `null`")).into());
+                    }
+                    self.call_c(Some(target.addr), name, params, &expr.ty, args, expr, frame)
+                }
                 _ => self.call_expr(expr, name, args, frame),
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
@@ -3518,7 +3641,17 @@ impl<'a, 'e> Interp<'a, 'e> {
                     let values = self.values(args, frame)?;
                     self.call(func, None, values, expr.span)
                 }
-                Callee::Value => unreachable!("a variable is called without a receiver"),
+                Callee::CFieldValue(index, params) => {
+                    let Value::Struct(_, fields) = owned(self.place(recv, frame)?.borrow().clone()) else {
+                        unreachable!("the checker only lets a field of a struct be called")
+                    };
+                    let target = raw_of(&strip(fields[*index].borrow().clone()));
+                    if target.addr == 0 {
+                        return Err(Diag::panic(expr.span, format!("`{name}` is called, and it is a `CFunc` that is `null`")).into());
+                    }
+                    self.call_c(Some(target.addr), name, params, &expr.ty, args, expr, frame)
+                }
+                Callee::Value | Callee::CValue(_) => unreachable!("a variable is called without a receiver"),
                 Callee::Join => {
                     let Value::Str(separator) = strip(self.expr(&args[0], frame)?) else {
                         unreachable!("the checker makes the separator text")
@@ -3972,6 +4105,14 @@ impl<'a, 'e> Interp<'a, 'e> {
     fn call_extern(&mut self, name: &str, args: &'a [Expr], expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
         let (params, ret) = &self.foreign[name];
         let (params, ret) = (params.clone(), ret.clone());
+        self.call_c(None, name, &params, &ret, args, expr, frame)
+    }
+
+    /// A call of C: of the function of C named `name`, or, with `through`, of the function at
+    /// that address (a `CFunc`).
+    #[allow(clippy::too_many_arguments)]
+    fn call_c(&mut self, through: Option<usize>, name: &str, params: &[Ty], ret: &Ty, args: &'a [Expr], expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let (params, ret) = (params.to_vec(), ret.clone());
         // A struct C gives back is written into room whose address follows the arguments.
         let returned_struct = matches!(ret, Ty::Struct(_)).then(|| raw::Scratch::new(raw::layout(&ret, self.plain).0));
         let mut slots: Vec<crate::ffi::Slot> = vec![0; args.len() + usize::from(returned_struct.is_some())];
@@ -4013,7 +4154,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                         Value::Int(_, number) => number,
                         _ => unreachable!("the checker gives an integer"),
                     }),
-                    Ty::Float(_) | Ty::Bool | Ty::Raw(_) => store(at as usize, param, &value, self.plain),
+                    Ty::Float(_) | Ty::Bool | Ty::Raw(_) | Ty::CFunc(..) => store(at as usize, param, &value, self.plain),
                     // A struct given by value is copied out for C, which may change its copy.
                     Ty::Struct(_) => {
                         let (size, _) = raw::layout(param, self.plain);
@@ -4042,7 +4183,26 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
             }
         }
-        let returned = self.io.ffi.call(name, &mut slots, &mut self.errno);
+        let mut addresses: Vec<*mut std::ffi::c_void> = slots.iter_mut().map(|slot| (slot as *mut crate::ffi::Slot).cast::<std::ffi::c_void>()).collect();
+        let mut returned: crate::ffi::Slot = 0;
+        let mut errno = self.errno;
+        let io = self.io;
+        // C may call an `export` function back, which this interpreter runs: from here until
+        // the call returns, nothing of it is touched but through `ENTERED`.
+        let me: *mut Self = self;
+        let before = ENTERED.with(|entered| entered.replace(me.cast()));
+        let room = (&mut returned as *mut crate::ffi::Slot).cast::<std::ffi::c_void>();
+        // SAFETY: the wrapper reads as many slots as the function takes, each as the C type it
+        // was declared with, and writes at most eight bytes into `returned`. What the function
+        // of C does is the program's to answer for: it is called inside `unsafe`.
+        unsafe {
+            match through {
+                None => io.ffi.wrapper(name)(addresses.as_mut_ptr(), room, &mut errno),
+                Some(address) => io.ffi.through(&crate::ffi::through_key(&params, &ret))(address as *mut std::ffi::c_void, addresses.as_mut_ptr(), room, &mut errno),
+            }
+        }
+        ENTERED.with(|entered| entered.set(before));
+        self.errno = errno;
         for (scratch, item, cells) in &lent {
             let (size, _) = raw::layout(item, self.plain);
             for (position, held) in cells.iter().enumerate() {
@@ -4120,6 +4280,14 @@ impl<'a, 'e> Interp<'a, 'e> {
             MemoryCall::SetErrno => {
                 self.errno = self.int(&args[0], frame)? as i32;
                 Ok(Value::Void)
+            }
+            // The address of the cell of the value, kept with its type for `(ref T)data`.
+            MemoryCall::AddressOf => {
+                let ExprKind::Borrow { expr: place, .. } = &args[0].kind else { unreachable!("the checker gives `Memory.addressOf` a borrow") };
+                let held = behind_borrows(self.place(place, frame)?);
+                let addr = Rc::as_ptr(&held) as usize;
+                ADDRESSES.with(|given| given.borrow_mut().insert(addr, (Rc::downgrade(&held), place.ty.strip_borrow().clone())));
+                Ok(Value::Raw(RawPtr { addr, block: None }))
             }
             // A number that is no code of the system's, below 0, is kept as it is.
             MemoryCall::IoErrorOf => Ok(io_cause(None, Some(self.int(&args[0], frame)? as i32))),

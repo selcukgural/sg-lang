@@ -1,0 +1,6 @@
+export int sg_count(int n) {
+    return n
+}
+
+void main() {
+}

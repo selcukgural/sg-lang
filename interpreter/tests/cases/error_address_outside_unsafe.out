@@ -1,0 +1,5 @@
+error: the address outlives the borrow, and the checker cannot see where it goes, so it is written inside `unsafe`
+  --> error_address_outside_unsafe.sg:7:16
+ 7 |     var data = Memory.addressOf(ref state)
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `unsafe Memory.addressOf(ref state)`, or `unsafe { ... }` around several statements

@@ -56,9 +56,13 @@ struct Body {
     calls: Vec<(String, Span)>,
     /// The calls through a function value: how many arguments, the return type, where.
     values: Vec<(usize, Ty, Span)>,
+    /// Whether it calls C, which may call any `export` function back.
+    calls_c: bool,
 }
 
 pub fn check(prog: &Program) -> Res<()> {
+    // What a call of C may call back.
+    let exports: Vec<String> = prog.funcs.iter().filter(|func| func.export).map(|func| func.name.clone()).collect();
     // Every body, under the name a call reaches it by.
     let mut bodies: Vec<(String, &Block)> = Vec::new();
     for func in &prog.funcs {
@@ -112,6 +116,8 @@ pub fn check(prog: &Program) -> Res<()> {
                 found.push((name.to_string(), Why::Calls(callee.clone())));
             } else if let Some(target) = scan.values.iter().find_map(|(count, ret, _)| value_target(&taken, &waits, *count, ret)) {
                 found.push((name.to_string(), Why::CallsValue(target)));
+            } else if let Some(target) = exports.iter().find(|export| scan.calls_c && waits.contains_key(*export)) {
+                found.push((name.to_string(), Why::CallsValue(target.clone())));
             }
         }
         if found.is_empty() {
@@ -121,10 +127,10 @@ pub fn check(prog: &Program) -> Res<()> {
     }
 
     for (_, body) in &bodies {
-        locks_in(body, &waits, &taken)?;
+        locks_in(body, &waits, &taken, &exports)?;
     }
     for test in &prog.tests {
-        locks_in(&test.body, &waits, &taken)?;
+        locks_in(&test.body, &waits, &taken, &exports)?;
     }
 
     // Which functions hold their thread, found the same way. An async function never does
@@ -151,6 +157,8 @@ pub fn check(prog: &Program) -> Res<()> {
                 found.push((name.to_string(), Why::Calls(callee.clone())));
             } else if let Some(target) = scan.values.iter().find_map(|(count, ret, _)| value_target(&taken, &holds, *count, ret)) {
                 found.push((name.to_string(), Why::CallsValue(target)));
+            } else if let Some(target) = exports.iter().find(|export| scan.calls_c && holds.contains_key(*export)) {
+                found.push((name.to_string(), Why::CallsValue(target.clone())));
             }
         }
         if found.is_empty() {
@@ -159,7 +167,7 @@ pub fn check(prog: &Program) -> Res<()> {
         holds.extend(found);
     }
     for (_, body) in &async_bodies {
-        held_in(body, &holds, &taken)?;
+        held_in(body, &holds, &taken, &exports)?;
     }
     for (name, _) in &async_bodies {
         awaits_itself(name, &scans, &asyncs)?;
@@ -168,7 +176,7 @@ pub fn check(prog: &Program) -> Res<()> {
 }
 
 /// Refuses what holds the thread in the body of an async function.
-fn held_in(body: &Block, holds: &HashMap<String, Why>, taken: &[(String, usize, Ty)]) -> Res<()> {
+fn held_in(body: &Block, holds: &HashMap<String, Why>, taken: &[(String, usize, Ty)], exports: &[String]) -> Res<()> {
     let mut error: Option<Diag> = None;
     walk_block(
         body,
@@ -218,6 +226,10 @@ fn held_in(body: &Block, holds: &HashMap<String, Why>, taken: &[(String, usize, 
                 | ExprKind::Method { args, name_span, callee: Callee::FieldValue(_), .. } => value_target(taken, holds, args.len(), &expr.ty).map(|target| {
                     let diag = Diag::error(*name_span, format!("this function value could be `{}`, which holds the thread until it is done, and an async function does not hold its thread", short_name(&target)));
                     explained(diag, &target, holds).note(NO_HOLD).hint(RUN_APART)
+                }),
+                _ if calls_c(expr).is_some() => exports.iter().find(|export| holds.contains_key(*export)).map(|target| {
+                    let diag = Diag::error(calls_c(expr).expect("tested"), format!("this call of C may call `{}` back, which holds the thread until it is done, and an async function does not hold its thread", short_name(target)));
+                    explained(diag, target, holds).note(NO_HOLD).hint(RUN_APART)
                 }),
                 _ => None,
             };
@@ -422,6 +434,7 @@ fn look(expr: &Expr, scan: &mut Body, taken: &mut Vec<(String, usize, Ty)>) {
     if scan.holds.is_none() {
         scan.holds = holding(expr);
     }
+    scan.calls_c |= calls_c(expr).is_some();
     match &expr.kind {
         ExprKind::Method { callee: Callee::Wait, name_span, .. } => {
             scan.itself.get_or_insert((*name_span, How::Wait));
@@ -447,6 +460,14 @@ fn look(expr: &Expr, scan: &mut Body, taken: &mut Vec<(String, usize, Ty)>) {
             }
         }
         _ => {}
+    }
+}
+
+/// Where the expression calls C, if it does: a function of C, or one through a `CFunc`.
+fn calls_c(expr: &Expr) -> Option<Span> {
+    match &expr.kind {
+        ExprKind::Call { name_span, callee: Callee::Extern | Callee::CValue(_), .. } | ExprKind::Method { name_span, callee: Callee::CFieldValue(..), .. } => Some(*name_span),
+        _ => None,
     }
 }
 
@@ -517,11 +538,11 @@ pub(crate) fn walk_expr<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr), lock
 }
 
 /// Finds every `lock` block in a body and refuses what waits inside it.
-fn locks_in(block: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize, Ty)]) -> Res<()> {
+fn locks_in(block: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize, Ty)], exports: &[String]) -> Res<()> {
     let mut error = None;
     each_lock(block, &mut |body| {
         if error.is_none() {
-            error = inside(body, waits, taken).err();
+            error = inside(body, waits, taken, exports).err();
         }
     });
     error.map_or(Ok(()), Err)
@@ -576,7 +597,7 @@ fn arms_in<'a>(expr: &'a Expr, arms: &mut Vec<&'a Block>) {
 }
 
 /// What waits inside the body of one `lock` block, as an error.
-fn inside(body: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize, Ty)]) -> Res<()> {
+fn inside(body: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize, Ty)], exports: &[String]) -> Res<()> {
     let mut error: Option<Diag> = None;
     let mut nested = None;
     walk_block(
@@ -603,6 +624,10 @@ fn inside(body: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize, T
                 | ExprKind::Method { args, name_span, callee: Callee::FieldValue(_), .. } => value_target(taken, waits, args.len(), &expr.ty).map(|target| {
                     let diag = Diag::error(*name_span, format!("this function value could be `{}`, which waits, and a `lock` block does not wait", short_name(&target)));
                     explained(diag, &target, waits).note(NO_WAIT)
+                }),
+                _ if calls_c(expr).is_some() => exports.iter().find(|export| waits.contains_key(*export)).map(|target| {
+                    let diag = Diag::error(calls_c(expr).expect("tested"), format!("this call of C may call `{}` back, which waits, and a `lock` block does not wait", short_name(target)));
+                    explained(diag, target, waits).note(NO_WAIT)
                 }),
                 _ => None,
             };

@@ -1,0 +1,10 @@
+// A `CFunc` that is `null` is not called: compiled code tests it first, as the interpreter does.
+struct Hooks {
+    CFunc<int, int> other
+}
+
+void main() {
+    var hooks = Hooks { other = null }
+    print("before")
+    print(unsafe hooks.other(2))
+}

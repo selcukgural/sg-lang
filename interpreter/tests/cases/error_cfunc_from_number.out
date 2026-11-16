@@ -1,0 +1,6 @@
+error: a cast to `CFunc<int, int>` reads an address C gave as a function of C, and this is `nint`
+  the address is a `raw void`, as `dlsym` gives it
+  --> error_cfunc_from_number.sg:3:37
+ 3 |     var f = unsafe (CFunc<int, int>)address
+   |                                     ^^^^^^^
+  hint: a number is made an address first: `(CFunc<int, int>)(raw void)address`

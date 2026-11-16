@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 16 November 2026, the eighty-fourth slice.
+Last brought up to date: 16 November 2026, the eighty-fifth slice.
 
 ## Functions and variables
 
@@ -203,6 +203,11 @@ Last brought up to date: 16 November 2026, the eighty-fourth slice.
 | `extern { type sqlite3; }`, an opaque `#[repr(C)] struct` | `extern "sqlite3" { struct sqlite3 }` | built | Only as `raw sqlite3`; `ref raw sqlite3` is C's `sqlite3**` |
 | the `cc` crate and a `build.rs` that compiles a C file | `extern "./native.c" { ... }` | built | Compiled in the same unit as the program, so a `static inline` function is inlined; no build script |
 | `extern { static mut optind: c_int; }` | `extern { int optind }` | built | Read and written inside `unsafe`, as an item of raw memory |
+| `#[no_mangle] pub extern "C" fn compare(a: *const c_void, b: *const c_void) -> c_int` | `export int compare(raw void a, raw void b) { ... }` | built | C types only, no borrows; the name C sees is the name written, one in the program. A panic inside ends the process. Called from SG by its name, with no `unsafe` |
+| `extern "C" fn(*const c_void) -> c_int`, `Option<extern "C" fn(...)>` | `CFunc<raw void, int>` | built | May be `null`, as a pointer of C may; the name of an `export` function or of a function of C is one. Every call through it is inside `unsafe`; a `null` one is a panic, not a crash |
+| `transmute::<*mut c_void, extern "C" fn(...)>(dlsym(...))` | `unsafe (CFunc<int, int>)dlsym(...)` | built | From a `raw void`; back with `(raw void)f` |
+| `&mut state as *mut State as *mut c_void`, then `&mut *(data as *mut State)` | `unsafe Memory.addressOf(ref state)`, then `unsafe (ref State)data` | built | That the value lives and stays where it is while C keeps the address is the program's promise; the interpreter panics on a wrong type, a value that ended or moved, and an address it did not give |
+| a closure handed to C through a trampoline | an `export` function and a state reached through `void*` | not in SG | There are no closures; what a closure would capture is a struct whose address C gives back |
 | `std::io::Error::last_os_error()`, `errno::set_errno` | `IoError.fromCode(C.errno())`, `C.setErrno(n)` | built | No `unsafe`; `errno` is read right after the call it belongs to |
 | `CString::new(s)?`, `c.as_ptr()` | `try CString.from(s)`, `read c` as an argument | built | A zero byte inside is a `TextError` at its position |
 | `CStr::from_ptr(p).to_str()?.to_owned()` | `try unsafe string.fromCString(p)` | built | Copies and checks the UTF-8 |

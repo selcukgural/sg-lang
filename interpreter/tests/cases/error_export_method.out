@@ -1,0 +1,5 @@
+error: a method is not called by C: `export` is written on a function at the top level
+  --> error_export_method.sg:4:5
+ 4 |     export void bump(ref this) {
+   |     ^^^^^^
+  hint: C reaches a value through the pointer it is given: `export void step(raw void data) { var s = unsafe (ref State)data ... }`

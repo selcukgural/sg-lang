@@ -5448,6 +5448,8 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         sites: Vec::new(),
         funcs: prog.funcs.iter().filter(|func| !func.is_async && func.foreign.is_none()).map(|func| func.name.as_str()).collect(),
         asyncs: prog.funcs.iter().filter(|func| func.is_async).map(|func| func.name.as_str()).collect(),
+        foreign: prog.funcs.iter().filter_map(|func| func.foreign.as_ref().map(|foreign| (func.name.as_str(), foreign))).collect(),
+        addressed: std::collections::BTreeSet::new(),
         async_methods: HashSet::new(),
         awaits: None,
         exit_blocks: Vec::new(),
@@ -5521,6 +5523,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     // The functions and the variables of C the program uses, the libraries it links and the C
     // files it takes in. What a C file gives is reached through functions written after it.
     let used = crate::ffi::used(prog, tests);
+    emitter.addressed = crate::ffi::c_values(prog, tests).addressed;
     let (mut libs, c_files) = crate::ffi::links(prog, &used);
     let mut after_c = String::new();
     for var in &prog.cvars {
@@ -5538,6 +5541,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         match func.is_async {
             true => emitter.async_func(func, None, &mut protos, &mut bodies)?,
             false => emitter.func(func, None, &mut protos, &mut bodies)?,
+        }
+        if func.export {
+            emitter.export_func(func, prog, &mut protos, &mut bodies)?;
         }
     }
     for (owner, methods) in typed() {
@@ -6066,8 +6072,8 @@ fn mangle(ty: &Ty) -> Option<String> {
         // What a `for` over a map gives: an entry of that map.
         Ty::Entry(key, value) => format!("E_{}", mangle(&Ty::Map(key.clone(), value.clone()))?),
         // A function type is named after the way it is written, letter by letter.
-        Ty::Func(..) => {
-            let mut name = String::from("F_");
+        Ty::Func(..) | Ty::CFunc(..) => {
+            let mut name = String::from(if matches!(ty, Ty::Func(..)) { "F_" } else { "C_" });
             for letter in ty.to_string().chars() {
                 match letter {
                     'a'..='z' | 'A'..='Z' | '0'..='9' => name.push(letter),
@@ -6438,6 +6444,10 @@ struct Emitter<'a> {
     funcs: Vec<&'a str>,
     /// The async functions of the program, by name.
     asyncs: HashSet<&'a str>,
+    /// Where each function of C is declared, by its full name.
+    foreign: HashMap<&'a str, &'a Foreign>,
+    /// The functions of C whose names are taken as `CFunc` values.
+    addressed: std::collections::BTreeSet<String>,
     /// The async methods, under `owner.name`.
     async_methods: HashSet<String>,
     /// While an async function is written: where each `await` stands, found again by the number
@@ -6563,6 +6573,38 @@ impl<'a> Emitter<'a> {
     ///
     /// A function of a C file is called by its name, from an adapter written after the file
     /// (`after_c`): it may be `static inline`, and is then inlined.
+    /// A `CFunc` about to be called, tested not to be `null` first.
+    fn live_c_func(&mut self, place: &str, name: &str, span: Span) -> String {
+        let loc = self.loc(span);
+        let text = c_string(&format!("`{name}` is called, and it is a `CFunc` that is `null`"));
+        format!("(({place}) ? (void)0 : sg_panic({text}, {loc}), {place})")
+    }
+
+    /// Where the function of C named `name` is declared, if it is one.
+    fn foreign_of(&self, name: &str) -> Option<&'a Foreign> {
+        self.foreign.get(name).copied()
+    }
+
+    /// An `export` function as C calls it: a function of its name and of C's types that calls
+    /// the function of SG. Declared before the C files, which may call it by its name.
+    fn export_func(&mut self, func: &Func, prog: &Program, protos: &mut String, bodies: &mut String) -> Res<()> {
+        let (params, ret) = &prog.exported[&func.name];
+        let c_name = short_name(&func.name);
+        let mut named = Vec::new();
+        let mut passed = Vec::new();
+        for (position, param) in params.iter().enumerate() {
+            named.push(format!("{} a{position}", self.ctype(param, func.name_span)?));
+            passed.push(format!("a{position}"));
+        }
+        let list = if named.is_empty() { "void".to_string() } else { named.join(", ") };
+        let head = format!("{} {c_name}({list})", self.ctype(ret, func.ret.span)?);
+        let call = format!("f_{}({})", cname(&func.name), passed.join(", "));
+        let body = if *ret == Ty::Void { format!("{call};") } else { format!("return {call};") };
+        let _ = writeln!(protos, "{head};");
+        let _ = writeln!(bodies, "{head} {{ {body} }}\n");
+        Ok(())
+    }
+
     fn foreign_func(&mut self, func: &Func, prog: &Program, protos: &mut String, after_c: &mut String) -> Res<()> {
         self.made.insert("ffi".to_string());
         let (params, ret) = &prog.foreign[&func.name];
@@ -6594,6 +6636,13 @@ impl<'a> Emitter<'a> {
         let call = format!("{callee}({})", passed.join(", "));
         let body = if *ret == Ty::Void { format!("{call};") } else { format!("return {call};") };
         let adapter = format!("static inline {ret_type} sg_x_{}({list})", cname(&func.name));
+        // Its name is a `CFunc`: a function of the C file is reached after the file.
+        if in_file && self.addressed.contains(&func.name) {
+            let ctype = self.ctype(&Ty::CFunc(params.clone(), Box::new(ret.clone())), func.name_span)?;
+            let getter = format!("static inline {ctype} sg_fa_{}(void)", cname(&func.name));
+            let _ = writeln!(protos, "{getter};");
+            let _ = writeln!(after_c, "{getter} {{ return ({ctype})(void (*)(void)){c_name}; }}");
+        }
         match in_file {
             true => {
                 let _ = writeln!(protos, "{adapter};");
@@ -6669,7 +6718,7 @@ impl<'a> Emitter<'a> {
             Ty::Enum(name) => format!("E_{}", cname(name)),
             // A window is one C type whether it is read through or written through.
             Ty::Read(inner) | Ty::Ref(inner) if matches!(**inner, Ty::Slice(_)) => self.ctype(inner, span)?,
-            Ty::Result(..) | Ty::List(_) | Ty::Func(..) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Array(..) | Ty::Slice(_) => {
+            Ty::Result(..) | Ty::List(_) | Ty::Func(..) | Ty::CFunc(..) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Array(..) | Ty::Slice(_) => {
                 // An entry is known where its map is.
                 if let Ty::Entry(key, value) = ty {
                     self.need(&Ty::Map(key.clone(), value.clone()), span)?;
@@ -7010,8 +7059,9 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(self.glue, "static void sg_drop_{name}({task}** v) {{ {task}* t = *v; if (!t) return; *v = NULL; sg_task_join(&t->head); {drop_result}free(t); }}");
                 let _ = writeln!(self.glue, "static inline {gives} sg_wait_{name}({task}* t) {{ sg_task_join(&t->head); {take}free(t);{back} }}");
             }
-            // A function value is the address of a function: one pointer.
-            Ty::Func(params, ret) => {
+            // A function value is the address of a function: one pointer. So is a pointer to a
+            // function of C, whose types are C's.
+            Ty::Func(params, ret) | Ty::CFunc(params, ret) => {
                 if !self.made.insert(name.clone()) {
                     return Ok(());
                 }
@@ -7344,9 +7394,12 @@ impl<'a> Emitter<'a> {
             (None, [result]) if ty.name == "Task" => Ty::Task(Box::new(self.written(result)?)),
             (None, [item]) if ty.name == "HashSet" => Ty::Set(Box::new(self.written(item)?)),
             (None, [key, value]) if ty.name == "HashMap" => Ty::Map(Box::new(self.written(key)?), Box::new(self.written(value)?)),
-            (None, [params @ .., ret]) if ty.name == "Func" => {
+            (None, [params @ .., ret]) if ty.name == "Func" || ty.name == "CFunc" => {
                 let params = params.iter().map(|param| self.written(param)).collect::<Res<Vec<Ty>>>()?;
-                Ty::Func(params, Box::new(self.written(ret)?))
+                match ty.name.as_str() {
+                    "Func" => Ty::Func(params, Box::new(self.written(ret)?)),
+                    _ => Ty::CFunc(params, Box::new(self.written(ret)?)),
+                }
             }
             (Some(base @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Void | Ty::Str | Ty::Formatter | Ty::Reader(_) | Ty::Writer | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString)), []) => base,
             (None, []) => match self.full(&ty.name, ty.span) {
@@ -10162,7 +10215,7 @@ impl<'a> Emitter<'a> {
                 _ if found.is_borrow() && !matches!(found.strip_borrow(), Ty::Nullable(_)) => Ok(value),
                 _ => Err(not_yet(span, &format!("a `{found}` lent as `{want}`"))),
             },
-            Ty::Raw(_) if *found == Ty::Null => Ok("NULL".to_string()),
+            Ty::Raw(_) | Ty::CFunc(..) if *found == Ty::Null => Ok("NULL".to_string()),
             _ if *found == Ty::Null => Err(not_yet(span, "`null` here")),
             // A pointer to a value is not a pointer to a value and a flag.
             Ty::Ref(to) if is_option(to) && found.is_borrow() && !matches!(found.strip_borrow(), Ty::Nullable(_)) => {
@@ -12214,6 +12267,16 @@ impl<'a> Emitter<'a> {
             ExprKind::Field { .. } if expr.ty.is_borrow() && !is_text_view(&expr.ty) && !is_window(&expr.ty) => Ok(format!("(&{})", self.lvalue(expr)?)),
             ExprKind::Field { .. } => self.lvalue(expr),
             // The name of a function, as a value: its address.
+            // A function C can call, as a `CFunc`: an `export` function by the name C sees, a
+            // function of C itself (one of a C file through a function written after the file).
+            ExprKind::FuncRef(name) if matches!(expr.ty, Ty::CFunc(..)) => {
+                let Some(foreign) = self.foreign_of(name) else { return Ok(short_name(name).to_string()) };
+                let ctype = self.ctype(&expr.ty, expr.span)?;
+                Ok(match foreign.path.is_some() {
+                    true => format!("sg_fa_{}()", cname(name)),
+                    false => format!("(({ctype})(void (*)(void))sg_c_{})", short_name(name)),
+                })
+            }
             ExprKind::FuncRef(name) => Ok(format!("f_{}", cname(name))),
             ExprKind::CVar(name) => Ok(format!("sg_cv_{}()", cname(name))),
             ExprKind::Constant { ty, name } => Ok(constant(ty, name)),
@@ -12568,6 +12631,18 @@ impl<'a> Emitter<'a> {
                     _ => format!("(sg_cmp({left}, {right}) {} 0)", op.symbol()),
                 }))
             }
+            // Two pointers to functions of C, or one and `null`.
+            ExprKind::Binary(op, left, right) if matches!(left.ty.strip_borrow(), Ty::CFunc(..)) || matches!(right.ty.strip_borrow(), Ty::CFunc(..)) => {
+                let (left, right) = match (&left.kind, &right.kind) {
+                    (ExprKind::Null, _) => ("NULL".to_string(), self.first(right, head)?),
+                    (_, ExprKind::Null) => (self.first(left, head)?, "NULL".to_string()),
+                    _ => {
+                        let (values, names) = self.two(left, right, head)?;
+                        return Ok(sequence(&names, format!("({} {} {})", values[0], op.symbol(), values[1])));
+                    }
+                };
+                Ok(format!("({left} {} {right})", op.symbol()))
+            }
             // `p + n` moves by items, as C's does; two addresses, or one and `null`, are compared.
             ExprKind::Binary(op, left, right) if matches!(left.ty.strip_borrow(), Ty::Raw(_)) || matches!(right.ty.strip_borrow(), Ty::Raw(_)) => {
                 let (left, right) = match (&left.kind, &right.kind) {
@@ -12671,6 +12746,23 @@ impl<'a> Emitter<'a> {
             ExprKind::Index { kind: IndexKind::List | IndexKind::Map | IndexKind::Array | IndexKind::Raw, .. } => self.lvalue(expr),
             ExprKind::Unsafe(inner) => self.value(inner),
             // `(raw byte)p`: the same address, read as another pointer.
+            // `(ref State)data`: the address is the borrow, or what a `read string` and a
+            // `read T?` are made of.
+            ExprKind::RawCast { expr: inner, .. } if expr.ty.is_borrow() => {
+                let pointer = self.first(inner, head)?;
+                let held = expr.ty.strip_borrow().clone();
+                let ctype = self.ctype(&held, expr.span)?;
+                if is_text_view(&expr.ty) {
+                    return Ok(format!("sg_view(({ctype}*)({pointer}))"));
+                }
+                if let Some(option) = lent_option(&expr.ty) {
+                    return self.lend(&format!("(({ctype}*)({pointer}))"), option, expr.span);
+                }
+                if is_window(&expr.ty) {
+                    return Err(not_yet(expr.span, "a slice lent from an address"));
+                }
+                Ok(format!("(({ctype}*)({pointer}))"))
+            }
             ExprKind::RawCast { expr: inner, .. } => {
                 let pointer = self.first(inner, head)?;
                 let ctype = self.ctype(&expr.ty, expr.span)?;
@@ -12910,6 +13002,14 @@ impl<'a> Emitter<'a> {
                     self.sigs.insert(callee.clone(), params);
                     self.call(callee, None, args, false, &expr.ty)
                 }
+                // A call through a `CFunc`: a panic if it is `null`.
+                Callee::CValue(params) => {
+                    let local = self.local(name);
+                    let place = if local.ty.is_borrow() { format!("(*{})", local.cname) } else { local.cname.clone() };
+                    let callee = self.live_c_func(&place, name, expr.span);
+                    self.sigs.insert(callee.clone(), params.clone());
+                    self.call(callee, None, args, false, &expr.ty)
+                }
                 _ => Err(not_yet(expr.span, "this call")),
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
@@ -12999,6 +13099,17 @@ impl<'a> Emitter<'a> {
                     let Ty::Func(params, _) = self.written(&field.ty)? else { return Err(not_yet(expr.span, "this call")) };
                     let callee = format!("{place}.m_{name}");
                     self.sigs.insert(callee.clone(), params);
+                    self.call(callee, None, args, false, &expr.ty)
+                }
+                Callee::CFieldValue(_, params) => {
+                    let mut place = self.look(recv)?;
+                    let mut ty = recv.ty.strip_borrow();
+                    while let Some(inner) = pointee(ty) {
+                        place = format!("(*{place})");
+                        ty = inner;
+                    }
+                    let callee = self.live_c_func(&format!("{place}.m_{name}"), name, expr.span);
+                    self.sigs.insert(callee.clone(), params.clone());
                     self.call(callee, None, args, false, &expr.ty)
                 }
                 // `slot.take()` leaves `null`; `slot.replace(v)` leaves `v`. Both give what was there.
@@ -13253,6 +13364,8 @@ impl<'a> Emitter<'a> {
                 // `errno` as C has it: nothing of the runtime runs between a call of C and the
                 // statements after it that changes it.
                 Callee::Memory(MemoryCall::Errno) => Ok("((int32_t)errno)".to_string()),
+                // The address of the value where it lies.
+                Callee::Memory(MemoryCall::AddressOf) => Ok(format!("((void*)({}))", self.value(&args[0])?)),
                 Callee::Memory(MemoryCall::SetErrno) => Ok(format!("(void)(errno = (int)({}))", self.first(&args[0], head)?)),
                 Callee::Memory(MemoryCall::IoErrorOf) => {
                     self.io_error(expr.span)?;

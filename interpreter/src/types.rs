@@ -260,6 +260,9 @@ pub enum Ty {
     Map(Box<Ty>, Box<Ty>),
     /// `Func<A, B, R>`: the address of a named function that takes `A` and `B` and returns `R`.
     Func(Vec<Ty>, Box<Ty>),
+    /// `CFunc<A, B, R>`: a pointer to a function as C calls it, which may be `null`: an
+    /// `export` function of SG, a function of C, or an address C gave. Plain data.
+    CFunc(Vec<Ty>, Box<Ty>),
     /// `HashSet<T>`: built in.
     Set(Box<Ty>),
     /// What a `for` over a `HashMap<K, V>` gives: a `key` and a `value`.
@@ -344,7 +347,7 @@ impl Ty {
     /// copyable until there is a borrow checker.
     pub fn is_copyable(&self, declared: &HashSet<String>) -> bool {
         match self {
-            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) | Ty::Func(..) | Ty::Raw(_) => true,
+            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Fmt | Ty::Void | Ty::Never | Ty::Null | Ty::Read(_) | Ty::Ref(_) | Ty::Func(..) | Ty::CFunc(..) | Ty::Raw(_) => true,
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
@@ -388,8 +391,8 @@ impl fmt::Display for Ty {
             Ty::List(item) => write!(f, "List<{item}>"),
             Ty::Map(key, value) => write!(f, "HashMap<{key}, {value}>"),
             Ty::Set(item) => write!(f, "HashSet<{item}>"),
-            Ty::Func(params, ret) => {
-                f.write_str("Func<")?;
+            Ty::Func(params, ret) | Ty::CFunc(params, ret) => {
+                f.write_str(if matches!(self, Ty::Func(..)) { "Func<" } else { "CFunc<" })?;
                 for param in params {
                     write!(f, "{param}, ")?;
                 }

@@ -1,0 +1,25 @@
+extern {
+    void qsort(raw void base, nuint count, nuint size, CFunc<raw void, raw void, int> compare)
+}
+
+int work() {
+    return 1
+}
+
+export int compareSlowly(raw void a, raw void b) {
+    var task = Task.run(work)
+    return task.wait()
+}
+
+struct Counter {
+    int value
+}
+
+void main() {
+    var total = new shared locked Counter { value = 0 }
+    var items = Memory.allocate<int>(2)
+    lock total as count {
+        unsafe qsort((raw void)items, 2, 4, compareSlowly)
+    }
+    unsafe Memory.free(items)
+}

@@ -1,0 +1,8 @@
+struct State {
+    int count
+}
+
+void main() {
+    var state = State { count = 0 }
+    var data = Memory.addressOf(ref state)
+}

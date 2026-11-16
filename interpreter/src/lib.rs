@@ -131,7 +131,7 @@ pub fn run_sources(sources: &Sources, out: &mut (dyn Write + Send)) -> Result<()
 pub fn run_sources_in(sources: &Sources, out: &mut (dyn Write + Send), world: World) -> Result<(), Stop> {
     on_large_stack(|| {
         let prog = check_all(sources, false)?;
-        interp::run_program(&prog, &sources.text, out, world)
+        interp::run_program(&prog, sources, out, world)
     })
 }
 

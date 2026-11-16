@@ -1,0 +1,5 @@
+error: C calls `length`, and cannot give it a `read string`
+  --> error_export_borrow.sg:2:19
+ 2 | export int length(read string text) {
+   |                   ^^^^^^^^^^^
+  hint: a text goes between C and SG as `raw byte`: `unsafe string.fromCString(p)` copies it

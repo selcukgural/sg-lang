@@ -1,0 +1,3 @@
+void main() {
+    CFunc<int, int>? f = null
+}

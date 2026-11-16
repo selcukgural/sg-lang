@@ -1,0 +1,4 @@
+error: expected `CFunc<int, int>`, found `CFunc<long, long>`
+  --> error_cfunc_other_types.sg:6:25
+ 6 |     CFunc<int, int> f = twice
+   |                         ^^^^^

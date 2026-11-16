@@ -1,0 +1,10 @@
+struct Counter {
+    int count
+
+    export void bump(ref this) {
+        this.count += 1
+    }
+}
+
+void main() {
+}

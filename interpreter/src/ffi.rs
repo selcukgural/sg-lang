@@ -33,10 +33,21 @@ const RTLD_NOW: c_int = 2;
 /// What a wrapper is: it puts the program's `errno` in place, reads each argument from the
 /// slot whose address it is given, calls the function, writes what it gives into `ret`, and
 /// keeps `errno` as the call left it.
-type Wrapper = unsafe extern "C" fn(*mut *mut c_void, *mut c_void, *mut c_int);
+pub type Wrapper = unsafe extern "C" fn(*mut *mut c_void, *mut c_void, *mut c_int);
 
-/// What gives the address of a variable of C.
+/// What gives the address of a variable of C, or of a function of C.
 type Address = unsafe extern "C" fn() -> *mut c_void;
+
+/// What calls a function of C through its address (a `CFunc`): the address first, then as a
+/// wrapper.
+pub type Through = unsafe extern "C" fn(*mut c_void, *mut *mut c_void, *mut c_void, *mut c_int);
+
+/// What C calls for an `export` function of the program: the number of the function, its
+/// name, the addresses of its arguments and where what it gives goes. The interpreter's.
+pub type Enter = unsafe extern "C" fn(c_int, *const c_char, *mut *mut c_void, *mut c_void);
+
+/// What the library is given the interpreter's entry with.
+type SetEnter = unsafe extern "C" fn(Enter);
 
 /// The wrappers of the functions of C a program calls, by their full name in the program, and
 /// the addresses of the variables of C it uses.
@@ -44,6 +55,13 @@ type Address = unsafe extern "C" fn() -> *mut c_void;
 pub struct Library {
     calls: HashMap<String, Wrapper>,
     vars: HashMap<String, usize>,
+    /// What calls through a `CFunc`, by the C types of the call (see `through_key`).
+    throughs: HashMap<String, Through>,
+    /// The address of each function whose name is a `CFunc` value: an `export` function's
+    /// stub, or a function of C.
+    addresses: HashMap<String, usize>,
+    /// The `export` functions, by number, with what they take and give.
+    exports: Vec<(String, Vec<Ty>, Ty)>,
 }
 
 /// One value as C takes it: eight bytes, enough for any argument, and aligned for each.
@@ -51,11 +69,12 @@ pub type Slot = u64;
 
 /// What wraps one function of C (or gives the address of one variable), in the C file of the
 /// wrappers.
-fn wrapper_text(prog: &Program, name: &str, number: usize, structs: &mut BTreeSet<String>, declared: &mut BTreeSet<String>, text: &mut String) {
+#[allow(clippy::too_many_arguments)]
+fn wrapper_text(prog: &Program, name: &str, number: usize, addressed: bool, types: &mut BTreeSet<String>, declared: &mut BTreeSet<String>, head: &mut String, text: &mut String) {
     let in_file = foreign_of(prog, name).path.is_some();
     let c_name = short_name(name);
     if let Some(ty) = prog.cvar_types.get(name) {
-        struct_text(ty, &prog.plain, structs, text);
+        type_text(ty, &prog.plain, types, head);
         // A variable of the C file is seen by its name; one of a library under a name of
         // our own, bound to its C name, so that it clashes with no header.
         let place = match in_file {
@@ -66,7 +85,7 @@ fn wrapper_text(prog: &Program, name: &str, number: usize, structs: &mut BTreeSe
                         Ty::Array(item, length) => (c_type(item), format!("[{length}]")),
                         other => (c_type(other), String::new()),
                     };
-                    text.push_str(&format!("extern {item} sg_cv_{c_name}{length} SG_C(\"{c_name}\");\n"));
+                    head.push_str(&format!("extern {item} sg_cv_{c_name}{length} SG_C(\"{c_name}\");\n"));
                 }
                 format!("sg_cv_{c_name}")
             }
@@ -76,7 +95,7 @@ fn wrapper_text(prog: &Program, name: &str, number: usize, structs: &mut BTreeSe
     }
     let (params, ret) = &prog.foreign[name];
     for ty in params.iter().chain([ret]) {
-        struct_text(ty, &prog.plain, structs, text);
+        type_text(ty, &prog.plain, types, head);
     }
     let types: Vec<String> = params.iter().map(c_type).collect();
     let callee = match in_file {
@@ -84,7 +103,7 @@ fn wrapper_text(prog: &Program, name: &str, number: usize, structs: &mut BTreeSe
         false => {
             if declared.insert(format!("f {c_name}")) {
                 let list = if types.is_empty() { "void".to_string() } else { types.join(", ") };
-                text.push_str(&format!("{} sg_c_{c_name}({list}) SG_C(\"{c_name}\");\n", c_type(ret)));
+                head.push_str(&format!("{} sg_c_{c_name}({list}) SG_C(\"{c_name}\");\n", c_type(ret)));
             }
             format!("sg_c_{c_name}")
         }
@@ -107,6 +126,77 @@ fn wrapper_text(prog: &Program, name: &str, number: usize, structs: &mut BTreeSe
         _ => format!("*({}*)sg_r = {call};", c_type(ret)),
     };
     text.push_str(&format!("void sg_w{number}(void **sg_a, void *sg_r, int *sg_e) {{ (void)sg_a; errno = *sg_e; {body} *sg_e = errno; }}\n"));
+    // Its name is a `CFunc` somewhere: the address of the function itself.
+    if addressed {
+        text.push_str(&format!("void *sg_f{number}(void) {{ return (void*)&{callee}; }}\n"));
+    }
+}
+
+/// The C types of a call, which name the wrapper that calls through a `CFunc` of them.
+pub fn through_key(params: &[Ty], ret: &Ty) -> String {
+    let types: Vec<String> = params.iter().map(c_type).collect();
+    format!("{}({})", c_type(ret), types.join(","))
+}
+
+/// What calls a function of C of these types through its address, numbered `number`.
+fn through_text(params: &[Ty], ret: &Ty, number: usize, plain: &HashMap<String, Vec<Ty>>, types: &mut BTreeSet<String>, head: &mut String, text: &mut String) {
+    for ty in params.iter().chain([ret]) {
+        type_text(ty, plain, types, head);
+    }
+    let c_types: Vec<String> = params.iter().map(c_type).collect();
+    let list = if c_types.is_empty() { "void".to_string() } else { c_types.join(", ") };
+    let args: Vec<String> = c_types
+        .iter()
+        .zip(params)
+        .enumerate()
+        .map(|(at, (ty, param))| match param {
+            Ty::Struct(_) => format!("**({ty}**)sg_a[{at}]"),
+            _ => format!("*({ty}*)sg_a[{at}]"),
+        })
+        .collect();
+    let call = format!("(({} (*)({list}))sg_p)({})", c_type(ret), args.join(", "));
+    let body = match ret {
+        Ty::Void => format!("(void)sg_r; {call};"),
+        Ty::Struct(_) => format!("(void)sg_r; **({}**)sg_a[{}] = {call};", c_type(ret), params.len()),
+        _ => format!("*({}*)sg_r = {call};", c_type(ret)),
+    };
+    text.push_str(&format!("void sg_t{number}(void *sg_p, void **sg_a, void *sg_r, int *sg_e) {{ (void)sg_a; errno = *sg_e; {body} *sg_e = errno; }}\n"));
+}
+
+/// Whether C files of the program are told about this `export` function before them: not
+/// when it takes or gives a struct by value, whose C name is SG's own.
+pub fn declared_to_c(params: &[Ty], ret: &Ty) -> bool {
+    !params.iter().chain([ret]).any(|ty| matches!(ty, Ty::Struct(_)))
+}
+
+/// What C calls for an `export` function: a function of its name and types that hands the
+/// addresses of its arguments to the interpreter, numbered `number`.
+#[allow(clippy::too_many_arguments)]
+fn export_text(name: &str, params: &[Ty], ret: &Ty, number: usize, plain: &HashMap<String, Vec<Ty>>, types: &mut BTreeSet<String>, head: &mut String, text: &mut String) {
+    for ty in params.iter().chain([ret]) {
+        type_text(ty, plain, types, head);
+    }
+    let c_name = short_name(name);
+    let c_types: Vec<String> = params.iter().map(c_type).collect();
+    let named: Vec<String> = c_types.iter().enumerate().map(|(at, ty)| format!("{ty} sg_a{at}")).collect();
+    let list = if named.is_empty() { "void".to_string() } else { named.join(", ") };
+    if declared_to_c(params, ret) {
+        let bare = if c_types.is_empty() { "void".to_string() } else { c_types.join(", ") };
+        head.push_str(&format!("{} {c_name}({bare});\n", c_type(ret)));
+    }
+    let mut addresses: Vec<String> = (0..params.len()).map(|at| format!("(void*)&sg_a{at}")).collect();
+    addresses.push("0".to_string());
+    let (room, back) = match ret {
+        Ty::Void => (String::new(), ("0".to_string(), String::new())),
+        _ => (format!(" {} sg_r;", c_type(ret)), ("(void*)&sg_r".to_string(), " return sg_r;".to_string())),
+    };
+    text.push_str(&format!(
+        "{} {c_name}({list}) {{{room} void *sg_args[] = {{ {} }}; sg_enter({number}, \"{c_name}\", sg_args, {});{} }}\n",
+        c_type(ret),
+        addresses.join(", "),
+        back.0,
+        back.1
+    ));
 }
 
 /// Where the function or the variable of C named `name` is declared.
@@ -149,25 +239,43 @@ impl Library {
     /// and nothing is built.
     pub fn open(prog: &Program, tests: bool) -> Result<Library, Diag> {
         let used = used(prog, tests);
-        if used.is_empty() {
+        let values = c_values(prog, tests);
+        if used.is_empty() && values.throughs.is_empty() && !values.exports {
             return Ok(Library::default());
         }
         let (libs, files) = links(prog, &used);
-        // The C files come first, so that what they define for the headers (`_GNU_SOURCE`) is
-        // seen by every header; nothing below is named in a way they could use.
-        let mut text = String::from("#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n");
+        // As in compiled code: the declarations, then the C files, then what reaches into them.
+        let mut head = String::from("#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n");
+        head.push_str("#include <stdint.h>\n#include <errno.h>\n#ifdef __APPLE__\n#define SG_C(name) __asm__(\"_\" name)\n#else\n#define SG_C(name) __asm__(name)\n#endif\n");
+        // The structs and the types of functions C is given or gives, each defined once.
+        let mut types: BTreeSet<String> = BTreeSet::new();
+        // A C function declared in two modules is one function of C.
+        let mut declared: BTreeSet<String> = BTreeSet::new();
+        let (mut before, mut after) = (String::new(), String::new());
+        for (number, name) in used.iter().enumerate() {
+            let text = if foreign_of(prog, name).path.is_some() { &mut after } else { &mut before };
+            wrapper_text(prog, name, number, values.addressed.contains(name), &mut types, &mut declared, &mut head, text);
+        }
+        for (number, (params, ret)) in values.throughs.values().enumerate() {
+            through_text(params, ret, number, &prog.plain, &mut types, &mut head, &mut after);
+        }
+        let exports: Vec<(String, Vec<Ty>, Ty)> = prog.exported.iter().map(|(name, (params, ret))| (name.clone(), params.clone(), ret.clone())).collect();
+        if !exports.is_empty() {
+            after.push_str("static void (*sg_enter)(int, const char*, void**, void*);\nvoid sg_set_enter(void (*enter)(int, const char*, void**, void*)) { sg_enter = enter; }\n");
+        }
+        for (number, (name, params, ret)) in exports.iter().enumerate() {
+            export_text(name, params, ret, number, &prog.plain, &mut types, &mut head, &mut after);
+        }
+        let mut text = head;
+        text.push_str(&before);
         for file in &files {
             text.push_str(&include_line(file));
         }
-        text.push_str("#include <stdint.h>\n#include <errno.h>\n#ifdef __APPLE__\n#define SG_C(name) __asm__(\"_\" name)\n#else\n#define SG_C(name) __asm__(name)\n#endif\n");
-        // The structs C is given or gives by value, each defined once.
-        let mut structs: BTreeSet<String> = BTreeSet::new();
-        // A C function declared in two modules is one function of C.
-        let mut declared: BTreeSet<String> = BTreeSet::new();
-        for (number, name) in used.iter().enumerate() {
-            wrapper_text(prog, name, number, &mut structs, &mut declared, &mut text);
-        }
-        let span = foreign_of(prog, &used[0]).span;
+        text.push_str(&after);
+        let span = match used.first() {
+            Some(name) => foreign_of(prog, name).span,
+            None => prog.funcs.iter().find(|func| func.export).map_or(crate::diag::Span::new(0, 0), |func| func.name_span),
+        };
         let failed = |why: String| {
             let linked: Vec<String> = libs.iter().map(|lib| format!("`-l{lib}`")).collect();
             let diag = Diag::error(span, "the functions of C this program uses could not be built and linked");
@@ -190,7 +298,37 @@ impl Library {
         });
         let _ = std::fs::remove_dir_all(&dir);
         let handle = opened.map_err(failed)?;
-        let mut library = Library::default();
+        let mut library = Library { exports, ..Library::default() };
+        let symbol_of = |name: String| -> Result<*mut c_void, Diag> {
+            let symbol = CString::new(name).expect("no zero byte");
+            // SAFETY: `handle` is open and `symbol` ends in a zero byte.
+            let found = unsafe { dlsym(handle, symbol.as_ptr()) };
+            if found.is_null() {
+                return Err(failed(format!("`dlsym` says: {}", last_error())));
+            }
+            Ok(found)
+        };
+        for (number, (key, _)) in values.throughs.iter().enumerate() {
+            let found = symbol_of(format!("sg_t{number}"))?;
+            // SAFETY: each wrapper that calls through an address was written with this signature.
+            library.throughs.insert(key.clone(), unsafe { std::mem::transmute::<*mut c_void, Through>(found) });
+        }
+        for (name, _, _) in &library.exports {
+            let found = symbol_of(short_name(name).to_string())?;
+            library.addresses.insert(name.clone(), found as usize);
+        }
+        if !library.exports.is_empty() {
+            let found = symbol_of("sg_set_enter".to_string())?;
+            // SAFETY: written with this signature; it keeps the entry for the stubs.
+            unsafe { std::mem::transmute::<*mut c_void, SetEnter>(found)(crate::interp::enter) };
+        }
+        for (number, name) in used.iter().enumerate().filter(|(_, name)| values.addressed.contains(*name)) {
+            let found = symbol_of(format!("sg_f{number}"))?;
+            // SAFETY: each address function was written with this signature.
+            let address = unsafe { std::mem::transmute::<*mut c_void, Address>(found) };
+            // SAFETY: it takes nothing and gives the address of the function.
+            library.addresses.insert(name.clone(), unsafe { address() } as usize);
+        }
         for (number, name) in used.iter().enumerate() {
             let is_var = prog.cvar_types.contains_key(name);
             let symbol = CString::new(format!("sg_{}{number}", if is_var { 'v' } else { 'w' })).expect("no zero byte");
@@ -213,23 +351,30 @@ impl Library {
         Ok(library)
     }
 
-    /// Calls the function of C named `name` with arguments already in their slots, and gives
-    /// the slot of what it returned. `errno` is the program's: C sees it when the call starts,
-    /// and it is what C left when the call ends.
-    pub fn call(&self, name: &str, slots: &mut [Slot], errno: &mut i32) -> Slot {
-        let wrapper = self.calls[name];
-        let mut addresses: Vec<*mut c_void> = slots.iter_mut().map(|slot| (slot as *mut Slot).cast::<c_void>()).collect();
-        let mut ret: Slot = 0;
-        // SAFETY: the wrapper reads as many slots as the function takes, each as the C type it
-        // was declared with, and writes at most eight bytes into `ret`. What the function of C
-        // does is the program's to answer for: it is called inside `unsafe`.
-        unsafe { wrapper(addresses.as_mut_ptr(), (&mut ret as *mut Slot).cast::<c_void>(), errno) };
-        ret
-    }
-
     /// The address of the variable of C named `name`.
     pub fn variable(&self, name: &str) -> usize {
         self.vars[name]
+    }
+
+    /// The wrapper of the function of C named `name`, to be called with no borrow of the
+    /// interpreter held: C may call back into it (see `call_wrapper`).
+    pub fn wrapper(&self, name: &str) -> Wrapper {
+        self.calls[name]
+    }
+
+    /// What calls through a `CFunc` of these C types.
+    pub fn through(&self, key: &str) -> Through {
+        self.throughs[key]
+    }
+
+    /// The address of the function named `name` as a `CFunc`.
+    pub fn address(&self, name: &str) -> usize {
+        self.addresses[name]
+    }
+
+    /// The `export` function numbered `number`, with what it takes and gives.
+    pub fn export(&self, number: usize) -> &(String, Vec<Ty>, Ty) {
+        &self.exports[number]
     }
 }
 
@@ -246,22 +391,58 @@ pub fn used(prog: &Program, tests: bool) -> Vec<String> {
         ExprKind::Call { name, callee: Callee::Extern, .. } | ExprKind::CVar(name) => {
             found.insert(name.clone());
         }
+        // The address of a function of C, as a `CFunc`.
+        ExprKind::FuncRef(name) if matches!(expr.ty, Ty::CFunc(..)) && prog.foreign.contains_key(name) => {
+            found.insert(name.clone());
+        }
         _ => {}
     };
+    each_expr(prog, tests, &mut each);
+    found.into_iter().collect()
+}
+
+/// What a program does with pointers to functions of C: the functions of C whose names it
+/// takes as `CFunc` values, the types of its calls through a `CFunc` (by `through_key`), and
+/// whether it takes the name of an `export` function as one.
+pub struct CValues {
+    pub addressed: BTreeSet<String>,
+    pub throughs: std::collections::BTreeMap<String, (Vec<Ty>, Ty)>,
+    pub exports: bool,
+}
+
+pub fn c_values(prog: &Program, tests: bool) -> CValues {
+    let mut found = CValues { addressed: BTreeSet::new(), throughs: Default::default(), exports: false };
+    let mut each = |expr: &crate::ast::Expr| match &expr.kind {
+        ExprKind::FuncRef(name) if matches!(expr.ty, Ty::CFunc(..)) => match prog.foreign.contains_key(name) {
+            true => {
+                found.addressed.insert(name.clone());
+            }
+            false => found.exports = true,
+        },
+        ExprKind::Call { callee: Callee::CValue(params), .. } | ExprKind::Method { callee: Callee::CFieldValue(_, params), .. } => {
+            found.throughs.insert(through_key(params, &expr.ty), (params.clone(), expr.ty.clone()));
+        }
+        _ => {}
+    };
+    each_expr(prog, tests, &mut each);
+    found
+}
+
+/// Shows `each` every expression in the bodies of the program, and of its tests with `tests`.
+fn each_expr<'p>(prog: &'p Program, tests: bool, each: &mut dyn FnMut(&'p crate::ast::Expr)) {
     let methods = prog.structs.iter().flat_map(|decl| &decl.methods).chain(prog.enums.iter().flat_map(|decl| &decl.methods));
     for func in prog.funcs.iter().chain(methods) {
         for stmt in &func.body {
-            crate::waits::walk_stmt(stmt, &mut each, &mut |_| {});
+            crate::waits::walk_stmt(stmt, each, &mut |_| {});
         }
     }
     if tests {
         for test in &prog.tests {
             for stmt in &test.body {
-                crate::waits::walk_stmt(stmt, &mut each, &mut |_| {});
+                crate::waits::walk_stmt(stmt, each, &mut |_| {});
             }
         }
     }
-    found.into_iter().collect()
 }
 
 /// The C type of a value as the wrapper reads it: a pointer is a pointer, whatever it points
@@ -269,8 +450,49 @@ pub fn used(prog: &Program, tests: bool) -> Vec<String> {
 fn c_type(ty: &Ty) -> String {
     match ty {
         Ty::Struct(name) => format!("struct sg_s_{}", c_struct_name(name)),
+        Ty::CFunc(..) => format!("sg_ft_{}", func_type_name(ty)),
         Ty::Char => "uint32_t".to_string(),
         other => scalar_type(other).to_string(),
+    }
+}
+
+/// A name for the type of a function of C, made of its types: `CFunc<raw void, int>` is
+/// `p_i32`, the return type first.
+fn func_type_name(ty: &Ty) -> String {
+    match ty {
+        Ty::CFunc(params, ret) => {
+            let mut parts = vec![func_type_name(ret)];
+            parts.extend(params.iter().map(func_type_name));
+            format!("F{}E", parts.join("_"))
+        }
+        Ty::Int(int) => int.name().to_string(),
+        Ty::Float(float) => float.name().to_string(),
+        Ty::Bool => "bool".to_string(),
+        Ty::Void => "void".to_string(),
+        Ty::Struct(name) => format!("S{}", c_struct_name(name)),
+        _ => "p".to_string(),
+    }
+}
+
+/// Defines what the C type of `ty` needs, before it is used: a struct, or the type of a
+/// function of C, after those they hold.
+fn type_text(ty: &Ty, plain: &HashMap<String, Vec<Ty>>, done: &mut BTreeSet<String>, text: &mut String) {
+    match ty {
+        Ty::CFunc(params, ret) => {
+            let name = c_type(ty);
+            if done.contains(&name) {
+                return;
+            }
+            for inner in params.iter().chain([&**ret]) {
+                type_text(inner, plain, done, text);
+            }
+            done.insert(name.clone());
+            let types: Vec<String> = params.iter().map(c_type).collect();
+            let list = if types.is_empty() { "void".to_string() } else { types.join(", ") };
+            text.push_str(&format!("typedef {} (*{name})({list});\n", c_type(ret)));
+        }
+        Ty::Array(item, _) => type_text(item, plain, done, text),
+        _ => struct_text(ty, plain, done, text),
     }
 }
 
@@ -292,7 +514,7 @@ fn struct_text(ty: &Ty, plain: &HashMap<String, Vec<Ty>>, done: &mut BTreeSet<St
     }
     let fields = &plain[name];
     for field in fields {
-        struct_text(field, plain, done, text);
+        type_text(field, plain, done, text);
     }
     let mut members = String::new();
     for (at, field) in fields.iter().enumerate() {

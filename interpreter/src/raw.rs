@@ -222,7 +222,7 @@ pub fn layout(ty: &Ty, plain: &HashMap<String, Vec<Ty>>) -> (usize, usize) {
         Ty::Float(FloatTy::Double) => (8, 8),
         Ty::Bool => (1, 1),
         Ty::Char => (4, 4),
-        Ty::Raw(_) => (std::mem::size_of::<usize>(), std::mem::align_of::<usize>()),
+        Ty::Raw(_) | Ty::CFunc(..) => (std::mem::size_of::<usize>(), std::mem::align_of::<usize>()),
         Ty::Array(item, length) => {
             let (size, align) = layout(item, plain);
             (size * length, align)

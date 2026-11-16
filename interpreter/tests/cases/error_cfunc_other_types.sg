@@ -1,0 +1,7 @@
+export long twice(long n) {
+    return n * 2
+}
+
+void main() {
+    CFunc<int, int> f = twice
+}

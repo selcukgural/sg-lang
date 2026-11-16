@@ -1,0 +1,8 @@
+// A module whose `export` function has the name of one in the program that uses it.
+public export int scaled(int n) {
+    return n * 3
+}
+
+public int calls() {
+    return 0
+}

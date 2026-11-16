@@ -1421,6 +1421,57 @@ nint count = q - p                               // the items between two pointe
 bool before = p < q                              // the order of two addresses
 ```
 
+A function of SG that C calls is written with `export`: it takes and gives only what C has, and C sees its
+name as it is written, without its module. Its name is a `CFunc`, a pointer to a function as C calls it;
+a `Func` does not go to C. A `CFunc` that comes from C (from `dlsym`, or kept in a struct) is called inside
+`unsafe`, as every call through a `CFunc` is. There are no lambdas and no global variables, so the state a
+callback reaches goes through C's `void*`:
+
+```
+extern {
+    void qsort(raw void base, nuint count, nuint size, CFunc<raw void, raw void, int> compare)
+    int abs(int n)
+}
+extern "./events.c" {
+    void listen(CFunc<raw void, int, void> callback, raw void data)
+}
+
+export int compareInts(raw void a, raw void b) { // C calls it as `compareInts`
+    var x = unsafe ((raw int)a)[0]
+    var y = unsafe ((raw int)b)[0]
+    if x < y {
+        return -1
+    }
+    if x > y {
+        return 1
+    }
+    return 0
+}
+
+struct Tally {
+    int calls
+}
+
+export void heard(raw void data, int value) {
+    var tally = unsafe (ref Tally)data           // lent again from the address C gives back
+    tally.calls += 1
+}
+
+unsafe qsort((raw void)items, count, 4, compareInts)
+var tally = Tally { calls = 0 }
+unsafe listen(heard, Memory.addressOf(ref tally))   // the address of the value, for C to keep
+CFunc<int, int> f = abs                          // a function of C, by its address
+var g = unsafe (CFunc<int, int>)dlsym(library, read name)
+if g != null {
+    print(unsafe g(-3))
+}
+```
+
+That `tally` still lives, and has not moved, while C keeps its address is the program's promise; the
+interpreter keeps the addresses it gave and panics on a wrong type, a value that has ended or one that has
+moved. A panic inside a function C called ends the process with its message, since nothing unwinds through
+C. A C file of the program calls an `export` function by its name: SG declares it before the file.
+
 ### The clock
 
 Three types come with the language: `Instant` for measuring, `Duration` for a span of time, `DateTime` for the

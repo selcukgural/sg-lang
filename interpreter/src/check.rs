@@ -30,7 +30,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "Path", "Environment", "VariableError"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "Path", "Environment", "VariableError"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -498,6 +498,8 @@ struct FuncSig {
     sources: Vec<Source>,
     /// Declared in an `extern` block: a function of C, called inside `unsafe`.
     foreign: bool,
+    /// Written with `export`: C calls it, and its name is a `CFunc`.
+    export: bool,
 }
 
 /// What `Stdin`, `Stdout` and `Stderr` are, for messages; `None` for any other name.
@@ -631,7 +633,7 @@ fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
         }
         sources = borrowed;
     }
-    Ok(FuncSig { public: func.public, is_async: func.is_async, this: func.this, holder, params, param_names, ret, sources, foreign: func.foreign.is_some() })
+    Ok(FuncSig { public: func.public, is_async: func.is_async, this: func.this, holder, params, param_names, ret, sources, foreign: func.foreign.is_some(), export: func.export })
 }
 
 /// With `tests` the `test` blocks are checked too and `main` may be missing: that is what the
@@ -639,6 +641,7 @@ fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
 pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     LOCKED.with(|found| found.borrow_mut().clear());
     RAW.with(|found| found.borrow_mut().clear());
+    CFUNCS.with(|found| found.borrow_mut().clear());
     let mut names = Names { files: prog.files.clone(), ..Names::default() };
     names.modules = prog.files.iter().filter(|file| !file.module.is_empty()).map(|file| file.module.clone()).collect();
     for file in &prog.files {
@@ -982,6 +985,50 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         if alias.public && !module_of(&alias.name).is_empty() {
             exposes(short_name(&alias.name), alias.name_span, &ty, &names)?;
         }
+    }
+
+    // A function C calls has a signature of C and a name C can use, one in the whole program.
+    let mut exported: HashMap<&str, &Func> = HashMap::new();
+    for func in prog.funcs.iter().filter(|func| func.export) {
+        let c_name = short_name(&func.name);
+        let sig = &sigs[&func.name];
+        if c_name == "main" {
+            return Err(Diag::error(func.name_span, "`main` is where the program starts, and C does not call it")
+                .hint("give the function C calls a name of its own"));
+        }
+        if c_name.starts_with("sg_") || C_WORDS.contains(&c_name) {
+            let diag = Diag::error(func.name_span, format!("C cannot see a function of SG named `{c_name}`"));
+            return Err(match c_name.starts_with("sg_") {
+                true => diag.note("the names that start with `sg_` belong to the code SG writes"),
+                false => diag.note(format!("`{c_name}` is a word of C")),
+            });
+        }
+        if let Some(other) = by_c_name.get(c_name) {
+            return Err(Diag::error(func.name_span, format!("`{c_name}` is also the name of a function of C, and C has one function of a name"))
+                .related(other.name_span, "the function of C"));
+        }
+        if let Some((var, _)) = c_vars.get(c_name) {
+            return Err(Diag::error(func.name_span, format!("`{c_name}` is also the name of a variable of C, and C has one thing of a name"))
+                .related(var.name_span, "the variable of C"));
+        }
+        if let Some(other) = exported.insert(c_name, func) {
+            return Err(Diag::error(func.name_span, format!("C would see two functions named `{c_name}`"))
+                .related(other.name_span, "the other one")
+                .note("C sees the name of an `export` function as it is written, without its module"));
+        }
+        for (ty, written) in sig.params.iter().zip(&func.params) {
+            if !c_value(ty, &structs) {
+                return Err(c_value_error(Diag::error(written.ty.span, format!("C calls `{c_name}`, and cannot give it a `{ty}`")), ty, &structs));
+            }
+        }
+        if sig.ret != Ty::Void && !c_value(&sig.ret, &structs) {
+            return Err(c_value_error(Diag::error(func.ret.span, format!("C calls `{c_name}`, and cannot take a `{}` from it", sig.ret)), &sig.ret, &structs));
+        }
+    }
+
+    for func in prog.funcs.iter().filter(|func| func.export) {
+        let sig = &sigs[&func.name];
+        prog.exported.insert(func.name.clone(), (sig.params.clone(), sig.ret.clone()));
     }
 
     // What a module shows to the others is made of what they can see. The root has no name, so
@@ -1371,7 +1418,7 @@ fn check_tests(
 }
 
 fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
-    if !matches!(ty.name.as_str(), "Result" | "List" | "HashMap" | "HashSet" | "Func" | "Task") && !ty.args.is_empty() {
+    if !matches!(ty.name.as_str(), "Result" | "List" | "HashMap" | "HashSet" | "Func" | "CFunc" | "Task") && !ty.args.is_empty() {
         return Err(Diag::error(ty.span, format!("`{}<...>`: generic types are not in the interpreter yet", ty.name))
             .note("the types written with `<` and `>` for now are `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, `Func<A, R>` and `Task<R>`"));
     }
@@ -1412,6 +1459,27 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
                 resolved.push(resolve_type(param, names, false)?);
             }
             Ty::Func(resolved, Box::new(resolve_type(ret, names, true)?))
+        }
+        // A pointer to a function as C calls it: what it takes, then what it returns, all of
+        // them types of C (checked once the fields of every type are known).
+        _ if ty.name == "CFunc" => {
+            let Some((ret, params)) = ty.args.split_last() else {
+                return Err(Diag::error(ty.span, "`CFunc` is written with the types of the parameters and then the return type: `CFunc<raw void, raw void, int>`")
+                    .note("a function of C that takes nothing and returns nothing is a `CFunc<void>`"));
+            };
+            for arg in ty.args.iter() {
+                if arg.mode.is_some() {
+                    return Err(Diag::error(arg.span, "a function of C takes and gives values, not borrows")
+                        .hint("a pointer C gives is a `raw T`, read inside `unsafe`"));
+                }
+            }
+            let mut resolved = Vec::new();
+            for param in params {
+                resolved.push(resolve_type(param, names, false)?);
+            }
+            let found = Ty::CFunc(resolved, Box::new(resolve_type(ret, names, true)?));
+            CFUNCS.with(|found_all| found_all.borrow_mut().push((found.clone(), ty.span)));
+            found
         }
         _ if ty.name == "HashSet" => {
             let [item] = ty.args.as_slice() else {
@@ -1543,6 +1611,10 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             Suffix::Array(length) => Ty::Array(Box::new(resolved), *length),
             Suffix::Slice => Ty::Slice(Box::new(resolved)),
             Suffix::Pointer => Ty::Ptr(Box::new(resolved)),
+            Suffix::Nullable if matches!(resolved, Ty::CFunc(..)) => {
+                return Err(Diag::error(ty.span, "a `CFunc` may be `null` as it is, as a pointer of C may be")
+                    .hint(format!("`{}`, compared with `null` before it is called", resolved)));
+            }
             Suffix::Nullable if matches!(resolved, Ty::Nullable(_)) => {
                 return Err(Diag::error(ty.span, "`??` is not a type: a value is either there or `null`"));
             }
@@ -1660,6 +1732,13 @@ fn held(holder: Holder, inner: Ty, ty: &TypeExpr, names: &Names) -> Res<Ty> {
     })
 }
 
+/// The words of C, which no function C calls may be named.
+const C_WORDS: &[&str] = &[
+    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum", "extern", "float", "for", "goto", "if",
+    "inline", "int", "long", "register", "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+    "unsigned", "void", "volatile", "while", "asm", "typeof",
+];
+
 thread_local! {
     /// What each `shared locked T` written in the program holds, and where: checked against
     /// the thread rule once the fields of every type are known.
@@ -1667,6 +1746,9 @@ thread_local! {
     /// What each `raw T` written in the program points at, and where: checked to be plain data
     /// once the fields of every type are known.
     static RAW: std::cell::RefCell<Vec<(Ty, Span)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Each `CFunc<...>` written in the program, and where: checked to take and give types of
+    /// C once the fields of every type are known.
+    static CFUNCS: std::cell::RefCell<Vec<(Ty, Span)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Why a value may not go to another task, for the messages of the thread rule.
@@ -4562,7 +4644,7 @@ impl<'a> Checker<'a> {
                 let text = if matches!(expr.kind, ExprKind::Coalesce { .. }) { format!("({text})") } else { text.to_string() };
                 mismatch(Some(format!("a number is not a condition; compare it: `{text} != 0`")))
             }
-            (Ty::Null, _) if matches!(expected.strip_borrow(), Ty::Nullable(_) | Ty::Raw(_)) => Ok(()),
+            (Ty::Null, _) if matches!(expected.strip_borrow(), Ty::Nullable(_) | Ty::Raw(_) | Ty::CFunc(..)) => Ok(()),
             (Ty::Null, _) => Err(Diag::error(expr.span, format!("`{expected}` cannot be `null`"))
                 .hint(format!("a value that may be missing has the type `{expected}?`"))),
             (Ty::Void, _) => Err(Diag::error(expr.span, "this call does not return a value, and one is needed here")),
@@ -5158,6 +5240,21 @@ impl<'a> Checker<'a> {
         // The name of a function is a value: its address.
         if let ExprKind::Var(name) = &expr.kind {
             let sig = &self.sigs[name.as_str()];
+            // Where a `CFunc` is expected, the name of a function C can call is its address.
+            if let Some(Ty::CFunc(params, ret)) = expected.map(Ty::strip_borrow) {
+                let short = short_name(name);
+                if !sig.foreign && !sig.export {
+                    return Err(Diag::error(expr.span, format!("C cannot call `{short}`: it is a function of SG"))
+                        .hint(format!("a function C calls is written with `export`: `export {} {short}(...)`", sig.ret)));
+                }
+                if sig.params != *params || sig.ret != **ret {
+                    let found = Ty::CFunc(sig.params.clone(), Box::new(sig.ret.clone()));
+                    return Err(Diag::error(expr.span, format!("expected `{}`, found `{found}`", Ty::CFunc(params.clone(), ret.clone()))));
+                }
+                let ty = Ty::CFunc(sig.params.clone(), Box::new(sig.ret.clone()));
+                expr.kind = ExprKind::FuncRef(name.clone());
+                return Ok(ty);
+            }
             if sig.foreign {
                 return Err(Diag::error(expr.span, format!("`{}` is a function of C, and a `Func` holds the address of a function of SG", short_name(name)))
                     .hint("wrap the call in a function of your own and use that"));
@@ -5269,13 +5366,51 @@ impl<'a> Checker<'a> {
             }
             // `(raw byte)p`
             ExprKind::RawCast { ty, expr: inner } => {
-                let target = resolve_type(ty, self.names, false)?;
+                let target = resolve_type(ty, self.names, false)?.strip_borrow().clone();
+                let void = Ty::Raw(Box::new(Ty::Void));
+                // `(ref State)data`: the address `Memory.addressOf` gave, lent again.
+                if let Some(mode) = ty.mode {
+                    let found = self.expr(inner, Some(&void))?;
+                    if *found.strip_borrow() != void {
+                        return Err(Diag::error(inner.span, format!("a cast to `{} {target}` lends what lies at an address `Memory.addressOf` gave, and this is `{found}`", if mode == Mode::Ref { "ref" } else { "read" }))
+                            .note("the address is a `raw void`, as C keeps it"));
+                    }
+                    self.coerce(inner, found, &void)?;
+                    self.needs_unsafe(span, &format!("this lends a `{target}` that the checker cannot see is there and still lives"))?;
+                    return Ok(match mode {
+                        Mode::Ref => Ty::Ref(Box::new(target)),
+                        Mode::Read => Ty::Read(Box::new(target)),
+                    });
+                }
+                // `(CFunc<int, int>)p`: an address C gave, as a function of C.
+                if let Ty::CFunc(..) = &target {
+                    let found = self.expr(inner, Some(&void))?;
+                    if *found.strip_borrow() != void {
+                        let diag = Diag::error(inner.span, format!("a cast to `{target}` reads an address C gave as a function of C, and this is `{found}`"))
+                            .note("the address is a `raw void`, as `dlsym` gives it");
+                        return Err(match found.strip_borrow() {
+                            Ty::Int(IntTy::Nint | IntTy::Nuint) => diag.hint(format!("a number is made an address first: `({target})(raw void){}`", &self.src[inner.span.start..inner.span.end])),
+                            _ => diag,
+                        });
+                    }
+                    self.coerce(inner, found, &void)?;
+                    self.needs_unsafe(span, "this takes an address for a function of C, which may be no function, or one that takes other values")?;
+                    return Ok(target);
+                }
                 if !matches!(target, Ty::Raw(_)) {
                     return Err(Diag::error(ty.span, format!("a cast with `raw` gives a raw pointer, and `{target}` is not one")));
                 }
                 // A number written here is an address: `(raw void)(nint)-1`, `(raw byte)0x1000`.
                 let found = self.expr(inner, Some(&Ty::Int(IntTy::Nint)))?;
                 let stripped = found.strip_borrow().clone();
+                // The address of a function of C, as C's `void*`.
+                if let Ty::CFunc(..) = stripped {
+                    if target != void {
+                        return Err(Diag::error(ty.span, format!("the address of a function of C is a `raw void`, and this is `{target}`")));
+                    }
+                    self.coerce(inner, found, &stripped)?;
+                    return Ok(target);
+                }
                 if let Ty::Int(IntTy::Nint | IntTy::Nuint) = stripped {
                     self.coerce(inner, found, &stripped)?;
                     self.needs_unsafe(span, "this makes a pointer out of a number, which may be no address of anything")?;
@@ -6869,6 +7004,22 @@ impl<'a> Checker<'a> {
                 }
                 false => Err(undefined().hint(format!("point both at one type with a cast: `unsafe (raw {a})q`"))),
             },
+            // A pointer to a function of C is compared with `null`, or with one of its type.
+            (Ty::CFunc(..), Ty::Null) | (Ty::Null, Ty::CFunc(..)) if matches!(op, BinOp::Eq | BinOp::Ne) => {
+                for (side, ty) in [(&mut *left, &left_ty), (&mut *right, &right_ty)] {
+                    if let Ty::CFunc(..) = ty.strip_borrow() {
+                        let func = ty.strip_borrow().clone();
+                        self.coerce(side, ty.clone(), &func)?;
+                    }
+                }
+                Ok(Ty::Bool)
+            }
+            (Ty::CFunc(..), Ty::CFunc(..)) if matches!(op, BinOp::Eq | BinOp::Ne) && left_ty.strip_borrow() == right_ty.strip_borrow() => {
+                let func = left_ty.strip_borrow().clone();
+                self.coerce(left, left_ty.clone(), &func)?;
+                self.coerce(right, right_ty.clone(), &func)?;
+                Ok(Ty::Bool)
+            }
             (Ty::Raw(_), Ty::Null) | (Ty::Null, Ty::Raw(_)) if matches!(op, BinOp::Eq | BinOp::Ne) => {
                 for (side, ty) in [(&mut *left, &left_ty), (&mut *right, &right_ty)] {
                     if let Ty::Raw(_) = ty.strip_borrow() {
@@ -7022,6 +7173,12 @@ impl<'a> Checker<'a> {
         // function of the same name.
         if let Some(var) = self.find(name) {
             let held = var.current.strip_borrow().clone();
+            if let Ty::CFunc(params, ret) = held {
+                self.live_var(name, name_span)?;
+                self.c_value_call(name, args, &params, span)?;
+                *callee = Callee::CValue(params);
+                return Ok(*ret);
+            }
             let Ty::Func(params, ret) = held else {
                 return Err(Diag::error(name_span, format!("`{name}` is a `{held}`, not a function, and cannot be called")));
             };
@@ -7159,7 +7316,23 @@ impl<'a> Checker<'a> {
             return Err(Diag::error(span, format!("`{short}` takes {} argument(s), {} given", sig.params.len(), args.len())));
         }
         self.needs_unsafe(span, &format!("`{short}` is a function of C, and the checker cannot see what it does"))?;
-        for (arg, param) in args.iter_mut().zip(&sig.params) {
+        self.c_args(args, &sig.params)?;
+        *callee = Callee::Extern;
+        Ok(sig.ret.clone())
+    }
+
+    /// A call through a `CFunc`: it may reach any function of C, so it is a call of C.
+    fn c_value_call(&mut self, name: &str, args: &mut [Expr], params: &[Ty], span: Span) -> Res<()> {
+        if args.len() != params.len() {
+            return Err(Diag::error(span, format!("`{name}` takes {} argument(s), {} given", params.len(), args.len())));
+        }
+        self.needs_unsafe(span, &format!("`{name}` points at a function of C, and the checker cannot see what it does"))?;
+        self.c_args(args, params)
+    }
+
+    /// The arguments of a call of C: `buffer.pointer()` is allowed among them.
+    fn c_args(&mut self, args: &mut [Expr], params: &[Ty]) -> Res<()> {
+        for (arg, param) in args.iter_mut().zip(params) {
             let pointer = |expr: &Expr| matches!(&expr.kind, ExprKind::Method { name, .. } if name == "pointer");
             self.extern_arg = match &arg.kind {
                 ExprKind::RawCast { expr, .. } => pointer(expr),
@@ -7169,9 +7342,7 @@ impl<'a> Checker<'a> {
             self.extern_arg = false;
             checked?;
         }
-        self.lent_twice(None, args)?;
-        *callee = Callee::Extern;
-        Ok(sig.ret.clone())
+        self.lent_twice(None, args)
     }
 
     /// `buffer.pointer()`: the address of the items of a list, an array or a slice of plain
@@ -7732,11 +7903,41 @@ impl<'a> Checker<'a> {
                 *callee = Callee::Memory(MemoryCall::Copy);
                 Ok(Ty::Void)
             }
+            // `Memory.addressOf(ref state)`: what a callback is given back by C.
+            "addressOf" => {
+                if args.len() != 1 {
+                    return Err(Diag::error(span, format!("`addressOf` takes 1 argument(s), {} given", args.len())));
+                }
+                let named = |expr: &Expr| {
+                    let mut at = expr;
+                    loop {
+                        match &at.kind {
+                            ExprKind::Var(_) => return true,
+                            ExprKind::Field { recv, .. } => at = recv,
+                            _ => return false,
+                        }
+                    }
+                };
+                let lent = matches!(&args[0].kind, ExprKind::Borrow { mutable: true, expr } if named(expr));
+                if !lent {
+                    let text = &self.src[args[0].span.start..args[0].span.end];
+                    let diag = Diag::error(args[0].span, "`Memory.addressOf` takes a variable or a field lent with `ref`");
+                    return Err(match &args[0].kind {
+                        ExprKind::Var(_) | ExprKind::Field { .. } => diag.hint(format!("`Memory.addressOf(ref {text})`")),
+                        ExprKind::Borrow { mutable: false, expr } if named(expr) => diag.hint(format!("`Memory.addressOf(ref {})`", &self.src[expr.span.start..expr.span.end])),
+                        _ => diag.note("the address must stay where the value is: a variable or a field keeps it, a value made in the call does not"),
+                    });
+                }
+                self.expr(&mut args[0], None)?;
+                self.needs_unsafe(span, "the address outlives the borrow, and the checker cannot see where it goes")?;
+                *callee = Callee::Memory(MemoryCall::AddressOf);
+                Ok(Ty::Raw(Box::new(Ty::Void)))
+            }
             _ => {
                 let diag = Diag::error(name_span, format!("`Memory` has no function `{name}`"));
-                Err(match nearest(name, ["allocate", "free", "copy"].into_iter()) {
+                Err(match nearest(name, ["allocate", "free", "copy", "addressOf"].into_iter()) {
                     Some(close) => diag.hint(format!("`{close}`")),
-                    None => diag.note("functions for now: allocate, free, copy"),
+                    None => diag.note("functions for now: allocate, free, copy, addressOf"),
                 })
             }
         }
@@ -8552,12 +8753,20 @@ impl<'a> Checker<'a> {
         if let Ty::Struct(owner) = target {
             let fields = &structs[owner].fields;
             if let Some(position) = fields.iter().position(|(field, _)| field == name) {
-                if let Ty::Func(params, ret) = &fields[position].1 {
+                if let Ty::Func(params, ret) | Ty::CFunc(params, ret) = &fields[position].1 {
                     if !structs[owner].open[position] && !self.inside(owner) {
                         return Err(self.not_public(name, owner, name_span));
                     }
-                    self.args(name, args, params, span)?;
-                    *callee = Callee::FieldValue(position);
+                    *callee = match &fields[position].1 {
+                        Ty::CFunc(..) => {
+                            self.c_value_call(name, args, params, span)?;
+                            Callee::CFieldValue(position, params.clone())
+                        }
+                        _ => {
+                            self.args(name, args, params, span)?;
+                            Callee::FieldValue(position)
+                        }
+                    };
                     return Ok((**ret).clone());
                 }
             }
@@ -9800,7 +10009,7 @@ fn foreign_sig(func: &Func, sig: &FuncSig, structs: &HashMap<String, StructInfo>
     let char_hint = |diag: Diag| diag.note("a `char` of SG is a Unicode character of 32 bits, and a `char` of C is a byte").hint("`byte`, or `sbyte` for a C `char` that is signed");
     for ((param, ty), written) in func.params.iter().zip(&sig.params).zip(&func.params) {
         let fine = match ty {
-            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Raw(_) => true,
+            Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Raw(_) | Ty::CFunc(..) => true,
             Ty::Read(inner) if **inner == Ty::CString => true,
             Ty::Read(inner) | Ty::Ref(inner) => not_plain(inner, structs).is_none() && !matches!(**inner, Ty::Array(..)),
             Ty::Struct(_) => not_plain(ty, structs).is_none(),
@@ -9827,7 +10036,7 @@ fn foreign_sig(func: &Func, sig: &FuncSig, structs: &HashMap<String, StructInfo>
         };
         return Err(diag);
     }
-    let fine = matches!(sig.ret, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Void | Ty::Raw(_)) || (matches!(sig.ret, Ty::Struct(_)) && not_plain(&sig.ret, structs).is_none());
+    let fine = matches!(sig.ret, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Void | Ty::Raw(_) | Ty::CFunc(..)) || (matches!(sig.ret, Ty::Struct(_)) && not_plain(&sig.ret, structs).is_none());
     if !fine {
         let diag = Diag::error(func.ret.span, format!("the C function `{c_name}` cannot give a `{}`", sig.ret));
         return Err(match &sig.ret {
@@ -9844,11 +10053,39 @@ fn foreign_sig(func: &Func, sig: &FuncSig, structs: &HashMap<String, StructInfo>
     Ok(())
 }
 
+/// Whether C takes and gives a value of this type as it is: an integer, a fractional number,
+/// `bool`, a raw pointer, a pointer to a function of C, or a struct of plain data.
+fn c_value(ty: &Ty, structs: &HashMap<String, StructInfo>) -> bool {
+    match ty {
+        Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Raw(_) | Ty::CFunc(..) => true,
+        Ty::Struct(_) => not_plain(ty, structs).is_none(),
+        _ => false,
+    }
+}
+
+/// What a message about a type C does not take or give adds.
+fn c_value_error(diag: Diag, ty: &Ty, structs: &HashMap<String, StructInfo>) -> Diag {
+    match ty {
+        Ty::Read(inner) | Ty::Ref(inner) if matches!(**inner, Ty::Str | Ty::CString) => diag.hint("a text goes between C and SG as `raw byte`: `unsafe string.fromCString(p)` copies it"),
+        Ty::Read(inner) | Ty::Ref(inner) if not_plain(inner, structs).is_some() => diag.note("C gives a pointer as a `raw T`, which points at plain data"),
+        Ty::Char => diag.note("a `char` of SG is a Unicode character of 32 bits, and a `char` of C is a byte").hint("`byte`, or `sbyte` for a C `char` that is signed"),
+        Ty::Str | Ty::CString => diag.hint("a text goes between C and SG as `raw byte`: `unsafe string.fromCString(p)` copies it"),
+        Ty::Read(inner) | Ty::Ref(inner) => diag.hint(format!("a pointer C gives is a `raw {inner}`, read inside `unsafe`")),
+        Ty::Func(..) => diag.hint("a pointer to a function as C calls it is a `CFunc<...>`"),
+        Ty::Struct(_) => match not_plain(ty, structs) {
+            Some(part) if part == *ty => diag.note(format!("`{part}` is not plain data: C takes numbers, `bool`, raw pointers, and arrays and structs of them")),
+            Some(part) => diag.note(format!("it holds a `{part}`, which is not plain data: C takes numbers, `bool`, raw pointers, and arrays and structs of them")),
+            None => diag,
+        },
+        _ => diag.note("C takes and gives integers, `float`, `double`, `bool`, `raw T`, `CFunc<...>` and plain structs"),
+    }
+}
+
 /// The part of a type that is not plain data, if there is one: what a `raw T` may point at
 /// is numbers, `bool`, `char`, raw pointers, and arrays and structs of them.
 fn not_plain(ty: &Ty, structs: &HashMap<String, StructInfo>) -> Option<Ty> {
     match ty {
-        Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Raw(_) => None,
+        Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Raw(_) | Ty::CFunc(..) => None,
         Ty::Array(item, _) => not_plain(item, structs),
         Ty::Struct(name) if structs.get(name).is_some_and(|info| info.disposable || info.opaque) => Some(ty.clone()),
         Ty::Struct(name) => structs.get(name).and_then(|info| info.fields.iter().find_map(|(_, field)| not_plain(field, structs))),
@@ -9858,6 +10095,15 @@ fn not_plain(ty: &Ty, structs: &HashMap<String, StructInfo>) -> Option<Ty> {
 
 /// Every `raw T` resolved since the last call points at plain data or at `void`.
 fn raw_rule(structs: &HashMap<String, StructInfo>) -> Res<()> {
+    for (found, span) in CFUNCS.with(|found| std::mem::take(&mut *found.borrow_mut())) {
+        let Ty::CFunc(params, ret) = &found else { unreachable!("only `CFunc` types are kept") };
+        for ty in params.iter().chain(std::iter::once(&**ret)) {
+            if (ty == &**ret && *ty == Ty::Void) || c_value(ty, structs) {
+                continue;
+            }
+            return Err(c_value_error(Diag::error(span, format!("a function of C cannot take or give a `{ty}`")), ty, structs));
+        }
+    }
     for (inner, span) in RAW.with(|found| std::mem::take(&mut *found.borrow_mut())) {
         if inner == Ty::Void || matches!(&inner, Ty::Struct(name) if structs[name].opaque) {
             continue;

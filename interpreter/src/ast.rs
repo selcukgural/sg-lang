@@ -26,6 +26,9 @@ pub struct Program {
     /// Every `extern` block, with the module it is written in, also one that declares nothing:
     /// `extern "curl" { }` names a library that the C file of its module needs.
     pub blocks: Vec<(String, Foreign)>,
+    /// What each `export` function takes and gives, under its full name. Filled in by the
+    /// checker.
+    pub exported: std::collections::BTreeMap<String, (Vec<Ty>, Ty)>,
 }
 
 /// One file: where its text lies, the module it belongs to (empty for the root, otherwise the
@@ -125,6 +128,9 @@ pub struct Func {
     /// Written with `async`: a call gives a `Task` of what `ret` names, and the body can
     /// `await`.
     pub is_async: bool,
+    /// Written with `export`: C calls it by its name as written (`export int compare(raw void
+    /// a, raw void b)`), and its name is a `CFunc`.
+    pub export: bool,
     pub ret: TypeExpr,
     pub name: String,
     pub name_span: Span,
@@ -237,6 +243,10 @@ pub enum Callee {
     Value,
     /// A call through a function value kept in a field: `this.test(order)`; the field's position.
     FieldValue(usize),
+    /// A call through a `CFunc` kept in a variable: a call of C, with what the function takes.
+    CValue(Vec<Ty>),
+    /// A call through a `CFunc` kept in a field: the field's position and what it takes.
+    CFieldValue(usize, Vec<Ty>),
     /// `Task.run(work, x)`: starts the function given first with the arguments after it.
     TaskRun,
     /// `t.wait()`: waits for the task and gives what its function returned; takes the task.
@@ -282,6 +292,8 @@ pub enum MemoryCall {
     SetErrno,
     /// `IoError.fromCode(n)`: the `IoError` for a number of `errno`.
     IoErrorOf,
+    /// `Memory.addressOf(ref x)`: the address of a value, for C to give back to a callback.
+    AddressOf,
 }
 
 /// The functions of a `CancellationSource` and a `CancellationToken`.

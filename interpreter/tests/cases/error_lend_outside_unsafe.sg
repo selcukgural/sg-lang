@@ -1,0 +1,11 @@
+struct State {
+    int count
+}
+
+export void step(raw void data) {
+    var state = (ref State)data
+    state.count += 1
+}
+
+void main() {
+}

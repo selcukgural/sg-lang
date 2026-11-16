@@ -1,0 +1,3 @@
+void main() {
+    var data = unsafe Memory.addressOf(ref 2 + 3)
+}

@@ -1,0 +1,117 @@
+// Functions of SG that C calls (`export`), pointers to functions of C (`CFunc`) both ways, and
+// the state a callback reaches through C's `void*`.
+extern {
+    void qsort(raw void base, nuint count, nuint size, CFunc<raw void, raw void, int> compare)
+    raw void bsearch(raw void key, raw void base, nuint count, nuint size, CFunc<raw void, raw void, int> compare)
+    int abs(int n)
+    raw void dlopen(raw byte path, int flags)
+    raw void dlsym(raw void handle, read CString name)
+}
+
+export int compareInts(raw void a, raw void b) {
+    var x = unsafe ((raw int)a)[0]
+    var y = unsafe ((raw int)b)[0]
+    if x < y {
+        return -1
+    }
+    if x > y {
+        return 1
+    }
+    return 0
+}
+
+// A struct of plain data, compared through the pointers C gives.
+struct Word {
+    int length
+    raw byte text
+}
+
+export int byLength(raw void a, raw void b) {
+    var x = unsafe ((raw Word)a)[0]
+    var y = unsafe ((raw Word)b)[0]
+    return x.length - y.length
+}
+
+struct Tally {
+    int calls
+    List<string> seen
+}
+
+// A callback that reaches its state through the address it is given back.
+export void note(raw void data, int value) {
+    var tally = unsafe (ref Tally)data
+    tally.calls += 1
+    tally.seen.add($"#{value}".toString())
+}
+
+struct Hooks {
+    CFunc<raw void, int, void> each
+    CFunc<int, int> other
+}
+
+// An `export` function is also a function of SG, called by its name with no `unsafe`.
+export double half(double x) {
+    return x / 2.0
+}
+
+void main() {
+    var items = Memory.allocate<int>(6)
+    unsafe {
+        items[0] = 42
+        items[1] = -7
+        items[2] = 19
+        items[3] = 0
+        items[4] = 19
+        items[5] = 3
+    }
+    unsafe qsort((raw void)items, 6, 4, compareInts)
+    var line = ""
+    for i in 0..6 {
+        line = $"{line}{unsafe items[i]} ".toString()
+    }
+    print(line)
+    var key = Memory.allocate<int>(1)
+    unsafe {
+        key[0] = 19
+    }
+    var found = unsafe bsearch((raw void)key, (raw void)items, 6, 4, compareInts)
+    print(found != null)
+    print(unsafe ((raw int)found)[0])
+    unsafe {
+        Memory.free(key)
+        Memory.free(items)
+    }
+
+    var words = Memory.allocate<Word>(3)
+    unsafe {
+        words[0] = Word { length = 5, text = null }
+        words[1] = Word { length = 2, text = null }
+        words[2] = Word { length = 9, text = null }
+        qsort((raw void)words, 3, 16, byLength)
+        print($"{words[0].length} {words[1].length} {words[2].length}")
+        Memory.free(words)
+    }
+
+    // The address of a function of C, and one found by its name.
+    CFunc<int, int> f = abs
+    print(unsafe f(-12))
+    var library = unsafe dlopen(null, 2)
+    var name = CString.from("abs") ?? panic("no zero byte in it")
+    var g = unsafe (CFunc<int, int>)dlsym(library, read name)
+    print(unsafe g(-13))
+    print(f == g)
+    print((raw void)f != null)
+
+    // A pointer to a function in a field, and one that is `null`.
+    var tally = Tally { calls = 0, seen = List<string>() }
+    var data = unsafe Memory.addressOf(ref tally)
+    var hooks = Hooks { each = note, other = null }
+    for i in 1..4 {
+        unsafe hooks.each(data, i * 10)
+    }
+    print($"{tally.calls} {tally.seen}")
+    print(hooks.other == null)
+    print(half(5.0))
+    CFunc<double, double> halving = half
+    print(unsafe halving(9.0))
+}

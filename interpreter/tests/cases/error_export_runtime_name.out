@@ -1,0 +1,5 @@
+error: C cannot see a function of SG named `sg_count`
+  the names that start with `sg_` belong to the code SG writes
+  --> error_export_runtime_name.sg:1:12
+ 1 | export int sg_count(int n) {
+   |            ^^^^^^^^

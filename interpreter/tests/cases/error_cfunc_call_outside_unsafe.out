@@ -1,0 +1,5 @@
+error: `f` points at a function of C, and the checker cannot see what it does, so it is written inside `unsafe`
+  --> error_cfunc_call_outside_unsafe.sg:7:11
+ 7 |     print(f(4))
+   |           ^^^^
+  hint: `unsafe f(4)`, or `unsafe { ... }` around several statements

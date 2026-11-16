@@ -1,0 +1,5 @@
+error: a cast to `ref State` lends what lies at an address `Memory.addressOf` gave, and this is `raw int`
+  the address is a `raw void`, as C keeps it
+  --> error_lend_not_void.sg:7:35
+ 7 |     var state = unsafe (ref State)p
+   |                                   ^

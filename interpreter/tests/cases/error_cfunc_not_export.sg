@@ -1,0 +1,13 @@
+extern {
+    void qsort(raw void base, nuint count, nuint size, CFunc<raw void, raw void, int> compare)
+}
+
+int compare(raw void a, raw void b) {
+    return 0
+}
+
+void main() {
+    var items = Memory.allocate<int>(2)
+    unsafe qsort((raw void)items, 2, 4, compare)
+    unsafe Memory.free(items)
+}

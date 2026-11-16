@@ -1,5 +1,5 @@
 error: `Memory` has no function `release`
-  functions for now: allocate, free, copy
+  functions for now: allocate, free, copy, addressOf
   --> error_raw_memory_unknown.sg:5:16
  5 |         Memory.release(numbers)
    |                ^^^^^^^

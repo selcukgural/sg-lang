@@ -1,0 +1,7 @@
+// C gives pointers, not borrows.
+export int length(read string text) {
+    return text.length()
+}
+
+void main() {
+}

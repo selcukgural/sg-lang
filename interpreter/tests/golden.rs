@@ -839,6 +839,99 @@ fn compiled_tests() {
 /// `.`, an empty part and a relative folder in `PATH`, a file of the folder the program works in
 /// is not run by its name alone, in the interpreter and in compiled code. Our own `PATH` cannot be
 /// changed inside the golden tests, so the program runs as a process of its own here.
+/// A function C calls cannot be unwound through C: a panic in it ends the process, in the
+/// interpreter as in compiled code. And the interpreter runs such a function only on a thread
+/// that is in a call of C; compiled code runs it on any thread.
+#[test]
+fn callbacks_end_the_process() {
+    const PANICS: &str = r#"
+extern {
+    void qsort(raw void base, nuint count, nuint size, CFunc<raw void, raw void, int> compare)
+}
+
+export int compareInts(raw void a, raw void b) {
+    panic("compared")
+}
+
+void main() {
+    var items = Memory.allocate<int>(2)
+    print("before")
+    unsafe qsort((raw void)items, 2, 4, compareInts)
+    print("after")
+}
+"#;
+    const THREAD_SG: &str = r#"
+extern "./native.c" {
+    int onThread()
+}
+
+export void calledBack(int n) {
+    print($"called back with {n}")
+}
+
+void main() {
+    print(unsafe onThread())
+}
+"#;
+    const THREAD_C: &str = r#"
+#include <pthread.h>
+#include <stddef.h>
+#include <stdint.h>
+
+static void* run(void* arg) {
+    (void)arg;
+    calledBack(7);
+    return NULL;
+}
+
+static int32_t onThread(void) {
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, run, NULL) != 0) return -1;
+    pthread_join(thread, NULL);
+    return 0;
+}
+"#;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("callbacks-end");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(work.join("panics")).unwrap();
+    std::fs::create_dir_all(work.join("thread")).unwrap();
+    std::fs::write(work.join("panics/main.sg"), PANICS).unwrap();
+    std::fs::write(work.join("thread/main.sg"), THREAD_SG).unwrap();
+    std::fs::write(work.join("thread/native.c"), THREAD_C).unwrap();
+    let run = |dir: &str| std::process::Command::new(env!("CARGO_BIN_EXE_sg")).arg("main.sg").current_dir(work.join(dir)).output().unwrap();
+
+    let panicked = run("panics");
+    assert_eq!(String::from_utf8_lossy(&panicked.stdout), "before\n");
+    let said = String::from_utf8_lossy(&panicked.stderr);
+    assert!(said.starts_with("panic: compared\n") && said.contains("main.sg:7:5"), "interpreter: {said}");
+    assert_eq!(panicked.status.code(), Some(1));
+
+    let elsewhere = run("thread");
+    assert_eq!(String::from_utf8_lossy(&elsewhere.stdout), "");
+    let said = String::from_utf8_lossy(&elsewhere.stderr);
+    assert!(said.starts_with("error: C called `calledBack` on a thread where the interpreter is in no call of C\n"), "interpreter: {said}");
+    assert_eq!(elsewhere.status.code(), Some(1));
+
+    if std::process::Command::new("cc").arg("--version").output().is_err() {
+        eprintln!("no C compiler (`cc`) found: the back end is not tested");
+        return;
+    }
+    for (dir, stdout, code) in [("panics", "before\n", Some(1)), ("thread", "called back with 7\n0\n", Some(0))] {
+        let sources = sg::load(&work.join(dir), false).unwrap();
+        let (c_file, binary) = (work.join(dir).join("out.c"), work.join(dir).join("out"));
+        std::fs::write(&c_file, sg::emit_c_sources(&sources, true).unwrap()).unwrap();
+        let cc = std::process::Command::new("cc").args(["-std=c11", "-O1"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+        assert!(cc.status.success(), "the C compiler rejected {dir}:\n{}", String::from_utf8_lossy(&cc.stderr));
+        let ran = std::process::Command::new(&binary).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), stdout, "compiled {dir}: {}", String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(ran.status.code(), code, "compiled {dir}: {}", String::from_utf8_lossy(&ran.stderr));
+        if dir == "panics" {
+            assert!(String::from_utf8_lossy(&ran.stderr).starts_with("panic: compared\n"), "compiled: {}", String::from_utf8_lossy(&ran.stderr));
+        }
+    }
+}
+
 #[test]
 fn process_path_lookup() {
     use std::os::unix::fs::PermissionsExt;

@@ -1,0 +1,15 @@
+// The interpreter keeps the addresses `Memory.addressOf` gave, and knows when the value ends.
+struct State {
+    int count
+}
+
+raw void addressOfLocal() {
+    var state = State { count = 1 }
+    return unsafe Memory.addressOf(ref state)
+}
+
+void main() {
+    var data = addressOfLocal()
+    var state = unsafe (read State)data
+    print(state.count)
+}

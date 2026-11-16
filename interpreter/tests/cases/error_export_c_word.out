@@ -1,0 +1,5 @@
+error: C cannot see a function of SG named `register`
+  `register` is a word of C
+  --> error_export_c_word.sg:1:12
+ 1 | export int register(int n) {
+   |            ^^^^^^^^
