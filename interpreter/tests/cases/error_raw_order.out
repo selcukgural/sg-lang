@@ -1,5 +1,0 @@
-error: operator `<` is not defined for `raw int` and `raw int`
-  a raw pointer is compared with `==` and `!=`, and moved by a count of items with `+` and `-`
-  --> error_raw_order.sg:5:11
- 5 |     print(numbers < last)
-   |           ^^^^^^^^^^^^^^

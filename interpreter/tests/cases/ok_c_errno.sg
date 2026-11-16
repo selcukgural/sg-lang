@@ -1,0 +1,39 @@
+// `errno` after a call of C, `IoError.fromCode`, and `C.setErrno` before one.
+extern {
+    int open(read CString path, int flags)
+    long strtol(read CString text, raw raw byte end, int base)
+}
+
+// The texts of the function end after the call, before the caller reads `errno`.
+nint openMissing() {
+    var missing = CString.from("/no/such/file") ?? return -1
+    var name = "a text that owns its bytes, freed when the function ends"
+    _ = unsafe open(read missing, 0)
+    return name.length()
+}
+
+void main() {
+    if CString.from("/no/such/folder/file") is Ok(path) {
+        int fd = unsafe open(read path, 0)
+        print(fd)
+        print(IoError.fromCode(C.errno()))
+    }
+    // What ends between the call and the read of `errno` changes nothing.
+    print(openMissing())
+    int code = C.errno()
+    print(IoError.fromCode(code) == IoError.NotFound)
+    // `strtol` says that a number does not fit only through `errno`.
+    var big = CString.from("99999999999999999999999") ?? return
+    C.setErrno(0)
+    long n = unsafe strtol(read big, null, 10)
+    print(n == long.MaxValue)
+    print(C.errno() != 0)
+    var small = CString.from("42") ?? return
+    C.setErrno(0)
+    print(unsafe strtol(read small, null, 10))
+    print(C.errno())
+    // A number that is no code of the system's.
+    print(IoError.fromCode(-10))
+    C.setErrno(7)
+    print(C.errno())
+}

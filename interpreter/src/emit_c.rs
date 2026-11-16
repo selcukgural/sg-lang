@@ -5518,14 +5518,20 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
 
     let mut protos = String::new();
     let mut bodies = String::new();
-    // The functions of C the program calls, and the libraries they are in.
-    let called = crate::ffi::called(prog, tests);
-    let mut libs: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    // The functions and the variables of C the program uses, the libraries it links and the C
+    // files it takes in. What a C file gives is reached through functions written after it.
+    let used = crate::ffi::used(prog, tests);
+    let (mut libs, c_files) = crate::ffi::links(prog, &used);
+    let mut after_c = String::new();
+    for var in &prog.cvars {
+        if used.contains(&var.name) {
+            emitter.foreign_var(var, prog, &mut protos, &mut after_c)?;
+        }
+    }
     for func in &prog.funcs {
-        if let Some(foreign) = &func.foreign {
-            if called.contains(&func.name) {
-                libs.extend(foreign.lib.as_deref());
-                emitter.foreign_func(func, prog, &mut protos)?;
+        if func.foreign.is_some() {
+            if used.contains(&func.name) {
+                emitter.foreign_func(func, prog, &mut protos, &mut after_c)?;
             }
             continue;
         }
@@ -5695,6 +5701,16 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         out.push_str(TEST_RUNNER);
     }
     out.push_str(&start);
+    // The C files last, so that what they define touches none of the program.
+    if !c_files.is_empty() {
+        out.push_str("\n/* The C files of the program. */\n");
+        for file in &c_files {
+            out.push_str(&crate::ffi::include_line(file));
+        }
+        out.push_str(&after_c);
+        // They see every function of the system's headers, as the interpreter's wrappers do.
+        out.insert_str(0, "#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n");
+    }
     // The libraries to link, on the first line, where `link_flags` reads them.
     // `-lm` is given to every program already.
     libs.remove("m");
@@ -6125,7 +6141,7 @@ fn may_leave(expr: &Expr) -> bool {
         ExprKind::Try { .. } | ExprKind::Return(_) | ExprKind::Match { .. } => true,
         ExprKind::Await(inner) | ExprKind::Unsafe(inner) | ExprKind::RawCast { expr: inner, .. } => may_leave(inner),
         ExprKind::Allocate { args, .. } => any(&mut args.iter()),
-        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::Constant { .. } => false,
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } => false,
         ExprKind::Array { args, items, .. } => any(&mut args.iter().chain(items.iter().flatten())),
         ExprKind::AsSlice(inner) => may_leave(inner),
         ExprKind::Field { recv: inner, .. }
@@ -6544,10 +6560,14 @@ impl<'a> Emitter<'a> {
     /// to the C name with a label, so that no header the runtime includes declares it
     /// differently; and an adapter that takes the arguments as the program gives them
     /// (`sg_x_compress`), where a `read CString` is the text it lends. Each is written once.
-    fn foreign_func(&mut self, func: &Func, prog: &Program, protos: &mut String) -> Res<()> {
+    ///
+    /// A function of a C file is called by its name, from an adapter written after the file
+    /// (`after_c`): it may be `static inline`, and is then inlined.
+    fn foreign_func(&mut self, func: &Func, prog: &Program, protos: &mut String, after_c: &mut String) -> Res<()> {
         self.made.insert("ffi".to_string());
         let (params, ret) = &prog.foreign[&func.name];
         let c_name = short_name(&func.name);
+        let in_file = func.foreign.as_ref().is_some_and(|foreign| foreign.path.is_some());
         let mut c_types = Vec::new();
         let mut sg_types = Vec::new();
         let mut passed = Vec::new();
@@ -6565,14 +6585,48 @@ impl<'a> Emitter<'a> {
             c_types.push(c_type);
         }
         let ret_type = self.ctype(ret, func.name_span)?;
-        if self.made.insert(format!("extern {c_name}")) {
+        if !in_file && self.made.insert(format!("extern {c_name}")) {
             let list = if c_types.is_empty() { "void".to_string() } else { c_types.join(", ") };
             let _ = writeln!(protos, "extern {ret_type} sg_c_{c_name}({list}) SG_C({});", c_string(c_name));
         }
         let list = if sg_types.is_empty() { "void".to_string() } else { sg_types.join(", ") };
-        let call = format!("sg_c_{c_name}({})", passed.join(", "));
+        let callee = if in_file { c_name.to_string() } else { format!("sg_c_{c_name}") };
+        let call = format!("{callee}({})", passed.join(", "));
         let body = if *ret == Ty::Void { format!("{call};") } else { format!("return {call};") };
-        let _ = writeln!(protos, "static inline {ret_type} sg_x_{}({list}) {{ {body} }}", cname(&func.name));
+        let adapter = format!("static inline {ret_type} sg_x_{}({list})", cname(&func.name));
+        match in_file {
+            true => {
+                let _ = writeln!(protos, "{adapter};");
+                let _ = writeln!(after_c, "{adapter} {{ {body} }}");
+            }
+            false => {
+                let _ = writeln!(protos, "{adapter} {{ {body} }}");
+            }
+        }
+        Ok(())
+    }
+
+    /// A variable of C: a function of the runtime's names that gives its address
+    /// (`sg_cv_opterr()`). One of a library is declared under a name of the runtime bound to
+    /// its C name; one of a C file is reached from after the file, by its name.
+    fn foreign_var(&mut self, var: &CVarDecl, prog: &Program, protos: &mut String, after_c: &mut String) -> Res<()> {
+        self.made.insert("ffi".to_string());
+        let ty = &prog.cvar_types[&var.name];
+        let held = self.ctype(ty, var.name_span)?;
+        let c_name = short_name(&var.name);
+        let getter = format!("static inline {held}* sg_cv_{}(void)", cname(&var.name));
+        match var.foreign.path.is_some() {
+            true => {
+                let _ = writeln!(protos, "{getter};");
+                let _ = writeln!(after_c, "{getter} {{ return ({held}*)(void*)&{c_name}; }}");
+            }
+            false => {
+                if self.made.insert(format!("extern var {c_name}")) {
+                    let _ = writeln!(protos, "extern {held} sg_cvd_{c_name} SG_C({});", c_string(c_name));
+                }
+                let _ = writeln!(protos, "{getter} {{ return &sg_cvd_{c_name}; }}");
+            }
+        }
         Ok(())
     }
 
@@ -10288,7 +10342,7 @@ impl<'a> Emitter<'a> {
         let of = |inner: &Expr| self.effect(inner);
         let all = |list: &mut dyn Iterator<Item = &Expr>| list.map(|inner| self.effect(inner)).max().unwrap_or(Effect::Reads);
         match &expr.kind {
-            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::Constant { .. } => Effect::Reads,
+            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } => Effect::Reads,
             ExprKind::Field { recv: inner, .. }
             | ExprKind::New(inner)
             | ExprKind::NewShared { value: inner, .. }
@@ -12161,6 +12215,7 @@ impl<'a> Emitter<'a> {
             ExprKind::Field { .. } => self.lvalue(expr),
             // The name of a function, as a value: its address.
             ExprKind::FuncRef(name) => Ok(format!("f_{}", cname(name))),
+            ExprKind::CVar(name) => Ok(format!("sg_cv_{}()", cname(name))),
             ExprKind::Constant { ty, name } => Ok(constant(ty, name)),
             // A number read out of a pointer that has no name: the pointer is freed after the statement.
             ExprKind::Load(inner) if matches!(inner.ty, Ty::Ptr(_) | Ty::Shared(..)) => Ok(format!("(*{})", self.look(inner)?)),
@@ -12519,9 +12574,21 @@ impl<'a> Emitter<'a> {
                     (ExprKind::Null, _) => ("NULL".to_string(), self.first(right, head)?),
                     (_, ExprKind::Null) => (self.first(left, head)?, "NULL".to_string()),
                     _ => {
+                        let both = matches!(right.ty.strip_borrow(), Ty::Raw(_)) && matches!(left.ty.strip_borrow(), Ty::Raw(_));
+                        let item = match left.ty.strip_borrow() {
+                            Ty::Raw(item) if both && *op == BinOp::Sub => Some(self.ctype(item, expr.span)?),
+                            _ => None,
+                        };
                         let (values, names) = self.two(left, right, head)?;
-                        let joined = sequence(&names, format!("({} {} {})", values[0], op.symbol(), values[1]));
-                        return Ok(joined);
+                        let (a, b) = (&values[0], &values[1]);
+                        // The order and the difference of two addresses are taken as numbers, so
+                        // that two pointers into two blocks are no undefined behaviour in C.
+                        let text = match op {
+                            BinOp::Sub if item.is_some() => format!("((intptr_t)((uintptr_t)({a}) - (uintptr_t)({b})) / (intptr_t)sizeof({}))", item.expect("tested")),
+                            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge if both => format!("((uintptr_t)({a}) {} (uintptr_t)({b}))", op.symbol()),
+                            _ => format!("({a} {} {b})", op.symbol()),
+                        };
+                        return Ok(sequence(&names, text));
                     }
                 };
                 Ok(format!("({left} {} {right})", op.symbol()))
@@ -12566,6 +12633,8 @@ impl<'a> Emitter<'a> {
                 let from = inner.ty.strip_borrow().clone();
                 let inner = self.first(inner, head)?;
                 match (ty, from) {
+                    // `(nuint)p`: the address as a number.
+                    (Ty::Int(to), Ty::Raw(_) | Ty::Null) => Ok(format!("(({})(uintptr_t)({inner}))", int_ctype(*to))),
                     (Ty::Int(to), Ty::Float(from)) => {
                         if !self.checked {
                             return Ok(format!("sg_sat_{}((double)({inner}))", int_name(*to)));
@@ -12604,7 +12673,12 @@ impl<'a> Emitter<'a> {
             // `(raw byte)p`: the same address, read as another pointer.
             ExprKind::RawCast { expr: inner, .. } => {
                 let pointer = self.first(inner, head)?;
-                Ok(format!("(({})({pointer}))", self.ctype(&expr.ty, expr.span)?))
+                let ctype = self.ctype(&expr.ty, expr.span)?;
+                // `(raw byte)n`: a number of the width of an address made into one.
+                Ok(match inner.ty.strip_borrow() {
+                    Ty::Int(_) => format!("(({ctype})(uintptr_t)({pointer}))"),
+                    _ => format!("(({ctype})({pointer}))"),
+                })
             }
             // `Memory.allocate<T>(n)`: zeroed memory from `calloc` (see `RAW_RUNTIME`).
             ExprKind::Allocate { args, .. } => {
@@ -13176,6 +13250,19 @@ impl<'a> Emitter<'a> {
                 Callee::System(call) => self.system(*call, args, head, expr),
                 // `Memory.free(p)` is C's `free`; `Memory.copy` is `memmove` behind a test of the count.
                 Callee::Memory(MemoryCall::Free) => Ok(format!("free({})", self.first(&args[0], head)?)),
+                // `errno` as C has it: nothing of the runtime runs between a call of C and the
+                // statements after it that changes it.
+                Callee::Memory(MemoryCall::Errno) => Ok("((int32_t)errno)".to_string()),
+                Callee::Memory(MemoryCall::SetErrno) => Ok(format!("(void)(errno = (int)({}))", self.first(&args[0], head)?)),
+                Callee::Memory(MemoryCall::IoErrorOf) => {
+                    self.io_error(expr.span)?;
+                    if self.made.insert("sg_io_from_code".to_string()) {
+                        let error_c = self.ctype(&Ty::Enum("IoError".to_string()), expr.span)?;
+                        // The runtime's own codes are below 0; a number there is kept as it is.
+                        let _ = writeln!(self.glue, "static {error_c} sg_io_from_code(int32_t code) {{ return code < 0 ? ({error_c}){{ .tag = 5, .u.v5 = {{ code }} }} : sg_io_error(code); }}");
+                    }
+                    Ok(format!("sg_io_from_code({})", self.first(&args[0], head)?))
+                }
                 Callee::Clock(wall) => {
                     self.made.insert("clock".to_string());
                     Ok(format!("sg_clock({})", if *wall { "CLOCK_REALTIME" } else { "CLOCK_MONOTONIC" }))

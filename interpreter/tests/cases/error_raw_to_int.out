@@ -1,0 +1,5 @@
+error: an address is read as a number as wide as an address, and `int` is not one
+  --> error_raw_to_int.sg:4:13
+ 4 |     int n = (int)p
+   |             ^^^^^^
+  hint: `(nuint)p`, or `(nint)p`

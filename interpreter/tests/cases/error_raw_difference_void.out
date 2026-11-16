@@ -1,0 +1,5 @@
+error: a `raw void` points at memory of no known type, so the items between two of them cannot be counted
+  --> error_raw_difference_void.sg:6:11
+ 6 |     print(p - q)
+   |           ^^^^^
+  hint: count bytes with casts: `unsafe ((raw byte)p - (raw byte)q)`

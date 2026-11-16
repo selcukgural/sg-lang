@@ -1,0 +1,4 @@
+panic: the items between two pointers are counted, and the two point into two blocks of raw memory
+  --> panic_unsafe_two_blocks.sg:5:11
+ 5 |     print(q - p)
+   |           ^^^^^

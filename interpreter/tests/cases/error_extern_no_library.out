@@ -1,4 +1,4 @@
-error: the functions of C this program calls could not be built and linked
+error: the functions of C this program uses could not be built and linked
   is every library installed where the C compiler looks? `-lnosuchlibxyz`
   the C compiler `cc` could not build the wrappers with them: a library or a function is missing
   --> error_extern_no_library.sg:1:1

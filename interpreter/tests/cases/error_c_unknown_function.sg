@@ -1,0 +1,4 @@
+// `C` has `errno` and `setErrno`.
+void main() {
+    print(C.errorNumber())
+}

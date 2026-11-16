@@ -26,18 +26,21 @@ pub fn parse(src: &str) -> Res<Program> {
 /// belongs to. What a module defines gets its full name here: `Product` in the folder `stock`
 /// is `stock.Product`.
 pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> {
-    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default() };
+    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new() };
     for (start, end, module) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
         let mut parser = Parser { src, toks, i: 0, struct_literals: true };
         let (structs, enums, funcs, aliases) = (program.structs.len(), program.enums.len(), program.funcs.len(), program.aliases.len());
+        let (cvars, blocks) = (program.cvars.len(), program.blocks.len());
         let uses = parser.file(&mut program)?;
+        program.blocks[blocks..].iter_mut().for_each(|(of, _)| *of = module.clone());
         if !module.is_empty() {
             let full = |name: &mut String| *name = format!("{module}.{name}");
             program.structs[structs..].iter_mut().for_each(|decl| full(&mut decl.name));
             program.enums[enums..].iter_mut().for_each(|decl| full(&mut decl.name));
             program.funcs[funcs..].iter_mut().for_each(|func| full(&mut func.name));
             program.aliases[aliases..].iter_mut().for_each(|alias| full(&mut alias.name));
+            program.cvars[cvars..].iter_mut().for_each(|var| full(&mut var.name));
         }
         program.files.push(FileScope { start: *start, end: *end, module: module.clone(), uses });
     }
@@ -362,7 +365,18 @@ impl<'a> Parser<'a> {
             }
             _ => None,
         };
-        let foreign = Foreign { lib, span: Span::new(start.start, self.prev_end()) };
+        let span = Span::new(start.start, self.prev_end());
+        // `./native.c`: a C file of the module's folder, in place of a library.
+        let (lib, file) = match lib {
+            Some(written) if written.starts_with("./") => (None, Some(c_file_path(&written, span)?)),
+            Some(written) if written.ends_with(".c") => {
+                return Err(Diag::error(span, format!("`{written}` is not the name of a library, nor a C file of this module"))
+                    .hint(format!("a C file beside the program is written from the module's folder: `extern \"./{}\"`", written.trim_start_matches('/'))))
+            }
+            other => (other, None),
+        };
+        let foreign = Foreign { lib, file, path: None, span };
+        program.blocks.push((String::new(), foreign.clone()));
         self.open_brace()?;
         self.skip_newlines();
         while *self.peek() != Tok::RBrace {
@@ -395,6 +409,19 @@ impl<'a> Parser<'a> {
             }
             let ret = self.type_expr()?;
             let (name, name_span) = self.ident("the name of a C function")?;
+            // `int opterr`: a variable of C.
+            if matches!(self.peek(), Tok::Newline | Tok::RBrace) {
+                program.cvars.push(CVarDecl { public, name, name_span, ty: ret, foreign: foreign.clone() });
+                if *self.peek() != Tok::RBrace {
+                    self.expect(Tok::Newline, "end of line")?;
+                }
+                self.skip_newlines();
+                continue;
+            }
+            if *self.peek() == Tok::Assign {
+                return Err(Diag::error(self.span(), "a variable of C has no value here: C gives it one")
+                    .hint(format!("`{name}` is given a value inside `unsafe`: `unsafe {{ {name} = ... }}`")));
+            }
             self.expect(Tok::LParen, "`(`")?;
             let mut params: Vec<Param> = Vec::new();
             while *self.peek() != Tok::RParen {
@@ -1756,4 +1783,18 @@ fn assign_op(tok: &Tok) -> Option<Option<BinOp>> {
         Tok::ShrEq => Some(Some(BinOp::Shr)),
         _ => None,
     }
+}
+
+/// `./native.c` and `./c/helpers.c`: a C file in the module's folder or below it. It ends in
+/// `.c`, and no part of it leaves the folder (`..`) or is empty.
+fn c_file_path(written: &str, span: Span) -> Res<String> {
+    let rest = &written[2..];
+    let parts_fine = rest.split('/').all(|part| !part.is_empty() && part != "." && part != "..");
+    let chars_fine = rest.chars().all(|c| c.is_ascii_alphanumeric() || "_-./+".contains(c));
+    if !rest.ends_with(".c") || rest.len() <= 2 || !parts_fine || !chars_fine {
+        return Err(Diag::error(span, format!("`{written}` is not a C file of this module"))
+            .note("a C file beside the program lies in the module's folder or below it, ends in `.c`, and its path is letters, digits and `_ - . +`, without `..`")
+            .hint("`extern \"./native.c\" { ... }`"));
+    }
+    Ok(written.to_string())
 }

@@ -1,0 +1,4 @@
+-v
+-o out.txt
+unknown, 63
+the first word that is no option: 5

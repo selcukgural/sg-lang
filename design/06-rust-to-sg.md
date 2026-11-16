@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 16 November 2026, the eighty-third slice.
+Last brought up to date: 16 November 2026, the eighty-fourth slice.
 
 ## Functions and variables
 
@@ -194,12 +194,16 @@ Last brought up to date: 16 November 2026, the eighty-third slice.
 | `*const T`, `*mut T`, `unsafe { }` | `raw T`, `unsafe { }`, `unsafe` in front of a value | built | A `raw T` points at plain data (numbers, `bool`, `char`, raw pointers, arrays and structs of them) or is a `raw void`; it may be `null`. An `unsafe` that nothing needs is an error |
 | `*p`, `*p.add(i)`, `(*p).x` | `p[0]`, `p[i]`, `p[i].x` | built | Inside `unsafe`; reading copies the item. A place in raw memory is not lent yet (`&*p`) |
 | `p.add(n)`, `p.sub(n)`, `p as *mut u8`, `p.is_null()` | `p + n`, `p - n`, `(raw byte)p`, `p == null` | built | The first three inside `unsafe` |
+| `p as usize`, `n as *mut T`, `p.offset_from(q)`, `p < q` | `(nuint)p`, `unsafe (raw T)n`, `p - q`, `p < q` | built | Only `(raw T)n` inside `unsafe`; `p - q` counts items of one type and is defined for any two pointers in compiled code, while the interpreter panics for two blocks |
 | `alloc_zeroed(Layout::array::<T>(n))`, `dealloc` | `Memory.allocate<T>(n)`, `Memory.free(p)` | built | Zeroed memory; `free` inside `unsafe`. The interpreter catches an item outside its block, after `free`, and a block freed twice, as Miri does |
 | `ptr::copy(src, dst, n)` | `Memory.copy(source, target, count)` | built | Inside `unsafe`; the two may overlap |
 | `extern "C" { fn ... }`, `#[link(name = "z")]` | `extern "z" { ... }` | built | Every call inside `unsafe`; `extern { }` is the C library itself. C names as C writes them; private to the module unless `public` is written on a function |
 | `c_int`, `size_t`, `*const T`, `*mut T` in a signature | `int`, `nuint`, `read T` or `raw T`, `ref T` or `raw T` | built | `ref` and `read` last for the call; `raw T` when C keeps the address. No `char` (a byte is `byte`), no `...` |
 | `#[repr(C)] struct`, given and returned by value | a struct of plain data, given and returned by value | built | Every struct of plain data is laid out as C lays it out; no mark is written. No unions, bit fields or `packed` |
 | `extern { type sqlite3; }`, an opaque `#[repr(C)] struct` | `extern "sqlite3" { struct sqlite3 }` | built | Only as `raw sqlite3`; `ref raw sqlite3` is C's `sqlite3**` |
+| the `cc` crate and a `build.rs` that compiles a C file | `extern "./native.c" { ... }` | built | Compiled in the same unit as the program, so a `static inline` function is inlined; no build script |
+| `extern { static mut optind: c_int; }` | `extern { int optind }` | built | Read and written inside `unsafe`, as an item of raw memory |
+| `std::io::Error::last_os_error()`, `errno::set_errno` | `IoError.fromCode(C.errno())`, `C.setErrno(n)` | built | No `unsafe`; `errno` is read right after the call it belongs to |
 | `CString::new(s)?`, `c.as_ptr()` | `try CString.from(s)`, `read c` as an argument | built | A zero byte inside is a `TextError` at its position |
 | `CStr::from_ptr(p).to_str()?.to_owned()` | `try unsafe string.fromCString(p)` | built | Copies and checks the UTF-8 |
 | `v.as_mut_ptr()`, `v.as_ptr()` | `v.pointer()` | built | Only as an argument of a C function, on a list, an array or a slice of plain data; it counts as a `ref` of `v` for the call |

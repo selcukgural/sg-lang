@@ -1392,6 +1392,35 @@ struct Div {                                     // the fields of C's div_t, in 
 A module that declares the functions of a library without `public` can give its users a safe interface, and they
 write no `unsafe`: a `Disposable` type holds what C made and gives it back when it ends.
 
+What a header gives and a library does not (a macro, a `static inline` function, a builtin of the compiler,
+assembly) comes through a C file beside the program, compiled with it in one unit; a variable of C is declared
+without parentheses, and `errno` is read right after the call it belongs to:
+
+```
+extern "./native.c" {                            // a C file of the module's folder
+    int count_bits(ulong n)                      // static inline: inlined where it is called
+}
+extern "curl" {                                  // a library the C file needs; it may declare nothing
+}
+extern {
+    int open(read CString path, int flags)
+    raw byte optarg                              // a variable of C
+}
+
+var bits = unsafe count_bits(0xff)
+var value = try unsafe string.fromCString(optarg)   // read inside unsafe
+int fd = unsafe open(read path, 0)
+if fd < 0 {
+    return Error(IoError.fromCode(C.errno()))    // NotFound, PermissionDenied, ... or Other(code)
+}
+C.setErrno(0)                                    // what the next call of C finds
+
+nuint at = (nuint)p                              // an address as a number
+var back = unsafe (raw int)at                    // and a number as an address
+nint count = q - p                               // the items between two pointers of one type
+bool before = p < q                              // the order of two addresses
+```
+
 ### The clock
 
 Three types come with the language: `Instant` for measuring, `Duration` for a span of time, `DateTime` for the

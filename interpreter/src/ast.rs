@@ -19,6 +19,13 @@ pub struct Program {
     pub plain: std::collections::HashMap<String, Vec<Ty>>,
     /// What each function of C takes and gives, under its full name. Filled in by the checker.
     pub foreign: std::collections::HashMap<String, (Vec<Ty>, Ty)>,
+    /// The variables of C declared in `extern` blocks (`extern { int opterr }`).
+    pub cvars: Vec<CVarDecl>,
+    /// The type of each variable of C, under its full name. Filled in by the checker.
+    pub cvar_types: std::collections::HashMap<String, Ty>,
+    /// Every `extern` block, with the module it is written in, also one that declares nothing:
+    /// `extern "curl" { }` names a library that the C file of its module needs.
+    pub blocks: Vec<(String, Foreign)>,
 }
 
 /// One file: where its text lies, the module it belongs to (empty for the root, otherwise the
@@ -135,12 +142,26 @@ pub struct Func {
 }
 
 /// Where a C function comes from: `extern "z" { ... }` names the library `z` (linked as
-/// `-lz`); `extern { ... }` is the C library itself.
+/// `-lz`); `extern { ... }` is the C library itself; `extern "./native.c" { ... }` is a C file
+/// of the module's folder, compiled with the program.
 #[derive(Clone)]
 pub struct Foreign {
     pub lib: Option<String>,
+    /// `./native.c` as written: a C file beside the program, in place of a library.
+    pub file: Option<String>,
+    /// Where that file lies, found once the program is read. Set before the checker runs.
+    pub path: Option<String>,
     /// The word `extern` and the name of the library after it.
     pub span: Span,
+}
+
+/// `int opterr` in an `extern` block: a variable of C, read and written inside `unsafe`.
+pub struct CVarDecl {
+    pub public: bool,
+    pub name: String,
+    pub name_span: Span,
+    pub ty: TypeExpr,
+    pub foreign: Foreign,
 }
 
 /// One name after `from`: a parameter (`input`), the source of the type a method belongs to
@@ -255,6 +276,12 @@ pub enum MemoryCall {
     Free,
     /// `Memory.copy(source, target, count)`: `count` items, also when the two overlap.
     Copy,
+    /// `C.errno()`: what the last call of C on this thread left in `errno`.
+    Errno,
+    /// `C.setErrno(n)`: what the next call of C finds in `errno`.
+    SetErrno,
+    /// `IoError.fromCode(n)`: the `IoError` for a number of `errno`.
+    IoErrorOf,
 }
 
 /// The functions of a `CancellationSource` and a `CancellationToken`.
@@ -645,6 +672,9 @@ pub enum ExprKind {
     Allocate { item: TypeExpr, args: Vec<Expr> },
     /// `(raw byte)p`: a raw pointer read as a pointer to another type.
     RawCast { ty: TypeExpr, expr: Box<Expr> },
+    /// The address of a variable of C, by its full name, as a `raw T`: the checker turns a use
+    /// of the variable `opterr` into `CVar("opterr")[0]`, an item of raw memory.
+    CVar(String),
     /// `await e`: waits, in an async function, for the task `e` and gives what it returns.
     /// `await f(x)` with `f` async runs `f` as part of this task, without a task of its own.
     Await(Box<Expr>),

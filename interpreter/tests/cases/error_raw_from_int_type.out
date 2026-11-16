@@ -1,0 +1,5 @@
+error: a cast to `raw int` reads a raw pointer as another, or an address as a pointer, and this is `long`
+  --> error_raw_from_int_type.sg:4:29
+ 4 |     var p = unsafe (raw int)at
+   |                             ^^
+  hint: an address is a `nint` or a `nuint`: `(raw int)(nuint)at`

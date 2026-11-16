@@ -1,0 +1,59 @@
+// `getopt` of the C library, which answers through its variables `optarg` and `optind`.
+extern {
+    int getopt(int count, raw raw byte words, read CString options)
+    raw byte optarg
+    int optind
+    int opterr
+}
+
+// The words as C keeps them: each a text ended by a zero byte, and a `null` after the last.
+raw raw byte words(read List<string> list) {
+    var all = Memory.allocate<raw byte>(list.length() + 1)
+    for at in 0..list.length() {
+        var bytes = list[at].asBytes()
+        var word = Memory.allocate<byte>(bytes.length() + 1)
+        for i in 0..bytes.length() {
+            unsafe {
+                word[i] = bytes[i]
+            }
+        }
+        unsafe {
+            all[at] = word
+        }
+    }
+    return all
+}
+
+void main() {
+    var list = List<string> { "tool", "-v", "-o", "out.txt", "-x", "in.txt" }
+    var argv = words(read list)
+    var options = CString.from("vo:") ?? return
+    // From the first word on, whatever an earlier scan left.
+    unsafe {
+        opterr = 0
+        optind = 1
+    }
+    while true {
+        int found = unsafe getopt((int)list.length(), argv, read options)
+        if found == -1 {
+            break
+        }
+        if found == (int)'o' {
+            var value = unsafe string.fromCString(optarg) ?? return
+            print($"-o {value}")
+        } else if found == (int)'v' {
+            print("-v")
+        } else {
+            print($"unknown, {found}")
+        }
+    }
+    print($"the first word that is no option: {unsafe optind}")
+    for at in 0..list.length() + 1 {
+        unsafe {
+            Memory.free(argv[at])
+        }
+    }
+    unsafe {
+        Memory.free(argv)
+    }
+}

@@ -1,0 +1,34 @@
+// An address as a number and back, and the difference and the order of two pointers.
+struct Pair {
+    int a
+    long b
+}
+
+void main() {
+    var p = Memory.allocate<int>(10)
+    var q = unsafe (p + 3)
+    print(q - p)
+    print(p - q)
+    print(p < q)
+    print(q <= p)
+    print(q >= q)
+    var pairs = Memory.allocate<Pair>(4)
+    var last = unsafe (pairs + 3)
+    print(last - pairs)
+    // The same address made from its number: it is still checked against its block.
+    nuint at = (nuint)q
+    var back = unsafe (raw int)at
+    unsafe {
+        back[1] = 9
+    }
+    print(unsafe p[4])
+    print(back == q)
+    // An address no block holds: `(void*)-1`, as `SQLITE_TRANSIENT` is.
+    var marker = unsafe (raw void)(nint)-1
+    print((nint)marker)
+    print((nuint)unsafe (raw byte)0x1000)
+    unsafe {
+        Memory.free(p)
+        Memory.free(pairs)
+    }
+}

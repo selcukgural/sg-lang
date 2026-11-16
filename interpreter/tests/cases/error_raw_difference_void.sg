@@ -1,0 +1,7 @@
+// The items between two `raw void` cannot be counted.
+void main() {
+    var block = Memory.allocate<int>(4)
+    var p = unsafe (raw void)block
+    var q = unsafe (raw void)(block + 2)
+    print(p - q)
+}

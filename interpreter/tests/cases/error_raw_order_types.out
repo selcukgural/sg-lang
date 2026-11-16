@@ -1,0 +1,5 @@
+error: operator `<` is not defined for `raw int` and `raw byte`
+  --> error_raw_order_types.sg:5:11
+ 5 |     print(p < q)
+   |           ^^^^^
+  hint: point both at one type with a cast: `unsafe (raw int)q`

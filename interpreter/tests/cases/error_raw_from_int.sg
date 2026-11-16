@@ -1,0 +1,6 @@
+// A number made into a pointer is written inside `unsafe`.
+void main() {
+    nuint at = 4096
+    var p = (raw int)at
+    print(p == null)
+}

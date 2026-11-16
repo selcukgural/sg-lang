@@ -1,0 +1,5 @@
+error: a variable of C has no value here: C gives it one
+  --> error_cvar_value.sg:3:15
+ 3 |     int count = 1
+   |               ^
+  hint: `count` is given a value inside `unsafe`: `unsafe { count = ... }`

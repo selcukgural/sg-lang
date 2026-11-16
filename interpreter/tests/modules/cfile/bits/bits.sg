@@ -1,0 +1,19 @@
+// A module that keeps a C file of its own behind safe functions, and links the library the
+// file needs.
+extern "./bits.c" {
+    int bits_in(ulong n)
+    uint crc_of(read CString text)
+}
+
+// What `bits.c` calls: nothing of it is declared here.
+extern "z" {
+}
+
+public int countBits(ulong n) {
+    return unsafe bits_in(n)
+}
+
+public uint checksum(read string text) {
+    var c = CString.from(text) ?? return 0
+    return unsafe crc_of(read c)
+}

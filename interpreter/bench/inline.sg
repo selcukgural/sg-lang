@@ -1,0 +1,13 @@
+// A function of a C file called five hundred million times: it is inlined, so the loop takes the
+// time of the same loop in C.
+extern "./inline_helpers.c" {
+    ulong mix(ulong x)
+}
+
+void main() {
+    ulong acc = 1
+    for i in 0..500_000_000 {
+        acc = unsafe mix(acc ^ (ulong)i)
+    }
+    print(acc)
+}

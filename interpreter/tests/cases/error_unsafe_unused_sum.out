@@ -1,5 +1,5 @@
 error: nothing here needs `unsafe`
-  `unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers, `Memory.free`, `Memory.copy`, a call of a C function and `string.fromCString`
+  `unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers or from a number to one, `Memory.free`, `Memory.copy`, a call of a C function, a variable of C and `string.fromCString`
   --> error_unsafe_unused_sum.sg:4:22
  4 |     raw int second = unsafe numbers + 1
    |                      ^^^^^^

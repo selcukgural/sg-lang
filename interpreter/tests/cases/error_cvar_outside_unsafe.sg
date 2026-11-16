@@ -1,0 +1,8 @@
+// A variable of C is read inside `unsafe`.
+extern {
+    int opterr
+}
+
+void main() {
+    print(opterr)
+}

@@ -1,0 +1,7 @@
+// A variable of C gets no value where it is declared.
+extern {
+    int count = 1
+}
+
+void main() {
+}

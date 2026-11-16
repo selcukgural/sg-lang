@@ -1,0 +1,8 @@
+error: `opterr` is declared twice in this module
+  --> error_cvar_twice.sg:4:9
+ 4 |     int opterr
+   |         ^^^^^^
+  the other declaration:
+  --> error_cvar_twice.sg:3:9
+ 3 |     int opterr
+   |         ^^^^^^

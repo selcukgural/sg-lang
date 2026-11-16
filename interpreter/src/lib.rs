@@ -40,7 +40,47 @@ fn parse(sources: &Sources, tests: bool) -> Result<ast::Program, Diag> {
     let files: Vec<(usize, usize, String)> = sources.files.iter().map(|file| (file.start, file.end, file.module.clone())).collect();
     let mut prog = parser::parse_files(&sources.text, &files)?;
     prog.tests.retain(|test| !tests || sources.file_at(test.name_span.start).tested);
+    c_files(&mut prog, sources)?;
     Ok(prog)
+}
+
+/// Finds the C file each `extern "./native.c"` block names, beside the file of SG it is
+/// written in, and keeps where it lies in every declaration of the block.
+fn c_files(prog: &mut ast::Program, sources: &Sources) -> Result<(), Diag> {
+    let mut found: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
+    let mut find = |foreign: &mut ast::Foreign| -> Result<(), Diag> {
+        let Some(written) = &foreign.file else { return Ok(()) };
+        if let Some(path) = found.get(&foreign.span.start) {
+            foreign.path = Some(path.clone());
+            return Ok(());
+        }
+        let source = &sources.file_at(foreign.span.start).path;
+        let folder = std::path::Path::new(source).parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        let place = folder.join(&written[2..]);
+        let path = match std::fs::canonicalize(&place) {
+            Ok(path) if path.is_file() => path,
+            _ => {
+                return Err(Diag::error(foreign.span, format!("there is no C file `{written}` beside this file"))
+                    .note(format!("it is looked for at {}", place.display())))
+            }
+        };
+        let path = path.to_string_lossy().into_owned();
+        found.insert(foreign.span.start, path.clone());
+        foreign.path = Some(path);
+        Ok(())
+    };
+    for (_, foreign) in &mut prog.blocks {
+        find(foreign)?;
+    }
+    for func in &mut prog.funcs {
+        if let Some(foreign) = &mut func.foreign {
+            find(foreign)?;
+        }
+    }
+    for var in &mut prog.cvars {
+        find(&mut var.foreign)?;
+    }
+    Ok(())
 }
 
 /// Parses and checks the program. For a name that was not found, the modules no file names

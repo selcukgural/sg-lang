@@ -1,0 +1,7 @@
+// The C file is not there.
+extern "./missing.c" {
+    int f()
+}
+
+void main() {
+}

@@ -1,0 +1,5 @@
+error: `opterr` is a variable of C, which C may read and write at any time and from any thread, so it is written inside `unsafe`
+  --> error_cvar_outside_unsafe.sg:7:11
+ 7 |     print(opterr)
+   |           ^^^^^^
+  hint: `unsafe opterr`, or `unsafe { ... }` around several statements

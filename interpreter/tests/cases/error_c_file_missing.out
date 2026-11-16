@@ -1,0 +1,5 @@
+error: there is no C file `./missing.c` beside this file
+  it is looked for at missing.c
+  --> error_c_file_missing.sg:2:1
+ 2 | extern "./missing.c" {
+   | ^^^^^^^^^^^^^^^^^^^^

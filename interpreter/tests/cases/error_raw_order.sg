@@ -1,6 +1,0 @@
-// Raw pointers have no order.
-void main() {
-    var numbers = Memory.allocate<int>(4)
-    raw int last = unsafe (numbers + 3)
-    print(numbers < last)
-}

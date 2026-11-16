@@ -1,0 +1,6 @@
+// An address is a number of its own width.
+void main() {
+    var p = Memory.allocate<int>(1)
+    int n = (int)p
+    print(n)
+}

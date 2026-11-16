@@ -1,0 +1,5 @@
+error: `C` has no function `errorNumber`
+  functions for now: errno, setErrno; the functions of C are declared in an `extern` block
+  --> error_c_unknown_function.sg:3:13
+ 3 |     print(C.errorNumber())
+   |             ^^^^^^^^^^^

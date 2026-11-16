@@ -1920,7 +1920,7 @@ pub fn run_program<'a>(prog: &'a Program, src: &'a str, out: &'a mut dyn Write, 
     let ffi = crate::ffi::Library::open(prog, false).map_err(Stop::Diag)?;
     let io = shared(out, world, ffi);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog) };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: 0 };
         let result = run_main(&mut interp);
         interp.end_fibers();
         result
@@ -1981,7 +1981,7 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let ffi = crate::ffi::Library::open(prog, true).map_err(Stop::Diag)?;
     let io = shared(out, world, ffi);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog) };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: 0 };
         run_each_test(&mut interp, prog, sources)
     })
 }
@@ -2106,6 +2106,10 @@ struct Interp<'a, 'e> {
     /// Where the files of the language's own module start in the text: they come after the
     /// program's. A panic in them is shown at the call that came from outside (see `call`).
     std_from: usize,
+    /// The `errno` of this fiber: what the last call of C left, and what the next one starts
+    /// with (`C.errno()`, `C.setErrno(n)`). Kept here, since the interpreter's own work between
+    /// two calls of C may change the system's.
+    errno: i32,
 }
 
 /// Where the first file of the language's own module starts; the end of the text if none was read in.
@@ -2582,6 +2586,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             plain: self.plain,
             foreign: self.foreign,
             std_from: self.std_from,
+            errno: 0,
         };
         let weak = Rc::downgrade(task);
         let name: Rc<str> = func.name.as_str().into();
@@ -3062,6 +3067,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Ok(value)
             }
             ExprKind::FuncRef(name) => Ok(Value::Func(name.as_str().into())),
+            // C owns the memory of its variable, so it is not checked as a block.
+            ExprKind::CVar(name) => Ok(Value::Raw(RawPtr { addr: self.io.ffi.variable(name), block: None })),
             ExprKind::Constant { ty, name } => Ok(constant(ty, name)),
             ExprKind::Collection { ty, items, .. } => {
                 let given = items.iter().flatten();
@@ -3125,9 +3132,30 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             // Two addresses, or one and `null`.
             ExprKind::Binary(op, left, right) if matches!(left.ty.strip_borrow(), Ty::Raw(_)) || matches!(right.ty.strip_borrow(), Ty::Raw(_)) => {
+                let item = match left.ty.strip_borrow() {
+                    Ty::Raw(item) => (**item).clone(),
+                    _ => Ty::Void,
+                };
                 let left = raw_of(&strip(self.expr(left, frame)?));
                 let right = raw_of(&strip(self.expr(right, frame)?));
-                Ok(Value::Bool((left.addr == right.addr) == (*op == BinOp::Eq)))
+                Ok(match op {
+                    BinOp::Lt => Value::Bool(left.addr < right.addr),
+                    BinOp::Le => Value::Bool(left.addr <= right.addr),
+                    BinOp::Gt => Value::Bool(left.addr > right.addr),
+                    BinOp::Ge => Value::Bool(left.addr >= right.addr),
+                    // Two pointers into two blocks have nothing between them to count.
+                    BinOp::Sub => {
+                        if let (Some(a), Some(b)) = (left.block, right.block) {
+                            if a != b {
+                                return Err(Diag::panic(expr.span, "the items between two pointers are counted, and the two point into two blocks of raw memory").into());
+                            }
+                        }
+                        let (size, _) = raw::layout(&item, self.plain);
+                        let bytes = left.addr as i128 - right.addr as i128;
+                        Value::Int(IntTy::Nint, if size == 0 { 0 } else { bytes / size as i128 })
+                    }
+                    _ => Value::Bool((left.addr == right.addr) == (*op == BinOp::Eq)),
+                })
             }
             ExprKind::Binary(op, left, right) => {
                 let left = strip(self.expr(left, frame)?);
@@ -3137,6 +3165,11 @@ impl<'a, 'e> Interp<'a, 'e> {
             ExprKind::Unsafe(inner) => self.expr(inner, frame),
             ExprKind::RawCast { expr: inner, .. } => Ok(match strip(self.expr(inner, frame)?) {
                 Value::Null => Value::Null,
+                // A number made into a pointer finds its block again by its address.
+                Value::Int(_, number) => {
+                    let addr = number as i64 as usize;
+                    Value::Raw(RawPtr { addr, block: raw::block_at(addr) })
+                }
                 pointer => Value::Raw(raw_of(&pointer)),
             }),
             // `Memory.allocate<T>(n)`
@@ -3215,6 +3248,9 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Ok(Value::Str(text[start..end].to_string().into()))
             }
             ExprKind::Cast { ty, expr: inner } => match (strip(self.expr(inner, frame)?), ty) {
+                (Value::Raw(pointer), Ty::Int(IntTy::Nint)) => Ok(Value::Int(IntTy::Nint, pointer.addr as isize as i128)),
+                (Value::Raw(pointer), Ty::Int(_)) => Ok(Value::Int(IntTy::Nuint, pointer.addr as i128)),
+                (Value::Null, Ty::Int(to)) => Ok(Value::Int(*to, 0)),
                 (Value::Int(_, value), Ty::Int(to)) if to.fits(value) => Ok(Value::Int(*to, value)),
                 (Value::Int(_, value), Ty::Int(to)) => Err(Diag::panic(expr.span, format!("value {value} does not fit in {}", to.name()))
                     .hint(format!("`tryTo{0}()` gives `null` when the value does not fit, and `wrappingTo{0}()` cuts it to size", to.title()))
@@ -4006,7 +4042,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
             }
         }
-        let returned = self.io.ffi.call(name, &mut slots);
+        let returned = self.io.ffi.call(name, &mut slots, &mut self.errno);
         for (scratch, item, cells) in &lent {
             let (size, _) = raw::layout(item, self.plain);
             for (position, held) in cells.iter().enumerate() {
@@ -4080,6 +4116,13 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// `Memory.free(p)` and `Memory.copy(source, target, count)`.
     fn memory(&mut self, call: MemoryCall, args: &'a [Expr], span: Span, frame: &mut Frame) -> Res<Value> {
         match call {
+            MemoryCall::Errno => Ok(Value::Int(IntTy::Int, self.errno as i128)),
+            MemoryCall::SetErrno => {
+                self.errno = self.int(&args[0], frame)? as i32;
+                Ok(Value::Void)
+            }
+            // A number that is no code of the system's, below 0, is kept as it is.
+            MemoryCall::IoErrorOf => Ok(io_cause(None, Some(self.int(&args[0], frame)? as i32))),
             MemoryCall::Free => {
                 let pointer = raw_of(&strip(self.expr(&args[0], frame)?));
                 let why = match raw::free(pointer) {

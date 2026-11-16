@@ -1,0 +1,5 @@
+error: this makes a pointer out of a number, which may be no address of anything, so it is written inside `unsafe`
+  --> error_raw_from_int.sg:4:13
+ 4 |     var p = (raw int)at
+   |             ^^^^^^^^^^^
+  hint: `unsafe (raw int)at`, or `unsafe { ... }` around several statements

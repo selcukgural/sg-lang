@@ -1,0 +1,6 @@
+// Two addresses are put in order when they point at one type.
+void main() {
+    var p = Memory.allocate<int>(4)
+    var q = Memory.allocate<byte>(4)
+    print(p < q)
+}

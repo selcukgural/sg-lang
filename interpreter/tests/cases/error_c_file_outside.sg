@@ -1,0 +1,7 @@
+// A C file of the program lies in the module's folder.
+extern "./../native.c" {
+    int f()
+}
+
+void main() {
+}

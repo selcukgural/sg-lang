@@ -1,0 +1,5 @@
+error: `native.c` is not the name of a library, nor a C file of this module
+  --> error_c_file_not_c.sg:2:1
+ 2 | extern "native.c" {
+   | ^^^^^^^^^^^^^^^^^
+  hint: a C file beside the program is written from the module's folder: `extern "./native.c"`

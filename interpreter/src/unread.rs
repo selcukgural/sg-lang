@@ -272,7 +272,7 @@ impl<'p> Pass<'p> {
     fn expr(&mut self, expr: &'p Expr) {
         match &expr.kind {
             ExprKind::Var(name) => self.read(expr.span.start, name),
-            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Constant { .. } | ExprKind::FuncRef(_) => {}
+            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Constant { .. } | ExprKind::FuncRef(_) | ExprKind::CVar(_) => {}
             ExprKind::Interp(parts) => {
                 for part in parts {
                     if let InterpPart::Expr(value, _) = part {

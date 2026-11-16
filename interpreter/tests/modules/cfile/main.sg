@@ -1,0 +1,51 @@
+// A C file beside the program: its inline functions, a macro behind one, and its variables;
+// and a module with a C file of its own.
+use bits
+
+extern "./native.c" {
+    long square(long n)
+    int count_bits(ulong n)
+    long hits
+    Point origin
+}
+
+// A variable of the C library.
+extern {
+    int opterr
+}
+
+struct Point {
+    int x
+    int y
+}
+
+void main() {
+    long total = 0
+    for i in 0..10 {
+        total += unsafe square(i)
+    }
+    print(total)
+    print(unsafe count_bits(0xff00ff))
+    print(unsafe hits)
+    unsafe {
+        hits = 100
+        hits += 1
+    }
+    print(unsafe hits)
+    var p = unsafe origin
+    print($"{p.x} {p.y}")
+    unsafe {
+        origin.y = 40
+    }
+    print(unsafe origin.y)
+    unsafe {
+        opterr = 1
+    }
+    print(unsafe opterr)
+    unsafe {
+        opterr = 0
+    }
+    print(unsafe opterr)
+    print(bits.countBits(0xf0f0))
+    print(bits.checksum("hello"))
+}

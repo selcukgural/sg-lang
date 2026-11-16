@@ -1,0 +1,7 @@
+// A variable of C holds plain data.
+extern {
+    string name
+}
+
+void main() {
+}

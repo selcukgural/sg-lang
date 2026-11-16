@@ -30,7 +30,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "CString", "Duration", "Instant", "DateTime", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "Path", "Environment", "VariableError"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "Path", "Environment", "VariableError"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -86,6 +86,10 @@ struct Names {
     /// The types of C declared in `extern` blocks (`struct sqlite3`), by full name: they are
     /// written only behind a raw pointer.
     opaque: HashSet<String>,
+    /// The variables of C declared in `extern` blocks (`int opterr`), by full name.
+    cvars: HashSet<String>,
+    /// What each of them holds, once the types are known.
+    cvar_types: HashMap<String, Ty>,
 }
 
 thread_local! {
@@ -104,7 +108,7 @@ impl Names {
     }
 
     fn known(&self, full: &str) -> bool {
-        self.kinds.contains_key(full) || self.funcs.contains(full)
+        self.kinds.contains_key(full) || self.funcs.contains(full) || self.cvars.contains(full)
     }
 
     /// The full name of the type or function that `written` means in the file at `at`: a name
@@ -660,6 +664,19 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             names.public.insert(func.name.clone());
         }
     }
+    for var in &prog.cvars {
+        if names.funcs.contains(&var.name) || !names.cvars.insert(var.name.clone()) {
+            let diag = Diag::error(var.name_span, format!("`{}` is declared twice in this module", short_name(&var.name)));
+            return Err(match names.spans.get(&var.name) {
+                Some(other) => diag.related(*other, "the other declaration"),
+                None => diag,
+            });
+        }
+        names.spans.insert(var.name.clone(), var.name_span);
+        if var.public {
+            names.public.insert(var.name.clone());
+        }
+    }
     let types = prog
         .structs
         .iter()
@@ -922,6 +939,41 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                     .note("C has one function of this name, so it is declared the same way everywhere"));
             }
         }
+    }
+
+    // A variable of C holds plain data, which C and SG lay out the same way.
+    let mut c_vars: HashMap<&str, (&CVarDecl, Ty)> = HashMap::new();
+    for var in &prog.cvars {
+        let ty = resolve_type(&var.ty, &names, false)?;
+        let c_name = short_name(&var.name);
+        if BUILTINS.contains(&c_name) || BUILTIN_TYPES.contains(&c_name) || names.kinds.contains_key(var.name.as_str()) {
+            return Err(Diag::error(var.name_span, format!("`{c_name}` is already the name of a type or a built-in function")));
+        }
+        if ty == Ty::Void || matches!(ty, Ty::Read(_) | Ty::Ref(_)) || not_plain(&ty, &structs).is_some() {
+            let diag = Diag::error(var.ty.span, format!("the variable of C `{c_name}` cannot hold a `{ty}`"));
+            return Err(match &ty {
+                Ty::Char => diag.note("a `char` of SG is a Unicode character of 32 bits, and a `char` of C is a byte").hint("`byte`, or `sbyte` for a C `char` that is signed"),
+                Ty::Str => diag.hint("C keeps a text as `raw byte`; `unsafe string.fromCString(p)` copies it"),
+                Ty::Struct(name) if structs.get(name).is_some_and(|info| info.opaque) => diag.hint(format!("a type of C seen only behind a pointer is held as `raw {}`", short_name(name))),
+                _ => diag.note("a variable of C holds plain data: numbers, `bool`, raw pointers, and arrays and structs of them"),
+            });
+        }
+        if let Some((other, theirs)) = c_vars.get(c_name) {
+            if *theirs != ty {
+                return Err(Diag::error(var.name_span, format!("the variable of C `{c_name}` is declared twice, and the two declarations differ"))
+                    .related(other.name_span, "the other declaration")
+                    .note("C has one variable of this name, so it is declared the same way everywhere"));
+            }
+        }
+        c_vars.insert(c_name, (var, ty.clone()));
+        names.cvar_types.insert(var.name.clone(), ty.clone());
+        prog.cvar_types.insert(var.name.clone(), ty);
+    }
+    for var in &prog.cvars {
+        foreign_lib(&var.foreign)?;
+    }
+    for (_, foreign) in &prog.blocks {
+        foreign_lib(foreign)?;
     }
 
     // Every alias names a type, also one that nothing uses yet.
@@ -2175,7 +2227,7 @@ const UNNAMED: usize = usize::MAX;
 /// is judged by what it borrowed.
 fn unnamed_owner(expr: &Expr) -> bool {
     match &expr.kind {
-        ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::FuncRef(_) => false,
+        ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::FuncRef(_) | ExprKind::CVar(_) => false,
         ExprKind::Borrow { .. } | ExprKind::Slice { .. } | ExprKind::Unbox(_) | ExprKind::AsSlice(_) => false,
         _ => !expr.ty.is_borrow() && !matches!(expr.ty, Ty::Void | Ty::Never | Ty::Null),
     }
@@ -2776,11 +2828,19 @@ impl<'a> Checker<'a> {
         if written == "this" || BUILTINS.contains(&written.as_str()) || self.find(written).is_some() {
             return Ok(());
         }
+        let is_var = matches!(expr.kind, ExprKind::Var(_));
         let (ExprKind::Var(name) | ExprKind::Call { name, .. } | ExprKind::StructLit { name, .. }) = &mut expr.kind else {
             unreachable!("matched above")
         };
         if let Some(full) = self.names.full(name, span)? {
             *name = full;
+        }
+        // `opterr`, a variable of C: the item at its address, in raw memory.
+        if is_var && self.names.cvars.contains(name.as_str()) {
+            let name = name.clone();
+            let at = |kind| Box::new(Expr { kind, span, ty: Ty::Void, moved: false });
+            expr.kind = ExprKind::Index { recv: at(ExprKind::CVar(name)), index: at(ExprKind::Int(0, IntTy::Nint)), kind: IndexKind::Raw };
+            return Ok(());
         }
         // An alias of a struct or an enum builds it under the other name.
         if let Some(target) = self.alias_target(name, span)? {
@@ -3574,6 +3634,14 @@ impl<'a> Checker<'a> {
                 // so a borrow that the right side reads last ends before the write (`b = Box { n
                 // = r.n + 1 }`), and a borrow the place goes through must outlive the right side.
                 let (first_use, first_clash) = (self.borrows.uses.len(), self.borrows.clashes.len());
+                // `opterr = 0`: a variable of C is an item of raw memory.
+                let cvar = match &target.kind {
+                    ExprKind::Var(name) if name != "this" && self.find(name).is_none() => self.names.full(name, target.span)?.is_some_and(|full| self.names.cvars.contains(&full)),
+                    _ => false,
+                };
+                if cvar {
+                    self.settle(target)?;
+                }
                 let target_ty = match &target.kind {
                     ExprKind::Var(name) => {
                         let var = if op.is_some() { self.live_var(name, target.span)? } else { self.var(name, target.span)? };
@@ -4124,7 +4192,7 @@ impl<'a> Checker<'a> {
         let value = result?;
         if !used {
             return Err(Diag::error(word, "nothing here needs `unsafe`")
-                .note("`unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers, `Memory.free`, `Memory.copy`, a call of a C function and `string.fromCString`")
+                .note("`unsafe` is for what the checker cannot follow: an item of raw memory (`p[i]`), `p + n`, a cast between raw pointers or from a number to one, `Memory.free`, `Memory.copy`, a call of a C function, a variable of C and `string.fromCString`")
                 .hint("leave `unsafe` out"));
         }
         Ok(value)
@@ -4839,7 +4907,10 @@ impl<'a> Checker<'a> {
                     // Whatever reached the pointer, what it points at is not borrowed from it.
                     Ty::Raw(item) => {
                         let item = (**item).clone();
-                        self.needs_unsafe(span, "this reaches raw memory, whose size and life the checker does not know")?;
+                        match &recv.kind {
+                            ExprKind::CVar(name) => self.needs_unsafe(span, &format!("`{}` is a variable of C, which C may read and write at any time and from any thread", short_name(name)))?,
+                            _ => self.needs_unsafe(span, "this reaches raw memory, whose size and life the checker does not know")?,
+                        }
                         self.index(index, "an index")?;
                         *kind = IndexKind::Raw;
                         Ok(Some((item, true)))
@@ -5136,7 +5207,9 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Method { recv, name, name_span, args, .. } => {
                 // `Shape.unit()`: a function of the enum, not a variant.
-                if let Some(owner) = self.enum_named(recv).filter(|owner| !self.methods_of(owner).contains_key(name.as_str())) {
+                // `IoError.fromCode(n)` is a function of the built-in enum, checked with the calls.
+                let built_in = name == "fromCode" && matches!(&recv.kind, ExprKind::Var(owner) if owner == IO_ERROR);
+                if let Some(owner) = self.enum_named(recv).filter(|owner| !built_in && !self.methods_of(owner).contains_key(name.as_str())) {
                     // `await Shape.Circle(f())` awaits no call in it.
                     self.awaiting = false;
                     let (index, ty) = self.variant(owner, name, *name_span, Some(args), span)?;
@@ -5200,11 +5273,20 @@ impl<'a> Checker<'a> {
                 if !matches!(target, Ty::Raw(_)) {
                     return Err(Diag::error(ty.span, format!("a cast with `raw` gives a raw pointer, and `{target}` is not one")));
                 }
-                let found = self.expr(inner, None)?;
+                // A number written here is an address: `(raw void)(nint)-1`, `(raw byte)0x1000`.
+                let found = self.expr(inner, Some(&Ty::Int(IntTy::Nint)))?;
                 let stripped = found.strip_borrow().clone();
+                if let Ty::Int(IntTy::Nint | IntTy::Nuint) = stripped {
+                    self.coerce(inner, found, &stripped)?;
+                    self.needs_unsafe(span, "this makes a pointer out of a number, which may be no address of anything")?;
+                    return Ok(target);
+                }
                 if !matches!(stripped, Ty::Raw(_)) {
-                    return Err(Diag::error(inner.span, format!("a cast to `{target}` reads a raw pointer as another, and this is `{found}`"))
-                        .note("a raw pointer is made by `Memory.allocate<T>(n)`"));
+                    let diag = Diag::error(inner.span, format!("a cast to `{target}` reads a raw pointer as another, or an address as a pointer, and this is `{found}`"));
+                    return Err(match stripped {
+                        Ty::Int(_) => diag.hint(format!("an address is a `nint` or a `nuint`: `({target})(nuint){}`", &self.src[inner.span.start..inner.span.end])),
+                        _ => diag.note("a raw pointer is made by `Memory.allocate<T>(n)`"),
+                    });
                 }
                 self.coerce(inner, found, &stripped)?;
                 self.needs_unsafe(span, "this reads a raw pointer as one to another type")?;
@@ -5412,6 +5494,16 @@ impl<'a> Checker<'a> {
             ExprKind::Cast { ty, expr: operand } => {
                 let found = self.operand(operand, None)?;
                 let from = found.strip_borrow().clone();
+                // `(nuint)p`: the address, as a number. Nothing is read, so no `unsafe`.
+                if let Ty::Raw(_) = &from {
+                    if !matches!(&*ty, Ty::Int(IntTy::Nint | IntTy::Nuint)) {
+                        let text = &self.src[operand.span.start..operand.span.end];
+                        return Err(Diag::error(span, format!("an address is read as a number as wide as an address, and `{ty}` is not one"))
+                            .hint(format!("`(nuint){text}`, or `(nint){text}`")));
+                    }
+                    self.coerce(operand, found, &from)?;
+                    return Ok(ty.clone());
+                }
                 // A `char` is converted to and from integers only: its code.
                 let fits = match (&from, &*ty) {
                     (Ty::Char, Ty::Int(_) | Ty::Char) | (Ty::Int(_), Ty::Char) => true,
@@ -5721,6 +5813,8 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Match { subject, arms, borrowed } => self.match_expr(subject, arms, borrowed, expected, false),
             ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => unreachable!("places are handled above"),
+            // The address of a variable of C: making it touches nothing.
+            ExprKind::CVar(name) => Ok(Ty::Raw(Box::new(self.names.cvar_types[name.as_str()].clone()))),
             ExprKind::Widen(..) | ExprKind::Load(_) | ExprKind::Unbox(_) | ExprKind::AsSlice(_) | ExprKind::Variant { .. } | ExprKind::FuncRef(_) | ExprKind::Constant { .. } => {
                 unreachable!("inserted only after checking")
             }
@@ -6737,6 +6831,34 @@ impl<'a> Checker<'a> {
             (Ty::Str | Ty::Fmt, Ty::Str | Ty::Fmt) if op == BinOp::Add => {
                 Err(undefined().hint("strings are joined with `$\"{a}{b}\"`"))
             }
+            // `p < q`: the order of two addresses, as numbers. Nothing is read.
+            (Ty::Raw(a), Ty::Raw(b)) if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) => match a == b {
+                true => {
+                    let raw = left_ty.strip_borrow().clone();
+                    self.coerce(left, left_ty.clone(), &raw)?;
+                    self.coerce(right, right_ty.clone(), &raw)?;
+                    Ok(Ty::Bool)
+                }
+                false => Err(undefined().hint(format!("point both at one type with a cast: `unsafe (raw {a})q`"))),
+            },
+            // `p - q`: how many items lie from `q` to `p`. Nothing is read.
+            (Ty::Raw(a), Ty::Raw(b)) if op == BinOp::Sub => {
+                if a != b {
+                    return Err(undefined().note("the items between two pointers are counted when both point at one type"));
+                }
+                if **a == Ty::Void {
+                    let (p, q) = (&self.src[left.span.start..left.span.end], &self.src[right.span.start..right.span.end]);
+                    return Err(Diag::error(span, "a `raw void` points at memory of no known type, so the items between two of them cannot be counted")
+                        .hint(format!("count bytes with casts: `unsafe ((raw byte){p} - (raw byte){q})`")));
+                }
+                if matches!(&**a, Ty::Struct(name) if self.structs[name].opaque) {
+                    return Err(Diag::error(span, format!("a `{}` points at a type of C whose size SG does not know, so the items between two of them cannot be counted", left_ty.strip_borrow())));
+                }
+                let raw = left_ty.strip_borrow().clone();
+                self.coerce(left, left_ty.clone(), &raw)?;
+                self.coerce(right, right_ty.clone(), &raw)?;
+                Ok(Ty::Int(IntTy::Nint))
+            }
             // Two addresses, or an address and `null`, are compared as they are.
             (Ty::Raw(a), Ty::Raw(b)) if matches!(op, BinOp::Eq | BinOp::Ne) => match a == b {
                 true => {
@@ -7545,6 +7667,31 @@ impl<'a> Checker<'a> {
 
     /// `Memory.free(p)`, `Memory.copy(source, target, count)`; `Memory.allocate<T>(n)` is an
     /// `Allocate`.
+    ///
+    /// `C.errno()` and `C.setErrno(n)`: the `errno` of the last call of C, and of the next.
+    /// Neither touches memory, so neither is written inside `unsafe`.
+    fn c_call(&mut self, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
+        match name {
+            "errno" => {
+                self.args(name, args, &[], span)?;
+                *callee = Callee::Memory(MemoryCall::Errno);
+                Ok(Ty::Int(IntTy::Int))
+            }
+            "setErrno" => {
+                self.args(name, args, &[Ty::Int(IntTy::Int)], span)?;
+                *callee = Callee::Memory(MemoryCall::SetErrno);
+                Ok(Ty::Void)
+            }
+            _ => {
+                let diag = Diag::error(name_span, format!("`C` has no function `{name}`"));
+                Err(match nearest(name, ["errno", "setErrno"].into_iter()) {
+                    Some(close) => diag.hint(format!("`{close}`")),
+                    None => diag.note("functions for now: errno, setErrno; the functions of C are declared in an `extern` block"),
+                })
+            }
+        }
+    }
+
     fn memory_call(&mut self, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
         let pointer = |checker: &mut Self, arg: &mut Expr, what: &str| -> Res<Ty> {
             let found = checker.expr(arg, None)?;
@@ -8064,6 +8211,12 @@ impl<'a> Checker<'a> {
         // A type name in front of the dot: `Stack.create()`.
         if let ExprKind::Var(owner) = &recv.kind {
             if self.find(owner).is_none() && owner != "this" {
+                // `IoError.fromCode(n)`: the error for a number C left in `errno`.
+                if owner == IO_ERROR && name == "fromCode" {
+                    self.args(name, args, &[Ty::Int(IntTy::Int)], span)?;
+                    *callee = Callee::Memory(MemoryCall::IoErrorOf);
+                    return Ok(Ty::Enum(IO_ERROR.to_string()));
+                }
                 if self.structs.contains_key(owner.as_str()) || self.enums.contains_key(owner.as_str()) {
                     return self.static_call(owner, name, name_span, args, callee, span, awaited);
                 }
@@ -8072,6 +8225,9 @@ impl<'a> Checker<'a> {
                 }
                 if owner == "Memory" {
                     return self.memory_call(name, name_span, args, callee, span);
+                }
+                if owner == "C" {
+                    return self.c_call(name, name_span, args, callee, span);
                 }
                 // The two readings of the clock, which only the language's own module makes.
                 if owner == "Clock" && self.names.module(span) == STD_MODULE && matches!(name, "monotonic" | "wall") {
@@ -9429,6 +9585,7 @@ fn parts(expr: &Expr) -> Vec<Part<'_>> {
         | ExprKind::Null
         | ExprKind::Var(_)
         | ExprKind::FuncRef(_)
+        | ExprKind::CVar(_)
         | ExprKind::Constant { .. }
         | ExprKind::Return(None) => {}
     }
@@ -9621,11 +9778,8 @@ fn unwrap_unsafe(expr: &mut Expr) {
 }
 
 
-/// What a C function takes and gives: integers, fractional numbers and `bool` as C has them,
-/// raw pointers, `ref T` and `read T` of plain data for the time of the call, and `read CString`
-/// for a text. The name of its library is a name, so that nothing else reaches the C compiler.
-fn foreign_sig(func: &Func, sig: &FuncSig, structs: &HashMap<String, StructInfo>) -> Res<()> {
-    let foreign = func.foreign.as_ref().expect("a function of C");
+/// The name of a library is a name, so that nothing else reaches the C compiler.
+fn foreign_lib(foreign: &Foreign) -> Res<()> {
     if let Some(lib) = &foreign.lib {
         let fine = !lib.is_empty() && !lib.starts_with('-') && lib.chars().all(|c| c.is_ascii_alphanumeric() || "_-.+".contains(c));
         if !fine {
@@ -9633,6 +9787,15 @@ fn foreign_sig(func: &Func, sig: &FuncSig, structs: &HashMap<String, StructInfo>
                 .note("a library is named as the C compiler links it, `extern \"z\"` for `-lz`: letters, digits and `_ - . +`"));
         }
     }
+    Ok(())
+}
+
+/// What a C function takes and gives: integers, fractional numbers and `bool` as C has them,
+/// raw pointers, `ref T` and `read T` of plain data for the time of the call, and `read CString`
+/// for a text. The name of its library is a name, so that nothing else reaches the C compiler.
+fn foreign_sig(func: &Func, sig: &FuncSig, structs: &HashMap<String, StructInfo>) -> Res<()> {
+    let foreign = func.foreign.as_ref().expect("a function of C");
+    foreign_lib(foreign)?;
     let c_name = short_name(&func.name);
     let char_hint = |diag: Diag| diag.note("a `char` of SG is a Unicode character of 32 bits, and a `char` of C is a byte").hint("`byte`, or `sbyte` for a C `char` that is signed");
     for ((param, ty), written) in func.params.iter().zip(&sig.params).zip(&func.params) {

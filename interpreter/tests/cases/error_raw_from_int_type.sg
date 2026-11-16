@@ -1,0 +1,6 @@
+// An address is a `nint` or a `nuint`.
+void main() {
+    long at = 4096
+    var p = unsafe (raw int)at
+    print(p == null)
+}

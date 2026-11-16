@@ -1,0 +1,8 @@
+// One name, declared twice.
+extern {
+    int opterr
+    int opterr
+}
+
+void main() {
+}
