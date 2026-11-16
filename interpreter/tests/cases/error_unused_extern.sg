@@ -1,0 +1,8 @@
+// What a function of C gives is often what says it failed: it is used or dropped on purpose.
+extern "c" {
+    int abs(int n)
+}
+
+void main() {
+    unsafe abs(-3)
+}

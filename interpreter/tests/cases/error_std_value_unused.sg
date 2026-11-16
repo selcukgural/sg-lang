@@ -1,0 +1,5 @@
+// A function of the language's own module gives its value to be used.
+void main() {
+    var folder = "logs"
+    Path.join(read folder, "today.txt")
+}

@@ -1,0 +1,14 @@
+// So does a method of your own that changes its value through `ref this`.
+struct Stack {
+    List<int> items
+
+    nint push(ref this, int item) {
+        this.items.add(item)
+        return this.items.length()
+    }
+}
+
+void main() {
+    var stack = Stack { items = List<int>() }
+    stack.push(5)
+}

@@ -1,0 +1,74 @@
+// The environment and the folder a program gets: a table of its own, made from ours with the
+// changes of `setVariable`, `removeVariable` and `clearVariables`, while ours stays as it is; and
+// `directory`. What the system cannot take is `InvalidInput`. The folder is the first word of the
+// command line.
+void show(read string what, Result<string, ProcessError> done) {
+    match done {
+        Ok(text) => print($"{what}: [{text.trim()}]")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+Command shell(read string script) {
+    var sh = Command("sh")
+    sh.arg("-c")
+    sh.arg(script)
+    return sh
+}
+
+Result<void, ProcessError> main(List<string> args) {
+    var dir = args[0].clone()
+    var greet = shell("echo \"${GREETING-unset} ${OTHER-unset}\"")
+    greet.setVariable("GREETING", "hello")
+    greet.setVariable("GREETING", "hello again")
+    greet.setVariable("OTHER", "there")
+    greet.removeVariable("OTHER")
+    show("set twice, removed", greet.output())
+    print($"ours: {Environment.get("GREETING") is Error(Missing)}")
+
+    // Ours is handed on: `PATH` is there unless the table starts empty.
+    var path = shell("test -n \"$PATH\" && echo has PATH")
+    show("inherited", path.output())
+    var clean = Command("/usr/bin/env")
+    clean.setVariable("BEFORE", "dropped")
+    clean.clearVariables()
+    clean.setVariable("ONLY", "this")
+    show("cleared", clean.output())
+    var empty = Command("/usr/bin/env")
+    empty.clearVariables()
+    show("nothing", empty.output())
+    var spaces = Command("/usr/bin/env")
+    spaces.clearVariables()
+    spaces.setVariable("A", "x = y; $z")
+    spaces.setVariable("B", "")
+    show("as written", spaces.output())
+
+    var bad = Command("true")
+    bad.setVariable("A=B", "c")
+    show("name with =", bad.output())
+    var nameless = Command("true")
+    nameless.setVariable("", "c")
+    show("empty name", nameless.output())
+    var zero = Command("echo")
+    zero.arg("a\0b")
+    show("zero byte", zero.output())
+    var zeroValue = Command("true")
+    zeroValue.setVariable("A", "a\0b")
+    show("zero in a value", zeroValue.output())
+
+    // The folder it works in; ours stays.
+    var folder = Path.join(read dir, "inner")
+    try Directory.create(read folder)
+    var pwd = Command("pwd")
+    pwd.directory(read folder)
+    var inner = try pwd.output()
+    print($"in inner: {inner.trim().endsWith("/inner")}")
+    var here = Command("pwd")
+    var ours = try here.output()
+    print($"ours stays: {ours.trim() != inner.trim()}")
+    var missing = Command("pwd")
+    var gone = Path.join(read dir, "missing")
+    missing.directory(read gone)
+    show("missing folder", missing.output())
+    return Ok()
+}

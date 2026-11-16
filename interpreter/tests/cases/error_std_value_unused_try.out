@@ -1,0 +1,5 @@
+error: the `ExitStatus` that `status` gives is not used
+  --> error_std_value_unused_try.sg:4:5
+ 4 |     try command.status()
+   |     ^^^^^^^^^^^^^^^^^^^^
+  hint: keep it: `var value = try command.status()`; to drop it on purpose, `_ = try command.status()`

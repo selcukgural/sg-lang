@@ -1,0 +1,6 @@
+// The `add` of a `HashSet` says whether the item was new.
+void main() {
+    var seen = HashSet<string>()
+    seen.add("a")
+    print(seen.length())
+}

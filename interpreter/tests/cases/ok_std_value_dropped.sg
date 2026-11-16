@@ -1,0 +1,13 @@
+// `_ =` drops the value of a function of the language's own module on purpose; one that gives
+// nothing stands alone.
+Result<void, IoError> main() {
+    var random = Random.fromSeed(7)
+    _ = random.nextInt(1, 6)
+    print(random.nextInt(1, 6) >= 1)
+    _ = Path.join("a", "b")
+    _ = try Directory.current()
+    var command = Command.create("true")
+    command.arg("x")
+    print("dropped")
+    return Ok()
+}

@@ -1,0 +1,5 @@
+error: the `int` that `noisy` gives is not used
+  --> error_unused_own_function.sg:8:5
+ 8 |     noisy(4)
+   |     ^^^^^^^^
+  hint: keep it: `var value = noisy(4)`; to drop it on purpose, `_ = noisy(4)`

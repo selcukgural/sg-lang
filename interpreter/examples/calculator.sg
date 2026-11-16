@@ -127,7 +127,7 @@ struct Parser<from source> {
                 Minus => Operator.Subtract
                 _ => return Ok(left)
             }
-            try this.advance()
+            _ = try this.advance()
             var right = try this.term()
             left = new Expr.Binary(op, left, right)
         }
@@ -141,7 +141,7 @@ struct Parser<from source> {
                 Slash => Operator.Divide
                 _ => return Ok(left)
             }
-            try this.advance()
+            _ = try this.advance()
             var right = try this.factor()
             left = new Expr.Binary(op, left, right)
         }
@@ -158,7 +158,7 @@ struct Parser<from source> {
                 if this.current is not RightParen {
                     return Error(SyntaxError.Unexpected(this.start))
                 }
-                try this.advance()
+                _ = try this.advance()
                 Ok(inner)
             }
             _ => Error(SyntaxError.Unexpected(position))

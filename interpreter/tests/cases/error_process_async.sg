@@ -1,0 +1,5 @@
+async Result<void, ProcessError> main() {
+    var list = Command("ls")
+    try list.run()
+    return Ok()
+}

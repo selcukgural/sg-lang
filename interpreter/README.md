@@ -18,7 +18,7 @@ cargo run -- build examples/primes.sg --release # the same as a release build: o
 sh bench/run.sh                                 # compiled SG against C written by hand
 ```
 
-## What runs today (15 November 2026)
+## What runs today (16 November 2026)
 
 | Area | Supported |
 |---|---|
@@ -56,6 +56,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. All three are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into). `Path.join(a, b)` gives a new path; `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
+| Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(byte code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std` |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -68,7 +69,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Characters | `char`: one Unicode character. `'+'`, `'é'`, `'\n'`, `'\u{e9}'` is a `char`, and a `byte` where an integer goes (`byte b = '+'`, `text[i] == ':'`). `(int)c` is its code, `(char)n` the character of a code, `n.tryToChar()` gives `null` where `(char)n` would panic. `==`, `<`, `match`, keys, `sort`, `print`. `isAsciiDigit()`, `isAsciiLetter()`, `isAsciiAlphanumeric()`, `isAsciiUpper()`, `isAsciiLower()`, `isAsciiWhitespace()`, `isAscii()`, `toAsciiUpper()`, `toAsciiLower()` on `char` and on `byte`; `isWhitespace()` and `utf8Length()` on `char` |
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
 | Built-ins | `print(x)`, `printError(x)` (the same, to the standard error), `panic("...")`, `assert(condition)`, `exit(code)` (ends the program with that code), `same(a, b)` (two `shared` values point to one object) |
-| Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`, and `File.openAppend(path)` one that writes after what the file holds. A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left), `lines()` (each line as a `Result<string, IoError>`) `readBytes(ref buffer)` (bytes into the buffer, as many as it holds unless the end comes first, and how many: a `Result<nint, IoError>`) and `readSome(ref buffer)` (what the block holds, or what one read of the system gives when it is empty; how many, 0 at the end); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `writeBytes(bytes)` (a `read byte[]` as it is), `flush()` and `close()`, each with a `Result<void, IoError>`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `AlreadyExists` / `NotDirectory` / `DirectoryNotEmpty` / `InvalidText(long position)` / `Other(int code) }`, with the variants of the network and `Cancelled` |
+| Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`, and `File.openAppend(path)` one that writes after what the file holds. A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left), `lines()` (each line as a `Result<string, IoError>`) `readBytes(ref buffer)` (bytes into the buffer, as many as it holds unless the end comes first, and how many: a `Result<nint, IoError>`) and `readSome(ref buffer)` (what the block holds, or what one read of the system gives when it is empty; how many, 0 at the end); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `writeBytes(bytes)` (a `read byte[]` as it is), `flush()` and `close()`, each with a `Result<void, IoError>`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `AlreadyExists` / `NotDirectory` / `DirectoryNotEmpty` / `InvalidInput` / `InvalidText(long position)` / `Other(int code) }`, with the variants of the network and `Cancelled` |
 | Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A test that passes and leaves `shared` values alive fails with the leak report. A normal run leaves the tests out |
 | Comparing by name | `a.compare(b)` on numbers, `char` and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
 | Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic. `tryToInt()` and the others give `null` where a cast would panic, `wrappingToInt()` and the others keep the bits that fit; `min`, `max` |
@@ -272,7 +273,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (281 of 1183 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (286 of 1199 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -778,6 +779,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/std/time.sg` | The language's own module `std`, written in SG: `Duration`, `Instant`, `DateTime` and the calendar. Only it calls the two readings of the clock, `Clock.monotonic()` and `Clock.wall()` |
 | `src/std/random.sg` | The same module's random numbers: `Random` (xoshiro256\*\* seeded with SplitMix64) and `SecureRandom`. Only it calls `Entropy.fill`, the random bytes of the system. A program gets each file of `std` when it names one of its types. A panic inside the module is shown at the program's call that led there (`Interp::call`; in compiled code `Emitter::tracked`) |
 | `src/std/files.sg`, `src/std/path.sg`, `src/std/environment.sg` | The same module's folders (`Directory`, `DirectoryEntry`, `FileInfo`, `FileKind`, and the work of `File.info` and `File.exists`), paths (`Path`) and variables of the environment (`Environment`, `VariableError`). Only they call `System.list`, `System.status` and the other calls of the system; a file of `std` that names a type of another brings it along (a `FileInfo` holds a `DateTime`) |
+| `src/std/process.sg` | The same module's other programs (`Command`, `ExitStatus`, `ProcessError`): the search in `PATH`, the checks of what the system cannot take, and the reading of how a program ended, over `System.run` and `System.executable` |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
 
 It is a library with a thin command line on top, so that a language server can later reuse the parser and the
@@ -2526,11 +2528,13 @@ approved on 14 November 2026:
      for later, and the ones that answer a question (`contains`, `length`, `indexOf`, `compare`), which
      are as useless alone; so it is one sentence with no list to learn. Zig refuses every value that is
      thrown away; Rust marks most of these methods `#[must_use]` and warns.
-283. **A built-in method that changes its value and gives one too may stand alone**: `xs.removeLast()`, the
+283. *(Replaced by 614 in the seventy-seventh slice: these are errors too, written `_ = xs.removeLast()`.)*
+     **A built-in method that changes its value and gives one too may stand alone**: `xs.removeLast()`, the
      `add` and `remove` of a `HashSet` (they give whether something changed), the `remove` and `getOrAdd`
      of a `HashMap`, and `next` on an iterator. The change is what they are called for. The ones that give
      nothing (`add` on a list, `sort`, `write`, `clear`) are statements as before.
-284. **Functions and methods you write are left as they are**: `noisy(4)` and `stack.push(5)` alone are
+284. *(Replaced by 614 in the seventy-seventh slice: these are errors too, written `_ = noisy(4)`.)*
+     **Functions and methods you write are left as they are**: `noisy(4)` and `stack.push(5)` alone are
      accepted even when they give a value, since they can print, change through `ref` or stop, and the
      checker does not know which ones do nothing else. Zig asks for `_ =` there too; SG keeps the error for
      what it knows does nothing. A `Result` stays an error everywhere (the rule above).
@@ -4507,6 +4511,150 @@ of compiled code following it), and all were approved the same day:
      of the C compiler now that the names are not marked used; on Linux too, in a container, with gcc and the
      same counts.
 
+Choices made in the seventy-seventh slice (running another program and waiting for it; in the checker, the
+interpreter and compiled code). 598 to 600, 602 to 609 and 611 to 613 were decided before it on 16 November
+2026, with the parts marked as coming from the slice; 597, 601 and 610 come from the slice, and 614 to 616
+from a gap the slice found (the value of a function of `std` that is not used), closed on the same day for
+every call. All were approved the same day:
+
+597. **Running another program is written in SG**, in one more file of the module `std` (`process.sg`), over
+     two calls of the system that only that module makes: `System.run`, which starts a program and waits for
+     it, and `System.executable`, which tells whether a file may be run. A program cannot define a type named
+     `Command`, `ExitStatus` or `ProcessError`. The fields of a `Command` are its own; a program reaches it
+     through its methods only.
+598. **No shell reads the words.** `Command("git")` names the program, and `arg(word)` and `args(read words)`
+     add arguments, each reaching the program as it is written: `$HOME`, `*`, `; ls` and a back quote are
+     plain text (`ok_process_run`). A shell is asked for by name: `Command("sh")` with `-c`. As Rust and Go;
+     C#'s `Arguments` is one text the program splits again.
+599. **A command is built with methods, one per line**: `arg`, `args`, `directory(path)`, `setVariable(name,
+     value)`, `removeVariable(name)`, `clearVariables()` and `input(text)`, each through `ref this`, giving
+     nothing, so they are not chained as Rust's builder is. `Command(name)` is `Command.create(name)`.
+600. **`run()` gives a `Result<void, ProcessError>`, `output()` a `Result<string, ProcessError>` and `status()`
+     a `Result<ExitStatus, IoError>`.** `run` and `output` take an end with anything but 0 for an error,
+     `Failed(status)`, as Go's `Run` and `Output`: a failure let go in silence is the best known mistake of
+     shell scripts. `run` hands the program the input, the output and the standard error of this program.
+     `output` keeps what it writes to its output, which must be UTF-8, gives it nothing to read, and lets its
+     standard error go to this program's, where it is seen. `status` takes no end for an error, for a program
+     whose code says something (`grep` ends with 1 when it found nothing).
+601. **A change from what was decided before the slice: `ProcessError.Io(IoError cause)`, not `Start`.** The
+     variant also carries what is not about the start: output that is not UTF-8 (`InvalidText`). And `try`
+     turns an `IoError` into a `ProcessError` on its own through this variant, as it does for any enum with a
+     variant that carries the error, so a function that gives a `ProcessError` can `try Directory.create(...)`
+     (`ok_process_environment`). `ProcessError` prints as the `IoError` does, or as `the program exited with
+     code 3`.
+602. **`ExitStatus`** is `Code(byte code)`, the code the program ended itself with (a `byte`, as `exit`
+     takes), or `Signal(int number)`, the signal that stopped it; `Copyable`, `Equatable`, `Hashable`,
+     `Formattable`, with `success()` and the texts `exited with code 3` and `was stopped by signal 9`. Rust's
+     `ExitStatus`, which gives `code()` and `signal()`.
+603. **How the program is found**: a name without `/` is looked for in the folders of this program's `PATH`
+     that start with `/`; an empty folder, `.` and any relative one are left out, so a file of the folder the
+     program works in is never run by its name alone (Go's `ErrDot`, since 1.19). A path with `/` is taken as
+     it is, from the folder this program works in, also when `directory` names another. Nothing found is
+     `NotFound`; from the slice: a `PATH` that is not set or not UTF-8 is `NotFound` too, and a file that is
+     there and may not be run is `PermissionDenied` only when no folder has one that may (as `execvp`). A
+     folder is `PermissionDenied`, and a file without `#!` that is not a program is `Other(8)` (`ENOEXEC`):
+     no shell is tried in its place, as `execvp` would. The search is written in SG, so the interpreter and
+     compiled code find the same file; a test of its own runs the program as a process with `.`, an empty part
+     and a relative folder in `PATH` (`process_path_lookup`), since the golden tests cannot change `PATH`.
+604. **The environment of the program is a table of its own**: this program's, with the changes made to the
+     command, the last change of a name counting; `clearVariables()` starts it empty and forgets the changes
+     made before it. This program's environment never changes, as decided in the seventy-fourth slice. A name
+     that is empty or holds `=` or a zero byte, and a zero byte in a value or an argument, is the new
+     `IoError.InvalidInput` (Rust's name), after the others, so the numbers of the variants before it stay;
+     from the slice: it is told when the program is run, since the methods that change the command give
+     nothing. A zero byte in the name of the program or in the folder is `NotFound`, as in every path.
+605. **What was printed goes out first**: the output and the standard error of this program are written out
+     before the program starts, so what both print comes out in order. Bytes the program read ahead of its
+     input (`Stdin`) are not seen by a program that takes the same input, as in Rust and C#.
+606. **`input(text)` gives the program what it reads**: the text is written into a pipe while its output is
+     read, so a program that reads all of it before it writes, or writes more than a pipe holds before it
+     reads, does not stop either side (four megabytes through `cat` in `ok_process_output`). A program that
+     ends before it read all of it is no error, as in Go: the write gives `EPIPE`, not the signal, which macOS
+     leaves out for that pipe (`F_SETNOSIGPIPE`) and Linux holds back on the thread for the time of the
+     writing and then takes away if it came.
+607. **Only the input, the output and the standard error reach the program.** It is started with
+     `posix_spawn` (not `fork`, which is not safe in a program with threads), with no signal held back and
+     `SIGPIPE` as the system has it. Every file, socket and pipe the runtime opens is close-on-exec. Found on
+     the way: the four `open` calls behind reading and writing a file whole (`File.readText`, `File.writeText`
+     and the others) and behind `File.openText`, `File.createText` and `File.openAppend` were not; now they
+     are. On macOS the sockets and the pipe of the loop of the network were
+     made close-on-exec a step after they were opened, which another thread starting a program could come
+     between; there the spawn now closes every descriptor it is not told to keep
+     (`POSIX_SPAWN_CLOEXEC_DEFAULT`). From the slice: what this program was itself handed open without
+     close-on-exec does not reach the program either (the first run of the tests found the pipe of the test
+     runner in it): on macOS through the same flag, with glibc 2.34 and later through
+     `posix_spawn_file_actions_addclosefrom_np`, and in the interpreter by marking every descriptor from 3
+     up close-on-exec in the child before the program runs (one `close_range` on Linux); an older glibc
+     still hands such a descriptor on. `ok_process_descriptors` keeps a writer, a reader, an appending writer and
+     a listener open and has the program try each descriptor from 3 up. The folder is given with
+     `posix_spawn_file_actions_addchdir`, the name POSIX took in 2024, where macOS 26 is the target, and with
+     the older `_np` name elsewhere.
+608. **These calls wait for the program, so an async function does not make them**: `try cmd.run()` there is
+     the error of any call that holds the thread, with the hint `await Task.run(work, x)`. From the slice: the
+     message says "`run` waits for another program to end" at the call the program wrote, rather than show a
+     line inside the language's own module, for every function of the module. A `Command` goes to another
+     task (it holds only text and lists). Starting a program and talking to it while it runs, stopping it,
+     and the async versions are the next slice.
+609. **The interpreter runs the program with Rust's `std::process::Command`**, the path the search in SG found
+     and the name as it was given in front of the arguments. The output and the standard error of the run need
+     not be those of the process (the tests keep them in memory), so the program writes into two pipes whose
+     bytes the interpreter copies to them as they come; a program run by the interpreter sees a pipe where a
+     compiled one may see a terminal. A program that reads this program's input reads the input of the
+     process. The marking of 607 makes Rust start the program with `fork` and `exec` rather than
+     `posix_spawn`; between the two only `fcntl` and `close_range` run.
+610. **Compiled code** has the calls in a runtime of its own (`PROCESS_RUNTIME`), only in a program that runs
+     another: the words and the table of the environment are made for the call (the texts of this program's
+     environment are not copied), the input and the output go through pipes only when `input` or `output` asks
+     for them, and one `poll` loop writes the one and reads the other straight into the `string` that
+     `output` gives, checked to be UTF-8 where it is. A first version read into a list of bytes and copied it
+     into the text; it took the same time and held the output twice. A program that reads or writes a file
+     now asks glibc for POSIX 2008 (`_POSIX_C_SOURCE`), as one with tasks or the clock did: in strict C11,
+     glibc keeps `O_CLOEXEC` out otherwise (found by the first run on Linux).
+611. **Measured** (`spawn`, a new program): five thousand runs of `true`, each looked for in `PATH`, started
+     and waited for, take 3.90 s, 4.06 s in the checked build, against 5.60 s for `posix_spawnp` and
+     `waitpid` in C (0.70), on macOS with twelve folders before `/usr/bin` in `PATH`: `posix_spawnp` tries
+     to run the program in each folder in turn, where the search in SG asks `stat` and `access`, which cost
+     less than a failed start. What is left is the start itself, about 0.8 ms.
+612. **Measured** (`capture`, a new program): `cat` of the log of two million lines (125 MB) kept with
+     `output` five times takes 0.333 s, 0.338 s in the checked build, against 0.223 s for the same pipe read
+     in C (1.49). All of the difference is the check that the output is UTF-8, which the C does not make:
+     without it the same program takes 0.23 s. A new entry in "Slower than C", with the other checks of
+     text.
+613. **The tests**: `ok_process_run` (the words as written, `run` and `status` on an end with a code and with
+     a signal, a program that is not there, one that may not be run, a script made runnable, a folder),
+     `ok_process_output` (`input`, four megabytes through `cat`, a program that reads none of a large input and
+     one that stops early, a failed end whose standard error is ours, output that is not UTF-8),
+     `ok_process_environment` (a name set twice and removed, the table emptied, ours unchanged, each
+     `InvalidInput`, `directory` and a folder that is not there), `ok_process_descriptors`, three `error_`
+     programs (a `run` in an async function, its `Result` not used, a field of a `Command`), and
+     `process_path_lookup`. `cargo test` compiles 285 of 1190 programs, 45 of them under the thread
+     sanitizer, and 15 of 20 programs of tests, without a warning of the C compiler; on Linux too, in a
+     container with glibc 2.41 and gcc, with the same counts.
+614. **Every call that gives a value is a compile error when the value is not used**, with `_ =` to drop
+     one on purpose: a function or a method of your own, one of the language's own module, a built-in method
+     and a function of C alike, and the value after `try` and `await` as well as the one before.
+     `Path.join(a, b)`, `try cmd.status()`, `random.nextInt(1, 6)`, `xs.removeLast()`, `seen.add(x)`,
+     `noisy(4)` and `unsafe memset(...)` alone are errors; `_ = try cmd.status()` runs the program and drops how
+     it ended. It takes the place of 283 and 284: the slice found a status of a program that nobody looked at
+     passing silently, because a function of `std` was held to the rule only as one of your own was, and
+     the line that decides which calls are free (only gives a value, changes and gives, may print) is one
+     the reader would have to know call by call. Now there is no list: what a call gives is read, kept or
+     dropped where it can be seen. Zig refuses every value thrown away the same way; Rust warns only where a
+     function is marked `#[must_use]`, Swift where it is not marked `@discardableResult`.
+615. **The words of the error**: "the `ExitStatus` that `status` gives is not used", with the hint "keep it:
+     `var value = try cmd.status()`; to drop it on purpose, `_ = try cmd.status()`", as an `await` whose value
+     is not used says it. A built-in method that only gives a value keeps the words of 285 ("it leaves
+     `distance` as it was"), and a `Result` not used keeps its own.
+616. **No cost, and compiled code as it was**: the rule is in the checker alone. Eighteen programs of the tests
+     and one example dropped a value: `_ =` went in front of the `add` of a `HashSet` (five), `removeLast`
+     (two), `try reader.readLine(ref line)` and its async form (six), `try` of a function of your own (two,
+     and three in the calculator), `receive` and two functions of C. The benchmarks and `std` dropped none.
+     `ok_unused_changers` now drops each value with `_ =`. The tests: `error_std_value_unused` (`Path.join`),
+     `error_std_value_unused_try` (`try cmd.status()`), `error_std_value_unused_changing` (`nextInt`),
+     `error_unused_own_function`, `error_unused_own_method`, `error_unused_changer` (`removeLast`),
+     `error_unused_set_add`, `error_unused_extern` and `ok_std_value_dropped`. `cargo test` compiles
+     286 of 1199 programs, 45 of them under the thread sanitizer, and 15 of 20 programs of tests.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -4572,12 +4720,17 @@ check off.
 - **Checking that a line is UTF-8** (`netlines`, 1.14 times `getline`, which checks nothing, 0.89 without
   the check, choice 493; `lines` takes 0.82 times with it): the reader checks its block at once (491), with
   sixteen bytes at a time while they are ASCII and one byte at a time inside a character (492), about
-  6 GB/s; the check is still some 0.02 s of the 0.09 s. Candidates: a check with vector instructions (as
+  6 GB/s; the check is still some 0.02 s of the 0.09 s. The output a program keeps of another (`capture`,
+  1.49 times reading the pipe in C, 1.02 without the check, choice 612) has the same check, 0.1 s for 626
+  MB. Candidates: a check with vector instructions (as
   `simdutf` does), measured at 8.8 GB/s with NEON on arm64; on x86 it needs SSSE3, which a program has to
   look for when it starts.
 
 ## Not here yet
 
+- **Of other programs**: a program started and talked to while it runs (its input and output as streams),
+  stopping it, waiting for it in an async function, and a cancel that stops it: the next slice. A program
+  run by the interpreter sees a pipe for its output and standard error (609).
 - **Of raw memory**: a place in it lent (`read p[i]`, `ref p[i]`, a method called on `p[i]`, 511); items that
   own memory (the design's `put`, `take` and `moveItems`); `Memory.resize`; the difference and the order of
   two pointers (`p - q`, `p < q`); the address of a variable.
@@ -4708,8 +4861,9 @@ assignment computes its right side first and then finds the place, as Rust does,
 read a borrow of the value it replaces (`b = Box { n = r.n + 1 }`) and can grow the list it is written
 into. `text.replaceAll(old, new)` and `text.repeat(n)` give a new text, and a call of them whose result is
 thrown away is a compile error; rewriting lines with them takes 0.94 times the time of the same program in C.
-So is every other built-in method that only gives a value (`line.trim()`, `xs.contains(3)` alone), while
-the ones that change their value (`removeLast`) and the functions you write may stand alone. `!` swaps what
+So is every other built-in method that only gives a value (`line.trim()`, `xs.contains(3)` alone); since
+the seventy-seventh slice every call that gives a value is, `removeLast` and the functions you write too
+(`_ = xs.removeLast()` drops one on purpose). `!` swaps what
 a test of `null` says (`if !(x is null)`), and after `while x is null { ... }` the variable is not `null`.
 The names of `is not` are seen where it fails, after the `if` too (`if int.parse(read text) is not Ok(n) {
 return }` and then `n`), and so are those of an `is` after an `if` whose `else` leaves.
@@ -4788,5 +4942,8 @@ Random numbers are there too: `Random`, xoshiro256\*\* with a seed, the same num
 gigabyte of the system's bytes, take the time of the same code in C. Folders, paths and the environment are there: `File.move` that never
 writes over a file, `Directory.list` sorted the same way everywhere, `deleteAll` that never follows a link,
 `Path`, and `Environment.get`; listing a folder of ten thousand files and asking about a file take the time
-of `readdir` and `stat` in C. The other places in "Slower than C" wait; next are running another program,
-Unicode tables and UDP.
+of `readdir` and `stat` in C. Another program is run and waited for (`Command`, with `run`, `output` and
+`status`), with no shell, a table of the environment of its own, an input of its own written while its
+output is read, and no descriptor of ours handed to it; starting a program takes 0.70 times
+`posix_spawnp` in C, and keeping its output 1.49 times reading the pipe, all of it the check that it is text. The other places in "Slower than C"
+wait; next is talking to a program while it runs, then Unicode tables and UDP.

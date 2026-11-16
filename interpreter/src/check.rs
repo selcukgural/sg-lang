@@ -305,6 +305,15 @@ fn gives_only(name: &str, callee: &Callee) -> bool {
     }
 }
 
+/// The call under `try` and `await`, or the expression itself.
+fn peel_try(expr: &Expr) -> &Expr {
+    match &expr.kind {
+        ExprKind::Try { expr, .. } | ExprKind::Await(expr) => peel_try(expr),
+        _ => expr,
+    }
+}
+
+
 /// The methods of `char` and `byte` that test a character against ASCII.
 const ASCII_TESTS: &[&str] = &["isAscii", "isAsciiDigit", "isAsciiLetter", "isAsciiAlphanumeric", "isAsciiUpper", "isAsciiLower", "isAsciiWhitespace"];
 
@@ -411,8 +420,8 @@ const IO_ERROR: &str = "IoError";
 
 /// The built-in `enum IoError : Copyable, Formattable, Equatable { NotFound, PermissionDenied,
 /// IsDirectory, NoSpace, InvalidText(long position), Other(int code), Cancelled(Cancelled
-/// cancelled), ConnectionRefused, ConnectionReset, AddressInUse, HostNotFound, LineTooLong }`. The first
-/// four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
+/// cancelled), ConnectionRefused, ConnectionReset, AddressInUse, HostNotFound, LineTooLong,
+/// AlreadyExists, NotDirectory, DirectoryNotEmpty, InvalidInput }`. The first four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
 /// where text was read, counted from the start of the file or of the input; `Other` keeps the
 /// code the system gave; `Cancelled` is async input or output whose token was cancelled, and
 /// lets `try` turn the error of `token.check()` into an `IoError`. The last four are the
@@ -422,7 +431,8 @@ const IO_ERROR: &str = "IoError";
 /// `AlreadyExists`: a file or a folder is where one was to be made (`File.move`, `File.copy`,
 /// `Directory.create`); `NotDirectory`: a part of the path, or the path of a folder, is a file
 /// (or a link where a folder was to be removed); `DirectoryNotEmpty`: a folder to be removed
-/// holds something.
+/// holds something. `InvalidInput`: what was given cannot be handed to the system, as an
+/// argument of a program with a zero byte in it.
 fn io_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
@@ -447,6 +457,7 @@ fn io_error() -> EnumDecl {
         variant("AlreadyExists", Vec::new()),
         variant("NotDirectory", Vec::new()),
         variant("DirectoryNotEmpty", Vec::new()),
+        variant("InvalidInput", Vec::new()),
     ];
     EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants, methods: Vec::new() }
 }
@@ -4106,6 +4117,18 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(span, "this `Result` is not used, so an error would be lost silently")
                         .hint(format!("pass the error on with `try {text}`, or drop it on purpose with `_ = {text}`")));
                 }
+                // Every call gives what it gives to be used: `Path.join(a, b)`, `try
+                // command.status()`, `xs.removeLast()` or a function of your own alone is a value
+                // nobody reads, and `_ =` drops one on purpose.
+                if !matches!(ty, Ty::Void | Ty::Never) {
+                    let text = &self.src[span.start..span.end];
+                    let name = match &peel_try(expr).kind {
+                        ExprKind::Call { name, .. } | ExprKind::Method { name, .. } => short_name(name),
+                        _ => text,
+                    };
+                    return Err(Diag::error(span, format!("the `{ty}` that `{name}` gives is not used"))
+                        .hint(format!("keep it: `var value = {text}`; to drop it on purpose, `_ = {text}`")));
+                }
             }
             _ => {
                 return Err(Diag::error(span, "the value of this expression is not used")
@@ -7544,6 +7567,28 @@ impl<'a> Checker<'a> {
             "current" => (SystemCall::Current, Vec::new(), io(Ty::Str)),
             "makeTemp" => (SystemCall::MakeTemp, vec![text()], io(Ty::Str)),
             "variable" => (SystemCall::Variable, vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))], Ty::Bool),
+            "executable" => (SystemCall::Executable, vec![text()], Ty::Int(IntTy::Long)),
+            "run" => {
+                let texts = || Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))));
+                (
+                    SystemCall::Run,
+                    vec![
+                        text(),
+                        texts(),
+                        text(),
+                        Ty::Bool,
+                        texts(),
+                        texts(),
+                        Ty::Read(Box::new(Ty::List(Box::new(Ty::Bool)))),
+                        Ty::Int(IntTy::Long),
+                        text(),
+                        Ty::Bool,
+                        Ty::Ref(Box::new(Ty::Str)),
+                        Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long))))),
+                    ],
+                    io(Ty::Void),
+                )
+            }
             _ => return Err(Diag::error(span, format!("`System` has no function `{name}`"))),
         };
         self.args(name, args, &params, span)?;

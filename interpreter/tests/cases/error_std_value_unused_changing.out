@@ -1,0 +1,5 @@
+error: the `int` that `nextInt` gives is not used
+  --> error_std_value_unused_changing.sg:4:5
+ 4 |     random.nextInt(1, 6)
+   |     ^^^^^^^^^^^^^^^^^^^^
+  hint: keep it: `var value = random.nextInt(1, 6)`; to drop it on purpose, `_ = random.nextInt(1, 6)`

@@ -83,7 +83,7 @@ void main() {
     var list = List<Res>()
     list.add(Res { name = "l1" })
     list.add(Res { name = "l2" })
-    list.removeLast()
+    _ = list.removeLast()
     print("after removeLast")
     a = make("a2")
     print("after assign")

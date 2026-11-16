@@ -654,16 +654,18 @@ Result<int, AppError> load(read string path) {
 A `Result` whose value is not used is a compile error. To discard it on purpose, write `_ = parse(s)`. A `Result` that
 is assigned to a variable and never unwrapped gives the same error.
 
-So is the value of a built-in method that only gives one: alone it does nothing. A built-in method that changes its
-value may stand alone even when it gives one too, and so may a function of your own, which can print or change through
-`ref`:
+So is the value of every call: a function or a method of your own, a built-in method, one of the language's own module
+and a function of C, also after `try`. A call made for what it does, whose value is not wanted, drops it with `_ =`,
+where the reader sees it:
 
 ```
 line.trim()                                      // error: the text that `trim` gives is not used
 distance.abs()                                   // error: ... it leaves `distance` as it was; hint: `distance = distance.abs()`
-xs.contains(3)                                   // error: the value that `contains` gives is not used
-xs.removeLast()                                  // the item is dropped; the list changed
-_ = xs.contains(3)                               // thrown away on purpose
+xs.removeLast()                                  // error: the `int?` that `removeLast` gives is not used
+try cmd.status()                                 // error: the `ExitStatus` that `status` gives is not used
+noisy(4)                                         // error: the `int` that `noisy` gives is not used
+_ = xs.removeLast()                              // the item is dropped on purpose; the list changed
+_ = try cmd.status()                             // run for what it does; how it ended is dropped on purpose
 ```
 
 A local variable whose value nothing reads is a compile error too, as in Go. Writing it is not reading it: not `x = 1`,
@@ -1458,6 +1460,38 @@ lead out of the folder it is joined to. The variables of the environment are onl
 program works in is not changed: both would be state that every thread sees change. `File.exists` and
 `Directory.exists` are there, but what they say can be different the next moment; to use a file, open it and
 look at the error.
+
+### Other programs
+
+`Command` runs another program and waits for it to end. There is no shell: each argument reaches the program as it
+is written, so a text from outside never becomes a command of its own. A name without `/` is looked for in the
+folders of `PATH` that start with `/`.
+
+```
+var git = Command("git")
+git.args(read List<string> { "log", "-1", "--format=%s" })
+git.directory(read repo)                       // the folder it works in; ours stays
+git.setVariable("LANG", "C")                   // its environment is a table of its own
+var subject = try git.output()                 // what it wrote, as text; its errors go to ours
+
+var tar = Command("tar")
+tar.args(read List<string> { "-czf", "backup.tgz", "notes" })
+try tar.run()                                  // our output and input; Failed unless it ends with 0
+
+var grep = Command("grep")
+grep.args(read List<string> { "-q", "TODO", "notes.txt" })
+var found = try grep.status()                  // ExitStatus.Code(1) is no error here
+var sort = Command("sort")
+sort.input(read lines)                         // written while the output is read
+var sorted = try sort.output()
+```
+
+`run` and `output` give a `ProcessError`: `Io(IoError cause)` when the program could not be started (`NotFound`,
+`PermissionDenied`, `InvalidInput` for a zero byte in a word) or wrote something that is not text, and
+`Failed(ExitStatus status)` when it ended with anything but 0. `status` takes no end for an error and gives the
+`ExitStatus`: `Code(byte code)` or `Signal(int number)`. A program started while files are open gets none of them.
+These calls wait, so an async function does not make them; starting a program and talking to it while it runs,
+stopping it, and the async versions come later.
 
 ### Modules and visibility
 

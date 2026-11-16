@@ -59,15 +59,15 @@ void main() {
 
     // The items of a list, an array or a slice, for the time of the call.
     var bytes = List<byte> { 1, 2, 3, 4, 5 }
-    unsafe memset(bytes.pointer(), 9, 3)
+    _ = unsafe memset(bytes.pointer(), 9, 3)
     print(bytes)
     var fixed = byte[4]
-    unsafe memset(fixed.pointer(), 7, 4)
+    _ = unsafe memset(fixed.pointer(), 7, 4)
     print(fixed)
     clear(ref bytes[3..])
     print(bytes)
 }
 
 void clear(ref byte[] window) {
-    unsafe memset(window.pointer(), 0, (nuint)window.length())
+    _ = unsafe memset(window.pointer(), 0, (nuint)window.length())
 }

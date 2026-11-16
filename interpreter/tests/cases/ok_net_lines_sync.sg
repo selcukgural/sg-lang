@@ -32,7 +32,7 @@ Result<void, IoError> ask(read string address) {
     try conn.send("one two\nthree\n\nfour five six\r\n".asBytes())
     var line = ""
     for _ in 0..4 {
-        try reader.readLine(ref line)
+        _ = try reader.readLine(ref line)
         print(line)
     }
     try conn.send("count\na b c\nd e\n".asBytes())

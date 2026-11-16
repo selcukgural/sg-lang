@@ -1,0 +1,255 @@
+// Running another program and waiting for it to end: `Command`, how a program ended (`ExitStatus`)
+// and why it did not do its work (`ProcessError`). No shell reads the words: each argument reaches
+// the program as it is written, so a text from outside never becomes a command of its own. Written
+// in SG and brought along by the language; only the starting of a program (`System.run`) and the
+// question whether a file can be run (`System.executable`) are the compiler's own, and only this
+// module can call them.
+
+// How a program ended.
+public enum ExitStatus : Copyable, Equatable, Hashable, Formattable {
+    // It ended by itself, with this code: 0 says it did its work.
+    Code(byte code)
+    // A signal of the system stopped it: 9 is `kill -9`, 15 the polite stop.
+    Signal(int number)
+
+    // Whether it ended by itself with 0.
+    public bool success(read this) {
+        return this == ExitStatus.Code(0)
+    }
+
+    // `exited with code 3`, `was stopped by signal 9`.
+    public void format(read this, ref Formatter f) {
+        match this {
+            Code(code) => f.write($"exited with code {code}")
+            Signal(number) => f.write($"was stopped by signal {number}")
+        }
+    }
+}
+
+// Why `run` or `output` did not give what the program did.
+public enum ProcessError : Copyable, Equatable, Formattable {
+    // The program could not be started (`NotFound`, `PermissionDenied`, `InvalidInput` for a word
+    // with a zero byte in it), or what it wrote was not UTF-8 (`InvalidText`).
+    Io(IoError cause)
+    // It ran, and did not end with 0.
+    Failed(ExitStatus status)
+
+    // What the `IoError` says, or `the program exited with code 1`.
+    public void format(read this, ref Formatter f) {
+        match this {
+            Io(cause) => f.write($"{cause}")
+            Failed(status) => f.write($"the program {status}")
+        }
+    }
+}
+
+// A program to run, with its arguments, the folder it works in and the changes to its environment;
+// `run`, `output` or `status` runs it and waits for it to end. A program it starts gets the output and
+// the standard error of this one, what was printed before it already written out.
+public struct Command {
+    // As it was given: a name looked for in `PATH`, or a path.
+    string program
+    // What the program gets as its command line: its name as it was given, then the arguments.
+    List<string> words
+    // The folder it works in; empty for the folder of this program.
+    string folder
+    // It starts with no variables of this program's environment.
+    bool clear
+    // The changes to the environment, in the order they were made: a name with its value, or a name
+    // to remove (`kept` false). The last change of a name is the one that counts.
+    List<string> names
+    List<string> values
+    List<bool> kept
+    // What the program reads as its input, when `input` gave it one.
+    bool fed
+    string text
+
+    // The program to run. A name without `/` is looked for in the folders of `PATH` when it runs,
+    // leaving out an empty folder and one that does not start with `/`, so a file of the folder this
+    // program works in is never run by its name alone. A path with `/` is taken as it is, from the
+    // folder this program works in.
+    public Command create(read string program) {
+        var words = List<string>()
+        words.add(program.clone())
+        return Command {
+            program = program.clone(), words = words, folder = "", clear = false,
+            names = List<string>(), values = List<string>(), kept = List<bool>(), fed = false, text = ""
+        }
+    }
+
+    // One more argument, as it is written: no shell splits it or reads `*` or `$` in it.
+    public void arg(ref this, read string word) {
+        this.words.add(word.clone())
+    }
+
+    // More arguments, each as it is written.
+    public void args(ref this, read string[] words) {
+        for word in words {
+            this.words.add(word.clone())
+        }
+    }
+
+    // The folder the program works in; this program's own folder stays as it is.
+    public void directory(ref this, read string path) {
+        this.folder = path.clone()
+    }
+
+    // A variable of the environment the program gets; the environment of this program stays as it is.
+    public void setVariable(ref this, read string name, read string value) {
+        this.names.add(name.clone())
+        this.values.add(value.clone())
+        this.kept.add(true)
+    }
+
+    // A variable of this program's environment the program does not get.
+    public void removeVariable(ref this, read string name) {
+        this.names.add(name.clone())
+        this.values.add("")
+        this.kept.add(false)
+    }
+
+    // The program gets none of this program's variables, only those set after this.
+    public void clearVariables(ref this) {
+        this.clear = true
+        this.names.clear()
+        this.values.clear()
+        this.kept.clear()
+    }
+
+    // What the program reads as its input, given while what it writes is read, so that neither waits
+    // for the other. A program that ends before it read all of it is no error.
+    public void input(ref this, read string text) {
+        this.fed = true
+        this.text = text.clone()
+    }
+
+    // Runs the program and waits for it to end. It reads the input of this program, unless `input`
+    // gave it one, and writes to the output and the standard error of this program. An end with
+    // anything but 0 is `Failed`.
+    public Result<void, ProcessError> run(read this) {
+        var nothing = ""
+        match this.start(false, ref nothing) {
+            Ok(status) => {
+                if status.success() {
+                    return Ok()
+                }
+                return Error(ProcessError.Failed(status))
+            }
+            Error(cause) => return Error(ProcessError.Io(cause))
+        }
+    }
+
+    // Runs the program and gives what it wrote to its output, which must be UTF-8. Its standard error
+    // is the standard error of this program, and it reads nothing, unless `input` gave it something to
+    // read. An end with anything but 0 is `Failed`, whatever it wrote.
+    public Result<string, ProcessError> output(read this) {
+        var text = ""
+        match this.start(true, ref text) {
+            Ok(status) => {
+                if !status.success() {
+                    return Error(ProcessError.Failed(status))
+                }
+            }
+            Error(cause) => return Error(ProcessError.Io(cause))
+        }
+        return Ok(text)
+    }
+
+    // Runs the program as `run` does and gives how it ended, without taking any end for an error:
+    // for a program whose code says something, as `grep` ends with 1 when it found nothing.
+    public Result<ExitStatus, IoError> status(read this) {
+        var nothing = ""
+        return this.start(false, ref nothing)
+    }
+
+    // Starts the program, gives it its input, puts what it writes into `output` when `capture`, and
+    // waits for it to end. What it wrote must be UTF-8, unless it did not end with 0, when what it
+    // wrote does not count.
+    Result<ExitStatus, IoError> start(read this, bool capture, ref string output) {
+        try this.valid()
+        var path = try this.found()
+        // Where its input comes from: this program's input, nothing, or the text of `input`.
+        long input = 0
+        if this.fed {
+            input = 2
+        } else if capture {
+            input = 1
+        }
+        // How it ended, the code or the signal, and where the first byte of its output that is not
+        // UTF-8 is (-1 when there is none).
+        var ended = long[3]
+        try System.run(
+            read path, read this.words, read this.folder, this.clear, read this.names, read this.values, read this.kept,
+            input, read this.text, capture, ref output, ref ended
+        )
+        var status = ExitStatus.Signal((int)ended[1])
+        if ended[0] == 0 {
+            status = ExitStatus.Code((byte)ended[1])
+        }
+        if ended[2] >= 0 && status.success() {
+            return Error(IoError.InvalidText(ended[2]))
+        }
+        return Ok(status)
+    }
+
+    // What the system cannot take: a zero byte would end a word early, and a name of a variable with
+    // `=` in it, or an empty one, would be read as another name.
+    Result<void, IoError> valid(read this) {
+        if this.program.contains('\0') || this.folder.contains('\0') {
+            return Error(IoError.NotFound)
+        }
+        for word in read this.words {
+            if word.contains('\0') {
+                return Error(IoError.InvalidInput)
+            }
+        }
+        for name in read this.names {
+            if name.length() == 0 || name.contains('=') || name.contains('\0') {
+                return Error(IoError.InvalidInput)
+            }
+        }
+        for value in read this.values {
+            if value.contains('\0') {
+                return Error(IoError.InvalidInput)
+            }
+        }
+        return Ok()
+    }
+
+    // The path of the program: a name looked for in `PATH`, or a path made to start from the folder
+    // this program works in when the program works in another one.
+    Result<string, IoError> found(read this) {
+        if this.program.contains('/') {
+            if this.program.startsWith('/') || this.folder.length() == 0 {
+                return Ok(this.program.clone())
+            }
+            var here = try Directory.current()
+            return Ok(Path.join(read here, read this.program))
+        }
+        if this.program.length() == 0 {
+            return Error(IoError.NotFound)
+        }
+        var folders = ""
+        match Environment.get("PATH") {
+            Ok(text) => folders = text
+            Error(_) => return Error(IoError.NotFound)
+        }
+        // A file that is there and cannot be run is told only when no folder has one that can.
+        var denied = false
+        for folder in folders.split(':') {
+            if !folder.startsWith('/') {
+                continue
+            }
+            var path = Path.join(folder, read this.program)
+            match System.executable(read path) {
+                1 => return Ok(path)
+                2 => denied = true
+                _ => {}
+            }
+        }
+        if denied {
+            return Error(IoError.PermissionDenied)
+        }
+        return Error(IoError.NotFound)
+    }
+}

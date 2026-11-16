@@ -1222,6 +1222,63 @@ impl InvalidText for Value {
 /// it holds and puts them after it.
 /// Bytes read as text: `Ok`, or `InvalidText` with the place of the first bad byte, counted
 /// from `at`.
+/// `System.executable(path)`: 1 for a file this program may run, 2 for a file that is there
+/// and may not be run, 0 for no file (a folder is none). A link is followed.
+fn executable(path: &str) -> i128 {
+    use std::os::unix::ffi::OsStrExt;
+    if path.contains('\0') {
+        return 0;
+    }
+    match std::fs::metadata(path) {
+        Ok(info) if info.is_file() => {
+            let Ok(name) = std::ffi::CString::new(std::ffi::OsStr::new(path).as_bytes()) else { return 0 };
+            // SAFETY: the name is a text ended by a zero byte; 1 is X_OK.
+            match unsafe { access(name.as_ptr(), 1) } {
+                0 => 1,
+                _ => 2,
+            }
+        }
+        _ => 0,
+    }
+}
+
+extern "C" {
+    fn access(path: *const std::ffi::c_char, mode: std::ffi::c_int) -> std::ffi::c_int;
+    fn fcntl(fd: std::ffi::c_int, cmd: std::ffi::c_int, ...) -> std::ffi::c_int;
+    fn sysconf(name: std::ffi::c_int) -> std::ffi::c_long;
+    #[cfg(target_os = "linux")]
+    fn syscall(number: std::ffi::c_long, ...) -> std::ffi::c_long;
+}
+
+/// The highest descriptor the process may have, plus one: `sysconf(_SC_OPEN_MAX)`, at most a
+/// million.
+fn open_max() -> std::ffi::c_int {
+    const SC_OPEN_MAX: std::ffi::c_int = if cfg!(target_os = "linux") { 4 } else { 5 };
+    // SAFETY: `sysconf` only reads a limit.
+    let max = unsafe { sysconf(SC_OPEN_MAX) };
+    std::ffi::c_int::try_from(max.clamp(256, 1 << 20)).unwrap_or(1 << 20)
+}
+
+/// Marks every descriptor from 3 up close-on-exec, in the child between `fork` and `exec`: one
+/// call of `close_range` on Linux 5.11 and later, otherwise one `fcntl` for each.
+fn cloexec_from_3(last: std::ffi::c_int) {
+    const F_SETFD: std::ffi::c_int = 2;
+    const FD_CLOEXEC: std::ffi::c_int = 1;
+    #[cfg(target_os = "linux")]
+    {
+        const CLOSE_RANGE: std::ffi::c_long = 436;
+        const CLOSE_RANGE_CLOEXEC: std::ffi::c_uint = 4;
+        // SAFETY: `close_range(3, ~0, CLOSE_RANGE_CLOEXEC)` only changes flags of descriptors.
+        if unsafe { syscall(CLOSE_RANGE, 3 as std::ffi::c_uint, std::ffi::c_uint::MAX, CLOSE_RANGE_CLOEXEC) } == 0 {
+            return;
+        }
+    }
+    for fd in 3..last {
+        // SAFETY: setting the flag of a descriptor that is not open fails and does nothing.
+        unsafe { fcntl(fd, F_SETFD, FD_CLOEXEC) };
+    }
+}
+
 fn text_read(bytes: Vec<u8>, at: u64) -> Value {
     match String::from_utf8(bytes) {
         Ok(text) => ok(Value::Str(Rc::new(text))),
@@ -4338,8 +4395,10 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// asks it, so the two give the same answers.
     fn system(&mut self, call: SystemCall, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
         let mut values = Vec::new();
-        for arg in args {
-            values.push(owned(self.expr(arg, frame)?));
+        for (at, arg) in args.iter().enumerate() {
+            let value = self.expr(arg, frame)?;
+            // The text `System.run` keeps the output in is written where it is.
+            values.push(if call == SystemCall::Run && at == 10 { value } else { owned(value) });
         }
         let text = |at: usize| match &values[at] {
             Value::Str(text) => text.to_string(),
@@ -4356,6 +4415,12 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::Move | SystemCall::Replace | SystemCall::Copy => 2,
             _ => 1,
         };
+        if call == SystemCall::Executable {
+            return Ok(Value::Int(IntTy::Long, executable(&text(0))));
+        }
+        if call == SystemCall::Run {
+            return self.run_child(values);
+        }
         if call != SystemCall::Variable && (0..paths).any(|at| text(at).contains('\0')) {
             return Ok(not_found());
         }
@@ -4414,6 +4479,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Err(error) => done(Err(error)),
             },
             SystemCall::MakeTemp => done(make_temp(&text(0)).map(|folder| Value::Str(Rc::new(folder)))),
+            SystemCall::Executable | SystemCall::Run => unreachable!("done above"),
             SystemCall::Variable => {
                 let name = text(0);
                 // A name with `=` or a zero byte in it is no variable's name.
@@ -4432,6 +4498,144 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
             }
         })
+    }
+
+    /// `System.run`: starts the program at the path and waits for it to end. What was printed
+    /// goes out first. The program writes into pipes whose bytes are copied, as they come, to
+    /// the output and the standard error of the run (or into the text, for its output when it
+    /// is kept), since those need not be the streams of the process; its input is that of the
+    /// process, nothing, or the text, written by a thread of its own while the output is read.
+    fn run_child(&mut self, values: Vec<Value>) -> Res<Value> {
+        use std::io::Read;
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+        use std::process::Stdio;
+        let text = |at: usize| match &values[at] {
+            Value::Str(text) => text.to_string(),
+            _ => unreachable!("the checker makes it text"),
+        };
+        let items = |at: usize| match &values[at] {
+            Value::List(items) => items.borrow().iter().map(|item| item.borrow().clone()).collect::<Vec<Value>>(),
+            _ => unreachable!("the checker makes it a list"),
+        };
+        let texts = |at: usize| {
+            items(at)
+                .into_iter()
+                .map(|item| match item {
+                    Value::Str(text) => text.to_string(),
+                    _ => unreachable!("the checker makes it a list of texts"),
+                })
+                .collect::<Vec<String>>()
+        };
+        let flag = |at: usize| matches!(values[at], Value::Bool(true));
+        let words = texts(1);
+        let mut command = std::process::Command::new(text(0));
+        command.arg0(&words[0]).args(&words[1..]);
+        let folder = text(2);
+        if !folder.is_empty() {
+            command.current_dir(folder);
+        }
+        if flag(3) {
+            command.env_clear();
+        }
+        let kept = items(6);
+        for ((name, value), kept) in texts(4).iter().zip(texts(5)).zip(kept) {
+            match kept {
+                Value::Bool(true) => command.env(name, value),
+                _ => command.env_remove(name),
+            };
+        }
+        let input = match &values[7] {
+            Value::Int(_, input) => *input,
+            _ => unreachable!("the checker makes it a number"),
+        };
+        command.stdin(match input {
+            0 => Stdio::inherit(),
+            1 => Stdio::null(),
+            _ => Stdio::piped(),
+        });
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        // Only the input, the output and the standard error reach the program: a descriptor the
+        // process was handed open (a test runner's pipe) is marked close-on-exec in the child,
+        // before the program runs. Marked, not closed, so that Rust's own pipe, which tells the
+        // parent why the start failed, still works.
+        let last = open_max();
+        // SAFETY: between `fork` and `exec` the closure only calls `fcntl` and the system call
+        // of `close_range`, which are safe there, and allocates nothing.
+        unsafe {
+            command.pre_exec(move || {
+                cloexec_from_3(last);
+                Ok(())
+            });
+        }
+        let fed = text(8);
+        let capture = flag(9);
+        self.flush_out()?;
+        let _ = self.io.world.borrow_mut().err.flush();
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => return Ok(failed(io_cause(Some(&error), error.raw_os_error()))),
+        };
+        let feed = child.stdin.take();
+        let mut out_pipe = child.stdout.take().expect("piped");
+        let mut err_pipe = child.stderr.take().expect("piped");
+        let mut kept_out = Vec::new();
+        {
+            let mut world = self.io.world.borrow_mut();
+            let err: &mut (dyn Write + Send) = &mut *world.err;
+            let mut out = self.io.out.borrow_mut();
+            std::thread::scope(|scope| {
+                if let Some(mut feed) = feed {
+                    // A program that ends before it reads all of it is no error.
+                    scope.spawn(move || {
+                        let _ = feed.write_all(fed.as_bytes());
+                    });
+                }
+                scope.spawn(move || {
+                    let mut block = [0u8; 65536];
+                    while let Ok(got) = err_pipe.read(&mut block) {
+                        if got == 0 || err.write_all(&block[..got]).and_then(|()| err.flush()).is_err() {
+                            break;
+                        }
+                    }
+                });
+                match capture {
+                    true => {
+                        let _ = out_pipe.read_to_end(&mut kept_out);
+                    }
+                    false => {
+                        let mut block = [0u8; 65536];
+                        while let Ok(got) = out_pipe.read(&mut block) {
+                            if got == 0 || out.write_all(&block[..got]).and_then(|()| out.flush()).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        let ended = match child.wait() {
+            Ok(status) => status,
+            Err(error) => return Ok(failed(io_cause(Some(&error), error.raw_os_error()))),
+        };
+        // What it wrote, kept where it is UTF-8; otherwise where the first byte that is not.
+        let mut bad = -1;
+        if capture {
+            let Value::Borrow(slot) = &values[10] else { unreachable!("the checker makes it a `ref string`") };
+            match String::from_utf8(kept_out) {
+                Ok(text) => *behind_borrows(slot.clone()).borrow_mut() = Value::Str(Rc::new(text)),
+                Err(error) => bad = i64::try_from(error.utf8_error().valid_up_to()).unwrap_or(i64::MAX),
+            }
+        }
+        let (kind, number) = match (ended.code(), ended.signal()) {
+            (Some(code), _) => (0, i64::from(code)),
+            (None, Some(signal)) => (1, i64::from(signal)),
+            (None, None) => (0, 0),
+        };
+        let fields = cells_of(&values[11]);
+        for (slot, value) in fields.iter().zip([kind, number, bad]) {
+            *slot.borrow_mut() = Value::Int(IntTy::Long, i128::from(value));
+        }
+        Ok(ok(Value::Void))
     }
 
     /// The methods of a `StreamReader` and a `StreamWriter`.

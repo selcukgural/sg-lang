@@ -29,10 +29,10 @@ void main() {
         p[2] = 0x66
         p[3] = 0xc3
         p[4] = 0xa9
-        setenv(read name, p, 1)
+        _ = setenv(read name, p, 1)
         p[1] = 0xff
         var bad = CString.from("SG_TEST_BYTES") ?? panic("zero byte")
-        setenv(read bad, p, 1)
+        _ = setenv(read bad, p, 1)
         Memory.free(p)
     }
     show("SG_TEST_TEXT")

@@ -1,0 +1,5 @@
+error: the `string` that `join` gives is not used
+  --> error_std_value_unused.sg:4:5
+ 4 |     Path.join(read folder, "today.txt")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: keep it: `var value = Path.join(read folder, "today.txt")`; to drop it on purpose, `_ = Path.join(read folder, "today.txt")`

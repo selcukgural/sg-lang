@@ -1,0 +1,4 @@
+void main() {
+    var list = Command("ls")
+    list.words.add("-l")
+}

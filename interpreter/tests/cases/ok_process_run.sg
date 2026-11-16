@@ -1,0 +1,66 @@
+// Programs run and waited for: `Command` with `run` and `status`. The words reach the program as
+// they are written, an end with anything but 0 is an error of `run`, and `status` tells every end.
+// The folder is the first word of the command line.
+extern {
+    int chmod(read CString path, ushort mode)
+}
+
+void show(read string what, Result<void, ProcessError> done) {
+    match done {
+        Ok => print($"{what}: done")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+void ended(read string what, Result<ExitStatus, IoError> done) {
+    match done {
+        Ok(status) => print($"{what}: {status}, success {status.success()}")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+Command shell(read string script) {
+    var sh = Command("sh")
+    sh.arg("-c")
+    sh.arg(script)
+    return sh
+}
+
+Result<void, ProcessError> main(List<string> args) {
+    var dir = args[0].clone()
+    print("printed before the program writes")
+    var echo = Command("echo")
+    echo.arg("two words")
+    echo.args(read List<string> { "$HOME", "*", "; ls", "`id`" })
+    try echo.run()
+
+    show("exit 3", shell("exit 3").run())
+    show("true", Command("true").run())
+    show("false", Command("false").run())
+    ended("exit 3", shell("exit 3").status())
+    ended("exit 0", shell("exit 0").status())
+    ended("kill -9", shell("kill -9 $$").status())
+    ended("kill", shell("kill $$").status())
+
+    // The error of `run` is a value: what it says, and its parts.
+    match shell("exit 7").run() {
+        Error(Failed(Code(code))) => print($"code {code}")
+        _ => print("unexpected")
+    }
+    assert(ExitStatus.Code(0).success())
+    assert(!ExitStatus.Signal(9).success())
+    assert(ExitStatus.Code(1) == ExitStatus.Code(1))
+
+    // What is not there, and what cannot be run.
+    show("missing", Command("no-such-program-anywhere").run())
+    show("missing path", Command("/no/such/program").run())
+    show("empty", Command("").run())
+    var script = Path.join(read dir, "hello.sh")
+    _ = File.writeText(read script, "#!/bin/sh\necho hello from a script\n")
+    show("not runnable", Command(read script).run())
+    var name = CString.from(read script) ?? panic("zero byte")
+    _ = unsafe chmod(read name, 0x1ed)
+    show("runnable", Command(read script).run())
+    show("folder", Command(read dir).run())
+    return Ok()
+}

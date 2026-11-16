@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 15 November 2026, the seventy-sixth slice.
+Last brought up to date: 16 November 2026, the seventy-seventh slice.
 
 ## Functions and variables
 
@@ -160,6 +160,7 @@ Last brought up to date: 15 November 2026, the seventy-sixth slice.
 | `x?` | `try x` | built | |
 | `?` with `From` | `try x` | built | Wraps the error in the one variant of the caller's error type that carries it |
 | `#[must_use]` on `Result` | always | built | A `Result` nobody looks at is an error |
+| `#[must_use]` on a function | nothing to write | built | The value of every call is an error when nobody uses it (`xs.removeLast()`, `try cmd.status()`, a function of your own alone); `_ = f()` drops it, as Rust's `let _ =` |
 | `let _ = f();` | `_ = f()` | built | |
 | `r.unwrap_or(d)` | `r ?? d` | built | |
 | `.unwrap()` | `?? panic("...")` | built | The reason is written |
@@ -277,6 +278,20 @@ Last brought up to date: 15 November 2026, the seventy-sixth slice.
 | `path.join(name)`, `path.file_name()`, `path.extension()`, `path.parent()` | `Path.join(read path, name)`, `Path.fileName(read path)`, `Path.extension(read path)`, `Path.parent(read path)` | built | A path is a `string`. A second path that starts with `/` is put after the first, where Rust's `join` puts it in its place; the extension keeps its `.`, as in C# |
 | `env::var("HOME")` | `Environment.get("HOME")` | built | A `Result<string, VariableError>` with `Missing` and `InvalidText(position)`, as Rust's `VarError` |
 | `env::set_var`, `env::remove_var` | none | not in SG | Unsafe in Rust 2024 for the same reason: another thread may be reading. A program that starts another gives it an environment of its own |
+
+## Other programs
+
+| Rust | SG | Status | Note |
+|---|---|---|---|
+| `Command::new("git")` | `var git = Command("git")` | built | No shell, as in Rust. A name without `/` is looked for only in the folders of `PATH` that start with `/`, as Go does since 1.19; Rust also runs a program found through `.` or a relative folder |
+| `.arg("log")`, `.args(["-1", "--oneline"])` | `git.arg("log")`, `git.args(read words)` | built | One call per line: the methods change the command (`ref this`) and give nothing, so they are not chained |
+| `.current_dir(dir)` | `git.directory(read dir)` | built | A relative path of the program is taken from our folder, not from the program's |
+| `.env(k, v)`, `.env_remove(k)`, `.env_clear()` | `git.setVariable(k, v)`, `git.removeVariable(k)`, `git.clearVariables()` | built | A table of the program's own; ours is never changed. A name with `=` or a zero byte is `IoError.InvalidInput` when it runs, as Rust's `InvalidInput` |
+| `.status()?` and `status.success()` | `try git.run()` | built | `run` takes an end with anything but 0 for an error (`ProcessError.Failed`), as Go's `Run`; Rust leaves the check to the program |
+| `.status()?` | `try git.status()` | built | Every end is a value: `ExitStatus.Code(code)` or `ExitStatus.Signal(number)`, where Rust has `code()` and `signal()` |
+| `.output()?`, `String::from_utf8(out.stdout)?` | `try git.output()` | built | The output as a `string` (`InvalidText` if it is not UTF-8); the standard error goes to ours, not into the value, and an end with anything but 0 is an error |
+| `.stdin(Stdio::piped())`, writing in a thread | `git.input(read text)` | built | Written while the output is read, so neither waits for the other; a program that stops reading is no error |
+| `.spawn()?`, `child.wait()?`, `child.kill()?` | none yet | designed | The next slice: a running program, its pipes as streams, stopping it, and the async versions |
 
 ## Network
 

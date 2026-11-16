@@ -1,0 +1,5 @@
+// A method of the language's own module that changes its value and gives one is no exception.
+void main() {
+    var random = Random.fromSeed(7)
+    random.nextInt(1, 6)
+}

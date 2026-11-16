@@ -1,0 +1,4 @@
+error: `Command` keeps `words` to itself: its methods give what it holds
+  --> error_process_field.sg:3:10
+ 3 |     list.words.add("-l")
+   |          ^^^^^

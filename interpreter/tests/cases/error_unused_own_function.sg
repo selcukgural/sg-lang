@@ -1,0 +1,9 @@
+// A function of your own gives its value to be used too, even one that prints as it gives it.
+int noisy(int n) {
+    print($"noisy {n}")
+    return n * 2
+}
+
+void main() {
+    noisy(4)
+}

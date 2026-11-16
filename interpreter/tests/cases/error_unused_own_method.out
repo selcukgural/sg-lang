@@ -1,0 +1,5 @@
+error: the `nint` that `push` gives is not used
+  --> error_unused_own_method.sg:13:5
+ 13 |     stack.push(5)
+    |     ^^^^^^^^^^^^^
+  hint: keep it: `var value = stack.push(5)`; to drop it on purpose, `_ = stack.push(5)`

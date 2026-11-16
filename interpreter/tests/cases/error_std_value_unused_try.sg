@@ -1,0 +1,6 @@
+// What `try` takes out of a `Result` of the language's own module is a value too.
+Result<void, ProcessError> main() {
+    var command = Command.create("true")
+    try command.status()
+    return Ok()
+}

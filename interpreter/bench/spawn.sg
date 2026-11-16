@@ -1,0 +1,12 @@
+// Five thousand runs of a program that does nothing, each looked for in `PATH`, started and waited
+// for: what starting a program costs.
+Result<void, ProcessError> main() {
+    var program = Command("true")
+    long ran = 0
+    for _ in 0..5000 {
+        try program.run()
+        ran += 1
+    }
+    print(ran)
+    return Ok()
+}

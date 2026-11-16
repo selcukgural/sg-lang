@@ -1,0 +1,5 @@
+error: the `int` that `abs` gives is not used
+  --> error_unused_extern.sg:7:12
+ 7 |     unsafe abs(-3)
+   |            ^^^^^^^
+  hint: keep it: `var value = abs(-3)`; to drop it on purpose, `_ = abs(-3)`

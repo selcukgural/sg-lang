@@ -2,7 +2,7 @@
 async Result<void, IoError> first(TcpStream conn) {
     var reader = conn.reader()
     var line = ""
-    try reader.readLine(ref line)
+    _ = try reader.readLine(ref line)
     return Ok()
 }
 

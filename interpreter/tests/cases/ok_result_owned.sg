@@ -69,7 +69,7 @@ Result<Config*, LoadError> boxed(read string name) {
 }
 
 Result<void, LoadError> check(read string name) {
-    try load(name, 5)                        // the value is freed, an error goes on
+    _ = try load(name, 5)                    // the value is freed, an error goes on
     return Ok()
 }
 

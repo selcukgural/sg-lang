@@ -790,3 +790,54 @@ fn compiled_tests() {
     assert!(!sanitizers || alone >= 8, "only {alone} tests were looked at for leaks");
     eprintln!("{compiled} of {} programs of tests compiled through C and reported the same; {alone} passing tests left no memory behind", programs.len());
 }
+
+/// A program is looked for by its name only in the folders of `PATH` that start with `/`: with
+/// `.`, an empty part and a relative folder in `PATH`, a file of the folder the program works in
+/// is not run by its name alone, in the interpreter and in compiled code. Our own `PATH` cannot be
+/// changed inside the golden tests, so the program runs as a process of its own here.
+#[test]
+fn process_path_lookup() {
+    use std::os::unix::fs::PermissionsExt;
+    const PROGRAM: &str = r#"
+void show(read string what, Result<string, ProcessError> done) {
+    match done {
+        Ok(text) => print($"{what}: {text.trim()}")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+void main() {
+    var list = Command("ls")
+    list.args(read List<string> { "-d", "/" })
+    show("ls", list.output())
+    show("here", Command("here").output())
+    show("relative", Command("relative").output())
+    show("with a slash", Command("./here").output())
+}
+"#;
+    const EXPECTED: &str = "ls: /\nhere: NotFound\nrelative: NotFound\nwith a slash: here\n";
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("process-path");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(work.join("bin")).unwrap();
+    for (path, says) in [("ls", "wrong ls"), ("here", "here"), ("bin/relative", "relative")] {
+        let file = work.join(path);
+        std::fs::write(&file, format!("#!/bin/sh\necho {says}\n")).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let source = work.join("main.sg");
+    std::fs::write(&source, PROGRAM).unwrap();
+    let path = ".::bin:/bin:/usr/bin";
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_sg")).arg(&source).current_dir(&work).env("PATH", path).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), EXPECTED, "interpreter: {}", String::from_utf8_lossy(&run.stderr));
+    if std::process::Command::new("cc").arg("--version").output().is_err() {
+        eprintln!("no C compiler (`cc`) found: the back end is not tested");
+        return;
+    }
+    let (c_file, binary) = (work.join("main.c"), work.join("main"));
+    std::fs::write(&c_file, sg::emit_c(PROGRAM, "main.sg", true).unwrap()).unwrap();
+    let cc = std::process::Command::new("cc").args(["-std=c11", "-O1"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+    assert!(cc.status.success(), "the C compiler rejected it:\n{}", String::from_utf8_lossy(&cc.stderr));
+    let run = std::process::Command::new(&binary).current_dir(&work).env("PATH", path).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), EXPECTED, "compiled: {}", String::from_utf8_lossy(&run.stderr));
+}

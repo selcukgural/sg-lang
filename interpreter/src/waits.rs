@@ -203,6 +203,23 @@ fn held_in(body: &Block, holds: &HashMap<String, Why>, taken: &[(String, usize, 
     error.map_or(Ok(()), Err)
 }
 
+/// The full names of the functions of the language's own module start with it.
+const STD_PREFIX: &str = "std.";
+
+/// What a function of the language's own module does at the end of its calls that holds the
+/// thread, as `holding` names it.
+fn inner_hold(name: &str, waits: &HashMap<String, Why>) -> Option<String> {
+    let mut at = name.to_string();
+    for _ in 0..waits.len() {
+        match waits.get(&at)? {
+            Why::Holds(_, what) => return Some(what.clone()),
+            Why::Itself(..) => return None,
+            Why::Calls(callee) | Why::CallsValue(callee) => at = callee.clone(),
+        }
+    }
+    None
+}
+
 const NO_HOLD: &str = "the tasks of async functions share a few threads: one that holds its thread keeps the others from running";
 const RUN_APART: &str = "a function that does it runs on a thread of its own with `await Task.run(work, x)`";
 
@@ -212,6 +229,10 @@ const RUN_APART: &str = "a function that does it runs on a thread of its own wit
 fn holding(expr: &Expr) -> Option<(Span, String)> {
     match &expr.kind {
         ExprKind::Method { callee: Callee::Wait, name_span, .. } => Some((*name_span, "`wait`".to_string())),
+        // Inside the language's own module: `Command.run` and the others wait for the program.
+        ExprKind::Call { callee: Callee::System(SystemCall::Run), name_span, .. } | ExprKind::Method { callee: Callee::System(SystemCall::Run), name_span, .. } => {
+            Some((*name_span, "`System.run`".to_string()))
+        }
         ExprKind::Call { callee: Callee::Io(call), name_span, .. } | ExprKind::Method { callee: Callee::Io(call), name_span, .. } => {
             Some((*name_span, format!("`File.{}`", call.name())))
         }
@@ -556,6 +577,20 @@ fn explained(diag: Diag, name: &str, waits: &HashMap<String, Why>) -> Diag {
     let mut chain = vec![short_name(name).to_string()];
     let mut at = name.to_string();
     for _ in 0..waits.len() {
+        // What a function of the language's own module does inside is not shown: the message
+        // says what it does, at the call the program wrote.
+        if at.starts_with(STD_PREFIX) {
+            let what = match inner_hold(&at, waits).as_deref() {
+                Some("`System.run`") => "waits for another program to end".to_string(),
+                Some(what) => format!("does {what}"),
+                None => "waits".to_string(),
+            };
+            let path = match chain.len() {
+                1 => format!("`{}` {what}", chain[0]),
+                _ => format!("{}, which {what}", chain.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(" calls ")),
+            };
+            return diag.note(path);
+        }
         match &waits[&at] {
             Why::Holds(span, what) => {
                 let path = match chain.len() {

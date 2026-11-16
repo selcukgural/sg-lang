@@ -1,0 +1,14 @@
+set twice, removed: [hello again unset]
+ours: true
+inherited: [has PATH]
+cleared: [ONLY=this]
+nothing: []
+as written: [A=x = y; $z
+B=]
+name with =: InvalidInput
+empty name: InvalidInput
+zero byte: InvalidInput
+zero in a value: InvalidInput
+in inner: true
+ours stays: true
+missing folder: NotFound

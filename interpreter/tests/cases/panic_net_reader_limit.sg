@@ -6,6 +6,6 @@ Result<void, IoError> main() {
     nint limit = 0
     var reader = conn.reader(limit)
     var line = ""
-    try reader.readLine(ref line)
+    _ = try reader.readLine(ref line)
     return Ok()
 }

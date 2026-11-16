@@ -1,0 +1,24 @@
+// A program started while files, a socket and a reader are open gets none of them: only its input,
+// its output and its standard error. The folder is the first word of the command line.
+Result<void, ProcessError> main(List<string> args) {
+    var dir = args[0].clone()
+    var path = Path.join(read dir, "open.txt")
+    var writer = try File.createText(read path)
+    try writer.writeLine("kept open")
+    try writer.flush()
+    var reader = try File.openText(read path)
+    var appender = try File.openAppend(read path)
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    // The program tries to write to each descriptor from 3 up: one it got would take it.
+    var sh = Command("sh")
+    sh.arg("-c")
+    sh.arg("for fd in 3 4 5 6 7 8 9; do if { true >&$fd; } 2>/dev/null; then echo \"open: $fd\"; fi; done; echo checked")
+    try sh.run()
+    print(listener.port() > 0)
+    var line = ""
+    _ = try reader.readLine(ref line)
+    print(line)
+    try writer.close()
+    try appender.close()
+    return Ok()
+}

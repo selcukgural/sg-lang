@@ -20,7 +20,7 @@ async Result<void, IoError> ask(string address) {
     try await conn.sendAsync("rd\n".asBytes())
     var line = ""
     for _ in 0..3 {
-        try await reader.readLineAsync(ref line)
+        _ = try await reader.readLineAsync(ref line)
         print(line)
     }
     return Ok()
@@ -50,7 +50,7 @@ async Result<void, IoError> some(read TcpListener listener, read string address)
     try await client.sendAsync("size 11\nhello world".asBytes())
     var reader = conn.reader()
     var header = ""
-    try await reader.readLineAsync(ref header)
+    _ = try await reader.readLineAsync(ref header)
     print(header)
     var buffer = byte[4](0)
     nint got = 0
@@ -76,7 +76,7 @@ async Result<void, IoError> cancelled(read TcpListener listener, read string add
         Error(cause) => print($"error: {cause}")
     }
     try await client.sendAsync("and the rest\n".asBytes())
-    try await reader.readLineAsync(ref line)
+    _ = try await reader.readLineAsync(ref line)
     print(line)
     return Ok()
 }

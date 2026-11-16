@@ -1,7 +1,7 @@
 error: `conn` cannot be changed here: `reader` borrows from it and is used again later
-  --> error_net_receive_under_reader.sg:8:9
- 8 |     try conn.receive(ref buffer)
-   |         ^^^^
+  --> error_net_receive_under_reader.sg:8:13
+ 8 |     _ = try conn.receive(ref buffer)
+   |             ^^^^
   `reader` borrowed it here:
   --> error_net_receive_under_reader.sg:4:18
  4 |     var reader = conn.reader()

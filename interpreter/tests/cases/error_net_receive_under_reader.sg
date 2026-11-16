@@ -3,10 +3,10 @@
 Result<void, IoError> talk(TcpStream conn) {
     var reader = conn.reader()
     var line = ""
-    try reader.readLine(ref line)
+    _ = try reader.readLine(ref line)
     var buffer = byte[16](0)
-    try conn.receive(ref buffer)
-    try reader.readLine(ref line)
+    _ = try conn.receive(ref buffer)
+    _ = try reader.readLine(ref line)
     return Ok()
 }
 

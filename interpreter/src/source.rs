@@ -23,6 +23,7 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("files.sg", include_str!("std/files.sg"), &["Directory", "DirectoryEntry", "FileInfo", "FileKind"]),
     ("path.sg", include_str!("std/path.sg"), &["Path"]),
     ("environment.sg", include_str!("std/environment.sg"), &["Environment", "VariableError"]),
+    ("process.sg", include_str!("std/process.sg"), &["Command", "ExitStatus", "ProcessError"]),
 ];
 
 /// The functions of the built-in `File` that the language's own module does the work of

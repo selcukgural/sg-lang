@@ -63,7 +63,7 @@ List<string>? route(read CityRef start, read CityRef goal) {
             CityRef? city = share road          // CityRef?, null if the city was removed
             if city is null { continue }
             if seen.contains(city.id) { continue }
-            seen.add(city.id)
+            _ = seen.add(city.id)
             cameFrom.add(city.id, share cur) // share touches the count, not the contents: no conflict
             waiting.add(city)
         }

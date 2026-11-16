@@ -22,7 +22,7 @@ Result<HashMap<string, int>, string> ages(bool ok) {
 
 Result<HashSet<int>, string> picks() {
     var s = HashSet<int>()
-    s.add(7)
+    _ = s.add(7)
     return Ok(s)
 }
 

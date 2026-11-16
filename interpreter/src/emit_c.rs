@@ -36,7 +36,8 @@
 //! random numbers; only the random bytes of the system are C (`sg_entropy`, which the key of a hash
 //! table is drawn with too). So are folders, paths and the environment (`Directory`, `FileInfo`,
 //! `Path`, `Environment`); the calls of the system under them, and `File.delete`, `File.move`,
-//! `File.replace` and `File.copy`, are C (see `FILES_RUNTIME`). A function of the module takes the
+//! `File.replace` and `File.copy`, are C (see `FILES_RUNTIME`), and so is the running of another
+//! program under `Command` (see `PROCESS_RUNTIME`). A function of the module takes the
 //! place of its call as one more parameter, so a panic inside it is shown at the program's line
 //! (see `Emitter::tracked`). A type
 //! alias is the type it names. Anything else is an error
@@ -2932,6 +2933,236 @@ static int sg_reader_net(sg_reader* r, int need, int64_t want, sg_wait* w, sg_ca
 /// The calls of the file system beyond reading and writing a file (`File.delete`, `File.move`,
 /// `Directory.list` and the others), and the variables of the environment. Added only to such a
 /// program, after `IO_RUNTIME`.
+const PROCESS_RUNTIME: &str = r#"
+#include <poll.h>
+#include <pthread.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
+extern char** environ;
+
+/* `System.executable(path)`: 1 for a file this program may run, 2 for a file that is there and
+   may not be run, 0 for no file (a folder is none). A link is followed. */
+static int64_t sg_proc_executable(sg_str path) {
+    int code = 0;
+    char* name = sg_path(path, &code);
+    if (!name) return 0;
+    struct stat info;
+    int64_t found = 0;
+    if (stat(name, &info) == 0 && S_ISREG(info.st_mode)) found = access(name, X_OK) == 0 ? 1 : 2;
+    free(name);
+    return found;
+}
+/* A text as the system takes it: the language's own module has made sure no zero byte is in it. */
+static char* sg_proc_text(const uint8_t* ptr, int64_t len) {
+    char* text = malloc((size_t)len + 1);
+    if (!text) abort();
+    if (len > 0) memcpy(text, ptr, (size_t)len);
+    text[len] = 0;
+    return text;
+}
+/* Whether the change at `at` is the last one of its name. */
+static bool sg_proc_last(const sg_string* names, int64_t changes, int64_t at) {
+    for (int64_t j = at + 1; j < changes; j++)
+        if (names[j].len == names[at].len && memcmp(names[j].ptr, names[at].ptr, (size_t)names[at].len) == 0) return false;
+    return true;
+}
+/* The environment the program gets: this program's, unless `clear`, without the names a change
+   was made to, then the last value given to each name kept. Ended by NULL; the texts of this
+   program's environment are not copied. */
+static char** sg_proc_environment(bool clear, const sg_string* names, const sg_string* values, const bool* kept, int64_t changes, char*** made, int64_t* count) {
+    int64_t own = 0;
+    if (!clear) while (environ[own]) own++;
+    char** table = malloc(sizeof(char*) * (size_t)(own + changes + 1));
+    char** fresh = malloc(sizeof(char*) * (size_t)(changes + 1));
+    if (!table || !fresh) abort();
+    int64_t n = 0, m = 0;
+    for (int64_t i = 0; i < own; i++) {
+        const char* entry = environ[i];
+        const char* equals = strchr(entry, '=');
+        size_t len = equals ? (size_t)(equals - entry) : strlen(entry);
+        bool changed = false;
+        for (int64_t j = 0; j < changes && !changed; j++) changed = (size_t)names[j].len == len && memcmp(names[j].ptr, entry, len) == 0;
+        if (!changed) table[n++] = environ[i];
+    }
+    for (int64_t j = 0; j < changes; j++) {
+        if (!kept[j] || !sg_proc_last(names, changes, j)) continue;
+        char* entry = malloc((size_t)(names[j].len + values[j].len + 2));
+        if (!entry) abort();
+        memcpy(entry, names[j].ptr, (size_t)names[j].len);
+        entry[names[j].len] = '=';
+        if (values[j].len > 0) memcpy(entry + names[j].len + 1, values[j].ptr, (size_t)values[j].len);
+        entry[names[j].len + 1 + values[j].len] = 0;
+        table[n++] = entry;
+        fresh[m++] = entry;
+    }
+    table[n] = NULL;
+    *made = fresh;
+    *count = m;
+    return table;
+}
+/* A pipe whose ends are not handed to the programs this one starts. */
+static int sg_proc_pipe(int ends[2]) {
+#if defined(__linux__)
+    return pipe2(ends, O_CLOEXEC) == 0 ? 0 : sg_os_error();
+#else
+    if (pipe(ends) != 0) return sg_os_error();
+    fcntl(ends[0], F_SETFD, FD_CLOEXEC);
+    fcntl(ends[1], F_SETFD, FD_CLOEXEC);
+    return 0;
+#endif
+}
+/* Writes `text` to the input of the program while what it writes to its output is read into
+   `kept`, so that neither waits for the other. A program that stops reading its
+   input ends the writing without an error: a pipe nobody reads gives EPIPE, not the signal,
+   which macOS leaves out for the pipe and Linux holds back on this thread and takes away. */
+static int sg_proc_pump(int in, sg_str text, int out, sg_string* kept) {
+    int code = 0;
+    int64_t sent = 0;
+    if (in >= 0) {
+        fcntl(in, F_SETFL, fcntl(in, F_GETFL) | O_NONBLOCK);
+#ifdef F_SETNOSIGPIPE
+        fcntl(in, F_SETNOSIGPIPE, 1);
+#endif
+        if (text.len == 0) { close(in); in = -1; }
+    }
+#ifndef F_SETNOSIGPIPE
+    sigset_t pipe_signal, before, pending;
+    sigemptyset(&pipe_signal);
+    sigaddset(&pipe_signal, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &pipe_signal, &before);
+    sigpending(&pending);
+    bool held = sigismember(&pending, SIGPIPE);
+#endif
+    while (in >= 0 || out >= 0) {
+        struct pollfd waits[2];
+        int n = 0;
+        if (in >= 0) waits[n++] = (struct pollfd){ in, POLLOUT, 0 };
+        if (out >= 0) waits[n++] = (struct pollfd){ out, POLLIN, 0 };
+        if (poll(waits, (nfds_t)n, -1) < 0) {
+            if (errno == EINTR) continue;
+            code = sg_os_error();
+            break;
+        }
+        for (int i = 0; i < n; i++) {
+            if (!waits[i].revents) continue;
+            if (waits[i].fd == in) {
+                ssize_t put = write(in, text.ptr + sent, (size_t)(text.len - sent));
+                if (put < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+                if (put > 0) sent += put;
+                if (put < 0 || sent == text.len) { close(in); in = -1; }
+            } else {
+                sg_room(kept, 65536);
+                ssize_t got = read(out, kept->ptr + kept->len, (size_t)(kept->cap - kept->len));
+                if (got < 0 && errno == EINTR) continue;
+                if (got < 0) { code = sg_os_error(); close(out); out = -1; }
+                else if (got == 0) { close(out); out = -1; }
+                else kept->len += got;
+            }
+        }
+    }
+    if (in >= 0) close(in);
+    if (out >= 0) close(out);
+#ifndef F_SETNOSIGPIPE
+    if (!held) {
+        sigpending(&pending);
+        if (sigismember(&pending, SIGPIPE)) {
+            int taken;
+            sigwait(&pipe_signal, &taken);
+        }
+    }
+    pthread_sigmask(SIG_SETMASK, &before, NULL);
+#endif
+    return code;
+}
+/* `System.run`: starts the program at `path` with `posix_spawn` and waits for it to end. Its
+   input is this program's (`input` 0), nothing (1) or `text` (2); its output is a pipe read into
+   `output` when it is given, otherwise this program's; its standard error is this program's. What
+   was printed goes out first. Only 0, 1 and 2 reach the program: every other descriptor of the
+   runtime is opened close-on-exec, and on macOS the spawn closes every descriptor it is not told
+   to keep. `ended` gets 0 and the code, or 1 and the signal that stopped it. */
+static int sg_proc_run(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
+                       const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
+                       int64_t input, sg_str text, sg_string* output, int64_t* ended) {
+    char* program = sg_proc_text(path.ptr, path.len);
+    char** argv = malloc(sizeof(char*) * (size_t)(count + 1));
+    if (!argv) abort();
+    for (int64_t i = 0; i < count; i++) argv[i] = sg_proc_text(words[i].ptr, words[i].len);
+    argv[count] = NULL;
+    char* dir = folder.len > 0 ? sg_proc_text(folder.ptr, folder.len) : NULL;
+    char** made = NULL;
+    int64_t fresh = 0;
+    char** envp = sg_proc_environment(clear, names, values, kept, changes, &made, &fresh);
+    int in_pipe[2] = { -1, -1 }, out_pipe[2] = { -1, -1 };
+    int code = 0;
+    if (input == 2) code = sg_proc_pipe(in_pipe);
+    if (!code && output) code = sg_proc_pipe(out_pipe);
+    pid_t child = 0;
+    if (!code) {
+        posix_spawn_file_actions_t actions;
+        posix_spawnattr_t attr;
+        posix_spawn_file_actions_init(&actions);
+        posix_spawnattr_init(&attr);
+        sigset_t none, plain;
+        sigemptyset(&none);
+        sigemptyset(&plain);
+        sigaddset(&plain, SIGPIPE);
+        short flags = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF;
+#ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
+        flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+        for (int fd = 0; fd < 3; fd++) posix_spawn_file_actions_addinherit_np(&actions, fd);
+#endif
+        posix_spawnattr_setflags(&attr, flags);
+        posix_spawnattr_setsigmask(&attr, &none);
+        posix_spawnattr_setsigdefault(&attr, &plain);
+        if (input == 1) posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
+        if (input == 2) posix_spawn_file_actions_adddup2(&actions, in_pipe[0], 0);
+        if (output) posix_spawn_file_actions_adddup2(&actions, out_pipe[1], 1);
+        /* POSIX named it without `_np` in 2024; macOS 26 has only that name left undeprecated. */
+#if defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && __MAC_OS_X_VERSION_MIN_REQUIRED >= 260000
+        if (dir) posix_spawn_file_actions_addchdir(&actions, dir);
+#else
+        if (dir) posix_spawn_file_actions_addchdir_np(&actions, dir);
+#endif
+        /* What this program was handed open and not marked close-on-exec does not reach the
+           program either: on macOS `POSIX_SPAWN_CLOEXEC_DEFAULT` does it, with glibc 2.34 this. */
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
+        posix_spawn_file_actions_addclosefrom_np(&actions, 3);
+#endif
+        fflush(stdout);
+        fflush(stderr);
+        code = posix_spawn(&child, program, &actions, &attr, argv, envp);
+        posix_spawn_file_actions_destroy(&actions);
+        posix_spawnattr_destroy(&attr);
+    }
+    if (in_pipe[0] >= 0) close(in_pipe[0]);
+    if (out_pipe[1] >= 0) close(out_pipe[1]);
+    if (code) {
+        if (in_pipe[1] >= 0) close(in_pipe[1]);
+        if (out_pipe[0] >= 0) close(out_pipe[0]);
+    } else {
+        int pumped = (in_pipe[1] >= 0 || out_pipe[0] >= 0) ? sg_proc_pump(in_pipe[1], text, out_pipe[0], output) : 0;
+        int status = 0;
+        while (waitpid(child, &status, 0) < 0) {
+            if (errno != EINTR) { code = sg_os_error(); break; }
+        }
+        if (!code) code = pumped;
+        if (!code) {
+            ended[0] = WIFSIGNALED(status) ? 1 : 0;
+            ended[1] = WIFSIGNALED(status) ? WTERMSIG(status) : WEXITSTATUS(status);
+        }
+    }
+    free(program);
+    for (int64_t i = 0; i < count; i++) free(argv[i]);
+    free(argv);
+    free(dir);
+    for (int64_t i = 0; i < fresh; i++) free(made[i]);
+    free(made);
+    free(envp);
+    return code;
+}
+"#;
+
 const FILES_RUNTIME: &str = r#"
 #include <dirent.h>
 #include <stdio.h>
@@ -3219,7 +3450,8 @@ const IO_RUNTIME: &str = r#"
    2 IsDirectory, 3 NoSpace, 7 ConnectionRefused, 8 ConnectionReset, 9 AddressInUse; 5 is Other,
    which keeps the code. A host that could not be found, or an address that is not `host:port`,
    has a code of its own (10 HostNotFound), and so has a line longer than the limit of the reader
-   of a connection (11 LineTooLong). 12 AlreadyExists, 13 NotDirectory, 14 DirectoryNotEmpty. */
+   of a connection (11 LineTooLong). 12 AlreadyExists, 13 NotDirectory, 14 DirectoryNotEmpty; 15 InvalidInput, which only
+   the language's own module gives. */
 #define SG_HOST_NOT_FOUND (-10)
 #define SG_LINE_TOO_LONG (-11)
 static int sg_io_kind(int code) {
@@ -3258,7 +3490,7 @@ static int sg_read_file(sg_str path, uint8_t** bytes, int64_t* len) {
     int code = 0;
     char* name = sg_path(path, &code);
     if (!name) return code;
-    int fd = open(name, O_RDONLY);
+    int fd = open(name, O_RDONLY | O_CLOEXEC);
     free(name);
     if (fd < 0) return sg_os_error();
     struct stat info;
@@ -3284,7 +3516,7 @@ static int sg_write_file(sg_str path, const uint8_t* bytes, int64_t len, bool ap
     int code = 0;
     char* name = sg_path(path, &code);
     if (!name) return code;
-    int fd = open(name, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC), 0666);
+    int fd = open(name, O_WRONLY | O_CREAT | O_CLOEXEC | (append ? O_APPEND : O_TRUNC), 0666);
     free(name);
     if (fd < 0) return sg_os_error();
     int64_t done = 0;
@@ -3607,7 +3839,7 @@ static int sg_open_reader(sg_str path, sg_reader* out) {
     int code = 0;
     char* name = sg_path(path, &code);
     if (!name) return code;
-    int fd = open(name, O_RDONLY);
+    int fd = open(name, O_RDONLY | O_CLOEXEC);
     free(name);
     if (fd < 0) return sg_os_error();
     struct stat info;
@@ -3770,7 +4002,7 @@ static int sg_open_writer(sg_str path, bool append, sg_writer* out) {
     int code = 0;
     char* name = sg_path(path, &code);
     if (!name) return code;
-    int fd = open(name, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC), 0666);
+    int fd = open(name, O_WRONLY | O_CREAT | O_CLOEXEC | (append ? O_APPEND : O_TRUNC), 0666);
     free(name);
     if (fd < 0) return sg_os_error();
     *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 } };
@@ -4361,8 +4593,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     // A program with tasks or `locked` values runs on several threads.
     let threads = emitter.made.contains("tasks") || emitter.made.contains("threads");
-    // glibc keeps `flockfile` and `clock_gettime` out of strict C11 unless POSIX is asked for.
-    let mut out = match threads || emitter.made.contains("clock") {
+    // glibc keeps `flockfile`, `clock_gettime` and `O_CLOEXEC` out of strict C11 unless POSIX is
+    // asked for.
+    let mut out = match threads || emitter.made.contains("clock") || emitter.made.contains("io") {
         true => "#if defined(__linux__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n".to_string(),
         false => String::new(),
     };
@@ -4407,6 +4640,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     if emitter.made.contains("files") {
         out.push_str(FILES_RUNTIME);
+    }
+    if emitter.made.contains("process") {
+        out.push_str(PROCESS_RUNTIME);
     }
     if emitter.made.contains("net") {
         out.push_str(NET_RUNTIME);
@@ -9462,6 +9698,37 @@ impl<'a> Emitter<'a> {
             ),
             SystemCall::Current => ("sg_system_current", Vec::new(), owned_text("sg_fs_current(&bytes, &n)")),
             SystemCall::MakeTemp => ("sg_system_make_temp", vec![text()], owned_text("sg_fs_make_temp(a0, &bytes, &n)")),
+            SystemCall::Executable => ("sg_system_executable", vec![text()], "return sg_proc_executable(a0);".to_string()),
+            SystemCall::Run => {
+                self.made.insert("process".to_string());
+                let texts = || Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))));
+                (
+                    "sg_system_run",
+                    vec![
+                        text(),
+                        texts(),
+                        text(),
+                        Ty::Bool,
+                        texts(),
+                        texts(),
+                        Ty::Read(Box::new(Ty::List(Box::new(Ty::Bool)))),
+                        Ty::Int(IntTy::Long),
+                        text(),
+                        Ty::Bool,
+                        Ty::Ref(Box::new(Ty::Str)),
+                        Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long))))),
+                    ],
+                    // What the program wrote is read into the text where it is kept, checked to be
+                    // UTF-8 there, and left out when it is not: the third number says where.
+                    format!(
+                        "int64_t ended[3] = {{ 0, 0, -1 }}; \
+                         int code = sg_proc_run(a0, a1->ptr, a1->len, a2, a3, a4->ptr, a5->ptr, a6->ptr, a4->len, a7, a8, a9 ? a10 : NULL, ended); \
+                         if (code) {} if (a9) {{ ended[2] = sg_utf8_bad(a10->ptr, a10->len); if (ended[2] >= 0) a10->len = 0; }} \
+                         for (int64_t i = 0; i < 3 && i < a11.len; i++) a11.ptr[i] = ended[i]; return ({gives}){{ .tag = 0 }};",
+                        failed("sg_io_error(code)")
+                    ),
+                )
+            }
             SystemCall::Variable => (
                 "sg_system_variable",
                 vec![text(), bytes()],

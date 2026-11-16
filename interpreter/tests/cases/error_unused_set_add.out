@@ -1,0 +1,5 @@
+error: the `bool` that `add` gives is not used
+  --> error_unused_set_add.sg:4:5
+ 4 |     seen.add("a")
+   |     ^^^^^^^^^^^^^
+  hint: keep it: `var value = seen.add("a")`; to drop it on purpose, `_ = seen.add("a")`

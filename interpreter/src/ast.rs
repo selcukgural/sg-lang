@@ -368,6 +368,14 @@ pub enum SystemCall {
     MakeTemp,
     /// `System.variable(name, ref bytes)`: a variable of the environment, `false` when it is not set.
     Variable,
+    /// `System.executable(path)`: 1 for a file this program may run, 2 for a file it may not, 0
+    /// for no file.
+    Executable,
+    /// `System.run(path, read words, read folder, clear, read names, read values, read kept,
+    /// input, read text, capture, ref output, ref ended)`: starts a program and waits for it.
+    /// What it wrote is kept in `output` when it is UTF-8; `ended` gets how it ended and where
+    /// the first byte that is not UTF-8 is, or -1.
+    Run,
 }
 
 impl IoCall {

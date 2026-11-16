@@ -1,0 +1,7 @@
+// A built-in method that changes its value and gives one too: the item `removeLast` takes out
+// is dropped only on purpose.
+void main() {
+    var xs = List<int> { 1, 2 }
+    xs.removeLast()
+    print(xs)
+}

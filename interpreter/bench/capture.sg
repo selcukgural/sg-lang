@@ -1,0 +1,13 @@
+// What `cat` writes of a log of two million lines, kept as text with `output` five times: reading
+// from a pipe, the check that it is UTF-8 and the copy into a `string`.
+Result<void, ProcessError> main() {
+    var cat = Command("cat")
+    cat.arg("target/bench/lines.in")
+    long total = 0
+    for _ in 0..5 {
+        var text = try cat.output()
+        total += text.length()
+    }
+    print(total)
+    return Ok()
+}

@@ -1,6 +1,5 @@
-// The built-in methods that change their value may be called alone even when they give a
-// value too: the change is what they are called for. A value thrown away on purpose is
-// written with `_ =`.
+// A call that changes something and gives a value too is called for the change, and its value
+// is thrown away on purpose with `_ =`: a built-in method, a function and a method of your own.
 struct Stack {
     List<int> items
 
@@ -20,30 +19,30 @@ void main() {
     var xs = List<int>()
     xs.add(1)
     xs.add(2)
-    xs.removeLast()
+    _ = xs.removeLast()
     print(xs)
 
     var seen = HashSet<string>()
-    seen.add("a")
-    seen.add("a")
-    seen.remove("b")
+    _ = seen.add("a")
+    _ = seen.add("a")
+    _ = seen.remove("b")
     print(seen.length())
 
     var ages = HashMap<string, int>()
     ages.add("ada", 36)
-    ages.remove("ada")
-    ages.getOrAdd("bob", 7)
+    _ = ages.remove("ada")
+    _ = ages.getOrAdd("bob", 7)
     print(ages.get("bob") ?? 0)
 
     var words = "one two".splitWhitespace()
-    words.next()
+    _ = words.next()
     print(words.next() ?? "")
 
-    // Functions and methods of your own may print or change through `ref`: their value may
-    // be left unused.
-    noisy(4)
+    // Functions and methods of your own may print or change through `ref`; their value is
+    // dropped the same way.
+    _ = noisy(4)
     var stack = Stack { items = List<int>() }
-    stack.push(5)
+    _ = stack.push(5)
 
     _ = xs.contains(1)
     _ = "  x ".trim()

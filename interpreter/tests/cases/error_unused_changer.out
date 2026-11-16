@@ -1,0 +1,5 @@
+error: the `int?` that `removeLast` gives is not used
+  --> error_unused_changer.sg:5:5
+ 5 |     xs.removeLast()
+   |     ^^^^^^^^^^^^^^^
+  hint: keep it: `var value = xs.removeLast()`; to drop it on purpose, `_ = xs.removeLast()`
