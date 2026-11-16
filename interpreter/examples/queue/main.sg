@@ -1,0 +1,51 @@
+// Four tasks push the numbers 1 to 2500 each (or to the number given) through a queue without
+// locks of 1024 places, and four tasks take them out at the same time. Every number comes out
+// once: the sum of what the consumers took is the sum of what the producers pushed.
+use queue
+
+void produce(shared BoundedQueue q, long count) {
+    for n in 1..count + 1 {
+        while !q.tryPush(n) {
+            Atomic.spinLoop()
+        }
+    }
+}
+
+// Takes values until `left` says none are left to take; gives their sum.
+long consume(shared BoundedQueue q, shared atomic long left) {
+    long sum = 0
+    while left.load(MemoryOrder.Relaxed) > 0 {
+        var taken = q.tryPop()
+        if taken is null {
+            Atomic.spinLoop()
+            continue
+        }
+        sum += taken
+        _ = left.fetchSub(1, MemoryOrder.Relaxed)
+    }
+    return sum
+}
+
+void main(List<string> args) {
+    long count = 2500
+    if args.length() == 1 {
+        count = long.parse(args[0]) ?? count
+    }
+    var q = new shared BoundedQueue.withCapacity(1024)
+    var left = new shared atomic (4 * count)
+    var producers = List<Task<void>>()
+    var consumers = List<Task<long>>()
+    for _ in 0..4 {
+        producers.add(Task.run(produce, share q, count))
+        consumers.add(Task.run(consume, share q, share left))
+    }
+    Task.whenAll(producers).wait()
+    var sums = Task.whenAll(consumers).wait()
+    long total = 0
+    for sum in sums {
+        total += sum
+    }
+    var expected = 4 * (count * (count + 1) / 2)
+    print($"{4 * count} numbers through a queue of {q.capacity()} places")
+    print($"the sum taken out is {total}, the sum put in {expected}")
+}

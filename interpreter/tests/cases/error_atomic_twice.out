@@ -1,0 +1,4 @@
+error: `atomic` is written once
+  --> error_atomic_twice.sg:2:12
+ 2 |     atomic atomic int count = atomic 0
+   |            ^^^^^^

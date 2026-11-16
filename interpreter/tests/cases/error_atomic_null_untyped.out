@@ -1,0 +1,5 @@
+error: the type of an atomic pointer is not known from `null` alone
+  --> error_atomic_null_untyped.sg:2:23
+ 2 |     var head = atomic null
+   |                       ^^^^
+  hint: write the type: `atomic raw Node head = atomic null`

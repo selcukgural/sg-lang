@@ -1,0 +1,6 @@
+2147483645
+panic: overflow: 2147483645 + 5 does not fit in int
+  --> panic_atomic_overflow.sg:7:9
+ 7 |     _ = count.fetchAdd(5)
+   |         ^^^^^^^^^^^^^^^^^
+  hint: `wrappingFetchAdd` wraps around

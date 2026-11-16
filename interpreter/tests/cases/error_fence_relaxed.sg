@@ -1,0 +1,3 @@
+void main() {
+    Atomic.fence(MemoryOrder.Relaxed)
+}

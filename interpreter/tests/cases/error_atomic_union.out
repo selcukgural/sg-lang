@@ -1,0 +1,5 @@
+error: a union holds no atomic value
+  a task that writes another field of the union writes over it, and no atomic operation sees that
+  --> error_atomic_union.sg:2:5
+ 2 |     atomic uint whole
+   |     ^^^^^^^^^^^

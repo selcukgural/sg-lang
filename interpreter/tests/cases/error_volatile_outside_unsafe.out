@@ -1,0 +1,5 @@
+error: `Memory.writeVolatile` writes raw memory, which the checker does not follow, so it is written inside `unsafe`
+  --> error_volatile_outside_unsafe.sg:3:5
+ 3 |     Memory.writeVolatile(block[0], 1)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `unsafe Memory.writeVolatile(block[0], 1)`, or `unsafe { ... }` around several statements

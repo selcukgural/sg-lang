@@ -1,0 +1,3 @@
+void main() {
+    atomic atomic int count = atomic 0
+}

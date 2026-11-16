@@ -263,6 +263,17 @@ SG_COLD static _Noreturn void sg_die_hint(const char* loc, const char* hint) {
     if (!sg_called(loc)) fprintf(stderr, "  hint: %s\n", hint);
     exit(1);
 }
+/* `fetchAdd` and `fetchSub` that overflow: the value is written by then, and the panic ends the
+   program. */
+SG_COLD static _Noreturn void sg_overflow_atomic(__int128 a, const char* op, __int128 b, const char* ty, const char* loc) {
+    SG_PANIC_START();
+    fputs("panic: overflow: ", stderr);
+    sg_err_int(a);
+    fprintf(stderr, " %s ", op);
+    sg_err_int(b);
+    fprintf(stderr, " does not fit in %s\n", ty);
+    sg_die_hint(loc, op[0] == '+' ? "`wrappingFetchAdd` wraps around" : "`wrappingFetchSub` wraps around");
+}
 SG_COLD static _Noreturn void sg_overflow(__int128 a, const char* op, __int128 b, const char* ty, const char* loc) {
     SG_PANIC_START();
     fputs("panic: overflow: ", stderr);
@@ -6359,6 +6370,7 @@ fn mangle(ty: &Ty) -> Option<String> {
         Ty::Shared(inner, checked) => format!("{}_{}", if *checked { "SC" } else { "SH" }, mangle(inner)?),
         Ty::Weak(inner, checked) => format!("{}_{}", if *checked { "WC" } else { "WK" }, mangle(inner)?),
         Ty::Locked(inner) => format!("LK_{}", mangle(inner)?),
+        Ty::Atomic(inner) => format!("AT_{}", mangle(inner)?),
         // A task is named after what it gives.
         Ty::Task(result) if **result == Ty::Void => "TK_void".to_string(),
         Ty::Task(result) => format!("TK_{}", mangle(result)?),
@@ -6470,6 +6482,7 @@ fn may_leave(expr: &Expr) -> bool {
         ExprKind::AsSlice(inner) => may_leave(inner),
         ExprKind::Field { recv: inner, .. }
         | ExprKind::New(inner)
+        | ExprKind::Atomic(inner)
         | ExprKind::NewShared { value: inner, .. }
         | ExprKind::Open { inner, .. }
         | ExprKind::Within(inner)
@@ -7087,6 +7100,8 @@ impl<'a> Emitter<'a> {
             Ty::Read(inner) | Ty::Ref(inner) => format!("{}*", self.ctype(inner, span)?),
             // What a `locked` value holds is the value; its mutex is in front of it (`sg_mutex`).
             Ty::Locked(inner) => self.ctype(inner, span)?,
+            // An atomic value is the value, reached only through the `__atomic` builtins.
+            Ty::Atomic(inner) => self.ctype(inner, span)?,
             // A raw pointer is the pointer C has.
             Ty::Raw(inner) if **inner == Ty::Void => "void*".to_string(),
             Ty::Raw(inner) => format!("{}*", self.ctype(inner, span)?),
@@ -8648,6 +8663,11 @@ impl<'a> Emitter<'a> {
             match field.bits {
                 Some((width, _)) => {
                     let _ = writeln!(fields, "    {} m_{} : {width};", self.ctype(&ty, field.ty.span)?, field.name);
+                }
+                // An atomic value is aligned to its size, where its type may be aligned to less.
+                None if matches!(ty, Ty::Atomic(_)) => {
+                    let ctype = self.ctype(&ty, field.ty.span)?;
+                    let _ = writeln!(fields, "    _Alignas(sizeof({ctype})) {ctype} m_{};", field.name);
                 }
                 None => {
                     let _ = writeln!(fields, "    {} m_{};", self.ctype(&ty, field.ty.span)?, field.name);
@@ -10827,6 +10847,7 @@ impl<'a> Emitter<'a> {
             ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::SizeOf { .. } => Effect::Reads,
             ExprKind::Field { recv: inner, .. }
             | ExprKind::New(inner)
+            | ExprKind::Atomic(inner)
             | ExprKind::NewShared { value: inner, .. }
             | ExprKind::Share(inner)
             | ExprKind::WeakOf(inner)
@@ -12603,6 +12624,146 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// An atomic operation, through GCC's and Clang's `__atomic` builtins, which Clang has on
+    /// Windows too. A `bool` is worked on as its byte; a `float` and a `double` through the
+    /// forms that take addresses, with a loop of `compareExchange` for `fetchAdd`.
+    #[allow(clippy::too_many_arguments)]
+    fn atomic(&mut self, op: AtomicOp, order: Order, failure: Order, recv: &'a Expr, args: &'a [Expr], head: bool, expr: &'a Expr) -> Res<String> {
+        let o = order.c_name();
+        match op {
+            AtomicOp::Fence => return Ok(format!("__atomic_thread_fence({o})")),
+            AtomicOp::CompilerFence => return Ok(format!("__atomic_signal_fence({o})")),
+            AtomicOp::SpinLoop => {
+                if self.made.insert("sg_spin_loop".to_string()) {
+                    let _ = writeln!(
+                        self.glue,
+                        "static inline void sg_spin_loop(void) {{\n#if defined(__x86_64__) || defined(__i386__)\n    __builtin_ia32_pause();\n#elif defined(__aarch64__) || defined(__arm__)\n    __asm__ __volatile__(\"yield\");\n#endif\n}}"
+                    );
+                }
+                return Ok("sg_spin_loop()".to_string());
+            }
+            _ => {}
+        }
+        // The pointer to the value: where the place is, or what the borrows and owners on the
+        // way point at.
+        let mut ty = &recv.ty;
+        let mut at = match ty {
+            Ty::Atomic(_) if recv.is_place() => {
+                self.head = head;
+                let place = self.lvalue(recv);
+                self.head = false;
+                format!("(&{})", place?)
+            }
+            Ty::Atomic(_) => {
+                let (ctype, temp, value) = (self.ctype(ty, recv.span)?, self.temp(), self.first(recv, head)?);
+                self.pre.push(format!("{ctype} {temp} = {value};"));
+                format!("(&{temp})")
+            }
+            _ => self.first(recv, head)?,
+        };
+        while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Ptr(inner) | Ty::Shared(inner, _) = ty {
+            if matches!(**inner, Ty::Atomic(_)) {
+                break;
+            }
+            at = format!("(*{at})");
+            ty = inner;
+        }
+        let item = match ty {
+            Ty::Atomic(item) => (**item).clone(),
+            Ty::Read(inner) | Ty::Ref(inner) | Ty::Ptr(inner) | Ty::Shared(inner, _) => match &**inner {
+                Ty::Atomic(item) => (**item).clone(),
+                _ => unreachable!("the checker calls an atomic operation on an atomic value"),
+            },
+            _ => unreachable!("the checker calls an atomic operation on an atomic value"),
+        };
+        let ctype = self.ctype(&item, expr.span)?;
+        let mut parts = Vec::new();
+        for arg in args {
+            let before = self.mark();
+            let value = self.value_as(arg, &item)?;
+            parts.push(self.part(arg, &item, value, before));
+        }
+        let (values, names) = self.in_order(parts)?;
+        let (p, f) = (self.temp(), failure.c_name());
+        let weak = matches!(op, AtomicOp::CompareExchange(true));
+        let pointer = format!("{ctype}* {p} = {at};");
+        let result = |checker: &mut Self, e: &str| -> Res<String> {
+            let gives = checker.ctype(&expr.ty, expr.span)?;
+            Ok(format!("(ok ? ({gives}){{ .tag = 0, .u.v0 = {{ {e} }} }} : ({gives}){{ .tag = 1, .u.v1 = {{ {e} }} }})"))
+        };
+        let code = match &item {
+            Ty::Float(_) => match op {
+                AtomicOp::Load => format!("({{ {pointer} {ctype} r; __atomic_load({p}, &r, {o}); r; }})"),
+                AtomicOp::Store => format!("({{ {pointer} {ctype} v = {}; __atomic_store({p}, &v, {o}); }})", values[0]),
+                AtomicOp::Exchange => format!("({{ {pointer} {ctype} v = {}, r; __atomic_exchange({p}, &v, &r, {o}); r; }})", values[0]),
+                AtomicOp::CompareExchange(_) => {
+                    let made = result(self, "e")?;
+                    format!("({{ {pointer} {ctype} e = {}, d = {}; bool ok = __atomic_compare_exchange({p}, &e, &d, {weak}, {o}, {f}); {made}; }})", values[0], values[1])
+                }
+                AtomicOp::FetchAdd(_) | AtomicOp::FetchSub(_) => {
+                    let sign = if matches!(op, AtomicOp::FetchAdd(_)) { "+" } else { "-" };
+                    format!(
+                        "({{ {pointer} {ctype} d = {}, old, new; __atomic_load({p}, &old, __ATOMIC_RELAXED); \
+                         do {{ new = old {sign} d; }} while (!__atomic_compare_exchange({p}, &old, &new, true, {o}, __ATOMIC_RELAXED)); old; }})",
+                        values[0]
+                    )
+                }
+                _ => unreachable!("the checker takes no bits of a fractional number"),
+            },
+            Ty::Bool => {
+                let p8 = format!("((uint8_t*){p})");
+                match op {
+                    AtomicOp::Load => format!("({{ {pointer} (bool)__atomic_load_n({p8}, {o}); }})"),
+                    AtomicOp::Store => format!("({{ {pointer} __atomic_store_n({p8}, (uint8_t){}, {o}); }})", values[0]),
+                    AtomicOp::Exchange => format!("({{ {pointer} (bool)__atomic_exchange_n({p8}, (uint8_t){}, {o}); }})", values[0]),
+                    AtomicOp::CompareExchange(_) => {
+                        let made = result(self, "(bool)e")?;
+                        format!("({{ {pointer} uint8_t e = (uint8_t){}; bool ok = __atomic_compare_exchange_n({p8}, &e, (uint8_t){}, {weak}, {o}, {f}); {made}; }})", values[0], values[1])
+                    }
+                    AtomicOp::FetchAnd | AtomicOp::FetchOr | AtomicOp::FetchXor => {
+                        let name = &op.name()[5..].to_lowercase();
+                        format!("({{ {pointer} (bool)__atomic_fetch_{name}({p8}, (uint8_t){}, {o}); }})", values[0])
+                    }
+                    _ => unreachable!("the checker adds nothing to a `bool`"),
+                }
+            }
+            _ => match op {
+                AtomicOp::Load => format!("({{ {pointer} __atomic_load_n({p}, {o}); }})"),
+                AtomicOp::Store => format!("({{ {pointer} __atomic_store_n({p}, {}, {o}); }})", values[0]),
+                AtomicOp::Exchange => format!("({{ {pointer} __atomic_exchange_n({p}, {}, {o}); }})", values[0]),
+                AtomicOp::CompareExchange(_) => {
+                    let made = result(self, "e")?;
+                    format!("({{ {pointer} {ctype} e = {}; bool ok = __atomic_compare_exchange_n({p}, &e, {}, {weak}, {o}, {f}); {made}; }})", values[0], values[1])
+                }
+                // Checked, the sum is tested after the step, from the value before it: the
+                // operation stays one step, and the panic ends the program.
+                AtomicOp::FetchAdd(wrapping) | AtomicOp::FetchSub(wrapping) => {
+                    let (name, short) = if matches!(op, AtomicOp::FetchAdd(_)) { ("add", "add") } else { ("sub", "sub") };
+                    let Ty::Int(int) = item else { unreachable!("the checker adds integers here") };
+                    match self.checked && !wrapping {
+                        true => {
+                            let loc = self.loc(expr.span);
+                            let sign = if short == "add" { "+" } else { "-" };
+                            format!(
+                                "({{ {pointer} {ctype} d = {}, r; {ctype} old = __atomic_fetch_{name}({p}, d, {o}); \
+                                 if (__builtin_expect(__builtin_{short}_overflow(old, d, &r), 0)) sg_overflow_atomic(old, \"{sign}\", d, \"{}\", {loc}); old; }})",
+                                values[0],
+                                int.name()
+                            )
+                        }
+                        false => format!("({{ {pointer} __atomic_fetch_{name}({p}, {}, {o}); }})", values[0]),
+                    }
+                }
+                AtomicOp::FetchAnd | AtomicOp::FetchOr | AtomicOp::FetchXor => {
+                    let name = op.name()[5..].to_lowercase();
+                    format!("({{ {pointer} __atomic_fetch_{name}({p}, {}, {o}); }})", values[0])
+                }
+                AtomicOp::Fence | AtomicOp::CompilerFence | AtomicOp::SpinLoop => unreachable!("written above"),
+            },
+        };
+        Ok(sequence(&names, code))
+    }
+
     /// The address of a place, for `read x`, `ref x` and the receiver of a method.
     fn address(&mut self, place: &'a Expr) -> Res<String> {
         if let ExprKind::Var(name) = &place.kind {
@@ -12791,6 +12952,11 @@ impl<'a> Emitter<'a> {
                     Ty::Void | Ty::Never => format!("({{ {value}; {ended} }})"),
                     _ => format!("({{ __auto_type {temp} = {value}; {ended} {temp}; }})"),
                 })
+            }
+            // An atomic value is laid out as the value.
+            ExprKind::Atomic(inner) => {
+                let Ty::Atomic(item) = &expr.ty else { unreachable!("the checker makes `atomic e` an `atomic T`") };
+                self.first_as(inner, item, head)
             }
             ExprKind::New(inner) => {
                 let Ty::Ptr(target) = &expr.ty else { return Err(not_yet(expr.span, "this `new`")) };
@@ -13852,6 +14018,26 @@ impl<'a> Emitter<'a> {
                         }
                         _ => Ok(format!("free({pointer})")),
                     }
+                }
+                Callee::Atomic { op, order, failure } => self.atomic(*op, *order, *failure, recv, args, head, expr),
+                // `Memory.readVolatile(p[i].status)`: the place, read through a `volatile`
+                // pointer, so that C reads it once, where it is written.
+                Callee::Memory(MemoryCall::ReadVolatile) => {
+                    let ctype = self.ctype(&args[0].ty, expr.span)?;
+                    self.head = head;
+                    let place = self.lvalue(&args[0]);
+                    self.head = false;
+                    Ok(format!("(*(volatile {ctype}*)&{})", place?))
+                }
+                Callee::Memory(MemoryCall::WriteVolatile) => {
+                    let ctype = self.ctype(&args[0].ty, expr.span)?;
+                    // The value first, then the place, as for any write.
+                    let before = self.mark();
+                    let value = self.first_as(&args[1], &args[0].ty, head)?;
+                    let part = self.part(&args[1], &args[0].ty, value, before);
+                    let (values, names) = self.in_order(vec![part])?;
+                    let place = self.lvalue(&args[0])?;
+                    Ok(sequence(&names, format!("(void)(*(volatile {ctype}*)&{place} = {})", values[0])))
                 }
                 // `Memory.readUnaligned(p)` and `Memory.writeUnaligned(p, value)`: the bytes, copied.
                 Callee::Memory(call @ (MemoryCall::ReadUnaligned | MemoryCall::WriteUnaligned)) => {

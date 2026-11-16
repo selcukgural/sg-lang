@@ -1,0 +1,4 @@
+void main() {
+    var count = atomic 1
+    print(count.load(2))
+}

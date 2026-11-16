@@ -1,0 +1,5 @@
+error: `fetchAdd` is not a method of `atomic raw int`
+  an atomic pointer is loaded, stored, exchanged and compared: `load`, `store`, `exchange`, `compareExchange`
+  --> error_atomic_pointer_add.sg:4:12
+ 4 |     _ = at.fetchAdd(1)
+   |            ^^^^^^^^

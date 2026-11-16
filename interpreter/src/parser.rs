@@ -14,7 +14,7 @@ const NOT_YET: &[&str] = &[
 /// Words of the language that are read where they stand, not names: `shared T`, `weak T`,
 /// `shared checked T`, `shared locked T`, `share x`, `weak x`, `using Name = T`,
 /// `lock x as c { }`, `async int f()`, `await t`, `raw byte p`, `unsafe { }`.
-const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock", "async", "await", "raw", "unsafe", "extern", "export"];
+const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock", "async", "await", "raw", "unsafe", "extern", "export", "atomic"];
 
 type Res<T> = Result<T, Diag>;
 
@@ -176,9 +176,22 @@ impl<'a> Parser<'a> {
             return Err(Diag::error(self.span(), "`locked` is written after `shared` or `weak`: several tasks own the value it holds")
                 .hint("`shared locked T` for an owner, `weak locked T` for a look at one"));
         }
-        // `raw byte`, `raw raw byte`: an address of what follows.
+        // `raw byte`, `raw raw byte`: an address of what follows. `atomic` may come before the
+        // `raw`s (`atomic raw Node`, an atomic pointer) or after them (`raw atomic int`).
         let mut raw = 0u8;
-        while self.at_word("raw") {
+        let mut atomic = None;
+        loop {
+            if self.at_word("atomic") {
+                if atomic.is_some() {
+                    return Err(Diag::error(self.span(), "`atomic` is written once"));
+                }
+                atomic = Some(raw);
+                self.bump();
+                continue;
+            }
+            if !self.at_word("raw") {
+                break;
+            }
             self.bump();
             raw = raw.saturating_add(1);
             if self.at_word("shared") || self.at_word("weak") || self.at_word("checked") || self.at_word("locked") {
@@ -233,7 +246,7 @@ impl<'a> Parser<'a> {
             }
             self.bump();
         }
-        Ok(TypeExpr { mode, holder, checked, locked, raw, name, args, suffixes, span: Span::new(start.start, self.prev_end()) })
+        Ok(TypeExpr { mode, holder, checked, locked, atomic, raw, name, args, suffixes, span: Span::new(start.start, self.prev_end()) })
     }
 
     /// `using NodeRef = shared Node`
@@ -619,6 +632,16 @@ impl<'a> Parser<'a> {
         let mut list = Vec::new();
         if self.eat(&Tok::Colon) {
             loop {
+                // `: unsafe Sendable`: a promise of the writer, kept with the name.
+                if self.at_word("unsafe") {
+                    let start = self.bump().span;
+                    let (name, span) = self.ident("an interface name")?;
+                    list.push((format!("unsafe {name}"), start.to(span)));
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                    continue;
+                }
                 list.push(self.ident("an interface name")?);
                 if !self.eat(&Tok::Comma) {
                     break;
@@ -854,7 +877,7 @@ impl<'a> Parser<'a> {
         if holder && matches!(self.peek_at(first), Tok::Ident(word) if word == "checked" || word == "locked") {
             first += 1;
         }
-        while matches!(self.peek_at(first), Tok::Ident(word) if word == "raw") {
+        while matches!(self.peek_at(first), Tok::Ident(word) if word == "raw" || word == "atomic") {
             first += 1;
         }
         if !matches!(self.peek_at(first), Tok::Ident(_)) {
@@ -1474,6 +1497,20 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let operand = self.unary()?;
                 Ok(wrap(ExprKind::Share, operand))
+            }
+            // `atomic 0`: the value as an `atomic int`, like `locked` in `new shared locked 0`.
+            // `atomic uint[3] { ... }` is an array of atomic values, since no array is one.
+            Tok::Ident(word) if word == "atomic" => {
+                self.bump();
+                let mut operand = self.unary()?;
+                if let ExprKind::Array { ty, .. } = &mut operand.kind {
+                    if ty.atomic.is_none() && ty.raw == 0 && ty.holder.is_none() {
+                        ty.atomic = Some(0);
+                        operand.span = start.to(operand.span);
+                        return Ok(operand);
+                    }
+                }
+                Ok(wrap(ExprKind::Atomic, operand))
             }
             Tok::Ident(word) if word == "weak" => {
                 self.bump();

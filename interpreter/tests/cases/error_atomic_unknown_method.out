@@ -1,0 +1,5 @@
+error: `atomic int` has no method `increment`
+  --> error_atomic_unknown_method.sg:3:11
+ 3 |     count.increment()
+   |           ^^^^^^^^^
+  hint: `fetchAdd(1)`, which gives the value before

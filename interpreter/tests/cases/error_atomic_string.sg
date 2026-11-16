@@ -1,0 +1,4 @@
+void main() {
+    atomic string name = atomic "x"
+    print(name.load())
+}

@@ -1,0 +1,5 @@
+panic: overflow: 0 - 1 does not fit in uint
+  --> panic_atomic_sub.sg:5:9
+ 5 |     _ = left.fetchSub(1, MemoryOrder.Relaxed)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `wrappingFetchSub` wraps around

@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 16 November 2026, the eighty-eighth slice.
+Last brought up to date: 16 November 2026, the ninetieth slice.
 
 ## Functions and variables
 
@@ -243,6 +243,19 @@ Last brought up to date: 16 November 2026, the eighty-eighth slice.
 | two locks, one after the other | `lock a as x, b as y { }` | built | Taken in a fixed order; a lock inside a lock is an error |
 | a lock held across a wait | a compile error | built | Nothing in a `lock` block waits, so locks and waits cannot deadlock |
 | lock poisoning | none | built | A panic stops the process |
+| `AtomicI64::new(0)`, `AtomicBool`, `AtomicPtr<T>` | `atomic 0` of the type `atomic long`, `atomic bool`, `atomic raw T` | built | Any integer type, `bool`, `float`, `double` and a raw pointer; as large as its type and aligned to its size, in a struct, a list, an array or raw memory |
+| `Arc<AtomicI64>` | `shared atomic long`, made with `new shared atomic 0` | built | Its methods work through `read` and `shared`, as Rust's through `&self` |
+| `a.load(Ordering::SeqCst)`, `a.store(v, Ordering::Release)` | `a.load()`, `a.store(v, MemoryOrder.Release)` | built | Sequentially consistent unless an order is written; an order the operation cannot keep is a compile error, where Rust panics at run time |
+| `a.fetch_add(1, Ordering::Relaxed)` | `a.fetchAdd(1, MemoryOrder.Relaxed)` | built | Gives the value before, as Rust's; checked for overflow in a debug build, where Rust wraps; `wrappingFetchAdd` wraps in every build. On `float` and `double` too |
+| `a.compare_exchange(old, new, s, f)` | `a.compareExchange(old, new, s, f)` | built | A `Result<T, T>`, as Rust's; with one order, the order on failure is taken from it; `compareExchangeWeak` too |
+| `fetch_max`, `fetch_min`, `fetch_nand`, `fetch_update` | none | not in SG | A loop of `compareExchangeWeak` |
+| `atomic::fence(o)`, `compiler_fence(o)` | `Atomic.fence(o)`, `Atomic.compilerFence(o)` | built | |
+| `std::hint::spin_loop()` | `Atomic.spinLoop()` | built | In the interpreter, where one task runs at a time, it lets the others run |
+| `unsafe impl Send for T {}`, `unsafe impl Sync for T {}` | `struct T : unsafe Sendable` | built | The writer's promise that what its raw pointers reach is safe for several tasks; one word, as SG has one thread rule |
+| `ptr::read_volatile(p)`, `ptr::write_volatile(p, v)` | `unsafe Memory.readVolatile(p[0])`, `unsafe Memory.writeVolatile(p[0].status, v)` | built | Takes a place in raw memory, so a field of a block of registers is reached as C's `regs->status` |
+| C#'s `Interlocked.Increment(ref x)`, `Interlocked.Add(ref x, n)` | `_ = x.fetchAdd(1)`, `x.fetchAdd(n)` | built | C#'s `Add` gives the value after, `fetchAdd` the one before, as C and Rust; the value is `atomic`, so it is never read or written without an atomic operation |
+| C#'s `Interlocked.CompareExchange(ref x, value, comparand)` | `x.compareExchange(comparand, value)` | built | The expected value first, as C and Rust have it |
+| C#'s `Volatile.Read`, `Volatile.Write`, `volatile` fields | `x.load(MemoryOrder.Acquire)`, `x.store(v, MemoryOrder.Release)` | built | C#'s `volatile` orders reads and writes between threads; SG's `Memory.readVolatile` is C's, for devices, and orders nothing |
 | `static`, `thread_local!` | none | not in SG | No global variables: what tasks share is in the arguments of `Task.run` |
 | `async fn`, `.await` | `async int f()`, `await t`, `await f(x)` | built | C#'s behaviour: a call starts the task at once; a call alone on a line is an error. Compiled as Rust compiles it ("Async, the direction") |
 | `tokio::spawn(f(x))` | `var t = f(x)` (no `await`) | built | What it is given follows the thread rule; `await f(read x)` can borrow, as an awaited future does |

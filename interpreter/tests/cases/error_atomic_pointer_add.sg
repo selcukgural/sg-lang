@@ -1,0 +1,5 @@
+void main() {
+    var block = Memory.allocate<int>(4)
+    atomic raw int at = atomic block
+    _ = at.fetchAdd(1)
+}

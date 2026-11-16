@@ -1,0 +1,6 @@
+error: operator `==` is not defined for `atomic int` and `atomic int`
+  an atomic value is read once with `load`, so that another task cannot change it in the middle of the computation
+  --> error_atomic_compare.sg:4:11
+ 4 |     print(a == b)
+   |           ^^^^^^
+  hint: read it first: `a.load()`

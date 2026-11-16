@@ -1,0 +1,89 @@
+// Atomic values in raw memory, made there or read so through a cast of memory C would share;
+// `volatile` reads and writes of places in raw memory, a field of a struct of registers among
+// them; and a struct that keeps raw memory, promised to be safe for several tasks with
+// `: unsafe Sendable`, goes to another task.
+struct Registers {
+    uint status
+    uint control
+    Mode mode
+}
+
+union Mode {
+    uint word
+    byte[4] bytes
+}
+
+// A block of counters that tasks add to, each counter reached at its address.
+struct Tally : unsafe Sendable, Disposable {
+    raw atomic long counts
+    nint length
+
+    Tally create(nint length) {
+        return Tally { counts = Memory.allocate<atomic long>(length), length = length }
+    }
+
+    void add(read this, nint at, long n) {
+        unsafe {
+            _ = this.counts[at].fetchAdd(n)
+        }
+    }
+
+    long get(read this, nint at) {
+        return unsafe this.counts[at].load()
+    }
+
+    void dispose(ref this) {
+        unsafe {
+            Memory.free(this.counts)
+        }
+    }
+}
+
+void fill(shared Tally tally, nint at) {
+    for _ in 0..100 {
+        tally.add(at, 2)
+    }
+}
+
+void main() {
+    var slots = Memory.allocate<atomic int>(4)
+    unsafe {
+        slots[1].store(5)
+        _ = slots[1].fetchAdd(10, MemoryOrder.Relaxed)
+        print(slots[1].load())
+        print(slots[2].compareExchange(0, 7) is Ok(_))
+        // The same memory as plain `int`s, as C would see it.
+        var plain = (raw int)slots
+        print(plain[2])
+        Memory.free(slots)
+    }
+
+    var words = Memory.allocate<int>(2)
+    unsafe {
+        var seen = (raw atomic int)words
+        _ = seen[0].fetchOr(12)
+        print(words[0])
+        Memory.free(words)
+    }
+
+    var device = Memory.allocate<Registers>(1)
+    unsafe {
+        Memory.writeVolatile(device[0].control, 3)
+        Memory.writeVolatile(device[0].mode.word, 0x01020304)
+        print(Memory.readVolatile(device[0].control))
+        print(Memory.readVolatile(device[0].mode.bytes[0]) + Memory.readVolatile(device[0].mode.bytes[3]))
+        var all = Memory.readVolatile(device[0])
+        print(all.status + all.control)
+        var cells = (raw uint)device
+        Memory.writeVolatile((cells + 1)[0], 9)
+        print(Memory.readVolatile(device[0].control))
+        Memory.free(device)
+    }
+
+    var tally = new shared Tally.create(2)
+    var one = Task.run(fill, share tally, 0)
+    var two = Task.run(fill, share tally, 1)
+    one.wait()
+    two.wait()
+    print(tally.get(0) + tally.get(1))
+}

@@ -1,0 +1,5 @@
+error: an `atomic int` is not written as text: another task may change it while it is written
+  --> error_atomic_print.sg:3:11
+ 3 |     print(count)
+   |           ^^^^^
+  hint: read it first: `count.load()`

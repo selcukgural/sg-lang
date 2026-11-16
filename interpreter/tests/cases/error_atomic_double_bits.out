@@ -1,0 +1,5 @@
+error: `fetchOr` is not a method of `atomic double`
+  the bits of a fractional number are not taken one by one
+  --> error_atomic_double_bits.sg:3:15
+ 3 |     _ = total.fetchOr(2.0)
+   |               ^^^^^^^

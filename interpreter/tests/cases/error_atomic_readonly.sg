@@ -1,0 +1,8 @@
+public struct Meter {
+    public readonly atomic long total
+}
+
+void main() {
+    var meter = Meter { total = atomic 0 }
+    print(meter.total.load())
+}

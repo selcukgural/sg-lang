@@ -1,0 +1,5 @@
+error: the order of an atomic operation is written out, as a variant: `MemoryOrder.Acquire`
+  the compiler checks it against the operation, so it is known when the program is compiled
+  --> error_atomic_order_variable.sg:4:22
+ 4 |     print(count.load(order))
+   |                      ^^^^^

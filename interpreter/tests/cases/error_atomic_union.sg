@@ -1,0 +1,8 @@
+union Word {
+    atomic uint whole
+    byte[4] parts
+}
+
+void main() {
+    var word = Word { parts = byte[4](0) }
+}

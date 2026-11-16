@@ -1,0 +1,6 @@
+struct Pool : unsafe Copyable {
+    raw byte bytes
+}
+
+void main() {
+}

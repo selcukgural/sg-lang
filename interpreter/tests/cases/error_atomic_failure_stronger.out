@@ -1,0 +1,5 @@
+error: a `compareExchange` that fails keeps no more order than one that succeeds, and `Acquire` is more than `Release`
+  C asks this of the two orders
+  --> error_atomic_failure_stronger.sg:3:58
+ 3 |     _ = count.compareExchange(1, 2, MemoryOrder.Release, MemoryOrder.Acquire)
+   |                                                          ^^^^^^^^^^^^^^^^^^^

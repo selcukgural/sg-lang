@@ -378,7 +378,7 @@ impl Opener<'_> {
             }
             ExprKind::AsSlice(inner) => self.expr(inner, used)?,
             ExprKind::Load(inner) | ExprKind::Widen(_, inner) | ExprKind::Cast { expr: inner, .. } | ExprKind::Unary(_, inner) => self.expr(inner, Use::Value)?,
-            ExprKind::New(inner) | ExprKind::NewShared { value: inner, .. } | ExprKind::Share(inner) | ExprKind::WeakOf(inner) => self.expr(inner, Use::Value)?,
+            ExprKind::New(inner) | ExprKind::Atomic(inner) | ExprKind::NewShared { value: inner, .. } | ExprKind::Share(inner) | ExprKind::WeakOf(inner) => self.expr(inner, Use::Value)?,
             ExprKind::IsNull { expr: inner, .. } | ExprKind::Try { expr: inner, .. } | ExprKind::Await(inner) => self.expr(inner, Use::Value)?,
             ExprKind::Unsafe(inner) | ExprKind::RawCast { expr: inner, .. } => self.expr(inner, Use::Value)?,
             ExprKind::Allocate { args, .. } => {

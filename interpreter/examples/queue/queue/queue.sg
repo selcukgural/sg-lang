@@ -1,0 +1,98 @@
+// A queue without locks that several tasks push to and pop from at once: Dmitry Vyukov's bounded
+// queue for many producers and many consumers. Each cell has a number that says whose turn it is:
+// a producer takes a place by moving the head on with `compareExchange`, writes the value, and
+// then gives the cell to the consumers by moving its number on with a `Release` store; a consumer
+// takes it the same way from the tail. Nothing here is `unsafe`: the values themselves are atomic
+// too, read and written `Relaxed`, which costs what a plain read and write cost, since the number
+// of the cell orders them.
+
+// What a task increments alone: on a cache line of its own, so that the producers moving the
+// head do not slow down the consumers moving the tail.
+align(64) struct Position {
+    atomic nuint value
+}
+
+struct Cell {
+    // Equal to the place for a producer whose turn it is, one more for a consumer.
+    atomic nuint turn
+    atomic long value
+}
+
+public struct BoundedQueue {
+    List<Cell> cells
+    nuint mask
+    Position head
+    Position tail
+
+    // A queue that holds `capacity` values at most, a power of two.
+    public BoundedQueue withCapacity(nint capacity) {
+        if capacity < 2 || (capacity & (capacity - 1)) != 0 {
+            panic($"the capacity of a queue is a power of two, at least 2, and this is {capacity}")
+        }
+        var cells = List<Cell>()
+        for at in 0..capacity {
+            cells.add(Cell { turn = atomic (nuint)at, value = atomic 0 })
+        }
+        return BoundedQueue {
+            cells = cells,
+            mask = (nuint)(capacity - 1),
+            head = Position { value = atomic 0 },
+            tail = Position { value = atomic 0 },
+        }
+    }
+
+    // Puts the value at the head; `false` when the queue is full.
+    public bool tryPush(read this, long value) {
+        var at = this.head.value.load(MemoryOrder.Relaxed)
+        while true {
+            var cell = this.cells[(nint)(at & this.mask)]
+            var turn = cell.turn.load(MemoryOrder.Acquire)
+            var ahead = turn.wrappingToNint() - at.wrappingToNint()
+            if ahead == 0 {
+                match this.head.value.compareExchangeWeak(at, at + 1, MemoryOrder.Relaxed) {
+                    Ok(_) => {
+                        cell.value.store(value, MemoryOrder.Relaxed)
+                        cell.turn.store(at + 1, MemoryOrder.Release)
+                        return true
+                    }
+                    Error(moved) => at = moved
+                }
+            } else if ahead < 0 {
+                return false
+            } else {
+                at = this.head.value.load(MemoryOrder.Relaxed)
+            }
+        }
+        return false
+    }
+
+    // Takes the value at the tail; `null` when the queue is empty.
+    public long? tryPop(read this) {
+        var at = this.tail.value.load(MemoryOrder.Relaxed)
+        while true {
+            var cell = this.cells[(nint)(at & this.mask)]
+            var turn = cell.turn.load(MemoryOrder.Acquire)
+            var ahead = turn.wrappingToNint() - (at + 1).wrappingToNint()
+            if ahead == 0 {
+                match this.tail.value.compareExchangeWeak(at, at + 1, MemoryOrder.Relaxed) {
+                    Ok(_) => {
+                        var value = cell.value.load(MemoryOrder.Relaxed)
+                        cell.turn.store(at + this.mask + 1, MemoryOrder.Release)
+                        return value
+                    }
+                    Error(moved) => at = moved
+                }
+            } else if ahead < 0 {
+                return null
+            } else {
+                at = this.tail.value.load(MemoryOrder.Relaxed)
+            }
+        }
+        return null
+    }
+
+    // How many values it holds at most.
+    public nint capacity(read this) {
+        return this.cells.length()
+    }
+}

@@ -1,0 +1,8 @@
+struct Counter {
+    atomic long hits
+}
+
+void main() {
+    var counter = Counter { hits = 0 }
+    print(counter.hits.load())
+}

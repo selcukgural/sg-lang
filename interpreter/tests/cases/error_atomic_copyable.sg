@@ -1,0 +1,8 @@
+struct Slot : Copyable {
+    atomic int value
+}
+
+void main() {
+    var slot = Slot { value = atomic 1 }
+    print(slot.value.load())
+}

@@ -1,0 +1,5 @@
+error: `Sendable` is a promise the checker cannot check, so it is written `unsafe Sendable`
+  a type whose raw pointers reach what several tasks may reach at once, as its writer has made sure
+  --> error_sendable_without_unsafe.sg:1:15
+ 1 | struct Pool : Sendable {
+   |               ^^^^^^^^

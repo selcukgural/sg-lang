@@ -1,0 +1,5 @@
+error: an `atomic int` is written with `store`, and this is `int`
+  --> error_atomic_assign.sg:3:13
+ 3 |     count = 2
+   |             ^
+  hint: `count.store(2)`

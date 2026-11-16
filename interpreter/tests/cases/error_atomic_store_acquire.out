@@ -1,0 +1,5 @@
+error: `store` cannot keep the order `Acquire`
+  a store writes, so its order is `Relaxed`, `Release` or `SequentiallyConsistent`
+  --> error_atomic_store_acquire.sg:3:23
+ 3 |     ready.store(true, MemoryOrder.Acquire)
+   |                       ^^^^^^^^^^^^^^^^^^^

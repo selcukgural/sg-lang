@@ -1,0 +1,5 @@
+error: `Memory.readVolatile` reaches a place by its address, and a bit field has none
+  --> error_volatile_bit_field.sg:9:35
+ 9 |         print(Memory.readVolatile(block[0].mode))
+   |                                   ^^^^^^^^^^^^^
+  hint: read the struct that holds it whole: `block[0]`

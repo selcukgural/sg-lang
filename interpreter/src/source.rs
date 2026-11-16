@@ -26,6 +26,7 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("process.sg", include_str!("std/process.sg"), &["Command", "Process", "ExitStatus", "ProcessError"]),
     ("net.sg", include_str!("std/net.sg"), &["SocketAddress", "UdpSocket", "Received"]),
     ("signals.sg", include_str!("std/signals.sg"), &["Signal", "Signals", "SignalListener"]),
+    ("atomic.sg", include_str!("std/atomic.sg"), &["MemoryOrder"]),
 ];
 
 /// The functions of the built-in `File` that the language's own module does the work of

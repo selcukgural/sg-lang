@@ -1,0 +1,5 @@
+void main() {
+    var count = atomic 1
+    var order = MemoryOrder.Acquire
+    print(count.load(order))
+}

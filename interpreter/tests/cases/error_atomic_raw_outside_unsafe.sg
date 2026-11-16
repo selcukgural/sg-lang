@@ -1,0 +1,4 @@
+void main() {
+    var slots = Memory.allocate<atomic int>(4)
+    _ = slots[0].fetchAdd(1)
+}

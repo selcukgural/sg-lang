@@ -367,6 +367,12 @@ pub fn layout_for(ty: &Ty, plain: &PlainTypes, abi: Abi) -> (usize, usize) {
         Ty::Bool => (1, 1),
         Ty::Char => (4, 4),
         Ty::Raw(_) | Ty::CFunc(..) => (std::mem::size_of::<usize>(), std::mem::align_of::<usize>()),
+        // An atomic value is aligned to its size, also where its type is aligned to less (a
+        // `long` on 32-bit x86), as C11 and Rust lay it out.
+        Ty::Atomic(inner) => {
+            let (size, _) = layout_for(inner, plain, abi);
+            (size, size)
+        }
         Ty::Array(item, length) => {
             let (size, align) = layout_for(item, plain, abi);
             (size * length, align)
@@ -482,6 +488,15 @@ pub fn c_definition(name: &str, decl: &Plain, c_type: &dyn Fn(&Ty) -> String, me
         let named = member(index);
         members.push_str(&match (field, decl.bits[index]) {
             (_, Some(width)) => format!(" {} {named} : {width};", c_type(field)),
+            // An atomic value is aligned to its size, where its type may be aligned to less.
+            (Ty::Array(item, length), None) if matches!(**item, Ty::Atomic(_)) => {
+                let ctype = c_type(item);
+                format!(" _Alignas(sizeof({ctype})) {ctype} {named}[{length}];")
+            }
+            (Ty::Atomic(_), None) => {
+                let ctype = c_type(field);
+                format!(" _Alignas(sizeof({ctype})) {ctype} {named};")
+            }
             (Ty::Array(item, length), None) => format!(" {} {named}[{length}];", c_type(item)),
             (other, None) => format!(" {} {named};", c_type(other)),
         });

@@ -1,0 +1,9 @@
+// In a release build `fetchAdd` and `fetchSub` wrap, as `+` and `-` do there.
+void main() {
+    var count = atomic (int)2147483647
+    print(count.fetchAdd(1))
+    print(count.load())
+    var left = atomic (uint)0
+    _ = left.fetchSub(1)
+    print(left.load())
+}

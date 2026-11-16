@@ -1,0 +1,5 @@
+error: a `fence` that is `Relaxed` orders nothing
+  its order is `Acquire`, `Release`, `AcquireRelease` or `SequentiallyConsistent`
+  --> error_fence_relaxed.sg:2:18
+ 2 |     Atomic.fence(MemoryOrder.Relaxed)
+   |                  ^^^^^^^^^^^^^^^^^^^

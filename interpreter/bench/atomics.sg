@@ -1,0 +1,26 @@
+// A counter four tasks add to at once, five million times each: `fetchAdd` on a `shared atomic
+// long`, sequentially consistent, and a `Relaxed` `fetchAdd` on a second one beside it. What is
+// measured: an atomic operation with the others wanting the same line of the cache, and the
+// check of overflow on the value it gives back in a checked build, against the same in C with
+// pthreads and the `__atomic` builtins.
+struct Counts {
+    atomic long ordered
+    atomic long relaxed
+}
+
+void count(shared Counts counts, long times) {
+    for _ in 0..times {
+        _ = counts.ordered.fetchAdd(1)
+        _ = counts.relaxed.fetchAdd(2, MemoryOrder.Relaxed)
+    }
+}
+
+void main() {
+    var counts = new shared Counts { ordered = atomic 0, relaxed = atomic 0 }
+    var tasks = List<Task<void>>()
+    for _ in 0..4 {
+        tasks.add(Task.run(count, share counts, 5000000))
+    }
+    Task.whenAll(tasks).wait()
+    print(counts.ordered.load() + counts.relaxed.load())
+}

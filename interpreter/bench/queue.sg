@@ -1,0 +1,137 @@
+// A queue without locks: Vyukov's bounded queue for many producers and many consumers, the one
+// of `examples/queue`. Four tasks push 500,000 numbers each through 1024 places while four take
+// them out, spinning when the queue is full or empty. What is measured: atomic loads, stores and
+// `compareExchangeWeak` with the orders written, and the tasks that wait for one another through
+// them, against the same queue in C with pthreads and the `__atomic` builtins.
+
+// What a task increments alone: on a cache line of its own, so that the producers moving the
+// head do not slow down the consumers moving the tail.
+align(64) struct Position {
+    atomic nuint value
+}
+
+struct Cell {
+    // Equal to the place for a producer whose turn it is, one more for a consumer.
+    atomic nuint turn
+    atomic long value
+}
+
+struct BoundedQueue {
+    List<Cell> cells
+    nuint mask
+    Position head
+    Position tail
+
+    // A queue that holds `capacity` values at most, a power of two.
+    BoundedQueue withCapacity(nint capacity) {
+        if capacity < 2 || (capacity & (capacity - 1)) != 0 {
+            panic($"the capacity of a queue is a power of two, at least 2, and this is {capacity}")
+        }
+        var cells = List<Cell>()
+        for at in 0..capacity {
+            cells.add(Cell { turn = atomic (nuint)at, value = atomic 0 })
+        }
+        return BoundedQueue {
+            cells = cells,
+            mask = (nuint)(capacity - 1),
+            head = Position { value = atomic 0 },
+            tail = Position { value = atomic 0 },
+        }
+    }
+
+    // Puts the value at the head; `false` when the queue is full.
+    bool tryPush(read this, long value) {
+        var at = this.head.value.load(MemoryOrder.Relaxed)
+        while true {
+            var cell = this.cells[(nint)(at & this.mask)]
+            var turn = cell.turn.load(MemoryOrder.Acquire)
+            var ahead = turn.wrappingToNint() - at.wrappingToNint()
+            if ahead == 0 {
+                match this.head.value.compareExchangeWeak(at, at + 1, MemoryOrder.Relaxed) {
+                    Ok(_) => {
+                        cell.value.store(value, MemoryOrder.Relaxed)
+                        cell.turn.store(at + 1, MemoryOrder.Release)
+                        return true
+                    }
+                    Error(moved) => at = moved
+                }
+            } else if ahead < 0 {
+                return false
+            } else {
+                at = this.head.value.load(MemoryOrder.Relaxed)
+            }
+        }
+        return false
+    }
+
+    // Takes the value at the tail; `null` when the queue is empty.
+    long? tryPop(read this) {
+        var at = this.tail.value.load(MemoryOrder.Relaxed)
+        while true {
+            var cell = this.cells[(nint)(at & this.mask)]
+            var turn = cell.turn.load(MemoryOrder.Acquire)
+            var ahead = turn.wrappingToNint() - (at + 1).wrappingToNint()
+            if ahead == 0 {
+                match this.tail.value.compareExchangeWeak(at, at + 1, MemoryOrder.Relaxed) {
+                    Ok(_) => {
+                        var value = cell.value.load(MemoryOrder.Relaxed)
+                        cell.turn.store(at + this.mask + 1, MemoryOrder.Release)
+                        return value
+                    }
+                    Error(moved) => at = moved
+                }
+            } else if ahead < 0 {
+                return null
+            } else {
+                at = this.tail.value.load(MemoryOrder.Relaxed)
+            }
+        }
+        return null
+    }
+
+    // How many values it holds at most.
+    nint capacity(read this) {
+        return this.cells.length()
+    }
+}
+
+void produce(shared BoundedQueue q, long count) {
+    for n in 1..count + 1 {
+        while !q.tryPush(n) {
+            Atomic.spinLoop()
+        }
+    }
+}
+
+long consume(shared BoundedQueue q, shared atomic long left) {
+    long sum = 0
+    while left.load(MemoryOrder.Relaxed) > 0 {
+        var taken = q.tryPop()
+        if taken is null {
+            Atomic.spinLoop()
+            continue
+        }
+        sum += taken
+        _ = left.fetchSub(1, MemoryOrder.Relaxed)
+    }
+    return sum
+}
+
+void main() {
+    long count = 500000
+    var q = new shared BoundedQueue.withCapacity(1024)
+    var left = new shared atomic (4 * count)
+    var producers = List<Task<void>>()
+    var consumers = List<Task<long>>()
+    for _ in 0..4 {
+        producers.add(Task.run(produce, share q, count))
+        consumers.add(Task.run(consume, share q, share left))
+    }
+    Task.whenAll(producers).wait()
+    var sums = Task.whenAll(consumers).wait()
+    long total = 0
+    for sum in sums {
+        total += sum
+    }
+    print(total)
+}

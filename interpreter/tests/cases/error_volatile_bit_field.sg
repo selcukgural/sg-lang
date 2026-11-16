@@ -1,0 +1,11 @@
+struct Control {
+    uint enabled : 1
+    uint mode : 3
+}
+
+void main() {
+    var block = Memory.allocate<Control>(1)
+    unsafe {
+        print(Memory.readVolatile(block[0].mode))
+    }
+}

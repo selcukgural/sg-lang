@@ -1,0 +1,6 @@
+// A `uint` that `fetchSub` takes below 0 does not fit: the same panic as `-` gives.
+void main() {
+    var left = new shared atomic (uint)1
+    _ = left.fetchSub(1, MemoryOrder.Relaxed)
+    _ = left.fetchSub(1, MemoryOrder.Relaxed)
+}

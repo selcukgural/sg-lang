@@ -1,0 +1,6 @@
+void main() {
+    var block = Memory.allocate<atomic uint>(1)
+    unsafe {
+        print(Memory.readVolatile(block[0]))
+    }
+}

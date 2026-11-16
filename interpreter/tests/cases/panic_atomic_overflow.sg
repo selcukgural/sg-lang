@@ -1,0 +1,9 @@
+// `fetchAdd` follows the rule of overflow: a panic in a debug build and in the interpreter, from
+// the value it gives back; `wrappingFetchAdd` is what wraps on purpose.
+void main() {
+    var count = atomic (int)2147483640
+    _ = count.fetchAdd(5)
+    print(count.load())
+    _ = count.fetchAdd(5)
+    print(count.load())
+}

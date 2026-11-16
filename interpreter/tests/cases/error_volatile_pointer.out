@@ -1,0 +1,6 @@
+error: `Memory.readVolatile` reads a place in raw memory, and this is not one
+  a volatile access is for memory the program does not own alone: the registers of a device, memory another program writes
+  --> error_volatile_pointer.sg:4:35
+ 4 |         print(Memory.readVolatile(block))
+   |                                   ^^^^^
+  hint: the item it points at: `block[0]`

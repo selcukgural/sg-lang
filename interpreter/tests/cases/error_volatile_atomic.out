@@ -1,0 +1,5 @@
+error: an `atomic uint` is read and written by its own methods, not as `volatile`
+  --> error_volatile_atomic.sg:4:35
+ 4 |         print(Memory.readVolatile(block[0]))
+   |                                   ^^^^^^^^
+  hint: `load` and `store`, inside `unsafe` for an item of raw memory

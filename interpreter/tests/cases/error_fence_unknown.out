@@ -1,0 +1,5 @@
+error: `Atomic` has no function `barrier`
+  functions: fence, compilerFence, spinLoop; an atomic value is made with `atomic`: `atomic 0`
+  --> error_fence_unknown.sg:2:12
+ 2 |     Atomic.barrier()
+   |            ^^^^^^^

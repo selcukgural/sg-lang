@@ -1,0 +1,6 @@
+struct Pool : Sendable {
+    raw byte bytes
+}
+
+void main() {
+}

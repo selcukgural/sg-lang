@@ -1,0 +1,4 @@
+error: a bit field is an integer or a `bool`, and this is `atomic uint`
+  --> error_atomic_bit_field.sg:2:23
+ 2 |     atomic uint ready : 1
+   |                       ^^^

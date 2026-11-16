@@ -1,0 +1,6 @@
+void main() {
+    var count = 1
+    unsafe {
+        print(Memory.readVolatile(count))
+    }
+}

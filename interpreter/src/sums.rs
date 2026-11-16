@@ -258,6 +258,7 @@ pub(crate) fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
         | ExprKind::Unary(_, inner)
         | ExprKind::Cast { expr: inner, .. }
         | ExprKind::New(inner)
+        | ExprKind::Atomic(inner)
         | ExprKind::NewShared { value: inner, .. }
         | ExprKind::Open { inner, .. }
         | ExprKind::Within(inner)

@@ -1,0 +1,4 @@
+void main() {
+    var block = Memory.allocate<uint>(1)
+    Memory.writeVolatile(block[0], 1)
+}

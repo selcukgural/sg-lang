@@ -1,0 +1,5 @@
+ok    queue: a queue gives back what it was given, in order
+ok    queue: a full queue takes nothing more until a value is taken out
+ok    queue: the places go round many times
+ok    queue: two tasks push and two pop at once, and every value comes out once
+4 test(s) passed

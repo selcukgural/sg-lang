@@ -1,0 +1,5 @@
+error: the order of `load` is a `MemoryOrder`, and this is `int`
+  --> error_atomic_order_type.sg:3:22
+ 3 |     print(count.load(2))
+   |                      ^
+  hint: `MemoryOrder.Relaxed`, `Acquire`, `Release`, `AcquireRelease` or `SequentiallyConsistent`

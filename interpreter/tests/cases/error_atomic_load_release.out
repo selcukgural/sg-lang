@@ -1,0 +1,5 @@
+error: `load` cannot keep the order `Release`
+  a load reads, so its order is `Relaxed`, `Acquire` or `SequentiallyConsistent`
+  --> error_atomic_load_release.sg:3:22
+ 3 |     print(ready.load(MemoryOrder.Release))
+   |                      ^^^^^^^^^^^^^^^^^^^

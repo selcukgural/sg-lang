@@ -1,0 +1,5 @@
+error: `fetchAdd` is not a method of `atomic bool`
+  a `bool` is not a number; `fetchAnd`, `fetchOr` and `fetchXor` change it
+  --> error_atomic_bool_add.sg:3:14
+ 3 |     _ = flag.fetchAdd(true)
+   |              ^^^^^^^^

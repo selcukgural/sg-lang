@@ -1,0 +1,18 @@
+// The orders an atomic operation keeps with the reads and writes around it, as C11 names them.
+// An operation without one written is `SequentiallyConsistent`. Written in SG and brought along by
+// the language; the operations themselves are the compiler's own (`load`, `store`, `fetchAdd`,
+// `Atomic.fence`), which take the order written as a variant, so that it is checked against the
+// operation when the program is compiled.
+public enum MemoryOrder : Copyable, Equatable, Hashable, Formattable {
+    // Only the value itself is one step; nothing around it is ordered.
+    Relaxed
+    // What this task reads and writes after the load is not seen to happen before it: it pairs
+    // with a `Release` store of another task, whose writes before that store it then sees.
+    Acquire
+    // What this task reads and writes before the store is not seen to happen after it.
+    Release
+    // Both, for an operation that reads and writes: `exchange`, `fetchAdd`, `compareExchange`.
+    AcquireRelease
+    // Both, and every task sees all such operations in one order.
+    SequentiallyConsistent
+}

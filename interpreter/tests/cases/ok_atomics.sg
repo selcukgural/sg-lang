@@ -1,0 +1,100 @@
+// The operations of an atomic value of each kind: an integer, a `bool`, a `double`, a `float` and
+// a raw pointer; each with and without an order. Every operation gives the value before it,
+// `compareExchange` an `Ok` with it when it wrote and an `Error` with what it found when not.
+struct Gauge {
+    atomic long hits
+    atomic bool open
+}
+
+void show(read string what, Result<int, int> r) {
+    match r {
+        Ok(before) => print($"{what}: written over {before}")
+        Error(found) => print($"{what}: found {found}")
+    }
+}
+
+void main() {
+    atomic int a = atomic 5
+    print(a.load())
+    a.store(7)
+    print(a.exchange(9))
+    show("9 to 10", a.compareExchange(9, 10))
+    show("9 to 11", a.compareExchange(9, 11, MemoryOrder.AcquireRelease))
+    show("10 to 12", a.compareExchange(10, 12, MemoryOrder.SequentiallyConsistent, MemoryOrder.Relaxed))
+    print(a.fetchAdd(5))
+    print(a.fetchSub(3, MemoryOrder.Release))
+    print(a.fetchAnd(6))
+    print(a.fetchOr(1))
+    print(a.fetchXor(3, MemoryOrder.Relaxed))
+    print(a.load(MemoryOrder.Acquire))
+
+    // `compareExchangeWeak` may fail when it finds what it expects; in a loop it does not matter.
+    var done = false
+    while !done {
+        var seen = a.load(MemoryOrder.Relaxed)
+        done = a.compareExchangeWeak(seen, seen * 2) is Ok(_)
+    }
+    print(a.load())
+
+    var flag = atomic false
+    print(flag.fetchOr(true))
+    print(flag.fetchXor(true))
+    print(flag.exchange(true))
+    print(flag.compareExchange(true, false) is Ok(_))
+    print(flag.load())
+
+    var total = atomic 1.5
+    print(total.fetchAdd(2.25))
+    print(total.fetchSub(0.75, MemoryOrder.Relaxed))
+    print(total.load())
+    print(total.compareExchange(3.0, -0.0) is Ok(_))
+    // -0.0 and 0.0 are two patterns of bits.
+    print(total.compareExchange(0.0, 1.0) is Ok(_))
+    atomic float small = atomic 0.5
+    print(small.exchange(2.5))
+    print(small.load())
+
+    // A number that wraps where that is meant.
+    var spins = atomic (byteMax())
+    print(spins.wrappingFetchAdd(1))
+    print(spins.load())
+    print(spins.wrappingFetchSub(1))
+    print(spins.load())
+
+    // An atomic pointer: loaded, stored, exchanged and compared, never followed by itself.
+    var block = Memory.allocate<int>(2)
+    atomic raw int at = atomic null
+    print(at.load() == null)
+    at.store(block)
+    print(at.compareExchange(block, unsafe (block + 1)) is Ok(_))
+    print(at.load() - block)
+    print(at.exchange(null) - block)
+    unsafe {
+        Memory.free(block)
+    }
+
+    // In a struct, behind `new`, in a list and in an array.
+    var gauge = Gauge { hits = atomic 0, open = atomic true }
+    _ = gauge.hits.fetchAdd(3)
+    print($"{gauge.hits.load()} {gauge.open.load()}")
+    var boxed = new atomic (short)4
+    _ = boxed.fetchAdd(1)
+    print(boxed.load())
+    var cells = List<atomic int>()
+    cells.add(atomic 1)
+    cells.add(atomic 2)
+    _ = cells[1].fetchAdd(40)
+    print(cells[1].load())
+    var slots = atomic uint[3] { atomic 1, atomic 2, atomic 3 }
+    _ = slots[2].fetchOr(8)
+    print(slots[2].load())
+
+    Atomic.fence(MemoryOrder.Release)
+    Atomic.fence()
+    Atomic.compilerFence(MemoryOrder.Acquire)
+    Atomic.spinLoop()
+}
+
+byte byteMax() {
+    return byte.MaxValue
+}

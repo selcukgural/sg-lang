@@ -1,0 +1,5 @@
+error: an atomic value is an integer, a `bool`, a `float`, a `double` or a raw pointer, and this is `string`
+  what the processor changes in one step; a larger value that several tasks change is a `shared locked T`
+  --> error_atomic_string.sg:2:5
+ 2 |     atomic string name = atomic "x"
+   |     ^^^^^^^^^^^^^

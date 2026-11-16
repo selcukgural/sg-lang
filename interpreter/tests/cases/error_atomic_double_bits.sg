@@ -1,0 +1,4 @@
+void main() {
+    var total = atomic 1.5
+    _ = total.fetchOr(2.0)
+}

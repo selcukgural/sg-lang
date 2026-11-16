@@ -1,0 +1,5 @@
+error: this reaches raw memory, whose size and life the checker does not know, so it is written inside `unsafe`
+  --> error_atomic_raw_outside_unsafe.sg:3:9
+ 3 |     _ = slots[0].fetchAdd(1)
+   |         ^^^^^^^^
+  hint: `unsafe slots[0]`, or `unsafe { ... }` around several statements

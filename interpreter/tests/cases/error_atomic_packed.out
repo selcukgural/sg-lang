@@ -1,0 +1,5 @@
+error: a `packed` struct holds no atomic value
+  in a `packed` struct it may lie where an atomic operation cannot reach it in one step
+  --> error_atomic_packed.sg:3:5
+ 3 |     atomic uint length
+   |     ^^^^^^^^^^^

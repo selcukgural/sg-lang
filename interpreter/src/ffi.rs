@@ -509,6 +509,7 @@ fn c_type(ty: &Ty) -> String {
         Ty::Struct(name) => format!("sg_s_{}", c_struct_name(name)),
         Ty::CFunc(..) => format!("sg_ft_{}", func_type_name(ty)),
         Ty::Char => "uint32_t".to_string(),
+        Ty::Atomic(inner) => c_type(inner),
         other => scalar_type(other).to_string(),
     }
 }

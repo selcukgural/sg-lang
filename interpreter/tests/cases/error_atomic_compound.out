@@ -1,0 +1,5 @@
+error: `+=` would read `count` and write it in two steps, and another task could change it between them
+  --> error_atomic_compound.sg:3:5
+ 3 |     count += 1
+   |     ^^^^^^^^^^
+  hint: one step: `_ = count.fetchAdd(1)`

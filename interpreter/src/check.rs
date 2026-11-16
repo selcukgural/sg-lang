@@ -93,6 +93,9 @@ struct Names {
     cvars: HashSet<String>,
     /// What each of them holds, once the types are known.
     cvar_types: HashMap<String, Ty>,
+    /// Types written with `: unsafe Sendable`: what their raw pointers reach, their writer
+    /// promises, may be reached from several tasks, so they go to another task.
+    sendable: HashSet<String>,
 }
 
 thread_local! {
@@ -392,7 +395,7 @@ const TEXT_ERROR: &str = "TextError";
 fn text_error() -> StructDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
-    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, raw: 0, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, atomic: None, raw: 0, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
     let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere, bits: None };
     StructDecl { public: true, name: TEXT_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: vec![position], methods: Vec::new(), opaque: false, layout: LayoutDecl::default() }
 }
@@ -406,7 +409,7 @@ const NUMBER_ERROR: &str = "NumberError";
 fn number_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
-    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, raw: 0, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, atomic: None, raw: 0, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
     let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere, bits: None };
     let variants = vec![
         VariantDecl { name: "Invalid".to_string(), span: nowhere, fields: vec![position] },
@@ -449,7 +452,7 @@ fn io_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
     let field = |ty: &str, name: &str| {
-        let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, raw: 0, name: ty.to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
+        let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, atomic: None, raw: 0, name: ty.to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
         FieldDecl { public: true, readonly: true, ty, name: name.to_string(), span: nowhere, bits: None }
     };
     let variant = |name: &str, fields: Vec<FieldDecl>| VariantDecl { name: name.to_string(), span: nowhere, fields };
@@ -778,6 +781,15 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                         .note("a struct that holds the enum can be, and its `dispose` sees the enum whole"));
                 }
                 "Disposable" | "Closable" => false,
+                "unsafe Sendable" => names.sendable.insert(name.clone()),
+                "Sendable" => {
+                    return Err(Diag::error(*span, "`Sendable` is a promise the checker cannot check, so it is written `unsafe Sendable`")
+                        .note("a type whose raw pointers reach what several tasks may reach at once, as its writer has made sure"));
+                }
+                _ if interface.starts_with("unsafe ") => {
+                    return Err(Diag::error(*span, format!("`{interface}` is not an interface: `unsafe` goes only in front of `Sendable`"))
+                        .note("the other interfaces are checked by the compiler, so they need no promise"));
+                }
                 _ if INTERFACES_NOT_YET.contains(&interface.as_str()) => {
                     return Err(Diag::error(*span, format!("`{interface}` is not in the interpreter yet"))
                         .note("interfaces for now: `Copyable`, `Formattable`, `Equatable`, `Hashable`, `Comparable`, `Disposable` and `Closable`"));
@@ -807,6 +819,12 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             let field_ty = resolve_type(&field.ty, &names, false)?;
             if keeps_tasks(&field_ty) {
                 return Err(task_kept(field.ty.span));
+            }
+            // A `readonly` field is read outside its module, and an atomic one is changed through
+            // a `read` borrow: the word would promise what it cannot keep.
+            if field.readonly && matches!(field_ty, Ty::Atomic(_)) {
+                return Err(Diag::error(field.span, format!("an `{field_ty}` field is not `readonly`: its methods change it through a `read` borrow"))
+                    .hint(format!("keep the field to its module and give a method that reads it: `{} {}(read this) {{ return this.{}.load() }}`", field_ty.strip_borrow().to_string().trim_start_matches("atomic "), field.name, field.name)));
             }
             fields.push((field.name.clone(), field_ty));
         }
@@ -1602,6 +1620,22 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
     // before `?` does.
     let mut holder = ty.holder;
     let mut raw = ty.raw;
+    // `atomic int`, `raw atomic int`: the value is atomic before the suffixes and the `raw`s
+    // around it; `atomic raw Node`: the pointers after `atomic` are taken in first.
+    if let Some(before) = ty.atomic {
+        if before < raw {
+            if !ty.suffixes.is_empty() {
+                return Err(Diag::error(ty.span, "an atomic pointer is written without `*`, `?` or `[...]` after it")
+                    .hint("name the pointer with `using`: `using NodeRef = raw Node`, then `atomic NodeRef`"));
+            }
+            RAW.with(|found| found.borrow_mut().push((resolved.clone(), ty.span)));
+            while raw > before {
+                resolved = Ty::Raw(Box::new(resolved));
+                raw -= 1;
+            }
+        }
+        resolved = atomic_of(resolved, ty.span)?;
+    }
     for suffix in &ty.suffixes {
         if *suffix == Suffix::Nullable {
             if raw > 0 {
@@ -1629,6 +1663,10 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             Suffix::Nullable if matches!(resolved, Ty::CFunc(..)) => {
                 return Err(Diag::error(ty.span, "a `CFunc` may be `null` as it is, as a pointer of C may be")
                     .hint(format!("`{}`, compared with `null` before it is called", resolved)));
+            }
+            Suffix::Nullable if matches!(resolved, Ty::Atomic(_)) => {
+                return Err(Diag::error(ty.span, format!("an `{resolved}` is always there, so it is not written with `?`"))
+                    .note("an atomic pointer may be `null`: `atomic raw Node`"));
             }
             Suffix::Nullable if matches!(resolved, Ty::Nullable(_)) => {
                 return Err(Diag::error(ty.span, "`??` is not a type: a value is either there or `null`"));
@@ -1667,6 +1705,36 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
         Some(Mode::Ref) => Ty::Ref(Box::new(resolved)),
         None => resolved,
     })
+}
+
+/// `atomic T` around a type that an atomic operation takes as one step: an integer, a `bool`,
+/// a `float`, a `double` or a raw pointer.
+fn atomic_of(inner: Ty, span: Span) -> Res<Ty> {
+    match inner {
+        Ty::Int(_) | Ty::Bool | Ty::Float(_) | Ty::Raw(_) => Ok(Ty::Atomic(Box::new(inner))),
+        Ty::Atomic(_) => Err(Diag::error(span, "`atomic` is written once")),
+        other => Err(Diag::error(span, format!("an atomic value is an integer, a `bool`, a `float`, a `double` or a raw pointer, and this is `{other}`"))
+            .note("what the processor changes in one step; a larger value that several tasks change is a `shared locked T`")),
+    }
+}
+
+/// The name of the language's own enum of the orders of atomic operations.
+const MEMORY_ORDER: &str = "std.MemoryOrder";
+
+/// The methods of an `atomic T`.
+const ATOMIC_METHODS: &[&str] = &[
+    "load", "store", "exchange", "compareExchange", "compareExchangeWeak", "fetchAdd", "fetchSub", "wrappingFetchAdd", "wrappingFetchSub", "fetchAnd", "fetchOr", "fetchXor",
+];
+
+/// Whether an `atomic T` of this `T` has the method.
+fn atomic_takes(item: &Ty, method: &str) -> bool {
+    match method {
+        "load" | "store" | "exchange" | "compareExchange" | "compareExchangeWeak" => true,
+        "fetchAdd" | "fetchSub" => matches!(item, Ty::Int(_) | Ty::Float(_)),
+        "wrappingFetchAdd" | "wrappingFetchSub" => matches!(item, Ty::Int(_)),
+        "fetchAnd" | "fetchOr" | "fetchXor" => matches!(item, Ty::Int(_) | Ty::Bool),
+        _ => false,
+    }
 }
 
 /// Why a `shared` value cannot be written through.
@@ -1842,13 +1910,22 @@ fn when_all(ty: &Ty, text: &str, is_async: bool) -> String {
 /// `None` when all of it can. `seen`: the structs and enums being looked at, so that a type
 /// that holds itself through a pointer ends.
 fn stays(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, names: &Names, seen: &mut Vec<String>) -> Option<(Ty, String)> {
+    stays_in(ty, structs, enums, names, seen, false)
+}
+
+/// `stays`, inside a type written with `: unsafe Sendable` when `promised`: there a raw pointer
+/// goes to another task, as its writer has promised.
+fn stays_in(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, names: &Names, seen: &mut Vec<String>, promised: bool) -> Option<(Ty, String)> {
+    let stays = |ty: &Ty, seen: &mut Vec<String>| stays_in(ty, structs, enums, names, seen, promised);
     match ty {
         Ty::Read(_) | Ty::Ref(_) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(true) | Ty::Entry(..) | Ty::Formatter | Ty::Task(_) => Some((ty.clone(), String::new())),
+        Ty::Raw(_) if promised => None,
         Ty::Shared(_, true) | Ty::Weak(_, true) | Ty::Raw(_) => Some((ty.clone(), String::new())),
-        Ty::Shared(inner, false) | Ty::Weak(inner, false) | Ty::Locked(inner) => stays(inner, structs, enums, names, seen),
-        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) => stays(inner, structs, enums, names, seen),
-        Ty::Result(a, b) | Ty::Map(a, b) => stays(a, structs, enums, names, seen).or_else(|| stays(b, structs, enums, names, seen)),
+        Ty::Shared(inner, false) | Ty::Weak(inner, false) | Ty::Locked(inner) | Ty::Atomic(inner) => stays(inner, seen),
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) => stays(inner, seen),
+        Ty::Result(a, b) | Ty::Map(a, b) => stays(a, seen).or_else(|| stays(b, seen)),
         Ty::Struct(name) | Ty::Enum(name) => {
+            let promised = promised || names.sendable.contains(name);
             if names.carriers.contains_key(name) {
                 return Some((ty.clone(), String::new()));
             }
@@ -1862,7 +1939,7 @@ fn stays(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String,
                 _ => Vec::new(),
             };
             let found = fields.iter().find_map(|(field, field_ty)| {
-                stays(field_ty, structs, enums, names, seen).map(|(part, at)| match at.is_empty() {
+                stays_in(field_ty, structs, enums, names, seen, promised).map(|(part, at)| match at.is_empty() {
                     true => (part, format!(" (the field `{field}` of `{}`)", short_name(name))),
                     false => (part, at),
                 })
@@ -1879,7 +1956,7 @@ fn why_it_stays(part: &Ty, names: &Names) -> String {
     match part {
         Ty::Shared(..) | Ty::Weak(..) => format!("a `{part}` is checked within one task; one that several tasks change is `shared locked`"),
         Ty::Task(_) => "a task is waited for by the task that started it, and by no other".to_string(),
-        Ty::Raw(_) => "the checker does not follow a raw pointer, and two tasks could reach what it points at at once".to_string(),
+        Ty::Raw(_) => "the checker does not follow a raw pointer, and two tasks could reach what it points at at once; a struct that keeps what it reaches safe for several tasks says so with `: unsafe Sendable`".to_string(),
         Ty::Reader(true) => "this `StreamReader` reads a connection it borrows, and the task could outlive the connection".to_string(),
         Ty::Struct(name) | Ty::Enum(name) if names.carriers.contains_key(name) => format!("a `{part}` carries a borrow, and the task could outlive what it borrows from"),
         _ => format!("a `{part}` is a borrow, and the task could outlive what it borrows from"),
@@ -2163,8 +2240,10 @@ fn all_copyable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, &'d
         if ty.is_copyable(copyable) {
             continue;
         }
-        let diag = Diag::error(field.ty.span, format!("`{name}` cannot be `Copyable`: `{}` is a `{ty}`, which is not", field.name));
+        let article = if matches!(ty, Ty::Atomic(_)) { "an" } else { "a" };
+        let diag = Diag::error(field.ty.span, format!("`{name}` cannot be `Copyable`: `{}` is {article} `{ty}`, which is not", field.name));
         return Err(match ty {
+            Ty::Atomic(_) => diag.note("a copy of an atomic value would be a second value, which the tasks that change the first never change"),
             Ty::Struct(inner) | Ty::Enum(inner) => diag.hint(format!("make `{inner}` `Copyable` too, or take `Copyable` off `{name}`")),
             Ty::Str | Ty::Ptr(_) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) => diag.note(format!("a `{ty}` owns memory on the heap; a copy would have to allocate, and that is written `.clone()`")),
             Ty::Shared(..) | Ty::Weak(..) => diag.note(format!("a `{ty}` counts its owners; one more is made with `share`, so that the count changes where it can be seen")),
@@ -2238,7 +2317,8 @@ fn all_formattable<'d>(name: &str, fields: impl Iterator<Item = (&'d FieldDecl, 
         if can_format(ty, formattable) {
             continue;
         }
-        let diag = Diag::error(field.ty.span, format!("`{name}` cannot be written as text field by field: `{}` is a `{ty}`, which is not `Formattable`", field.name));
+        let article = if matches!(ty, Ty::Atomic(_)) { "an" } else { "a" };
+        let diag = Diag::error(field.ty.span, format!("`{name}` cannot be written as text field by field: `{}` is {article} `{ty}`, which is not `Formattable`", field.name));
         let mut inner = ty;
         while let Ty::Nullable(behind) | Ty::List(behind) | Ty::Set(behind) | Ty::Array(behind, _) = inner {
             inner = behind;
@@ -3826,6 +3906,27 @@ impl<'a> Checker<'a> {
                     self.not_locked(target, Access::Write)?;
                 }
                 let (place_uses, place_clashes) = (first_use..self.borrows.uses.len(), first_clash..self.borrows.clashes.len());
+                // An atomic value is changed by its methods, each one step; a whole new one is
+                // written only as `atomic e`, where nothing else reaches the place.
+                if let Ty::Atomic(_) = &target_ty {
+                    let text = &self.src[target.span.start..target.span.end];
+                    let value_text = &self.src[value.span.start..value.span.end];
+                    if let Some(op) = *op {
+                        let method = match op {
+                            BinOp::Add => Some("fetchAdd"),
+                            BinOp::Sub => Some("fetchSub"),
+                            BinOp::BitAnd => Some("fetchAnd"),
+                            BinOp::BitOr => Some("fetchOr"),
+                            BinOp::BitXor => Some("fetchXor"),
+                            _ => None,
+                        };
+                        let diag = Diag::error(stmt_span, format!("`{}=` would read `{text}` and write it in two steps, and another task could change it between them", op.symbol()));
+                        return Err(match method {
+                            Some(method) => diag.hint(format!("one step: `_ = {text}.{method}({value_text})`")),
+                            None => diag.hint("read it, compute, and write it back with `compareExchange` in a loop, so that a change in between is seen"),
+                        });
+                    }
+                }
                 if let (Some(op), Ty::Float(_)) = (*op, &target_ty) {
                     if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem) {
                         return Err(Diag::error(stmt_span, format!("`{}=` needs an integer on the left, found `{target_ty}`", op.symbol()))
@@ -3849,6 +3950,16 @@ impl<'a> Checker<'a> {
                     (Some(op), Ty::Int(ty)) if op.is_shift() => {
                         self.int_operand(value, None, "a shift count")?;
                         shift_count(*ty, value)?;
+                    }
+                    // `count = 2` on an `atomic int` is meant as `count.store(2)`.
+                    (None, Ty::Atomic(_)) => {
+                        self.typed(value, &target_ty).map_err(|diag| match &value.ty {
+                            found if !matches!(found.strip_borrow(), Ty::Atomic(_)) && !matches!(value.kind, ExprKind::Atomic(_)) => {
+                                let (text, value_text) = (&self.src[target.span.start..target.span.end], &self.src[value.span.start..value.span.end]);
+                                Diag::error(value.span, format!("an `{target_ty}` is written with `store`, and this is `{found}`")).hint(format!("`{text}.store({value_text})`"))
+                            }
+                            _ => diag,
+                        })?;
                     }
                     _ => {
                         self.typed(value, &target_ty)?;
@@ -4640,6 +4751,14 @@ impl<'a> Checker<'a> {
             })
         };
         match (&found, expected) {
+            // An atomic value is read and written by its methods, each one step.
+            (Ty::Atomic(_), _) if !matches!(expected.strip_borrow(), Ty::Atomic(_)) => mismatch(Some(format!("read it: `{text}.load()`"))),
+            (Ty::Read(inner) | Ty::Ref(inner), _) if matches!(**inner, Ty::Atomic(_)) && !matches!(expected.strip_borrow(), Ty::Atomic(_)) => {
+                mismatch(Some(format!("read it: `{text}.load()`")))
+            }
+            (_, Ty::Atomic(inner)) if found.strip_borrow() == &**inner || matches!((found.strip_borrow(), &**inner), (Ty::Int(_), Ty::Int(_) | Ty::Float(_)) | (Ty::Null, Ty::Raw(_))) => {
+                mismatch(Some(format!("make it atomic: `atomic {text}`")))
+            }
             (Ty::Int(from), Ty::Int(to)) if from.widens_to(*to) => {
                 wrap(expr, |inner| ExprKind::Widen(Ty::Int(*to), inner));
                 expr.ty = Ty::Int(*to);
@@ -4851,7 +4970,7 @@ impl<'a> Checker<'a> {
             if let (ExprKind::Var(name), ExprKind::Int(length, _)) = (&recv.kind, &index.kind) {
                 let is_type = Ty::from_name(name).is_some() || self.names.full(name, recv.span)?.is_some_and(|full| self.names.kinds.contains_key(&full));
                 if self.find(name).is_none() && name != "this" && is_type && *length >= 0 {
-                    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, raw: 0, name: name.clone(), args: Vec::new(), suffixes: vec![Suffix::Array(*length as usize)], span };
+                    let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, atomic: None, raw: 0, name: name.clone(), args: Vec::new(), suffixes: vec![Suffix::Array(*length as usize)], span };
                     expr.kind = ExprKind::Array { ty, args: Vec::new(), items: None };
                     return Ok(None);
                 }
@@ -5909,6 +6028,36 @@ impl<'a> Checker<'a> {
                     return Ok(Ty::Shared(Box::new(Ty::Locked(Box::new(ty))), false));
                 }
                 Ok(Ty::Shared(Box::new(ty), checked))
+            }
+            // `atomic 0`: the value as an `atomic T`; a number takes the type that is expected.
+            ExprKind::Atomic(inner) => {
+                let wanted = match expected.map(Ty::strip_borrow) {
+                    Some(Ty::Atomic(item)) => Some((**item).clone()),
+                    Some(Ty::Shared(item, _) | Ty::Ptr(item)) => match &**item {
+                        Ty::Atomic(item) => Some((**item).clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let ty = match wanted {
+                    Some(wanted) => {
+                        self.typed(inner, &wanted)?;
+                        wanted
+                    }
+                    None => {
+                        let found = self.expr(inner, None)?;
+                        let item = found.strip_borrow().clone();
+                        if found.is_borrow() && item.is_copyable(self.copyable) {
+                            self.coerce(inner, found, &item)?;
+                        }
+                        item
+                    }
+                };
+                if ty == Ty::Null {
+                    return Err(Diag::error(inner.span, "the type of an atomic pointer is not known from `null` alone")
+                        .hint("write the type: `atomic raw Node head = atomic null`"));
+                }
+                atomic_of(ty, span)
             }
             ExprKind::Share(inner) => {
                 let found = self.operand(inner, None)?;
@@ -6990,6 +7139,12 @@ impl<'a> Checker<'a> {
                 return Err(self.locked_outside(side.span));
             }
         }
+        // An atomic value is read with `load`, and changed in one step by its methods.
+        if let Some(side) = [&*left, &*right].into_iter().find(|side| matches!(peel(&side.ty), Ty::Atomic(_))) {
+            let text = &self.src[side.span.start..side.span.end];
+            let diag = Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()));
+            return Err(diag.hint(format!("read it first: `{text}.load()`")).note("an atomic value is read once with `load`, so that another task cannot change it in the middle of the computation"));
+        }
         let undefined = || Diag::error(span, format!("operator `{}` is not defined for `{left_ty}` and `{right_ty}`", op.symbol()));
         // `a == b` is `a.equals(b)` and `a < b` is `a.compare(b) < 0`, for the types that have them.
         if let (Ty::Struct(name) | Ty::Enum(name), true, true) = (peel(&left_ty), peel(&left_ty) == peel(&right_ty), op.is_comparison()) {
@@ -7252,6 +7407,11 @@ impl<'a> Checker<'a> {
                 .hint("write what lies there: `unsafe p[0]`")),
             Ty::Weak(..) => Err(Diag::error(span, format!("a `{inner}` cannot be written as text: what it looks at may be gone"))
                 .hint("ask for an owner first with `share`, which gives `null` if it is gone")),
+            Ty::Atomic(_) => {
+                let text = &self.src[span.start..span.end];
+                Err(Diag::error(span, format!("an `{inner}` is not written as text: another task may change it while it is written"))
+                    .hint(format!("read it first: `{text}.load()`")))
+            }
             other => Err(Diag::error(span, format!("a `{other}` value cannot be written as text"))),
         }
     }
@@ -7910,6 +8070,161 @@ impl<'a> Checker<'a> {
         })))
     }
 
+    /// The orders written after the values of an atomic operation, at most `most` of them, each
+    /// a variant of `MemoryOrder` written out, so that it is checked against the operation when
+    /// the program is compiled. They are taken out of the arguments.
+    fn orders(&mut self, op: AtomicOp, args: &mut Vec<Expr>, values: usize, most: usize, span: Span) -> Res<Vec<(Order, Span)>> {
+        let name = op.name();
+        if args.len() < values || args.len() > values + most {
+            let diag = Diag::error(span, format!("`{name}` takes {} argument(s), {} given", match most {
+                0 => values.to_string(),
+                _ => format!("{values} to {}", values + most),
+            }, args.len()));
+            return Err(match op {
+                AtomicOp::CompareExchange(_) => diag.note(format!("`{name}(expected, desired)`, then the order it keeps and the one it keeps when it fails, if not `SequentiallyConsistent`")),
+                AtomicOp::Load => diag.note("`load()`, or `load(MemoryOrder.Acquire)` with an order"),
+                AtomicOp::SpinLoop => diag,
+                _ if values == 0 => diag.note(format!("`Atomic.{name}()`, or `Atomic.{name}(MemoryOrder.Acquire)` with an order")),
+                _ => diag.note(format!("`{name}(value)`, or `{name}(value, MemoryOrder.Release)` with an order")),
+            });
+        }
+        let mut found = Vec::new();
+        for arg in &mut args[values..] {
+            let ty = self.expr(arg, Some(&Ty::Enum(MEMORY_ORDER.to_string())))?;
+            match &arg.kind {
+                ExprKind::Variant { owner, index, .. } if owner == MEMORY_ORDER => found.push((Order::ALL[*index], arg.span)),
+                _ if ty.strip_borrow() == &Ty::Enum(MEMORY_ORDER.to_string()) => {
+                    return Err(Diag::error(arg.span, "the order of an atomic operation is written out, as a variant: `MemoryOrder.Acquire`")
+                        .note("the compiler checks it against the operation, so it is known when the program is compiled"));
+                }
+                _ => {
+                    return Err(Diag::error(arg.span, format!("the order of `{name}` is a `MemoryOrder`, and this is `{ty}`"))
+                        .hint("`MemoryOrder.Relaxed`, `Acquire`, `Release`, `AcquireRelease` or `SequentiallyConsistent`"));
+                }
+            }
+        }
+        args.truncate(values);
+        Ok(found)
+    }
+
+    /// `count.fetchAdd(1)`, `flag.compareExchange(false, true)`: an operation on an `atomic T`,
+    /// sequentially consistent unless an order is written. `item` is the `T`.
+    fn atomic_method(&mut self, item: &Ty, name: &str, name_span: Span, args: &mut Vec<Expr>, callee: &mut Callee, span: Span) -> Res<Ty> {
+        let op = match name {
+            "load" => AtomicOp::Load,
+            "store" => AtomicOp::Store,
+            "exchange" => AtomicOp::Exchange,
+            "compareExchange" => AtomicOp::CompareExchange(false),
+            "compareExchangeWeak" => AtomicOp::CompareExchange(true),
+            "fetchAdd" => AtomicOp::FetchAdd(false),
+            "wrappingFetchAdd" => AtomicOp::FetchAdd(true),
+            "fetchSub" => AtomicOp::FetchSub(false),
+            "wrappingFetchSub" => AtomicOp::FetchSub(true),
+            "fetchAnd" => AtomicOp::FetchAnd,
+            "fetchOr" => AtomicOp::FetchOr,
+            "fetchXor" => AtomicOp::FetchXor,
+            _ => {
+                let atomic = Ty::Atomic(Box::new(item.clone()));
+                let known: Vec<&str> = ATOMIC_METHODS.iter().copied().filter(|method| atomic_takes(item, method)).collect();
+                let diag = Diag::error(name_span, format!("`{atomic}` has no method `{name}`"));
+                return Err(match (name, nearest(name, known.iter().copied())) {
+                    ("add" | "increment", _) => diag.hint("`fetchAdd(1)`, which gives the value before"),
+                    ("sub" | "decrement", _) => diag.hint("`fetchSub(1)`, which gives the value before"),
+                    ("get" | "read" | "value", _) => diag.hint("`load()`"),
+                    ("set" | "write", _) => diag.hint("`store(value)`"),
+                    ("swap", _) => diag.hint("`exchange(value)`, which gives the value before"),
+                    ("compareAndSwap" | "compareAndSet" | "cas", _) => diag.hint("`compareExchange(expected, desired)`"),
+                    (_, Some(close)) => diag.hint(format!("`{close}`")),
+                    (_, None) => diag.note(format!("methods: {}", known.join(", "))),
+                });
+            }
+        };
+        if !atomic_takes(item, name) {
+            let diag = Diag::error(name_span, format!("`{name}` is not a method of `atomic {item}`"));
+            return Err(match (op, item) {
+                (AtomicOp::FetchAdd(true) | AtomicOp::FetchSub(true), Ty::Float(_)) => diag.note("a fractional number does not wrap; `fetchAdd` and `fetchSub` add to it"),
+                (AtomicOp::FetchAdd(_) | AtomicOp::FetchSub(_), Ty::Bool) => diag.note("a `bool` is not a number; `fetchAnd`, `fetchOr` and `fetchXor` change it"),
+                (AtomicOp::FetchAnd | AtomicOp::FetchOr | AtomicOp::FetchXor, Ty::Float(_)) => diag.note("the bits of a fractional number are not taken one by one"),
+                (_, Ty::Raw(_)) => diag.note("an atomic pointer is loaded, stored, exchanged and compared: `load`, `store`, `exchange`, `compareExchange`"),
+                _ => diag,
+            });
+        }
+        let (values, most) = match op {
+            AtomicOp::Load => (0, 1),
+            AtomicOp::CompareExchange(_) => (2, 2),
+            _ => (1, 1),
+        };
+        let orders = self.orders(op, args, values, most, span)?;
+        for arg in args.iter_mut() {
+            self.typed(arg, item)?;
+        }
+        let order = orders.first().map_or(Order::SequentiallyConsistent, |(order, _)| *order);
+        let refused = match op {
+            AtomicOp::Load if matches!(order, Order::Release | Order::AcquireRelease) => Some("a load reads, so its order is `Relaxed`, `Acquire` or `SequentiallyConsistent`"),
+            AtomicOp::Store if matches!(order, Order::Acquire | Order::AcquireRelease) => Some("a store writes, so its order is `Relaxed`, `Release` or `SequentiallyConsistent`"),
+            _ => None,
+        };
+        if let Some(why) = refused {
+            return Err(Diag::error(orders[0].1, format!("`{name}` cannot keep the order `{}`", order.name())).note(why));
+        }
+        // When it fails, `compareExchange` only reads: the order it keeps then is the one it
+        // keeps when it succeeds, without the part that writes, unless another is written.
+        let failure = match orders.get(1) {
+            Some((failure, at)) => {
+                if matches!(failure, Order::Release | Order::AcquireRelease) {
+                    return Err(Diag::error(*at, format!("a `{name}` that fails only reads, so it cannot keep the order `{}`", failure.name()))
+                        .note("the second order is `Relaxed`, `Acquire` or `SequentiallyConsistent`"));
+                }
+                let strength = |order: Order| match order {
+                    Order::Relaxed | Order::Release => 0,
+                    Order::Acquire | Order::AcquireRelease => 1,
+                    Order::SequentiallyConsistent => 2,
+                };
+                if strength(*failure) > strength(order) {
+                    return Err(Diag::error(*at, format!("a `{name}` that fails keeps no more order than one that succeeds, and `{}` is more than `{}`", failure.name(), order.name()))
+                        .note("C asks this of the two orders"));
+                }
+                *failure
+            }
+            None => match order {
+                Order::AcquireRelease => Order::Acquire,
+                Order::Release => Order::Relaxed,
+                other => other,
+            },
+        };
+        *callee = Callee::Atomic { op, order, failure };
+        Ok(match op {
+            AtomicOp::Store => Ty::Void,
+            AtomicOp::CompareExchange(_) => Ty::Result(Box::new(item.clone()), Box::new(item.clone())),
+            _ => item.clone(),
+        })
+    }
+
+    /// `Atomic.fence(order)`, `Atomic.compilerFence(order)` and `Atomic.spinLoop()`.
+    fn atomic_static(&mut self, name: &str, name_span: Span, args: &mut Vec<Expr>, callee: &mut Callee, span: Span) -> Res<Ty> {
+        let op = match name {
+            "fence" => AtomicOp::Fence,
+            "compilerFence" => AtomicOp::CompilerFence,
+            "spinLoop" => AtomicOp::SpinLoop,
+            _ => {
+                let diag = Diag::error(name_span, format!("`Atomic` has no function `{name}`"));
+                return Err(match nearest(name, ["fence", "compilerFence", "spinLoop"].into_iter()) {
+                    Some(close) => diag.hint(format!("`{close}`")),
+                    None => diag.note("functions: fence, compilerFence, spinLoop; an atomic value is made with `atomic`: `atomic 0`"),
+                });
+            }
+        };
+        let most = if op == AtomicOp::SpinLoop { 0 } else { 1 };
+        let orders = self.orders(op, args, 0, most, span)?;
+        let order = orders.first().map_or(Order::SequentiallyConsistent, |(order, _)| *order);
+        if order == Order::Relaxed {
+            return Err(Diag::error(orders[0].1, format!("a `{name}` that is `Relaxed` orders nothing"))
+                .note("its order is `Acquire`, `Release`, `AcquireRelease` or `SequentiallyConsistent`"));
+        }
+        *callee = Callee::Atomic { op, order, failure: order };
+        Ok(Ty::Void)
+    }
+
     /// `CancellationSource.after(ms)`: a function of the source type. The token type has only
     /// its constant, `CancellationToken.None`.
     fn cancel_static(&mut self, owner: &str, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
@@ -8212,6 +8527,51 @@ impl<'a> Checker<'a> {
             }
             // `Memory.readUnaligned(p)` and `Memory.writeUnaligned(p, value)`: an item at an
             // address that need not be a multiple of its alignment.
+            // `Memory.readVolatile(p[i].status)`: a place in raw memory, as it is written
+            // elsewhere, so that a field of a block of registers is reached as C reaches it.
+            "readVolatile" | "writeVolatile" => {
+                let writes = name == "writeVolatile";
+                let wanted = if writes { 2 } else { 1 };
+                if args.len() != wanted {
+                    let diag = Diag::error(span, format!("`{name}` takes {wanted} argument(s), {} given", args.len()));
+                    return Err(diag.note(if writes { "`Memory.writeVolatile(p[0], value)` writes the item at `p`" } else { "`Memory.readVolatile(p[0])` reads the item at `p`" }));
+                }
+                self.needs_unsafe(span, &format!("`Memory.{name}` {} raw memory, which the checker does not follow", if writes { "writes" } else { "reads" }))?;
+                let found = match self.place(&mut args[0])? {
+                    Some((ty, _)) if Expr::in_raw_memory(&args[0]) => ty,
+                    found => {
+                        let found = match found {
+                            Some((ty, _)) => ty,
+                            None => self.expr(&mut args[0], None)?,
+                        };
+                        let text = &self.src[args[0].span.start..args[0].span.end];
+                        let diag = Diag::error(args[0].span, format!("`Memory.{name}` {} a place in raw memory, and this is not one", if writes { "writes" } else { "reads" }))
+                            .note("a volatile access is for memory the program does not own alone: the registers of a device, memory another program writes");
+                        return Err(match found.strip_borrow() {
+                            Ty::Raw(_) => diag.hint(format!("the item it points at: `{text}[0]`")),
+                            _ => diag,
+                        });
+                    }
+                };
+                if let Some(field) = bit_field_at(&args[0], self.structs) {
+                    let text = &self.src[field.start..field.end];
+                    return Err(Diag::error(args[0].span, format!("`Memory.{name}` reaches a place by its address, and a bit field has none"))
+                        .hint(format!("{} the struct that holds it whole: `{text}`", if writes { "write" } else { "read" })));
+                }
+                if let Some(diag) = not_lent(&args[0], self.structs, self.src).filter(|_| union_field(&args[0], self.structs).is_none()) {
+                    return Err(diag);
+                }
+                if matches!(found, Ty::Atomic(_)) {
+                    return Err(Diag::error(args[0].span, format!("an `{found}` is read and written by its own methods, not as `volatile`"))
+                        .hint("`load` and `store`, inside `unsafe` for an item of raw memory"));
+                }
+                if writes {
+                    let given = self.expr(&mut args[1], Some(&found))?;
+                    self.coerce(&mut args[1], given, &found)?;
+                }
+                *callee = Callee::Memory(if writes { MemoryCall::WriteVolatile } else { MemoryCall::ReadVolatile });
+                Ok(if writes { Ty::Void } else { found })
+            }
             "readUnaligned" | "writeUnaligned" => {
                 let writes = name == "writeUnaligned";
                 let wanted = if writes { 2 } else { 1 };
@@ -8235,7 +8595,7 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let diag = Diag::error(name_span, format!("`Memory` has no function `{name}`"));
-                let all = ["allocate", "free", "copy", "addressOf", "view", "viewRef", "readUnaligned", "writeUnaligned", "sizeOf", "alignOf"];
+                let all = ["allocate", "free", "copy", "addressOf", "view", "viewRef", "readUnaligned", "writeUnaligned", "readVolatile", "writeVolatile", "sizeOf", "alignOf"];
                 Err(match nearest(name, all.into_iter()) {
                     Some(close @ ("sizeOf" | "alignOf")) => diag.hint(format!("`Memory.{close}<int>()`")),
                     Some(close) => diag.hint(format!("`{close}`")),
@@ -8739,6 +9099,9 @@ impl<'a> Checker<'a> {
                 if owner == "Memory" {
                     return self.memory_call(name, name_span, args, callee, span);
                 }
+                if owner == "Atomic" {
+                    return self.atomic_static(name, name_span, args, callee, span);
+                }
                 if owner == "C" {
                     return self.c_call(name, name_span, args, callee, span);
                 }
@@ -8961,6 +9324,12 @@ impl<'a> Checker<'a> {
                 }
                 _ => break,
             };
+        }
+        // `count.fetchAdd(1)`: an atomic value is changed through any way it is reached, `read`
+        // and `shared` too: each operation is one step, which no other task sees half done.
+        if let Ty::Atomic(item) = target {
+            let item = (**item).clone();
+            return self.atomic_method(&item, name, name_span, args, callee, span);
         }
 
         let structs = self.structs;
@@ -10094,6 +10463,7 @@ fn parts(expr: &Expr) -> Vec<Part<'_>> {
         | ExprKind::Unary(_, inner)
         | ExprKind::Cast { expr: inner, .. }
         | ExprKind::New(inner)
+        | ExprKind::Atomic(inner)
         | ExprKind::NewShared { value: inner, .. }
         | ExprKind::Open { inner, .. }
         | ExprKind::Within(inner)
@@ -10404,7 +10774,7 @@ fn c_value_error(diag: Diag, ty: &Ty, structs: &HashMap<String, StructInfo>) -> 
 fn not_plain(ty: &Ty, structs: &HashMap<String, StructInfo>) -> Option<Ty> {
     match ty {
         Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Raw(_) | Ty::CFunc(..) => None,
-        Ty::Array(item, _) => not_plain(item, structs),
+        Ty::Array(item, _) | Ty::Atomic(item) => not_plain(item, structs),
         Ty::Struct(name) if structs.get(name).is_some_and(|info| info.disposable || info.opaque) => Some(ty.clone()),
         Ty::Struct(name) => structs.get(name).and_then(|info| info.fields.iter().find_map(|(_, field)| not_plain(field, structs))),
         other => Some(other.clone()),
@@ -10453,6 +10823,13 @@ fn layout_rules(prog: &Program, structs: &HashMap<String, StructInfo>) -> Res<()
                 return Err(Diag::error(*span, format!("{named} holds plain data, and plain data borrows nothing")));
             }
             for (field, (_, ty)) in decl.fields.iter().zip(&info.fields) {
+                if (decl.layout.union || decl.layout.packed.is_some()) && holds_atomic(ty, structs) {
+                    let diag = Diag::error(field.ty.span, format!("{named} holds no atomic value"));
+                    return Err(match decl.layout.union {
+                        true => diag.note("a task that writes another field of the union writes over it, and no atomic operation sees that"),
+                        false => diag.note("in a `packed` struct it may lie where an atomic operation cannot reach it in one step"),
+                    });
+                }
                 if let Some(part) = not_plain(ty, structs) {
                     let diag = Diag::error(field.ty.span, format!("{named} holds plain data, and `{part}` is not"));
                     return Err(diag.note("plain data is numbers, `bool`, `char`, raw pointers, `CFunc`, and arrays, structs and unions of them: what C lays out"));
@@ -10616,6 +10993,23 @@ fn union_field(place: &Expr, structs: &HashMap<String, StructInfo>) -> Option<(S
             _ => return found,
         }
     }
+}
+
+/// Whether an atomic value lies in the type, in its arrays and in the structs it holds.
+fn holds_atomic(ty: &Ty, structs: &HashMap<String, StructInfo>) -> bool {
+    match ty {
+        Ty::Atomic(_) => true,
+        Ty::Array(item, _) => holds_atomic(item, structs),
+        Ty::Struct(name) => structs.get(name).is_some_and(|info| info.fields.iter().any(|(_, field)| holds_atomic(field, structs))),
+        _ => false,
+    }
+}
+
+/// The struct that holds a bit field, when the place is one: what is read whole instead.
+fn bit_field_at(place: &Expr, structs: &HashMap<String, StructInfo>) -> Option<Span> {
+    let ExprKind::Field { recv, index, .. } = &place.kind else { return None };
+    let info = struct_of(&recv.ty).and_then(|name| structs.get(name))?;
+    info.shape.bits.get(*index).copied().flatten().map(|_| recv.span)
 }
 
 /// Why a place is not lent: a field of a union (which field it holds is not known), a bit

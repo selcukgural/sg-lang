@@ -1717,6 +1717,45 @@ program again. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, 
 numbers, since they differ between systems. A server that stops cleanly cancels its accepts on the first signal
 and waits for the connections it has (`examples/shutdown`).
 
+### Atomic values and `volatile`
+
+An atomic value is an integer, a `bool`, a `float`, a `double` or a raw pointer that every task reads and changes in
+one step, through its methods. It is written `atomic T`, anywhere a value is (a field, a local, an item of a list or
+an array, raw memory), takes the room of its `T`, and is made with `atomic e`. Its methods work through a `read`
+borrow and through `shared`, so tasks share it as a `shared atomic T` or inside a `shared` struct:
+
+```
+struct Stats {
+    atomic long count
+    atomic bool open
+}
+
+var stats = new shared Stats { count = atomic 0, open = atomic true }
+_ = stats.count.fetchAdd(1)                                 // gives the value before; checked for overflow
+var seen = stats.count.load(MemoryOrder.Acquire)
+stats.open.store(false, MemoryOrder.Release)
+match stats.count.compareExchange(seen, seen + 10) {        // Result<long, long>
+    Ok(before) => print($"written over {before}")
+    Error(found) => print($"another task wrote {found}")
+}
+Atomic.fence(MemoryOrder.SequentiallyConsistent)
+Atomic.spinLoop()                                           // in a loop that waits for a value
+```
+
+The methods are `load`, `store`, `exchange`, `compareExchange` and `compareExchangeWeak`; on numbers `fetchAdd` and
+`fetchSub` (an integer also has `wrappingFetchAdd` and `wrappingFetchSub`); on integers and `bool` `fetchAnd`,
+`fetchOr` and `fetchXor`. Each is sequentially consistent unless an order is written after the values, as a variant of
+`MemoryOrder` (`Relaxed`, `Acquire`, `Release`, `AcquireRelease`, `SequentiallyConsistent`): an order the operation
+cannot keep, such as a `load` that is `Release`, is a compile error. `count += 1` and `print(count)` are errors whose
+hints are `fetchAdd` and `load`: an atomic value is never read or written without saying so. A struct whose raw
+pointers reach memory that several tasks may use is written `struct Pool : unsafe Sendable`, the writer's promise,
+and goes to another task.
+
+`volatile` is not a type: a place in raw memory is read or written once, where it is written, with
+`unsafe Memory.readVolatile(regs[0].status)` and `unsafe Memory.writeVolatile(regs[0].control, 1)`. It is for the
+registers of a device and memory another program writes; it orders nothing between tasks, as C's `volatile` does
+not (C#'s `volatile` is an acquire and a release, which SG writes as orders of `load` and `store`).
+
 ### The network
 
 A `TcpListener` takes connections and a `TcpStream` receives and sends bytes; an address is one text,

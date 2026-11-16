@@ -1221,6 +1221,18 @@ fn io_cancelled() -> Value {
     Value::Enum("IoError".into(), 6, Rc::new(vec![cell(cancelled())]))
 }
 
+/// Whether `compareExchange` finds the value it expects: the same bits, as C compares them, so
+/// `-0.0` is not `0.0` and a NaN may be itself.
+fn same_bits(found: &Value, expected: &Value) -> bool {
+    match (found, expected) {
+        (Value::Float(FloatTy::Float, a), Value::Float(_, b)) => (*a as f32).to_bits() == (*b as f32).to_bits(),
+        (Value::Float(_, a), Value::Float(_, b)) => a.to_bits() == b.to_bits(),
+        (Value::Int(_, a), Value::Int(_, b)) => a == b,
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (found, expected) => raw_of(found).addr == raw_of(expected).addr,
+    }
+}
+
 fn ok(value: Value) -> Value {
     Value::Enum("Result".into(), 0, Rc::new(vec![cell(value)]))
 }
@@ -1569,6 +1581,7 @@ fn load(addr: usize, ty: &Ty, plain: &crate::raw::PlainTypes, span: Span) -> Res
     unsafe {
         let at = addr as *const u8;
         Ok(match ty {
+            Ty::Atomic(inner) => return load(addr, inner, plain, span),
             Ty::Int(int) => Value::Int(*int, raw::read_int(addr, *int)),
             Ty::Float(FloatTy::Float) => Value::Float(FloatTy::Float, at.cast::<f32>().read_unaligned() as f64),
             Ty::Float(FloatTy::Double) => Value::Float(FloatTy::Double, at.cast::<f64>().read_unaligned()),
@@ -1621,6 +1634,7 @@ fn store(addr: usize, ty: &Ty, value: &Value, plain: &crate::raw::PlainTypes) {
     unsafe {
         let at = addr as *mut u8;
         match (ty, &value) {
+            (Ty::Atomic(inner), _) => store(addr, inner, &value, plain),
             (Ty::Int(int), Value::Int(_, number)) => raw::write_int(addr, *int, *number),
             (Ty::Float(FloatTy::Float), Value::Float(_, number)) => at.cast::<f32>().write_unaligned(*number as f32),
             (Ty::Float(FloatTy::Double), Value::Float(_, number)) => at.cast::<f64>().write_unaligned(*number),
@@ -2182,7 +2196,7 @@ pub fn run_program<'a>(prog: &'a Program, sources: &'a crate::source::Sources, o
     let ffi = crate::ffi::Library::open(prog, false).map_err(Stop::Diag)?;
     let io = shared(out, world, ffi, sources);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: 0 };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: 0, locking: 0, atomics: 0 };
         let result = run_main(&mut interp);
         interp.end_fibers();
         result
@@ -2243,7 +2257,7 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let ffi = crate::ffi::Library::open(prog, true).map_err(Stop::Diag)?;
     let io = shared(out, world, ffi, sources);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: 0 };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: 0, locking: 0, atomics: 0 };
         run_each_test(&mut interp, prog, sources)
     })
 }
@@ -2372,7 +2386,17 @@ struct Interp<'a, 'e> {
     /// with (`C.errno()`, `C.setErrno(n)`). Kept here, since the interpreter's own work between
     /// two calls of C may change the system's.
     errno: i32,
+    /// How many `lock` blocks this fiber is inside: an atomic operation there does not give the
+    /// turn away, since no other task may take a lock this one holds.
+    locking: usize,
+    /// How many atomic operations this fiber has done: the turn goes to another every
+    /// `ATOMICS_PER_TURN` of them.
+    atomics: u64,
 }
+
+/// How many atomic operations a fiber does before the turn goes to the next one that is ready;
+/// `Atomic.spinLoop()` gives it at once.
+const ATOMICS_PER_TURN: u64 = 64;
 
 /// Where the first file of the language's own module starts; the end of the text if none was read in.
 fn std_from(prog: &Program) -> usize {
@@ -2665,6 +2689,129 @@ impl<'a, 'e> Interp<'a, 'e> {
 
     /// The tasks of `Task.run` that have not run start now, as they would on threads of their
     /// own in compiled code, and each runs until it waits.
+    /// An atomic operation, or a function of `Atomic`. One task runs at a time, so each is
+    /// one step whatever its order, and every order acts as `SequentiallyConsistent`. The turn
+    /// changes hands at `Atomic.spinLoop()` and every `ATOMICS_PER_TURN` operations, so that a
+    /// task that spins waiting for a value lets the one that writes it run.
+    fn atomic(&mut self, op: AtomicOp, recv: Option<&'a Expr>, args: &'a [Expr], span: Span, frame: &mut Frame) -> Res<Value> {
+        match op {
+            AtomicOp::Fence | AtomicOp::CompilerFence => return Ok(Value::Void),
+            AtomicOp::SpinLoop => {
+                self.pass_turn(span)?;
+                return Ok(Value::Void);
+            }
+            _ => {}
+        }
+        let recv = recv.expect("an atomic operation has a value it works on");
+        // What lies in raw memory is written there; anything else is the cell of the value,
+        // through the borrows, pointers and owners on the way.
+        let spot = match recv.in_raw_memory() {
+            true => Err(self.raw_place(recv, "written", frame)?),
+            false => {
+                let mut at = self.place(recv, frame)?;
+                loop {
+                    let next = match &*at.borrow() {
+                        Value::Borrow(inner) | Value::Ptr(inner) => inner.clone(),
+                        Value::Shared(held) => held.value.clone(),
+                        _ => break,
+                    };
+                    at = next;
+                }
+                Ok(at)
+            }
+        };
+        let values = self.values(args, frame)?.into_iter().map(strip).collect::<Vec<Value>>();
+        // A hand-over costs a wake of a thread, so the turn goes every so many operations: a
+        // loop that spins on a value does at least one in each round.
+        self.atomics = self.atomics.wrapping_add(1);
+        if self.atomics.is_multiple_of(ATOMICS_PER_TURN) {
+            self.pass_turn(span)?;
+        }
+        let old = match &spot {
+            Ok(at) => strip(at.borrow().clone()),
+            Err(raw) => raw.read(self.plain, span)?,
+        };
+        let (new, gives) = match op {
+            AtomicOp::Load => (None, old.clone()),
+            AtomicOp::Store => (Some(values[0].clone()), Value::Void),
+            AtomicOp::Exchange => (Some(values[0].clone()), old.clone()),
+            AtomicOp::CompareExchange(_) => match same_bits(&old, &values[0]) {
+                true => (Some(values[1].clone()), ok(old.clone())),
+                false => (None, failed(old.clone())),
+            },
+            AtomicOp::FetchAdd(wrapping) | AtomicOp::FetchSub(wrapping) => {
+                let add = matches!(op, AtomicOp::FetchAdd(_));
+                let new = match (&old, &values[0]) {
+                    (Value::Int(ty, a), Value::Int(_, b)) => {
+                        let sum = if add { a + b } else { a - b };
+                        if !wrapping && !ty.fits(sum) {
+                            let (sign, other) = if add { ("+", "Add") } else { ("-", "Sub") };
+                            return Err(Diag::panic(span, format!("overflow: {a} {sign} {b} does not fit in {}", ty.name()))
+                                .hint(format!("`wrappingFetch{other}` wraps around"))
+                                .into());
+                        }
+                        Value::Int(*ty, ty.wrap(sum))
+                    }
+                    _ => binary(if add { BinOp::Add } else { BinOp::Sub }, old.clone(), values[0].clone(), span)?,
+                };
+                (Some(new), old.clone())
+            }
+            AtomicOp::FetchAnd | AtomicOp::FetchOr | AtomicOp::FetchXor => {
+                let new = match (&old, &values[0]) {
+                    (Value::Bool(a), Value::Bool(b)) => Value::Bool(match op {
+                        AtomicOp::FetchAnd => a & b,
+                        AtomicOp::FetchOr => a | b,
+                        _ => a ^ b,
+                    }),
+                    (Value::Int(ty, a), Value::Int(_, b)) => Value::Int(*ty, ty.wrap(match op {
+                        AtomicOp::FetchAnd => a & b,
+                        AtomicOp::FetchOr => a | b,
+                        _ => a ^ b,
+                    })),
+                    _ => unreachable!("the checker takes the bits of integers and of `bool`"),
+                };
+                (Some(new), old.clone())
+            }
+            AtomicOp::Fence | AtomicOp::CompilerFence | AtomicOp::SpinLoop => unreachable!("handled above"),
+        };
+        if let Some(new) = new {
+            match &spot {
+                Ok(at) => *at.borrow_mut() = new,
+                Err(raw) => {
+                    raw.write(&new, self.plain);
+                    windows_in(self.plain, span)?;
+                }
+            }
+        }
+        Ok(gives)
+    }
+
+    /// Where an atomic operation lets the other tasks run: the turn goes to the next fiber that
+    /// is ready, the tasks of `Task.run` not started yet start, and this fiber is ready again
+    /// after them. A fiber alone, or one inside a `lock` block, keeps the turn.
+    fn pass_turn(&mut self, at: Span) -> Res<()> {
+        if self.locking > 0 {
+            return Ok(());
+        }
+        {
+            let state = self.io.sched.lock();
+            let lazy = state.lazy.iter().any(|task| task.upgrade().is_some_and(|task| matches!(task.borrow().state, TaskState::Lazy(..))));
+            if state.ready.is_empty() && state.outside.is_empty() && !lazy {
+                return Ok(());
+            }
+        }
+        self.start_lazy()?;
+        let mut state = self.io.sched.lock();
+        // Sockets and threads that are done by now make their fibers ready, without a wait.
+        if !state.outside.is_empty() {
+            Sched::wait_outside(&mut state, Some(Duration::ZERO));
+        }
+        let Some(next) = state.ready.pop_front() else { return Ok(()) };
+        state.ready.push_back(self.me);
+        let _ = at;
+        self.io.sched.hand(state, self.me, next)
+    }
+
     fn start_lazy(&mut self) -> Res<()> {
         loop {
             let lazy = std::mem::take(&mut self.io.sched.lock().lazy);
@@ -2997,6 +3144,8 @@ impl<'a, 'e> Interp<'a, 'e> {
             foreign: self.foreign,
             std_from: self.std_from,
             errno: 0,
+            locking: 0,
+            atomics: 0,
         };
         let weak = Rc::downgrade(task);
         let name: Rc<str> = func.name.as_str().into();
@@ -3362,7 +3511,9 @@ impl<'a, 'e> Interp<'a, 'e> {
                     frame.declare(&item.name, Value::Borrow(held.value.clone()));
                     taken.push(held);
                 }
+                self.locking += 1;
                 let flow = self.block(body, frame);
+                self.locking -= 1;
                 frame.scopes.pop();
                 return flow;
             }
@@ -3778,6 +3929,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Ok(Value::Struct(name.as_str().into(), Rc::new(Fields { cells, disposed_as })))
             }
             ExprKind::New(inner) => Ok(Value::Ptr(cell(self.expr(inner, frame)?))),
+            // An atomic value is kept as the value itself: one task runs at a time.
+            ExprKind::Atomic(inner) => self.expr(inner, frame),
             ExprKind::NewShared { value, checked, .. } => Ok(Value::Shared(Held::new(self.expr(value, frame)?, *checked, expr.span))),
             ExprKind::Open { inner, how } => {
                 let value = self.expr(inner, frame)?;
@@ -3966,6 +4119,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             },
             ExprKind::Method { recv, name, args, callee, .. } => match callee {
                 Callee::System(call) => self.system(*call, args, frame),
+                Callee::Atomic { op, .. } => self.atomic(*op, Some(recv), args, expr.span, frame),
                 Callee::Extern | Callee::Variadic(_) | Callee::Pointer => unreachable!("a function of C is called by its name, and `pointer()` is read by its call"),
                 // `string.fromCString(p)`: the bytes up to the zero byte, copied and checked.
                 Callee::FromCString => {
@@ -4766,6 +4920,16 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let window = Window { items: items.clone(), at, item: (**item).clone(), memory: bytes_at(at.addr, count * size), cells: written };
                 WINDOWS.with(|windows| windows.borrow_mut().push(window));
                 Ok(Value::Slice(items))
+            }
+            // A place in raw memory is read and written where it lies, each time it is
+            // written: the interpreter leaves nothing out, so a volatile access is any access.
+            MemoryCall::ReadVolatile => self.expr(&args[0], frame),
+            MemoryCall::WriteVolatile => {
+                let new = strip(self.expr(&args[1], frame)?);
+                let spot = self.raw_place(&args[0], "written", frame)?;
+                spot.write(&new, self.plain);
+                windows_in(self.plain, span)?;
+                Ok(Value::Void)
             }
             MemoryCall::ReadUnaligned => {
                 let at = raw_of(&strip(self.expr(&args[0], frame)?));

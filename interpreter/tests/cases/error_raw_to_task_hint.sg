@@ -1,0 +1,11 @@
+struct Pool {
+    raw byte bytes
+}
+
+void keep(Pool pool) {
+}
+
+void main() {
+    var pool = Pool { bytes = Memory.allocate<byte>(4) }
+    Task.run(keep, pool).wait()
+}

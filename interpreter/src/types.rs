@@ -294,6 +294,10 @@ pub enum Ty {
     Locked(Box<Ty>),
     /// `Task<R>`: a function started with `Task.run`, to be waited for; `R` is what it returns.
     Task(Box<Ty>),
+    /// `atomic T`: an integer, a `bool`, a `float`, a `double` or a `raw T` that every task
+    /// reads and changes as one step, through its methods (`load`, `store`, `fetchAdd`); also
+    /// through a `read` borrow and inside `shared`. As large as `T`, aligned to its size.
+    Atomic(Box<Ty>),
     /// `CancellationSource`: what cancels the tasks that were given its tokens. One owner;
     /// `cancel` works through a `read` borrow, since cancelling twice is cancelling once.
     Source,
@@ -351,7 +355,7 @@ impl Ty {
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(_) | Ty::Writer | Ty::Locked(_) | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString => false,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(_) | Ty::Writer | Ty::Locked(_) | Ty::Atomic(_) | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString => false,
         }
     }
 
@@ -405,6 +409,7 @@ impl fmt::Display for Ty {
             Ty::Reader(_) => f.write_str("StreamReader"),
             Ty::Writer => f.write_str("StreamWriter"),
             Ty::Locked(inner) => write!(f, "locked {inner}"),
+            Ty::Atomic(inner) => write!(f, "atomic {inner}"),
             Ty::Task(result) => write!(f, "Task<{result}>"),
             Ty::Source => f.write_str("CancellationSource"),
             Ty::Token => f.write_str("CancellationToken"),

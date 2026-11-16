@@ -1,0 +1,7 @@
+struct Flags {
+    atomic uint ready : 1
+}
+
+void main() {
+    var flags = Flags { ready = atomic 1 }
+}

@@ -1,0 +1,5 @@
+error: expected `atomic long`, found `int`
+  --> error_atomic_plain_value.sg:6:36
+ 6 |     var counter = Counter { hits = 0 }
+   |                                    ^
+  hint: make it atomic: `atomic 0`

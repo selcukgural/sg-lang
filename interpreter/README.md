@@ -60,6 +60,8 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into). `Path.join(a, b)` gives a new path; `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
 | Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(byte code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `signal(Signal.Interrupt)` sends it a signal by its name, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
 | Signals | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })`: while the listener lives, those signals do not end the program; `signals.next()` waits for the next and gives it, `await signals.nextAsync(read token)` without holding the thread. Several of one kind before a call are one; every listener gets each signal it listens for. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`. `Signals.raise(signal)` sends one to this program. Written in SG in the module `std`; the handler only writes into a pipe, and a thread hands each signal on |
+| Atomic values | `atomic T` for an integer, `bool`, `float`, `double` or `raw T`, made with `atomic 0` and written anywhere a value is (a field, a local, a list, an array `atomic uint[4] { ... }`, raw memory as `Memory.allocate<atomic long>(n)` or `(raw atomic int)p`); tasks share one as `new shared atomic 0` or in a `shared` struct, since its methods work through `read` and `shared`. `count.load()`, `count.store(v)`, `count.exchange(v)`, `count.compareExchange(expected, desired)` and `compareExchangeWeak` (a `Result<T, T>`: `Ok` with the value it wrote over, `Error` with the one it found), `count.fetchAdd(n)` and `fetchSub` on numbers (the value before; overflow is a panic in a debug build and wraps in a release build, `wrappingFetchAdd` wraps in both), `fetchAnd`, `fetchOr`, `fetchXor` on integers and `bool`. Each is sequentially consistent unless an order follows the values, written as a variant: `count.load(MemoryOrder.Acquire)`, `count.compareExchange(a, b, MemoryOrder.AcquireRelease, MemoryOrder.Relaxed)`; an order the operation cannot keep is a compile error. `Atomic.fence(order)`, `Atomic.compilerFence(order)`, `Atomic.spinLoop()`. `struct Pool : unsafe Sendable` goes to another task with its raw pointers, as its writer promises. `examples/queue` is a queue without locks for many producers and many consumers, with no `unsafe` |
+| `volatile` | `unsafe Memory.readVolatile(regs[0].status)` and `unsafe Memory.writeVolatile(regs[0].control, 1)`: a place in raw memory read or written once, where it is written, for the registers of a device; it orders nothing between tasks |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
@@ -404,7 +406,9 @@ So was the eighty-eighth (signals): the handler of the runtime only writes into 
 each signal to its listeners, in compiled code and in the interpreter alike (779-799). So was the
 eighty-ninth (the layout of C): unions, bit fields, `packed` and `align` are written as C has them, and C
 places them; the interpreter places them by the rules of the machine it runs on, which a test compares
-with C for every system (800-829).
+with C for every system (800-829). So was the ninetieth (atomics and `volatile`): an atomic value is its
+type in C, reached only through GCC's and Clang's `__atomic` builtins with the order written, and a
+volatile access is the place read or written through a `volatile` pointer (830-859).
 What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
@@ -475,6 +479,8 @@ hand with no checks):
 | `curl`: a thousand fetches of a body of one megabyte over the loopback with libcurl, on one kept connection, from a server that is a task of the program; each piece of the body added to a list by an `export` callback through `Memory.view` (the C is the same program through libcurl's header, its server a thread, each piece copied with `memcpy`) | 0.163 s | 0.161 s | 0.160 s | 1.02 |
 | `signals`: a hundred thousand rounds of `Signals.raise(Signal.User1)` and `listener.next()` (the C is a handler that writes into a pipe the program reads itself, after each `raise`) | 0.318 s | 0.313 s | 0.250 s | 1.27 |
 | `bitfields`: four million pixels of 16 bits in bit fields of 5, 6 and 5 made brighter field by field, five hundred times, then four thousand IPv4 headers (bit fields of 4) read out of their bytes with `fromBytes`, twenty thousand times (the C is the same bit fields and `memcpy`) | 0.326 s | 0.323 s | 0.358 s | 0.91 |
+| `atomics`: four tasks add to two counters five million times each, one sequentially consistent and one `Relaxed` (the C is pthreads and the `__atomic` builtins) | 0.274 s | 0.256 s | 0.268 s | 1.02 |
+| `queue`: four tasks push 500,000 numbers each through a queue without locks of 1024 places while four take them out (the C is the same queue with pthreads and `__atomic`) | 0.475 s | 0.456 s | 0.341 s | 1.39 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -5781,12 +5787,160 @@ slice. All were approved the same day:
      MinGW, from the layouts `clang` dumps. Linux in its container has no `clang`, and tests its own
      layout there. Given the wrong rule for a system, it fails with what differs.
 
+Choices made in the ninetieth slice (atomics and `volatile`), the seventh of the slices that bring SG to what
+C reaches. 830 to 847 were decided before it on 16 November 2026, with C's and Rust's names kept over C#'s
+(`fetchAdd` gives the value before, as C and Rust do; C#'s `Interlocked.Add` gives the one after); 848 to 859
+come from the slice. All were approved the same day:
+
+830. **`atomic T`**, decided before the slice: a word in front of the type, as C's `_Atomic` and SG's own
+     `locked`, made with `atomic e` (`atomic 0`, `new shared atomic 0`). Unlike `locked`, it is written
+     anywhere a value is (a local, a field, an item of a list or an array, raw memory, behind `new` and
+     `shared`), since an atomic value is plain data the size of its type, not a value with a lock in front.
+831. **What may be atomic**, decided before the slice: every integer type, `bool`, `float`, `double` and a
+     raw pointer (`atomic raw Node`). Nothing of 128 bits, which would need `libatomic` and a lock.
+832. **The methods**, decided before the slice: `load`, `store`, `exchange`, `compareExchange` and
+     `compareExchangeWeak` on all; `fetchAdd` and `fetchSub` on numbers; `fetchAnd`, `fetchOr` and `fetchXor`
+     on integers and `bool`. `fetchMax`, `fetchMin` and `fetchNand` wait. There is no `+=` on an atomic value
+     and no reading of it without a method; a call that gives a value is used or written `_ = ...`, as every
+     call is (614).
+833. **`compareExchange(expected, desired)` gives a `Result<T, T>`**, decided before the slice: `Ok` with the
+     value it wrote over, `Error` with the value it found, as Rust's. A `float` and a `double` are compared by
+     their bits, as C compares them: `-0.0` is not `0.0`.
+834. **`fetchAdd` and `fetchSub` follow the rule of overflow**, decided before the slice: a panic in the
+     interpreter and in a debug build, a wrap in a release build. The test needs no loop: it looks at the
+     value the operation gave back. The new value is written by then, and the panic ends the program.
+     `wrappingFetchAdd` and `wrappingFetchSub` wrap in every build, as `wrappingAdd` does.
+835. **`MemoryOrder`**, decided before the slice: `Relaxed`, `Acquire`, `Release`, `AcquireRelease` and
+     `SequentiallyConsistent`, C11's orders without `consume`; not named `Order`, which a program may well
+     have. An operation is sequentially consistent unless an order is written after its values, the way a
+     `CancellationToken` may be left out (627), with no second function of the same name. The order is
+     written as a variant, not a variable, and one the operation cannot keep is a compile error: a `load`
+     that is `Release` or `AcquireRelease`, a `store` that is `Acquire` or `AcquireRelease`, a
+     `compareExchange` whose order on failure is `Release` or `AcquireRelease`. Given one order,
+     `compareExchange` takes its order on failure from it (`AcquireRelease` gives `Acquire`, `Release`
+     gives `Relaxed`); given two, it keeps both.
+836. **Through `read` and `shared`**, decided before the slice: an atomic operation changes the value
+     through a `read` borrow and inside a `shared` value, as Rust's through `&self`; tasks share one as a
+     `shared atomic T` or in a `shared` struct of them. The thread rule is the same. A field written
+     `readonly atomic` is an error, since another module could still `store` into it; the hint keeps it to
+     its module and gives a method that reads it.
+837. **Not `Copyable`, `Equatable`, `Hashable`, `Comparable` or `Formattable`**, decided before the slice: a
+     struct with an atomic field cannot say `: Copyable`. A value is moved as any other, and one held alone
+     (a local, or through `ref`) is written whole with `count = atomic 2`.
+838. **Its layout**, decided before the slice: the size of its type and an alignment of that size, also
+     where the type has less (a `long` on 32-bit x86), as C11 and Rust lay it out. It is not a field of a
+     union, of a `packed` struct or a bit field. It is plain data, so `Memory.allocate<atomic long>(n)` and
+     `raw atomic int` are written, and memory shared with C is read as atomic with a cast inside `unsafe`,
+     `(raw atomic int)p`; an operation on an item of raw memory is inside `unsafe` (`p[i].fetchAdd(1)`).
+839. **`Atomic.fence(order)`, `Atomic.compilerFence(order)` and `Atomic.spinLoop()`**, decided before the
+     slice: C's `atomic_thread_fence`, `atomic_signal_fence` (an order for the compiler alone) and the hint
+     that a thread spins (`pause` on x86, `yield` on Arm).
+840. **Compiled through the `__atomic` builtins**, decided before the slice: those of GCC and Clang, which
+     the runtime's own counts of `shared` already use and which Clang has on Windows; no `stdatomic.h` and
+     no `libatomic`. Every atomic value is free of locks on the systems SG runs on.
+841. **In the interpreter**, decided before the slice: one task runs at a time, so every operation is one
+     step and every order acts as `SequentiallyConsistent`. An atomic operation is a place where the turn may
+     go to another task that is ready, in the same order on every run, so that a loop that spins on a `load`
+     ends; not inside a `lock` block, where no other task may take a lock held. How often the turn goes was
+     changed by the slice (849). A bug of a weaker order than needed is not found by the interpreter;
+     compiled tests run under the thread sanitizer.
+842. **`struct Pool : unsafe Sendable`**, decided before the slice: a value that holds a raw pointer does not
+     go to another task ("C and tasks"); this is the writer's promise that what its raw pointers reach is safe
+     for several tasks, and with it the value goes. Swift's `@unchecked Sendable`, Rust's `unsafe impl Send`.
+843. **`unsafe Memory.readVolatile(p[i].status)` and `unsafe Memory.writeVolatile(p[i].status, v)`**,
+     decided before the slice, a little apart from "Reaching what C reaches", which wrote `readVolatile(p)`:
+     the argument is a place in raw memory written as it is read anywhere else, so a field of a block of
+     registers is reached as C's `regs->status`. `volatile` is not a type.
+844. **What `volatile` takes**, decided before the slice: a place of plain data; a bit field is an error
+     whose hint reads the struct whole; the alignment of a debug build is checked as for any item of raw
+     memory (812). A volatile access orders nothing between tasks: C's `volatile`, for devices, not C#'s,
+     which is an acquire and a release (`load(MemoryOrder.Acquire)` and `store(v, MemoryOrder.Release)` in
+     SG).
+845. **`examples/queue`**, decided before the slice: Dmitry Vyukov's bounded queue for many producers and
+     many consumers, of `long` values since generics wait. Each cell has an atomic number that says whose
+     turn it is and an atomic value, read and written `Relaxed`, which costs what a plain read and write
+     cost; the head and the tail are `align(64)` so that the producers and the consumers do not share a line
+     of the cache. Neither the module nor its users write `unsafe`. `main` sends ten thousand numbers through
+     1024 places with four producers and four consumers and checks the sum; its four tests run in the
+     interpreter, compiled and under the thread sanitizer. It is the program of the threshold that is a
+     queue without locks built on atomics.
+846. **The measurements**, decided before the slice: `queue`, against the same queue in C with pthreads and
+     `__atomic`, and `atomics`, four tasks adding to two counters (859).
+847. **The documents**, decided before the slice: this list, the table at the top, "Not here yet", the
+     paragraph on the back end and the rows of the measurements; 04, 02 and 06 (with C#'s `Interlocked` and
+     `Volatile` beside Rust's types) and the README of the repository.
+848. **An array of atomic values** (from the slice): `atomic uint[3] { atomic 1, atomic 2, atomic 3 }`:
+     `atomic` in front of an array built in place makes its items atomic, since no array is. An atomic
+     pointer with `*`, `?` or `[...]` after it is named with `using` first (`using NodeRef = raw Node`, then
+     `atomic NodeRef`), and `atomic null` with no type known is an error whose hint writes the type.
+849. **The turn goes every 64 operations in the interpreter** (from the slice; 841 said at each): a
+     hand-over wakes the thread of another task, and `examples/queue` took 10.8 s with one at each operation
+     against 0.35 s with one every 64. `Atomic.spinLoop()` gives the turn away at once, and a loop that spins
+     without it gives it after 64 rounds at most. The tasks of `Task.run` not started yet start there, so a
+     task that spins waiting for one still to start is not left waiting.
+850. **An atomic value in raw memory, in the interpreter** (from the slice): read and written as the memory
+     it is, after the checks of the block and of the alignment. One task runs at a time, so it is one step
+     for the program, but a thread of C that changes it at the same time is not seen in one step ("Not here
+     yet").
+851. **The panic of `fetchAdd`** (from the slice): `overflow: 2147483645 + 5 does not fit in int`, as for
+     `+`, with the hint ``wrappingFetchAdd` wraps around``; compiled, one `__builtin_add_overflow` on the
+     value `__atomic_fetch_add` gave back.
+852. **What is said instead of a method** (from the slice): `count += 1` is an error that says the read and
+     the write would be two steps, with the hint `_ = count.fetchAdd(1)` (`fetchSub`, `fetchAnd`, `fetchOr`,
+     `fetchXor` for the others); `count = 2` has the hint `count.store(2)`; `count + 1`, `count == other` and
+     `print(count)` have the hint `count.load()`; `Counter { hits = 0 }` has the hint `atomic 0`.
+853. **The order on failure is no stronger than on success** (from the slice): C asks it of
+     `compare_exchange`, and GCC warns otherwise, so `compareExchange(a, b, MemoryOrder.Release,
+     MemoryOrder.Acquire)` is an error. A fence that is `Relaxed` orders nothing, and is an error too.
+854. **How the back end writes them** (from the slice): an atomic value is its type in C, written in a
+     struct with `_Alignas(sizeof(T))`; a `bool` is worked on as its byte, which the builtins that change
+     bits take; a `float` and a `double` go through the forms of the builtins that take addresses, and their
+     `fetchAdd` is a loop of `compareExchangeWeak`, since C has no `fetch_add` for them.
+855. **`MemoryOrder` is written in SG** (from the slice): an enum of the language's own module
+     (`std/atomic.sg`), brought along when a program names it, as `Signal` is.
+856. **`: unsafe Sendable`, the details** (from the slice): it lets go the raw pointers of the type and of
+     the structs it holds; a borrow, a `shared checked` value and a `Task` still stay. `Sendable` without
+     `unsafe` is an error, and so is `unsafe` in front of another interface. The message of the thread rule
+     on a raw pointer names it.
+857. **`volatile`, the details** (from the slice): a field of a union is read and written as any other
+     place (the program is inside `unsafe` already); a field of a `packed` struct that may lie where its
+     type is not reached is an error, as for a borrow (809); an atomic place is an error whose hint is `load`
+     and `store`; a whole struct is read at once (`Memory.readVolatile(regs[0])`). The value written is
+     computed before the place, as for any write (270).
+858. **The tests**: `ok_atomics` (every operation on each kind, with and without orders, in a struct,
+     behind `new`, in a list and in an array), `ok_atomic_tasks` (counters shared by tasks, a value
+     published with `Release` and read with `Acquire`, a loop that spins without `spinLoop`), `ok_atomic_raw`
+     (atomic values in raw memory and through a cast, `volatile` on registers and a union, a struct
+     `: unsafe Sendable` given to tasks), `panic_atomic_overflow`, `panic_atomic_sub`, and `atomic_wraps` in
+     `tests/release`; 38 errors (`error_atomic_*`, `error_fence_*`, `error_volatile_*`,
+     `error_sendable_without_unsafe`, `error_unsafe_copyable`, `error_raw_to_task_hint`); `examples/queue`
+     with its four tests. `cargo test` passes on macOS, where it compiles 346 of 1409 programs, 77 of them
+     under the thread sanitizer, and 23 of 28 programs of tests, and on Linux in a container with the same
+     counts. Three messages of earlier tests changed with the slice: the thread rule on a raw pointer names
+     `unsafe Sendable`, and the functions of `Memory` listed include the two of `volatile`.
+859. **Measured** (`atomics` and `queue`): four tasks adding to two counters five million times each take
+     0.274 s against 0.268 s for C, 1.02 times, and 0.256 s in a debug build optimised as the others, so
+     the test of overflow after `fetchAdd` costs nothing that shows; on Linux in a container of eight cores
+     0.265 s against 0.270 s, 0.98 times. Four producers and four consumers of `examples/queue`'s queue take
+     0.475 s against 0.341 s for C, 1.39 times (0.456 s in a debug build), and 1.42 times on Linux, where C
+     itself goes from 0.28 to 0.44 s from one run to the next; with two of each it is 1.10 times. The loop
+     of a producer compiles to the instructions of C's, one more for the bound of the list, so what is left
+     is in "Slower than C".
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
 here to be talked over when their time comes; none of them breaks a program, and none is fixed by turning a
 check off.
 
+- **Eight tasks that spin on one queue** (`queue`, 1.39 times on macOS and 1.42 on Linux, choice 859): four producers and four
+  consumers of `examples/queue`'s queue take 0.475 s against 0.341 s for the same queue in C. The loop of a
+  producer is the same instructions as C's (one more for the bound of the list), and neither taking that
+  test out, nor laying the queue and the counter out on the heap in C as SG lays them, nor giving the
+  counter a line of the cache of its own changes either time; with two producers and two consumers SG
+  takes 1.10 times C. What is left is where the eight threads that spin run on a machine of twelve fast
+  and four slow cores, and in which order they start. Candidate: compare the order and the moment each
+  task starts with C's, and the cores the threads land on.
 - **A signal raised by the program wakes the relay** (`signals`, 1.27 times on macOS and 2.36 on Linux,
   choice 792): the handler writes each signal into the pipe, so the thread that waits for the pipe wakes
   and takes the lock even when `raise` has handed the signal on itself; without that wake the program
@@ -5889,6 +6043,13 @@ check off.
 - **Of the layout of C**: `packed(2)` and the other packings of `#pragma pack`; an alignment written on one
   field; `Memory.offsetOf`; `toBytes`; bit fields in a union, and in a `packed` struct (808); a union or a
   struct without a name inside another; a struct by value to a function of the program's own C file (824).
+- **Of atomics**: `fetchMax`, `fetchMin`, `fetchNand` and `fetchUpdate` (a loop of `compareExchangeWeak`
+  does their work); atomic values of 128 bits; waiting on an atomic value until it changes (C++'s `wait` and
+  `notify`, a futex); an atomic `shared T`; an order given as a variable (835); a queue of
+  `examples/queue` for values of any type, which waits for generics. In the interpreter an atomic value in
+  raw memory is read and written as plain memory, so a thread of C that changes it at the same time is not
+  seen in one step (850), and since one task runs at a time a program that leans on an order weaker than it
+  needs runs right there; compiled tests run under the thread sanitizer.
 - **Of calling C**: a `va_list` (`vprintf`), a function
   of SG that takes `...`, and a `CFunc` to a function that takes it (753); the address of a `CString`
   kept by C, `sg build -L path` for a library the C compiler does not find by itself, `pkg-config`,
@@ -6142,4 +6303,9 @@ type being an error there, and SQLite is wrapped in a module whose users write n
 the bytes C hands a callback to a list in one copy, and a call of C no longer holds up the other tasks in
 the interpreter (761-778). The eighty-eighth is written: a program listens for signals and takes them one
 at a time (`Signals.listen`, `next`, `nextAsync`), with no handler of its own, and `examples/shutdown` is a
-server that ends cleanly on Ctrl-C or `kill`, tested with real signals sent from outside (779-799).
+server that ends cleanly on Ctrl-C or `kill`, tested with real signals sent from outside (779-799). The eighty-ninth is
+written: unions, bit fields, `packed` and `align` are laid out as C lays them out on each system, Windows
+included, and a binary header is read out of its bytes with no `unsafe` (800-829). The ninetieth is written:
+atomic values with the orders of C11, checked when the program is compiled, and `volatile` reads and writes
+of raw memory; `examples/queue` is a queue without locks for many producers and many consumers written with
+no `unsafe` (830-859). Next is a library built from SG for C to call.

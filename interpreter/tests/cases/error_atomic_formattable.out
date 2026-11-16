@@ -1,0 +1,4 @@
+error: `Meter` cannot be written as text field by field: `total` is an `atomic long`, which is not `Formattable`
+  --> error_atomic_formattable.sg:2:5
+ 2 |     atomic long total
+   |     ^^^^^^^^^^^

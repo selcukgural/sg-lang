@@ -1,0 +1,8 @@
+packed struct Header {
+    byte kind
+    atomic uint length
+}
+
+void main() {
+    var header = Header { kind = 1, length = atomic 2 }
+}

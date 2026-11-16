@@ -310,6 +310,10 @@ pub enum Callee {
     /// language's own module makes (`System.list`, `System.status`), with `File.delete`,
     /// `File.move`, `File.replace` and `File.copy`.
     System(SystemCall),
+    /// `count.fetchAdd(1)`, `Atomic.fence(MemoryOrder.Release)`: an atomic operation, with the
+    /// order it keeps and, for `compareExchange`, the order it keeps when it fails. The orders
+    /// written are taken out of the arguments.
+    Atomic { op: AtomicOp, order: Order, failure: Order },
     /// `slot.take()`: gives the value and leaves `null`.
     Take,
     /// `slot.replace(value)`: gives the old value and leaves the new one.
@@ -340,6 +344,96 @@ pub enum MemoryCall {
     ReadUnaligned,
     /// `Memory.writeUnaligned(p, value)`: writes the item at `p`, which may lie at any address.
     WriteUnaligned,
+    /// `Memory.readVolatile(p[i].status)`: the place in raw memory, read once, as written,
+    /// never left out or merged with another read.
+    ReadVolatile,
+    /// `Memory.writeVolatile(p[i].status, value)`: the place in raw memory, written once, as
+    /// written.
+    WriteVolatile,
+}
+
+/// The order an atomic operation keeps with the reads and writes around it, as C11 names them:
+/// `MemoryOrder` of the language's own module.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Order {
+    Relaxed,
+    Acquire,
+    Release,
+    AcquireRelease,
+    SequentiallyConsistent,
+}
+
+impl Order {
+    /// In the order of the variants of `MemoryOrder`.
+    pub const ALL: [Order; 5] = [Order::Relaxed, Order::Acquire, Order::Release, Order::AcquireRelease, Order::SequentiallyConsistent];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Order::Relaxed => "Relaxed",
+            Order::Acquire => "Acquire",
+            Order::Release => "Release",
+            Order::AcquireRelease => "AcquireRelease",
+            Order::SequentiallyConsistent => "SequentiallyConsistent",
+        }
+    }
+
+    /// The constant of GCC's and Clang's `__atomic` builtins.
+    pub fn c_name(self) -> &'static str {
+        match self {
+            Order::Relaxed => "__ATOMIC_RELAXED",
+            Order::Acquire => "__ATOMIC_ACQUIRE",
+            Order::Release => "__ATOMIC_RELEASE",
+            Order::AcquireRelease => "__ATOMIC_ACQ_REL",
+            Order::SequentiallyConsistent => "__ATOMIC_SEQ_CST",
+        }
+    }
+}
+
+/// What an atomic value is asked to do, and the functions of `Atomic`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum AtomicOp {
+    Load,
+    Store,
+    Exchange,
+    /// `compareExchange`, or with `true` `compareExchangeWeak`, which may fail when the value
+    /// was the one expected.
+    CompareExchange(bool),
+    /// `fetchAdd`, or with `true` `wrappingFetchAdd`.
+    FetchAdd(bool),
+    /// `fetchSub`, or with `true` `wrappingFetchSub`.
+    FetchSub(bool),
+    FetchAnd,
+    FetchOr,
+    FetchXor,
+    /// `Atomic.fence(order)`
+    Fence,
+    /// `Atomic.compilerFence(order)`: an order for the compiler alone, as C's
+    /// `atomic_signal_fence`.
+    CompilerFence,
+    /// `Atomic.spinLoop()`: the processor is told the thread spins waiting.
+    SpinLoop,
+}
+
+impl AtomicOp {
+    pub fn name(self) -> &'static str {
+        match self {
+            AtomicOp::Load => "load",
+            AtomicOp::Store => "store",
+            AtomicOp::Exchange => "exchange",
+            AtomicOp::CompareExchange(false) => "compareExchange",
+            AtomicOp::CompareExchange(true) => "compareExchangeWeak",
+            AtomicOp::FetchAdd(false) => "fetchAdd",
+            AtomicOp::FetchAdd(true) => "wrappingFetchAdd",
+            AtomicOp::FetchSub(false) => "fetchSub",
+            AtomicOp::FetchSub(true) => "wrappingFetchSub",
+            AtomicOp::FetchAnd => "fetchAnd",
+            AtomicOp::FetchOr => "fetchOr",
+            AtomicOp::FetchXor => "fetchXor",
+            AtomicOp::Fence => "fence",
+            AtomicOp::CompilerFence => "compilerFence",
+            AtomicOp::SpinLoop => "spinLoop",
+        }
+    }
 }
 
 /// The functions of a `CancellationSource` and a `CancellationToken`.
@@ -583,6 +677,10 @@ pub struct TypeExpr {
     pub checked: bool,
     /// `locked` after the holder: `shared locked T`.
     pub locked: bool,
+    /// `atomic` in front of the name, with how many `raw` are written before it: `atomic int`
+    /// and `shared atomic int` are 0, `raw atomic int` is 1. `atomic raw Node` is 0 with a
+    /// `raw` after it: an atomic pointer.
+    pub atomic: Option<u8>,
     /// How many times `raw` is written in front of the name: `raw byte` is 1, `raw raw byte`
     /// 2. A raw pointer goes around the type before `?` does, as a holder does.
     pub raw: u8,
@@ -724,6 +822,8 @@ pub enum ExprKind {
     /// `new shared checked e` gives `shared checked T`, `new shared locked e` gives
     /// `shared locked T`.
     NewShared { value: Box<Expr>, checked: bool, locked: bool },
+    /// `atomic e`: the value as an `atomic T`.
+    Atomic(Box<Expr>),
     /// `share e`: one more owner of a `shared T`, or of what a `weak T` looks at (`null` once
     /// it is gone). Does not move `e`.
     Share(Box<Expr>),

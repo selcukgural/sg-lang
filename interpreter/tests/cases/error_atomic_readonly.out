@@ -1,0 +1,5 @@
+error: an `atomic long` field is not `readonly`: its methods change it through a `read` borrow
+  --> error_atomic_readonly.sg:2:33
+ 2 |     public readonly atomic long total
+   |                                 ^^^^^
+  hint: keep the field to its module and give a method that reads it: `long total(read this) { return this.total.load() }`

@@ -283,6 +283,7 @@ impl<'p> Pass<'p> {
             ExprKind::Field { recv: inner, .. }
             | ExprKind::Unary(_, inner)
             | ExprKind::New(inner)
+            | ExprKind::Atomic(inner)
             | ExprKind::Share(inner)
             | ExprKind::WeakOf(inner)
             | ExprKind::Borrow { expr: inner, .. }

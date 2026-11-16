@@ -1,0 +1,54 @@
+// Tasks share atomic values through `shared`, and a struct of them, each changed through a `read`
+// borrow. A task that spins on a value until another writes it ends: in the interpreter the turn
+// goes to the other tasks every so many atomic operations, and at once at `Atomic.spinLoop()`.
+struct Stats {
+    atomic long count
+    atomic long sum
+}
+
+void record(shared Stats stats, long from, long to) {
+    for n in from..to {
+        _ = stats.count.fetchAdd(1, MemoryOrder.Relaxed)
+        _ = stats.sum.fetchAdd(n, MemoryOrder.Relaxed)
+    }
+}
+
+void add(read Stats stats, long n) {
+    _ = stats.count.fetchAdd(1)
+    _ = stats.sum.fetchAdd(n)
+}
+
+// Writes the value, then lets the reader see it with a `Release` store.
+void publish(shared atomic int data, shared atomic bool ready) {
+    data.store(42, MemoryOrder.Relaxed)
+    ready.store(true, MemoryOrder.Release)
+}
+
+void main() {
+    var stats = new shared Stats { count = atomic 0, sum = atomic 0 }
+    var tasks = List<Task<void>>()
+    for part in 0..4 {
+        tasks.add(Task.run(record, share stats, (long)part * 1000, (long)part * 1000 + 1000))
+    }
+    Task.whenAll(tasks).wait()
+    add(read stats, 1)
+    print($"{stats.count.load()} numbers, {stats.sum.load()} in all")
+
+    var data = new shared atomic 0
+    var ready = new shared atomic false
+    var writer = Task.run(publish, share data, share ready)
+    // Spins without a word to the processor: the interpreter still lets the writer run.
+    while !ready.load(MemoryOrder.Acquire) {
+    }
+    print(data.load(MemoryOrder.Relaxed))
+    writer.wait()
+
+    var left = new shared atomic 3
+    var waiter = Task.run(publish, share data, share ready)
+    while left.load() > 0 {
+        _ = left.fetchSub(1)
+        Atomic.spinLoop()
+    }
+    waiter.wait()
+    print(left.load())
+}

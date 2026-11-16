@@ -1,0 +1,5 @@
+void main() {
+    var a = atomic 1
+    var b = atomic 1
+    print(a == b)
+}

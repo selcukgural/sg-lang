@@ -1,0 +1,6 @@
+error: operator `+` is not defined for `atomic int` and `int`
+  an atomic value is read once with `load`, so that another task cannot change it in the middle of the computation
+  --> error_atomic_arithmetic.sg:3:16
+ 3 |     var next = count + 1
+   |                ^^^^^^^^^
+  hint: read it first: `count.load()`

@@ -1,0 +1,5 @@
+error: `unsafe Copyable` is not an interface: `unsafe` goes only in front of `Sendable`
+  the other interfaces are checked by the compiler, so they need no promise
+  --> error_unsafe_copyable.sg:1:15
+ 1 | struct Pool : unsafe Copyable {
+   |               ^^^^^^^^^^^^^^^

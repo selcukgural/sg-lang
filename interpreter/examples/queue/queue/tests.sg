@@ -1,0 +1,73 @@
+// The queue alone, and with tasks that push and pop at once.
+
+// What the queue gives next, or -1 when it is empty.
+long next(read BoundedQueue q) {
+    return q.tryPop() ?? -1
+}
+
+test "a queue gives back what it was given, in order" {
+    var q = BoundedQueue.withCapacity(4)
+    assert(q.tryPush(1))
+    assert(q.tryPush(2))
+    assert(next(read q) == 1)
+    assert(q.tryPush(3))
+    assert(next(read q) == 2)
+    assert(next(read q) == 3)
+    assert(next(read q) == -1)
+}
+
+test "a full queue takes nothing more until a value is taken out" {
+    var q = BoundedQueue.withCapacity(2)
+    assert(q.tryPush(10))
+    assert(q.tryPush(20))
+    assert(!q.tryPush(30))
+    assert(next(read q) == 10)
+    assert(q.tryPush(30))
+    assert(next(read q) == 20)
+    assert(next(read q) == 30)
+}
+
+test "the places go round many times" {
+    var q = BoundedQueue.withCapacity(2)
+    long sum = 0
+    for n in 0..1000 {
+        assert(q.tryPush((long)n))
+        sum += q.tryPop() ?? -1
+    }
+    assert(sum == 499500)
+}
+
+void pushAll(shared BoundedQueue q, long from, long to) {
+    for n in from..to {
+        while !q.tryPush(n) {
+            Atomic.spinLoop()
+        }
+    }
+}
+
+long popSome(shared BoundedQueue q, long count) {
+    long sum = 0
+    long taken = 0
+    while taken < count {
+        var value = q.tryPop()
+        if value is null {
+            Atomic.spinLoop()
+            continue
+        }
+        sum += value
+        taken += 1
+    }
+    return sum
+}
+
+test "two tasks push and two pop at once, and every value comes out once" {
+    var q = new shared BoundedQueue.withCapacity(8)
+    var one = Task.run(pushAll, share q, 0, 500)
+    var two = Task.run(pushAll, share q, 500, 1000)
+    var three = Task.run(popSome, share q, 400)
+    var four = Task.run(popSome, share q, 600)
+    one.wait()
+    two.wait()
+    assert(three.wait() + four.wait() == 499500)
+    assert(next(read q) == -1)
+}

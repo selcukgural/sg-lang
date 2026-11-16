@@ -1,0 +1,5 @@
+error: a `compareExchange` that fails only reads, so it cannot keep the order `Release`
+  the second order is `Relaxed`, `Acquire` or `SequentiallyConsistent`
+  --> error_atomic_failure_release.sg:3:65
+ 3 |     _ = count.compareExchange(1, 2, MemoryOrder.AcquireRelease, MemoryOrder.Release)
+   |                                                                 ^^^^^^^^^^^^^^^^^^^
