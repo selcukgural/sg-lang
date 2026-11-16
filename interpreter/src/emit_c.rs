@@ -159,6 +159,24 @@ const RUNTIME: &str = r#"#include <math.h>
 #include <sys/random.h>
 #endif
 
+/* A panic ends the process. A library (`sg build --library` or `--shared`) aborts: other
+   threads of the program that loaded it may be running, and C's `exit` would run that
+   program's `atexit` functions under them. */
+#ifndef SG_LIBRARY
+#define SG_LIBRARY 0
+#endif
+#if SG_LIBRARY
+#define SG_PANIC_END() abort()
+#else
+#define SG_PANIC_END() exit(1)
+#endif
+/* An `export` function: seen from outside a shared library, whose other names are hidden. */
+#if defined(_WIN32)
+#define SG_EXPORT __declspec(dllexport)
+#else
+#define SG_EXPORT __attribute__((visibility("default")))
+#endif
+
 /* The error of a call of the system that failed. A call that failed and left `errno` at 0
    would otherwise read as success to the code that asked, with what it was to fill unset. */
 static inline int sg_os_error(void) { return errno ? errno : EIO; }
@@ -242,7 +260,7 @@ static void sg_task_note(void) {
 SG_COLD static _Noreturn void sg_die(const char* loc) {
     fputs(loc, stderr);
     sg_task_note();
-    exit(1);
+    SG_PANIC_END();
 }
 /* A failing operation hands its numbers over as `__int128`, which holds a value of every
    integer type, signed or not; they are written in full. */
@@ -261,7 +279,7 @@ SG_COLD static _Noreturn void sg_die_hint(const char* loc, const char* hint) {
     fputs(loc, stderr);
     sg_task_note();
     if (!sg_called(loc)) fprintf(stderr, "  hint: %s\n", hint);
-    exit(1);
+    SG_PANIC_END();
 }
 /* `fetchAdd` and `fetchSub` that overflow: the value is written by then, and the panic ends the
    program. */
@@ -319,7 +337,7 @@ SG_COLD static _Noreturn void sg_cast_fail(__int128 v, const char* ty, const cha
     if (!sg_called(loc))
         fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit, and `wrappingTo%c%s()` cuts it to size\n",
                 ty[0] - 'a' + 'A', ty + 1, ty[0] - 'a' + 'A', ty + 1);
-    exit(1);
+    SG_PANIC_END();
 }
 SG_COLD static _Noreturn void sg_panic(const char* text, const char* loc) {
     SG_PANIC_START();
@@ -413,7 +431,7 @@ SG_COLD static _Noreturn void sg_fcast_fail(double v, bool single, const char* t
     fputs(loc, stderr);
     sg_task_note();
     if (!sg_called(loc)) fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit\n", ty[0] - 'a' + 'A', ty + 1);
-    exit(1);
+    SG_PANIC_END();
 }
 SG_COLD static _Noreturn void sg_assert_fail_fd(const char* text, double l, double r, bool single, const char* loc) {
     SG_PANIC_START();
@@ -1669,7 +1687,7 @@ SG_COLD static _Noreturn void sg_conflict(const char* what, bool changing, const
     fprintf(stderr, "  it is being %s from here:\n", doing);
     /* This message already shows a second place, which it keeps over the task's. */
     fputs(other->at, stderr);
-    exit(1);
+    SG_PANIC_END();
 }
 static inline void sg_look(void* p, const char* what, const char* loc) {
     sg_lock* lock = sg_lock_of(p);
@@ -5896,12 +5914,18 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
             "static const sg_test sg_tests[] = {{\n{listed}    {{ NULL, NULL }}\n}};\nint main(int argc, char** argv) {{\n    return sg_run_tests(sg_tests, {}, argc, argv);\n}}\n",
             prog.tests.len()
         ),
+        // A library starts when it is loaded: C's constructor, which every compiler the
+        // language uses knows, Clang on Windows too.
+        None if prog.library => "#ifdef SG_LEAKS\nstatic void sg_library_end(void) { (void)sg_leaks(\"the library\"); }\n#endif\n\
+             __attribute__((constructor)) static void sg_library_start(void) {\n#ifdef SG_LEAKS\n    atexit(sg_library_end);\n#endif\n}\n"
+            .to_string(),
         None => unreachable!("the checker asks for `main`"),
         Some(main) => emitter.start(main)?,
     };
 
     // A program with a hash table draws the key of its hash before anything else runs.
     let start = match emitter.made.contains("tables") {
+        true if prog.library => start.replacen("(void) {\n", "(void) {\n    sg_seed_init();\n", 1),
         true => start.replacen(") {\n", ") {\n    sg_seed_init();\n", 1),
         false => start,
     };
@@ -5924,6 +5948,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         false => String::new(),
     };
     let _ = writeln!(out, "#define SG_THREADS {}", u8::from(threads));
+    if prog.library {
+        out.push_str("#define SG_LIBRARY 1\n");
+    }
     // `accept4` and the flags of `socket` are GNU's on Linux, and so are `renameat2`, `d_type`
     // and `mkdtemp` in strict C11.
     if emitter.made.contains("net") || emitter.made.contains("files") || emitter.made.contains("signals") {
@@ -6926,17 +6953,66 @@ impl<'a> Emitter<'a> {
         let c_name = short_name(&func.name);
         let mut named = Vec::new();
         let mut passed = Vec::new();
+        let mut checks = String::new();
         for (position, param) in params.iter().enumerate() {
-            named.push(format!("{} a{position}", self.ctype(param, func.name_span)?));
-            passed.push(format!("a{position}"));
+            // A value of SG that C holds is an address C does not look into: `void*`, so that
+            // a C file of the program may hold it under a type of its own. One C gives where
+            // the function takes no `null` is checked.
+            match param {
+                // C's `const char*`, lent for the call through a `CString` of the wrapper.
+                Ty::Read(inner) if **inner == Ty::CString => {
+                    named.push(format!("const char* a{position}"));
+                    passed.push(format!("&c{position}"));
+                    if self.made.insert("null given".to_string()) {
+                        self.null_given();
+                    }
+                    let loc = self.loc(func.name_span);
+                    let _ = write!(checks, "if (!a{position}) sg_null_given({}, \"read CString\", false, {loc}); sg_cstring c{position} = (sg_cstring)a{position}; ", c_string(c_name));
+                    self.ctype(inner, func.name_span)?;
+                }
+                Ty::Ptr(_) | Ty::Nullable(_) | Ty::Read(_) | Ty::Ref(_) => {
+                    let constant = if matches!(param, Ty::Read(_)) { "const " } else { "" };
+                    named.push(format!("{constant}void* a{position}"));
+                    passed.push(format!("({})a{position}", self.ctype(param, func.name_span)?));
+                    if !matches!(param, Ty::Nullable(_)) {
+                        if self.made.insert("null given".to_string()) {
+                            self.null_given();
+                        }
+                        let loc = self.loc(func.name_span);
+                        let owned = matches!(param, Ty::Ptr(_));
+                        let _ = write!(checks, "if (!a{position}) sg_null_given({}, {}, {owned}, {loc}); ", c_string(c_name), c_string(&param.to_string()));
+                    }
+                }
+                _ => {
+                    named.push(format!("{} a{position}", self.ctype(param, func.name_span)?));
+                    passed.push(format!("a{position}"));
+                }
+            }
         }
         let list = if named.is_empty() { "void".to_string() } else { named.join(", ") };
-        let head = format!("{} {c_name}({list})", self.ctype(ret, func.ret.span)?);
+        let gives = match ret {
+            Ty::Ptr(_) | Ty::Nullable(_) => "void*".to_string(),
+            other => self.ctype(other, func.ret.span)?,
+        };
+        let head = format!("{gives} {c_name}({list})");
         let call = format!("f_{}({})", cname(&func.name), passed.join(", "));
-        let body = if *ret == Ty::Void { format!("{call};") } else { format!("return {call};") };
-        let _ = writeln!(protos, "{head};");
+        let body = if *ret == Ty::Void { format!("{checks}{call};") } else { format!("{checks}return {call};") };
+        let _ = writeln!(protos, "SG_EXPORT {head};");
         let _ = writeln!(bodies, "{head} {{ {body} }}\n");
         Ok(())
+    }
+
+    /// Writes the panic of an `export` function that C gave `null` where it takes none.
+    fn null_given(&mut self) {
+        let _ = writeln!(self.glue_protos, "SG_COLD static _Noreturn void sg_null_given(const char* func, const char* ty, bool owned, const char* loc);");
+        let _ = writeln!(
+            self.glue,
+            "SG_COLD static _Noreturn void sg_null_given(const char* func, const char* ty, bool owned, const char* loc) {{\n    SG_PANIC_START();\n    \
+             fprintf(stderr, \"panic: C gave `null` to `%s`, which takes a `%s`\\n\", func, ty);\n    \
+             if (!owned) sg_die(loc);\n    char hint[256];\n    \
+             snprintf(hint, sizeof hint, \"a parameter C may give `null` is written `%s?`\", ty);\n    \
+             sg_die_hint(loc, hint);\n}}"
+        );
     }
 
     /// What a function of C is declared with, what its adapter takes, and what the adapter
@@ -13983,7 +14059,11 @@ impl<'a> Emitter<'a> {
                         );
                     }
                     let pointer = self.first(&args[0], head)?;
-                    Ok(format!("sg_from_cstring({pointer})"))
+                    // A lent `CString` is the address of one, which holds the bytes.
+                    match args[0].ty.strip_borrow() {
+                        Ty::CString => Ok(format!("sg_from_cstring(*{pointer})")),
+                        _ => Ok(format!("sg_from_cstring({pointer})")),
+                    }
                 }
                 // `buffer.pointer()`, an argument of a C function: where the items are.
                 Callee::Pointer => {

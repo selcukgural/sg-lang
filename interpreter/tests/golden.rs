@@ -233,6 +233,7 @@ fn modules() {
     entries.push(root.join("examples/headers"));
     entries.push(root.join("examples/shutdown"));
     entries.push(root.join("examples/queue"));
+    entries.push(root.join("examples/calclib"));
     entries.sort();
     for path in entries {
         if path.extension().is_some_and(|ext| ext == "sg") {
@@ -241,6 +242,9 @@ fn modules() {
             let within = path.parent().unwrap().to_path_buf();
             runs.push((path.clone(), false, path.join("main.out"), within.clone()));
             runs.push((path.clone(), true, path.join("tests.out"), within));
+        } else if path.join("tests.out").exists() {
+            // A library has no `main`, only its tests.
+            runs.push((path.clone(), true, path.join("tests.out"), path.parent().unwrap().to_path_buf()));
         }
     }
     assert!(runs.len() > 10);
@@ -789,6 +793,7 @@ fn compiled_tests() {
     folders.push(root.join("examples/headers"));
     folders.push(root.join("examples/shutdown"));
     folders.push(root.join("examples/queue"));
+    folders.push(root.join("examples/calclib"));
     folders.sort();
     for path in folders {
         if path.join("tests.out").exists() {
@@ -1128,6 +1133,287 @@ fn shutdown_on_signals() {
             assert_eq!(&said[1..], expected, "{way}, {scenario}; standard error: {errors}");
             assert_eq!(status.code(), Some(0), "{way}, {scenario}: {errors}");
             assert!(errors.is_empty(), "{way}, {scenario}: {errors}");
+        }
+    }
+}
+
+/// A library built from SG and called from C (`sg build --library` and `--shared`): the
+/// calculator of `examples/calclib`, with its program of C, prints `main.out` as a static
+/// library, a shared one and a release build, under the sanitizers too, and leaves nothing
+/// behind. Two libraries of SG live in one program, each with its runtime; C calls a library
+/// from threads of its own, under the thread sanitizer; a panic aborts the program that loaded
+/// it; and the checker asks of a library what it gives C.
+#[test]
+fn libraries() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if std::process::Command::new("cc").arg("--version").output().is_err() {
+        eprintln!("no C compiler (`cc`) found: libraries are not tested");
+        return;
+    }
+    let sg_bin = env!("CARGO_BIN_EXE_sg");
+    let work = root.join("target").join("libraries");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let example = root.join("examples/calclib");
+    let expected = std::fs::read_to_string(example.join("main.out")).unwrap();
+    let cc = |args: &[&std::ffi::OsStr]| {
+        let made = std::process::Command::new("cc").args(["-std=c11"]).args(args).output().unwrap();
+        assert!(made.status.success(), "the C compiler rejected {args:?}:\n{}", String::from_utf8_lossy(&made.stderr));
+    };
+    let sg = |args: &[&str], dir: &Path| {
+        let made = std::process::Command::new(sg_bin).arg("build").args(args).current_dir(dir).output().unwrap();
+        assert!(made.status.success(), "sg build {args:?}: {}{}", String::from_utf8_lossy(&made.stdout), String::from_utf8_lossy(&made.stderr));
+        String::from_utf8_lossy(&made.stdout).into_owned()
+    };
+    let main_c = example.join("main.c");
+
+    // The static library, debug and release, and the shared one.
+    for (dir, flag, release) in [("static", "--library", false), ("release", "--library", true), ("shared", "--shared", false)] {
+        let out = work.join(dir);
+        std::fs::create_dir_all(&out).unwrap();
+        let file = match flag {
+            "--library" => "libcalclib.a".to_string(),
+            _ if cfg!(target_os = "macos") => "libcalclib.dylib".to_string(),
+            _ => "libcalclib.so".to_string(),
+        };
+        let mut args = vec![example.to_str().unwrap(), flag, "-o", file.as_str()];
+        if release {
+            args.push("--release");
+        }
+        let said = sg(&args, &out);
+        assert!(said.starts_with(&format!("built {file} and ")), "{said}");
+        let header = std::fs::read_to_string(out.join("calclib.h")).unwrap();
+        assert!(header.contains("typedef struct Calculator Calculator;") && header.contains("CALCLIB_API int32_t calc_eval(Calculator *calc, const char *text, double *out);"), "{header}");
+        let program = out.join("calc");
+        let mut flags: Vec<std::ffi::OsString> = ["-Wall", "-Wextra", "-Werror", "-pedantic", "-o"].iter().map(Into::into).collect();
+        flags.push(program.clone().into());
+        flags.push("-I".into());
+        flags.push(out.clone().into());
+        flags.push(main_c.clone().into());
+        match flag {
+            "--library" => flags.extend([out.join(&file).into(), "-lm".into(), "-pthread".into()]),
+            _ => flags.extend([format!("-L{}", out.display()).into(), "-lcalclib".into(), format!("-Wl,-rpath,{}", out.display()).into()]),
+        }
+        cc(&flags.iter().map(|flag| flag.as_os_str()).collect::<Vec<_>>());
+        let ran = std::process::Command::new(&program).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), expected, "{dir}: {}", String::from_utf8_lossy(&ran.stderr));
+        assert!(ran.status.success(), "{dir}: {}", String::from_utf8_lossy(&ran.stderr));
+        // Only the functions of the header are seen from outside.
+        let names = std::process::Command::new("nm").arg("-g").arg(out.join(&file)).output().unwrap();
+        let defined: Vec<String> = String::from_utf8_lossy(&names.stdout)
+            .lines()
+            .filter(|line| line.contains(" T "))
+            .map(|line| line.rsplit(' ').next().unwrap().trim_start_matches('_').to_string())
+            .collect();
+        assert!(!defined.is_empty() && defined.iter().all(|name| name.starts_with("calc_")), "{dir} shows more than its functions: {defined:?}");
+        if dir == "static" && std::env::var_os("SG_NO_SANITIZERS").is_none() {
+            // The same C under the sanitizers, as one program, and looked at for leaks.
+            let code = std::process::Command::new(sg_bin).args(["emit-c", example.to_str().unwrap(), "--library"]).output().unwrap();
+            assert!(code.status.success());
+            std::fs::write(out.join("calclib.c"), &code.stdout).unwrap();
+            let sanitized = out.join("calc-san");
+            cc(&["-O1".as_ref(), "-g".as_ref(), "-fsanitize=address,undefined".as_ref(), "-fno-sanitize-recover=all".as_ref(), "-I".as_ref(), out.as_os_str(), "-o".as_ref(), sanitized.as_os_str(), main_c.as_os_str(), out.join("calclib.c").as_os_str(), "-lm".as_ref(), "-pthread".as_ref()]);
+            let ran = std::process::Command::new(&sanitized).output().unwrap();
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), expected, "under the sanitizers: {}", String::from_utf8_lossy(&ran.stderr));
+            leak_check_sees_a_leak(&work);
+            if let Some(report) = left_behind(&program, &sanitized, &[], Path::new("")) {
+                panic!("the program of C with the library left memory behind:\n{report}");
+            }
+        }
+    }
+
+    // Two libraries of SG in one program: each has its runtime, and none of its names is seen.
+    let other = work.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(
+        other.join("words.sg"),
+        "// Counts the words of a text with a map and a task, as the calculator uses both.\nint countIn(string text) {\n    var seen = HashSet<string>()\n    for word in text.split(\" \") {\n        if word.length() > 0 {\n            _ = seen.add(word.clone())\n        }\n    }\n    return (int)seen.length()\n}\n\nexport int words_distinct(read CString text) {\n    var copy = string.fromCString(text) ?? \"\"\n    var task = Task.run(countIn, copy)\n    return task.wait()\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        other.join("both.c"),
+        "#include <stdio.h>\n#include \"calclib.h\"\n#include \"words.h\"\nint main(void) {\n    Calculator *calc = calc_new();\n    double value = 0;\n    calc_eval(calc, \"6 * 7\", &value);\n    printf(\"%g %d\\n\", value, (int)words_distinct(\"to be or not to be\"));\n    calc_free(calc);\n    return 0;\n}\n",
+    )
+    .unwrap();
+    sg(&[example.to_str().unwrap(), "--library"], &other);
+    sg(&["words.sg", "--library", "-o", "libother.a"], &other);
+    let both = other.join("both");
+    cc(&["-Wall".as_ref(), "-Werror".as_ref(), "-I".as_ref(), other.as_os_str(), "-o".as_ref(), both.as_os_str(), other.join("both.c").as_os_str(), other.join("libcalclib.a").as_os_str(), other.join("libother.a").as_os_str(), "-lm".as_ref(), "-pthread".as_ref()]);
+    let ran = std::process::Command::new(&both).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "42 4\n", "{}", String::from_utf8_lossy(&ran.stderr));
+
+    // C calls the library from threads of its own, each with a calculator, under the thread
+    // sanitizer: the runtime starts what it needs on first use, from any thread.
+    let threads_c = work.join("threads.c");
+    std::fs::write(
+        &threads_c,
+        "#include <pthread.h>\n#include <stdio.h>\n#include \"calclib.h\"\nstatic void *work(void *arg) {\n    (void)arg;\n    Calculator *calc = calc_new();\n    double sum = 0, value = 0;\n    for (int i = 0; i < 20; i++) {\n        calc_set(calc, \"i\", i);\n        calc_eval(calc, \"x = i * 2\", &value);\n    }\n    calc_sum(calc, \"k + x\", \"k\", 1, 100, &sum);\n    calc_free(calc);\n    return (void *)(long)sum;\n}\nint main(void) {\n    pthread_t threads[4];\n    for (int i = 0; i < 4; i++) pthread_create(&threads[i], NULL, work, NULL);\n    long total = 0;\n    for (int i = 0; i < 4; i++) { void *got; pthread_join(threads[i], &got); total += (long)got; }\n    printf(\"%ld\\n\", total);\n    return 0;\n}\n",
+    )
+    .unwrap();
+    if std::env::var_os("SG_NO_SANITIZERS").is_none() {
+        race_check_sees_a_race(&work);
+        let racy = work.join("threads-tsan");
+        let static_dir = work.join("static");
+        cc(&["-O1".as_ref(), "-g".as_ref(), "-fsanitize=thread".as_ref(), "-I".as_ref(), static_dir.as_os_str(), "-o".as_ref(), racy.as_os_str(), threads_c.as_os_str(), static_dir.join("calclib.c").as_os_str(), "-lm".as_ref(), "-pthread".as_ref()]);
+        let ran = std::process::Command::new(&racy).output().unwrap();
+        // Each thread: 5050 + 100 * 38.
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), "35400\n", "{}", String::from_utf8_lossy(&ran.stderr));
+        assert!(ran.status.success() && !String::from_utf8_lossy(&ran.stderr).contains("ThreadSanitizer"), "{}", String::from_utf8_lossy(&ran.stderr));
+    }
+
+    // A panic writes its message and aborts: other threads of the program may be running, so
+    // C's `exit` and the program's `atexit` functions do not run.
+    let panics_c = work.join("panics.c");
+    std::fs::write(&panics_c, "#include <stdio.h>\n#include \"calclib.h\"\nint main(void) {\n    double value = 0;\n    printf(\"before\\n\");\n    fflush(stdout);\n    calc_eval(NULL, \"1\", &value);\n    printf(\"after\\n\");\n    return 0;\n}\n").unwrap();
+    let panics = work.join("panics");
+    let static_dir = work.join("static");
+    cc(&["-I".as_ref(), static_dir.as_os_str(), "-o".as_ref(), panics.as_os_str(), panics_c.as_os_str(), static_dir.join("libcalclib.a").as_os_str(), "-lm".as_ref(), "-pthread".as_ref()]);
+    let ran = std::process::Command::new(&panics).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "before\n");
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert!(said.starts_with("panic: C gave `null` to `calc_eval`, which takes a `ref Calculator`\n") && said.contains("api.sg:"), "{said}");
+    {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(ran.status.signal(), Some(6), "a panic in a library aborts: {:?}", ran.status);
+    }
+
+    // What the checker asks of a library.
+    for (name, text, message) in [
+        ("main.sg", "export int one() { return 1 }\nvoid main() { }\n", "error: a library has no `main`: C calls its `export` functions"),
+        ("none.sg", "int one() { return 1 }\n", "error: a library gives C its `export` functions, and this one has none"),
+        ("word.sg", "struct union {\n    List<int> items\n}\nexport union* make() { return new union { items = List<int>() } }\n", "is a word of C"),
+        ("plain.sg", "struct Point {\n    int x\n}\nexport Point* make() { return new Point { x = 1 } }\n", "error: C calls `make`, and cannot take a `Point*` from it"),
+        ("borrow.sg", "struct Box {\n    List<int> items\n}\nexport read Box give(read Box b) from b { return b }\n", "give C the value itself: `Box*`"),
+    ] {
+        let file = work.join(name);
+        std::fs::write(&file, text).unwrap();
+        let made = std::process::Command::new(sg_bin).args(["build", name, "--library"]).current_dir(&work).output().unwrap();
+        let said = String::from_utf8_lossy(&made.stderr);
+        assert!(!made.status.success() && said.contains(message), "{name}: {said}");
+    }
+    let clash = work.join("clash");
+    std::fs::create_dir_all(clash.join("a")).unwrap();
+    std::fs::create_dir_all(clash.join("b")).unwrap();
+    std::fs::write(clash.join("a/a.sg"), "public struct Item {\n    public List<int> items\n}\n").unwrap();
+    std::fs::write(clash.join("b/b.sg"), "public enum Item {\n    One\n}\n").unwrap();
+    std::fs::write(clash.join("lib.sg"), "use a\nuse b\nexport a.Item* first() { return new a.Item { items = List<int>() } }\nexport b.Item* second() { return new b.Item.One }\n").unwrap();
+    let made = std::process::Command::new(sg_bin).args(["build", ".", "--library"]).current_dir(&clash).output().unwrap();
+    let said = String::from_utf8_lossy(&made.stderr);
+    assert!(!made.status.success() && said.contains("the header of the library would name two types `Item`"), "{said}");
+}
+
+/// The interpreter keeps the values it gave C by their address, and checks what C gives back:
+/// an address it did not give, one of another type, one given back already, one lent in a way
+/// the rules of borrowing forbid, and `null` where none is taken are panics. Compiled code
+/// checks `null` only.
+#[test]
+fn handles_misused() {
+    const PROGRAM: &str = r#"
+extern "./native.c" {
+    void misuse(int how)
+}
+
+struct Tally {
+    List<int> seen
+}
+
+struct Other {
+    List<int> seen
+}
+
+export Tally* tally_new() {
+    return new Tally { seen = List<int>() }
+}
+
+export Other* other_new() {
+    return new Other { seen = List<int>() }
+}
+
+export void tally_add(ref Tally tally, int n) {
+    tally.seen.add(n)
+}
+
+export nint tally_count(read Tally tally) {
+    return tally.seen.length()
+}
+
+// Calls C back while it changes the tally.
+export void tally_each(ref Tally tally, CFunc<raw void, void> visit, raw void data) {
+    tally.seen.add(0)
+    unsafe visit(data)
+}
+
+export void tally_free(Tally* tally) {
+    _ = tally
+}
+
+export nint text_length(read CString text) {
+    var made = string.fromCString(text) ?? ""
+    return made.length()
+}
+
+void main(List<string> args) {
+    unsafe misuse(int.parse(args[0]) ?? 0)
+    print("no panic")
+}
+"#;
+    const NATIVE: &str = r#"
+#include <stddef.h>
+static void *kept = NULL;
+static void reads(void *tally) { (void)tally_count(tally); }
+static void frees(void *tally) { tally_free(tally); }
+static void misuse(int32_t how) {
+    void *tally = tally_new();
+    int local = 0;
+    switch (how) {
+    case 0: tally_add(tally, 1); tally_free(tally); break;
+    case 1: tally_free(tally); tally_add(tally, 1); break;
+    case 2: tally_add(&local, 1); break;
+    case 3: tally_add(other_new(), 1); break;
+    case 4: tally_each(tally, reads, tally); break;
+    case 5: kept = tally; tally_each(tally, frees, tally); break;
+    case 6: tally_free(NULL); break;
+    case 7: (void)text_length(NULL); break;
+    }
+}
+"#;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("handles-misused");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("main.sg"), PROGRAM).unwrap();
+    std::fs::write(work.join("native.c"), NATIVE).unwrap();
+    let cases: [(&str, &str); 8] = [
+        ("0", "no panic\n"),
+        ("1", "panic: C gave `tally_add` an address that holds no `Tally`\n"),
+        ("2", "panic: C gave `tally_add` an address that holds no `Tally`\n"),
+        ("3", "panic: C gave `tally_add` a `Other` where it takes a `Tally`\n"),
+        ("4", "panic: C gave `tally_count` a `Tally` that a call of `tally_each` in progress changes\n"),
+        ("5", "panic: C gave `tally_free` a `Tally` that a call of `tally_each` in progress changes\n"),
+        ("6", "panic: C gave `null` to `tally_free`, which takes a `Tally*`\n"),
+        ("7", "panic: C gave `null` to `text_length`, which takes a `read CString`\n"),
+    ];
+    for (how, said) in cases {
+        let ran = std::process::Command::new(env!("CARGO_BIN_EXE_sg")).args(["main.sg", how]).current_dir(&work).output().unwrap();
+        let all = format!("{}{}", String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert!(all.starts_with(said), "case {how}: {all}");
+        assert_eq!(ran.status.code(), Some(if how == "0" { 0 } else { 1 }), "case {how}: {all}");
+    }
+    if std::process::Command::new("cc").arg("--version").output().is_err() {
+        return;
+    }
+    // Compiled, the program checks `null` alone, with the same message and its hint.
+    let sources = sg::load(&work.join("main.sg"), false).unwrap();
+    let (c_file, binary) = (work.join("out.c"), work.join("out"));
+    std::fs::write(&c_file, sg::emit_c_sources(&sources, true).unwrap()).unwrap();
+    let cc = std::process::Command::new("cc").args(["-std=c11", "-O1"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+    assert!(cc.status.success(), "{}", String::from_utf8_lossy(&cc.stderr));
+    for (how, said) in [cases[0], cases[6], cases[7]] {
+        let ran = std::process::Command::new(&binary).arg(how).output().unwrap();
+        let all = format!("{}{}", String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert!(all.starts_with(said), "compiled case {how}: {all}");
+        if how == "6" {
+            assert!(all.contains("hint: a parameter C may give `null` is written `Tally*?`"), "{all}");
         }
     }
 }

@@ -1,0 +1,73 @@
+// Values of SG that C holds by their address: an `export` function gives one as `T*`, C lends it
+// back as `read T` or `ref T`, and gives it back as `T*` or `T*?`. A text comes from C as its
+// `const char*`, a `read CString`.
+extern "./native.c" {
+    int drive()
+}
+
+struct Tally : Disposable {
+    string name
+    List<int> seen
+
+    void dispose(ref this) {
+        print($"{this.name} ends with {this.seen.length()} number(s)")
+    }
+}
+
+enum Shape {
+    Circle(double radius)
+    Square(double side)
+}
+
+export Tally* tally_new(read CString name) {
+    var text = string.fromCString(name) ?? "not text"
+    return new Tally { name = text, seen = List<int>() }
+}
+
+export void tally_add(ref Tally tally, int n) {
+    tally.seen.add(n)
+}
+
+export nint tally_count(read Tally tally) {
+    return tally.seen.length()
+}
+
+// Lends the tally to C again while it is lent to this call: two readers at once.
+export nint tally_twice(read Tally tally, CFunc<raw void, nint> again, raw void data) {
+    return tally.seen.length() + unsafe again(data)
+}
+
+export void tally_free(Tally*? tally) {
+    if tally is null {
+        print("nothing to free")
+    }
+}
+
+export Shape*? shape_make(int kind) {
+    return match kind {
+        0 => new Shape.Circle(1.5)
+        1 => new Shape.Square(2.0)
+        _ => null
+    }
+}
+
+export double shape_area(read Shape shape) {
+    return match shape {
+        Circle(r) => 3.0 * r * r
+        Square(side) => side * side
+    }
+}
+
+export void shape_free(Shape* shape) {
+    _ = shape
+}
+
+// What C has to say, written by SG, so that it comes out in order with the rest.
+export void report(read CString what, double value) {
+    var text = string.fromCString(what) ?? "not text"
+    print($"{text}: {value}")
+}
+
+void main() {
+    print($"C saw {unsafe drive()}")
+}

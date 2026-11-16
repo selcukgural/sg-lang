@@ -189,7 +189,12 @@ fn export_text(name: &str, params: &[Ty], ret: &Ty, number: usize, plain: &crate
         type_text(ty, plain, types, head);
     }
     let c_name = short_name(name);
-    let c_types: Vec<String> = params.iter().map(c_type).collect();
+    // A value of SG that C holds is an address C does not look into.
+    let export_type = |ty: &Ty| match ty {
+        Ty::Read(_) => "const void*".to_string(),
+        other => c_type(other),
+    };
+    let c_types: Vec<String> = params.iter().map(export_type).collect();
     let named: Vec<String> = c_types.iter().enumerate().map(|(at, ty)| format!("{ty} sg_a{at}")).collect();
     let list = if named.is_empty() { "void".to_string() } else { named.join(", ") };
     if declared_to_c(params, ret) {
@@ -588,8 +593,9 @@ fn scalar_type(ty: &Ty) -> &'static str {
             IntTy::Uint => "uint32_t",
             IntTy::Long => "int64_t",
             IntTy::Ulong => "uint64_t",
-            IntTy::Nint => "intptr_t",
-            IntTy::Nuint => "uintptr_t",
+            // As compiled code has them, so that a C file of the program sees the same types.
+            IntTy::Nint => "int64_t",
+            IntTy::Nuint => "uint64_t",
         },
         Ty::Float(FloatTy::Float) => "float",
         Ty::Float(FloatTy::Double) => "double",

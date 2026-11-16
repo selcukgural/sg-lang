@@ -1756,6 +1756,44 @@ and goes to another task.
 registers of a device and memory another program writes; it orders nothing between tasks, as C's `volatile` does
 not (C#'s `volatile` is an acquire and a release, which SG writes as orders of `load` and `store`).
 
+### A library for C
+
+A folder of SG is built into a library a program of C links: `sg build calclib --library` gives `libcalclib.a`,
+`--shared` gives `libcalclib.so` (`.dylib` on macOS), and each comes with `calclib.h`, the header of its `export`
+functions. A library has no `main`. What C cannot see into, a struct of SG that holds a list, a text or a map, or an
+enum, goes to C by its address:
+
+```
+struct Calculator : Disposable {                    // C sees: typedef struct Calculator Calculator;
+    Scope scope
+    string lastError
+    ...
+}
+
+export Calculator* calc_new() {                     // C keeps it        Calculator *calc_new(void);
+    return new Calculator { ... }
+}
+
+export int calc_eval(ref Calculator calc, read CString text, raw double out) {
+    var source = string.fromCString(text) ?? return 4           // C's const char*, copied and checked
+    ...
+}
+
+export double calc_get(read Calculator calc, read CString name) { ... }   // lent for the call
+
+export void calc_free(Calculator*? calc) {          // given back: it ends here, `dispose` too; NULL is nothing
+    _ = calc
+}
+```
+
+No `unsafe` is written: what C gives is C's promise, as Rust's `extern "C" fn` takes `Box<T>` and `&T`. `NULL`
+where the function takes none is a panic, and a panic in a library aborts the program, since nothing unwinds through
+C. The interpreter also keeps every address it gave C, and catches one it did not give, one of another type, one
+given back already, and one lent against the rules of borrowing (freed while a call it is lent to runs). A plain
+struct is not held by its address: C takes it by value, with its fields in the header. Only the `export` functions
+are seen from outside, so two libraries of SG live in one program; the runtime starts on first use, from any thread.
+The full example is `interpreter/examples/calclib`, with a program of C that uses it.
+
 ### The network
 
 A `TcpListener` takes connections and a `TcpStream` receives and sends bytes; an address is one text,

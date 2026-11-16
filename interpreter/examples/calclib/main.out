@@ -1,0 +1,20 @@
+1 + 2 * 3              = 7
+price = 80             = 80
+price * (1 + rate)     = 100
+2 ^ 10                 = 1024
+sqrt(price + 1)        = 9
+1 / (rate - 0.25)      : error 3: a division by zero
+price +                : error 1: something unexpected at 7
+cost * 2               : error 2: no variable is named `cost`
+a byte 0xff            : error 4: the text is not UTF-8
+cut to "the tex", 21 bytes in all
+n after 5 steps = 31
+does not compile: something unexpected at 6
+sum of k * k for k in 1..1000 = 333833500
+15 evaluations, 5 failed, 4 variables
+  n = 31
+  pi = 3.14159
+  price = 80
+  rate = 0.25
+4 variables seen
+the calculator ended after 15 evaluations

@@ -1,0 +1,53 @@
+// The calculator on its own, without C: `sg test examples/calclib` runs these.
+
+double run(ref Scope scope, read string text) {
+    var tree = parse(read text) ?? panic($"`{text}` does not parse")
+    return scope.evaluate(read tree) ?? panic($"`{text}` does not evaluate")
+}
+
+string failure(read string text) {
+    var scope = Scope()
+    match parse(read text) {
+        Ok(tree) => match scope.evaluate(read tree) {
+            Ok(value) => return $"no error: {value}".toString()
+            Error(cause) => return $"{cause}".toString()
+        }
+        Error(cause) => return $"{cause}".toString()
+    }
+}
+
+test "the order of operations" {
+    var scope = Scope()
+    assert(run(ref scope, "1 + 2 * 3") == 7.0)
+    assert(run(ref scope, "(1 + 2) * 3") == 9.0)
+    assert(run(ref scope, "2 ^ 3 ^ 2") == 512.0)
+    assert(run(ref scope, "-2 ^ 2") == 4.0)
+    assert(run(ref scope, "10 / 4") == 2.5)
+}
+
+test "variables and functions" {
+    var scope = Scope()
+    assert(run(ref scope, "x = 3") == 3.0)
+    assert(run(ref scope, "y = x * x + 1") == 10.0)
+    assert(run(ref scope, "sqrt(y - 1) + abs(-1)") == 4.0)
+    var names = scope.names()
+    assert(string.join(", ", read names) == "pi, x, y")
+}
+
+test "what goes wrong" {
+    assert(failure("1 +") == "something unexpected at 3")
+    assert(failure("2 $ 3") == "a character that starts nothing at 2")
+    assert(failure("nothing + 1") == "no variable is named `nothing`")
+    assert(failure("cube(2)") == "no function is named `cube`")
+    assert(failure("1 / (2 - 2)") == "a division by zero")
+    assert(failure("1 + .") == "a number that cannot be read at 4")
+    assert(failure("1..2") == "something unexpected at 2")
+}
+
+test "a copy for another task" {
+    var scope = Scope()
+    _ = run(ref scope, "k = 2")
+    var other = scope.copy()
+    _ = run(ref scope, "k = 5")
+    assert(run(ref other, "k") == 2.0)
+}

@@ -1052,13 +1052,39 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 .note("C sees the name of an `export` function as it is written, without its module"));
         }
         for (ty, written) in sig.params.iter().zip(&func.params) {
-            if !c_value(ty, &structs) {
-                return Err(c_value_error(Diag::error(written.ty.span, format!("C calls `{c_name}`, and cannot give it a `{ty}`")), ty, &structs));
+            if !c_value(ty, &structs) && !handle_param(ty, &structs) {
+                let diag = Diag::error(written.ty.span, format!("C calls `{c_name}`, and cannot give it a `{ty}`"));
+                return Err(match ty.strip_borrow() {
+                    // C gives a text as its `const char*`.
+                    Ty::Str | Ty::CString => diag.hint("C gives a text as `read CString`, its `const char*`, which `string.fromCString(text)` copies"),
+                    _ => c_value_error(diag, ty, &structs),
+                });
             }
         }
-        if sig.ret != Ty::Void && !c_value(&sig.ret, &structs) {
-            return Err(c_value_error(Diag::error(func.ret.span, format!("C calls `{c_name}`, and cannot take a `{}` from it", sig.ret)), &sig.ret, &structs));
+        if sig.ret != Ty::Void && !c_value(&sig.ret, &structs) && !handle_owned(&sig.ret, &structs) {
+            let diag = Diag::error(func.ret.span, format!("C calls `{c_name}`, and cannot take a `{}` from it", sig.ret));
+            return Err(match &sig.ret {
+                Ty::Read(inner) | Ty::Ref(inner) if handle_type(inner, &structs) => {
+                    diag.note("a borrow ends with the call, and C keeps what it is given").hint(format!("give C the value itself: `{inner}*`"))
+                }
+                other => c_value_error(diag, other, &structs),
+            });
         }
+    }
+
+    // A library has no `main`: C starts it, through its `export` functions, which the header
+    // names together with the types they take, each under the name it has in SG.
+    if prog.library {
+        let root_end = prog.files.first().map_or(src.len(), |file| file.end);
+        if let Some(main) = prog.funcs.iter().find(|func| func.name == "main") {
+            return Err(Diag::error(main.name_span, "a library has no `main`: C calls its `export` functions")
+                .hint("a program that starts at `main` is built without `--library` and `--shared`"));
+        }
+        if exported.is_empty() {
+            return Err(Diag::error(Span::new(root_end, root_end), "a library gives C its `export` functions, and this one has none")
+                .hint("`export int add(int a, int b) { return a + b }`"));
+        }
+        header_names(prog, &sigs, &structs, &exported)?;
     }
 
     for func in prog.funcs.iter().filter(|func| func.export) {
@@ -1101,7 +1127,11 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
 
     let root_end = prog.files.first().map_or(src.len(), |file| file.end);
     match prog.funcs.iter().find(|func| func.name == "main") {
-        None if tests => {}
+        None if tests || prog.library => {}
+        None if prog.funcs.iter().any(|func| func.export) => {
+            return Err(Diag::error(Span::new(root_end, root_end), "there is no `main` function")
+                .hint("a library that C calls through its `export` functions is built with `sg build <folder> --library`, or `--shared`"))
+        }
         None if !prog.tests.is_empty() => {
             return Err(Diag::error(Span::new(root_end, root_end), "there is no `main` function")
                 .hint("this file holds tests; they are run by the test command: `sg test <file>`"))
@@ -9155,6 +9185,15 @@ impl<'a> Checker<'a> {
                         return Err(Diag::error(span, format!("`fromCString` takes 1 argument(s), {} given", args.len())));
                     }
                     let found = self.expr(&mut args[0], None)?;
+                    // A `CString` is a text with its zero byte: reading it needs no `unsafe`. One
+                    // C lends an `export` function is one C promised.
+                    if *found.strip_borrow() == Ty::CString {
+                        if !matches!(found, Ty::Read(_) | Ty::Ref(_)) {
+                            return Err(Diag::error(args[0].span, "`string.fromCString` reads a `CString` it is lent").hint("lend it: `read text`"));
+                        }
+                        *callee = Callee::FromCString;
+                        return Ok(Ty::Result(Box::new(Ty::Str), Box::new(Ty::Struct(TEXT_ERROR.to_string()))));
+                    }
                     let bytes = Ty::Raw(Box::new(Ty::Int(IntTy::Byte)));
                     if *found.strip_borrow() != bytes && *found.strip_borrow() != Ty::Raw(Box::new(Ty::Int(IntTy::Sbyte))) {
                         return Err(Diag::error(args[0].span, format!("`string.fromCString` reads the bytes a `raw byte` points at, and this is `{found}`")));
@@ -10751,10 +10790,107 @@ fn c_value(ty: &Ty, structs: &HashMap<String, StructInfo>) -> bool {
     }
 }
 
+/// A type of SG that C holds only by its address: a struct that is not plain data and not
+/// of C, or an enum. The header declares it without its fields (`typedef struct Calculator
+/// Calculator;`).
+fn handle_type(ty: &Ty, structs: &HashMap<String, StructInfo>) -> bool {
+    match ty {
+        Ty::Struct(name) => structs.get(name).is_some_and(|info| !info.opaque) && not_plain(ty, structs).is_some(),
+        Ty::Enum(_) => true,
+        _ => false,
+    }
+}
+
+/// What an `export` function gives C to keep: `T*`, or `T*?`, which may be `null`.
+fn handle_owned(ty: &Ty, structs: &HashMap<String, StructInfo>) -> bool {
+    match ty {
+        Ty::Ptr(inner) => handle_type(inner, structs),
+        Ty::Nullable(inner) => matches!(&**inner, Ty::Ptr(target) if handle_type(target, structs)),
+        _ => false,
+    }
+}
+
+/// What an `export` function takes from C beyond the values of C: a value C keeps, given back
+/// (`T*`, `T*?`), or lent for the call (`read T`, `ref T`).
+fn handle_param(ty: &Ty, structs: &HashMap<String, StructInfo>) -> bool {
+    match ty {
+        // C's `const char*`, lent for the call, as a `read CString` is lent to a function of C.
+        Ty::Read(inner) if **inner == Ty::CString => true,
+        Ty::Read(inner) | Ty::Ref(inner) => handle_type(inner, structs),
+        other => handle_owned(other, structs),
+    }
+}
+
+/// The header of a library names each type of its `export` functions under the name it has in
+/// SG, without its module, and each field of a plain struct under its own: the names must be
+/// one each, apart from the functions, and not words of C.
+fn header_names(prog: &Program, sigs: &HashMap<String, FuncSig>, structs: &HashMap<String, StructInfo>, exported: &HashMap<&str, &Func>) -> Res<()> {
+    fn named(ty: &Ty, structs: &HashMap<String, StructInfo>, found: &mut Vec<String>) {
+        match ty {
+            Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) | Ty::Raw(inner) | Ty::Array(inner, _) | Ty::Atomic(inner) => named(inner, structs, found),
+            Ty::CFunc(params, ret) => {
+                for inner in params.iter().chain([&**ret]) {
+                    named(inner, structs, found);
+                }
+            }
+            Ty::Struct(name) | Ty::Enum(name) if !found.contains(name) => {
+                found.push(name.clone());
+                if let Some(info) = structs.get(name).filter(|info| !info.opaque && not_plain(ty, structs).is_none()) {
+                    for (_, field) in &info.fields {
+                        named(field, structs, found);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    let mut funcs: Vec<&&Func> = exported.values().collect();
+    funcs.sort_by_key(|func| func.name_span.start);
+    for func in &funcs {
+        let sig = &sigs[&func.name];
+        for ty in sig.params.iter().chain([&sig.ret]) {
+            named(ty, structs, &mut found);
+        }
+    }
+    let span_of = |name: &str| {
+        let structs = prog.structs.iter().map(|decl| (&decl.name, decl.name_span));
+        structs.chain(prog.enums.iter().map(|decl| (&decl.name, decl.name_span))).find(|(full, _)| *full == name).map_or(Span::new(0, 0), |(_, span)| span)
+    };
+    let mut seen: HashMap<&str, &str> = HashMap::new();
+    for full in &found {
+        let short = short_name(full);
+        let span = span_of(full);
+        if C_WORDS.contains(&short) {
+            return Err(Diag::error(span, format!("the header of the library names `{short}`, and `{short}` is a word of C")).hint("give the type another name"));
+        }
+        if let Some(other) = seen.insert(short, full) {
+            return Err(Diag::error(span, format!("the header of the library would name two types `{short}`"))
+                .related(span_of(other), "the other one")
+                .note("C sees a type of an `export` function under its name in SG, without its module"));
+        }
+        if let Some(func) = exported.get(short) {
+            return Err(Diag::error(span, format!("the header of the library would name both a type and a function `{short}`")).related(func.name_span, "the function"));
+        }
+        if let Some(info) = structs.get(full.as_str()).filter(|info| !info.opaque && not_plain(&Ty::Struct(full.clone()), structs).is_none()) {
+            for (field, _) in &info.fields {
+                if C_WORDS.contains(&field.as_str()) {
+                    return Err(Diag::error(span, format!("the header of the library writes the field `{field}` of `{short}`, and `{field}` is a word of C"))
+                        .hint("give the field another name"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// What a message about a type C does not take or give adds.
 fn c_value_error(diag: Diag, ty: &Ty, structs: &HashMap<String, StructInfo>) -> Diag {
     match ty {
         Ty::Read(inner) | Ty::Ref(inner) if matches!(**inner, Ty::Str | Ty::CString) => diag.hint("a text goes between C and SG as `raw byte`: `unsafe string.fromCString(p)` copies it"),
+        Ty::Ptr(inner) | Ty::Nullable(inner) if matches!(**inner, Ty::Struct(_)) && not_plain(inner, structs).is_none() => {
+            diag.note(format!("`{inner}` is plain data, which C holds itself")).hint(format!("give it by value, or as a `raw {inner}`"))
+        }
         Ty::Read(inner) | Ty::Ref(inner) if not_plain(inner, structs).is_some() => diag.note("C gives a pointer as a `raw T`, which points at plain data"),
         Ty::Char => diag.note("a `char` of SG is a Unicode character of 32 bits, and a `char` of C is a byte").hint("`byte`, or `sbyte` for a C `char` that is signed"),
         Ty::Str | Ty::CString => diag.hint("a text goes between C and SG as `raw byte`: `unsafe string.fromCString(p)` copies it"),

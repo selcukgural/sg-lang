@@ -32,6 +32,9 @@ pub struct Program {
     /// The full names of the functions of C declared with `...` after their parameters:
     /// each call gives what follows them as the types of its own arguments.
     pub variadic: std::collections::BTreeSet<String>,
+    /// Built as a library C calls (`sg build --library` or `--shared`): no `main`, and at
+    /// least one `export` function.
+    pub library: bool,
 }
 
 /// One file: where its text lies, the module it belongs to (empty for the root, otherwise the

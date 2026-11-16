@@ -1,0 +1,110 @@
+// What an expression is worked out in: the variables, and the functions by name. A function
+// is a `Func<double, double>`, the address of a named function of SG.
+
+double squareRoot(double x) {
+    return x.sqrt()
+}
+
+double absolute(double x) {
+    return x.abs()
+}
+
+double naturalLog(double x) {
+    return x.log()
+}
+
+double sine(double x) {
+    return x.sin()
+}
+
+public struct Scope {
+    HashMap<string, double> variables
+    HashMap<string, Func<double, double>> functions
+
+    public Scope create() {
+        var functions = HashMap<string, Func<double, double>>()
+        functions.add("sqrt", squareRoot)
+        functions.add("abs", absolute)
+        functions.add("ln", naturalLog)
+        functions.add("sin", sine)
+        var variables = HashMap<string, double>()
+        variables.add("pi", 3.141592653589793)
+        return Scope { variables = variables, functions = functions }
+    }
+
+    // Puts a variable in, or changes the one of that name: a map writes `map[key]` only under a
+    // key it has, and adds one only with `add`.
+    public void set(ref this, read string name, double value) {
+        if this.variables.contains(name) {
+            this.variables[name] = value
+        } else {
+            this.variables.add(name.clone(), value)
+        }
+    }
+
+    public double? get(read this, read string name) {
+        double found = this.variables.get(name) ?? return null
+        return found
+    }
+
+    // A scope of its own with the same variables, for another task.
+    public Scope copy(read this) {
+        var made = Scope()
+        for entry in read this.variables {
+            made.set(read entry.key, entry.value)
+        }
+        return made
+    }
+
+    // The names of the variables, in order.
+    public List<string> names(read this) {
+        var names = List<string>()
+        for entry in read this.variables {
+            names.add(entry.key.clone())
+        }
+        names.sort()
+        return names
+    }
+
+    public nint count(read this) {
+        return this.variables.length()
+    }
+
+    // Works the tree out. An assignment keeps its value and gives it.
+    public Result<double, CalcError> evaluate(ref this, read Expr e) {
+        return match e {
+            Number(value) => Ok(value)
+            Variable(name) => {
+                var value = this.get(name) ?? return Error(CalcError.UnknownVariable(name.clone()))
+                Ok(value)
+            }
+            Negate(operand) => Ok(-(try this.evaluate(operand)))
+            Binary(op, left, right) => {
+                double a = try this.evaluate(left)
+                double b = try this.evaluate(right)
+                apply(op, a, b)
+            }
+            Call(function, argument) => {
+                var f = this.functions.get(function) ?? return Error(CalcError.UnknownFunction(function.clone()))
+                double x = try this.evaluate(argument)
+                Ok(f(x))
+            }
+            Assign(name, value) => {
+                double result = try this.evaluate(value)
+                this.set(name, result)
+                Ok(result)
+            }
+        }
+    }
+}
+
+Result<double, CalcError> apply(Operator op, double a, double b) {
+    return match op {
+        Add => Ok(a + b)
+        Subtract => Ok(a - b)
+        Multiply => Ok(a * b)
+        Divide when b == 0.0 => Error(CalcError.DivisionByZero)
+        Divide => Ok(a / b)
+        Power => Ok(a.pow(b))
+    }
+}

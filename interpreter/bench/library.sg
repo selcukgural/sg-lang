@@ -1,0 +1,48 @@
+// A library that C calls: fifty million calls through a handle, and one hash over 256 MB of
+// bytes C holds. `library.c` is the same library written in C, and `library_main.c` the
+// program of C that uses either, linked against each.
+struct Stats {
+    string name
+    long count
+    double sum
+    double low
+    double high
+}
+
+export Stats* stats_new(read CString name) {
+    var text = string.fromCString(name) ?? ""
+    return new Stats { name = text, count = 0, sum = 0.0, low = 1.0e300, high = -1.0e300 }
+}
+
+export void stats_add(ref Stats stats, double x) {
+    stats.count += 1
+    stats.sum += x
+    if x < stats.low {
+        stats.low = x
+    }
+    if x > stats.high {
+        stats.high = x
+    }
+}
+
+export double stats_mean(read Stats stats) {
+    return stats.sum / (double)stats.count
+}
+
+export double stats_spread(read Stats stats) {
+    return stats.high - stats.low
+}
+
+export void stats_free(Stats*? stats) {
+    _ = stats
+}
+
+// FNV-1a over the bytes, read where C keeps them.
+export ulong fnv(raw byte data, nuint length) {
+    var bytes = unsafe Memory.view(data, (nint)length)
+    ulong hash = 14695981039346656037
+    for b in bytes {
+        hash = (hash ^ (ulong)b).wrappingMultiply(1099511628211)
+    }
+    return hash
+}

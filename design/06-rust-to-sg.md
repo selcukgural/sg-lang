@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 16 November 2026, the ninetieth slice.
+Last brought up to date: 17 November 2026, the ninety-first slice.
 
 ## Functions and variables
 
@@ -212,7 +212,10 @@ Last brought up to date: 16 November 2026, the ninetieth slice.
 | `extern { type sqlite3; }`, an opaque `#[repr(C)] struct` | `extern "sqlite3" { struct sqlite3 }` | built | Only as `raw sqlite3`; `ref raw sqlite3` is C's `sqlite3**` |
 | the `cc` crate and a `build.rs` that compiles a C file | `extern "./native.c" { ... }` | built | Compiled in the same unit as the program, so a `static inline` function is inlined; no build script |
 | `extern { static mut optind: c_int; }` | `extern { int optind }` | built | Read and written inside `unsafe`, as an item of raw memory |
-| `#[no_mangle] pub extern "C" fn compare(a: *const c_void, b: *const c_void) -> c_int` | `export int compare(raw void a, raw void b) { ... }` | built | C types only, no borrows; the name C sees is the name written, one in the program. A panic inside ends the process. Called from SG by its name, with no `unsafe` |
+| `#[no_mangle] pub extern "C" fn compare(a: *const c_void, b: *const c_void) -> c_int` | `export int compare(raw void a, raw void b) { ... }` | built | C types, and the values of SG of the next rows; the name C sees is the name written, one in the program. A panic inside ends the process. Called from SG by its name, with no `unsafe` |
+| `extern "C" fn calc_new() -> Box<Calculator>`, `fn calc_free(c: Option<Box<Calculator>>)`, `fn calc_eval(c: &mut Calculator, ...)` | `export Calculator* calc_new()`, `export void calc_free(Calculator*? c)`, `export int calc_eval(ref Calculator c, ...)` | built | A struct of SG that is not plain data, or an enum, goes to C by its address, with no `unsafe`; C sees an opaque `typedef struct Calculator Calculator;`. `NULL` where none is taken is a panic; the interpreter also catches an address it did not give, of another type, freed already, or lent against the rules of borrowing |
+| `extern "C" fn f(text: *const c_char)` with `CStr::from_ptr(text).to_str()?` | `export int f(read CString text)` with `try string.fromCString(text)` | built | C's `const char*`; copied and checked, with no `unsafe` |
+| `crate-type = ["staticlib"]`, `["cdylib"]`, and cbindgen for the header | `sg build folder --library`, `--shared` | built | The header comes with the library; only the `export` functions are seen, a panic aborts, a shared library is not unloaded. `examples/calclib` |
 | `extern "C" fn(*const c_void) -> c_int`, `Option<extern "C" fn(...)>` | `CFunc<raw void, int>` | built | May be `null`, as a pointer of C may; the name of an `export` function or of a function of C is one. Every call through it is inside `unsafe`; a `null` one is a panic, not a crash |
 | `transmute::<*mut c_void, extern "C" fn(...)>(dlsym(...))` | `unsafe (CFunc<int, int>)dlsym(...)` | built | From a `raw void`; back with `(raw void)f` |
 | `&mut state as *mut State as *mut c_void`, then `&mut *(data as *mut State)` | `unsafe Memory.addressOf(ref state)`, then `unsafe (ref State)data` | built | That the value lives and stays where it is while C keeps the address is the program's promise; the interpreter panics on a wrong type, a value that ended or moved, and an address it did not give |

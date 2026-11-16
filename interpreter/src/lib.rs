@@ -7,6 +7,7 @@ pub mod check;
 pub mod diag;
 pub mod emit_c;
 pub mod exhaust;
+pub mod header;
 pub mod ffi;
 pub mod interp;
 pub mod input;
@@ -165,6 +166,28 @@ pub fn emit_c_sources(sources: &Sources, checked: bool) -> Result<String, Diag> 
     on_large_stack(|| {
         let prog = check_all(sources, false)?;
         emit_c::emit(&prog, sources, checked, false)
+    })
+}
+
+/// The back end for a library C calls (`sg build --library` or `--shared`): the C of the
+/// library, which has no `main`, and its header, named `name`; `links` are the libraries a
+/// program adds when it links the static one.
+pub fn emit_c_library(sources: &Sources, checked: bool, name: &str) -> Result<(String, String), Diag> {
+    on_large_stack(|| {
+        let mut prog = parse(sources, false)?;
+        prog.library = true;
+        match check::check(&mut prog, &sources.text, false) {
+            Ok(()) => {}
+            Err(diag) => {
+                return Err(match missing_use(sources, &diag) {
+                    Some(module) => diag.hint(format!("`use {module}` at the top of the file")),
+                    None => diag,
+                })
+            }
+        }
+        let code = emit_c::emit(&prog, sources, checked, false)?;
+        let links = emit_c::link_flags(&code);
+        Ok((code, header::header(&prog, name, &links)))
     })
 }
 

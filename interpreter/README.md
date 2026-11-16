@@ -18,7 +18,7 @@ cargo run -- build examples/primes.sg --release # the same as a release build: o
 sh bench/run.sh                                 # compiled SG against C written by hand
 ```
 
-## What runs today (16 November 2026)
+## What runs today (17 November 2026)
 
 | Area | Supported |
 |---|---|
@@ -49,7 +49,8 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Raw memory | `raw T` is an address that owns nothing and may be `null`; it points at plain data (numbers, `bool`, `char`, raw pointers, and arrays and structs of them), laid out as C lays it, or is a `raw void`. `Memory.allocate<T>(n)` gives room for `n` items, all zero (C's `calloc`, in the interpreter too). `p[i]` reads and writes an item (`p[i] = v`, `p[i].x += 1`), `p + n` and `p - n` move by items, `(raw byte)p` reads the memory as another type, `Memory.copy(source, target, count)` copies items (also over itself), `Memory.view(p, count)` looks at `count` items as a `read T[]` (C's memory added to a list in one copy, read as text where it lies), `Memory.viewRef(p, count)` writes them as a `ref T[]` (a buffer C wants filled), `Memory.readUnaligned(p)` and `Memory.writeUnaligned(p, v)` reach an item at any address, and `Memory.free(p)` gives the block back, or memory C gave with `malloc`; each of them is written inside `unsafe { ... }`, or with `unsafe` in front of a value (`var first = unsafe p[0]`), and an `unsafe` that nothing needs is an error. `p == q` and `p == null` need no `unsafe`, nor do `p < q` and `p - q` (the order of two addresses, and the count of items between them) and `(nuint)p` (an address as a number); `unsafe (raw T)n` makes a pointer out of a `nint` or a `nuint` (`(raw void)(nint)-1`). The interpreter checks every item against the block it came from and panics outside it, after `Memory.free` and through `null`; compiled code checks nothing of that, and a `raw T` is a `T*`. An item reached at an address that is not a multiple of the alignment of its type is a panic in the interpreter and in a debug build, and costs nothing in a release build. `Memory.sizeOf<T>()` and `Memory.alignOf<T>()` give what C has for a type of plain data. A window of `Memory.view` borrows the variable or the field that holds its pointer, so it does not outlive it; a count below 0, and `null` with items, are panics in both. A raw pointer does not go to another task |
 | Calling C | `extern "z" { int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen) }` declares functions of C, a block for each library (linked as `-lz`; `extern { }` is the C library itself), each called inside `unsafe`. A C function takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data (C's `T*` and `const T*`, for the time of the call; `ref raw T` is `T**`), a struct of plain data by value, laid out as C lays it out, and `read CString`, and gives a number, a `bool`, a `raw T`, a struct of plain data or nothing. `struct sqlite3` without a body in an `extern` block is a type of C that SG only points at (`raw sqlite3`). `CString.from(text)` gives a `Result<CString, TextError>`, an error for a zero byte inside; `unsafe string.fromCString(p)` copies what C ended with a zero byte and checks that it is UTF-8. `buffer.pointer()` on a list, an array or a slice of plain data is written only as an argument of a C function. The functions are private to their module unless `public` is written on one, so a module can hide a library behind a safe interface, and a `Disposable` type gives back what C made when it ends (`examples/zlib`, whose `Deflater` holds zlib's stream). `extern "./native.c" { ... }` names a C file of the module's folder in place of a library: it is compiled with the program, in the same unit, so its macros, `static inline` functions, builtins and assembly are reached through functions it declares, and an inline one is inlined; a library block of the module (`extern "z" { }`, also empty) links what the file needs. `int opterr` in an `extern` block, without parentheses, is a variable of C, read and written inside `unsafe` (`unsafe opterr`, `unsafe { opterr = 0 }`, `unsafe { origin.y = 4 }`) as an item of raw memory. `C.errno()` gives what the last call of C left in `errno`, read right after it, `C.setErrno(n)` sets what the next one finds, and `IoError.fromCode(n)` makes an `IoError` of it. `int snprintf(raw byte s, nuint n, read CString format, ...)` declares a function that takes a varying count of arguments: each value after the parameters says the type C reads, so a `byte`, a `bool` or a `float` there, and a number or `null` written without a type, are errors whose hint is the cast (`(long)30`). The interpreter builds a small library of wrappers with `cc` and opens it with `dlopen`; compiled code calls C directly. While a call of C waits, the other tasks run, in the interpreter too. `examples/sqlite` and `examples/curl` wrap SQLite and libcurl in modules whose users write no `unsafe` |
 | The layout of C | `union Bits { uint word` / `float number }` holds one field at a time in the same bytes: built with one (`Bits { number = 1.5 }`), written whole (`bits.word = 3`), read inside `unsafe` (`unsafe bits.word`), never lent. `uint version : 4` is a bit field of a struct, signed or not, `bool` too, and `uint _ : 4` leaves bits empty; a value that does not fit is a panic, as overflow is (the lowest bits in a release build). `packed struct Header { ... }` has no padding, and its fields are copied out, not lent. `align(64) struct Slot { ... }` lies at a multiple of 64 bytes wherever it is kept, on the heap too. Each is laid out as C lays it out on the machine, Windows' rules for bit fields included. `Header.fromBytes(bytes)` reads a struct of integers, fractions, bit fields and unions out of exactly as many bytes as it takes, with no `unsafe` (`examples/headers`: a BMP header and an IPv4 header) |
-| C calling SG | `export int compareInts(raw void a, raw void b) { ... }` is a function C calls by the name written, without its module: it takes and gives only the types C has (integers, `float`, `double`, `bool`, `raw T`, `CFunc`, structs of plain data by value), and SG calls it by its name too. `CFunc<raw void, raw void, int>` is a pointer to a function as C calls it, plain data that may be `null`: the name of an `export` function or of a function of C is one (`unsafe qsort((raw void)items, n, 4, compareInts)`, `CFunc<int, int> f = abs`), `unsafe (CFunc<int, int>)p` takes one from a `raw void` (`dlsym`), `(raw void)f` gives it back, and every call through one is inside `unsafe`; calling a `null` one is a panic. The state a callback reaches goes through C's `void*`: `unsafe Memory.addressOf(ref state)` gives the address of a variable or a field, and `unsafe (ref State)data` (or `read`) lends it again inside the callback; the interpreter keeps the addresses it gave and panics on a wrong type, a value that ended or moved, or an address it did not give. A C file of the program calls an `export` function by its name. A panic inside one ends the process with its message, since nothing unwinds through C; the interpreter runs one only on a thread that is in a call of C, and compiled code on any thread. A `lock` block does not call C when an `export` function waits |
+| C calling SG | `export int compareInts(raw void a, raw void b) { ... }` is a function C calls by the name written, without its module: it takes and gives only the types C has (integers, `float`, `double`, `bool`, `raw T`, `CFunc`, structs of plain data by value), and SG calls it by its name too. `CFunc<raw void, raw void, int>` is a pointer to a function as C calls it, plain data that may be `null`: the name of an `export` function or of a function of C is one (`unsafe qsort((raw void)items, n, 4, compareInts)`, `CFunc<int, int> f = abs`), `unsafe (CFunc<int, int>)p` takes one from a `raw void` (`dlsym`), `(raw void)f` gives it back, and every call through one is inside `unsafe`; calling a `null` one is a panic. The state a callback reaches goes through C's `void*`: `unsafe Memory.addressOf(ref state)` gives the address of a variable or a field, and `unsafe (ref State)data` (or `read`) lends it again inside the callback; the interpreter keeps the addresses it gave and panics on a wrong type, a value that ended or moved, or an address it did not give. A C file of the program calls an `export` function by its name. A panic inside one ends the process with its message, since nothing unwinds through C; the interpreter runs one only on a thread that is in a call of C, and compiled code on any thread. A `lock` block does not call C when an `export` function waits. A struct or an enum of SG that is not plain data goes to C by its address: an `export` function gives it as `T*` (C keeps it), takes it back as `T*` or `T*?` (it ends there; `T*?` takes `NULL`), and is lent it as `read T` or `ref T` for the call; `read CString` is C's `const char*`, which `string.fromCString(text)` copies with no `unsafe`. `NULL` where none is taken is a panic; the interpreter also keeps every address it gave and panics on one it did not give, of another type, given back already, or lent against the rules of borrowing |
+| A library of SG for C | `sg build folder --library` gives `libfolder.a`, `--shared` gives `libfolder.so` (`.dylib` on macOS), each with `folder.h`, the header of its `export` functions: the types C holds by their address declared without fields (`typedef struct Calculator Calculator;`), plain structs laid out as SG lays them out, pointers to functions written out, `extern "C"` for C++ and a macro for Windows' DLLs. A library has no `main` and at least one `export` function; only those are seen from outside, so two libraries of SG live in one program, each with its runtime, which starts what it needs on first use from any thread. A panic aborts. A shared library is not unloaded. `examples/calclib` is a calculator called from `main.c` |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads, each with a queue of its own that the others steal from. A method is async too (`public async int total(read this)`): one that lends `this` is awaited where it is written, one that takes it by value may start as a task; `create`, `format`, `equals`, `hash` and `compare` are not async |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
@@ -408,7 +409,10 @@ eighty-ninth (the layout of C): unions, bit fields, `packed` and `align` are wri
 places them; the interpreter places them by the rules of the machine it runs on, which a test compares
 with C for every system (800-829). So was the ninetieth (atomics and `volatile`): an atomic value is its
 type in C, reached only through GCC's and Clang's `__atomic` builtins with the order written, and a
-volatile access is the place read or written through a `volatile` pointer (830-859).
+volatile access is the place read or written through a `volatile` pointer (830-859). So was the
+ninety-first (a library built from SG): the unit of a program is a library once `main` gives way to a
+constructor, every name of the runtime being `static` already; an `export` function that takes a value of
+SG from C takes a `void*` and checks it for `NULL`, and a panic ends in `abort` (860-885).
 What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
@@ -481,6 +485,7 @@ hand with no checks):
 | `bitfields`: four million pixels of 16 bits in bit fields of 5, 6 and 5 made brighter field by field, five hundred times, then four thousand IPv4 headers (bit fields of 4) read out of their bytes with `fromBytes`, twenty thousand times (the C is the same bit fields and `memcpy`) | 0.326 s | 0.323 s | 0.358 s | 0.91 |
 | `atomics`: four tasks add to two counters five million times each, one sequentially consistent and one `Relaxed` (the C is pthreads and the `__atomic` builtins) | 0.274 s | 0.256 s | 0.268 s | 1.02 |
 | `queue`: four tasks push 500,000 numbers each through a queue without locks of 1024 places while four take them out (the C is the same queue with pthreads and `__atomic`) | 0.475 s | 0.456 s | 0.341 s | 1.39 |
+| `library`: a program of C calls a static library built from SG fifty million times through a handle (`ref Stats`), then hashes 256 MB of its own bytes with it through `Memory.view` (the C is the same program linked against the same library written in C) | 0.506 s | 0.507 s | 0.503 s | 1.01 |
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -5927,6 +5932,129 @@ come from the slice. All were approved the same day:
      of a producer compiles to the instructions of C's, one more for the bound of the list, so what is left
      is in "Slower than C".
 
+Choices made in the ninety-first slice (a library built from SG for C to call), the eighth of the slices
+that bring SG to what C reaches. 860 to 875 were decided before it on 16 November 2026, with the address of
+a value of SG given to C as Rust gives a `Box<T>` (A) rather than as a `void*` taken back with `unsafe`
+(B); 876 to 885 come from the slice. All were approved on 17 November 2026:
+
+860. **`sg build folder --library` and `--shared`**, decided before the slice: a static library
+     (`libfolder.a`) or a shared one (`libfolder.so`, `libfolder.dylib` on macOS), as Go's `c-archive` and
+     `c-shared`; each with `folder.h` beside it. `-o` names the file, `--release` works as for a program,
+     and `sg emit-c folder --library` prints the C.
+861. **No `main`, at least one `export` function**, decided before the slice: a library with `main` is an
+     error whose hint builds it without `--library`; one that exports nothing is an error that shows how one
+     is written. Its `test` blocks run with `sg test` as any module's.
+862. **Only the `export` functions are seen**, decided before the slice: the runtime of compiled code is one
+     unit whose names are all `static`, so the static library shows its `export` functions alone; the shared
+     one is built with `-fvisibility=hidden` and they are marked to be seen. Two libraries of SG are linked
+     into one program, each with its runtime. A library is built with `-fPIC`, so the static one goes into a
+     program that is position independent, and into a shared library. A function of a C file of the
+     library (`extern "./native.c"`) is C's to hide: `static`, or seen from the static library.
+863. **The header**, decided before the slice: a guard, `stdbool.h`, `stddef.h` and `stdint.h`,
+     `extern "C"` for C++, the C types compiled code has (`int` is `int32_t`, `nint` is `int64_t`), each
+     plain struct written out with its fields under their names (unions, bit fields, `packed` and `align`
+     as in the eighty-ninth slice), each type C holds by its address declared without fields, and each
+     pointer to a function written out where it stands (a `typedef` named after the struct and the field
+     for one in a plain struct). A type is named as SG names it, without its module: two of one name, a
+     type and a function of one name, and a name or a field that is a word of C are errors. A macro
+     `FOLDER_API` is `__declspec(dllimport)` for a program that uses the DLL on Windows, and nothing
+     elsewhere (`FOLDER_STATIC` for the static library there).
+864. **What a program links**, decided before the slice: `sg build` says it (`libcalclib.a -lm -pthread`
+     and the libraries of the `extern` blocks, or `-Lbuild -lcalclib`), and so does the comment at the top
+     of the header. No `pkg-config` file yet.
+865. **Values of SG that C holds**, decided before the slice: an `export` function takes and gives `T*`,
+     `T*?`, `read T` and `ref T` of a struct of SG that is not plain data, or of an enum. Giving a `T*` gives
+     C the value to keep; taking one back ends it at the end of the call, its `dispose` included; `T*?` takes
+     `NULL` too, as C's `free` does; `read T` and `ref T` lend it for the call. No `unsafe` is written:
+     what C gives is C's promise, as Rust's `extern "C" fn` takes `Box<T>` and `&T`. C sees
+     `typedef struct Calculator Calculator;` and never its fields. `NULL` where none is taken is a panic, in
+     the interpreter and in compiled code; the interpreter keeps every address it gave, with its type, and an
+     address it did not give, one of another type and one given back already are panics there. The same
+     holds for the `export` functions of a program, which a C file of it calls.
+866. **A panic aborts in a library**, decided before the slice: its message, then C's `abort`. In a
+     program, `exit(1)` stays. Threads of the program that loaded the library may be running, and `exit`
+     would run its `atexit` functions under them; Rust aborts at the edge of an `extern "C"` function too.
+     `exit(n)` written in SG is still C's `exit`.
+867. **Nothing to call first**, decided before the slice: the pool of tasks, the clock, the threads of
+     input and output and the signals start on first use under their locks, so C calls an `export`
+     function from any thread, several at once. A key of the hash tables is drawn by a constructor of C when
+     the library is loaded. `Signals.listen` in a library takes the signals of the program that loaded it.
+868. **A shared library is not unloaded**, decided before the slice: the threads of its tasks would run on
+     in code that is gone. Linux links it with `-z nodelete`; macOS does not unload a library with variables
+     of its threads; Windows will pin it (`GET_MODULE_HANDLE_EX_FLAG_PIN`). Go's `c-shared` is not unloaded
+     either.
+869. **The report of `shared` values left alive**, decided before the slice: in a debug build of a library
+     that makes them, it is written when the process ends (`atexit`), as "the library ended with ..."; the
+     exit code is the program's.
+870. **`examples/calclib`**, decided before the slice: the calculator of the examples grown into a library,
+     with C's program `main.c`. Its module `calc` knows nothing of C: tokens that borrow the text
+     (`from source`), a tree of `Expr*`, errors in one enum that is `Formattable`, `Result` and `try`, `match`
+     with `or`, ranges and `when`, a `HashMap` of `Func<double, double>`, and four tests. The root file
+     `api.sg` is the boundary: a `Calculator : Disposable` and a compiled `Expr` held by C, `read CString`
+     texts, a value written to `double *out` through a `raw double`, the message of the last error copied
+     into a buffer of C through `Memory.viewRef` and cut as `snprintf` cuts it, a plain struct by value, a
+     callback per variable whose name lies in memory from `Memory.allocate`, a hook of C called by
+     `dispose`, and a sum worked out by four tasks of `Task.run` and `Task.whenAll`. It is the program of
+     the threshold that is a library written in SG and called from C.
+871. **The names C sees are C's** (decided before the slice): an `export` function of a library may be named
+     as C names functions (`calc_new`); the rule of camelCase gives way here, as for the functions of an
+     `extern` block.
+872. **The tests**, decided before the slice: `libraries` in `tests/golden.rs` builds `examples/calclib`
+     as a static library (debug and release) and as a shared one, compiles `main.c` with `-Wall -Wextra
+     -Werror -pedantic` against each and compares what it prints with `main.out`; checks with `nm` that only
+     the functions of the header are seen; runs it under the address and undefined sanitizers and looks at
+     it for leaks; links a second library of SG with a map and a task into the same program; calls the
+     library from four threads of C under the thread sanitizer; sees a panic abort; and gives the checker
+     six libraries it must refuse. `handles_misused` gives the interpreter every wrong address, and compiled
+     code `NULL`. `tests/modules/handles` runs the same C against the interpreter and compiled code. All of
+     it on Linux too.
+873. **Measured** (`library`), decided before the slice: a program of C linked against the library built
+     from SG and against the same library written in C (885).
+874. **Windows**, decided before the slice: not built yet, and kept within reach: the macro of the header,
+     a `.dll` with its `.lib`, the pin of 868, the constructor of 867 (Clang's on Windows too), and `SG_EXPORT`
+     already `__declspec(dllexport)` there. Added to the list of "Three systems" in 04.
+875. **The documents**, decided before the slice: this list, the table at the top, "Not here yet", the
+     paragraph on the back end and the row of the measurements; 04, 02 and 06 (with Rust's `staticlib`,
+     `cdylib` and cbindgen), the README of the repository and the README of the example.
+876. **`read CString` from C** (from the slice): a text C gives an `export` function is a `read CString`,
+     C's `const char*`, the same type a function of C is given a text as; `string.fromCString(text)` copies
+     it, checked to be UTF-8, with no `unsafe`, since the zero byte at its end is C's promise. `NULL` is a
+     panic. Without it, a text came as `raw byte`, which a header writes `uint8_t *`, and a program of C
+     could not give it a string constant without a cast.
+877. **A plain struct is not held by its address** (from the slice): `T*` of a struct of plain data is an
+     error whose hint gives it by value or as a `raw T`. C sees its fields, could make one of its own, and
+     give that back to be freed.
+878. **A C file of a program sees `void*`** (from the slice): the declarations SG writes before a C file of
+     the program take and give a value of SG as `void*` (`const void*` for `read T`), so the C file holds it
+     under a type of its own; the header of a library names the types.
+879. **`nint` and `nuint` are `int64_t` and `uint64_t` in the wrappers of the interpreter** (from the slice;
+     they were `intptr_t` and `uintptr_t`): what a C file of the program is declared is the same in the
+     interpreter and in compiled code. On macOS `intptr_t` is `long` and `int64_t` `long long`, of one size
+     but two types, so a pointer to a function of C that gives an `int64_t` was refused by one of the two.
+880. **The rules of borrowing for what C lends** (from the slice): the interpreter counts the calls in
+     progress that a value is lent to. Several `read` borrows at once are allowed (C lends the value again to
+     a call it makes inside one); a `ref` borrow and a `T*` taken back while any other is in progress are
+     panics that name the call that has it ("a `Tally` that a call of `tally_each` in progress changes").
+881. **The name of a library** (from the slice): its folder, or its file without `.sg`. The header is named
+     after it and written beside the library, whatever `-o` says; the static library holds one object,
+     `name.o`, and is made new each time.
+882. **A program run on a library** (from the slice): `sg folder` on a folder with `export` functions and no
+     `main` says how a library is built.
+883. **The constructor** (from the slice): what `main` did first in a program (drawing the key of the hash
+     tables) is done by a function marked `constructor`, with the `atexit` of 869; nothing else needed it.
+884. **The tests passed**: `libraries`, `handles_misused`, `tests/modules/handles` (its C file calls the
+     functions with values of SG, and one lends a value again from inside a call it is lent to), and
+     `examples/calclib` with its four tests in the interpreter and compiled; `error_export_borrow` now hints
+     at `read CString`. `cargo test` passes on macOS and on Linux in a container, where it compiles 347 of
+     1410 programs, 77 of them under the thread sanitizer, and 25 of 30 programs of tests. The header was
+     also compiled by a C++ compiler with `-pedantic`.
+885. **Measured** (`library`): fifty million calls of `stats_add(ref Stats, double)` through the address C
+     holds, then FNV-1a over 256 MB of C's bytes through `Memory.view`, take 0.506 s against 0.503 s for
+     the same program linked against the same library in C, 1.01 times (0.507 s with overflow checked);
+     on Linux in a container 0.528 s against 0.530 s, 1.00 times. The test for `NULL` at each call does
+     not show. On Linux the run of every measurement stops at `case`, whose output differs from that of C
+     there, before it reaches `library`, which was run on its own.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -6043,6 +6171,11 @@ check off.
 - **Of the layout of C**: `packed(2)` and the other packings of `#pragma pack`; an alignment written on one
   field; `Memory.offsetOf`; `toBytes`; bit fields in a union, and in a `packed` struct (808); a union or a
   struct without a name inside another; a struct by value to a function of the program's own C file (824).
+- **Of a library built from SG**: constants in the header (C's program writes the numbers the functions
+  give, as `main.c` does); a text given back to C other than into its buffer; a `T*` inside a plain struct
+  or a list; a header of its own for a program's `export` functions; `pkg-config`; names of the header
+  with a prefix chosen for them; Windows (874). C can still give a freed or forged address to compiled
+  code, which only the interpreter catches (865), as C can give one to any library of C.
 - **Of atomics**: `fetchMax`, `fetchMin`, `fetchNand` and `fetchUpdate` (a loop of `compareExchangeWeak`
   does their work); atomic values of 128 bits; waiting on an atomic value until it changes (C++'s `wait` and
   `notify`, a futex); an atomic `shared T`; an order given as a variable (835); a queue of
@@ -6308,4 +6441,7 @@ written: unions, bit fields, `packed` and `align` are laid out as C lays them ou
 included, and a binary header is read out of its bytes with no `unsafe` (800-829). The ninetieth is written:
 atomic values with the orders of C11, checked when the program is compiled, and `volatile` reads and writes
 of raw memory; `examples/queue` is a queue without locks for many producers and many consumers written with
-no `unsafe` (830-859). Next is a library built from SG for C to call.
+no `unsafe` (830-859). The ninety-first is written: `sg build --library` and `--shared` make a static or
+a shared library of SG with its header, C holds values of SG by their address and lends them back, and
+`examples/calclib` is a calculator in SG that a program of C uses (860-885). Next is building without an
+operating system.

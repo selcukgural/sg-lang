@@ -1,0 +1,154 @@
+// An expression as a tree. The tree owns its parts (`Expr*`) and owns its names too, so it
+// outlives the text it was read from: C keeps a compiled expression and runs it again later.
+
+public enum Operator : Copyable, Formattable {
+    Add
+    Subtract
+    Multiply
+    Divide
+    Power
+
+    void format(read this, ref Formatter f) {
+        f.write(match this {
+            Add => "+"
+            Subtract => "-"
+            Multiply => "*"
+            Divide => "/"
+            Power => "^"
+        })
+    }
+}
+
+public enum Expr {
+    Number(double value)
+    Variable(string name)
+    Negate(Expr* operand)
+    Binary(Operator op, Expr* left, Expr* right)
+    Call(string function, Expr* argument)
+    Assign(string name, Expr* value)
+}
+
+// statement  = name "=" expression | expression
+// expression = term (("+" | "-") term)*
+// term       = power (("*" | "/") power)*
+// power      = unary ("^" power)?           the right one first: 2^3^2 is 2^9
+// unary      = "-" unary | primary
+// primary    = number | name "(" expression ")" | name | "(" expression ")"
+struct Parser<from source> {
+    Lexer lexer
+    Token current
+    nint at
+
+    Result<Parser, CalcError> create(read string input) from input {
+        var lexer = Lexer(input)
+        var first = try lexer.next()
+        return Ok(Parser { lexer = lexer, current = first, at = 0 })
+    }
+
+    // Gives the current token and reads the next one.
+    Result<Token, CalcError> advance(ref this) from source {
+        this.at = this.lexer.pos
+        var next = try this.lexer.next()
+        return Ok(this.current.replace(next))
+    }
+
+    Result<Expr*, CalcError> statement(ref this) {
+        if this.current is Name(name) {
+            // `x = ...` is told from `x + ...` by the token after the name.
+            if this.lexer.nextIs('=') {
+                var target = name.clone()
+                _ = try this.advance()
+                _ = try this.advance()
+                var value = try this.expression()
+                return Ok(new Expr.Assign(target, value))
+            }
+        }
+        return this.expression()
+    }
+
+    Result<Expr*, CalcError> expression(ref this) {
+        var left = try this.term()
+        while true {
+            Operator op = match read this.current {
+                Plus => Operator.Add
+                Minus => Operator.Subtract
+                _ => return Ok(left)
+            }
+            _ = try this.advance()
+            var right = try this.term()
+            left = new Expr.Binary(op, left, right)
+        }
+    }
+
+    Result<Expr*, CalcError> term(ref this) {
+        var left = try this.power()
+        while true {
+            Operator op = match read this.current {
+                Star => Operator.Multiply
+                Slash => Operator.Divide
+                _ => return Ok(left)
+            }
+            _ = try this.advance()
+            var right = try this.power()
+            left = new Expr.Binary(op, left, right)
+        }
+    }
+
+    Result<Expr*, CalcError> power(ref this) {
+        var base = try this.unary()
+        if this.current is Caret {
+            _ = try this.advance()
+            var exponent = try this.power()
+            return Ok(new Expr.Binary(Operator.Power, base, exponent))
+        }
+        return Ok(base)
+    }
+
+    Result<Expr*, CalcError> unary(ref this) {
+        if this.current is Minus {
+            _ = try this.advance()
+            var operand = try this.unary()
+            return Ok(new Expr.Negate(operand))
+        }
+        return this.primary()
+    }
+
+    Result<Expr*, CalcError> primary(ref this) {
+        var token = try this.advance()
+        return match token {
+            Number(value) => Ok(new Expr.Number(value))
+            Name(name) when this.current is LeftParen => {
+                _ = try this.advance()
+                var argument = try this.expression()
+                try this.expect(this.current is RightParen)
+                Ok(new Expr.Call(name.clone(), argument))
+            }
+            Name(name) => Ok(new Expr.Variable(name.clone()))
+            LeftParen => {
+                var inner = try this.expression()
+                try this.expect(this.current is RightParen)
+                Ok(inner)
+            }
+            _ => Error(CalcError.Unexpected(this.at))
+        }
+    }
+
+    // Steps over the token that was looked for, or fails where it is not.
+    Result<void, CalcError> expect(ref this, bool found) {
+        if !found {
+            return Error(CalcError.Unexpected(this.lexer.pos))
+        }
+        _ = try this.advance()
+        return Ok()
+    }
+}
+
+// Reads a whole statement; anything after it is an error.
+public Result<Expr*, CalcError> parse(read string text) {
+    var parser = try Parser(text)
+    var tree = try parser.statement()
+    if !(parser.current is End) {
+        return Error(CalcError.Unexpected(parser.at))
+    }
+    return Ok(tree)
+}

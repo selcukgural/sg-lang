@@ -66,3 +66,25 @@ for name in fib primes collatz words list expr parse vector counts show lookup b
     ratio=$(python3 -c "print(f'{$release / $c:.2f}')")
     printf "%-10s %12s %12s %10s %14s\n" "$name" "$release" "$checked" "$c" "$ratio"
 done
+
+# A library C calls: one program of C (`library_main.c`) linked against the library built from
+# `library.sg`, as a release build and with overflow checked, and against the same library
+# written in C (`library.c`), each a static library made with `cc -O2`.
+name=library
+mkdir -p "$out/lib-release" "$out/lib-checked" "$out/lib-c"
+./target/release/sg build "bench/$name.sg" --library --release -o "$out/lib-release/liblibrary.a" > /dev/null
+./target/release/sg emit-c "bench/$name.sg" --library > "$out/lib-checked/library.c"
+cc -std=c11 -O2 -ffp-contract=off -fPIC -c -o "$out/lib-checked/library.o" "$out/lib-checked/library.c"
+cc -std=c11 -O2 -ffp-contract=off -fPIC -c -o "$out/lib-c/library.o" "bench/$name.c"
+rm -f "$out/lib-checked/liblibrary.a" "$out/lib-c/liblibrary.a"
+ar rcs "$out/lib-checked/liblibrary.a" "$out/lib-checked/library.o"
+ar rcs "$out/lib-c/liblibrary.a" "$out/lib-c/library.o"
+for kind in release checked c; do
+    cc -std=c11 -O2 -ffp-contract=off -I"$out/lib-release" -o "$out/$name-$kind" "bench/${name}_main.c" "$out/lib-$kind/liblibrary.a" -lm -pthread
+done
+[ "$("$out/$name-release")" = "$("$out/$name-c")" ] || { echo "$name: the two programs print different things"; exit 1; }
+release=$(best "$out/$name-release" /dev/null)
+checked=$(best "$out/$name-checked" /dev/null)
+c=$(best "$out/$name-c" /dev/null)
+ratio=$(python3 -c "print(f'{$release / $c:.2f}')")
+printf "%-10s %12s %12s %10s %14s\n" "$name" "$release" "$checked" "$c" "$ratio"

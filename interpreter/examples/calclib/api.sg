@@ -1,0 +1,205 @@
+// The library as C sees it: every `export` function below is a function of C, declared in
+// `calclib.h`, which `sg build --library` writes. The calculator itself is in the module `calc`,
+// which knows nothing of C; this file is the boundary, and the only place with `unsafe`.
+//
+// A C program holds a `Calculator` and a compiled `Expr` by their addresses, gives them back to
+// be freed, and lends them for a call. Texts come as C's zero-ended `const char*` and are
+// checked to be UTF-8; a message goes back into a buffer of C, cut to its size as `snprintf`
+// cuts it.
+use calc
+
+// What `calc_stats` gives: plain data, which C takes by value, laid out as C lays it out.
+struct CalcStats {
+    long evaluations
+    long failures
+    int variables
+}
+
+// A calculator, which C holds by its address and frees with `calc_free`. Its `dispose` runs
+// when it ends, and tells the hook C gave, if any.
+struct Calculator : Disposable {
+    Scope scope
+    string lastError
+    long evaluations
+    long failures
+    CFunc<raw void, long, void> onClose
+    raw void closeData
+
+    void dispose(ref this) {
+        if this.onClose != null {
+            unsafe this.onClose(this.closeData, this.evaluations)
+        }
+    }
+
+    // Counts what was worked out, writes the value where C asked for it, and gives C its
+    // number: 0, or the code of the error, whose message is kept for `calc_error`.
+    int done(ref this, Result<double, CalcError> outcome, raw double out) {
+        this.evaluations += 1
+        match outcome {
+            Ok(value) => {
+                this.lastError = ""
+                if out != null {
+                    unsafe {
+                        out[0] = value
+                    }
+                }
+                return 0
+            }
+            Error(cause) => {
+                this.failures += 1
+                this.lastError = $"{cause}".toString()
+                return cause.code()
+            }
+        }
+    }
+}
+
+// A text C gives, its `const char*`: the bytes up to the zero, which must be UTF-8.
+Result<string, CalcError> fromC(read CString text) {
+    var made = string.fromCString(text) ?? return Error(CalcError.NotText)
+    return Ok(made)
+}
+
+Result<double, CalcError> evaluateText(ref Scope scope, read CString text) {
+    var source = try fromC(text)
+    var tree = try parse(read source)
+    return scope.evaluate(read tree)
+}
+
+Result<Expr*, CalcError> compileText(read CString text) {
+    var source = try fromC(text)
+    return parse(read source)
+}
+
+// ---- making and ending ----
+
+export Calculator* calc_new() {
+    return new Calculator { scope = Scope(), lastError = "", evaluations = 0, failures = 0, onClose = null, closeData = null }
+}
+
+// Ends the calculator C gives back; `NULL` is nothing to end, as with C's `free`.
+export void calc_free(Calculator*? calc) {
+    _ = calc
+}
+
+// A function of C called with `data` and the count of evaluations when the calculator ends.
+export void calc_on_close(ref Calculator calc, CFunc<raw void, long, void> hook, raw void data) {
+    calc.onClose = hook
+    calc.closeData = data
+}
+
+// ---- working things out ----
+
+// Sets a variable; 0, or 4 for a name that is not UTF-8.
+export int calc_set(ref Calculator calc, read CString name, double value) {
+    var text = fromC(name) ?? return CalcError.NotText.code()
+    calc.scope.set(read text, value)
+    return 0
+}
+
+// Reads and works out a statement (`2 * x`, `y = x + 1`); the value goes to `*out`.
+export int calc_eval(ref Calculator calc, read CString text, raw double out) {
+    var outcome = evaluateText(ref calc.scope, text)
+    return calc.done(outcome, out)
+}
+
+// Reads a statement once, to run it many times; `NULL` when it cannot be read, with the
+// message kept.
+export Expr*? calc_compile(ref Calculator calc, read CString text) {
+    match compileText(text) {
+        Ok(tree) => return tree
+        Error(cause) => {
+            calc.failures += 1
+            calc.lastError = $"{cause}".toString()
+            return null
+        }
+    }
+}
+
+// Runs a compiled statement, which C lends for the call.
+export int calc_run(ref Calculator calc, read Expr expr, raw double out) {
+    var outcome = calc.scope.evaluate(expr)
+    return calc.done(outcome, out)
+}
+
+export void calc_expr_free(Expr*? expr) {
+    _ = expr
+}
+
+// Sums a statement over a variable that goes from `from` to `to`, both counted, in four tasks,
+// each with a copy of the variables. The parts are added in their order, so the sum is the
+// same on every run.
+export int calc_sum(ref Calculator calc, read CString text, read CString name, int from, int to, raw double out) {
+    var outcome = sumText(read calc.scope, text, name, from, to)
+    return calc.done(outcome, out)
+}
+
+Result<double, CalcError> sumText(read Scope scope, read CString text, read CString name, int from, int to) {
+    var source = try fromC(text)
+    var variable = try fromC(name)
+    _ = try parse(read source)
+    long count = (long)to - (long)from + 1
+    if count <= 0 {
+        return Ok(0.0)
+    }
+    var tasks = List<Task<Result<double, CalcError>>>()
+    for part in 0..4 {
+        long low = (long)from + count * (long)part / 4
+        long high = (long)from + count * (long)(part + 1) / 4
+        tasks.add(Task.run(sumPart, source.clone(), variable.clone(), scope.copy(), low, high))
+    }
+    double total = 0.0
+    for part in Task.whenAll(tasks).wait() {
+        total += try part
+    }
+    return Ok(total)
+}
+
+Result<double, CalcError> sumPart(string text, string name, Scope scope, long low, long high) {
+    var tree = try parse(read text)
+    var mine = scope
+    double total = 0.0
+    for i in low..high {
+        mine.set(read name, (double)i)
+        total += try mine.evaluate(read tree)
+    }
+    return Ok(total)
+}
+
+// ---- looking at it ----
+
+// The message of the last error into `buffer`, cut to `capacity` bytes with its zero; gives
+// the length of the whole message, as `snprintf` does.
+export nuint calc_error(read Calculator calc, raw byte buffer, nuint capacity) {
+    var bytes = calc.lastError.asBytes()
+    if buffer != null && capacity > 0 {
+        nint room = capacity.tryToNint() ?? bytes.length() + 1
+        nint fits = bytes.length().min(room - 1)
+        var window = unsafe Memory.viewRef(buffer, fits + 1)
+        for i in 0..fits {
+            window[i] = bytes[i]
+        }
+        window[fits] = 0
+    }
+    return (nuint)bytes.length()
+}
+
+export CalcStats calc_stats(read Calculator calc) {
+    return CalcStats { evaluations = calc.evaluations, failures = calc.failures, variables = (int)calc.scope.count() }
+}
+
+// Calls `visit` with `data`, the name and the value of each variable, in the order of their
+// names. The name lies in memory of its own, made for the call and freed after it.
+export void calc_each_variable(read Calculator calc, CFunc<raw void, raw byte, double, void> visit, raw void data) {
+    for name in calc.scope.names() {
+        var bytes = name.asBytes()
+        var text = Memory.allocate<byte>(bytes.length() + 1)
+        for i in 0..bytes.length() {
+            unsafe {
+                text[i] = bytes[i]
+            }
+        }
+        unsafe visit(data, text, calc.scope.get(read name) ?? 0.0)
+        unsafe Memory.free(text)
+    }
+}

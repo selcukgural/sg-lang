@@ -537,6 +537,19 @@ struct Shared<'e> {
     /// The files of the program, for a panic that must be shown where it happens: in a
     /// function C called (see `Interp::die`).
     sources: &'e crate::source::Sources,
+    /// The values of SG an `export` function gave C to keep (`T*`), by the address C holds.
+    handles: RefCell<HashMap<usize, Handle>>,
+}
+
+/// A value of SG that C holds: an `export` function gave it as a `T*`, and C gives it back,
+/// or lends it, by its address.
+struct Handle {
+    value: Cell,
+    ty: Ty,
+    /// Lent to the calls in progress: how many `read` borrows, or -1 for a `ref` one; and the
+    /// function that took the first.
+    lent: i32,
+    lent_to: String,
 }
 
 /// A program `System.start` started. What it writes to an output it shares with the run is read
@@ -2177,7 +2190,7 @@ impl Frame {
 fn shared<'a>(out: &'a mut dyn Write, mut world: World<'a>, ffi: crate::ffi::Library, sources: &'a crate::source::Sources) -> Shared<'a> {
     let source = std::mem::replace(&mut world.input, Box::new(std::io::empty()));
     let input = crate::input::Input::new(source, world.input_waits);
-    Shared { out: RefCell::new(out), world: RefCell::new(world), input: RefCell::new(input), test_err: RefCell::new(String::new()), sched: Sched::new(), ffi, children: RefCell::new(HashMap::new()), sources }
+    Shared { out: RefCell::new(out), world: RefCell::new(world), input: RefCell::new(input), test_err: RefCell::new(String::new()), sched: Sched::new(), ffi, children: RefCell::new(HashMap::new()), sources, handles: RefCell::new(HashMap::new()) }
 }
 
 pub fn run_program<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out: &'a mut dyn Write, world: World<'a>) -> Result<(), Stop> {
@@ -2451,23 +2464,118 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// `ret`.
     fn run_entered(&mut self, func: &'a Func, params: &[Ty], gives: &Ty, args: *mut *mut std::ffi::c_void, ret: *mut std::ffi::c_void) {
         let mut values = Vec::new();
+        let mut lent = Vec::new();
         for (position, ty) in params.iter().enumerate() {
             // SAFETY: the stub gives the address of each argument, as the C type of its parameter.
             let at = unsafe { *args.add(position) } as usize;
-            match load(at, ty, self.plain, func.name_span) {
+            let value = match ty {
+                // C's `const char*`: the text up to its zero byte, copied for the call.
+                Ty::Read(inner) if **inner == Ty::CString => {
+                    // SAFETY: the stub keeps the pointer C gave at `at`.
+                    let address = unsafe { (at as *const usize).read() };
+                    match address {
+                        0 => Err(Diag::panic(func.name_span, format!("C gave `null` to `{}`, which takes a `read CString`", short_name(&func.name)))),
+                        // SAFETY: C promises a text that ends in a zero byte.
+                        _ => Ok(Value::Borrow(cell(Value::CStr(Rc::new(unsafe { std::ffi::CStr::from_ptr(address as *const std::ffi::c_char) }.to_owned()))))),
+                    }
+                }
+                Ty::Ptr(_) | Ty::Nullable(_) | Ty::Read(_) | Ty::Ref(_) => {
+                    // SAFETY: a value C holds is passed as an address, which the stub keeps at `at`.
+                    let address = unsafe { (at as *const usize).read() };
+                    self.handle_in(func, ty, address, &mut lent)
+                }
+                _ => load(at, ty, self.plain, func.name_span),
+            };
+            match value {
                 Ok(value) => values.push(value),
                 Err(diag) => self.die(Stop::Diag(diag)),
             }
         }
-        match self.call(func, None, values, func.name_span) {
-            Ok(value) => {
-                if *gives != Ty::Void {
-                    store(ret as usize, gives, &value, self.plain);
+        let result = self.call(func, None, values, func.name_span);
+        {
+            let mut handles = self.io.handles.borrow_mut();
+            for address in lent {
+                if let Some(handle) = handles.get_mut(&address) {
+                    handle.lent = if handle.lent < 0 { 0 } else { handle.lent - 1 };
                 }
             }
+        }
+        match result {
+            Ok(value) => match gives {
+                Ty::Void => {}
+                Ty::Ptr(inner) | Ty::Nullable(inner) => {
+                    let address = match strip(value) {
+                        Value::Ptr(held) => {
+                            let address = Rc::as_ptr(&held) as usize;
+                            let ty = match inner.as_ref() {
+                                Ty::Ptr(target) => (**target).clone(),
+                                other => other.clone(),
+                            };
+                            self.io.handles.borrow_mut().insert(address, Handle { value: held, ty, lent: 0, lent_to: String::new() });
+                            address
+                        }
+                        _ => 0,
+                    };
+                    // SAFETY: `ret` has room for the address C is given.
+                    unsafe { (ret as *mut usize).write(address) };
+                }
+                _ => store(ret as usize, gives, &value, self.plain),
+            },
             Err(Unwind::Stop(stop)) => self.die(stop),
             Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop"),
         }
+    }
+
+    /// The value of SG C gives an `export` function by its address: taken back for a `T*`,
+    /// lent for a `read T` or a `ref T`. An address the interpreter did not give for a value
+    /// of that type, one given back already, and one lent in a way the borrow rules forbid,
+    /// are panics. What is lent is put in `lent`, to be given back when the call ends.
+    fn handle_in(&self, func: &Func, ty: &Ty, address: usize, lent: &mut Vec<usize>) -> Result<Value, Diag> {
+        let name = short_name(&func.name);
+        let (target, owned, nullable, writes) = match ty {
+            Ty::Nullable(inner) => match inner.as_ref() {
+                Ty::Ptr(target) => (target.as_ref(), true, true, false),
+                other => unreachable!("the checker gives C a `T*?`, not a `{other}?`"),
+            },
+            Ty::Ptr(target) => (target.as_ref(), true, false, false),
+            Ty::Read(target) => (target.as_ref(), false, false, false),
+            Ty::Ref(target) => (target.as_ref(), false, false, true),
+            other => unreachable!("C gives a value of SG as `T*`, `read T` or `ref T`, not `{other}`"),
+        };
+        let span = func.name_span;
+        if address == 0 {
+            if nullable {
+                return Ok(Value::Null);
+            }
+            let diag = Diag::panic(span, format!("C gave `null` to `{name}`, which takes a `{ty}`"));
+            return Err(match owned {
+                true => diag.hint(format!("a parameter C may give `null` is written `{target}*?`")),
+                false => diag,
+            });
+        }
+        let mut handles = self.io.handles.borrow_mut();
+        let Some(handle) = handles.get_mut(&address) else {
+            return Err(Diag::panic(span, format!("C gave `{name}` an address that holds no `{target}`"))
+                .note("C gives back what an `export` function gave it as a `T*`, until it is given back to one that takes the `T*`"));
+        };
+        if handle.ty != *target {
+            return Err(Diag::panic(span, format!("C gave `{name}` a `{}` where it takes a `{target}`", handle.ty)));
+        }
+        if handle.lent != 0 && (owned || writes || handle.lent < 0) {
+            let how = if handle.lent < 0 { "changes" } else { "reads" };
+            return Err(Diag::panic(span, format!("C gave `{name}` a `{target}` that a call of `{}` in progress {how}", handle.lent_to))
+                .note("while a call of C borrows a value of SG, the rules of borrowing hold for it as in SG"));
+        }
+        if owned {
+            let handle = handles.remove(&address).expect("found above");
+            return Ok(Value::Ptr(handle.value));
+        }
+        if handle.lent == 0 {
+            handle.lent_to = name.to_string();
+        }
+        handle.lent = if writes { -1 } else { handle.lent + 1 };
+        lent.push(address);
+        Ok(Value::Borrow(handle.value.clone()))
     }
 
     /// Ends the process from inside a function C called, where nothing can be unwound: what
@@ -4123,7 +4231,18 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Callee::Extern | Callee::Variadic(_) | Callee::Pointer => unreachable!("a function of C is called by its name, and `pointer()` is read by its call"),
                 // `string.fromCString(p)`: the bytes up to the zero byte, copied and checked.
                 Callee::FromCString => {
-                    let pointer = raw_of(&strip(self.expr(&args[0], frame)?));
+                    let given = strip(self.expr(&args[0], frame)?);
+                    if let Value::CStr(text) = &given {
+                        return Ok(match String::from_utf8(text.as_bytes().to_vec()) {
+                            Ok(text) => Value::Enum("Result".into(), 0, Rc::new(vec![cell(Value::Str(text.into()))])),
+                            Err(error) => {
+                                let position = cell(Value::Int(IntTy::Nint, error.utf8_error().valid_up_to() as i128));
+                                let cause = Value::Struct("TextError".into(), Fields::plain(vec![position]));
+                                Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
+                            }
+                        });
+                    }
+                    let pointer = raw_of(&given);
                     if pointer.addr == 0 {
                         return Err(Diag::panic(expr.span, "`string.fromCString` is given a pointer that is `null`").into());
                     }
