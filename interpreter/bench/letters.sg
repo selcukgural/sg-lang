@@ -1,0 +1,20 @@
+// The characters of a text of many scripts, tested against the Unicode tables: letters,
+// upper case letters and numbers, over about 1.2 MB, two hundred times.
+void main() {
+    var line = "İstanbul'da ılık bir sabah, Größe der Straße; ΟΔΟΣ Ελληνικά, café naïve, Привет мир, the quick brown fox jumps over the lazy dog 日本語 ٣ "
+    var text = ""
+    for _ in 0..8000 {
+        text.write(line)
+    }
+    long letters = 0
+    long uppers = 0
+    long numbers = 0
+    for _ in 0..200 {
+        for c in text.chars() {
+            if c.isLetter() { letters += 1 }
+            if c.isUpper() { uppers += 1 }
+            if c.isNumeric() { numbers += 1 }
+        }
+    }
+    print($"{letters} letters, {uppers} upper case, {numbers} numbers")
+}

@@ -1,0 +1,6 @@
+error: type `char` has no method `isDigit`
+  `isNumeric()` says yes to the digits of every script, and to `'½'` and `'²'`, which `parse` does not read
+  --> error_unicode_is_digit.sg:3:13
+ 3 |     print(c.isDigit())
+   |             ^^^^^^^
+  hint: `isAsciiDigit()`: the digits `parse` reads

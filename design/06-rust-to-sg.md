@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 16 November 2026, the seventy-eighth slice.
+Last brought up to date: 16 November 2026, the seventy-ninth slice.
 
 ## Functions and variables
 
@@ -86,7 +86,12 @@ Last brought up to date: 16 November 2026, the seventy-eighth slice.
 | `s.eq_ignore_ascii_case(t)` | `s.equalsIgnoreAsciiCase(t)` | built | |
 | `names.join(", ")` | `string.join(", ", read names)` | built | |
 | `char` | `char` | built | `'+'` is a `byte` where an integer goes: Rust's `b'+'` |
-| `s.to_uppercase()` | none yet | designed | Needs Unicode tables; `toAsciiUpper()` on a `char` is there |
+| `s.to_uppercase()`, `s.to_lowercase()` | `s.toUpper()`, `s.toLower()` | built | The same full mappings and final sigma, from SG's own tables of Unicode 17.0 |
+| `c.to_uppercase()` (an iterator) | `c.toUpper()` (a `char`) | built | One character for one: `'ß'.toUpper()` is `'ß'`; the text method gives `"SS"` |
+| `c.is_alphabetic()`, `c.is_numeric()`, `c.is_alphanumeric()` | `c.isLetter()`, `c.isNumeric()`, `c.isAlphanumeric()` | built | `isLetter` is the category L, narrower than Alphabetic |
+| `c.is_uppercase()`, `c.is_lowercase()`, `c.is_control()` | `c.isUpper()`, `c.isLower()`, `c.isControl()` | built | The categories Lu and Ll, narrower than Rust's derived properties |
+| none (the `caseless` or `unicase` crates) | `s.equalsIgnoreCase(t)`, `s.foldCase()` | built | Full case folding, without the Turkic lines |
+| the `unicode-normalization` and `unicode-segmentation` crates | none | not planned yet | |
 
 ## Collections
 

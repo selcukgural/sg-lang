@@ -19,6 +19,8 @@ pub mod source;
 pub mod opening;
 pub mod sums;
 pub mod types;
+pub mod unicode;
+pub mod unicode_tables;
 pub mod unread;
 pub mod waits;
 

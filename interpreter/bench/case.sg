@@ -1,0 +1,16 @@
+// A text of many scripts in upper case and back in lower case, by Unicode's full mappings:
+// about 1.2 MB, fifty times each way.
+void main() {
+    var line = "İstanbul'da ılık bir sabah, Größe der Straße; ΟΔΟΣ Ελληνικά, café naïve, Привет мир, the quick brown fox jumps over the lazy dog 日本語 "
+    var text = ""
+    for _ in 0..8000 {
+        text.write(line)
+    }
+    nint total = 0
+    for _ in 0..50 {
+        var upper = text.toUpper()
+        var lower = upper.toLower()
+        total += upper.length() + lower.length()
+    }
+    print($"{text.length()} bytes, {total} written")
+}

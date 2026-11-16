@@ -1,0 +1,4 @@
+void main() {
+    var c = (char)0x663
+    print(c.isDigit())
+}

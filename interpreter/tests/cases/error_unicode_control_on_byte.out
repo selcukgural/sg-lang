@@ -1,0 +1,6 @@
+error: type `byte` has no method `isControl`
+  `isControl` reads the Unicode tables, and is a method of `char`
+  --> error_unicode_control_on_byte.sg:3:13
+ 3 |     print(b.isControl())
+   |             ^^^^^^^^^
+  hint: the ASCII control characters: `b < 32 || b == 127`

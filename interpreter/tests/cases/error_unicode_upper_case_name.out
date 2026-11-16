@@ -1,0 +1,5 @@
+error: type `string` has no method `toUpperCase`
+  --> error_unicode_upper_case_name.sg:3:16
+ 3 |     print(name.toUpperCase())
+   |                ^^^^^^^^^^^
+  hint: `toUpper()`

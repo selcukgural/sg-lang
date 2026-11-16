@@ -9,7 +9,8 @@
 //!
 //! Only a part of the language is compiled so far: integers, `float` and `double` (with their
 //! constants, `parse`, the conversions that do not panic, the math of `<math.h>`, and printed with
-//! the fewest digits by Dragonbox, `shortest.rs`), `bool`, `char`,
+//! the fewest digits by Dragonbox, `shortest.rs`), `bool`, `char` (with the Unicode tables of
+//! `unicode.rs` in a program that tests or changes the case of a character or a text),
 //! text (with `trim`, the searches, the iterators `chars`, `split`, `splitWhitespace` and `lines`,
 //! `replaceAll` and `repeat`, `write` and `clear`, which add to a text where it is, as `f.write` does, and the width and the
 //! letter after a value in `$"..."`), functions, structs,
@@ -4839,6 +4840,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         .any(|text| FLOAT_WRITERS.iter().any(|name| text.contains(name)));
     let _ = writeln!(out, "#define SG_FLOATS {}", u8::from(floats));
     out.push_str(RUNTIME);
+    if emitter.made.contains("unicode") {
+        out.push_str(crate::unicode::c_runtime());
+    }
     if emitter.made.contains("raw") {
         out.push_str(RAW_RUNTIME);
     }
@@ -4994,7 +4998,11 @@ fn mentions(code: &str, name: &str) -> bool {
 }
 
 fn is_char_method(name: &str) -> bool {
-    name.starts_with("isAscii") || matches!(name, "toAsciiUpper" | "toAsciiLower" | "isWhitespace" | "utf8Length" | "tryToChar")
+    name.starts_with("isAscii")
+        || matches!(
+            name,
+            "toAsciiUpper" | "toAsciiLower" | "isWhitespace" | "utf8Length" | "tryToChar" | "isLetter" | "isNumeric" | "isAlphanumeric" | "isUpper" | "isLower" | "isControl" | "toUpper" | "toLower"
+        )
 }
 
 /// What a `T*` or a `shared T` points at: what is reached through it as through a `T*`.
@@ -9557,6 +9565,7 @@ impl<'a> Emitter<'a> {
                     Callee::Plain if matches!(name.as_str(), "write" | "clear") && (is_text(&recv.ty) || is_text_behind_pointer(&recv.ty)) => Effect::Changes,
                     // These allocate, and `replaceAll` and `repeat` can stop the program.
                     Callee::Plain if matches!(name.as_str(), "clone" | "toString" | "replaceAll" | "repeat") => Effect::Acts,
+                    Callee::Plain if matches!(name.as_str(), "toUpper" | "toLower" | "foldCase") && *recv.ty.strip_borrow() == Ty::Str => Effect::Acts,
                     // `next` moves the iterator on; `split` stops at a separator that is empty.
                     Callee::Plain if matches!(recv.ty.strip_borrow(), Ty::TextIter(_)) => Effect::Changes,
                     Callee::Plain if name == "split" => Effect::Stops,
@@ -12462,6 +12471,22 @@ impl<'a> Emitter<'a> {
                         Ok(format!("({{ sg_str {temp}h = {text}; sg_repeat({temp}h, {times}, {loc}); }})"))
                     }
                     "trim" | "trimStart" | "trimEnd" => Ok(format!("sg_{}({})", if name == "trim" { "trim" } else if name == "trimStart" { "trim_start" } else { "trim_end" }, self.view(recv)?)),
+                    // A new text in the other case, or folded (see `crate::unicode`).
+                    "toUpper" | "toLower" | "foldCase" => {
+                        self.made.insert("unicode".to_string());
+                        let which = match name.as_str() {
+                            "toUpper" => 0,
+                            "toLower" => 1,
+                            _ => 2,
+                        };
+                        Ok(format!("sg_uni_text({}, {which})", self.view(recv)?))
+                    }
+                    "equalsIgnoreCase" => {
+                        self.made.insert("unicode".to_string());
+                        let temp = self.temp();
+                        let (text, other) = (self.view(recv)?, self.view(&args[0])?);
+                        Ok(format!("({{ sg_str {temp}a = {text}; sg_str {temp}b = {other}; sg_eq_case({temp}a, {temp}b); }})"))
+                    }
                     "equalsIgnoreAsciiCase" => {
                         let temp = self.temp();
                         let (text, other) = (self.view(recv)?, self.view(&args[0])?);
@@ -12559,6 +12584,22 @@ impl<'a> Emitter<'a> {
                         "toAsciiUpper" => format!("(({ctype})sg_ascii_upper({value}))"),
                         "toAsciiLower" => format!("(({ctype})sg_ascii_lower({value}))"),
                         "isWhitespace" => format!("sg_is_space({value})"),
+                        "isLetter" | "isNumeric" | "isAlphanumeric" | "isUpper" | "isLower" | "isControl" => {
+                            self.made.insert("unicode".to_string());
+                            let bits = match name.as_str() {
+                                "isLetter" => "SG_UNI_LETTER",
+                                "isNumeric" => "SG_UNI_NUMERIC",
+                                "isAlphanumeric" => "(SG_UNI_LETTER | SG_UNI_NUMERIC)",
+                                "isUpper" => "SG_UNI_UPPER",
+                                "isLower" => "SG_UNI_LOWER",
+                                _ => "SG_UNI_CONTROL",
+                            };
+                            format!("sg_uni_is({value}, {bits})")
+                        }
+                        "toUpper" | "toLower" => {
+                            self.made.insert("unicode".to_string());
+                            format!("sg_uni_{}1({value})", if name == "toUpper" { "upper" } else { "lower" })
+                        }
                         "utf8Length" => {
                             let temp = self.temp();
                             format!("({{ uint32_t {temp} = {value}; (int64_t)({temp} < 0x80u ? 1 : {temp} < 0x800u ? 2 : {temp} < 0x10000u ? 3 : 4); }})")

@@ -1,0 +1,45 @@
+// Every 17th code point, so that the interpreter is quick: each block of 16 in the tables is
+// reached. `tests/release/unicode_every.sg` goes over all of them, compiled.
+long mix(long hash, read string text) {
+    var h = hash
+    for c in text.chars() {
+        h = h.wrappingMultiply(31).wrappingAdd((long)(int)c)
+    }
+    return h
+}
+
+void main() {
+    int letters = 0
+    int numbers = 0
+    int alphanumerics = 0
+    int uppers = 0
+    int lowers = 0
+    int controls = 0
+    long simple = 0
+    long upper = 0
+    long lower = 0
+    long folded = 0
+    for step in 0..0x10000 {
+        var n = step * 17
+        var maybe = n.tryToChar()
+        if maybe is null {
+            continue
+        }
+        char c = maybe
+        if c.isLetter() { letters += 1 }
+        if c.isNumeric() { numbers += 1 }
+        if c.isAlphanumeric() { alphanumerics += 1 }
+        if c.isUpper() { uppers += 1 }
+        if c.isLower() { lowers += 1 }
+        if c.isControl() { controls += 1 }
+        simple = simple.wrappingMultiply(31).wrappingAdd((long)(int)c.toUpper() * 3 + (long)(int)c.toLower())
+        var text = c.toString()
+        upper = mix(upper, read text.toUpper())
+        lower = mix(lower, read text.toLower())
+        folded = mix(folded, read text.foldCase())
+    }
+    print($"letters {letters}, numbers {numbers}, alphanumerics {alphanumerics}")
+    print($"upper case {uppers}, lower case {lowers}, control {controls}")
+    print($"simple {simple}")
+    print($"upper {upper}, lower {lower}, folded {folded}")
+}

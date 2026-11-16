@@ -1,0 +1,6 @@
+error: type `byte` has no method `toUpper`
+  `toUpper` reads the Unicode tables, and is a method of `char`
+  --> error_unicode_on_byte.sg:3:13
+ 3 |     print(b.toUpper())
+   |             ^^^^^^^
+  hint: `toAsciiUpper()`

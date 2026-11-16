@@ -67,6 +67,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Writing a number | Inside `$"..."` a width and a letter may follow the value, as in C#: `{n,5}` takes at least five characters with spaces in front, `{name,-10}` with spaces after (counted in characters, for every value `print` takes); `{b:X2}` and `{crc:x8}` write hex with at least so many digits, `{mask:b8}` binary, `{n:D3}` decimal with at least three digits, `{price:F2}` a fractional number with two digits after the point; `{price,8:F2}` both |
 | Going over text | `for c in text.chars()` gives each `char`; `text.split(',')` (a `char` or a `read string`), `text.splitWhitespace()` and `text.lines()` give each part as a `read string`, nothing copied. Kept in a `var`, the iterator gives the next part with `parts.next()`, `null` at the end |
 | Characters | `char`: one Unicode character. `'+'`, `'é'`, `'\n'`, `'\u{e9}'` is a `char`, and a `byte` where an integer goes (`byte b = '+'`, `text[i] == ':'`). `(int)c` is its code, `(char)n` the character of a code, `n.tryToChar()` gives `null` where `(char)n` would panic. `==`, `<`, `match`, keys, `sort`, `print`. `isAsciiDigit()`, `isAsciiLetter()`, `isAsciiAlphanumeric()`, `isAsciiUpper()`, `isAsciiLower()`, `isAsciiWhitespace()`, `isAscii()`, `toAsciiUpper()`, `toAsciiLower()` on `char` and on `byte`; `isWhitespace()` and `utf8Length()` on `char` |
+| Unicode | On `char`, from the tables of Unicode 17.0: `isLetter()` (category L), `isNumeric()` (N: `'٣'`, `'½'`), `isAlphanumeric()`, `isUpper()` (Lu), `isLower()` (Ll), `isControl()` (Cc), and `toUpper()`, `toLower()`, one character for one (`'ß'.toUpper()` is `'ß'`). On a text: `toUpper()` and `toLower()` give a new text by the full mappings (`"straße".toUpper()` is `"STRASSE"`, `Σ` at the end of a word is `ς`), `foldCase()` the text as it is compared without case, `a.equalsIgnoreCase(b)` compares so without allocating. No language is taken into account: `"i".toUpper()` is `"I"` |
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
 | Built-ins | `print(x)`, `printError(x)` (the same, to the standard error), `panic("...")`, `assert(condition)`, `exit(code)` (ends the program with that code), `same(a, b)` (two `shared` values point to one object) |
 | Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`, and `File.openAppend(path)` one that writes after what the file holds. A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left), `lines()` (each line as a `Result<string, IoError>`) `readBytes(ref buffer)` (bytes into the buffer, as many as it holds unless the end comes first, and how many: a `Result<nint, IoError>`) and `readSome(ref buffer)` (what the block holds, or what one read of the system gives when it is empty; how many, 0 at the end); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `writeBytes(bytes)` (a `read byte[]` as it is), `flush()` and `close()`, each with a `Result<void, IoError>`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `AlreadyExists` / `NotDirectory` / `DirectoryNotEmpty` / `InvalidInput` / `InvalidText(long position)` / `Other(int code) }`, with the variants of the network and `Cancelled` |
@@ -273,7 +274,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (293 of 1215 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (297 of 1222 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -774,6 +775,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/ffi.rs` | For the interpreter: the library of wrappers for the functions of C a program calls, built with `cc` in a folder of its own and opened with `dlopen` |
 | `src/raw.rs` | For the interpreter: raw memory, real addresses from `calloc`, each checked against the block it came from |
 | `src/sums.rs` | For the back end: the sums in a loop that cannot overflow for a number of rounds, so that a checked build runs those rounds without their test |
+| `src/unicode.rs`, `src/unicode_tables.rs` | What a character is and its case: the tables of Unicode 17.0, one record for each code point found in three steps, read by the interpreter and written into compiled code as C when a program calls a method that needs them. `tools/unicode_tables.py` makes the tables from the Unicode Character Database (each file checked against its SHA-256) and checks every code point against Python's tables of the same version |
 | `src/diag.rs` | Error and panic messages |
 | `src/source.rs` | The files of a program: which folders are modules and which of them are read. All files are kept as one text, so a position says which file it is in; the language's own module comes last, when a file names one of its types |
 | `src/std/time.sg` | The language's own module `std`, written in SG: `Duration`, `Instant`, `DateTime` and the calendar. Only it calls the two readings of the clock, `Clock.monotonic()` and `Clock.wall()` |
@@ -1867,6 +1869,7 @@ constant takes where it is used, `text.chars()`) and wrote `text.split(' ')`, `t
      read), and `ToUpper` depends on the culture; `isDigit`,
      `toUpper` and the like get the ASCII method as a hint. On `char` only: `isWhitespace` (Unicode's
      White_Space, 25 characters: what `trim` takes off) and `utf8Length` (1 to 4).
+     (The Unicode tests and `toUpper` came with the tables, 637 and 638; `isDigit` still gets the hint.)
 173. **Going over a text: `text.chars()`, `text.split(sep)`, `text.splitWhitespace()`, `text.lines()`.**
      `chars` gives each `char`; the others give each part as a `read string`, a look at the text where it
      is. `split` keeps the empty parts (`"a,,b"` gives three, `""` gives one), as Rust and C# do;
@@ -1894,7 +1897,8 @@ constant takes where it is used, `text.chars()`) and wrote `text.split(' ')`, `t
 178. **`equalsIgnoreAsciiCase`, not the design's `equalsIgnoreCase`**: only the ASCII letters are folded,
      which is what the name of a protocol field (`Content-Length`) needs, with one answer everywhere;
      `"É".equalsIgnoreAsciiCase("é")` is false. Ignoring the case of any text needs Unicode tables.
-     `equalsIgnoreCase` gets the hint. The design's HTTP example changes in that one word.
+     The design's HTTP example changes in that one word. (`equalsIgnoreCase`, which folds every letter,
+     came with the tables, 641.)
 179. **`try` on a `read T?` gives a `read T`**, as `??` already did: `var level = try parts.next()`, `var
      name = try names.get(1)`, in a function that returns a `T?` or a `read T?`. It was an error ("takes the
      value out"); nothing is taken out, the borrow is passed on. With it the log summary example parses its
@@ -4759,6 +4763,86 @@ during it, 628 was confirmed by the user during it, and 629 comes from the slice
      293 of 1215 programs, 57 of them under the thread sanitizer, and 15 of 20 programs of tests; on Linux
      too, in a container, with the same counts, where the sanitizer found a field of the wait that was read
      before it was written (the direction of a wait on epoll), now set.
+
+Choices made in the seventy-ninth slice (the Unicode tables: what a character is, the case of a character and of a
+text, and comparing without case; in the checker, the interpreter and compiled code). 635 to 644 were decided
+before it on 16 November 2026, with the parts marked as coming from the slice; 645 to 647 come from the slice.
+All were approved the same day:
+
+635. **What is here**: what a character is (a letter, a number, an upper or a lower case letter, a control
+     character), the case of a character and of a text, and comparing and folding without case. Not here, as
+     in Rust's standard library: normalization (`"é"` written as one character and as `e` with a combining
+     accent are not equal), grapheme clusters (`👍🏽` is two `char`s), sorting by a language, the width of a
+     character on the screen, words, scripts, and names in Unicode in the source.
+636. **One set of tables, Unicode 17.0, for both sides**: `src/unicode_tables.rs` is made by
+     `tools/unicode_tables.py` from four files of the Unicode Character Database (`UnicodeData.txt`,
+     `SpecialCasing.txt`, `CaseFolding.txt`, `DerivedCoreProperties.txt`), each checked against its SHA-256;
+     the files are not kept in the repository, the tables made from them are (Rust's way). The interpreter
+     does not use Rust's own `char` methods, whose version of Unicode is Rust's: it reads the same tables as
+     compiled code, so the two give the same answers. Each code point has a record of what it is and what
+     its simple upper, lower and folded case add to its code (201 different records); it is found in three
+     steps (by the code shifted right by 9, the next 5 bits, the last 4), 20.7 KB in all. A mapping to more
+     than one character is in a short sorted table (102 upper case, 1 lower case, 104 folded). From the
+     slice: the generator checks every code point against Python's tables when Python knows the same
+     version (3.15 knows 17.0): the category, and `upper()`, `lower()` and `casefold()` of the character.
+637. **What a character is, on `char` only**: `isLetter()` is the general category L (Lu, Ll, Lt, Lm, Lo), as
+     C#, Go and Java have it (Rust's `is_alphabetic` is the wider Alphabetic: `'Ⅻ'` and the vowel signs of
+     Indian scripts); `isNumeric()` is N (Nd, Nl, No: `'٣'`, `'½'`, `'²'`), Rust's `is_numeric` and C#'s
+     `IsNumber`; `isAlphanumeric()` is either; `isUpper()` and `isLower()` are Lu and Ll, so an upper case
+     letter is a letter (Rust's `is_uppercase` takes the derived property, with `'Ⓐ'`); `isControl()` is Cc
+     (65 characters). `isDigit` stays out (172): `'٣'` would be a digit that `parse` does not read. A `byte`
+     keeps the ASCII methods.
+638. **`c.toUpper()` and `c.toLower()` give a `char`**: the simple mapping, one character for one, as C#'s
+     `ToUpperInvariant` and Go's `unicode.ToUpper`: `'ß'.toUpper()` is `'ß'`, `'ǅ'.toUpper()` is `'Ǆ'`.
+     Rust's `to_uppercase` gives an iterator (`'ß'` gives `S`, `S`), whose type cannot be written here; the
+     text methods give the full mapping.
+639. **`text.toUpper()` and `text.toLower()` give a new `string`** by the full mappings, Rust's
+     `to_uppercase` and `to_lowercase`: `"straße".toUpper()` is `"STRASSE"`, `"ﬃ"` gives `"FFI"`, `"İ"`
+     lower case is `i` with a combining dot above (U+0307). `Σ` lower case is `ς` at the end of a word
+     (Final_Sigma: after a cased letter, case-ignorable characters such as `'` skipped, and not before one),
+     `σ` elsewhere: `"ΟΔΟΣ"` gives `"οδος"`. The length in bytes may change (`"ﬁ"` is 3 bytes, `"FI"` 2).
+640. **No language is taken into account**: the answer is the same on every machine, as in Rust and Go and in
+     C#'s invariant culture: `"istanbul".toUpper()` is `"ISTANBUL"`, not `"İSTANBUL"`, and `"I".toLower()` is
+     `"i"`. C#'s `ToUpper` follows the culture of the machine, the source of the well-known "Turkish i"
+     mistakes. The Turkish and Azeri mappings (Go's `unicode.TurkishCase`) are left for later.
+641. **`a.equalsIgnoreCase(b)` folds both by the full folding** of CaseFolding.txt (C and F, not the Turkic T):
+     `"Straße".equalsIgnoreCase("STRASSE")` and `"ΣΑΣ".equalsIgnoreCase("σας")` are true, `"İ"` and `"i"` are not
+     the same. It allocates nothing: both texts are folded one character after the other and compared as they
+     go. C#'s `OrdinalIgnoreCase` and Go's `EqualFold` fold one character to one (`ß` is not `ss`); Rust's
+     standard library has only the ASCII one. `equalsIgnoreAsciiCase` stays, for the names of protocols (178).
+642. **`text.foldCase()` gives the folded text**, Python's `casefold`: the key of a `HashMap` that is not to
+     care about case. `toLower` would not do it: `"STRASSE"` and `"Straße"` lower case differ, folded they are
+     both `"strasse"`.
+643. **In compiled code** the tables are only in a program that calls one of these methods; one that does grows
+     by about 16 KB (macOS). An ASCII character is changed without the tables, and a text of ASCII is copied
+     byte by byte. From the slice: a new text takes room for the length of the old one first, and room for
+     three characters before each character past ASCII, which maps to at most three.
+644. **The hints**: `toUpper` and the Unicode tests on a `byte` are errors with the ASCII method as a hint
+     (`toAsciiUpper()`; for `isControl`, `b < 32 || b == 127`) and the note that they are methods of `char`.
+     `isDigit` gets `isAsciiDigit()` and the note on `isNumeric`; `isAlphabetic` gets `isLetter()`,
+     `toUpperCase` and `to_uppercase` `toUpper()`, `casefold` `foldCase()`. The notes that said the Unicode
+     tables were not here are gone.
+645. **Measured** (`case`, a new program): a text of 1.3 MB in many scripts, fifty times in upper case and back
+     in lower case: 0.220 s against 0.962 s for C's `mbrtowc`, `towupper` and `wcrtomb` in a UTF-8 locale: 0.23
+     times on macOS (0.221 s checked); on Linux in a container, glibc 2.41, 0.162 s against 1.855 s, 0.09
+     times. The C functions map one character to one and know nothing of the end of
+     a word, so they do less; SG reaches a record in three steps and changes an ASCII byte without the tables.
+646. **Measured** (`letters`, a new program): the characters of the same kind of text tested with `isLetter`,
+     `isUpper` and `isNumeric`, two hundred times: 0.290 s against 2.969 s for `mbrtowc` with `iswalpha`, `iswupper` and
+     `iswdigit`: 0.10 times on macOS (0.387 s checked, where the three counters are checked for overflow);
+     on Linux 0.263 s against 2.493 s, 0.11 times.
+     `iswdigit` knows the ASCII digits only, so C counts no `'٣'`.
+647. **The tests**: `ok_unicode_char` (each test and the simple mappings on letters of several scripts, `'ß'`,
+     `'ǅ'`, `'Σ'`, `'Ⅻ'`, `'ª'`, Cherokee, control and format characters), `ok_unicode_text` (the full
+     mappings, Final_Sigma with and without an apostrophe, Turkish letters, folding, `equalsIgnoreCase` both
+     ways, a `HashMap` keyed by the folded text, a trimmed look at a text), `ok_unicode_sample` (every 17th code
+     point, which reaches each block of 16 of the tables: counts and sums over every method), and
+     `tests/release/unicode_every` (every code point, compiled), whose counts and sums of the full mappings are
+     those Python gives; a test of `src/unicode.rs` goes over every code point in the interpreter's code. The
+     checker refuses `error_unicode_on_byte`, `error_unicode_control_on_byte`, `error_unicode_is_digit` and
+     `error_unicode_upper_case_name`; `error_text_to_upper`, which said the case of a text was not here, is
+     gone. `cargo test` passes on macOS and on Linux in a container, where it compiles 297 of 1222 programs, 57
+     of them under the thread sanitizer, and 15 of 20 programs of tests.
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -4886,8 +4970,9 @@ check off.
   the loop started.
 - Lists of borrows (`List<read T>`); `reserve`, `clone`; a `Hashable`
   type with its own `equals` or `hash`.
-- What text needs Unicode tables for: changing the case of a text (`toUpper`), letters and digits beyond
-  ASCII (`isLetter`), comparing without case beyond ASCII. Replacing only the first places
+- What Unicode has beyond the tables of 635: normalization, grapheme clusters, sorting by a language, the width
+  of a character, the title case, the Turkish and Azeri case mappings (640), and names in Unicode in the
+  source. Replacing only the first places
   (`replacen`), replacing in place without a new text; a `padLeft` is a width: `$"{name,10}"` (229); the positions
   of the characters (`charIndices`); splitting at most n times. Writing the type of an
   iterator, and a `for` over a type of your own that has `next` (with generics). `text.capacity()` and
@@ -5057,4 +5142,4 @@ output is read, and no descriptor of ours handed to it; starting a program takes
 wait. A program is also started and talked to while it runs (`start`, its pipes taken out of the
 `Process` as a writer and readers, `wait`, `kill`, `terminate`), and one that is not waited for is a
 compile error, or stopped where it ends; the async versions take a token, and a cancel stops the program.
-A method can be async. Reading the output of a started program line by line takes 0.85 times `popen` and `getline` in C. Next are the Unicode tables, then UDP.
+A method can be async. Reading the output of a started program line by line takes 0.85 times `popen` and `getline` in C. A character is tested against the tables of Unicode 17.0 and a text changes its case by Unicode's full mappings, which takes a quarter of the time of `towupper` in C. Next is UDP.

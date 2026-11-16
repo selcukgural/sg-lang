@@ -1,0 +1,24 @@
+a: letter true, numeric false, upper false, lower true, control false, up A, down a
+Z: letter true, numeric false, upper true, lower false, control false, up Z, down z
+7: letter false, numeric true, upper false, lower false, control false, up 7, down 7
+é: letter true, numeric false, upper false, lower true, control false, up É, down é
+Ğ: letter true, numeric false, upper true, lower false, control false, up Ğ, down ğ
+ı: letter true, numeric false, upper false, lower true, control false, up I, down ı
+İ: letter true, numeric false, upper true, lower false, control false, up İ, down i
+ß: letter true, numeric false, upper false, lower true, control false, up ß, down ß
+ǅ: letter true, numeric false, upper false, lower false, control false, up Ǆ, down ǆ
+Σ: letter true, numeric false, upper true, lower false, control false, up Σ, down σ
+ς: letter true, numeric false, upper false, lower true, control false, up Σ, down ς
+٣: letter false, numeric true, upper false, lower false, control false, up ٣, down ٣
+½: letter false, numeric true, upper false, lower false, control false, up ½, down ½
+²: letter false, numeric true, upper false, lower false, control false, up ², down ²
+Ⅻ: letter false, numeric true, upper false, lower false, control false, up Ⅻ, down ⅻ
+ª: letter true, numeric false, upper false, lower false, control false, up ª, down ª
+中: letter true, numeric false, upper false, lower false, control false, up 中, down 中
+😀: letter false, numeric false, upper false, lower false, control false, up 😀, down 😀
+ᏸ: letter true, numeric false, upper false, lower true, control false, up Ᏸ, down ᏸ
+ẞ: letter true, numeric false, upper true, lower false, control false, up ẞ, down ß
+true true false false
+false
+true
+true

@@ -1,0 +1,35 @@
+// What the Unicode tables say of a character, and its case changed one character for one.
+void show(char c) {
+    print($"{c}: letter {c.isLetter()}, numeric {c.isNumeric()}, upper {c.isUpper()}, lower {c.isLower()}, control {c.isControl()}, up {c.toUpper()}, down {c.toLower()}")
+}
+
+void main() {
+    show('a')
+    show('Z')
+    show('7')
+    show('é')
+    show('Ğ')
+    show('ı')
+    show('İ')
+    show('ß')
+    show('ǅ')
+    show('Σ')
+    show('ς')
+    show('٣')
+    show('½')
+    show('²')
+    show('Ⅻ')
+    show('ª')
+    show('中')
+    show('😀')
+    show('ᏸ')
+    show('ẞ')
+    // Control characters (Cc), and a soft hyphen, which is a format character (Cf).
+    print($"{'\u{85}'.isControl()} {'\u{1b}'.isControl()} {'\u{ad}'.isControl()} {'\u{ad}'.isLetter()}")
+    // `isDigit` is not here: `'٣'` is numeric, and `parse` does not read it.
+    print('٣'.isAsciiDigit())
+    print('x'.isAlphanumeric() && '9'.isAlphanumeric() && !'-'.isAlphanumeric())
+    // A byte goes through a `char` to be tested beyond ASCII.
+    byte b = 0xC9
+    print(((char)b).isUpper())
+}

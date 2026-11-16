@@ -1,0 +1,47 @@
+// Every code point once, compiled: how many are letters, numbers, upper and lower case letters
+// and control characters, and a sum over what the case methods give for each. The counts and
+// the sums of the full mappings are those of Python's tables of Unicode 17.0 (`unicodedata`,
+// `upper`, `lower`, `casefold`); the interpreter goes over every 17th code point in
+// `tests/cases/ok_unicode_sample.sg`, and over all of them in a test of `src/unicode.rs`.
+long mix(long hash, read string text) {
+    var h = hash
+    for c in text.chars() {
+        h = h.wrappingMultiply(31).wrappingAdd((long)(int)c)
+    }
+    return h
+}
+
+void main() {
+    int letters = 0
+    int numbers = 0
+    int alphanumerics = 0
+    int uppers = 0
+    int lowers = 0
+    int controls = 0
+    long simple = 0
+    long upper = 0
+    long lower = 0
+    long folded = 0
+    for n in 0..0x110000 {
+        var maybe = n.tryToChar()
+        if maybe is null {
+            continue
+        }
+        char c = maybe
+        if c.isLetter() { letters += 1 }
+        if c.isNumeric() { numbers += 1 }
+        if c.isAlphanumeric() { alphanumerics += 1 }
+        if c.isUpper() { uppers += 1 }
+        if c.isLower() { lowers += 1 }
+        if c.isControl() { controls += 1 }
+        simple = simple.wrappingMultiply(31).wrappingAdd((long)(int)c.toUpper() * 3 + (long)(int)c.toLower())
+        var text = c.toString()
+        upper = mix(upper, read text.toUpper())
+        lower = mix(lower, read text.toLower())
+        folded = mix(folded, read text.foldCase())
+    }
+    print($"letters {letters}, numbers {numbers}, alphanumerics {alphanumerics}")
+    print($"upper case {uppers}, lower case {lowers}, control {controls}")
+    print($"simple {simple}")
+    print($"upper {upper}, lower {lower}, folded {folded}")
+}

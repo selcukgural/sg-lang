@@ -1,5 +1,0 @@
-error: type `string` has no method `toUpper`
-  changing the case of a text is not here yet; a `char` and a `byte` have `toAsciiUpper`
-  --> error_text_to_upper.sg:2:16
- 2 |     print("ab".toUpper())
-   |                ^^^^^^^

@@ -321,10 +321,14 @@ const ASCII_TESTS: &[&str] = &["isAscii", "isAsciiDigit", "isAsciiLetter", "isAs
 const CHAR_METHODS: &[&str] = &[
     "isAscii", "isAsciiDigit", "isAsciiLetter", "isAsciiAlphanumeric", "isAsciiUpper", "isAsciiLower", "isAsciiWhitespace",
     "toAsciiUpper", "toAsciiLower", "isWhitespace", "utf8Length", "toString", "equals", "compare",
+    "isLetter", "isNumeric", "isAlphanumeric", "isUpper", "isLower", "isControl", "toUpper", "toLower",
 ];
+/// The methods of `char` that need the Unicode tables.
+const UNICODE_TESTS: &[&str] = &["isLetter", "isNumeric", "isAlphanumeric", "isUpper", "isLower", "isControl"];
 const TEXT_METHODS: &[&str] = &[
     "length", "clone", "asBytes", "write", "clear", "indexOf", "lastIndexOf", "contains", "startsWith", "endsWith", "trim", "trimStart", "trimEnd",
     "chars", "split", "splitWhitespace", "lines", "replaceAll", "repeat", "equalsIgnoreAsciiCase", "equals", "compare",
+    "toUpper", "toLower", "foldCase", "equalsIgnoreCase",
 ];
 
 /// A method a `char` or a `string` does not have: the one it may have meant.
@@ -335,25 +339,20 @@ fn text_method_hint(diag: Diag, target: &Ty, name: &str) -> Diag {
     let text = *target == Ty::Str;
     let lower = name.to_lowercase();
     match lower.as_str() {
-        "toupper" | "tolower" | "touppercase" | "tolowercase" | "to_uppercase" | "to_lowercase" => {
-            let ascii = if lower.contains("upper") { "toAsciiUpper" } else { "toAsciiLower" };
-            return match text {
-                true => diag.note(format!("changing the case of a text is not here yet; a `char` and a `byte` have `{ascii}`")),
-                false => diag.hint(format!("`{ascii}()` changes the ASCII letters; the other characters need Unicode tables, which are not here yet")),
-            };
+        "touppercase" | "tolowercase" | "to_uppercase" | "to_lowercase" | "toupperinvariant" | "tolowerinvariant" => {
+            return diag.hint(format!("`{}()`", if lower.contains("upper") { "toUpper" } else { "toLower" }));
         }
-        "isdigit" | "isletter" | "isalphabetic" | "isnumeric" | "isupper" | "islower" | "isletterordigit" | "isalphanumeric" => {
-            let ascii = match lower.as_str() {
-                "isdigit" | "isnumeric" => "isAsciiDigit",
-                "isletter" | "isalphabetic" => "isAsciiLetter",
-                "isupper" => "isAsciiUpper",
-                "islower" => "isAsciiLower",
-                _ => "isAsciiAlphanumeric",
-            };
-            return diag.hint(format!("`{ascii}()`")).note("the tests that need Unicode tables are not here yet");
+        "isdigit" | "isasciidigit" | "is_digit" | "is_numeric" | "isnumber" if !text => {
+            return diag.hint("`isAsciiDigit()`: the digits `parse` reads").note("`isNumeric()` says yes to the digits of every script, and to `'½'` and `'²'`, which `parse` does not read");
         }
+        "isalphabetic" | "is_alphabetic" if !text => return diag.hint("`isLetter()`"),
+        "isletterordigit" | "is_alphanumeric" if !text => return diag.hint("`isAlphanumeric()`"),
+        "isuppercase" | "is_uppercase" if !text => return diag.hint("`isUpper()`"),
+        "islowercase" | "is_lowercase" if !text => return diag.hint("`isLower()`"),
+        "casefold" | "tocasefold" | "fold" | "folded" | "tofoldcase" if text => return diag.hint("`foldCase()`: the text as it is compared without case"),
+        "totitle" | "totitlecase" | "capitalize" => return diag.note("the title case is not here yet"),
         "substring" | "substr" | "slice" if text => return diag.hint("a range of the text: `text[a..b]`, `text[a..]`"),
-        "equalsignorecase" if text => return diag.hint("`equalsIgnoreAsciiCase`: it treats the ASCII letters alone as the same in either case"),
+        "equals_ignore_case" | "equalsignorecaseinvariant" | "eq_ignore_case" if text => return diag.hint("`equalsIgnoreCase`"),
         "charat" | "at" if text => return diag.hint("the characters, one after the other: `for c in text.chars()`; one byte: `text[i]`"),
         "replacefirst" | "replacen" | "replace_all" | "replaceall" if text => {
             return diag.hint("`replaceAll(old, new)` gives a new text with every `old` replaced").note("replacing only the first ones is not here yet")
@@ -8460,6 +8459,19 @@ impl<'a> Checker<'a> {
                 self.coerce(recv, recv_ty.clone(), target)?;
                 Ok(target.clone())
             }
+            // What the Unicode tables say of a character: a letter (category L), a number (N),
+            // an upper or a lower case letter (Lu, Ll), a control character (Cc).
+            (Ty::Char, _) if UNICODE_TESTS.contains(&name) => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Bool)
+            }
+            // The simple case mapping: one character for one (`'ß'.toUpper()` is `'ß'`).
+            (Ty::Char, "toUpper" | "toLower") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Char)
+            }
             // White space as Unicode has it: what `trim` takes off.
             (Ty::Char, "isWhitespace") => {
                 arity(0)?;
@@ -8638,7 +8650,13 @@ impl<'a> Checker<'a> {
                 arity(0)?;
                 Ok(Ty::Read(Box::new(Ty::Str)))
             }
-            (Ty::Str, "equalsIgnoreAsciiCase") => {
+            // A new text in the other case, by the full mappings (`"straße".toUpper()` is
+            // `"STRASSE"`), or folded as it is compared without case.
+            (Ty::Str, "toUpper" | "toLower" | "foldCase") => {
+                arity(0)?;
+                Ok(Ty::Str)
+            }
+            (Ty::Str, "equalsIgnoreAsciiCase" | "equalsIgnoreCase") => {
                 arity(1)?;
                 self.typed(&mut args[0], &Ty::Read(Box::new(Ty::Str)))?;
                 Ok(Ty::Bool)
@@ -8739,6 +8757,26 @@ impl<'a> Checker<'a> {
                 }
                 if matches!(target, Ty::Int(_)) && matches!(name, "isWhitespace" | "utf8Length") {
                     return Err(diag.note(format!("`{name}` is a method of `char`")));
+                }
+                // A byte is ASCII to these methods; the character of a byte past ASCII is half a
+                // character.
+                if matches!(target, Ty::Int(_)) && (UNICODE_TESTS.contains(&name) || matches!(name, "toUpper" | "toLower")) {
+                    let ascii = match name {
+                        "isLetter" => "isAsciiLetter",
+                        "isNumeric" => "isAsciiDigit",
+                        "isAlphanumeric" => "isAsciiAlphanumeric",
+                        "isUpper" => "isAsciiUpper",
+                        "isLower" => "isAsciiLower",
+                        "toUpper" => "toAsciiUpper",
+                        "toLower" => "toAsciiLower",
+                        _ => "isAscii",
+                    };
+                    let note = format!("`{name}` reads the Unicode tables, and is a method of `char`");
+                    let text = &self.src[recv.span.start..recv.span.end];
+                    return Err(match name {
+                        "isControl" => diag.hint(format!("the ASCII control characters: `{text} < 32 || {text} == 127`")).note(note),
+                        _ => diag.hint(format!("`{ascii}()`")).note(note),
+                    });
                 }
                 if let (Ty::Int(_), "fromLittleEndian" | "fromBigEndian") = (target, name) {
                     return Err(diag.hint(format!("`{name}` is a function of the type: `{target}.{name}(bytes)`")));

@@ -1,0 +1,40 @@
+// A text in the other case by the full mappings, folded, and compared without case.
+void main() {
+    print("straße".toUpper())
+    print("ﬃ ŉ ΐ".toUpper())
+    print("İstanbul ISPARTA ılık".toLower())
+    print("İstanbul ısparta".toUpper())
+    print("ΟΔΟΣ ΟΔΟΣ. ΣΑΣ Σ".toLower())
+    print("ΑΣ'Β ΑΣ'".toLower())
+    print("Hello, World 123".toUpper())
+    print("".toUpper().length())
+    print("ᏸᏹ ꭰ".toUpper())
+    print("ꭰ Ᏸ".foldCase())
+    print("Straße ǅ ﬃ ΣΑΣ".foldCase())
+    print("Straße".equalsIgnoreCase("STRASSE"))
+    print("ΣΑΣ".equalsIgnoreCase("σας"))
+    print("İ".equalsIgnoreCase("i"))
+    print("İ".equalsIgnoreCase("i\u{307}"))
+    print("Ankara".equalsIgnoreCase("ANKARA"))
+    print("Ankara".equalsIgnoreCase("ANKAR"))
+    print("".equalsIgnoreCase(""))
+    print("ss".equalsIgnoreCase("ß"))
+    print("s".equalsIgnoreCase("ß"))
+    print("É".equalsIgnoreAsciiCase("é"))
+    print("É".equalsIgnoreCase("é"))
+    // The length in bytes can change.
+    var word = "ﬁ"
+    var big = word.toUpper()
+    print($"{word.length()} {big.length()}")
+    // A key compared without case: fold it.
+    var counts = HashMap<string, int>()
+    for name in "Straße STRASSE strasse Weg WEG".splitWhitespace() {
+        var slot = counts.getOrAdd(read name.foldCase(), 0)
+        slot += 1
+    }
+    print(counts.get("strasse") ?? 0)
+    print(counts.get("weg") ?? 0)
+    // A look at a text is changed the same way.
+    var line = "  Merhaba Dünya  "
+    print(line.trim().toUpper())
+}

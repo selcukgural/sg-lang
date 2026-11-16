@@ -5765,6 +5765,20 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
             Err(changed) => Value::Int(*ty, changed as i128),
         },
         (Value::Char(value), "isWhitespace", []) => Value::Bool(value.is_whitespace()),
+        (Value::Char(value), "isLetter" | "isNumeric" | "isAlphanumeric" | "isUpper" | "isLower" | "isControl", []) => {
+            use crate::unicode::{CONTROL, LETTER, LOWER, NUMERIC, UPPER};
+            let bits = match name {
+                "isLetter" => LETTER,
+                "isNumeric" => NUMERIC,
+                "isAlphanumeric" => LETTER | NUMERIC,
+                "isUpper" => UPPER,
+                "isLower" => LOWER,
+                _ => CONTROL,
+            };
+            Value::Bool(crate::unicode::is(*value, bits))
+        }
+        (Value::Char(value), "toUpper", []) => Value::Char(crate::unicode::upper(*value)),
+        (Value::Char(value), "toLower", []) => Value::Char(crate::unicode::lower(*value)),
         (Value::Char(value), "utf8Length", []) => Value::Int(IntTy::Nint, value.len_utf8() as i128),
         (Value::Str(_), "clone", []) => recv,
         (Value::Str(_), "asBytes", []) => Value::Slice(cells_of(&recv)),
@@ -5797,6 +5811,10 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
             Value::Str(text.replace(&old.expect("a character or a text"), &new.expect("a character or a text")).into())
         }
         (Value::Str(text), "equalsIgnoreAsciiCase", [Value::Str(other)]) => Value::Bool(text.eq_ignore_ascii_case(other)),
+        (Value::Str(text), "equalsIgnoreCase", [Value::Str(other)]) => Value::Bool(crate::unicode::equals_ignore_case(text, other)),
+        (Value::Str(text), "toUpper", []) => Value::Str(crate::unicode::upper_text(text).into()),
+        (Value::Str(text), "toLower", []) => Value::Str(crate::unicode::lower_text(text).into()),
+        (Value::Str(text), "foldCase", []) => Value::Str(crate::unicode::fold_text(text).into()),
         (Value::Str(text), "chars" | "split" | "splitWhitespace" | "lines", _) => {
             let kind = match name {
                 "chars" => TextIter::Chars,

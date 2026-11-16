@@ -1026,6 +1026,20 @@ c.utf8Length()                                   // 1 to 4: the bytes it takes i
 c.isDigit()                                      // error: no such method. Hint: isAsciiDigit()
 ```
 
+The tests that need Unicode's tables (17.0) are on `char` only. A character changes its case one for one; a text by
+the full mappings, into a new text. No language is taken into account: `"i".toUpper()` is `"I"` everywhere.
+
+```
+c.isLetter(), c.isNumeric(), c.isAlphanumeric()  // categories L and N: '٣' and '½' are numeric
+c.isUpper(), c.isLower(), c.isControl()          // Lu, Ll, Cc
+'ß'.toUpper()                                    // 'ß': one character for one
+"straße".toUpper()                               // "STRASSE": a new string
+"ΟΔΟΣ".toLower()                                 // "οδος": Σ at the end of a word is ς
+"Straße".equalsIgnoreCase("STRASSE")             // true: both folded, nothing allocated
+var key = name.foldCase()                        // a key that does not care about case
+b.toUpper()                                      // error on a byte. Hint: toAsciiUpper()
+```
+
 ### Going over text
 
 A text is split and trimmed without copying: each part is a `read string`, a look at the text where it is.
