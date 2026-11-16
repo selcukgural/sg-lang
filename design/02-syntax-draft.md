@@ -1542,6 +1542,35 @@ var status = try await process.waitAsync(read source.token())
 A method can be async too: `public async int total(read this) { ... }`. One that lends `this` is awaited where it
 is written; one that takes `this` by value may start as a task of its own.
 
+### The network
+
+A `TcpListener` takes connections and a `TcpStream` receives and sends bytes; an address is one text,
+`host:port`. A `UdpSocket` sends and receives datagrams, each one a message that comes whole or not at all, and
+says where it goes and where it came from with a `SocketAddress`:
+
+```
+var socket = try UdpSocket.bind(":5353")       // a number, localhost, or every v4 address; port 0 for any
+var buffer = byte[1500]
+var got = try socket.receiveFrom(ref buffer)   // Received: got.count bytes, from got.from
+try socket.sendTo(buffer[..got.count], got.from)
+
+var server = try SocketAddress.parse("[::1]:53")         // a number only: InvalidInput otherwise
+var all = try SocketAddress.lookup("example.com:53")      // List<SocketAddress>, the name looked up
+print(server)                                  // [::1]:53, as it is read
+var client = try UdpSocket.bind(":0")
+try client.connect(server)                     // send and receive need no address now
+try client.send(question)
+var n = try client.receive(ref buffer)         // ConnectionRefused when nobody listens there
+
+var peer = try conn.remoteAddress()            // the other end of a TcpStream
+```
+
+A datagram longer than the buffer, or one too long to send as one message, is `IoError.MessageTooLong`, where
+Rust and Go cut it short without a word. Every method of a `UdpSocket` lends it with `read`, so a `shared` socket
+serves several tasks at once; there is no `close`, it is closed where it ends. An async function writes the async
+versions (`receiveFromAsync`, `sendToAsync`, `receiveAsync`, `sendAsync`, `SocketAddress.lookupAsync`), awaited
+where they are written, with a token that may come last.
+
 ### Modules and visibility
 
 A folder is a module; there is no declaration in the file. A name without `public` stays inside the module; the rule

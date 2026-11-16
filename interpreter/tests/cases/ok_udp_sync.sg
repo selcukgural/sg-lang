@@ -1,0 +1,57 @@
+// Datagrams without async: each `sendTo` is one message, which `receiveFrom` takes whole, with who
+// sent it. One longer than the buffer is `MessageTooLong` and is gone; one the system cannot send as
+// one message is `MessageTooLong` too, and nothing of it is sent. `connect` gives the socket an
+// address for `send` and `receive`.
+Result<void, IoError> main() {
+    var server = try UdpSocket.bind("127.0.0.1:0")
+    var client = try UdpSocket.bind("localhost:0")
+    print(server.port() > 0)
+    print(server.localAddress().host())
+    var to = server.localAddress()
+    try client.sendTo("hello".asBytes(), to)
+    try client.sendTo("a message too long".asBytes(), to)
+    try client.sendTo("".asBytes(), to)
+    var buffer = byte[8]
+    var got = try server.receiveFrom(ref buffer)
+    print(got.count)
+    print(got.from == client.localAddress())
+    print(string.fromUtf8(buffer[..got.count]) ?? "not text")
+    match server.receiveFrom(ref buffer) {
+        Ok(other) => print($"received {other.count}")
+        Error(cause) => print($"{cause}")
+    }
+    got = try server.receiveFrom(ref buffer)
+    print(got.count)
+    var huge = byte[70000]
+    match client.sendTo(read huge, to) {
+        Ok => print("sent")
+        Error(cause) => print($"{cause}")
+    }
+    print(client.remoteAddress() is null)
+    try client.connect(to)
+    var other = client.remoteAddress() ?? panic("connected")
+    print(other == to)
+    try client.send("one".asBytes())
+    try server.sendTo("two".asBytes(), client.localAddress())
+    var n = try server.receive(ref buffer)
+    print(string.fromUtf8(buffer[..n]) ?? "not text")
+    n = try client.receive(ref buffer)
+    print(string.fromUtf8(buffer[..n]) ?? "not text")
+    // A socket of v6 on the loopback, when the machine has one.
+    match UdpSocket.bind("[::1]:0") {
+        Ok(six) => print(six.localAddress().host())
+        Error(cause) => print($"::1 {cause}")
+    }
+    for text in "example.com:53 1.2.3.4 :70000".split(' ') {
+        match UdpSocket.bind(text) {
+            Ok(_) => print("bound")
+            Error(cause) => print($"{text} -> {cause}")
+        }
+    }
+    var taken = $"{server.localAddress()}".toString()
+    match UdpSocket.bind(read taken) {
+        Ok(_) => print("bound twice")
+        Error(cause) => print($"{cause}")
+    }
+    return Ok()
+}

@@ -1,0 +1,45 @@
+// Datagrams the async way: an echo server and eight clients in one program, over the loopback.
+// Each client sends 64 bytes to the server and waits for them to come back, 20,000 times; the
+// server is one task with one socket, which answers each datagram where it came from. A socket
+// that is not ready is waited for on the loop of the network (kqueue or epoll), through a copy of
+// its own, and the task is woken on a thread of the pool. The C is the classic way: blocking
+// sockets and a thread for the server and each client.
+async Result<void, IoError> serve(UdpSocket socket, int count) {
+    var buffer = byte[64](0)
+    for _ in 0..count {
+        var got = try await socket.receiveFromAsync(ref buffer)
+        try await socket.sendToAsync(buffer[0..got.count], got.from)
+    }
+    return Ok()
+}
+
+async Result<long, IoError> client(SocketAddress to, int rounds) {
+    var socket = try UdpSocket.bind("127.0.0.1:0")
+    try socket.connect(to)
+    var message = byte[64](7)
+    var buffer = byte[64](0)
+    long sum = 0
+    for _ in 0..rounds {
+        try await socket.sendAsync(message[0..64])
+        var got = try await socket.receiveAsync(ref buffer)
+        sum += buffer[got - 1]
+    }
+    return Ok(sum)
+}
+
+async Result<void, IoError> main() {
+    var socket = try UdpSocket.bind("127.0.0.1:0")
+    var to = socket.localAddress()
+    var server = serve(socket, 8 * 20000)
+    var clients = List<Task<Result<long, IoError>>>()
+    for _ in 0..8 {
+        clients.add(client(to, 20000))
+    }
+    long sum = 0
+    while clients.length() > 0 {
+        sum += try await Task.whenAny(ref clients)
+    }
+    try await server
+    print($"{sum} bytes came back")
+    return Ok()
+}

@@ -24,7 +24,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 |---|---|
 | Functions | Top-level functions, type-first signature, recursion, any order. `void main()` is the entry point; `void main(List<string> args)` gets the words of the command line |
 | Modules | A folder is a module: the files in it see each other with nothing written. `use stock` at the top of a file brings in the `public` names of the folder `stock`; `use shop.stock` for a folder inside a folder. The full name works without `use`: `billing.Line { ... }`, `stock.total(read xs)`, `stock.Color.Red`, `List<stock.Product>`. `public` on a struct, an enum, a function, a field or a method; without it the name stays inside its module. `readonly` on a field. The program is `sg main.sg` (the file is the root module, the folders next to it are the modules) or `sg folder` (every file of the folder is the root module). `sg build main.sg` and `sg build folder` compile the same program |
-| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `CString`, `Duration`, `Instant`, `DateTime`, `Random`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, types of C seen only behind a raw pointer (`struct sqlite3` in an `extern` block), `read T` and `ref T` in signatures |
+| Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `UdpSocket`, `SocketAddress`, `CString`, `Duration`, `Instant`, `DateTime`, `Random`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, types of C seen only behind a raw pointer (`struct sqlite3` in an `extern` block), `read T` and `ref T` in signatures |
 | Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
@@ -52,7 +52,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
 | Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`, on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`, `readSomeAsync(ref buffer)`, and on a writer (`Stdout` and `Stderr` too) `writeAsync(x)`, `writeLineAsync(x)`, `writeBytesAsync(bytes)`, `flushAsync()` and `closeAsync()`: the work of the function without `Async`, as a task, with a token that may come last (`read token`; not for `closeAsync`). A call given a borrow, and `closeAsync`, is awaited where it is written. A writer an async function drops without `closeAsync` is written and closed the async way, awaited where it is dropped. In the interpreter the work is done when it is called; the token is looked at first. Compiled too: the work is done on a thread of input and output while the task waits, and what the block of a reader or a writer can do is done in place. A read of an input that can make the program wait (a pipe, a terminal) waits on a thread in both, and a cancel ends the wait; what comes later stays for the next read |
-| Network | `TcpListener.bind("127.0.0.1:8080")` (a number, `localhost`, or `":8080"` for every address of the machine; port 0 lets the system choose, `listener.port()` tells which), `listener.accept()`, `TcpStream.connect("example.com:80")` (the host looked up by name, each of its addresses tried in turn), `stream.receive(ref buffer)` (what has come, at most what the buffer holds; how many, 0 once the other side has let go) and `stream.send(bytes)` (all of them, through a `read` borrow): each gives a `Result` with an `IoError` (`ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong` are the network's). `stream.reader()` gives a `StreamReader` that borrows the stream and reads it through a block of its own (`readLine`, `lines()`, `readText`, `readBytes`, `readSome` and their async versions), while the stream goes on sending; a line or a text longer than 64 KB (`stream.reader(limit)` for another limit) is `LineTooLong`, and so is every read after it. A `receive` while the reader is used again is a compile error, and neither `send` nor `reader()` goes through a `shared` stream. `acceptAsync`, `connectAsync`, `receiveAsync` and `sendAsync` do the same work as a task, awaited where they are written, with a token that may come last; a cancel ends a wait at once and loses nothing that came. A socket sends without a buffer and is closed when it ends. In an async function the calls without `Async` are an error, as for files. In the interpreter a socket that is not ready gives the turn away, and the scheduler waits for the sockets with `poll` when no task can run. Compiled too: a call that has to wait waits with `poll`, and an async one on the loop of the network (epoll, kqueue), on a thread of its own |
+| Network | `TcpListener.bind("127.0.0.1:8080")` (a number, `localhost`, or `":8080"` for every address of the machine; port 0 lets the system choose, `listener.port()` tells which), `listener.accept()`, `TcpStream.connect("example.com:80")` (the host looked up by name, each of its addresses tried in turn), `stream.receive(ref buffer)` (what has come, at most what the buffer holds; how many, 0 once the other side has let go) and `stream.send(bytes)` (all of them, through a `read` borrow): each gives a `Result` with an `IoError` (`ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong` are the network's). `stream.reader()` gives a `StreamReader` that borrows the stream and reads it through a block of its own (`readLine`, `lines()`, `readText`, `readBytes`, `readSome` and their async versions), while the stream goes on sending; a line or a text longer than 64 KB (`stream.reader(limit)` for another limit) is `LineTooLong`, and so is every read after it. A `receive` while the reader is used again is a compile error, and neither `send` nor `reader()` goes through a `shared` stream. `acceptAsync`, `connectAsync`, `receiveAsync` and `sendAsync` do the same work as a task, awaited where they are written, with a token that may come last; a cancel ends a wait at once and loses nothing that came. A socket sends without a buffer and is closed when it ends. In an async function the calls without `Async` are an error, as for files. `stream.localAddress()` and `stream.remoteAddress()` give the two ends as a `SocketAddress`. Datagrams: `UdpSocket.bind("127.0.0.1:0")`, `socket.sendTo(bytes, to)` (one message, whole) and `socket.receiveFrom(ref buffer)` (one message and who sent it, a `Received`), `connect(to)` with `send` and `receive`, all through a `read` borrow so a `shared` socket serves several tasks; a datagram that does not fit is `MessageTooLong`. A `SocketAddress` is read by `SocketAddress.parse("[::1]:53")` and printed the same way, and `SocketAddress.lookup("example.com:53")` gives the addresses of a name. In the interpreter a socket that is not ready gives the turn away, and the scheduler waits for the sockets with `poll` when no task can run. Compiled too: a call that has to wait waits with `poll`, and an async one on the loop of the network (epoll, kqueue), on a thread of its own |
 | Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. All three are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into). `Path.join(a, b)` gives a new path; `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
@@ -274,7 +274,7 @@ hands that to the C compiler (`sg build folder` for a program that is a folder; 
 compiled with it). The interpreter stays as the reference: `cargo test` compiles every program the
 back end accepts and requires the same output as the interpreter, panic messages included, then runs the
 same C once more under the address and undefined-behaviour sanitizers, and once more to see that it left no
-memory behind (297 of 1222 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
+memory behind (301 of 1232 programs for now; the others are almost all programs the checker rejects, on purpose; of the programs that run, one uses what it does not compile yet, 268). A
 program that ends in a panic is not looked at for leaks: a panic does not unwind, and the system takes back
 what the program owned (382). A
 program with tasks or `locked` values runs once more under the thread sanitizer, which stops it where two
@@ -782,6 +782,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/std/random.sg` | The same module's random numbers: `Random` (xoshiro256\*\* seeded with SplitMix64) and `SecureRandom`. Only it calls `Entropy.fill`, the random bytes of the system. A program gets each file of `std` when it names one of its types. A panic inside the module is shown at the program's call that led there (`Interp::call`; in compiled code `Emitter::tracked`) |
 | `src/std/files.sg`, `src/std/path.sg`, `src/std/environment.sg` | The same module's folders (`Directory`, `DirectoryEntry`, `FileInfo`, `FileKind`, and the work of `File.info` and `File.exists`), paths (`Path`) and variables of the environment (`Environment`, `VariableError`). Only they call `System.list`, `System.status` and the other calls of the system; a file of `std` that names a type of another brings it along (a `FileInfo` holds a `DateTime`) |
 | `src/std/process.sg` | The same module's other programs (`Command`, `Process`, `ExitStatus`, `ProcessError`): the search in `PATH`, the checks of what the system cannot take, the pipes taken out of a running program, its stop when it is not waited for, and the reading of how a program ended, over `System.run`, `System.start`, `System.wait`, `System.waitAsync`, `System.signal`, `System.reader`, `System.writer` and `System.executable` |
+| `src/std/net.sg` | The same module's datagrams and addresses (`UdpSocket`, `SocketAddress`, `Received`): reading and printing a v4 and a v6 address, and the two ends of a `TcpStream`. Only it calls the sockets of the system (`System.udpBind`, `System.udpSend`, `System.udpReceive`, `System.lookup` and the others) |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
 
 It is a library with a thin command line on top, so that a language server can later reuse the parser and the
@@ -4843,6 +4844,113 @@ All were approved the same day:
      `error_unicode_upper_case_name`; `error_text_to_upper`, which said the case of a text was not here, is
      gone. `cargo test` passes on macOS and on Linux in a container, where it compiles 297 of 1222 programs, 57
      of them under the thread sanitizer, and 15 of 20 programs of tests.
+Choices made in the eightieth slice (datagrams: `UdpSocket`, `SocketAddress`, and the addresses of a
+`TcpStream`; in the checker, the interpreter and compiled code). 648 to 660 were decided before it on 16
+November 2026, with the parts marked as coming from the slice; 661 to 666 come from the slice.
+All were approved the same day:
+
+648. **What is here**: `UdpSocket` (`bind`, `sendTo`, `receiveFrom`, `connect`, `send`, `receive`, `port`,
+     `localAddress`, `remoteAddress`, and the async versions with a token that may come last),
+     `SocketAddress` (`parse`, `lookup`, `lookupAsync`, `host`, `port`) and `Received`, and the two addresses
+     of a `TcpStream`. Not here, as in Rust's `UdpSocket` without a crate: multicast, the options of a socket
+     (the time to live, the size of its buffers, `SO_REUSEADDR`), a look at a datagram that leaves it in the
+     socket (`peek`), and sending to every host of a network (broadcast), which comes later. From the slice:
+     the zone of a v6 address (`fe80::1%en0`) is not kept, so a link-local address cannot be answered.
+649. **Written in SG, in the language's own module** (`src/std/net.sg`), decided before the slice: an address
+     is read and written in SG, so the interpreter and compiled code read the same texts and print the same
+     way; only the calls of the system under the three types are the compiler's own (`System.udpBind`,
+     `System.udpSend`, `System.udpReceive`, `System.lookup` and the others), and only this module can call
+     them. From the slice: a `SocketAddress` is two `ulong` (the 128 bits of the host; a v4 host is the last
+     32), whether it is v6, and the port: an array is not `Hashable`, two numbers are, so `Copyable`,
+     `Equatable` and `Hashable` come field by field. A v4 address inside a v6 one (`[::ffff:1.2.3.4]:53`) is
+     not equal to the v4 address, as in Rust.
+650. **`SocketAddress.parse(text)` reads a number, never a name**, decided before the slice: `1.2.3.4:53` and
+     `[::1]:53`, anything else `InvalidInput`. From the slice: a part of a v4 address is a number up to 255
+     without a 0 in front (`01.2.3.4` is not read, as in Rust), a v6 address has groups of
+     up to four hex digits, one `::`, and may end in a v4 address (`[::ffff:10.0.0.1]:1`). It is printed as RFC
+     5952 asks: small hex digits, the longest run of two groups of 0 or more as `::` (the first of the
+     longest), never one group alone, and `::ffff:` followed by the v4 address. `host()` gives the host
+     alone, without the brackets, and `port()` the port.
+651. **`SocketAddress.lookup(text)` gives a `List<SocketAddress>`**, decided before the slice: the addresses
+     of `host:port` in the order the system gives them, one for each (as Rust's `to_socket_addrs`); a host
+     written as a number is the one address, found without asking. A name that has no address, and a text
+     that is not `host:port`, are `HostNotFound`, as for `TcpStream.connect`. `lookupAsync` looks the name up
+     on a thread of its own, which a cancel leaves to finish, as `connectAsync` does.
+652. **`receiveFrom` gives a `Received`**, decided before the slice (the first of two ways offered; the other
+     was a `ref SocketAddress` to fill, C#'s way): a struct of two read-only fields, `count` and `from`, so
+     `got.from` answers where the datagram came from. It is `Copyable`, `Equatable` and `Formattable`.
+653. **`UdpSocket.bind(address)` takes what `TcpListener.bind` takes**, decided before the slice: a number,
+     `localhost` (the v4 loopback), or no host for every v4 address; port 0 lets the system choose, and
+     `port()` tells which. From the slice: a name, or a text that is not `host:port`, is `HostNotFound` here
+     as it is for a listener, though `SocketAddress.parse` says `InvalidInput` for the same text: `bind` keeps
+     the word of `TcpListener.bind`, `parse` the word of a text it was given to read. `SO_REUSEADDR` is not
+     set (Rust does not set it for a datagram socket), so a port in use is `AddressInUse`.
+654. **`connect(address)` gives the socket a default address**, decided before the slice: `send` and
+     `receive` need none, and the system lets go of a datagram from anyone else. When nobody listens there,
+     a `send` or a `receive` after it may say `ConnectionRefused`: the system heard so from the other
+     machine. `remoteAddress()` gives that address, or `null` before a `connect`.
+655. **A datagram that does not fit is an error, `MessageTooLong`**, decided before the slice: a new variant of
+     `IoError` (the seventeenth, last), both for a send the system cannot make as one message and for a
+     receive into a buffer shorter than the datagram, which is then gone. Rust and Go cut such a datagram
+     short without a word. A `match` that names every variant of `IoError` needs one more arm.
+656. **Every method goes through a `read` borrow**, decided before the slice: a `shared` socket is used by
+     several tasks at once, which UDP allows, since each message is whole. From the slice: an async call
+     waits for the socket on the loop through a copy of its own (`dup`), as a listener is waited for, since
+     several tasks may wait for one socket.
+657. **No `close`**, decided before the slice: a datagram is handed to the system whole, so nothing is left to
+     lose; the socket is closed where it ends (it is `Disposable` inside the module), and `close()` is an
+     error whose note says so, as for a `TcpStream`.
+658. **The async versions**, decided before the slice: `sendToAsync`, `receiveFromAsync`, `sendAsync`,
+     `receiveAsync` and `lookupAsync`, each awaited where it is written (they lend the socket), with a token
+     that may come last. A token cancelled before the call gives `Cancelled` and nothing is done; a cancel
+     while a receive waits ends the wait at once, and a datagram that comes later is taken by the next
+     receive. A wait has a time limit through `CancellationSource.after(ms)`. A call without `Async` in an
+     async function is an error with the async version in the hint, followed through the calls.
+659. **The interpreter and compiled code**, decided before the slice: Rust's `UdpSocket` in the interpreter,
+     the calls of the system in compiled code, through the loop of the network for async calls. From the
+     slice, in the interpreter: a socket is the number of a socket of the system, which does not block, as a
+     `TcpStream`; a datagram is received into a block one byte longer than the buffer, so one that fills it
+     did not fit. In compiled code: a socket blocks, so a call without async is one call of the system, and
+     an async call asks the system not to wait (`MSG_DONTWAIT`) and waits on the loop instead, so the socket
+     has no state to keep and the two kinds of call share it; a receive is `recvmsg`, whose `MSG_TRUNC` says
+     the datagram did not fit. `UDP_RUNTIME` and `UDP_ASYNC_RUNTIME` are added only to a program that uses
+     them; `sg_net_op` has two more kinds.
+660. **The two addresses of a `TcpStream`**, decided before the slice: `stream.localAddress()` gives a
+     `SocketAddress`, `stream.remoteAddress()` a `Result<SocketAddress, IoError>`, since the system no
+     longer knows the other side once it has broken the connection off (`ConnectionReset`). From the slice:
+     the checker hands both to the module (`SocketAddress.remoteOf(read stream)`), which a program that names
+     either method gets; `ENOTCONN` is `ConnectionReset` for every call.
+661. **A blocking call in an async function names what it waits for**: the note says `receiveFrom` "waits for
+     the network" and `lookup` "waits for a name to be looked up", and the hint writes the async call with
+     its arguments. The hint of a `TcpStream` got its arguments too: `await conn.receiveAsync(ref buffer)`
+     where it said `(...)` (`error_net_blocking_in_async`).
+662. **A user type may have the name of a type of the module**: `struct Received` in a program is its own,
+     as `Command` is; the module's file is read only when the program names one of its types or one of the
+     two methods of a `TcpStream`.
+663. **Found on the way**: a struct literal of `Command` or `Process` said how to make a `DateTime`; it now
+     says `Command("ls")` and `cmd.start()`.
+664. **Measured** (`udpecho`, a new program): an echo server and eight clients in one async program over the
+     loopback, each client sending 64 bytes and waiting for them to come back 20,000 times, the server one
+     task with one socket: 1.261 s against 1.062 s for C, whose sockets block, with a thread for the server
+     and for each client: 1.19 times on macOS (1.267 s checked). A wait wakes two threads where C wakes one,
+     as for `echo` (478), and the socket is waited for through a copy of its own (656), made and closed for
+     each wait. On Linux in a container, 1.668 s against 0.691 s: 2.41 times. Waiting through the socket
+     itself instead of a copy took that to 1.67 s, so the copy is not what costs: the two wakes are. In
+     "Slower than C".
+665. **Measured** (`udpechosync`, a new program): the same without async, the server and each client on a
+     thread of `Task.run`: 1.058 s against the same C, 1.055 s: 1.00 times on macOS (1.070 s checked), each
+     call one call of the system (659); on Linux 0.700 s against 0.707 s, 0.99 times.
+666. **The tests**: `ok_udp_address` (texts read and printed, v4 inside v6, `::` rules, sixteen texts that are
+     not addresses, equality and a `HashSet`, a lookup of a number), `ok_udp_sync` (a datagram whole, one too
+     long for the buffer and one too long to send, an empty one, `connect`, `send` and `receive`, the v6
+     loopback, `bind` given a name and a port in use), `ok_udp_async` (a `shared` socket answered by two
+     tasks at once, a cancel that ends a receive, a token cancelled before each async call, `lookupAsync`,
+     and `ConnectionRefused` on a connected socket), `ok_net_address` (the two ends of a TCP connection,
+     through a borrow too), and six programs the checker refuses (`error_udp_*`).
+     `error_io_error_cancelled_arm` names one more variant. `cargo test` passes on macOS and on Linux in a
+     container, where it compiles 301 of 1232 programs, 61 of them under the thread sanitizer, and 15 of 20
+     programs of tests.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -4900,6 +5008,12 @@ check off.
   again each time. Candidates: the threads of the pool wait for the loop themselves when they have nothing
   to do, so the one the system wakes runs the task (as Tokio's workers do), and a socket that stays on the
   loop, woken by its edges, instead of being put on again for each wait.
+- **Datagrams the async way** (`udpecho`, 1.19 times C on macOS and 2.41 on Linux, choice 664; 1.00 and 0.99
+  without async): the two wakes of `echo`. A copy of the socket is made (`dup`) and closed for each wait, since
+  several tasks may wait for one socket, but waiting without it saved 3% on Linux. Candidates: those of `echo`.
+  The same measurement found `echo` itself 29 times C on Linux in a container (2.237 s against 0.077 s; its C,
+  with blocking sockets and a thread for each connection, is far quicker there than on macOS), so the loop
+  of the network on Linux is the first thing to look at.
 - **Handing a buffer to C across calls** (`deflate`, 1.04 times C, choice 543): zlib reads its input
   between calls, and `buffer.pointer()` lasts only for one (523), so the `Deflater` copies each piece into
   raw memory a byte at a time, and copies what zlib wrote back the same way. Candidates: `Memory.copy`
@@ -4916,6 +5030,9 @@ check off.
 
 ## Not here yet
 
+- **Of datagrams**: multicast, sending to every host of a network (broadcast), the options of a socket (the
+  time to live, the size of its buffers), a look at a datagram that leaves it in the socket (`peek`), and the
+  zone of a v6 address (`fe80::1%en0`), so a link-local address cannot be answered (648).
 - **Of other programs**: two programs joined by a pipe (`a | b`), an output sent straight into a file, a
   look at whether a program has ended without waiting (`try_wait`; a wait with a time limit is
   `waitAsync` with a token of `CancellationSource.after(ms)`), a program left to go on after this one
@@ -4959,7 +5076,7 @@ check off.
   by one task and sent to by another (and so `send` through a `shared` stream), the reader of a connection
   kept in a field or given back (it carries a borrow; `StreamReader<from conn>`), a writer of a connection,
   closing one direction (`shutdown`), the
-  address of the other side, the options of a socket (`TCP_NODELAY`), looking a name up alone, UDP, a
+  options of a socket (`TCP_NODELAY`), a
   listener on every v6 address. `checked` on its own, in a value with one
   owner (`checked int hits` in a plain struct, the design's `RefCell` outside `Rc`). `List<shared T>.clone()`,
   since a list has no `clone` yet, so the design's hint "loop over a copy" is not given. A conflict through two
@@ -5142,4 +5259,4 @@ output is read, and no descriptor of ours handed to it; starting a program takes
 wait. A program is also started and talked to while it runs (`start`, its pipes taken out of the
 `Process` as a writer and readers, `wait`, `kill`, `terminate`), and one that is not waited for is a
 compile error, or stopped where it ends; the async versions take a token, and a cancel stops the program.
-A method can be async. Reading the output of a started program line by line takes 0.85 times `popen` and `getline` in C. A character is tested against the tables of Unicode 17.0 and a text changes its case by Unicode's full mappings, which takes a quarter of the time of `towupper` in C. Next is UDP.
+A method can be async. Reading the output of a started program line by line takes 0.85 times `popen` and `getline` in C. A character is tested against the tables of Unicode 17.0 and a text changes its case by Unicode's full mappings, which takes a quarter of the time of `towupper` in C. Datagrams are sent and received (`UdpSocket`), and an address is read and printed in SG (`SocketAddress`); an echo over UDP takes the time of C without async, and 1.19 times C (2.41 on Linux) the async way. With them the plan made before a preview of the language (04, "Calling C, the direction") is done.

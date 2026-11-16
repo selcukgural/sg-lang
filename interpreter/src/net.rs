@@ -7,7 +7,7 @@
 //! socket of its own when it is done.
 
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -72,6 +72,40 @@ pub fn connect(address: &str) -> Connected {
         }
     }
     Err(last)
+}
+
+/// An address as the language's own module gives it to the system: whether it is v6, the high and
+/// the low 64 bits of the host (a v4 host is the last 32 of `low`), and the port.
+pub fn address_of(v6: bool, high: u64, low: u64, port: u16) -> SocketAddr {
+    match v6 {
+        true => SocketAddr::new(IpAddr::V6(Ipv6Addr::from((u128::from(high) << 64) | u128::from(low))), port),
+        false => SocketAddr::new(IpAddr::V4(Ipv4Addr::from(low as u32)), port),
+    }
+}
+
+/// The four numbers of an address, as `address_of` takes them: v6 (1 or 0), high, low, port.
+pub fn bits_of(at: SocketAddr) -> [u64; 4] {
+    match at.ip() {
+        IpAddr::V4(ip) => [0, 0, u64::from(u32::from(ip)), u64::from(at.port())],
+        IpAddr::V6(ip) => {
+            let bits = u128::from(ip);
+            [1, (bits >> 64) as u64, bits as u64, u64::from(at.port())]
+        }
+    }
+}
+
+/// `System.udpBind`: a datagram socket that does not block.
+pub fn udp_bind(at: SocketAddr) -> io::Result<UdpSocket> {
+    let socket = UdpSocket::bind(at)?;
+    socket.set_nonblocking(true)?;
+    Ok(socket)
+}
+
+/// `System.lookup`: the addresses of a host name, in the order the system gives them; `None`
+/// when it has none.
+pub fn lookup(host: &str) -> Option<Vec<IpAddr>> {
+    let found = (host, 0).to_socket_addrs().ok()?;
+    Some(found.map(|at| at.ip()).collect())
 }
 
 /// A finished piece of work of a thread, which the scheduler hands to the fiber that waits

@@ -1,0 +1,42 @@
+// A `SocketAddress` is read and written in SG: a v4 address, a v6 one with the longest run of
+// groups that are 0 written `::` (the first of the longest, and never one group alone), a v4
+// address inside a v6 one, and what is not an address. Two that are equal are the same in a set.
+void main() {
+    var texts = "1.2.3.4:53 0.0.0.0:0 255.255.255.255:65535 [::1]:53 [::]:0 [2001:DB8::8a2e:370:7334]:443 [::ffff:10.0.0.1]:1 [1:0:0:2:0:0:0:3]:9 [1:0:0:2:2:0:0:3]:9 [1:2:3:4:5:6:7::]:1 [::1.2.3.4]:2 [1::]:5"
+    for text in texts.split(' ') {
+        match SocketAddress.parse(text) {
+            Ok(address) => print($"{text} -> {address}, host {address.host()}, port {address.port()}")
+            Error(cause) => print($"{text} -> {cause}")
+        }
+    }
+    var wrong = "01.2.3.4:5 1.2.3:4 1.2.3.4.5:6 256.1.1.1:1 1.2.3.4:65536 1.2.3.4: 1.2.3.4 ::1:53 [1::2::3]:4 [1:2:3:4:5:6:7:8:9]:1 [12345::]:1 [::1.2.3]:1 [fe80::1%en0]:1 x:1 :53 [::1:53"
+    for text in wrong.split(' ') {
+        match SocketAddress.parse(text) {
+            Ok(address) => print($"{text} -> {address}")
+            Error(cause) => print($"{text} -> {cause}")
+        }
+    }
+    var a = SocketAddress.parse("[::1]:53") ?? panic("an address")
+    var b = SocketAddress.parse("[0:0:0:0:0:0:0:1]:53") ?? panic("an address")
+    var c = SocketAddress.parse("[::ffff:127.0.0.1]:53") ?? panic("an address")
+    var d = SocketAddress.parse("127.0.0.1:53") ?? panic("an address")
+    print(a == b)
+    print(c == d)
+    var seen = HashSet<SocketAddress>()
+    print(seen.add(a))
+    print(seen.add(b))
+    print(seen.add(c))
+    print(seen.add(d))
+    print(seen.length())
+    // A host written as a number is found without asking the system.
+    match SocketAddress.lookup("[::1]:80") {
+        Ok(found) => print($"{found}")
+        Error(cause) => print($"{cause}")
+    }
+    for text in "example.com 1.2.3.4: :80".split(' ') {
+        match SocketAddress.lookup(text) {
+            Ok(found) => print($"{found}")
+            Error(cause) => print($"{text} -> {cause}")
+        }
+    }
+}

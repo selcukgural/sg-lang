@@ -1,0 +1,517 @@
+// The network beyond a TCP connection: where a socket is (`SocketAddress`), a socket that sends and
+// receives datagrams (`UdpSocket`), and what one receive gave (`Received`). An address is read and
+// written here, in SG, so it is the same in every program; only the calls of the system under these
+// types (`System.udpBind`, `System.udpSend`, `System.udpReceive`, `System.lookup` and the others) are
+// the compiler's own, and only this module can call them.
+
+// Where a socket is: a v4 or a v6 address of a host, and a port. Written `1.2.3.4:53` and `[::1]:53`,
+// as `parse` reads it and as it is printed.
+public struct SocketAddress : Copyable, Equatable, Hashable, Formattable {
+    // The 128 bits of a v6 address, the first 64 in `high`; a v4 address is the last 32 bits of `low`.
+    ulong high
+    ulong low
+    // A v6 address: `[::ffff:1.2.3.4]:53` is not `1.2.3.4:53`, though it reaches the same host.
+    bool v6
+    // 0 to 65535.
+    int number
+
+    // An address written as a number, with its port: `1.2.3.4:53` or `[::1]:53`. No name is looked
+    // up, so it never waits; anything else is `InvalidInput`. A name is looked up by `lookup`.
+    public Result<SocketAddress, IoError> parse(read string text) {
+        var colon = colonOf(text)
+        if colon < 0 {
+            return Error(IoError.InvalidInput)
+        }
+        var port = portOf(text, colon)
+        match SocketAddress.numeric(hostOf(text, colon), port) {
+            Ok(address) => return Ok(address)
+            Error(_) => return Error(IoError.InvalidInput)
+        }
+    }
+
+    // The addresses of `host:port`, the host looked up by name, in the order the system gives them;
+    // a host written as a number is the one address, found without asking. `HostNotFound` when the
+    // name has no address, or the text is not `host:port`, as `TcpStream.connect` says it. The lookup
+    // holds the thread; `lookupAsync` does not.
+    public Result<List<SocketAddress>, IoError> lookup(read string address) {
+        var colon = colonOf(address)
+        if colon < 0 || colon == 0 {
+            return Error(IoError.HostNotFound)
+        }
+        var port = portOf(address, colon)
+        var host = hostOf(address, colon)
+        var found = List<SocketAddress>()
+        if SocketAddress.numeric(host, port) is Ok(one) {
+            found.add(one)
+            return Ok(found)
+        }
+        var bits = List<ulong>()
+        try System.lookup(host, ref bits)
+        SocketAddress.collect(read bits, port, ref found)
+        return Ok(found)
+    }
+
+    // `lookup` without holding the thread, for an async function: the name is looked up on a thread
+    // of its own. A cancel ends the wait at once and leaves the lookup to its thread.
+    public async Result<List<SocketAddress>, IoError> lookupAsync(read string address, read CancellationToken token) {
+        try token.check()
+        var colon = colonOf(address)
+        if colon < 0 || colon == 0 {
+            return Error(IoError.HostNotFound)
+        }
+        var port = portOf(address, colon)
+        var host = hostOf(address, colon)
+        var found = List<SocketAddress>()
+        if SocketAddress.numeric(host, port) is Ok(one) {
+            found.add(one)
+            return Ok(found)
+        }
+        var bits = List<ulong>()
+        try await System.lookupAsync(host, ref bits, read token)
+        SocketAddress.collect(read bits, port, ref found)
+        return Ok(found)
+    }
+
+    // The port: 0 to 65535.
+    public int port(read this) {
+        return this.number
+    }
+
+    // The host alone, without the port and without brackets: `1.2.3.4`, `::1`.
+    public string host(read this) {
+        var text = ""
+        if !this.v6 {
+            text.write(dotted(this.low))
+            return text
+        }
+        // `::ffff:1.2.3.4`: a v4 address in a v6 one is written with its v4 part, as RFC 5952 asks.
+        if this.high == 0 && this.low >> 32 == 0xffff {
+            text.write("::ffff:")
+            text.write(dotted(this.low))
+            return text
+        }
+        var groups = int[8]
+        for at in 0..8 {
+            var bits = this.low
+            if at < 4 {
+                bits = this.high
+            }
+            groups[at] = (int)((bits >> (ulong)(48 - 16 * (at % 4))) & 0xffff)
+        }
+        // The longest run of two groups or more that are 0 is written `::`, the first of the longest.
+        var best = -1
+        var bestLength = 1
+        var run = 0
+        for at in 0..8 {
+            if groups[at] == 0 {
+                run += 1
+                if run > bestLength {
+                    bestLength = run
+                    best = at - run + 1
+                }
+            } else {
+                run = 0
+            }
+        }
+        var at = 0
+        while at < 8 {
+            if at == best {
+                text.write("::")
+                at += bestLength
+                continue
+            }
+            if at > 0 && at != best + bestLength {
+                text.write(":")
+            }
+            var group = groups[at]
+            text.write($"{group:x}")
+            at += 1
+        }
+        return text
+    }
+
+    // `1.2.3.4:53`, `[::1]:53`.
+    public void format(read this, ref Formatter f) {
+        var host = this.host()
+        if this.v6 {
+            f.write($"[{host}]:{this.number}")
+        } else {
+            f.write($"{host}:{this.number}")
+        }
+    }
+
+    // A host written as a number: four parts of a v4 address, or the groups of a v6 one.
+    Result<SocketAddress, IoError> numeric(read string host, int port) {
+        var v4 = v4Of(host)
+        if v4 >= 0 {
+            return Ok(SocketAddress { high = 0, low = (ulong)v4, v6 = false, number = port })
+        }
+        var groups = int[8]
+        if !v6Of(host, ref groups) {
+            return Error(IoError.InvalidInput)
+        }
+        ulong high = 0
+        ulong low = 0
+        for at in 0..4 {
+            high = high << 16 | (ulong)groups[at]
+            low = low << 16 | (ulong)groups[at + 4]
+        }
+        return Ok(SocketAddress { high = high, low = low, v6 = true, number = port })
+    }
+
+    // The address the system gave, from `bits[at]` on: whether it is v6, its high and low bits, its port.
+    SocketAddress given(read ulong[] bits, nint at) {
+        return SocketAddress { high = bits[at + 1], low = bits[at + 2], v6 = bits[at] == 1, number = (int)bits[at + 3] }
+    }
+
+    // The addresses `System.lookup` found, three numbers each (v6, high, low), with the port.
+    void collect(read List<ulong> bits, int port, ref List<SocketAddress> found) {
+        var at = 0
+        while at + 2 < bits.length() {
+            found.add(SocketAddress { high = bits[at + 1], low = bits[at + 2], v6 = bits[at] == 1, number = port })
+            at += 3
+        }
+    }
+
+    // `stream.remoteAddress()` of a `TcpStream`: the address of the other side, which the system no
+    // longer knows once that side has broken the connection off (`ConnectionReset`).
+    Result<SocketAddress, IoError> remoteOf(read TcpStream stream) {
+        var bits = ulong[4]
+        if !System.streamAddress(stream, true, ref bits) {
+            return Error(IoError.ConnectionReset)
+        }
+        return Ok(SocketAddress.given(read bits, 0))
+    }
+
+    // `stream.localAddress()` of a `TcpStream`: the address of this side.
+    SocketAddress localOf(read TcpStream stream) {
+        var bits = ulong[4]
+        _ = System.streamAddress(stream, false, ref bits)
+        return SocketAddress.given(read bits, 0)
+    }
+
+    // Whether it is a v6 address, as the calls of the system are given it.
+    bool isV6(read this) {
+        return this.v6
+    }
+}
+
+// What one receive of a datagram gave: how many bytes it put into the buffer, and who sent it.
+public struct Received : Copyable, Equatable, Formattable {
+    public readonly nint count
+    public readonly SocketAddress from
+}
+
+// A socket that sends and receives datagrams: each `sendTo` is one message, which comes whole or not
+// at all, and each `receiveFrom` takes one. Nothing is kept in order or sent again. Every method goes
+// through a `read` borrow, so a `shared` socket is used by several tasks at once. It is closed where it
+// ends; there is no `close`.
+public struct UdpSocket : Disposable {
+    // The socket of the system.
+    long fd
+
+    // A socket at `host:port`, as `TcpListener.bind` takes it: a number, `localhost` (the v4 loopback),
+    // or no host (`":5353"`, every v4 address of the machine). Port 0 lets the system choose, and
+    // `port()` tells which. Nothing is looked up, so it never waits; a name or a text that is not
+    // `host:port` is `HostNotFound`, as for a listener.
+    public Result<UdpSocket, IoError> bind(read string address) {
+        var colon = colonOf(address)
+        if colon < 0 {
+            return Error(IoError.HostNotFound)
+        }
+        var port = portOf(address, colon)
+        var host = hostOf(address, colon)
+        var at = SocketAddress { high = 0, low = 0, v6 = false, number = port }
+        if host == "localhost" {
+            at = SocketAddress { high = 0, low = 0x7f000001, v6 = false, number = port }
+        } else if host.length() > 0 {
+            match SocketAddress.numeric(host, port) {
+                Ok(address) => at = address
+                Error(_) => return Error(IoError.HostNotFound)
+            }
+        }
+        var fd = try System.udpBind(at.isV6(), at.high, at.low, at.number)
+        return Ok(UdpSocket { fd = fd })
+    }
+
+    // The port the socket is bound to.
+    public int port(read this) {
+        return this.localAddress().port()
+    }
+
+    // The address the socket is bound to: `0.0.0.0:5353` when it was bound to every address.
+    public SocketAddress localAddress(read this) {
+        var bits = ulong[4]
+        _ = System.socketAddress(this.fd, false, ref bits)
+        return SocketAddress.given(read bits, 0)
+    }
+
+    // The address `connect` gave the socket, or `null` when it has none.
+    public SocketAddress? remoteAddress(read this) {
+        var bits = ulong[4]
+        if !System.socketAddress(this.fd, true, ref bits) {
+            return null
+        }
+        return SocketAddress.given(read bits, 0)
+    }
+
+    // The datagram to `to`, whole: one that the system cannot send as one message is `MessageTooLong`,
+    // and nothing of it is sent.
+    public Result<void, IoError> sendTo(read this, read byte[] bytes, SocketAddress to) {
+        return System.udpSend(this.fd, bytes, true, to.isV6(), to.high, to.low, to.number)
+    }
+
+    // The next datagram, into the buffer, with who sent it. A datagram longer than the buffer is
+    // `MessageTooLong`, and is gone: the buffer is made as long as the longest message can be.
+    public Result<Received, IoError> receiveFrom(read this, ref byte[] buffer) {
+        var bits = ulong[5]
+        try System.udpReceive(this.fd, ref buffer, ref bits)
+        return Ok(Received { count = (nint)bits[0], from = SocketAddress.given(read bits, 1) })
+    }
+
+    // Sends to `to` and receives only from it from now on: `send` and `receive` need no address, and
+    // a datagram that comes from anyone else is let go of by the system. When nobody listens at `to`,
+    // a `send` or a `receive` after it may say `ConnectionRefused`. Nothing goes over the network, so
+    // it never waits. A second `connect` takes the place of the first.
+    public Result<void, IoError> connect(read this, SocketAddress to) {
+        return System.udpConnect(this.fd, to.isV6(), to.high, to.low, to.number)
+    }
+
+    // `sendTo` the address of `connect`.
+    public Result<void, IoError> send(read this, read byte[] bytes) {
+        return System.udpSend(this.fd, bytes, false, false, 0, 0, 0)
+    }
+
+    // `receiveFrom` the address of `connect`: how many bytes came.
+    public Result<nint, IoError> receive(read this, ref byte[] buffer) {
+        var bits = ulong[5]
+        try System.udpReceive(this.fd, ref buffer, ref bits)
+        return Ok((nint)bits[0])
+    }
+
+    // `sendTo` without holding the thread, for an async function. A token cancelled before the call
+    // sends nothing.
+    public async Result<void, IoError> sendToAsync(read this, read byte[] bytes, SocketAddress to, read CancellationToken token) {
+        return await System.udpSendAsync(this.fd, bytes, true, to.isV6(), to.high, to.low, to.number, read token)
+    }
+
+    // `receiveFrom` without holding the thread, for an async function. A cancel ends the wait at once;
+    // a datagram that comes later stays for the next receive.
+    public async Result<Received, IoError> receiveFromAsync(read this, ref byte[] buffer, read CancellationToken token) {
+        var bits = ulong[5]
+        try await System.udpReceiveAsync(this.fd, ref buffer, ref bits, read token)
+        return Ok(Received { count = (nint)bits[0], from = SocketAddress.given(read bits, 1) })
+    }
+
+    // `send` without holding the thread, for an async function.
+    public async Result<void, IoError> sendAsync(read this, read byte[] bytes, read CancellationToken token) {
+        return await System.udpSendAsync(this.fd, bytes, false, false, 0, 0, 0, read token)
+    }
+
+    // `receive` without holding the thread, for an async function.
+    public async Result<nint, IoError> receiveAsync(read this, ref byte[] buffer, read CancellationToken token) {
+        var bits = ulong[5]
+        try await System.udpReceiveAsync(this.fd, ref buffer, ref bits, read token)
+        return Ok((nint)bits[0])
+    }
+
+    void dispose(ref this) {
+        System.closeSocket(this.fd)
+    }
+}
+
+// The position of the `:` before the port of `host:port`, when the port is a number up to 65535 and
+// a host with `:` in it is written in brackets; -1 when the text is not `host:port`.
+nint colonOf(read string text) {
+    var colon = text.lastIndexOf(':') ?? -1
+    if colon < 0 {
+        return -1
+    }
+    var digits = text.length() - colon - 1
+    if digits < 1 || digits > 5 {
+        return -1
+    }
+    if portOf(text, colon) > 65535 {
+        return -1
+    }
+    for at in colon + 1..text.length() {
+        if text[at] < '0' || text[at] > '9' {
+            return -1
+        }
+    }
+    var host = text[..colon]
+    if host.startsWith('[') {
+        if host.length() < 2 || !host.endsWith(']') {
+            return -1
+        }
+    } else if host.contains(':') {
+        return -1
+    }
+    return colon
+}
+
+// The port after the `:` at `colon`; the digits are looked at by `colonOf`.
+int portOf(read string text, nint colon) {
+    var value = 0
+    for at in colon + 1..text.length() {
+        var c = text[at]
+        if c >= '0' && c <= '9' {
+            value = value * 10 + (int)(c - '0')
+        }
+    }
+    return value
+}
+
+// The host before the `:` at `colon`, without the brackets of a v6 address.
+read string hostOf(read string text, nint colon) from text {
+    if colon >= 2 && text[0] == '[' {
+        return text[1..colon - 1]
+    }
+    return text[..colon]
+}
+
+// The 32 bits of a v4 address written `1.2.3.4`: four numbers up to 255, none with a 0 in front of
+// it; -1 when the text is not one.
+long v4Of(read string host) {
+    long bits = 0
+    var parts = 0
+    long value = 0
+    var digits = 0
+    for at in 0..host.length() + 1 {
+        if at == host.length() || host[at] == '.' {
+            if digits == 0 || parts == 4 {
+                return -1
+            }
+            bits = bits * 256 + value
+            parts += 1
+            value = 0
+            digits = 0
+            continue
+        }
+        var c = host[at]
+        if c < '0' || c > '9' || digits == 3 || (digits == 1 && value == 0) {
+            return -1
+        }
+        value = value * 10 + (long)(c - '0')
+        if value > 255 {
+            return -1
+        }
+        digits += 1
+    }
+    if parts != 4 {
+        return -1
+    }
+    return bits
+}
+
+// The value of a hex digit, or -1.
+int hexOf(byte c) {
+    if c >= '0' && c <= '9' {
+        return (int)(c - '0')
+    }
+    if c >= 'a' && c <= 'f' {
+        return (int)(c - 'a') + 10
+    }
+    if c >= 'A' && c <= 'F' {
+        return (int)(c - 'A') + 10
+    }
+    return -1
+}
+
+// The eight groups of 16 bits of a v6 address: groups of up to four hex digits between `:`, one `::`
+// for one group of 0 or more, and the last two groups written as a v4 address if they are. False when
+// the text is not one; a zone (`%en0`) is not taken.
+bool v6Of(read string host, ref int[] groups) {
+    var found = int[8]
+    var count = 0
+    // How many groups come before `::`; -1 when there is none.
+    var gap = -1
+    var at = 0
+    var n = host.length()
+    if n == 0 {
+        return false
+    }
+    if host[0] == ':' {
+        if n < 2 || host[1] != ':' {
+            return false
+        }
+        gap = 0
+        at = 2
+    }
+    while at < n {
+        var start = at
+        var value = 0
+        while at < n && at - start < 5 && hexOf(host[at]) >= 0 {
+            value = value * 16 + hexOf(host[at])
+            at += 1
+        }
+        if at < n && host[at] == '.' {
+            if count > 6 {
+                return false
+            }
+            var v4 = v4Of(host[start..])
+            if v4 < 0 {
+                return false
+            }
+            found[count] = (int)(v4 >> 16)
+            found[count + 1] = (int)(v4 & 0xffff)
+            count += 2
+            break
+        }
+        var digits = at - start
+        if digits == 0 || digits > 4 || count == 8 {
+            return false
+        }
+        found[count] = value
+        count += 1
+        if at == n {
+            break
+        }
+        if host[at] != ':' {
+            return false
+        }
+        at += 1
+        if at == n {
+            return false
+        }
+        if host[at] == ':' {
+            if gap >= 0 {
+                return false
+            }
+            gap = count
+            at += 1
+        }
+    }
+    if gap < 0 {
+        if count != 8 {
+            return false
+        }
+        for i in 0..8 {
+            groups[i] = found[i]
+        }
+        return true
+    }
+    if count > 7 {
+        return false
+    }
+    for i in 0..8 {
+        groups[i] = 0
+    }
+    for i in 0..gap {
+        groups[i] = found[i]
+    }
+    var after = count - gap
+    for i in 0..after {
+        groups[8 - after + i] = found[gap + i]
+    }
+    return true
+}
+
+// `1.2.3.4`, from the last 32 bits.
+string dotted(ulong bits) {
+    var a = (bits >> 24) & 0xff
+    var b = (bits >> 16) & 0xff
+    var c = (bits >> 8) & 0xff
+    var d = bits & 0xff
+    return $"{a}.{b}.{c}.{d}".toString()
+}

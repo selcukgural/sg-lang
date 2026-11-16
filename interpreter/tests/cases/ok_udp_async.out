@@ -1,0 +1,19 @@
+ping 0
+ping 1
+ping 2
+ping 3
+ping 4
+ping 5
+6
+receive: Cancelled(Cancelled)
+receiveFrom: Cancelled(Cancelled)
+kept
+true
+send: Cancelled(Cancelled)
+sendTo: Cancelled(Cancelled)
+receiveFrom: Cancelled(Cancelled)
+lookup: Cancelled(Cancelled)
+true
+9
+lookup: HostNotFound
+receive: ConnectionRefused

@@ -1,0 +1,87 @@
+// Datagrams in async functions: one `shared` socket answered by two tasks at once, a cancel that
+// ends a wait to receive (a datagram that comes later is taken by the next receive), a token
+// cancelled before the call, a lookup on a thread of its own, and a connected socket that hears
+// that nobody listens.
+async Result<int, IoError> answer(shared UdpSocket server, int rounds) {
+    var buffer = byte[64]
+    var count = 0
+    for _ in 0..rounds {
+        var got = try await server.receiveFromAsync(ref buffer)
+        try await server.sendToAsync(buffer[..got.count], got.from)
+        count += 1
+    }
+    return Ok(count)
+}
+
+async Result<void, IoError> main() {
+    var server = new shared (try UdpSocket.bind("127.0.0.1:0"))
+    var to = server.localAddress()
+    var one = answer(share server, 3)
+    var two = answer(share server, 3)
+    var client = try UdpSocket.bind("127.0.0.1:0")
+    try client.connect(to)
+    var buffer = byte[64]
+    for i in 0..6 {
+        try await client.sendAsync($"ping {i}".toString().asBytes())
+        var n = try await client.receiveAsync(ref buffer)
+        print(string.fromUtf8(buffer[..n]) ?? "not text")
+    }
+    var answered = try await one
+    answered += try await two
+    print(answered)
+    var soon = CancellationSource.after(30)
+    match await client.receiveAsync(ref buffer, read soon.token()) {
+        Ok(n) => print($"received {n}")
+        Error(cause) => print($"receive: {cause}")
+    }
+    // A connected socket hears only from the address it is connected to.
+    var free = try UdpSocket.bind("127.0.0.1:0")
+    var waiting = CancellationSource.after(30)
+    match await free.receiveFromAsync(ref buffer, read waiting.token()) {
+        Ok(_) => print("received")
+        Error(cause) => print($"receiveFrom: {cause}")
+    }
+    var other = try UdpSocket.bind("127.0.0.1:0")
+    try await other.sendToAsync("kept".asBytes(), free.localAddress())
+    var got = try await free.receiveFromAsync(ref buffer, read CancellationToken.None)
+    print(string.fromUtf8(buffer[..got.count]) ?? "not text")
+    print(got.from == other.localAddress())
+    var gone = CancellationSource()
+    gone.cancel()
+    match await client.sendAsync("never".asBytes(), read gone.token()) {
+        Ok => print("sent")
+        Error(cause) => print($"send: {cause}")
+    }
+    match await other.sendToAsync("never".asBytes(), to, read gone.token()) {
+        Ok => print("sent")
+        Error(cause) => print($"sendTo: {cause}")
+    }
+    match await free.receiveFromAsync(ref buffer, read gone.token()) {
+        Ok(_) => print("received")
+        Error(cause) => print($"receiveFrom: {cause}")
+    }
+    match await SocketAddress.lookupAsync("localhost:9", read gone.token()) {
+        Ok(_) => print("found")
+        Error(cause) => print($"lookup: {cause}")
+    }
+    var found = try await SocketAddress.lookupAsync("localhost:9")
+    print(found.length() > 0)
+    print(found[0].port())
+    match await SocketAddress.lookupAsync("no.such.host.invalid:9") {
+        Ok(_) => print("found")
+        Error(cause) => print($"lookup: {cause}")
+    }
+    // A port nobody listens on: the system says so to the connected socket.
+    var gap = other.localAddress()
+    other = try UdpSocket.bind("127.0.0.1:0")
+    var lone = try UdpSocket.bind("127.0.0.1:0")
+    try lone.connect(gap)
+    try await lone.sendAsync("anyone?".asBytes())
+    var later = CancellationSource.after(2000)
+    match await lone.receiveAsync(ref buffer, read later.token()) {
+        Ok(n) => print($"received {n}")
+        Error(cause) => print($"receive: {cause}")
+    }
+    _ = other
+    return Ok()
+}

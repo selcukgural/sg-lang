@@ -1,0 +1,5 @@
+error: `UdpSocket` has no method `close`
+  a `UdpSocket` has nothing to lose: it is closed when it ends
+  --> error_udp_close.sg:3:12
+ 3 |     socket.close()
+   |            ^^^^^

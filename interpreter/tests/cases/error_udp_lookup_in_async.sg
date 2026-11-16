@@ -1,0 +1,5 @@
+async Result<void, IoError> main() {
+    var found = try SocketAddress.lookup("localhost:53")
+    print(found.length())
+    return Ok()
+}

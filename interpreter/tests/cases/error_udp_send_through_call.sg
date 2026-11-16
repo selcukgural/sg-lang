@@ -1,0 +1,9 @@
+Result<void, IoError> ping(read UdpSocket socket) {
+    return socket.send("ping".asBytes())
+}
+
+async Result<void, IoError> main() {
+    var socket = try UdpSocket.bind("127.0.0.1:0")
+    try ping(read socket)
+    return Ok()
+}

@@ -1,0 +1,42 @@
+// `udpecho` without async: the server runs on a thread of its own and each client on one
+// (`Task.run`), and every call is one call of the system, whose socket blocks. The C is that of
+// `udpecho`.
+Result<void, IoError> serve(UdpSocket socket, int count) {
+    var buffer = byte[64](0)
+    for _ in 0..count {
+        var got = try socket.receiveFrom(ref buffer)
+        try socket.sendTo(buffer[0..got.count], got.from)
+    }
+    return Ok()
+}
+
+Result<long, IoError> client(SocketAddress to, int rounds) {
+    var socket = try UdpSocket.bind("127.0.0.1:0")
+    try socket.connect(to)
+    var message = byte[64](7)
+    var buffer = byte[64](0)
+    long sum = 0
+    for _ in 0..rounds {
+        try socket.send(message[0..64])
+        var got = try socket.receive(ref buffer)
+        sum += buffer[got - 1]
+    }
+    return Ok(sum)
+}
+
+Result<void, IoError> main() {
+    var socket = try UdpSocket.bind("127.0.0.1:0")
+    var to = socket.localAddress()
+    var server = Task.run(serve, socket, 8 * 20000)
+    var clients = List<Task<Result<long, IoError>>>()
+    for _ in 0..8 {
+        clients.add(Task.run(client, to, 20000))
+    }
+    long sum = 0
+    while clients.length() > 0 {
+        sum += try Task.whenAny(ref clients).wait()
+    }
+    try server.wait()
+    print($"{sum} bytes came back")
+    return Ok()
+}

@@ -395,6 +395,38 @@ pub enum SystemCall {
     PipeReader,
     /// `System.writer(end)`: the writer of the end of a pipe made by `start`, which it owns.
     PipeWriter,
+    /// `System.udpBind(v6, high, low, port)`: a datagram socket bound to the address; gives the
+    /// socket of the system. An address goes to the system as four values: whether it is v6, the
+    /// high and the low 64 bits of the host (a v4 host is the last 32), and the port.
+    UdpBind,
+    /// `System.udpConnect(fd, v6, high, low, port)`: the address `send` sends to and `receive`
+    /// receives from.
+    UdpConnect,
+    /// `System.udpSend(fd, read bytes, to, v6, high, low, port)`: one datagram, to the address
+    /// when `to`, and to that of `connect` otherwise. One the system cannot send whole is
+    /// `MessageTooLong`.
+    UdpSend,
+    /// `System.udpSendAsync(..., read token)`: the same without holding the thread.
+    UdpSendAsync,
+    /// `System.udpReceive(fd, ref buffer, ref bits)`: one datagram into the buffer; `bits` gets
+    /// how many bytes, then the address it came from (v6, high, low, port). One longer than the
+    /// buffer is `MessageTooLong`.
+    UdpReceive,
+    /// `System.udpReceiveAsync(..., read token)`: the same without holding the thread.
+    UdpReceiveAsync,
+    /// `System.socketAddress(fd, remote, ref bits)`: the address the socket is bound to, or the one
+    /// it is connected to; `false` when it has none.
+    SocketName,
+    /// `System.streamAddress(read stream, remote, ref bits)`: the same for a `TcpStream`.
+    StreamName,
+    /// `System.closeSocket(fd)`: `close`.
+    CloseSocket,
+    /// `System.lookup(host, ref bits)`: the addresses of a host name, three numbers each (v6,
+    /// high, low).
+    Lookup,
+    /// `System.lookupAsync(host, ref bits, read token)`: the same on a thread of its own, which a
+    /// cancel leaves.
+    LookupAsync,
 }
 
 impl IoCall {

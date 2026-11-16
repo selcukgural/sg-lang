@@ -24,12 +24,18 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("path.sg", include_str!("std/path.sg"), &["Path"]),
     ("environment.sg", include_str!("std/environment.sg"), &["Environment", "VariableError"]),
     ("process.sg", include_str!("std/process.sg"), &["Command", "Process", "ExitStatus", "ProcessError"]),
+    ("net.sg", include_str!("std/net.sg"), &["SocketAddress", "UdpSocket", "Received"]),
 ];
 
 /// The functions of the built-in `File` that the language's own module does the work of
 /// (`File.info(path)` is `FileInfo`'s): a program that names `File` and one of them gets the file
 /// of `FileInfo`.
 pub const STD_FILE_CALLS: &[&str] = &["info", "exists"];
+
+/// The methods of the built-in `TcpStream` that the language's own module does the work of
+/// (`stream.remoteAddress()` gives a `SocketAddress`): a program that names one gets the file of
+/// `SocketAddress`.
+pub const STD_STREAM_CALLS: &[&str] = &["remoteAddress", "localAddress"];
 
 /// Every type of the language's own module.
 pub fn std_types() -> impl Iterator<Item = &'static str> {
@@ -83,6 +89,9 @@ impl Sources {
         }
         if named.contains("File") && STD_FILE_CALLS.iter().any(|name| named.contains(*name)) {
             named.insert("FileInfo".to_string());
+        }
+        if STD_STREAM_CALLS.iter().any(|name| named.contains(*name)) {
+            named.insert("SocketAddress".to_string());
         }
         // A file of the module may name a type of another (a `FileInfo` holds a `DateTime`), so
         // the names of each file brought are looked at too, until nothing more is named.

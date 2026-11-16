@@ -39,7 +39,10 @@
 //! `Path`, `Environment`); the calls of the system under them, and `File.delete`, `File.move`,
 //! `File.replace` and `File.copy`, are C (see `FILES_RUNTIME`), and so is the running of another
 //! program under `Command` and `Process` (see `PROCESS_RUNTIME`, with the reader of a pipe in
-//! `PROCESS_PIPES_RUNTIME` and the async wait in `PROCESS_ASYNC_RUNTIME`). An async method is
+//! `PROCESS_PIPES_RUNTIME` and the async wait in `PROCESS_ASYNC_RUNTIME`), and so are the datagrams
+//! of `UdpSocket` and the addresses of `SocketAddress`, whose sockets are C (see `UDP_RUNTIME`, the
+//! async calls on the loop of the network in `NET_ASYNC_RUNTIME`, and a lookup on a thread in
+//! `UDP_ASYNC_RUNTIME`). An async method is
 //! an async function with `this` in front of its parameters. A function of the module takes the
 //! place of its call as one more parameter, so a panic inside it is shown at the program's line
 //! (see `Emitter::tracked`). A type
@@ -2284,6 +2287,7 @@ static sg_cancel* sg_cancel_after(int32_t ms, const char* loc) {
 /// socket with `poll`. Added only to such a program, after `IO_RUNTIME`.
 const NET_RUNTIME: &str = r#"
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -2524,6 +2528,52 @@ static int sg_net_connect(sg_str address, sg_socket* out) {
     freeaddrinfo(list);
     return code;
 }
+/* A datagram socket of `UdpSocket` is a number of the system, as the language's own module keeps
+   it. It blocks, so a call that is not async is one call of the system; an async call never waits
+   in the system (`MSG_DONTWAIT`) and waits on the loop instead, so the two kinds of call share a
+   socket. An address comes as the module gives it: whether it is v6, the high and the low 64 bits
+   of the host (a v4 host is the last 32 of `low`), and the port. */
+static inline socklen_t sg_udp_at(bool v6, uint64_t high, uint64_t low, int32_t port, struct sockaddr_storage* at) {
+    memset(at, 0, sizeof *at);
+    if (v6) {
+        struct sockaddr_in6* a = (struct sockaddr_in6*)at;
+        a->sin6_family = AF_INET6;
+        a->sin6_port = htons((uint16_t)port);
+        for (int i = 0; i < 8; i++) {
+            a->sin6_addr.s6_addr[i] = (uint8_t)(high >> (56 - 8 * i));
+            a->sin6_addr.s6_addr[8 + i] = (uint8_t)(low >> (56 - 8 * i));
+        }
+        return sizeof *a;
+    }
+    struct sockaddr_in* a = (struct sockaddr_in*)at;
+    a->sin_family = AF_INET;
+    a->sin_port = htons((uint16_t)port);
+    a->sin_addr.s_addr = htonl((uint32_t)low);
+    return sizeof *a;
+}
+/* One try of a send of one datagram (`to` NULL: to the address of `connect`) and of a receive:
+   0, EAGAIN when the socket is not ready, or the code the system gave. A datagram longer than
+   the buffer is EMSGSIZE, and is gone. */
+static inline int sg_udp_send_now(int fd, const uint8_t* from, int64_t len, const struct sockaddr_storage* to, socklen_t to_len, int flags) {
+    ssize_t n = to ? sendto(fd, from, (size_t)len, flags, (const struct sockaddr*)to, to_len) : send(fd, from, (size_t)len, flags);
+    if (n < 0) return errno == EWOULDBLOCK ? EAGAIN : sg_os_error();
+    return 0;
+}
+static inline int sg_udp_recv_now(int fd, uint8_t* to, int64_t len, struct sockaddr_storage* from, int64_t* got, int flags) {
+    struct iovec part = { to, (size_t)len };
+    struct msghdr m;
+    memset(&m, 0, sizeof m);
+    memset(from, 0, sizeof *from);
+    m.msg_name = from;
+    m.msg_namelen = sizeof *from;
+    m.msg_iov = &part;
+    m.msg_iovlen = 1;
+    ssize_t n = recvmsg(fd, &m, flags);
+    if (n < 0) return errno == EWOULDBLOCK ? EAGAIN : sg_os_error();
+    if (m.msg_flags & MSG_TRUNC) return EMSGSIZE;
+    *got = n;
+    return 0;
+}
 /* `conn.reader(limit)`: a reader of the connection, which it borrows (see `sg_reader`). */
 static sg_reader sg_net_reader(sg_socket* s, int64_t limit, const char* loc) {
     if (limit < 1) {
@@ -2534,6 +2584,165 @@ static sg_reader sg_net_reader(sg_socket* s, int64_t limit, const char* loc) {
     uint8_t* block = malloc(65536);
     if (!block) abort();
     return (sg_reader){ s->fd, block, 0, 0, 0, false, s, 65536, limit, false, 0, false };
+}
+"#;
+
+/// The calls of the system under `UdpSocket` and `SocketAddress` that are not async: binding,
+/// connecting, a send and a receive that block, the addresses of a socket, and a lookup of a
+/// name. After `NET_RUNTIME`.
+const UDP_RUNTIME: &str = r#"
+/* The four values of an address the system gave, into `out`: v6 (1 or 0), high, low, port. */
+static inline void sg_udp_bits(const struct sockaddr_storage* at, uint64_t* out, int64_t n) {
+    uint64_t v[4] = { 0, 0, 0, 0 };
+    if (at->ss_family == AF_INET6) {
+        const struct sockaddr_in6* a = (const struct sockaddr_in6*)at;
+        v[0] = 1;
+        for (int i = 0; i < 8; i++) {
+            v[1] = v[1] << 8 | a->sin6_addr.s6_addr[i];
+            v[2] = v[2] << 8 | a->sin6_addr.s6_addr[8 + i];
+        }
+        v[3] = ntohs(a->sin6_port);
+    } else if (at->ss_family == AF_INET) {
+        const struct sockaddr_in* a = (const struct sockaddr_in*)at;
+        v[2] = ntohl(a->sin_addr.s_addr);
+        v[3] = ntohs(a->sin_port);
+    }
+    for (int64_t i = 0; i < 4 && i < n; i++) out[i] = v[i];
+}
+/* A received datagram: how many bytes, then the address it came from. */
+static inline void sg_udp_got(int64_t got, const struct sockaddr_storage* from, uint64_t* out, int64_t n) {
+    if (n > 0) out[0] = (uint64_t)got;
+    if (n > 1) sg_udp_bits(from, out + 1, n - 1);
+}
+/* `System.udpBind`: a socket of its own, not handed to programs this one starts. */
+static inline int sg_udp_bind(bool v6, uint64_t high, uint64_t low, int32_t port, int64_t* fd) {
+    struct sockaddr_storage at;
+    socklen_t len = sg_udp_at(v6, high, low, port, &at);
+#if defined(__linux__)
+    int s = socket(at.ss_family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+#else
+    int s = socket(at.ss_family, SOCK_DGRAM, 0);
+    if (s >= 0) fcntl(s, F_SETFD, FD_CLOEXEC);
+#endif
+    if (s < 0) return sg_os_error();
+    if (bind(s, (struct sockaddr*)&at, len) != 0) {
+        int code = sg_os_error();
+        close(s);
+        return code;
+    }
+    *fd = s;
+    return 0;
+}
+static inline int sg_udp_connect(int64_t fd, bool v6, uint64_t high, uint64_t low, int32_t port) {
+    struct sockaddr_storage at;
+    socklen_t len = sg_udp_at(v6, high, low, port, &at);
+    while (connect((int)fd, (struct sockaddr*)&at, len) != 0) {
+        if (errno != EINTR) return sg_os_error();
+    }
+    return 0;
+}
+static inline int sg_udp_send(int64_t fd, const uint8_t* from, int64_t len, bool to, bool v6, uint64_t high, uint64_t low, int32_t port) {
+    struct sockaddr_storage at;
+    socklen_t at_len = to ? sg_udp_at(v6, high, low, port, &at) : 0;
+    for (;;) {
+        int code = sg_udp_send_now((int)fd, from, len, to ? &at : NULL, at_len, 0);
+        if (code == EINTR) continue;
+        if (code != EAGAIN) return code;
+        if ((code = sg_net_poll((int)fd, true))) return code;
+    }
+}
+static inline int sg_udp_recv(int64_t fd, uint8_t* to, int64_t len, uint64_t* out, int64_t n) {
+    struct sockaddr_storage from;
+    for (;;) {
+        int64_t got = 0;
+        int code = sg_udp_recv_now((int)fd, to, len, &from, &got, 0);
+        if (!code) {
+            sg_udp_got(got, &from, out, n);
+            return 0;
+        }
+        if (code == EINTR) continue;
+        if (code != EAGAIN) return code;
+        if ((code = sg_net_poll((int)fd, false))) return code;
+    }
+}
+/* `System.socketAddress` and `System.streamAddress`: false when the socket has no such address. */
+static inline bool sg_udp_name(int fd, bool remote, uint64_t* out, int64_t n) {
+    struct sockaddr_storage at;
+    memset(&at, 0, sizeof at);
+    socklen_t len = sizeof at;
+    int r = remote ? getpeername(fd, (struct sockaddr*)&at, &len) : getsockname(fd, (struct sockaddr*)&at, &len);
+    if (r != 0) return false;
+    sg_udp_bits(&at, out, n);
+    return true;
+}
+/* The host of `System.lookup`, ended by a zero byte: false for one no name can be. */
+static inline bool sg_udp_host(sg_str host, char out[256]) {
+    if (host.len < 1 || host.len > 255 || memchr(host.ptr, 0, (size_t)host.len)) return false;
+    memcpy(out, host.ptr, (size_t)host.len);
+    out[host.len] = 0;
+    return true;
+}
+/* The addresses a lookup found, three numbers each, into `out` when it is not NULL; how many
+   numbers. */
+static inline int64_t sg_udp_found(const struct addrinfo* list, uint64_t* out) {
+    int64_t n = 0;
+    for (const struct addrinfo* a = list; a; a = a->ai_next) {
+        if (a->ai_family != AF_INET && a->ai_family != AF_INET6) continue;
+        struct sockaddr_storage at;
+        memset(&at, 0, sizeof at);
+        memcpy(&at, a->ai_addr, a->ai_addrlen <= sizeof at ? a->ai_addrlen : sizeof at);
+        uint64_t bits[4];
+        sg_udp_bits(&at, bits, 4);
+        if (out) {
+            out[n] = bits[0];
+            out[n + 1] = bits[1];
+            out[n + 2] = bits[2];
+        }
+        n += 3;
+    }
+    return n;
+}
+"#;
+
+/// `System.lookupAsync`: the name is looked up on a thread of input and output, as for
+/// `connectAsync`, and a cancel leaves it to the thread. After `NET_ASYNC_RUNTIME`.
+const UDP_ASYNC_RUNTIME: &str = r#"
+/* The wait in the frame of the task. `state`: SG_WAITING, SG_OVER (with `code` and `list`), or
+   SG_CANCELLED. */
+typedef struct { sg_wait w; int state; int code; struct addrinfo* list; } sg_io_lookup;
+static void sg_udp_lookup_start(sg_io_lookup* x, sg_str host, sg_cancel* token, const char* loc) {
+    x->code = 0;
+    x->list = NULL;
+    x->state = SG_OVER;
+    memset(&x->w, 0, sizeof x->w);
+    if (sg_cancelled(token)) {
+        x->state = SG_CANCELLED;
+        return;
+    }
+    sg_lookup* f = calloc(1, sizeof *f);
+    if (!f) abort();
+    if (!sg_udp_host(host, f->host)) {
+        free(f);
+        x->code = SG_HOST_NOT_FOUND;
+        return;
+    }
+    memcpy(f->port, "0", 2);
+    f->far.run = sg_lookup_run;
+    f->far.lost = sg_lookup_lost;
+    f->far.keep = true;
+    x->state = sg_far_start(&f->far, &x->w, token, loc);
+}
+static bool sg_udp_lookup_ready(sg_io_lookup* x) {
+    if (x->state != SG_WAITING) return true;
+    if (!sg_wait_settled(&x->w)) return false;
+    x->state = sg_wait_state(&x->w);
+    if (x->state != SG_CANCELLED) {
+        sg_lookup* f = (sg_lookup*)x->w.on.far;
+        x->code = f->code;
+        x->list = f->code ? NULL : f->list;
+        free(f);
+    }
+    return true;
 }
 "#;
 
@@ -2748,7 +2957,7 @@ static void sg_lookup_lost(sg_far* f) {
 /* An async call of the network, in the frame of the task: what it is, where it is, and what it
    gives (`code`: 0, the code of the system, SG_HOST_NOT_FOUND, or SG_CUT for a cancel; `out`:
    the socket that `acceptAsync` and `connectAsync` give, `done`: the bytes of `receiveAsync`). */
-enum { SG_ACCEPT, SG_RECEIVE, SG_SEND, SG_CONNECT };
+enum { SG_ACCEPT, SG_RECEIVE, SG_SEND, SG_CONNECT, SG_UDP_SEND, SG_UDP_RECEIVE };
 enum { SG_NET_TRY, SG_NET_WAIT, SG_NET_LOOKUP, SG_NET_CONNECT, SG_NET_DONE };
 #define SG_CUT (-6)
 typedef struct {
@@ -2770,6 +2979,9 @@ typedef struct {
     struct addrinfo* next;
     char host[256];
     char port[6];
+    /* A datagram: where it goes (`at_len` 0 for the address of `connect`), or where it came from. */
+    struct sockaddr_storage at;
+    socklen_t at_len;
 } sg_net_op;
 /* An async call makes the socket stop blocking, once. */
 static inline sg_net_op sg_net_accept_op(sg_listener* l, sg_cancel* token, const char* loc) {
@@ -2792,6 +3004,16 @@ static inline sg_net_op sg_net_receive_op(sg_socket* s, uint8_t* to, int64_t len
 static inline sg_net_op sg_net_send_op(sg_socket* s, const uint8_t* from, int64_t len, sg_cancel* token, const char* loc) {
     sg_socket_nonblock(s);
     return (sg_net_op){ .kind = SG_SEND, .fd = s->fd, .armed = &s->armed, .token = token, .loc = loc, .from = from, .len = len, .out = -1 };
+}
+/* A datagram socket may be waited for by several tasks at once (a `shared` `UdpSocket`), so it is
+   waited for through a copy of its own, as a listener is. */
+static inline sg_net_op sg_net_udp_send_op(int64_t fd, const uint8_t* from, int64_t len, bool to, bool v6, uint64_t high, uint64_t low, int32_t port, sg_cancel* token, const char* loc) {
+    sg_net_op op = { .kind = SG_UDP_SEND, .fd = (int)fd, .armed = NULL, .token = token, .loc = loc, .from = from, .len = len, .out = -1 };
+    if (to) op.at_len = sg_udp_at(v6, high, low, port, &op.at);
+    return op;
+}
+static inline sg_net_op sg_net_udp_receive_op(int64_t fd, uint8_t* to, int64_t len, sg_cancel* token, const char* loc) {
+    return (sg_net_op){ .kind = SG_UDP_RECEIVE, .fd = (int)fd, .armed = NULL, .token = token, .loc = loc, .to = to, .len = len, .out = -1 };
 }
 static sg_net_op sg_net_connect_op(sg_str address, sg_cancel* token, const char* loc) {
     sg_net_op op = { .kind = SG_CONNECT, .fd = -1, .token = token, .loc = loc, .out = -1 };
@@ -2855,6 +3077,10 @@ static bool sg_net_go(sg_net_op* op) {
             code = sg_net_accept_now(op->fd, &op->out, true);
         } else if (op->kind == SG_RECEIVE) {
             code = sg_net_recv_now(op->fd, op->to, op->len, &op->done);
+        } else if (op->kind == SG_UDP_SEND) {
+            code = sg_udp_send_now(op->fd, op->from, op->len, op->at_len ? &op->at : NULL, op->at_len, MSG_DONTWAIT);
+        } else if (op->kind == SG_UDP_RECEIVE) {
+            code = sg_udp_recv_now(op->fd, op->to, op->len, &op->at, &op->done, MSG_DONTWAIT);
         } else {
             while (op->done < op->len) {
                 int64_t sent = 0;
@@ -2865,7 +3091,7 @@ static bool sg_net_go(sg_net_op* op) {
         if (!code) return sg_net_finish(op, 0);
         if (sg_net_again(code, op->kind == SG_ACCEPT)) continue;
         if (code != EAGAIN) return sg_net_finish(op, code);
-        int st = sg_wait_start(&op->w, op->fd, op->kind == SG_SEND, op->armed, op->token, op->loc);
+        int st = sg_wait_start(&op->w, op->fd, op->kind == SG_SEND || op->kind == SG_UDP_SEND, op->armed, op->token, op->loc);
         if (st == SG_WAITING) return false;
         return sg_net_finish(op, st == SG_CANCELLED ? SG_CUT : st);
     }
@@ -3617,7 +3843,8 @@ const IO_RUNTIME: &str = r#"
    which keeps the code. A host that could not be found, or an address that is not `host:port`,
    has a code of its own (10 HostNotFound), and so has a line longer than the limit of the reader
    of a connection (11 LineTooLong). 12 AlreadyExists, 13 NotDirectory, 14 DirectoryNotEmpty; 15 InvalidInput, which only
-   the language's own module gives. */
+   the language's own module gives; 16 MessageTooLong, a datagram too long to send whole or for the
+   buffer it was received into. */
 #define SG_HOST_NOT_FOUND (-10)
 #define SG_LINE_TOO_LONG (-11)
 static int sg_io_kind(int code) {
@@ -3625,7 +3852,8 @@ static int sg_io_kind(int code) {
     case SG_HOST_NOT_FOUND: return 10;
     case SG_LINE_TOO_LONG: return 11;
     case ECONNREFUSED: return 7;
-    case ECONNRESET: case ECONNABORTED: case EPIPE: return 8;
+    case ECONNRESET: case ECONNABORTED: case EPIPE: case ENOTCONN: return 8;
+    case EMSGSIZE: return 16;
     case EADDRINUSE: return 9;
     case ENOENT: return 0;
     case EEXIST: return 12;
@@ -4871,6 +5099,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     if emitter.made.contains("net") {
         out.push_str(NET_RUNTIME);
     }
+    if emitter.made.contains("udp") {
+        out.push_str(UDP_RUNTIME);
+    }
     if emitter.made.contains("process pipes") {
         out.push_str(PROCESS_PIPES_RUNTIME);
     }
@@ -4882,6 +5113,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     if emitter.made.contains("process async") {
         out.push_str(PROCESS_ASYNC_RUNTIME);
+    }
+    if emitter.made.contains("udp async") {
+        out.push_str(UDP_ASYNC_RUNTIME);
     }
     if tests {
         out.push_str(TEST_SUPPORT);
@@ -10101,7 +10335,51 @@ impl<'a> Emitter<'a> {
                 self.made.insert("process".to_string());
                 ("sg_system_writer", vec![Ty::Int(IntTy::Long)], "return sg_proc_writer(a0);".to_string())
             }
-            SystemCall::WaitAsync => unreachable!("the checker has `System.waitAsync` awaited where it is written"),
+            SystemCall::WaitAsync | SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync | SystemCall::LookupAsync => {
+                unreachable!("the checker has the async calls of `System` awaited where they are written")
+            }
+            SystemCall::UdpBind | SystemCall::UdpConnect | SystemCall::UdpSend | SystemCall::UdpReceive | SystemCall::SocketName | SystemCall::StreamName | SystemCall::CloseSocket | SystemCall::Lookup => {
+                self.made.extend(["net".to_string(), "udp".to_string()]);
+                let fd = || Ty::Int(IntTy::Long);
+                let address = || [Ty::Bool, Ty::Int(IntTy::Ulong), Ty::Int(IntTy::Ulong), Ty::Int(IntTy::Int)];
+                let bits = || Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Ulong)))));
+                let buffer = |mode: fn(Box<Ty>) -> Ty| mode(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+                match call {
+                    SystemCall::UdpBind => (
+                        "sg_system_udp_bind",
+                        address().to_vec(),
+                        format!("int64_t fd = -1; int code = sg_udp_bind(a0, a1, a2, a3, &fd); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ fd }} }};", failed("sg_io_error(code)")),
+                    ),
+                    SystemCall::UdpConnect => ("sg_system_udp_connect", [vec![fd()], address().to_vec()].concat(), plain("sg_udp_connect(a0, a1, a2, a3, a4)")),
+                    SystemCall::UdpSend => (
+                        "sg_system_udp_send",
+                        [vec![fd(), buffer(Ty::Read), Ty::Bool], address().to_vec()].concat(),
+                        plain("sg_udp_send(a0, a1.ptr, a1.len, a2, a3, a4, a5, a6)"),
+                    ),
+                    SystemCall::UdpReceive => ("sg_system_udp_receive", vec![fd(), buffer(Ty::Ref), bits()], plain("sg_udp_recv(a0, a1.ptr, a1.len, a2.ptr, a2.len)")),
+                    SystemCall::SocketName => ("sg_system_socket_address", vec![fd(), Ty::Bool, bits()], "return sg_udp_name((int)a0, a1, a2.ptr, a2.len);".to_string()),
+                    SystemCall::StreamName => (
+                        "sg_system_stream_address",
+                        vec![Ty::Read(Box::new(Ty::Socket)), Ty::Bool, bits()],
+                        "return sg_udp_name(a0->fd, a1, a2.ptr, a2.len);".to_string(),
+                    ),
+                    SystemCall::CloseSocket => ("sg_system_close_socket", vec![fd()], "(void)close((int)a0);".to_string()),
+                    _ => (
+                        "sg_system_lookup",
+                        vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Ulong)))))],
+                        format!(
+                            "char host[256]; if (!sg_udp_host(a0, host)) {} \
+                             struct addrinfo* list = NULL; int code = sg_net_lookup(host, \"0\", false, &list); if (code) {} \
+                             int64_t n = sg_udp_found(list, NULL); \
+                             if (n > 0) {{ if (a1->len + n > a1->cap) a1->ptr = sg_reserve(a1->ptr, &a1->cap, a1->len + n, sizeof *a1->ptr); \
+                             (void)sg_udp_found(list, a1->ptr + a1->len); a1->len += n; }} \
+                             freeaddrinfo(list); return ({gives}){{ .tag = 0 }};",
+                            failed("sg_io_error(SG_HOST_NOT_FOUND)"),
+                            failed("sg_io_error(code)")
+                        ),
+                    ),
+                }
+            }
             SystemCall::Variable => (
                 "sg_system_variable",
                 vec![text(), bytes()],
@@ -10459,6 +10737,67 @@ impl<'a> Emitter<'a> {
                      for (int64_t i = 0; i < 2 && i < ({ended}).len; i++) ({ended}).ptr[i] = {reaped}[i]; }}"
                 ));
                 result(self, format!("({wait}.state == SG_CANCELLED ? ({ctype}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }} : ({ctype}){{ .tag = 0 }})"))
+            }
+            // `await System.udpSendAsync(...)` and `await System.udpReceiveAsync(...)`: a call of the
+            // network in the frame (`sg_net_op`), as `stream.receiveAsync` is; the socket is waited
+            // for through a copy of its own, since several tasks may wait for one.
+            ExprKind::Method { args, callee: Callee::System(call @ (SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync)), .. } => {
+                self.made.extend(["net", "udp", "net async", "async io", "tasks"].map(str::to_string));
+                self.io_error(inner.span)?;
+                let gives = self.ctype(&expr.ty, expr.span)?;
+                let (op, loc) = (self.temp(), self.loc(inner.span));
+                let fd = self.value_as(&args[0], &Ty::Int(IntTy::Long))?;
+                let buffer = self.value(&args[1])?;
+                let slice = self.ctype(&args[1].ty, args[1].span)?;
+                self.pre.push(format!("{slice} {op}b = {buffer};"));
+                let (made, bits) = match call {
+                    SystemCall::UdpSendAsync => {
+                        let to = self.value(&args[2])?;
+                        let v6 = self.value(&args[3])?;
+                        let high = self.value_as(&args[4], &Ty::Int(IntTy::Ulong))?;
+                        let low = self.value_as(&args[5], &Ty::Int(IntTy::Ulong))?;
+                        let port = self.value_as(&args[6], &Ty::Int(IntTy::Int))?;
+                        let token = format!("(*{})", self.value(&args[7])?);
+                        (format!("sg_net_udp_send_op({fd}, {op}b.ptr, {op}b.len, {to}, {v6}, {high}, {low}, {port}, {token}, {loc})"), None)
+                    }
+                    _ => {
+                        let bits = self.value(&args[2])?;
+                        let bits_c = self.ctype(&args[2].ty, args[2].span)?;
+                        self.pre.push(format!("{bits_c} {op}o = {bits};"));
+                        let token = format!("(*{})", self.value(&args[3])?);
+                        (format!("sg_net_udp_receive_op({fd}, {op}b.ptr, {op}b.len, {token}, {loc})"), Some(format!("{op}o")))
+                    }
+                };
+                self.pre.push(format!("sg_net_op {op} = {made}; sg_net_go(&{op});"));
+                self.resume_point(expr.span);
+                self.pre.push(format!("if (!sg_net_more(&{op})) return false;"));
+                if let Some(bits) = bits {
+                    self.pre.push(format!("if (!{op}.code) sg_udp_got({op}.done, &{op}.at, {bits}.ptr, {bits}.len);"));
+                }
+                result(self, format!("({op}.code ? ({gives}){{ .tag = 1, .u.v1 = {{ {op}.code == SG_CUT ? sg_io_cancelled() : sg_io_error({op}.code) }} }} : ({gives}){{ .tag = 0 }})"))
+            }
+            // `await System.lookupAsync(host, ref bits, read token)`: the name is looked up on a thread
+            // of input and output while the task waits.
+            ExprKind::Method { args, callee: Callee::System(SystemCall::LookupAsync), .. } => {
+                self.made.extend(["net", "udp", "net async", "udp async", "async io", "tasks"].map(str::to_string));
+                self.io_error(inner.span)?;
+                let gives = self.ctype(&expr.ty, expr.span)?;
+                let (wait, loc) = (self.temp(), self.loc(inner.span));
+                let host = self.value(&args[0])?;
+                let found = self.value(&args[1])?;
+                let found_c = self.ctype(&args[1].ty, args[1].span)?;
+                let token = format!("(*{})", self.value(&args[2])?);
+                self.pre.push(format!("{found_c} {wait}o = {found}; sg_io_lookup {wait}; sg_udp_lookup_start(&{wait}, {host}, {token}, {loc});"));
+                self.resume_point(expr.span);
+                self.pre.push(format!("if (!sg_udp_lookup_ready(&{wait})) return false;"));
+                self.pre.push(format!(
+                    "if ({wait}.state != SG_CANCELLED && !{wait}.code) {{ int64_t {wait}n = sg_udp_found({wait}.list, NULL); \
+                     if ({wait}n > 0) {{ if ({wait}o->len + {wait}n > {wait}o->cap) {wait}o->ptr = sg_reserve({wait}o->ptr, &{wait}o->cap, {wait}o->len + {wait}n, sizeof *{wait}o->ptr); \
+                     (void)sg_udp_found({wait}.list, {wait}o->ptr + {wait}o->len); {wait}o->len += {wait}n; }} freeaddrinfo({wait}.list); }}"
+                ));
+                result(self, format!(
+                    "({wait}.state == SG_CANCELLED ? ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }} : {wait}.code ? ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_error({wait}.code) }} }} : ({gives}){{ .tag = 0 }})"
+                ))
             }
             ExprKind::Method { args, callee: Callee::Delay(told), .. } => {
                 let delay = self.temp();

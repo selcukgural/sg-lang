@@ -1,0 +1,4 @@
+void main() {
+    var address = SocketAddress { high = 0, low = 1, v6 = false, number = 53 }
+    print(address)
+}

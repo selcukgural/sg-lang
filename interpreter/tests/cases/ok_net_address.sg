@@ -1,0 +1,21 @@
+// The two ends of a TCP connection: what one calls its own address the other calls the address of
+// the other side.
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var conn = try await TcpStream.connectAsync(read address)
+    var other = try await listener.acceptAsync()
+    var seen = try other.remoteAddress()
+    print(conn.localAddress() == seen)
+    var peer = try conn.remoteAddress()
+    print(peer == other.localAddress())
+    print(peer.port() == listener.port())
+    print(peer.host())
+    print(work(read conn))
+    return Ok()
+}
+
+// Through a borrow too.
+string work(read TcpStream stream) {
+    return $"{stream.localAddress().host()}".toString()
+}

@@ -203,6 +203,11 @@ fn std_makers(short: &str) -> &'static str {
         "Environment" => "nothing is made: the functions are called on the type, `Environment.get(\"HOME\")`",
         "FileInfo" => "`File.info(read path)`",
         "DirectoryEntry" => "`Directory.list(read path)` gives one for each name in the folder",
+        "SocketAddress" => "`SocketAddress.parse(\"127.0.0.1:53\")`, `SocketAddress.lookup(\"example.com:53\")`, `socket.localAddress()`",
+        "UdpSocket" => "`UdpSocket.bind(\":0\")`",
+        "Command" => "`Command(\"ls\")`, then `cmd.arg(word)`",
+        "Process" => "`cmd.start()`",
+        "Received" => "`socket.receiveFrom(ref buffer)`",
         _ => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
     }
 }
@@ -420,7 +425,7 @@ const IO_ERROR: &str = "IoError";
 /// The built-in `enum IoError : Copyable, Formattable, Equatable { NotFound, PermissionDenied,
 /// IsDirectory, NoSpace, InvalidText(long position), Other(int code), Cancelled(Cancelled
 /// cancelled), ConnectionRefused, ConnectionReset, AddressInUse, HostNotFound, LineTooLong,
-/// AlreadyExists, NotDirectory, DirectoryNotEmpty, InvalidInput }`. The first four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
+/// AlreadyExists, NotDirectory, DirectoryNotEmpty, InvalidInput, MessageTooLong }`. The first four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
 /// where text was read, counted from the start of the file or of the input; `Other` keeps the
 /// code the system gave; `Cancelled` is async input or output whose token was cancelled, and
 /// lets `try` turn the error of `token.check()` into an `IoError`. The last four are the
@@ -431,7 +436,8 @@ const IO_ERROR: &str = "IoError";
 /// `Directory.create`); `NotDirectory`: a part of the path, or the path of a folder, is a file
 /// (or a link where a folder was to be removed); `DirectoryNotEmpty`: a folder to be removed
 /// holds something. `InvalidInput`: what was given cannot be handed to the system, as an
-/// argument of a program with a zero byte in it.
+/// argument of a program with a zero byte in it. `MessageTooLong`: a datagram the system cannot
+/// send as one message, or one longer than the buffer it was received into.
 fn io_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
@@ -457,6 +463,7 @@ fn io_error() -> EnumDecl {
         variant("NotDirectory", Vec::new()),
         variant("DirectoryNotEmpty", Vec::new()),
         variant("InvalidInput", Vec::new()),
+        variant("MessageTooLong", Vec::new()),
     ];
     EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants, methods: Vec::new() }
 }
@@ -7726,14 +7733,37 @@ impl<'a> Checker<'a> {
             "signal" => (SystemCall::Signal, vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)], Ty::Void),
             "reader" => (SystemCall::PipeReader, vec![Ty::Int(IntTy::Long)], Ty::Reader(false)),
             "writer" => (SystemCall::PipeWriter, vec![Ty::Int(IntTy::Long)], Ty::Writer),
+            "udpBind" | "udpConnect" | "udpSend" | "udpSendAsync" | "udpReceive" | "udpReceiveAsync" | "socketAddress" | "streamAddress" | "closeSocket" | "lookup" | "lookupAsync" => {
+                let fd = || Ty::Int(IntTy::Long);
+                let address = || [Ty::Bool, Ty::Int(IntTy::Ulong), Ty::Int(IntTy::Ulong), Ty::Int(IntTy::Int)];
+                let bits = || Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Ulong)))));
+                let buffer = |mode: fn(Box<Ty>) -> Ty| mode(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Byte)))));
+                let token = || Ty::Read(Box::new(Ty::Token));
+                let found = || Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Ulong)))));
+                let task = |ok: Ty| Ty::Task(Box::new(io(ok)));
+                let send = || [vec![fd(), buffer(Ty::Read), Ty::Bool], address().to_vec()].concat();
+                match name {
+                    "udpBind" => (SystemCall::UdpBind, address().to_vec(), io(fd())),
+                    "udpConnect" => (SystemCall::UdpConnect, [vec![fd()], address().to_vec()].concat(), io(Ty::Void)),
+                    "udpSend" => (SystemCall::UdpSend, send(), io(Ty::Void)),
+                    "udpSendAsync" => (SystemCall::UdpSendAsync, [send(), vec![token()]].concat(), task(Ty::Void)),
+                    "udpReceive" => (SystemCall::UdpReceive, vec![fd(), buffer(Ty::Ref), bits()], io(Ty::Void)),
+                    "udpReceiveAsync" => (SystemCall::UdpReceiveAsync, vec![fd(), buffer(Ty::Ref), bits(), token()], task(Ty::Void)),
+                    "socketAddress" => (SystemCall::SocketName, vec![fd(), Ty::Bool, bits()], Ty::Bool),
+                    "streamAddress" => (SystemCall::StreamName, vec![Ty::Read(Box::new(Ty::Socket)), Ty::Bool, bits()], Ty::Bool),
+                    "closeSocket" => (SystemCall::CloseSocket, vec![fd()], Ty::Void),
+                    "lookup" => (SystemCall::Lookup, vec![text(), found()], io(Ty::Void)),
+                    _ => (SystemCall::LookupAsync, vec![text(), found(), token()], task(Ty::Void)),
+                }
+            }
             _ => return Err(Diag::error(span, format!("`System` has no function `{name}`"))),
         };
         self.args(name, args, &params, span)?;
-        if call == SystemCall::WaitAsync {
+        if matches!(call, SystemCall::WaitAsync | SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync | SystemCall::LookupAsync) {
             if !self.is_async {
-                return Err(Diag::error(span, "`System.waitAsync` is awaited in an async function"));
+                return Err(Diag::error(span, format!("`System.{name}` is awaited in an async function")));
             }
-            self.awaited_here("System.waitAsync", awaited, args, span)?;
+            self.awaited_here(&format!("System.{name}"), awaited, args, span)?;
         }
         *callee = Callee::System(call);
         Ok(ret)
@@ -7942,6 +7972,26 @@ impl<'a> Checker<'a> {
         }
         *callee = Callee::NetAsync(call);
         Ok(Ty::Task(Box::new(ty)))
+    }
+
+    /// `stream.remoteAddress()` and `stream.localAddress()`: done by the language's own module,
+    /// which is given the stream through a `read` borrow (`SocketAddress.remoteOf(read stream)`).
+    /// Neither waits, so neither has an async version.
+    fn stream_address(&mut self, recv: &mut Expr, name: &str, args: &mut Vec<Expr>, callee: &mut Callee, span: Span) -> Res<Ty> {
+        if !args.is_empty() {
+            return Err(Diag::error(span, format!("`{name}` takes no arguments, {} given", args.len())));
+        }
+        self.touch(recv, Access::Read);
+        let owner = format!("{STD_MODULE}.SocketAddress");
+        let inner = if name == "remoteAddress" { "remoteOf" } else { "localOf" };
+        let Some(sig) = self.methods_of(&owner).get(inner) else { unreachable!("a program that names `{name}` gets the file of `SocketAddress`") };
+        let ret = sig.ret.clone();
+        let written = Expr { kind: ExprKind::Var(STD_MODULE.to_string()), span: recv.span, ty: Ty::Void, moved: false };
+        let stream = std::mem::replace(recv, written);
+        let (span, ty) = (stream.span, Ty::Read(Box::new(stream.ty.strip_borrow().clone())));
+        args.push(Expr { kind: ExprKind::Borrow { mutable: false, expr: Box::new(stream) }, span, ty, moved: false });
+        *callee = Callee::Static { owner, name: inner.to_string() };
+        Ok(ret)
     }
 
     /// `conn.reader()`, `conn.reader(limit)`: a `StreamReader` that reads the connection
@@ -8241,6 +8291,10 @@ impl<'a> Checker<'a> {
 
         let structs = self.structs;
         if let Ty::Struct(owner) | Ty::Enum(owner) = target {
+            // A datagram socket sends each message as it is given, as a `TcpStream` does.
+            if owner == &format!("{STD_MODULE}.UdpSocket") && matches!(name, "close" | "shutdown") {
+                return Err(Diag::error(name_span, format!("`UdpSocket` has no method `{name}`")).note("a `UdpSocket` has nothing to lose: it is closed when it ends"));
+            }
             if name == "dispose" && structs.get(owner).is_some_and(|info| info.disposable) {
                 let diag = Diag::error(name_span, "`dispose` is not called by the program: it runs by itself, once, when the last owner of the value ends");
                 let text = &self.src[recv.span.start..recv.span.end];
@@ -8390,6 +8444,9 @@ impl<'a> Checker<'a> {
         if matches!(target, Ty::Source | Ty::Token) {
             let target = target.clone();
             return self.cancel_method(recv, &target, name, name_span, args, callee, span);
+        }
+        if *target == Ty::Socket && matches!(name, "remoteAddress" | "localAddress") {
+            return self.stream_address(recv, name, args, callee, span);
         }
         if matches!(target, Ty::Listener | Ty::Socket) {
             let target = target.clone();

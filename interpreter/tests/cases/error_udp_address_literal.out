@@ -1,0 +1,5 @@
+error: a `SocketAddress` is made by its functions, not field by field
+  --> error_udp_address_literal.sg:2:19
+ 2 |     var address = SocketAddress { high = 0, low = 1, v6 = false, number = 53 }
+   |                   ^^^^^^^^^^^^^
+  hint: `SocketAddress.parse("127.0.0.1:53")`, `SocketAddress.lookup("example.com:53")`, `socket.localAddress()`

@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 16 November 2026, the seventy-ninth slice.
+Last brought up to date: 16 November 2026, the eightieth slice.
 
 ## Functions and variables
 
@@ -324,8 +324,19 @@ Last brought up to date: 16 November 2026, the seventy-ninth slice.
 | `tokio::io::BufReader::new(stream).lines()` | `await reader.readLineAsync(ref line)` | built | A line the block holds is read in place; a cancel ends a wait, and what came stays in the block |
 | `drop(stream)`, `stream.shutdown(Both)` | the stream ends | built | Closed where it ends; no `close` |
 | `tokio::net::TcpListener`, `TcpStream`, `.await` | `await listener.acceptAsync()`, `connectAsync`, `receiveAsync`, `sendAsync` | built | A token may come last, and a cancel ends a wait at once; what came stays in the socket |
-| `stream.into_split()`, `Arc<TcpStream>` sent on from several threads, `stream.shutdown(Write)`, `peer_addr()`, `set_nodelay` | none yet | designed | Later slices of the network |
-| `UdpSocket` | none yet | designed | |
+| `stream.peer_addr()?`, `stream.local_addr()?` | `try stream.remoteAddress()`, `stream.localAddress()` | built | A `SocketAddress`; the other side is `ConnectionReset` once it has broken the connection off |
+| `stream.into_split()`, `Arc<TcpStream>` sent on from several threads, `stream.shutdown(Write)`, `set_nodelay` | none yet | designed | Later slices of the network |
+| `UdpSocket::bind("127.0.0.1:0")?` | `try UdpSocket.bind("127.0.0.1:0")` | built | What `TcpListener.bind` takes; no name is looked up |
+| `socket.send_to(&bytes, addr)?` | `try socket.sendTo(bytes, to)` | built | One datagram, whole: one too long to send as one message is `IoError.MessageTooLong`. `to` is a `SocketAddress`, not a text to look up |
+| `let (n, from) = socket.recv_from(&mut buf)?` | `var got = try socket.receiveFrom(ref buffer)` | built | A `Received` with `got.count` and `got.from`. A datagram longer than the buffer is `MessageTooLong`, where Rust cuts it short |
+| `socket.connect(addr)?`, `socket.send(&b)?`, `socket.recv(&mut buf)?` | `try socket.connect(to)`, `try socket.send(bytes)`, `try socket.receive(ref buffer)` | built | `ConnectionRefused` when the other machine says nobody listens |
+| `socket.local_addr()?`, `socket.peer_addr()` | `socket.localAddress()`, `socket.remoteAddress()` | built | `remoteAddress` is a `SocketAddress?`: `null` before a `connect` |
+| `Arc<UdpSocket>` shared by threads, `&self` methods | `shared UdpSocket`, every method through `read` | built | No `close`: it is closed where it ends |
+| `tokio::net::UdpSocket`, `.recv_from(&mut buf).await` | `await socket.receiveFromAsync(ref buffer)`, `sendToAsync`, `receiveAsync`, `sendAsync` | built | A token may come last; a cancel ends a wait at once |
+| `"[::1]:53".parse::<SocketAddr>()?` | `try SocketAddress.parse("[::1]:53")` | built | `IoError.InvalidInput` for a text that is not an address; printed as it is read (RFC 5952) |
+| `("example.com", 53).to_socket_addrs()?` | `try SocketAddress.lookup("example.com:53")` | built | A `List<SocketAddress>`; `HostNotFound` when the name has none. `lookupAsync` looks it up on a thread |
+| `addr.ip()`, `addr.port()` | `address.host()`, `address.port()` | built | `host()` is text: there is no `IpAddr` type |
+| `socket.join_multicast_v4(...)`, `set_broadcast(true)`, `set_ttl`, `peek_from` | none yet | designed | Later |
 
 ## Time
 

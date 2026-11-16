@@ -1,0 +1,39 @@
+1.2.3.4:53 -> 1.2.3.4:53, host 1.2.3.4, port 53
+0.0.0.0:0 -> 0.0.0.0:0, host 0.0.0.0, port 0
+255.255.255.255:65535 -> 255.255.255.255:65535, host 255.255.255.255, port 65535
+[::1]:53 -> [::1]:53, host ::1, port 53
+[::]:0 -> [::]:0, host ::, port 0
+[2001:DB8::8a2e:370:7334]:443 -> [2001:db8::8a2e:370:7334]:443, host 2001:db8::8a2e:370:7334, port 443
+[::ffff:10.0.0.1]:1 -> [::ffff:10.0.0.1]:1, host ::ffff:10.0.0.1, port 1
+[1:0:0:2:0:0:0:3]:9 -> [1:0:0:2::3]:9, host 1:0:0:2::3, port 9
+[1:0:0:2:2:0:0:3]:9 -> [1::2:2:0:0:3]:9, host 1::2:2:0:0:3, port 9
+[1:2:3:4:5:6:7::]:1 -> [1:2:3:4:5:6:7:0]:1, host 1:2:3:4:5:6:7:0, port 1
+[::1.2.3.4]:2 -> [::102:304]:2, host ::102:304, port 2
+[1::]:5 -> [1::]:5, host 1::, port 5
+01.2.3.4:5 -> InvalidInput
+1.2.3:4 -> InvalidInput
+1.2.3.4.5:6 -> InvalidInput
+256.1.1.1:1 -> InvalidInput
+1.2.3.4:65536 -> InvalidInput
+1.2.3.4: -> InvalidInput
+1.2.3.4 -> InvalidInput
+::1:53 -> InvalidInput
+[1::2::3]:4 -> InvalidInput
+[1:2:3:4:5:6:7:8:9]:1 -> InvalidInput
+[12345::]:1 -> InvalidInput
+[::1.2.3]:1 -> InvalidInput
+[fe80::1%en0]:1 -> InvalidInput
+x:1 -> InvalidInput
+:53 -> InvalidInput
+[::1:53 -> InvalidInput
+true
+false
+true
+false
+true
+true
+3
+[[::1]:80]
+example.com -> HostNotFound
+1.2.3.4: -> HostNotFound
+:80 -> HostNotFound

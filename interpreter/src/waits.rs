@@ -203,7 +203,16 @@ fn held_in(body: &Block, holds: &HashMap<String, Why>, taken: &[(String, usize, 
                         _ => diag,
                     })
                 }
-                ExprKind::Call { callee: Callee::Static { owner, name }, name_span, .. } => call(&format!("{owner}.{name}"), *name_span),
+                ExprKind::Call { callee: Callee::Static { owner, name }, name_span, args, .. } | ExprKind::Method { callee: Callee::Static { owner, name }, name_span, args, .. } => {
+                    let full = format!("{owner}.{name}");
+                    call(&full, *name_span).map(|diag| match ASYNC_FUNCTIONS.contains(&full.as_str()) {
+                        true => {
+                            let shown: Vec<String> = args.iter().map(written_arg).collect();
+                            diag.hint(format!("`await {}.{name}Async({})` does the same work without holding the thread", short_name(owner), shown.join(", ")))
+                        }
+                        false => diag,
+                    })
+                }
                 ExprKind::Call { name, name_span, callee: Callee::Plain, .. } => call(name, *name_span),
                 ExprKind::Call { args, name_span, callee: Callee::Value | Callee::FieldValue(_), .. }
                 | ExprKind::Method { args, name_span, callee: Callee::FieldValue(_), .. } => value_target(taken, holds, args.len(), &expr.ty).map(|target| {
@@ -237,7 +246,19 @@ fn inner_hold(name: &str, waits: &HashMap<String, Why>) -> Option<String> {
 
 /// The methods of the language's own module that hold the thread and have an async version,
 /// named with `Async` after them.
-const ASYNC_METHODS: [&str; 4] = ["std.Command.run", "std.Command.output", "std.Command.status", "std.Process.wait"];
+const ASYNC_METHODS: [&str; 8] = [
+    "std.Command.run",
+    "std.Command.output",
+    "std.Command.status",
+    "std.Process.wait",
+    "std.UdpSocket.sendTo",
+    "std.UdpSocket.receiveFrom",
+    "std.UdpSocket.send",
+    "std.UdpSocket.receive",
+];
+
+/// The functions of the language's own module that hold the thread and have an async version.
+const ASYNC_FUNCTIONS: [&str; 1] = ["std.SocketAddress.lookup"];
 
 const NO_HOLD: &str = "the tasks of async functions share a few threads: one that holds its thread keeps the others from running";
 const RUN_APART: &str = "a function that does it runs on a thread of its own with `await Task.run(work, x)`";
@@ -254,6 +275,16 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         }
         ExprKind::Call { callee: Callee::System(SystemCall::Wait), name_span, .. } | ExprKind::Method { callee: Callee::System(SystemCall::Wait), name_span, .. } => {
             Some((*name_span, "`System.wait`".to_string()))
+        }
+        // `UdpSocket` and `SocketAddress.lookup` wait for the network.
+        ExprKind::Call { callee: Callee::System(call @ (SystemCall::UdpSend | SystemCall::UdpReceive | SystemCall::Lookup)), name_span, .. }
+        | ExprKind::Method { callee: Callee::System(call @ (SystemCall::UdpSend | SystemCall::UdpReceive | SystemCall::Lookup)), name_span, .. } => {
+            let name = match call {
+                SystemCall::UdpSend => "udpSend",
+                SystemCall::UdpReceive => "udpReceive",
+                _ => "lookup",
+            };
+            Some((*name_span, format!("`System.{name}`")))
         }
         ExprKind::Call { callee: Callee::Io(call), name_span, .. } | ExprKind::Method { callee: Callee::Io(call), name_span, .. } => {
             Some((*name_span, format!("`File.{}`", call.name())))
@@ -310,8 +341,12 @@ fn written_arg(arg: &Expr) -> String {
     match &arg.kind {
         ExprKind::Borrow { expr: inner, mutable } => match &inner.kind {
             ExprKind::Var(name) => format!("{} {name}", if *mutable { "ref" } else { "read" }),
+            ExprKind::AsSlice(array) if matches!(&array.kind, ExprKind::Var(_)) => format!("{} {}", if *mutable { "ref" } else { "read" }, written_arg(array)),
+            // A text written where a `read string` goes is lent without `read`.
+            ExprKind::Str(_) => written_arg(inner),
             _ => "...".to_string(),
         },
+        ExprKind::AsSlice(array) => written_arg(array),
         ExprKind::Var(name) => name.clone(),
         ExprKind::Str(text) => format!("{text:?}"),
         _ => "...".to_string(),
@@ -607,6 +642,8 @@ fn explained(diag: Diag, name: &str, waits: &HashMap<String, Why>) -> Diag {
         if at.starts_with(STD_PREFIX) {
             let what = match inner_hold(&at, waits).as_deref() {
                 Some("`System.run`" | "`System.wait`") => "waits for another program to end".to_string(),
+                Some("`System.udpSend`" | "`System.udpReceive`") => "waits for the network".to_string(),
+                Some("`System.lookup`") => "waits for a name to be looked up".to_string(),
                 Some(what) => format!("does {what}"),
                 None => "waits".to_string(),
             };

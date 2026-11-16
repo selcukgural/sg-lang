@@ -3,4 +3,4 @@ error: `receive` on a connection holds the thread until it is done, and an async
   --> error_net_blocking_in_async.sg:3:17
  3 |     return conn.receive(ref buffer)
    |                 ^^^^^^^
-  hint: `await conn.receiveAsync(...)` does the same work without holding the thread
+  hint: `await conn.receiveAsync(ref buffer)` does the same work without holding the thread

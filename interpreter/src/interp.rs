@@ -1183,6 +1183,9 @@ fn failed(cause: Value) -> Value {
 
 /// The `IoError` for what the system said. The codes are the same on Linux and macOS, except
 /// for a full quota.
+/// EMSGSIZE: a datagram the system cannot send as one message, or one longer than the buffer.
+const MESSAGE_TOO_LONG: i32 = if cfg!(target_os = "linux") { 90 } else { 40 };
+
 fn io_cause(error: Option<&std::io::Error>, code: Option<i32>) -> Value {
     const QUOTA: i32 = if cfg!(target_os = "linux") { 122 } else { 69 };
     // ECONNREFUSED; ECONNRESET, ECONNABORTED, EPIPE; EADDRINUSE: their numbers differ.
@@ -1190,10 +1193,13 @@ fn io_cause(error: Option<&std::io::Error>, code: Option<i32>) -> Value {
     const RESET: [i32; 2] = if cfg!(target_os = "linux") { [104, 103] } else { [54, 53] };
     const IN_USE: i32 = if cfg!(target_os = "linux") { 98 } else { 48 };
     const NOT_EMPTY: i32 = if cfg!(target_os = "linux") { 39 } else { 66 };
+    // ENOTCONN: the other side of a connection has broken it off.
+    const NOT_CONNECTED: i32 = if cfg!(target_os = "linux") { 107 } else { 57 };
     let variant = |at: usize, fields: Vec<Value>| Value::Enum("IoError".into(), at, Rc::new(fields.into_iter().map(cell).collect()));
     match code {
         Some(code) if code == REFUSED => variant(7, Vec::new()),
-        Some(code) if RESET.contains(&code) || code == 32 => variant(8, Vec::new()),
+        Some(code) if RESET.contains(&code) || code == 32 || code == NOT_CONNECTED => variant(8, Vec::new()),
+        Some(MESSAGE_TOO_LONG) => variant(16, Vec::new()),
         Some(code) if code == IN_USE => variant(9, Vec::new()),
         // ENOTEMPTY
         Some(code) if code == NOT_EMPTY => variant(14, Vec::new()),
@@ -4519,6 +4525,22 @@ impl<'a, 'e> Interp<'a, 'e> {
         if call == SystemCall::WaitAsync {
             return self.wait_async(args, frame);
         }
+        if matches!(
+            call,
+            SystemCall::UdpBind
+                | SystemCall::UdpConnect
+                | SystemCall::UdpSend
+                | SystemCall::UdpSendAsync
+                | SystemCall::UdpReceive
+                | SystemCall::UdpReceiveAsync
+                | SystemCall::SocketName
+                | SystemCall::StreamName
+                | SystemCall::CloseSocket
+                | SystemCall::Lookup
+                | SystemCall::LookupAsync
+        ) {
+            return self.datagrams(call, args, frame);
+        }
         let mut values = Vec::new();
         for (at, arg) in args.iter().enumerate() {
             let value = self.expr(arg, frame)?;
@@ -4635,9 +4657,25 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Err(error) => done(Err(error)),
             },
             SystemCall::MakeTemp => done(make_temp(&text(0)).map(|folder| Value::Str(Rc::new(folder)))),
-            SystemCall::Executable | SystemCall::Run | SystemCall::Start | SystemCall::Wait | SystemCall::WaitAsync | SystemCall::Signal | SystemCall::PipeReader | SystemCall::PipeWriter => {
-                unreachable!("done above")
-            }
+            SystemCall::Executable
+            | SystemCall::Run
+            | SystemCall::Start
+            | SystemCall::Wait
+            | SystemCall::WaitAsync
+            | SystemCall::Signal
+            | SystemCall::PipeReader
+            | SystemCall::PipeWriter
+            | SystemCall::UdpBind
+            | SystemCall::UdpConnect
+            | SystemCall::UdpSend
+            | SystemCall::UdpSendAsync
+            | SystemCall::UdpReceive
+            | SystemCall::UdpReceiveAsync
+            | SystemCall::SocketName
+            | SystemCall::StreamName
+            | SystemCall::CloseSocket
+            | SystemCall::Lookup
+            | SystemCall::LookupAsync => unreachable!("done above"),
             SystemCall::Variable => {
                 let name = text(0);
                 // A name with `=` or a zero byte in it is no variable's name.
@@ -4780,6 +4818,165 @@ impl<'a, 'e> Interp<'a, 'e> {
             ok(Value::Void)
         };
         Ok(self.ended_task(value, at))
+    }
+
+    /// The calls of the system under `UdpSocket` and `SocketAddress`. A socket is the number of a
+    /// socket of the system, made by `System.udpBind` and closed by `System.closeSocket`; it does not
+    /// block, so a call whose socket is not ready gives the turn away until it is, as a `TcpStream`
+    /// does, and a token is looked at before the work. A datagram is received into a block one byte
+    /// longer than the buffer: one that fills it did not fit. An async call gives a task that has
+    /// ended, which the module awaits where it is written.
+    fn datagrams(&mut self, call: SystemCall, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
+        use std::os::unix::io::{FromRawFd, IntoRawFd};
+        let at = args[0].span;
+        let is_async = matches!(call, SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync | SystemCall::LookupAsync);
+        let given = if is_async { &args[..args.len() - 1] } else { args };
+        let mut values = Vec::new();
+        for arg in given {
+            values.push(owned(self.expr(arg, frame)?));
+        }
+        let source = match is_async {
+            true => self.token(&args[args.len() - 1], frame)?,
+            false => None,
+        };
+        let number = |at: usize| match &values[at] {
+            Value::Int(_, number) => *number,
+            _ => unreachable!("the checker makes it a number"),
+        };
+        let flag = |at: usize| matches!(values[at], Value::Bool(true));
+        let address = |at: usize| crate::net::address_of(flag(at), number(at + 1) as u64, number(at + 2) as u64, number(at + 3) as u16);
+        let io_failed = |error: std::io::Error| failed(io_cause(Some(&error), error.raw_os_error()));
+        let put = |into: &Value, numbers: &[u64]| {
+            for (slot, value) in cells_of(into).iter().zip(numbers) {
+                *slot.borrow_mut() = Value::Int(IntTy::Ulong, i128::from(*value));
+            }
+        };
+        let fd = || number(0) as std::os::unix::io::RawFd;
+        // SAFETY: the number is that of a socket `System.udpBind` made, which the `UdpSocket` of the
+        // program owns and closes once, with `System.closeSocket`; this one is never closed.
+        let socket = || std::mem::ManuallyDrop::new(unsafe { std::net::UdpSocket::from_raw_fd(fd()) });
+        let cancelled = source.as_ref().is_some_and(|source| source.borrow().cancelled);
+        let value = match call {
+            SystemCall::UdpBind => match crate::net::udp_bind(address(0)) {
+                Ok(socket) => ok(Value::Int(IntTy::Long, i128::from(socket.into_raw_fd()))),
+                Err(error) => io_failed(error),
+            },
+            SystemCall::UdpConnect => match socket().connect(address(1)) {
+                Ok(()) => ok(Value::Void),
+                Err(error) => io_failed(error),
+            },
+            SystemCall::UdpSend | SystemCall::UdpSendAsync if cancelled => failed(io_cancelled()),
+            SystemCall::UdpSend | SystemCall::UdpSendAsync => {
+                let bytes: Vec<u8> = cells_of(&values[1]).iter().map(|item| match &*item.borrow() {
+                    Value::Int(_, byte) => *byte as u8,
+                    _ => unreachable!("the checker makes the items bytes"),
+                }).collect();
+                let to = flag(2).then(|| address(3));
+                let socket = socket();
+                loop {
+                    let sent = match to {
+                        Some(to) => socket.send_to(&bytes, to),
+                        None => socket.send(&bytes),
+                    };
+                    match sent {
+                        Ok(_) => break ok(Value::Void),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if self.wait_for(Outside::Socket(fd(), true), source.as_ref(), at)? {
+                                break failed(io_cancelled());
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(error) => break io_failed(error),
+                    }
+                }
+            }
+            SystemCall::UdpReceive | SystemCall::UdpReceiveAsync if cancelled => failed(io_cancelled()),
+            SystemCall::UdpReceive | SystemCall::UdpReceiveAsync => {
+                let cells = cells_of(&values[1]);
+                let mut block = vec![0u8; cells.len() + 1];
+                let socket = socket();
+                loop {
+                    match socket.recv_from(&mut block) {
+                        Ok((got, _)) if got > cells.len() => break failed(io_cause(None, Some(MESSAGE_TOO_LONG))),
+                        Ok((got, from)) => {
+                            for (slot, byte) in cells.iter().zip(&block[..got]) {
+                                *slot.borrow_mut() = Value::Int(IntTy::Byte, i128::from(*byte));
+                            }
+                            let [v6, high, low, port] = crate::net::bits_of(from);
+                            put(&values[2], &[got as u64, v6, high, low, port]);
+                            break ok(Value::Void);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if self.wait_for(Outside::Socket(fd(), false), source.as_ref(), at)? {
+                                break failed(io_cancelled());
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(error) => break io_failed(error),
+                    }
+                }
+            }
+            SystemCall::SocketName | SystemCall::StreamName => {
+                let remote = flag(1);
+                let found = match &values[0] {
+                    Value::Socket(stream) if remote => stream.peer_addr(),
+                    Value::Socket(stream) => stream.local_addr(),
+                    _ if remote => socket().peer_addr(),
+                    _ => socket().local_addr(),
+                };
+                match found {
+                    Ok(found) => {
+                        put(&values[2], &crate::net::bits_of(found));
+                        Value::Bool(true)
+                    }
+                    Err(_) => Value::Bool(false),
+                }
+            }
+            SystemCall::CloseSocket => {
+                // SAFETY: as above; the `UdpSocket` of the program is let go of here, once.
+                drop(unsafe { std::net::UdpSocket::from_raw_fd(fd()) });
+                Value::Void
+            }
+            SystemCall::Lookup | SystemCall::LookupAsync if cancelled => failed(io_cancelled()),
+            SystemCall::Lookup | SystemCall::LookupAsync => {
+                let Value::Str(host) = &values[0] else { unreachable!("the checker makes the host text") };
+                let host = host.to_string();
+                let found = match is_async {
+                    false => Some(crate::net::lookup(&host)),
+                    true => {
+                        let (id, done) = self.work(at)?;
+                        let slot = std::sync::Arc::new(Mutex::new(None));
+                        let kept = slot.clone();
+                        std::thread::spawn(move || {
+                            let found = crate::net::lookup(&host);
+                            *kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(found);
+                            done.tell(id);
+                        });
+                        match self.wait_for(Outside::Work(id), source.as_ref(), at)? {
+                            true => None,
+                            false => slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take(),
+                        }
+                    }
+                };
+                match found {
+                    None => failed(io_cancelled()),
+                    Some(None) => failed(io_host_not_found()),
+                    Some(Some(found)) => {
+                        let Value::List(into) = &values[1] else { unreachable!("the checker makes it a list") };
+                        for ip in found {
+                            let [v6, high, low, _] = crate::net::bits_of(std::net::SocketAddr::new(ip, 0));
+                            into.borrow_mut().extend([v6, high, low].iter().map(|value| cell(Value::Int(IntTy::Ulong, i128::from(*value)))));
+                        }
+                        ok(Value::Void)
+                    }
+                }
+            }
+            _ => unreachable!("only the calls of datagrams come here"),
+        };
+        Ok(match is_async {
+            true => self.ended_task(value, at),
+            false => value,
+        })
     }
 
     /// `System.run`: starts the program at the path and waits for it to end. What was printed

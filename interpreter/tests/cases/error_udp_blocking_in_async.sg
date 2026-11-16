@@ -1,0 +1,7 @@
+async Result<void, IoError> main() {
+    var socket = try UdpSocket.bind("127.0.0.1:0")
+    var buffer = byte[8]
+    var got = try socket.receiveFrom(ref buffer)
+    print(got.count)
+    return Ok()
+}
