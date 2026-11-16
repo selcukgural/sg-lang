@@ -1,5 +1,11 @@
 # SG
 
+<p align="center">
+  <img src="brand/pasha.png" alt="Pasha, a white Van cat with one blue and one amber eye, curled up in a circle" width="240">
+  <br>
+  <em>Pasha, the mascot of SG</em>
+</p>
+
 SG is a small systems language: about as small and as fast as C, memory safe like Rust, and
 written in a notation that reads like C#.
 
