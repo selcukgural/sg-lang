@@ -1,0 +1,64 @@
+// The network the async way with work in it: the echo of `echo.sg`, but the server works on
+// each message before it sends it back (300,000 steps of arithmetic that never overflows), and
+// each of the eight clients sends 300 of them. The tasks the loop of the network wakes have to
+// run on several threads at once to be quick. The C is that of `echo.c`, with the same work.
+async Result<void, IoError> echo(TcpStream conn) {
+    var buffer = byte[64](0)
+    while true {
+        var n = try await conn.receiveAsync(ref buffer)
+        if n == 0 {
+            return Ok()
+        }
+        long x = 0
+        for i in 0..300000 {
+            x = (x * 31 + i) % 1000003
+        }
+        buffer[0] = (byte)(x & 1)
+        try await conn.sendAsync(buffer[0..n])
+    }
+}
+
+async Result<void, IoError> serve(TcpListener listener, int count) {
+    var tasks = List<Task<Result<void, IoError>>>()
+    for _ in 0..count {
+        var conn = try await listener.acceptAsync()
+        tasks.add(echo(conn))
+    }
+    while tasks.length() > 0 {
+        try await Task.whenAny(ref tasks)
+    }
+    return Ok()
+}
+
+async Result<long, IoError> client(string address, int rounds) {
+    var conn = try await TcpStream.connectAsync(read address)
+    var message = byte[64](7)
+    var buffer = byte[64](0)
+    long sum = 0
+    for _ in 0..rounds {
+        try await conn.sendAsync(message[0..64])
+        nint got = 0
+        while got < 64 {
+            got += try await conn.receiveAsync(ref buffer[got..])
+        }
+        sum += buffer[63]
+    }
+    return Ok(sum)
+}
+
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = serve(listener, 8)
+    var clients = List<Task<Result<long, IoError>>>()
+    for _ in 0..8 {
+        clients.add(client(address.clone(), 300))
+    }
+    long sum = 0
+    while clients.length() > 0 {
+        sum += try await Task.whenAny(ref clients)
+    }
+    try await server
+    print($"{sum} bytes came back")
+    return Ok()
+}

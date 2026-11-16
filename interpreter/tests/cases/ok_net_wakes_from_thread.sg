@@ -1,0 +1,29 @@
+// A thread of `Task.run` wakes an async task while a thread of the pool waits on the loop of the
+// network for a connection. The server waits first, before the pool has a thread, so compiled
+// code starts one to wait on the loop; when every thread of the pool is busy or waiting there,
+// the loop is woken for the task (`compiled_small_pools` builds it with a pool of one thread).
+long work(long n) {
+    long sum = 0
+    for i in 0..n {
+        sum += i
+    }
+    return sum
+}
+
+async Result<nint, IoError> serve(TcpListener listener) {
+    var conn = try await listener.acceptAsync()
+    var buffer = byte[16](0)
+    var n = try await conn.receiveAsync(ref buffer)
+    return Ok(n)
+}
+
+async Result<void, IoError> main() {
+    var listener = try TcpListener.bind("127.0.0.1:0")
+    var address = $"127.0.0.1:{listener.port()}".toString()
+    var server = serve(listener)
+    print(await Task.run(work, 1000000))
+    var conn = try await TcpStream.connectAsync(read address)
+    try await conn.sendAsync("hello".asBytes())
+    print(try await server)
+    return Ok()
+}

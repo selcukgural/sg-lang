@@ -675,6 +675,49 @@ fn interpreted_input_cancel() {
     assert!(ok);
 }
 
+/// Async programs on the network, on processes and on threads, compiled with a pool of one
+/// thread and of two (`SG_POOL_MOST`, which no program sets): the thread that waits on the loop
+/// of the network is then soon the only one, and a task that a thread outside the pool wakes
+/// meanwhile has to wake the loop to run. Under the thread sanitizer when it is there.
+#[test]
+fn compiled_small_pools() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if std::process::Command::new("cc").arg("--version").output().is_err() {
+        eprintln!("no C compiler (`cc`) found: the back end is not tested");
+        return;
+    }
+    let work = root.join("target").join("compiled-pools");
+    std::fs::create_dir_all(&work).unwrap();
+    let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
+    let mut failures = Vec::new();
+    for stem in ["ok_net_wakes_from_thread", "ok_net_echo", "ok_net_cancel", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel"] {
+        let source = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.sg"))).unwrap();
+        let expected = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.out"))).unwrap();
+        let c_file = work.join(format!("{stem}.c"));
+        std::fs::write(&c_file, sg::emit_c(&source, &format!("{stem}.sg"), true).unwrap()).unwrap();
+        for most in [1, 2] {
+            let binary = work.join(format!("{stem}-{most}"));
+            let mut cc = std::process::Command::new("cc");
+            cc.args(["-std=c11", "-O1", "-g"]).arg(format!("-DSG_POOL_MOST={most}"));
+            // As in `compiled`, the thread sanitizer's build is not held to the warnings: gcc warns
+            // that it does not follow `atomic_thread_fence`, which the counts of `shared` use.
+            if sanitizers {
+                cc.arg("-fsanitize=thread");
+            } else {
+                cc.args(warnings(stem));
+            }
+            let built = cc.arg("-o").arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+            assert!(built.status.success(), "the C compiler rejected {stem}:\n{}", String::from_utf8_lossy(&built.stderr));
+            let run = std::process::Command::new(&binary).current_dir(&work).stdin(std::process::Stdio::null()).output().unwrap();
+            let actual = format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
+            if actual != expected {
+                failures.push(format!("--- {stem} with a pool of {most}\nexpected:\n{expected}\nactual:\n{actual}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} program(s) differ:\n{}", failures.len(), failures.join("\n"));
+}
+
 /// The test command on compiled code. Every program of tests is built into the program that
 /// runs its `test` blocks, each in a process of its own, and what that program writes is
 /// compared with what the test command of the interpreter writes: the same `.out` files. It
