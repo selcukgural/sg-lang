@@ -190,6 +190,12 @@ module can keep a library of C behind a safe interface, as `examples/zlib` does 
 `Disposable` type gives back what C made when its last owner ends. The promise of memory safety holds outside `unsafe`, as in Rust. The clock is there (`Instant`, `Duration`, and `DateTime` in UTC), written in SG itself, the first piece of a standard library that is otherwise still the compiler's built-in types, and so are random numbers (`Random` with a seed, `SecureRandom` from the system), folders and paths (`Directory`, `File.move` that never writes over a file, `Path`), the variables of the environment, which are only read, and other programs, run without a shell, waited for or talked to through pipes while they run, and stopped (`Command`, `Process`, with async versions); a method can be async. A character is tested against the tables of Unicode 17.0 (`isLetter`, `isUpper`) and a text changes its case by Unicode's full mappings (`toUpper`, `equalsIgnoreCase`), the same in every country. Datagrams are sent and received over UDP (`UdpSocket`), with an address read and printed in SG (`SocketAddress`). Generics of your own are put off. There is no full standard library,
 no package manager and no editor support.
 
+No preview comes out while there is work that C can do and SG cannot. The next slices close that gap: a C
+file compiled beside the program, `errno`, functions of SG that C calls back, sqlite and libcurl wrapped,
+signals, unions and bit fields, atomics and `volatile`, a library built from SG for C to call, and
+programs that run without an operating system, shown by a small kernel in QEMU (design/04, "Reaching what
+C reaches, the direction").
+
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is
 [gifsicle](https://www.lcdf.org/gifsicle/), the C tool that shrinks and edits GIF images: its work is

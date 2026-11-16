@@ -656,6 +656,32 @@ way and no pool starved by a call that blocks, which C# and Rust both allow; and
 `lock` block and written in another, changed by another task in between) is not caught; a two-step change is written in one
 block. These are promises of the design until they are built and tested; the README says so only then.
 
+### Reaching what C reaches, the direction
+
+*Decided on 16 November 2026, after the eighty-third slice.* No preview of the language comes out while there is work
+that C can do and SG cannot. The rows below were decided together (choices 703-718); each slice decides the details of
+its own part before it is written.
+
+| Topic | Direction | Reason |
+|---|---|---|
+| The threshold | It is reached when each of these runs and is tested: a program that keeps its data in sqlite; a client that fetches a page over HTTPS with libcurl; a server that ends cleanly on Ctrl-C; a library written in SG and called from C; a small kernel that boots in QEMU, writes to its serial port and takes a timer interrupt; a queue without locks, built on atomics; a reader of a binary header with a union and bit fields | A list of programs can be checked; "everything C can do" cannot |
+| The order | 84: a C file beside the program, the variables of C, `errno`, a pointer as an integer and back, the difference and the order of two pointers. 85: functions of SG that C calls (`export`), pointers to functions of C both ways (`CFunc`), the state a callback reaches. 86: calls of C with a varying count of arguments, and sqlite wrapped. 87: libcurl wrapped. 88: signals. 89: unions, bit fields, `packed` and alignment. 90: atomics and `volatile`. 91: a library built from SG. 92: building without an operating system. 93: the kernel in QEMU | The C file comes first: it opens macros, inline functions, assembly and intrinsics at once. sqlite needs callbacks, libcurl a varying count of arguments |
+| A C file beside the program | `extern "./native.c" { ... }` names a C file of the module's folder instead of a library; it is compiled into the same unit as the program, so a `static inline` function of it is inlined and costs nothing. The interpreter builds it into the library of its wrappers | One door for what a header gives and a library does not: macros, inline functions, assembly, intrinsics, `setjmp`. Rust takes it through the `cc` crate and a second build script |
+| The variables of C | `extern { int opterr }`: a variable of C, read and written only inside `unsafe`. SG still has no variable of its own outside a function ("No global variables") | Some C libraries keep their state in variables; a kernel's interrupt keeps its state where the handler finds it |
+| `errno` | Read right after the call of C it belongs to; the interpreter keeps it as each call of C ends, so that its own work does not change it; an `IoError` is made from its number | Rust's `last_os_error`; a C library answers most failures this way |
+| Functions of SG that C calls | `export int compareInts(raw void a, raw void b) { ... }`: a signature of C types only, the name C sees as written. A panic inside ends the process with its message; nothing unwinds through C | Callbacks, and the functions of a library built from SG, are the same thing |
+| Pointers to functions of C | A type of its own, `CFunc<raw void, raw void, int>`, apart from `Func`; the name of an `export` function is a value of it, and one that comes from C (`dlsym`, a field of a struct) is called only inside `unsafe`. A `Func` does not go to C | A pointer from C may be wrong, and a `Func` may take types C does not know |
+| The state a callback reaches | There are no lambdas and no globals, so it goes through C's `void* userdata`: `unsafe Memory.addressOf(ref state)` gives a `raw void`, and `unsafe (ref State)data` lends it again inside the callback. That the value lives long enough is the program's promise; the interpreter keeps the addresses it gave in a table and panics on a wrong type or a value that has ended | Rust's way; the interpreter checks it as it checks raw memory |
+| Signals | Not handlers written by the program: `Signals.listen(...)` and a wait for the next one (`next()`, `nextAsync(token)`), as in Go and Tokio; while a listener lives, those signals do not end the program. A handler of C is still possible inside `unsafe`, through `export` and `CFunc` | A handler runs between any two steps of any thread; almost nothing is safe inside it |
+| A varying count of arguments | `int curl_easy_setopt(raw CURL handle, int option, ...)`: what comes after is of C types, a number constant an `int` unless cast | `printf`, `ioctl`, `fcntl` and libcurl's options need it |
+| A pointer as a number | `(nuint)p`, `(raw void)n`, `p - q` (a count of items) and `p < q`; none of them reads memory | `SQLITE_TRANSIENT` is `(void*)-1`; allocators and kernels compute addresses |
+| The layout of C | Unions, bit fields, `packed` and alignment; a field of a union is read inside `unsafe`. The notation is decided in their slice | C structs as C lays them out, binary formats, the registers of devices |
+| Atomics and `volatile` | Built-in atomic types, sequentially consistent by default, with forms that take an order; `volatile` as calls (`unsafe Memory.readVolatile(p)`, `writeVolatile(p, v)`), not as a qualifier of a type | Queues without locks; the registers of devices. Rust's form for `volatile` |
+| A library built from SG | `sg build --library` gives a `.a` or a `.so` and a header made from the `export` functions | C calls SG |
+| Without an operating system | `sg build --freestanding` with a cross compiler, compiled code only: what needs the system (`print`, `File`, tasks) is a compile error with a hint, `string` and `List` work when the program gives an allocator, a panic goes to a function of the program, and `main` is not needed | Kernels, boot loaders, small devices |
+| The kernel shown | A RISC-V kernel on QEMU's `virt` machine | Its start is the simplest, and its serial port and timer are plain |
+| Windows | Not part of the threshold; talked through once the threshold is reached | A platform of its own: IOCP, its processes, its paths |
+
 ## Open questions
 
 - Generics: closed on 12 November 2026 as "deferred", see the section above.

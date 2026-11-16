@@ -5469,3 +5469,10 @@ wait. A program is also started and talked to while it runs (`start`, its pipes 
 `Process` as a writer and readers, `wait`, `kill`, `terminate`), and one that is not waited for is a
 compile error, or stopped where it ends; the async versions take a token, and a cancel stops the program.
 A method can be async. Reading the output of a started program line by line takes 0.85 times `popen` and `getline` in C. A character is tested against the tables of Unicode 17.0 and a text changes its case by Unicode's full mappings, which takes a quarter of the time of `towupper` in C. Datagrams are sent and received (`UdpSocket`), and an address is read and printed in SG (`SocketAddress`); an echo over UDP takes the time of C without async, and 1.11 times C (1.49 on Linux) the async way. With them the plan made before a preview of the language (04, "Calling C, the direction") is done. The scheduler of async tasks came close to Tokio's in three slices written in the C of the runtime with no library: a thread of the pool waits on the loop of the network itself, a socket goes on the loop once, and each thread has a queue of its own that the others steal from. An echo over TCP takes 0.89 times C on macOS (1.86 before) and 7.4 times on Linux (28 before, where Tokio takes 5.5), and an echo over UDP 1.06 and 0.57 times C.
+
+No preview comes out while there is work that C can do and SG cannot (04, "Reaching what C reaches, the
+direction", choices 703-718). The slices from the eighty-fourth close that gap in this order: a C file
+compiled beside the program, the variables of C, `errno` and a pointer as a number; functions of SG that
+C calls (`export`, `CFunc`); calls of C with a varying count of arguments and sqlite; libcurl; signals;
+unions, bit fields, `packed` and alignment; atomics and `volatile`; a library built from SG; building
+without an operating system; and a RISC-V kernel in QEMU. Windows is talked through after them.
