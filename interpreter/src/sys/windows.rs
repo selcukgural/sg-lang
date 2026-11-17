@@ -1,6 +1,7 @@
 //! What the interpreter asks Windows: random bytes, the clocks and the calls of the file system,
-//! as compiled code asks them, through the functions of Windows declared here (no crate). Other
-//! programs, signals and the network come in later slices; until then nothing reaches them,
+//! as compiled code asks them, through the functions of Windows declared here (no crate); the
+//! network is in `net_windows.rs`. Other programs and signals come in a later slice; until then
+//! nothing reaches them,
 //! since the checker refuses a program that uses them (`pending`).
 
 use std::ffi::{c_char, c_int, c_void};
@@ -165,16 +166,24 @@ pub(crate) fn signal(_pid: i64, _signal: i64) {
     pending("a signal")
 }
 
-/// The descriptor of a pipe or a socket, and the file or the socket of one.
+/// The descriptor of a pipe or a socket, and the file or the socket of one: a socket is its
+/// handle, cut to 32 bits (see `net::number_of`).
 pub(crate) type RawFd = i32;
 pub(crate) fn fd_of<T>(_: T) -> RawFd {
-    pending("a pipe or a socket")
+    pending("a pipe")
 }
 pub(crate) unsafe fn file_of_fd(_fd: RawFd) -> std::fs::File {
     pending("a pipe")
 }
-pub(crate) unsafe fn udp_of_fd(_fd: RawFd) -> std::net::UdpSocket {
-    pending("the network")
+/// The number of a datagram socket the interpreter keeps, which it owns from here.
+pub(crate) fn udp_fd(socket: std::net::UdpSocket) -> RawFd {
+    let fd = super::net::number_of(&socket);
+    std::mem::forget(socket);
+    fd
+}
+/// SAFETY: as `FromRawSocket`.
+pub(crate) unsafe fn udp_of_fd(fd: RawFd) -> std::net::UdpSocket {
+    super::net::udp_of(fd)
 }
 
 /// Libraries of C, which come in a later slice: none opens yet.

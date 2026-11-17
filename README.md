@@ -209,7 +209,9 @@ moves and deletes them as on Linux, reads the clock, random bytes, its command l
 runs its tests; a program can ask which system it is built for (`OperatingSystem.isWindows()`), and what
 Windows does not run yet is a compile error that names the slice that brings it. The second slice of
 Windows is written too: tasks, threads, locks, atomics and async functions run there, and a delay of a
-millisecond waits about a millisecond.
+millisecond waits about a millisecond. The third is written: the network, datagrams and async input and
+output run there, a listener holds its port alone, and a datagram that came back is told as on Linux and
+macOS.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is

@@ -1,5 +1,6 @@
 //! The network in the interpreter: what parses an address, binds a listener and connects,
-//! and the wait for sockets (`poll(2)`) that the scheduler does when no fiber can run.
+//! and the wait for sockets (`poll(2)`, `WSAPoll` on Windows) that the scheduler does when no
+//! fiber can run. What Windows does differently is in `sys::net`.
 //!
 //! Sockets do not block: a call that would wait gives the turn away, and the fiber is woken
 //! when its socket is ready. What has to block (looking a name up, connecting, reading the
@@ -7,18 +8,25 @@
 //! socket of its own when it is done.
 
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+#[cfg(unix)]
+use std::net::ToSocketAddrs;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(windows)]
+use std::os::windows::io::AsRawSocket;
 
 use crate::sys::RawFd;
 
-/// What the scheduler hears a thread through: a pair of sockets. Windows has the scheduler's
-/// wait in a later slice, and nothing that needs it runs there before.
+/// What the scheduler hears a thread through: a pair of connected sockets of the machine
+/// (`UnixStream`), and on Windows, which has none, a datagram socket of `127.0.0.1` connected to
+/// itself.
+#[cfg(unix)]
+type Bell = UnixStream;
 #[cfg(windows)]
-pub struct UnixStream;
+type Bell = UdpSocket;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -53,7 +61,10 @@ pub fn bind_address(address: &str) -> Option<SocketAddr> {
 
 /// `TcpListener.bind(address)`: the listener does not block.
 pub fn bind(at: SocketAddr) -> io::Result<TcpListener> {
+    #[cfg(unix)]
     let listener = TcpListener::bind(at)?;
+    #[cfg(windows)]
+    let listener = crate::sys::net::listener(at)?;
     listener.set_nonblocking(true)?;
     Ok(listener)
 }
@@ -69,7 +80,10 @@ pub fn connect(address: &str) -> Connected {
     if host.is_empty() {
         return Err(None);
     }
+    #[cfg(unix)]
     let addresses: Vec<SocketAddr> = (host, port).to_socket_addrs().map_err(|_| None)?.collect();
+    #[cfg(windows)]
+    let addresses = crate::sys::net::lookup(host, port).ok_or(None)?;
     let mut last = None;
     for at in addresses {
         match TcpStream::connect(at) {
@@ -105,7 +119,10 @@ pub fn bits_of(at: SocketAddr) -> [u64; 4] {
 
 /// `System.udpBind`: a datagram socket that does not block.
 pub fn udp_bind(at: SocketAddr) -> io::Result<UdpSocket> {
+    #[cfg(unix)]
     let socket = UdpSocket::bind(at)?;
+    #[cfg(windows)]
+    let socket = crate::sys::net::udp(at)?;
     socket.set_nonblocking(true)?;
     Ok(socket)
 }
@@ -113,49 +130,69 @@ pub fn udp_bind(at: SocketAddr) -> io::Result<UdpSocket> {
 /// `System.lookup`: the addresses of a host name, in the order the system gives them; `None`
 /// when it has none.
 pub fn lookup(host: &str) -> Option<Vec<IpAddr>> {
-    let found = (host, 0).to_socket_addrs().ok()?;
-    Some(found.map(|at| at.ip()).collect())
+    #[cfg(unix)]
+    let found: Vec<SocketAddr> = (host, 0).to_socket_addrs().ok()?.collect();
+    #[cfg(windows)]
+    let found = crate::sys::net::lookup(host, 0)?;
+    Some(found.into_iter().map(|at| at.ip()).collect())
+}
+
+/// A connected datagram socket is told of a datagram that came back undelivered (Windows sets
+/// this apart, see `sys::net`).
+pub fn udp_connected(_socket: &UdpSocket) {
+    #[cfg(windows)]
+    crate::sys::net::udp_connected(_socket);
+}
+
+/// The error of a datagram socket, as Linux and macOS tell it.
+pub fn udp_error(error: io::Error) -> io::Error {
+    #[cfg(windows)]
+    let error = crate::sys::net::udp_error(error);
+    error
 }
 
 /// A finished piece of work of a thread, which the scheduler hands to the fiber that waits
 /// for it.
 pub struct Done {
     ids: Mutex<Vec<u64>>,
-    #[cfg_attr(windows, allow(dead_code))]
-    tell: Mutex<UnixStream>,
+    tell: Mutex<Bell>,
 }
 
 /// The end of the scheduler: it waits on `hear` with the sockets, and finds in `done` which
 /// work has ended.
 pub struct Wake {
-    pub hear: UnixStream,
+    pub hear: Bell,
     pub done: Arc<Done>,
 }
 
-impl Wake {
-    #[cfg(windows)]
-    pub fn new() -> io::Result<Wake> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "tasks come to Windows in the 98th slice"))
-    }
+/// The two ends of a bell: one waited on, one rung.
+#[cfg(unix)]
+fn bell() -> io::Result<(Bell, Bell)> {
+    UnixStream::pair()
+}
 
-    #[cfg(unix)]
+#[cfg(windows)]
+fn bell() -> io::Result<(Bell, Bell)> {
+    let hear = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+    hear.connect(hear.local_addr()?)?;
+    let tell = hear.try_clone()?;
+    Ok((hear, tell))
+}
+
+impl Wake {
     pub fn new() -> io::Result<Wake> {
-        let (hear, tell) = UnixStream::pair()?;
+        let (hear, tell) = bell()?;
         hear.set_nonblocking(true)?;
         Ok(Wake { hear, done: Arc::new(Done { ids: Mutex::new(Vec::new()), tell: Mutex::new(tell) }) })
     }
 
     /// The work that has ended since the last time, in the order it ended.
-    #[cfg(windows)]
-    pub fn ended(&self) -> Vec<u64> {
-        std::mem::take(&mut *self.done.ids.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
-    }
-
-    /// The work that has ended since the last time, in the order it ended.
-    #[cfg(unix)]
     pub fn ended(&self) -> Vec<u64> {
         let mut drained = [0u8; 64];
+        #[cfg(unix)]
         while matches!(io::Read::read(&mut &self.hear, &mut drained), Ok(n) if n > 0) {}
+        #[cfg(windows)]
+        while self.hear.recv(&mut drained).is_ok() {}
         std::mem::take(&mut *self.done.ids.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
 }
@@ -164,8 +201,11 @@ impl Done {
     /// Work `id` has ended: the scheduler hears of it.
     pub fn tell(&self, id: u64) {
         self.ids.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(id);
+        let tell = self.tell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         #[cfg(unix)]
-        let _ = io::Write::write(&mut &*self.tell.lock().unwrap_or_else(|poisoned| poisoned.into_inner()), &[1]);
+        let _ = io::Write::write(&mut &*tell, &[1]);
+        #[cfg(windows)]
+        let _ = tell.send(&[1]);
     }
 }
 
@@ -196,8 +236,8 @@ extern "C" {
 /// waits as long as it takes. Gives which are ready. A wait that a signal cut short gives
 /// none, and is waited again by the caller.
 #[cfg(windows)]
-pub fn wait(_sockets: &[(RawFd, bool)], _limit: Option<Duration>) -> Vec<bool> {
-    unreachable!("tasks come to Windows in the 98th slice, and the checker refuses them before")
+pub fn wait(sockets: &[(RawFd, bool)], limit: Option<Duration>) -> Vec<bool> {
+    crate::sys::net::wait(sockets, limit)
 }
 
 #[cfg(unix)]
@@ -223,6 +263,6 @@ pub fn fd_of<T: AsRawFd>(socket: &T) -> RawFd {
 }
 
 #[cfg(windows)]
-pub fn fd_of<T>(_socket: &T) -> RawFd {
-    unreachable!("the network comes to Windows in the 99th slice, and the checker refuses it before")
+pub fn fd_of<T: AsRawSocket>(socket: &T) -> RawFd {
+    crate::sys::net::number_of(socket)
 }

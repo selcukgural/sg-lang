@@ -1985,6 +1985,14 @@ serves several tasks at once; there is no `close`, it is closed where it ends. A
 versions (`receiveFromAsync`, `sendToAsync`, `receiveAsync`, `sendAsync`, `SocketAddress.lookupAsync`), awaited
 where they are written, with a token that may come last.
 
+The network is the same on Linux, macOS and Windows. On Windows a listener and a datagram socket hold their
+port alone, so a socket of another program that asks to share it cannot take it on `127.0.0.1` from one
+bound to every address; and a datagram sent to a port nobody listens on is told
+only to a connected socket, as a refused connection, never to the next receive of one that is not connected
+(Windows' own way, which SG turns off). Windows tells of a refused connection after about two seconds, and
+`localhost` there tries `::1` before `127.0.0.1`: a server meant for `localhost` is reached at once on
+`127.0.0.1`.
+
 ### Modules and visibility
 
 A folder is a module; there is no declaration in the file. A name without `public` stays inside the module; the rule

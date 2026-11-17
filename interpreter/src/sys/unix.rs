@@ -369,6 +369,11 @@ pub(crate) unsafe fn file_of_fd(fd: RawFd) -> std::fs::File {
     std::os::unix::io::FromRawFd::from_raw_fd(fd)
 }
 /// # Safety
+/// The number of a datagram socket the interpreter keeps, which it owns from here.
+pub(crate) fn udp_fd(socket: std::net::UdpSocket) -> RawFd {
+    fd_of(socket)
+}
+
 /// As `file_of_fd`.
 pub(crate) unsafe fn udp_of_fd(fd: RawFd) -> std::net::UdpSocket {
     std::os::unix::io::FromRawFd::from_raw_fd(fd)

@@ -65,7 +65,7 @@ of `tests/Containerfile` has them.
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
 | Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`, on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`, `readSomeAsync(ref buffer)`, and on a writer (`Stdout` and `Stderr` too) `writeAsync(x)`, `writeLineAsync(x)`, `writeBytesAsync(bytes)`, `flushAsync()` and `closeAsync()`: the work of the function without `Async`, as a task, with a token that may come last (`read token`; not for `closeAsync`). A call given a borrow, and `closeAsync`, is awaited where it is written. A writer an async function drops without `closeAsync` is written and closed the async way, awaited where it is dropped. In the interpreter the work is done when it is called; the token is looked at first. Compiled too: the work is done on a thread of input and output while the task waits, and what the block of a reader or a writer can do is done in place. A read of an input that can make the program wait (a pipe, a terminal) waits on a thread in both, and a cancel ends the wait; what comes later stays for the next read |
-| Network | `TcpListener.bind("127.0.0.1:8080")` (a number, `localhost`, or `":8080"` for every address of the machine; port 0 lets the system choose, `listener.port()` tells which), `listener.accept()`, `TcpStream.connect("example.com:80")` (the host looked up by name, each of its addresses tried in turn), `stream.receive(ref buffer)` (what has come, at most what the buffer holds; how many, 0 once the other side has let go) and `stream.send(bytes)` (all of them, through a `read` borrow): each gives a `Result` with an `IoError` (`ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong` are the network's). `stream.reader()` gives a `StreamReader` that borrows the stream and reads it through a block of its own (`readLine`, `lines()`, `readText`, `readBytes`, `readSome` and their async versions), while the stream goes on sending; a line or a text longer than 64 KB (`stream.reader(limit)` for another limit) is `LineTooLong`, and so is every read after it. A `receive` while the reader is used again is a compile error, and neither `send` nor `reader()` goes through a `shared` stream. `acceptAsync`, `connectAsync`, `receiveAsync` and `sendAsync` do the same work as a task, awaited where they are written, with a token that may come last; a cancel ends a wait at once and loses nothing that came. A socket sends without a buffer and is closed when it ends. In an async function the calls without `Async` are an error, as for files. `stream.localAddress()` and `stream.remoteAddress()` give the two ends as a `SocketAddress`. Datagrams: `UdpSocket.bind("127.0.0.1:0")`, `socket.sendTo(bytes, to)` (one message, whole) and `socket.receiveFrom(ref buffer)` (one message and who sent it, a `Received`), `connect(to)` with `send` and `receive`, all through a `read` borrow so a `shared` socket serves several tasks; a datagram that does not fit is `MessageTooLong`. A `SocketAddress` is read by `SocketAddress.parse("[::1]:53")` and printed the same way, and `SocketAddress.lookup("example.com:53")` gives the addresses of a name. In the interpreter a socket that is not ready gives the turn away, and the scheduler waits for the sockets with `poll` when no task can run. Compiled too: a call that has to wait waits with `poll`, and an async one on the loop of the network (epoll, kqueue), which a thread of the pool with nothing to do waits on |
+| Network | `TcpListener.bind("127.0.0.1:8080")` (a number, `localhost`, or `":8080"` for every address of the machine; port 0 lets the system choose, `listener.port()` tells which), `listener.accept()`, `TcpStream.connect("example.com:80")` (the host looked up by name, each of its addresses tried in turn), `stream.receive(ref buffer)` (what has come, at most what the buffer holds; how many, 0 once the other side has let go) and `stream.send(bytes)` (all of them, through a `read` borrow): each gives a `Result` with an `IoError` (`ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong` are the network's). `stream.reader()` gives a `StreamReader` that borrows the stream and reads it through a block of its own (`readLine`, `lines()`, `readText`, `readBytes`, `readSome` and their async versions), while the stream goes on sending; a line or a text longer than 64 KB (`stream.reader(limit)` for another limit) is `LineTooLong`, and so is every read after it. A `receive` while the reader is used again is a compile error, and neither `send` nor `reader()` goes through a `shared` stream. `acceptAsync`, `connectAsync`, `receiveAsync` and `sendAsync` do the same work as a task, awaited where they are written, with a token that may come last; a cancel ends a wait at once and loses nothing that came. A socket sends without a buffer and is closed when it ends. In an async function the calls without `Async` are an error, as for files. `stream.localAddress()` and `stream.remoteAddress()` give the two ends as a `SocketAddress`. Datagrams: `UdpSocket.bind("127.0.0.1:0")`, `socket.sendTo(bytes, to)` (one message, whole) and `socket.receiveFrom(ref buffer)` (one message and who sent it, a `Received`), `connect(to)` with `send` and `receive`, all through a `read` borrow so a `shared` socket serves several tasks; a datagram that does not fit is `MessageTooLong`. A `SocketAddress` is read by `SocketAddress.parse("[::1]:53")` and printed the same way, and `SocketAddress.lookup("example.com:53")` gives the addresses of a name. In the interpreter a socket that is not ready gives the turn away, and the scheduler waits for the sockets with `poll` when no task can run. Compiled too: a call that has to wait waits with `poll`, and an async one on the loop of the network (epoll, kqueue), which a thread of the pool with nothing to do waits on. On Windows the same, through Winsock: the loop asks the driver under the sockets (AFD) on an I/O completion port, as mio and Tokio do, and the interpreter waits with `WSAPoll`; a listener and a datagram socket hold their port alone, and a datagram socket that is not connected is not told of a datagram that came back, as on Linux and macOS. Windows tells of a refused connection after about two seconds, and `localhost` tries `::1` before `127.0.0.1` (1025) |
 | Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. All three are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into). `Path.join(a, b)` gives a new path; `Path.joinInside(folder, name)` a `Result<string, IoError>` that is an `InvalidInput` for a name that could lead out of the folder on any system (`..`, a root, a `\`, a `:`, a device of Windows); `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
@@ -6648,6 +6648,88 @@ before the slice and approved on 17 November 2026:
      them on several threads without the thread sanitizer, and 80 lines of `tests/windows-pending.txt`
      wait for their slices. New: `short_delays_are_short`.
 
+Choices made in the ninety-ninth slice (the network and async input and output on Windows), the third of the
+slices of Windows (936), on the branch `windows`. 1015 to 1031 were put to the author before the slice and
+approved on 17 November 2026:
+
+1015. **The loop asks AFD**, the driver under Windows' sockets, as mio and Tokio do: a question
+     (`IOCTL_AFD_POLL`) on a handle of `\Device\Afd`, answered on an I/O completion port, which is the loop
+     a thread of the pool with nothing to do waits on (`GetQueuedCompletionStatusEx`). The slots of the
+     sockets are those of Linux and macOS: a task tries its call, and waits in the slot when the socket is
+     not ready. The driver answers a question once, where epoll and kqueue keep a socket on: a question is
+     asked when a task waits for a way the question out does not ask, and asked again, of what tasks still
+     wait for, when its answer has come; one that asks more calls the one out back. It is answered at once
+     when the socket is ready now, so nothing that came before the question is missed. The functions of
+     the driver are ntdll's, taken by name when the loop opens (`GetProcAddress`), so nothing more is
+     linked than `ws2_32`.
+1016. **A question is a block of its own**, let go of when its answer comes, so an answer that comes after
+     its socket was closed, and its number given to another, is let go of and reaches no one (on Linux and
+     macOS `gen` keeps them apart). A question's block is taken outside the count of blocks (975): one may
+     still be out when the program ends. Each 32 numbers of sockets share a handle of the driver, as mio
+     shares one, so a call back does not cost more as sockets are added.
+1017. **The loop is woken** by a packet posted to the port (`PostQueuedCompletionStatus`), where Linux and
+     macOS write into a pipe.
+1018. **A socket is a handle**, kept in 32 bits as a file is (97); its slot is its number over 4, since a
+     handle is a multiple of 4. It is asked of through its base handle (`SIO_BASE_HANDLE`), under any layer
+     a program put over Winsock.
+1019. **A socket** comes from `WSASocketW`, overlapped and not handed to programs this one starts
+     (`WSA_FLAG_NO_HANDLE_INHERIT`); one that `accept` gives has its handle set so too, and blocks or not as
+     the call asked. Winsock is started by the first call that needs it, as Rust starts it, and never
+     stopped.
+1020. **A listener and a datagram socket hold their port alone** (`SO_EXCLUSIVEADDRUSE`), never
+     `SO_REUSEADDR`: without it, while one has the port on every address of the machine (`":8080"`), a
+     socket of another program of the same user that asks to share the port binds it on `127.0.0.1` and
+     receives what is sent there. Measured on Windows 11 on 64-bit Arm, with each pair of addresses: that
+     is the one case it changes; one bound to `127.0.0.1` is not taken on `127.0.0.1` either way. Rust's
+     `TcpListener` and `UdpSocket` set neither.
+1021. **A datagram that came back** ("port unreachable") is told as Linux and macOS tell it: a socket that is
+     not connected is not told (`SIO_UDP_CONNRESET` and `SIO_UDP_NETRESET` off when it is bound; without
+     that, its next receive fails, whoever the datagram was for), and a connected one is told, its reset a
+     `ConnectionRefused`. Rust leaves Windows' way; libuv and Go turn it off.
+1022. **A call that is not async** is one call of a blocking socket, as elsewhere; a socket that an async call
+     made non-blocking is waited for with `WSAPoll`. Its fault, a failed connect it does not tell of, is not
+     met: a connect that is not async is made on a blocking socket.
+1023. **A name is looked up with `GetAddrInfoW`**, its UTF-8 turned into UTF-16, where Rust's `getaddrinfo`
+     goes through the code page of the machine; on a thread of input and output when async, as elsewhere.
+     The interpreter looks up with it too.
+1024. **The codes of Winsock** are the variants of `IoError` they are on Linux and macOS, through the table
+     of 988; `ok_net_errors` prints the same on every system.
+1025. **Windows tells of a refused connection after about two seconds**: it tries again twice after the
+     other side refused, as it does for Rust's and Go's programs. Measured on Windows 11 on 64-bit Arm:
+     2.02 s to a port nobody listens on, and 2.05 s to `localhost`, whose `::1` is tried first while the
+     listener is on `127.0.0.1`. It is left as Windows has it; a test that connects to `localhost` is two
+     seconds slower there.
+1026. **Files and the async streams** are read and written on the threads of input and output, as on Linux
+     and macOS (Tokio does not take files to the completion port either); only the calls under them are
+     Windows' (`sg_sys_read`, `GetFileType`).
+1027. **A cancel of a wait for the input** ends the wait at once, as elsewhere: the thread that reads goes on
+     reading (`ReadConsoleW` or `ReadFile`), and what it reads stays for the next read. No
+     `CancelSynchronousIo`, which could lose a character the console has given. The program ends with the
+     thread still reading.
+1028. **The interpreter**: std's sockets, waited for with `WSAPoll`; its scheduler is woken through a datagram
+     socket of `127.0.0.1` connected to itself, where Linux and macOS have a pair of sockets of the machine;
+     a listener and a datagram socket are made with `WSASocketW` and handed to std, holding their port
+     alone (1020) and told as 1021 says. Winsock is declared in `src/sys/net_windows.rs`, no crate.
+1029. **`tests/windows-pending.txt`** has no line of the 99th: 19 programs and three tests of the harness
+     (`compiled_input_waits_alone`, `compiled_input_cancel`, `interpreted_input_cancel`) run on Windows, and
+     four that also start other programs or listen for signals (`ok_process_async`,
+     `ok_process_descriptors`, `ok_process_talk`, `examples/shutdown`) moved to the 100th. A field of the
+     runtime named `far` is `away` now: Windows' headers take `far` as a word of their own.
+1030. **Tests**: `ok_udp_unreachable` (every system): an unconnected socket that sent to a port nobody listens
+     on receives the next datagram, and a connected one is refused; without 1021 Windows gives the first a
+     reset (`WSAECONNRESET`, tried in C on the machine). `ports_are_held_alone` (Windows): a socket that asks
+     to share the port, on `127.0.0.1`, of a listener or a datagram socket bound to every address,
+     interpreted and compiled, is refused, while it takes the port of such a socket of std. Its first
+     version bound both to `127.0.0.1`, where Windows refuses the second either way, and its check of std
+     failed: so the case was measured (1020).
+1031. **Documents**: this list, the network in the table above, "Not here yet", "Next"; 04 ("The runtime" as
+     built), 02 (the network), 06 (the sockets on Windows), the README of the repository. Nothing is measured but
+     1020 and 1025. `cargo test` passes on macOS, on Linux in a container (354 of 1440 programs compile
+     through C, 79 of them under the thread sanitizer, 26 of 32 programs of tests) and on Windows 11 on 64-bit
+     Arm, where 313 programs compile through C and run under the check of undefined behaviour, 60 of them
+     on several threads without the thread sanitizer, 16 programs of tests, and 58 lines of
+     `tests/windows-pending.txt` wait for their slices. New: `ok_udp_unreachable`, `ports_are_held_alone`.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -6752,8 +6834,7 @@ check off.
 
 ## Not here yet
 
-- **Of Windows**, after its first two slices: the network and async input and output, a cancelled wait
-  for the console among them (99); other programs and signals (100); C, `-L` (a path of Windows has a
+- **Of Windows**, after its first three slices: other programs and signals (100); C, `-L` (a path of Windows has a
   `:`, which the check of a folder refuses), `--library` and `--shared` (101); `--freestanding` and the
   kernel, and the tests of C's layouts (`tests/layouts.rs`), which are run on Linux and macOS for Windows'
   rules already (102, `tests/windows-pending.txt`). No thread sanitizer there (1011).
@@ -7091,4 +7172,7 @@ files and paths, the clock, random bytes and the environment, `OperatingSystem.i
 program its system, and what Windows does not run yet is a compile error that names its slice (980-998).
 The second is written too: tasks, threads, locks, atomics and the async scheduler run on Windows, a delay
 of a millisecond waits about a millisecond there, and a write to the console holds its stream (999-1014).
-Next are the network, other programs and signals, C, and everything tested and measured on both machines.
+The third is written: the network and async input and output run on Windows, the loop asking the driver
+under the sockets on a completion port, a port held alone, and a datagram that came back told as Linux
+and macOS tell it (1015-1031). Next are other programs and signals, C, and everything tested and
+measured on both machines.

@@ -382,7 +382,7 @@ Last brought up to date: 17 November 2026, the ninety-first slice.
 
 | Rust | SG | Status | Note |
 |---|---|---|---|
-| `TcpListener::bind("127.0.0.1:8080")?` | `try TcpListener.bind("127.0.0.1:8080")` | built | A number, `localhost` or `":8080"` (every v4 address); no name is looked up, so it never waits. Port 0 lets the system choose: `listener.port()` |
+| `TcpListener::bind("127.0.0.1:8080")?` | `try TcpListener.bind("127.0.0.1:8080")` | built | A number, `localhost` or `":8080"` (every v4 address); no name is looked up, so it never waits. Port 0 lets the system choose: `listener.port()`. On Windows it holds the port alone (`SO_EXCLUSIVEADDRUSE`), which Rust's does not: bound to every address, its port is not taken on `127.0.0.1` by another program's socket that asks to share it |
 | `listener.accept()?` | `try listener.accept()` | built | Through a `read` borrow, as `accept(&self)`; gives the `TcpStream` alone, not the address of the other side |
 | `TcpStream::connect("example.com:80")?` | `try TcpStream.connect("example.com:80")` | built | The host looked up by name, each address tried in turn |
 | `stream.read(&mut buf)?` | `try stream.receive(ref buffer)` | built | What has come, how many, 0 at the end; `read` is a word of SG, and `receive` is C#'s name |
@@ -394,7 +394,7 @@ Last brought up to date: 17 November 2026, the ninety-first slice.
 | `tokio::net::TcpListener`, `TcpStream`, `.await` | `await listener.acceptAsync()`, `connectAsync`, `receiveAsync`, `sendAsync` | built | A token may come last, and a cancel ends a wait at once; what came stays in the socket |
 | `stream.peer_addr()?`, `stream.local_addr()?` | `try stream.remoteAddress()`, `stream.localAddress()` | built | A `SocketAddress`; the other side is `ConnectionReset` once it has broken the connection off |
 | `stream.into_split()`, `Arc<TcpStream>` sent on from several threads, `stream.shutdown(Write)`, `set_nodelay` | none yet | designed | Later slices of the network |
-| `UdpSocket::bind("127.0.0.1:0")?` | `try UdpSocket.bind("127.0.0.1:0")` | built | What `TcpListener.bind` takes; no name is looked up |
+| `UdpSocket::bind("127.0.0.1:0")?` | `try UdpSocket.bind("127.0.0.1:0")` | built | What `TcpListener.bind` takes; no name is looked up. On Windows it holds the port alone, and a datagram that came back is told only to a connected socket, as on Linux and macOS; Rust's socket there fails its next receive with a reset, whoever the datagram was for |
 | `socket.send_to(&bytes, addr)?` | `try socket.sendTo(bytes, to)` | built | One datagram, whole: one too long to send as one message is `IoError.MessageTooLong`. `to` is a `SocketAddress`, not a text to look up |
 | `let (n, from) = socket.recv_from(&mut buf)?` | `var got = try socket.receiveFrom(ref buffer)` | built | A `Received` with `got.count` and `got.from`. A datagram longer than the buffer is `MessageTooLong`, where Rust cuts it short |
 | `socket.connect(addr)?`, `socket.send(&b)?`, `socket.recv(&mut buf)?` | `try socket.connect(to)`, `try socket.send(bytes)`, `try socket.receive(ref buffer)` | built | `ConnectionRefused` when the other machine says nobody listens |
@@ -402,7 +402,7 @@ Last brought up to date: 17 November 2026, the ninety-first slice.
 | `Arc<UdpSocket>` shared by threads, `&self` methods | `shared UdpSocket`, every method through `read` | built | No `close`: it is closed where it ends |
 | `tokio::net::UdpSocket`, `.recv_from(&mut buf).await` | `await socket.receiveFromAsync(ref buffer)`, `sendToAsync`, `receiveAsync`, `sendAsync` | built | A token may come last; a cancel ends a wait at once |
 | `"[::1]:53".parse::<SocketAddr>()?` | `try SocketAddress.parse("[::1]:53")` | built | `IoError.InvalidInput` for a text that is not an address; printed as it is read (RFC 5952) |
-| `("example.com", 53).to_socket_addrs()?` | `try SocketAddress.lookup("example.com:53")` | built | A `List<SocketAddress>`; `HostNotFound` when the name has none. `lookupAsync` looks it up on a thread |
+| `("example.com", 53).to_socket_addrs()?` | `try SocketAddress.lookup("example.com:53")` | built | A `List<SocketAddress>`; `HostNotFound` when the name has none. `lookupAsync` looks it up on a thread. On Windows the name goes to the system in UTF-16 (`GetAddrInfoW`), not through the code page as Rust's |
 | `addr.ip()`, `addr.port()` | `address.host()`, `address.port()` | built | `host()` is text: there is no `IpAddr` type |
 | `socket.join_multicast_v4(...)`, `set_broadcast(true)`, `set_ttl`, `peek_from` | none yet | designed | Later |
 

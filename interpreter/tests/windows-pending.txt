@@ -1,47 +1,26 @@
 # What does not run on Windows yet, and the slice that brings it (design/04, "Windows, the direction").
 # A program listed here must be refused on Windows by the checker as waiting for that slice; one that
 # runs is an error until it is taken off. A name with `*` at its end stands for every name that starts so.
-# Each slice takes its lines away; after the last the list is empty. The base (97) and tasks, threads
-# and locks (98) have come.
-
-# 99: the network and async input and output
-ok_async_files  # 99: the network and async input and output
-ok_async_io_tasks  # 99: the network and async input and output
-ok_async_stdin  # 99: the network and async input and output
-ok_async_writer  # 99: the network and async input and output
-ok_async_writer_drop  # 99: the network and async input and output
-ok_net_address  # 99: the network and async input and output
-ok_net_cancel  # 99: the network and async input and output
-ok_net_echo  # 99: the network and async input and output
-ok_net_errors  # 99: the network and async input and output
-ok_net_lines  # 99: the network and async input and output
-ok_net_lines_sync  # 99: the network and async input and output
-ok_net_slots  # 99: the network and async input and output
-ok_net_sync  # 99: the network and async input and output
-ok_net_wakes_from_thread  # 99: the network and async input and output
-ok_process_async  # 99: the network and async input and output
-ok_process_descriptors  # 99: the network and async input and output
-ok_process_talk  # 99: the network and async input and output
-ok_text_blocks  # 99: the network and async input and output
-ok_udp_address  # 99: the network and async input and output
-ok_udp_async  # 99: the network and async input and output
-ok_udp_sync  # 99: the network and async input and output
-panic_net_reader_limit  # 99: the network and async input and output
-shutdown  # 99: the network and async input and output
+# Each slice takes its lines away; after the last the list is empty. The base (97), tasks, threads
+# and locks (98), and the network and async input and output (99) have come.
 
 # 100: other programs and signals
+ok_process_async  # 100: other programs and signals
 ok_process_cancel  # 100: other programs and signals
+ok_process_descriptors  # 100: other programs and signals
 ok_process_drop  # 100: other programs and signals
 ok_process_environment  # 100: other programs and signals
 ok_process_kill  # 100: other programs and signals
 ok_process_output  # 100: other programs and signals
 ok_process_start  # 100: other programs and signals
+ok_process_talk  # 100: other programs and signals
 ok_signals_async  # 100: other programs and signals
 ok_signals_default  # 100: other programs and signals
 ok_signals_kept  # 100: other programs and signals
 ok_signals_next  # 100: other programs and signals
 ok_signals_process  # 100: other programs and signals
 panic_signals_listen_nothing  # 100: other programs and signals
+shutdown  # 100: other programs and signals
 
 # 101: C
 bare  # 101: C
@@ -79,9 +58,6 @@ varargs  # 101: C
 zlib  # 101: C
 
 # Tests of the harness that are about a later slice as a whole.
-compiled_input_waits_alone  # 99: the network and async input and output
-compiled_input_cancel  # 99: the network and async input and output
-interpreted_input_cancel  # 99: the network and async input and output
 callbacks_end_the_process  # 101: C
 process_path_lookup  # 100: other programs and signals
 shutdown_on_signals  # 100: other programs and signals

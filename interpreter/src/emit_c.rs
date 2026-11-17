@@ -25,7 +25,8 @@
 //! `await`, `Task.delay`, cancellation and lists of tasks with `Task.whenAll` and `Task.whenAny` (see
 //! `TASK_RUNTIME`), input and output the async way (see `ASYNC_IO_RUNTIME`), and the network,
 //! `TcpListener` and `TcpStream`, without async (see `NET_RUNTIME`) and with it, on a loop of epoll or
-//! kqueue that each socket goes on once (see `NET_ASYNC_RUNTIME`), and the reader of a connection, a `StreamReader` that borrows it
+//! kqueue that each socket goes on once, or of AFD on a completion port on Windows (see
+//! `NET_ASYNC_RUNTIME`), and the reader of a connection, a `StreamReader` that borrows it
 //! (see `sg_reader` in `IO_RUNTIME`), and raw memory: a `raw T` is a `T*`, an item of it is reached
 //! where it is with nothing checked, and `Memory.allocate` is `calloc` behind the tests of its count
 //! (see `RAW_RUNTIME`), and the functions of C an `extern` block declares, called directly through an
@@ -3682,12 +3683,59 @@ static sg_cancel* sg_cancel_after(int32_t ms, const char* loc) {
 /// and the calls of `TcpListener` and `TcpStream` for code that is not async, which wait for a
 /// socket with `poll`. Added only to such a program, after `IO_RUNTIME`.
 const NET_RUNTIME: &str = r#"
+#if defined(_WIN32)
+/* Windows: the sockets of Winsock. A socket is a handle, kept where a descriptor is on Linux and
+   macOS: Windows gives handles of 32 bits (see `sg_handle`), and -1 is `INVALID_SOCKET` cut to
+   that size. The codes are Winsock's (`WSAGetLastError`), which `sg_io_kind` tells apart. A name is
+   looked up with `GetAddrInfoW`, its UTF-8 turned into UTF-16, so a name that is not ASCII is
+   not turned through the code page of the machine. */
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <mstcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#define SG_SOCK(fd) ((SOCKET)(intptr_t)(fd))
+typedef ADDRINFOW sg_addrinfo;
+#define sg_freeaddrinfo FreeAddrInfoW
+#define SG_E_AGAIN WSAEWOULDBLOCK
+#define SG_E_INTR WSAEINTR
+#define SG_E_ABORTED WSAECONNABORTED
+#define SG_E_PROGRESS WSAEINPROGRESS
+#define SG_E_REFUSED WSAECONNREFUSED
+#define SG_E_MFILE WSAEMFILE
+#define SG_E_MSGSIZE WSAEMSGSIZE
+static inline int sg_net_error(void) { int code = WSAGetLastError(); return code ? code : ERROR_GEN_FAILURE; }
+/* Winsock is started once, by the first call that needs it, as Rust starts it; it is never
+   stopped (the end of the process lets go of it). Starting it twice only counts it twice. */
+static int sg_wsa_started = 0;
+static void sg_wsa_start(void) {
+    if (__atomic_load_n(&sg_wsa_started, __ATOMIC_ACQUIRE)) return;
+    WSADATA data;
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+        SG_PANIC_START();
+        fprintf(stderr, "panic: the system refused to start its sockets (os error %d)\n", WSAGetLastError());
+        exit(1);
+    }
+    __atomic_store_n(&sg_wsa_started, 1, __ATOMIC_RELEASE);
+}
+#else
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
+#define SG_SOCK(fd) (fd)
+typedef struct addrinfo sg_addrinfo;
+#define sg_freeaddrinfo freeaddrinfo
+#define SG_E_AGAIN EAGAIN
+#define SG_E_INTR EINTR
+#define SG_E_ABORTED ECONNABORTED
+#define SG_E_PROGRESS EINPROGRESS
+#define SG_E_REFUSED ECONNREFUSED
+#define SG_E_MFILE EMFILE
+#define SG_E_MSGSIZE EMSGSIZE
+static inline int sg_net_error(void) { return sg_os_error(); }
+#endif
 /* A listener and a connection are a socket of the system, -1 once moved or closed. A socket
    blocks until an async call first uses it (`nb`), so a call of code that is not async is one
    call of the system; every call still waits with `poll` when the socket is not ready, so the
@@ -3701,7 +3749,11 @@ static void (*sg_net_forget)(int) = NULL;
 static inline void sg_net_close(int fd) {
     void (*forget)(int) = __atomic_load_n(&sg_net_forget, __ATOMIC_ACQUIRE);
     if (forget) forget(fd);
+#if defined(_WIN32)
+    closesocket(SG_SOCK(fd));
+#else
     close(fd);
+#endif
 }
 static inline void sg_drop_listener(sg_listener* l) { if (l->fd >= 0) sg_net_close(l->fd); l->fd = -1; }
 static inline sg_listener sg_move_listener(sg_listener* l) { sg_listener out = *l; l->fd = -1; return out; }
@@ -3709,6 +3761,23 @@ static inline void sg_drop_socket(sg_socket* s) { if (s->fd >= 0) sg_net_close(s
 static inline sg_socket sg_move_socket(sg_socket* s) { sg_socket out = *s; s->fd = -1; return out; }
 /* A socket that is not handed to programs this one starts, gives an error instead of a signal
    when the other side has gone, and does not block if `nb`. */
+#if defined(_WIN32)
+static inline void sg_net_nonblock(int fd) { u_long one = 1; ioctlsocket(SG_SOCK(fd), FIONBIO, &one); }
+/* A socket that `accept` gave has the properties of its listener: whether it blocks is set, and
+   it is not handed to programs this one starts, as one of `sg_net_socket` is not. */
+static void sg_net_setup(int fd, bool nb) {
+    u_long on = nb ? 1 : 0;
+    ioctlsocket(SG_SOCK(fd), FIONBIO, &on);
+    SetHandleInformation((HANDLE)SG_SOCK(fd), HANDLE_FLAG_INHERIT, 0);
+}
+static int sg_net_socket(int family, bool nb) {
+    sg_wsa_start();
+    SOCKET s = WSASocketW(family, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+    if (s == INVALID_SOCKET) return -1;
+    if (nb) sg_net_nonblock((int)(intptr_t)s);
+    return (int)(intptr_t)s;
+}
+#else
 static void sg_net_setup(int fd, bool nb) {
 #if !defined(__linux__)
     if (nb) fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
@@ -3732,6 +3801,7 @@ static int sg_net_socket(int family, bool nb) {
     return fd;
 }
 static inline void sg_net_nonblock(int fd) { fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK); }
+#endif
 /* `host:port`: the host, without the brackets of a v6 address and ended by a zero byte, and the
    port as digits. False when the address is not `host:port`. */
 static bool sg_net_split(sg_str a, char host[256], char port[6]) {
@@ -3787,12 +3857,18 @@ static int sg_net_bind(sg_str address, sg_listener* out) {
         return SG_HOST_NOT_FOUND;
     }
     int fd = sg_net_socket(at.ss_family, false);
-    if (fd < 0) return sg_os_error();
+    if (fd < 0) return sg_net_error();
     int one = 1;
+#if defined(_WIN32)
+    /* No other socket may take the port while this one has it: with `SO_REUSEADDR` on Windows,
+       another program could. */
+    setsockopt(SG_SOCK(fd), SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*)&one, sizeof one);
+#else
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    if (bind(fd, (struct sockaddr*)&at, len) != 0 || listen(fd, SOMAXCONN) != 0) {
-        int code = sg_os_error();
-        close(fd);
+#endif
+    if (bind(SG_SOCK(fd), (struct sockaddr*)&at, len) != 0 || listen(SG_SOCK(fd), SOMAXCONN) != 0) {
+        int code = sg_net_error();
+        sg_net_close(fd);
         return code;
     }
     *out = (sg_listener){ fd, 0 };
@@ -3801,19 +3877,47 @@ static int sg_net_bind(sg_str address, sg_listener* out) {
 static int32_t sg_net_port(const sg_listener* l) {
     struct sockaddr_storage at;
     socklen_t len = sizeof at;
-    if (getsockname(l->fd, (struct sockaddr*)&at, &len) != 0) return 0;
+    if (getsockname(SG_SOCK(l->fd), (struct sockaddr*)&at, &len) != 0) return 0;
     if (at.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6*)&at)->sin6_port);
     return ntohs(((struct sockaddr_in*)&at)->sin_port);
 }
 /* Waits until the socket is ready, for code that is not async. */
 static int sg_net_poll(int fd, bool write) {
+#if defined(_WIN32)
+    WSAPOLLFD p = { SG_SOCK(fd), write ? POLLWRNORM : POLLRDNORM, 0 };
+    return WSAPoll(&p, 1, -1) >= 0 ? 0 : sg_net_error();
+#else
     struct pollfd p = { fd, write ? POLLOUT : POLLIN, 0 };
     for (;;) {
         if (poll(&p, 1, -1) >= 0) return 0;
         if (errno != EINTR) return sg_os_error();
     }
+#endif
 }
-/* One try of each call: 0, EAGAIN when the socket is not ready, or the code the system gave. */
+/* One try of each call: 0, SG_E_AGAIN when the socket is not ready, or the code the system gave. */
+#if defined(_WIN32)
+/* At most what a call of Winsock takes. */
+static inline int sg_net_most(int64_t len) { return len > 0x40000000 ? 0x40000000 : (int)len; }
+static int sg_net_accept_now(int lfd, int* out, bool nb) {
+    SOCKET s = accept(SG_SOCK(lfd), NULL, NULL);
+    if (s == INVALID_SOCKET) return sg_net_error();
+    sg_net_setup((int)(intptr_t)s, nb);
+    *out = (int)(intptr_t)s;
+    return 0;
+}
+static int sg_net_recv_now(int fd, uint8_t* to, int64_t len, int64_t* got) {
+    int n = recv(SG_SOCK(fd), (char*)to, sg_net_most(len), 0);
+    if (n < 0) return sg_net_error();
+    *got = n;
+    return 0;
+}
+static int sg_net_send_now(int fd, const uint8_t* from, int64_t len, int64_t* sent) {
+    int n = send(SG_SOCK(fd), (const char*)from, sg_net_most(len), 0);
+    if (n < 0) return sg_net_error();
+    *sent = n;
+    return 0;
+}
+#else
 static int sg_net_accept_now(int lfd, int* out, bool nb) {
 #if defined(__linux__)
     int fd = accept4(lfd, NULL, NULL, SOCK_CLOEXEC | (nb ? SOCK_NONBLOCK : 0));
@@ -3842,15 +3946,22 @@ static int sg_net_send_now(int fd, const uint8_t* from, int64_t len, int64_t* se
     *sent = n;
     return 0;
 }
-/* A connection that was refused before it was taken is not an error of the listener. */
-static inline bool sg_net_again(int code, bool accepting) { return code == EINTR || (accepting && code == ECONNABORTED); }
+#endif
+/* A connection that was refused before it was taken is not an error of the listener; Windows
+   tells of one reset before it was taken too. */
+static inline bool sg_net_again(int code, bool accepting) {
+#if defined(_WIN32)
+    if (accepting && code == WSAECONNRESET) return true;
+#endif
+    return code == SG_E_INTR || (accepting && code == SG_E_ABORTED);
+}
 static int sg_net_accept(const sg_listener* l, sg_socket* out) {
     for (;;) {
         int fd;
         int code = sg_net_accept_now(l->fd, &fd, false);
         if (!code) { *out = (sg_socket){ fd, false }; return 0; }
         if (sg_net_again(code, true)) continue;
-        if (code != EAGAIN) return code;
+        if (code != SG_E_AGAIN) return code;
         if ((code = sg_net_poll(l->fd, false))) return code;
     }
 }
@@ -3859,7 +3970,7 @@ static int sg_net_recv(sg_socket* s, uint8_t* to, int64_t len, int64_t* got) {
         int code = sg_net_recv_now(s->fd, to, len, got);
         if (!code) return 0;
         if (sg_net_again(code, false)) continue;
-        if (code != EAGAIN) return code;
+        if (code != SG_E_AGAIN) return code;
         if ((code = sg_net_poll(s->fd, false))) return code;
     }
 }
@@ -3870,40 +3981,54 @@ static int sg_net_send(sg_socket* s, const uint8_t* from, int64_t len) {
         int code = sg_net_send_now(s->fd, from + done, len - done, &sent);
         if (!code) { done += sent; continue; }
         if (sg_net_again(code, false)) continue;
-        if (code != EAGAIN) return code;
+        if (code != SG_E_AGAIN) return code;
         if ((code = sg_net_poll(s->fd, true))) return code;
     }
     return 0;
 }
 /* The addresses of `host:port`, looked up by name (`numeric`: only if the host is a number,
    which never waits). */
-static int sg_net_lookup(const char* host, const char* port, bool numeric, struct addrinfo** list) {
-    struct addrinfo hints;
+static int sg_net_lookup(const char* host, const char* port, bool numeric, sg_addrinfo** list) {
+    sg_addrinfo hints;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
+#if defined(_WIN32)
+    /* Windows has no `AI_NUMERICSERV`: the port is digits always. */
+    if (numeric) hints.ai_flags = AI_NUMERICHOST;
+    sg_wsa_start();
+    wchar_t wide_host[256], wide_port[6];
+    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, host, -1, wide_host, 256)) return SG_HOST_NOT_FOUND;
+    if (!MultiByteToWideChar(CP_UTF8, 0, port, -1, wide_port, 6)) return SG_HOST_NOT_FOUND;
+    int r = GetAddrInfoW(wide_host, wide_port, &hints, list);
+    if (r == 0) return 0;
+    if (r == WSA_NOT_ENOUGH_MEMORY) abort();
+    return SG_HOST_NOT_FOUND;
+#else
     if (numeric) hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
     int r = getaddrinfo(host, port, &hints, list);
     if (r == 0) return 0;
     if (r == EAI_SYSTEM) return sg_os_error();
     return SG_HOST_NOT_FOUND;
+#endif
 }
-/* A connect to one address is started: 0 when it is made at once, EINPROGRESS when it goes on
-   (`*fd` is the socket), or the code the system gave. */
-static int sg_net_try(const struct addrinfo* a, int* fd, bool nb) {
+/* A connect to one address is started: 0 when it is made at once, SG_E_PROGRESS when it goes on
+   (`*fd` is the socket), or the code the system gave. Windows tells of a connect that goes on
+   with `WSAEWOULDBLOCK`. */
+static int sg_net_try(const sg_addrinfo* a, int* fd, bool nb) {
     *fd = sg_net_socket(a->ai_family, nb);
-    if (*fd < 0) return sg_os_error();
-    if (connect(*fd, a->ai_addr, a->ai_addrlen) == 0) return 0;
-    int code = sg_os_error();
-    if (code == EINPROGRESS || code == EINTR) return EINPROGRESS;
-    close(*fd);
+    if (*fd < 0) return sg_net_error();
+    if (connect(SG_SOCK(*fd), a->ai_addr, (int)a->ai_addrlen) == 0) return 0;
+    int code = sg_net_error();
+    if (code == SG_E_PROGRESS || code == SG_E_INTR || code == SG_E_AGAIN) return SG_E_PROGRESS;
+    sg_net_close(*fd);
     *fd = -1;
     return code;
 }
 static int sg_net_made(int fd) {
     int code = 0;
     socklen_t len = sizeof code;
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &code, &len) != 0) return sg_os_error();
+    if (getsockopt(SG_SOCK(fd), SOL_SOCKET, SO_ERROR, (char*)&code, &len) != 0) return sg_net_error();
     return code;
 }
 /* `TcpStream.connect(address)`: each address of the host is tried in turn, until one takes
@@ -3911,25 +4036,25 @@ static int sg_net_made(int fd) {
 static int sg_net_connect(sg_str address, sg_socket* out) {
     char host[256], port[6];
     if (!sg_net_split(address, host, port) || host[0] == 0) return SG_HOST_NOT_FOUND;
-    struct addrinfo* list = NULL;
+    sg_addrinfo* list = NULL;
     int code = sg_net_lookup(host, port, false, &list);
     if (code) return code;
-    code = ECONNREFUSED;
-    for (struct addrinfo* a = list; a; a = a->ai_next) {
+    code = SG_E_REFUSED;
+    for (sg_addrinfo* a = list; a; a = a->ai_next) {
         int fd = -1;
         code = sg_net_try(a, &fd, false);
-        if (code == EINPROGRESS) {
+        if (code == SG_E_PROGRESS) {
             code = sg_net_poll(fd, true);
             if (!code) code = sg_net_made(fd);
         }
         if (!code) {
-            freeaddrinfo(list);
+            sg_freeaddrinfo(list);
             *out = (sg_socket){ fd, false };
             return 0;
         }
-        if (fd >= 0) close(fd);
+        if (fd >= 0) sg_net_close(fd);
     }
-    freeaddrinfo(list);
+    sg_freeaddrinfo(list);
     return code;
 }
 /* A datagram socket of `UdpSocket` is a number of the system, as the language's own module keeps
@@ -3956,8 +4081,30 @@ static inline socklen_t sg_udp_at(bool v6, uint64_t high, uint64_t low, int32_t 
     return sizeof *a;
 }
 /* One try of a send of one datagram (`to` NULL: to the address of `connect`) and of a receive:
-   0, EAGAIN when the socket is not ready, or the code the system gave. A datagram longer than
-   the buffer is EMSGSIZE, and is gone. */
+   0, SG_E_AGAIN when the socket is not ready, or the code the system gave. A datagram longer than
+   the buffer is SG_E_MSGSIZE, and is gone. */
+#if defined(_WIN32)
+/* Windows tells of a datagram that came back as "port unreachable" by a reset of the socket: on
+   a connected socket, as Linux and macOS tell it, that is a refused connection (an unconnected one
+   is not told, see `sg_udp_bind`). */
+static inline int sg_udp_error(void) {
+    int code = sg_net_error();
+    return code == WSAECONNRESET ? WSAECONNREFUSED : code;
+}
+static inline int sg_udp_send_now(int fd, const uint8_t* from, int64_t len, const struct sockaddr_storage* to, socklen_t to_len, int flags) {
+    int n = to ? sendto(SG_SOCK(fd), (const char*)from, sg_net_most(len), flags, (const struct sockaddr*)to, to_len) : send(SG_SOCK(fd), (const char*)from, sg_net_most(len), flags);
+    if (n < 0) return sg_udp_error();
+    return 0;
+}
+static inline int sg_udp_recv_now(int fd, uint8_t* to, int64_t len, struct sockaddr_storage* from, int64_t* got, int flags) {
+    memset(from, 0, sizeof *from);
+    int from_len = sizeof *from;
+    int n = recvfrom(SG_SOCK(fd), (char*)to, sg_net_most(len), flags, (struct sockaddr*)from, &from_len);
+    if (n < 0) return sg_udp_error();
+    *got = n;
+    return 0;
+}
+#else
 static inline int sg_udp_send_now(int fd, const uint8_t* from, int64_t len, const struct sockaddr_storage* to, socklen_t to_len, int flags) {
     ssize_t n = to ? sendto(fd, from, (size_t)len, flags, (const struct sockaddr*)to, to_len) : send(fd, from, (size_t)len, flags);
     if (n < 0) return errno == EWOULDBLOCK ? EAGAIN : sg_os_error();
@@ -3978,6 +4125,7 @@ static inline int sg_udp_recv_now(int fd, uint8_t* to, int64_t len, struct socka
     *got = n;
     return 0;
 }
+#endif
 /* `conn.reader(limit)`: a reader of the connection, which it borrows (see `sg_reader`). */
 static sg_reader sg_net_reader(sg_socket* s, int64_t limit, const char* loc) {
     if (limit < 1) {
@@ -4019,6 +4167,50 @@ static inline void sg_udp_got(int64_t got, const struct sockaddr_storage* from, 
     if (n > 1) sg_udp_bits(from, out + 1, n - 1);
 }
 /* `System.udpBind`: a socket of its own, not handed to programs this one starts. */
+#if defined(_WIN32)
+/* Whether Windows tells of a datagram that came back as "port unreachable" (`SIO_UDP_CONNRESET`)
+   or as "time to live ran out" (`SIO_UDP_NETRESET`) at the next receive. */
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
+#ifndef SIO_UDP_NETRESET
+#define SIO_UDP_NETRESET _WSAIOW(IOC_VENDOR, 15)
+#endif
+static inline void sg_udp_tell(SOCKET s, DWORD code, BOOL on) {
+    DWORD got = 0;
+    WSAIoctl(s, code, &on, sizeof on, NULL, 0, &got, NULL, NULL);
+}
+/* No other socket may take the port while this one has it (`SO_EXCLUSIVEADDRUSE`); and, as on
+   Linux and macOS, a datagram that came back undelivered is not told to an unconnected socket,
+   which would otherwise see the next receive fail for a send to anyone. */
+static inline int sg_udp_bind(bool v6, uint64_t high, uint64_t low, int32_t port, int64_t* fd) {
+    struct sockaddr_storage at;
+    socklen_t len = sg_udp_at(v6, high, low, port, &at);
+    sg_wsa_start();
+    SOCKET s = WSASocketW(at.ss_family, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+    if (s == INVALID_SOCKET) return sg_net_error();
+    int one = 1;
+    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*)&one, sizeof one);
+    sg_udp_tell(s, SIO_UDP_CONNRESET, FALSE);
+    sg_udp_tell(s, SIO_UDP_NETRESET, FALSE);
+    if (bind(s, (struct sockaddr*)&at, len) != 0) {
+        int code = sg_net_error();
+        closesocket(s);
+        return code;
+    }
+    *fd = (int64_t)(int)(intptr_t)s;
+    return 0;
+}
+/* A connected socket is told of a datagram that came back as "port unreachable", as on Linux
+   and macOS (a refused connection, see `sg_udp_error`). */
+static inline int sg_udp_connect(int64_t fd, bool v6, uint64_t high, uint64_t low, int32_t port) {
+    struct sockaddr_storage at;
+    socklen_t len = sg_udp_at(v6, high, low, port, &at);
+    if (connect(SG_SOCK(fd), (struct sockaddr*)&at, len) != 0) return sg_net_error();
+    sg_udp_tell(SG_SOCK(fd), SIO_UDP_CONNRESET, TRUE);
+    return 0;
+}
+#else
 static inline int sg_udp_bind(bool v6, uint64_t high, uint64_t low, int32_t port, int64_t* fd) {
     struct sockaddr_storage at;
     socklen_t len = sg_udp_at(v6, high, low, port, &at);
@@ -4045,13 +4237,14 @@ static inline int sg_udp_connect(int64_t fd, bool v6, uint64_t high, uint64_t lo
     }
     return 0;
 }
+#endif
 static inline int sg_udp_send(int64_t fd, const uint8_t* from, int64_t len, bool to, bool v6, uint64_t high, uint64_t low, int32_t port) {
     struct sockaddr_storage at;
     socklen_t at_len = to ? sg_udp_at(v6, high, low, port, &at) : 0;
     for (;;) {
         int code = sg_udp_send_now((int)fd, from, len, to ? &at : NULL, at_len, 0);
-        if (code == EINTR) continue;
-        if (code != EAGAIN) return code;
+        if (code == SG_E_INTR) continue;
+        if (code != SG_E_AGAIN) return code;
         if ((code = sg_net_poll((int)fd, true))) return code;
     }
 }
@@ -4064,8 +4257,8 @@ static inline int sg_udp_recv(int64_t fd, uint8_t* to, int64_t len, uint64_t* ou
             sg_udp_got(got, &from, out, n);
             return 0;
         }
-        if (code == EINTR) continue;
-        if (code != EAGAIN) return code;
+        if (code == SG_E_INTR) continue;
+        if (code != SG_E_AGAIN) return code;
         if ((code = sg_net_poll((int)fd, false))) return code;
     }
 }
@@ -4074,7 +4267,7 @@ static inline bool sg_udp_name(int fd, bool remote, uint64_t* out, int64_t n) {
     struct sockaddr_storage at;
     memset(&at, 0, sizeof at);
     socklen_t len = sizeof at;
-    int r = remote ? getpeername(fd, (struct sockaddr*)&at, &len) : getsockname(fd, (struct sockaddr*)&at, &len);
+    int r = remote ? getpeername(SG_SOCK(fd), (struct sockaddr*)&at, &len) : getsockname(SG_SOCK(fd), (struct sockaddr*)&at, &len);
     if (r != 0) return false;
     sg_udp_bits(&at, out, n);
     return true;
@@ -4088,9 +4281,9 @@ static inline bool sg_udp_host(sg_str host, char out[256]) {
 }
 /* The addresses a lookup found, three numbers each, into `out` when it is not NULL; how many
    numbers. */
-static inline int64_t sg_udp_found(const struct addrinfo* list, uint64_t* out) {
+static inline int64_t sg_udp_found(const sg_addrinfo* list, uint64_t* out) {
     int64_t n = 0;
-    for (const struct addrinfo* a = list; a; a = a->ai_next) {
+    for (const sg_addrinfo* a = list; a; a = a->ai_next) {
         if (a->ai_family != AF_INET && a->ai_family != AF_INET6) continue;
         struct sockaddr_storage at;
         memset(&at, 0, sizeof at);
@@ -4341,7 +4534,7 @@ static bool sg_sig_wait_ready(sg_sig_wait* x) {
 const UDP_ASYNC_RUNTIME: &str = r#"
 /* The wait in the frame of the task. `state`: SG_WAITING, SG_OVER (with `code` and `list`), or
    SG_CANCELLED. */
-typedef struct { sg_wait w; int state; int code; struct addrinfo* list; } sg_io_lookup;
+typedef struct { sg_wait w; int state; int code; sg_addrinfo* list; } sg_io_lookup;
 static void sg_udp_lookup_start(sg_io_lookup* x, sg_str host, sg_cancel* token, const char* loc) {
     x->code = 0;
     x->list = NULL;
@@ -4359,17 +4552,17 @@ static void sg_udp_lookup_start(sg_io_lookup* x, sg_str host, sg_cancel* token, 
         return;
     }
     memcpy(f->port, "0", 2);
-    f->far.run = sg_lookup_run;
-    f->far.lost = sg_lookup_lost;
-    f->far.keep = true;
-    x->state = sg_far_start(&f->far, &x->w, token, loc);
+    f->away.run = sg_lookup_run;
+    f->away.lost = sg_lookup_lost;
+    f->away.keep = true;
+    x->state = sg_far_start(&f->away, &x->w, token, loc);
 }
 static bool sg_udp_lookup_ready(sg_io_lookup* x) {
     if (x->state != SG_WAITING) return true;
     if (!sg_wait_settled(&x->w)) return false;
     x->state = sg_wait_state(&x->w);
     if (x->state != SG_CANCELLED) {
-        sg_lookup* f = (sg_lookup*)x->w.on.far;
+        sg_lookup* f = (sg_lookup*)x->w.on.away;
         x->code = f->code;
         x->list = f->code ? NULL : f->list;
         free(f);
@@ -4379,12 +4572,59 @@ static bool sg_udp_lookup_ready(sg_io_lookup* x) {
 "#;
 
 /// The network for async tasks: a thread of the pool that has nothing to do waits for every
-/// socket a task waits for, with epoll (Linux) or kqueue, and wakes the task when it is ready.
-/// A socket goes on the loop once, the first time a task waits for it, and a wait after is no
-/// call of the system: the loop writes what is ready into the slot of the socket, where its tasks
-/// wait. A cancel takes the task out of the slot and wakes it. A name is looked up on a thread of
+/// socket a task waits for, with epoll (Linux), kqueue (macOS) or AFD on an I/O completion port
+/// (Windows), and wakes the task when it is ready. A socket goes on the loop once, the first time a
+/// task waits for it, and a wait after is no call of the system: the loop writes what is ready into
+/// the slot of the socket, where its tasks wait. On Windows the driver is asked again each time a
+/// task finds the socket not ready. A cancel takes the task out of the slot and wakes it. A name is looked up on a thread of
 /// input and output, which a cancel leaves. After `ASYNC_IO_RUNTIME`.
 const NET_ASYNC_RUNTIME: &str = r#"
+#if defined(_WIN32)
+/* Windows: what is ready is asked of the driver under every socket, AFD, as mio and Tokio ask it
+   (`IOCTL_AFD_POLL` on a handle of `\Device\Afd`), and its answer comes to an I/O completion port,
+   the loop. The functions of the driver are Windows' own (ntdll), taken by name when the loop
+   opens. */
+typedef struct { union { LONG status; void* pointer; } u; ULONG_PTR information; } sg_iosb;
+typedef struct { USHORT length; USHORT most; wchar_t* text; } sg_nt_name;
+typedef struct { ULONG length; HANDLE root; sg_nt_name* name; ULONG attributes; void* security; void* quality; } sg_nt_object;
+typedef LONG (NTAPI* sg_nt_create_file)(HANDLE*, ACCESS_MASK, sg_nt_object*, sg_iosb*, LARGE_INTEGER*, ULONG, ULONG, ULONG, ULONG, void*, ULONG);
+typedef LONG (NTAPI* sg_nt_control)(HANDLE, HANDLE, void*, void*, sg_iosb*, ULONG, void*, ULONG, void*, ULONG);
+typedef LONG (NTAPI* sg_nt_cancel)(HANDLE, sg_iosb*, sg_iosb*);
+typedef ULONG (NTAPI* sg_nt_error)(LONG);
+static sg_nt_create_file sg_NtCreateFile;
+static sg_nt_control sg_NtDeviceIoControlFile;
+static sg_nt_cancel sg_NtCancelIoFileEx;
+static sg_nt_error sg_RtlNtStatusToDosError;
+#define SG_STATUS_PENDING 0x00000103L
+#define SG_STATUS_CANCELLED ((LONG)0xC0000120L)
+#define SG_IOCTL_AFD_POLL 0x00012024
+#define SG_FILE_OPEN 1
+#define SG_AFD_RECEIVE 0x0001
+#define SG_AFD_SEND 0x0004
+#define SG_AFD_DISCONNECT 0x0008
+#define SG_AFD_ABORT 0x0010
+#define SG_AFD_LOCAL_CLOSE 0x0020
+#define SG_AFD_ACCEPT 0x0080
+#define SG_AFD_CONNECT_FAIL 0x0100
+#ifndef SIO_BASE_HANDLE
+#define SIO_BASE_HANDLE _WSAIOR(IOC_WS2, 34)
+#endif
+typedef struct { HANDLE handle; ULONG events; LONG status; } sg_afd_handle;
+typedef struct { LARGE_INTEGER timeout; ULONG count; ULONG exclusive; sg_afd_handle handles[1]; } sg_afd_info;
+/* One question to the driver, until its answer comes: for socket `fd` while its number had `gen`,
+   whether it can be read (bit 1) or written (2). The answer is written here, so it is a block of
+   its own, let go of when the answer has come, even when the socket was closed before. */
+typedef struct sg_afd_poll {
+    sg_iosb io;
+    sg_afd_info info;
+    int fd;
+    uint32_t gen;
+    uint8_t bits;
+} sg_afd_poll;
+static sg_mtx sg_loop_lock = SG_MTX_INIT;
+static int sg_loop_open_now = 0;
+static HANDLE sg_loop = NULL;
+#else
 #if defined(__linux__)
 #include <sys/epoll.h>
 #else
@@ -4394,15 +4634,23 @@ static sg_mtx sg_loop_lock = SG_MTX_INIT;
 static int sg_loop_open_now = 0;
 static int sg_loop = -1;
 static int sg_loop_pipe[2];
+#endif
+#if !defined(_WIN32)
 /* The waits for the end of a program that a cancel ended (see `sg_proc_cut`). */
 static sg_wait* sg_loop_cut = NULL;
+#endif
 /* The sockets on the loop, by their number. A socket goes on the loop once, for reading and
    writing, edge-triggered (`EPOLLET`, kqueue's `EV_CLEAR`), the first time a task waits for it,
    and stays on until it is closed. The loop writes what is ready into its slot (`ready`, and
    `tick` one up) and wakes the tasks that wait there; a task that finds the socket not ready
    waits in the slot, with no call of the system. `gen` goes up when the socket is closed, and an
    event names the number and `gen`, so one that comes after is let go of. The slots are in blocks
-   that never move, and a slot is looked at under the lock of its number (`sg_slot_locks`). */
+   that never move, and a slot is looked at under the lock of its number (`sg_slot_locks`).
+   On Windows the driver answers a question once: `on` is what the question out asks (`poll`),
+   and it is asked again, of what tasks still wait for, when its answer has come. A socket is
+   asked through its base handle (`base`), under any layer put over it, and through a handle of
+   the driver that 32 numbers share (`afd`, kept in the first slot of the 32), as mio shares one.
+   A handle of Windows is a multiple of 4: its slot is its number over 4. */
 #define SG_SLOT_BLOCK 1024
 #define SG_SLOT_BLOCKS 16384
 #define SG_SLOT_LOCKS 256
@@ -4416,15 +4664,26 @@ typedef struct {
     /* A datagram socket that no longer blocks (see `sg_udp_nonblock`). */
     uint8_t nb;
     sg_wait* waits[2];
+#if defined(_WIN32)
+    sg_afd_poll* poll;
+    HANDLE base;
+    HANDLE afd;
+#endif
 } sg_slot;
+#if defined(_WIN32)
+#define SG_SLOT_INDEX(fd) ((uint32_t)(fd) >> 2)
+#else
+#define SG_SLOT_INDEX(fd) ((uint32_t)(fd))
+#endif
 static sg_slot* sg_slots[SG_SLOT_BLOCKS];
 static sg_mtx sg_slot_locks[SG_SLOT_LOCKS];
-static inline sg_mtx* sg_slot_lock(int fd) { return &sg_slot_locks[fd & (SG_SLOT_LOCKS - 1)]; }
+static inline sg_mtx* sg_slot_lock(int fd) { return &sg_slot_locks[SG_SLOT_INDEX(fd) & (SG_SLOT_LOCKS - 1)]; }
 /* The slot of socket `fd`, NULL when its block is not made yet. */
 static inline sg_slot* sg_slot_at(int fd) {
-    if (fd < 0 || fd >= SG_SLOT_BLOCK * SG_SLOT_BLOCKS) return NULL;
-    sg_slot* block = __atomic_load_n(&sg_slots[fd / SG_SLOT_BLOCK], __ATOMIC_ACQUIRE);
-    return block ? &block[fd % SG_SLOT_BLOCK] : NULL;
+    if (fd < 0 || SG_SLOT_INDEX(fd) >= SG_SLOT_BLOCK * SG_SLOT_BLOCKS) return NULL;
+    uint32_t i = SG_SLOT_INDEX(fd);
+    sg_slot* block = __atomic_load_n(&sg_slots[i / SG_SLOT_BLOCK], __ATOMIC_ACQUIRE);
+    return block ? &block[i % SG_SLOT_BLOCK] : NULL;
 }
 /* How many times the loop has seen socket `fd` ready: read before a call of the system tries
    the socket, and given to `sg_wait_start` when the call finds it not ready. */
@@ -4434,18 +4693,23 @@ static inline uint32_t sg_slot_tick(int fd) {
 }
 static sg_slot* sg_slot_make(int fd) {
     sg_slot* s = sg_slot_at(fd);
-    if (s || fd < 0 || fd >= SG_SLOT_BLOCK * SG_SLOT_BLOCKS) return s;
+    if (s || fd < 0 || SG_SLOT_INDEX(fd) >= SG_SLOT_BLOCK * SG_SLOT_BLOCKS) return s;
+    uint32_t i = SG_SLOT_INDEX(fd);
     sg_mtx_lock(&sg_loop_lock);
-    sg_slot* block = __atomic_load_n(&sg_slots[fd / SG_SLOT_BLOCK], __ATOMIC_RELAXED);
+    sg_slot* block = __atomic_load_n(&sg_slots[i / SG_SLOT_BLOCK], __ATOMIC_RELAXED);
     if (!block) {
         block = calloc(SG_SLOT_BLOCK, sizeof *block);
         if (!block) abort();
         SG_KEPT(1);
-        __atomic_store_n(&sg_slots[fd / SG_SLOT_BLOCK], block, __ATOMIC_RELEASE);
+        __atomic_store_n(&sg_slots[i / SG_SLOT_BLOCK], block, __ATOMIC_RELEASE);
     }
     sg_mtx_unlock(&sg_loop_lock);
-    return &block[fd % SG_SLOT_BLOCK];
+    return &block[i % SG_SLOT_BLOCK];
 }
+#if defined(_WIN32)
+/* The handle of the driver that the group of 32 numbers of `fd` shares, NULL until it is opened. */
+static inline HANDLE sg_afd_of(int fd, sg_slot* s) { return __atomic_load_n(&(s - (SG_SLOT_INDEX(fd) & 31))->afd, __ATOMIC_ACQUIRE); }
+#endif
 /* Socket `fd` is closed (see `sg_net_close`): its slot is let go of first, so a socket that then
    gets its number goes on the loop afresh. No task waits for it: its owner is closing it. */
 static void sg_slot_forget(int fd) {
@@ -4457,6 +4721,16 @@ static void sg_slot_forget(int fd) {
     s->on = 0;
     s->ready = 0;
     __atomic_store_n(&s->nb, 0, __ATOMIC_RELAXED);
+#if defined(_WIN32)
+    /* The question out is called back; its answer, which may come still, is let go of by the
+       loop, as one for a socket no longer there. */
+    if (s->poll) {
+        sg_iosb io;
+        sg_NtCancelIoFileEx(sg_afd_of(fd, s), &s->poll->io, &io);
+        s->poll = NULL;
+    }
+    s->base = NULL;
+#endif
     sg_mtx_unlock(m);
 }
 /* A datagram socket stops blocking the first time an async call uses it, as a connection does,
@@ -4488,6 +4762,35 @@ static void sg_wait_ready(sg_wait* w) {
     __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
     sg_wake(job);
 }
+/* Under the lock of its slot: socket `fd` is ready (`bits`: 1 it can be read, 2 written), which
+   goes into its slot, and the tasks that wait for it there are taken out, onto `woken`. */
+static sg_wait* sg_slot_ready(sg_slot* s, int bits, sg_wait* woken) {
+    s->ready |= (uint8_t)bits;
+    __atomic_store_n(&s->tick, s->tick + 1, __ATOMIC_RELEASE);
+    for (int i = 0; i < 2; i++) {
+        if (!(bits & (1 << i))) continue;
+        sg_wait* w = s->waits[i];
+        s->waits[i] = NULL;
+        while (w) {
+            sg_wait* next = w->after;
+            w->listed = false;
+            w->after = woken;
+            woken = w;
+            w = next;
+        }
+    }
+    return woken;
+}
+/* The tasks taken out of a slot go on. A task woken may end its wait at once: the next is read
+   first. */
+static void sg_slot_wake(sg_wait* woken) {
+    while (woken) {
+        sg_wait* next = woken->after;
+        sg_wait_ready(woken);
+        woken = next;
+    }
+}
+#if !defined(_WIN32)
 /* An event of the loop for socket `fd` (`bits`: 1 it can be read, 2 written): what is ready goes
    into its slot, and the tasks that wait for it there are woken. */
 static void sg_slot_event(uint64_t tag, int bits) {
@@ -4497,29 +4800,9 @@ static void sg_slot_event(uint64_t tag, int bits) {
     sg_mtx* m = sg_slot_lock(fd);
     sg_mtx_lock(m);
     sg_wait* woken = NULL;
-    if (s->gen == (uint32_t)(tag >> 32)) {
-        s->ready |= (uint8_t)bits;
-        __atomic_store_n(&s->tick, s->tick + 1, __ATOMIC_RELEASE);
-        for (int i = 0; i < 2; i++) {
-            if (!(bits & (1 << i))) continue;
-            sg_wait* w = s->waits[i];
-            s->waits[i] = NULL;
-            while (w) {
-                sg_wait* next = w->after;
-                w->listed = false;
-                w->after = woken;
-                woken = w;
-                w = next;
-            }
-        }
-    }
+    if (s->gen == (uint32_t)(tag >> 32)) woken = sg_slot_ready(s, bits, NULL);
     sg_mtx_unlock(m);
-    /* A task woken may end its wait at once: the next is read first. */
-    while (woken) {
-        sg_wait* next = woken->after;
-        sg_wait_ready(woken);
-        woken = next;
-    }
+    sg_slot_wake(woken);
 }
 /* The end of a program is ready: the task goes on, unless a cancel ended the wait first. */
 static void sg_proc_ready(sg_wait* w) {
@@ -4541,6 +4824,148 @@ static void sg_proc_ready(sg_wait* w) {
     __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
     sg_wake(job);
 }
+#endif
+#if defined(_WIN32)
+static int sg_slot_arm(int fd, sg_slot* s, int bit);
+/* The answer of the driver to a question, on the thread that waits on the loop: under the lock of
+   its slot, if it is the question out for the socket, what is ready goes into the slot and the
+   tasks that wait for it are woken; it is asked again of what tasks still wait for. An answer of
+   a socket closed since, or of a question called back, is only let go of. When the question cannot
+   be asked again, the tasks that wait are woken, and meet the error as they try their calls. */
+static void sg_afd_done(sg_afd_poll* p) {
+    int fd = p->fd;
+    sg_slot* s = sg_slot_at(fd);
+    sg_wait* woken = NULL;
+    sg_mtx* m = sg_slot_lock(fd);
+    sg_mtx_lock(m);
+    if (s && s->poll == p) {
+        s->poll = NULL;
+        s->on = 0;
+        LONG status = p->io.u.status;
+        ULONG events = p->info.count > 0 ? p->info.handles[0].events : 0;
+        int bits = 0;
+        if (status < 0 && status != SG_STATUS_CANCELLED) bits = 3;
+        if (events & (SG_AFD_RECEIVE | SG_AFD_ACCEPT | SG_AFD_DISCONNECT | SG_AFD_ABORT | SG_AFD_CONNECT_FAIL)) bits |= 1;
+        if (events & (SG_AFD_SEND | SG_AFD_ABORT | SG_AFD_CONNECT_FAIL)) bits |= 2;
+        if (bits) woken = sg_slot_ready(s, bits, NULL);
+        int still = (s->waits[0] ? 1 : 0) | (s->waits[1] ? 2 : 0);
+        if (still && sg_slot_arm(fd, s, still)) woken = sg_slot_ready(s, still, woken);
+    }
+    sg_mtx_unlock(m);
+    (free)(p);
+    sg_slot_wake(woken);
+}
+/* One round of the loop, on the thread of the pool that waits on it (see `TASK_RUNTIME`): it
+   sleeps until the driver answers or the loop is woken (with `wait`; without it, every 61 tasks
+   of a busy thread, it only looks), and wakes the tasks. A packet without a question is a wake
+   (`sg_loop_kick`). */
+static void sg_loop_round(bool wait) {
+    OVERLAPPED_ENTRY events[64];
+    ULONG n = 0;
+    if (!GetQueuedCompletionStatusEx(sg_loop, events, 64, &n, wait ? INFINITE : 0, FALSE)) {
+        if (GetLastError() != WAIT_TIMEOUT) abort();
+        n = 0;
+    }
+    for (ULONG i = 0; i < n; i++) {
+        if (events[i].lpOverlapped) sg_afd_done((sg_afd_poll*)events[i].lpOverlapped);
+    }
+}
+/* The thread waiting on the loop is woken: work for a pool whose other threads are busy (see
+   `sg_pool_notify`). */
+static void sg_loop_kick(void) { PostQueuedCompletionStatus(sg_loop, 0, 0, NULL); }
+SG_COLD static _Noreturn void sg_loop_refused(const char* loc) {
+    SG_PANIC_START();
+    fprintf(stderr, "panic: the system refused the loop of the network (os error %lu)\n", (unsigned long)GetLastError());
+    sg_die(loc);
+}
+static void sg_loop_open(const char* loc) {
+    if (__atomic_load_n(&sg_loop_open_now, __ATOMIC_ACQUIRE)) return;
+    sg_mtx_lock(&sg_loop_lock);
+    if (!sg_loop_open_now) {
+        HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+        if (nt) {
+            sg_NtCreateFile = (sg_nt_create_file)(void (*)(void))GetProcAddress(nt, "NtCreateFile");
+            sg_NtDeviceIoControlFile = (sg_nt_control)(void (*)(void))GetProcAddress(nt, "NtDeviceIoControlFile");
+            sg_NtCancelIoFileEx = (sg_nt_cancel)(void (*)(void))GetProcAddress(nt, "NtCancelIoFileEx");
+            sg_RtlNtStatusToDosError = (sg_nt_error)(void (*)(void))GetProcAddress(nt, "RtlNtStatusToDosError");
+        }
+        if (!sg_NtCreateFile || !sg_NtDeviceIoControlFile || !sg_NtCancelIoFileEx || !sg_RtlNtStatusToDosError) sg_loop_refused(loc);
+        sg_loop = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
+        if (!sg_loop) sg_loop_refused(loc);
+        for (int i = 0; i < SG_SLOT_LOCKS; i++) sg_mtx_init(&sg_slot_locks[i]);
+        __atomic_store_n(&sg_net_forget, sg_slot_forget, __ATOMIC_RELEASE);
+        sg_pool_drive(sg_loop_round, sg_loop_kick, loc);
+        __atomic_store_n(&sg_loop_open_now, 1, __ATOMIC_RELEASE);
+    }
+    sg_mtx_unlock(&sg_loop_lock);
+}
+/* A handle of the driver, on the loop: 0, or the code of the system. Its answers do not set the
+   handle as an event, which nobody waits for. */
+static int sg_afd_open(HANDLE* out) {
+    static wchar_t name[] = L"\\Device\\Afd\\SgLang";
+    sg_nt_name text = { (USHORT)(sizeof name - sizeof(wchar_t)), (USHORT)sizeof name, name };
+    sg_nt_object object = { sizeof object, NULL, &text, 0, NULL, NULL };
+    sg_iosb io;
+    HANDLE h = NULL;
+    LONG status = sg_NtCreateFile(&h, SYNCHRONIZE, &object, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, SG_FILE_OPEN, 0, NULL, 0);
+    if (status < 0) return (int)sg_RtlNtStatusToDosError(status);
+    if (!CreateIoCompletionPort(h, sg_loop, 0, 0)) {
+        int code = sg_win_error();
+        CloseHandle(h);
+        return code;
+    }
+    SetFileCompletionNotificationModes(h, FILE_SKIP_SET_EVENT_ON_HANDLE);
+    *out = h;
+    return 0;
+}
+/* Socket `fd` is asked of, under the lock of its slot, for `bit` and what the question out asks
+   already (which is called back, its answer let go of). The driver answers at once when the socket
+   is ready now, so nothing that came before is missed. 0, or the code of the system. */
+static int sg_slot_arm(int fd, sg_slot* s, int bit) {
+    int want = s->on | bit;
+    if (!s->base) {
+        SOCKET base = INVALID_SOCKET;
+        DWORD got = 0;
+        if (WSAIoctl(SG_SOCK(fd), SIO_BASE_HANDLE, NULL, 0, &base, sizeof base, &got, NULL, NULL) != 0 || base == INVALID_SOCKET) base = SG_SOCK(fd);
+        s->base = (HANDLE)base;
+    }
+    HANDLE afd = sg_afd_of(fd, s);
+    if (!afd) {
+        sg_slot* lead = s - (SG_SLOT_INDEX(fd) & 31);
+        sg_mtx_lock(&sg_loop_lock);
+        int code = lead->afd ? 0 : sg_afd_open(&lead->afd);
+        afd = lead->afd;
+        sg_mtx_unlock(&sg_loop_lock);
+        if (code) return code;
+    }
+    sg_afd_poll* p = (calloc)(1, sizeof *p);
+    if (!p) abort();
+    p->fd = fd;
+    p->gen = s->gen;
+    p->bits = (uint8_t)want;
+    p->info.timeout.QuadPart = INT64_MAX;
+    p->info.count = 1;
+    p->info.exclusive = FALSE;
+    p->info.handles[0].handle = s->base;
+    p->info.handles[0].events = SG_AFD_ABORT | SG_AFD_LOCAL_CLOSE | SG_AFD_CONNECT_FAIL
+        | ((want & 1) ? SG_AFD_RECEIVE | SG_AFD_ACCEPT | SG_AFD_DISCONNECT : 0) | ((want & 2) ? SG_AFD_SEND : 0);
+    p->io.u.status = SG_STATUS_PENDING;
+    if (s->poll) {
+        sg_iosb io;
+        sg_NtCancelIoFileEx(afd, &s->poll->io, &io);
+        s->poll = NULL;
+        s->on = 0;
+    }
+    LONG status = sg_NtDeviceIoControlFile(afd, NULL, NULL, &p->io, &p->io, SG_IOCTL_AFD_POLL, &p->info, sizeof p->info, &p->info, sizeof p->info);
+    if (status < 0) {
+        (free)(p);
+        return (int)sg_RtlNtStatusToDosError(status);
+    }
+    s->poll = p;
+    s->on = (uint8_t)want;
+    return 0;
+}
+#else
 /* One round of the loop, on the thread of the pool that waits on it (see `TASK_RUNTIME`): it
    sleeps until a socket is ready or the pipe is written (with `wait`; without it, every 61 tasks
    of a busy thread, it only looks), and wakes the tasks. An event names a
@@ -4627,6 +5052,8 @@ static void sg_loop_open(const char* loc) {
     }
     sg_mtx_unlock(&sg_loop_lock);
 }
+#endif
+#if !defined(_WIN32)
 /* Socket `fd` goes on the loop for `bit` (1 reading, 2 writing), under the lock of its slot: both
    at once on Linux; one filter at a time with kqueue, which a pipe may not have both of. */
 static int sg_slot_arm(int fd, sg_slot* s, int bit) {
@@ -4644,6 +5071,7 @@ static int sg_slot_arm(int fd, sg_slot* s, int bit) {
 #endif
     return 0;
 }
+#endif
 /* A cancel, under the clock's lock: a task still in the slot is taken out and goes on. One the
    loop took out already is woken by the loop. */
 static void sg_wait_cut(sg_delay* d) {
@@ -4677,7 +5105,7 @@ static int sg_wait_start(sg_wait* w, int fd, bool write, uint32_t seen, sg_cance
     if (sg_cancelled(token)) return SG_CANCELLED;
     sg_loop_open(loc);
     sg_slot* s = sg_slot_make(fd);
-    if (!s) return EMFILE;
+    if (!s) return SG_E_MFILE;
     int bit = write ? 2 : 1;
     int code = 0;
     if (token) {
@@ -4707,14 +5135,14 @@ static int sg_wait_start(sg_wait* w, int fd, bool write, uint32_t seen, sg_cance
 }
 
 /* A name looked up on a thread of input and output. */
-typedef struct { sg_far far; char host[256]; char port[6]; struct addrinfo* list; int code; } sg_lookup;
+typedef struct { sg_far away; char host[256]; char port[6]; sg_addrinfo* list; int code; } sg_lookup;
 static void sg_lookup_run(sg_far* f) {
     sg_lookup* x = (sg_lookup*)f;
     x->code = sg_net_lookup(x->host, x->port, false, &x->list);
 }
 static void sg_lookup_lost(sg_far* f) {
     sg_lookup* x = (sg_lookup*)f;
-    if (!x->code) freeaddrinfo(x->list);
+    if (!x->code) sg_freeaddrinfo(x->list);
 }
 
 /* An async call of the network, in the frame of the task: what it is, where it is, and what it
@@ -4738,8 +5166,8 @@ typedef struct {
     int64_t done;
     int code;
     int out;
-    struct addrinfo* list;
-    struct addrinfo* next;
+    sg_addrinfo* list;
+    sg_addrinfo* next;
     char host[256];
     char port[6];
     /* A datagram: where it goes (`at_len` 0 for the address of `connect`), or where it came from. */
@@ -4786,7 +5214,7 @@ static sg_net_op sg_net_connect_op(sg_str address, sg_cancel* token, const char*
     return op;
 }
 static bool sg_net_finish(sg_net_op* op, int code) {
-    if (op->list) freeaddrinfo(op->list);
+    if (op->list) sg_freeaddrinfo(op->list);
     op->list = NULL;
     op->code = code;
     op->phase = SG_NET_DONE;
@@ -4795,11 +5223,11 @@ static bool sg_net_finish(sg_net_op* op, int code) {
 /* The next address of the host is tried, until one takes the connection. */
 static bool sg_net_connect_next(sg_net_op* op) {
     while (op->next) {
-        const struct addrinfo* a = op->next;
+        const sg_addrinfo* a = op->next;
         op->next = a->ai_next;
         int code = sg_net_try(a, &op->fd, true);
         if (!code) { op->out = op->fd; return sg_net_finish(op, 0); }
-        if (code == EINPROGRESS) {
+        if (code == SG_E_PROGRESS) {
             int st = sg_wait_start(&op->w, op->fd, true, sg_slot_tick(op->fd), op->token, op->loc);
             if (st == SG_WAITING) { op->phase = SG_NET_CONNECT; return false; }
             if (st == SG_AGAIN) {
@@ -4815,7 +5243,7 @@ static bool sg_net_connect_next(sg_net_op* op) {
         }
         op->code = code;
     }
-    return sg_net_finish(op, op->code ? op->code : ECONNREFUSED);
+    return sg_net_finish(op, op->code ? op->code : SG_E_REFUSED);
 }
 /* Goes on with the call until it is done (true) or waits (false): it waits for the socket on the
    loop, or for the name on a thread. */
@@ -4831,12 +5259,12 @@ static bool sg_net_go(sg_net_op* op) {
             op->list = NULL;
             sg_lookup* f = calloc(1, sizeof *f);
             if (!f) abort();
-            f->far.run = sg_lookup_run;
-            f->far.lost = sg_lookup_lost;
-            f->far.keep = true;
+            f->away.run = sg_lookup_run;
+            f->away.lost = sg_lookup_lost;
+            f->away.keep = true;
             memcpy(f->host, op->host, sizeof f->host);
             memcpy(f->port, op->port, sizeof f->port);
-            if (sg_far_start(&f->far, &op->w, op->token, op->loc) == SG_CANCELLED) return sg_net_finish(op, SG_CUT);
+            if (sg_far_start(&f->away, &op->w, op->token, op->loc) == SG_CANCELLED) return sg_net_finish(op, SG_CUT);
             op->phase = SG_NET_LOOKUP;
             return false;
         }
@@ -4862,7 +5290,7 @@ static bool sg_net_go(sg_net_op* op) {
         }
         if (!code) return sg_net_finish(op, 0);
         if (sg_net_again(code, op->kind == SG_ACCEPT)) continue;
-        if (code != EAGAIN) return sg_net_finish(op, code);
+        if (code != SG_E_AGAIN) return sg_net_finish(op, code);
         int st = sg_wait_start(&op->w, op->fd, op->kind == SG_SEND || op->kind == SG_UDP_SEND, op->seen, op->token, op->loc);
         if (st == SG_WAITING) return false;
         if (st == SG_AGAIN) continue;
@@ -4876,7 +5304,7 @@ static bool sg_net_more(sg_net_op* op) {
     int state = sg_wait_state(&op->w);
     if (op->phase == SG_NET_LOOKUP) {
         if (state == SG_CANCELLED) return sg_net_finish(op, SG_CUT);
-        sg_lookup* f = (sg_lookup*)op->w.on.far;
+        sg_lookup* f = (sg_lookup*)op->w.on.away;
         int code = f->code;
         op->list = code ? NULL : f->list;
         free(f);
@@ -4921,7 +5349,7 @@ static int sg_reader_net(sg_reader* r, int need, int64_t want, sg_wait* w, sg_ca
             continue;
         }
         if (sg_net_again(c, false)) continue;
-        if (c != EAGAIN) { *code = c; return SG_OVER; }
+        if (c != SG_E_AGAIN) { *code = c; return SG_OVER; }
         int st = sg_wait_start(w, s->fd, false, seen, token, loc);
         if (st == SG_AGAIN) continue;
         if (st == SG_WAITING || st == SG_CANCELLED) return st;
@@ -4958,15 +5386,15 @@ const PROCESS_ASYNC_RUNTIME: &str = r#"
 #if defined(__linux__)
 #include <sys/syscall.h>
 #endif
-typedef struct { sg_far far; pid_t pid; } sg_proc_far;
+typedef struct { sg_far away; pid_t pid; } sg_proc_far;
 static void sg_proc_far_run(sg_far* f) {
     siginfo_t info;
     memset(&info, 0, sizeof info);
     while (waitid(P_PID, (id_t)((sg_proc_far*)f)->pid, &info, WEXITED | WNOWAIT) < 0 && errno == EINTR) {}
 }
 /* The wait in the frame of the task: on the loop (`pidfd` on Linux, -1 on macOS), or on a thread
-   (`far`). `state`: SG_WAITING, SG_OVER or SG_CANCELLED. */
-typedef struct { sg_wait w; int state; int pidfd; bool far; } sg_io_proc;
+   (`away`). `state`: SG_WAITING, SG_OVER or SG_CANCELLED. */
+typedef struct { sg_wait w; int state; int pidfd; bool away; } sg_io_proc;
 /* The end of the program goes on the loop, once: the event names the wait (see `sg_loop_round`). */
 static int sg_proc_arm(sg_wait* w) {
 #if defined(__linux__)
@@ -4998,7 +5426,7 @@ static void sg_proc_cut(sg_delay* d) {
 /* The task running now waits for the end of program `pid`. */
 static void sg_proc_wait_start(sg_io_proc* x, int64_t pid, sg_cancel* token, const char* loc) {
     x->pidfd = -1;
-    x->far = false;
+    x->away = false;
     sg_wait_init(&x->w, sg_proc_cut);
     if (sg_cancelled(token)) { x->state = SG_CANCELLED; return; }
     int on = (int)pid;
@@ -5010,10 +5438,10 @@ static void sg_proc_wait_start(sg_io_proc* x, int64_t pid, sg_cancel* token, con
     if (x->pidfd < 0) {
         sg_proc_far* f = calloc(1, sizeof *f);
         if (!f) abort();
-        f->far.run = sg_proc_far_run;
+        f->away.run = sg_proc_far_run;
         f->pid = (pid_t)pid;
-        x->far = true;
-        x->state = sg_far_start(&f->far, &x->w, token, loc);
+        x->away = true;
+        x->state = sg_far_start(&f->away, &x->w, token, loc);
         return;
     }
 #endif
@@ -6860,7 +7288,9 @@ static int sg_open_writer(sg_str path, bool append, sg_writer* out) {
 /// Tokio's threads for blocking work). A read of a reader that the block it keeps can answer is
 /// done in place, without a thread (`sg_reader_try` and the `_n` functions of the glue).
 const ASYNC_IO_RUNTIME: &str = r#"
+#if !defined(_WIN32)
 #include <sched.h>
+#endif
 /* `done`: 0 while the work goes on, 2 while its thread wakes the task, 1 once it has let go of it. */
 typedef struct sg_io {
     struct sg_io* next;
@@ -6946,12 +7376,12 @@ static inline bool sg_io_done(sg_io* io) {
 }
 
 /* A wait of an async task, in its frame: for a socket (`fd`, on the loop of the network) or for
-   work on a thread that the task may leave (`far`). The delay is what a cancel ends, on the list
+   work on a thread that the task may leave (`away`; not `far`, which Windows' headers take as a word of their own). The delay is what a cancel ends, on the list
    of its token, and what holds the task to wake. Whoever ends the wait sets `settled` last, and
    only then does the task go on: until then the wait may still be looked at. */
 typedef struct sg_wait {
     sg_delay d;
-    union { int fd; struct sg_far* far; } on;
+    union { int fd; struct sg_far* away; } on;
     bool write;
     /* The end of a program (`fd` its number on macOS, its pidfd on Linux), see `PROCESS_ASYNC_RUNTIME`. */
     bool proc;
@@ -7034,7 +7464,7 @@ static void sg_far_main(sg_io* io) {
 /* A cancel, under the clock's lock: the work is left to its thread, and the task goes on. */
 static void sg_far_cut(sg_delay* d) {
     sg_wait* w = (sg_wait*)d;
-    w->on.far->waiter = NULL;
+    w->on.away->waiter = NULL;
     sg_task* job = d->job;
     __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
     sg_wake(job);
@@ -7043,7 +7473,7 @@ static void sg_far_cut(sg_delay* d) {
    token is cancelled (the work does not start, and is freed). */
 static int sg_far_start(sg_far* f, sg_wait* w, sg_cancel* token, const char* loc) {
     sg_wait_init(w, sg_far_cut);
-    w->on.far = f;
+    w->on.away = f;
     sg_mtx_lock(&sg_clock_lock);
     if (token && token->cancelled) {
         sg_mtx_unlock(&sg_clock_lock);
@@ -7062,25 +7492,29 @@ static int sg_far_start(sg_far* f, sg_wait* w, sg_cancel* token, const char* loc
    A cancel ends the wait; what the thread reads stays in the block for the next read. One
    thread is out at a time, and one task waits for it; another task reads on a thread of its own,
    as a read of a file does. */
-typedef struct { sg_far far; uint8_t* into; int64_t room; } sg_in_fill;
+typedef struct { sg_far away; uint8_t* into; int64_t room; } sg_in_fill;
 static int sg_in_waits_now = -1;
 static bool sg_in_failed = false;
 static inline bool sg_in_waits(void) {
     if (sg_in_waits_now < 0) {
+#if defined(_WIN32)
+        sg_in_waits_now = GetFileType(sg_handle(0)) != FILE_TYPE_DISK;
+#else
         struct stat info;
         sg_in_waits_now = !(fstat(0, &info) == 0 && S_ISREG(info.st_mode));
+#endif
     }
     return sg_in_waits_now;
 }
 static void sg_in_fill_run(sg_far* f) {
     sg_in_fill* x = (sg_in_fill*)f;
-    if (sg_in_terminal < 0) sg_in_terminal = isatty(0);
-    ssize_t got;
-    do got = read(0, x->into, (size_t)x->room); while (got < 0 && errno == EINTR);
+    if (sg_in_terminal < 0) sg_in_terminal = sg_sys_terminal(0);
+    int64_t got = 0;
+    int code = sg_sys_read(0, x->into, x->room, &got);
     sg_mtx_lock(&sg_in_lock);
-    if (got > 0) sg_stdin.len += got;
-    else if (got == 0) sg_stdin.ended = true;
-    else sg_in_failed = true;
+    if (code) sg_in_failed = true;
+    else if (got > 0) sg_stdin.len += got;
+    else sg_stdin.ended = true;
     sg_in_filling = NULL;
     sg_cnd_broadcast(&sg_in_filled);
     sg_mtx_unlock(&sg_in_lock);
@@ -7103,24 +7537,24 @@ static int sg_in_wait(sg_wait* w, sg_cancel* token, const char* loc) {
         if (sg_stdin.len == 65536) return -1;
         f = calloc(1, sizeof *f);
         if (!f) abort();
-        f->far.run = sg_in_fill_run;
+        f->away.run = sg_in_fill_run;
         f->into = sg_stdin.block + sg_stdin.len;
         f->room = 65536 - sg_stdin.len;
         sg_in_filling = f;
         start = true;
-        if (sg_in_terminal < 0) sg_in_terminal = isatty(0);
+        if (sg_in_terminal < 0) sg_in_terminal = sg_sys_terminal(0);
         if (sg_in_terminal) fflush(stdout);
     }
     sg_wait_init(w, sg_far_cut);
-    w->on.far = &f->far;
+    w->on.away = &f->away;
     sg_mtx_lock(&sg_clock_lock);
-    bool join = !f->far.waiter && !(token && token->cancelled);
+    bool join = !f->away.waiter && !(token && token->cancelled);
     if (join) {
         if (token) sg_wait_link(w, token);
-        f->far.waiter = w;
+        f->away.waiter = w;
     }
     sg_mtx_unlock(&sg_clock_lock);
-    if (start) sg_io_put(&f->far.io, sg_far_main, NULL, loc);
+    if (start) sg_io_put(&f->away.io, sg_far_main, NULL, loc);
     if (join) return SG_WAITING;
     return sg_cancelled(token) ? SG_CANCELLED : -1;
 }
@@ -13493,11 +13927,11 @@ impl<'a> Emitter<'a> {
                         vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Ulong)))))],
                         format!(
                             "char host[256]; if (!sg_udp_host(a0, host)) {} \
-                             struct addrinfo* list = NULL; int code = sg_net_lookup(host, \"0\", false, &list); if (code) {} \
+                             sg_addrinfo* list = NULL; int code = sg_net_lookup(host, \"0\", false, &list); if (code) {} \
                              int64_t n = sg_udp_found(list, NULL); \
                              if (n > 0) {{ if (a1->len + n > a1->cap) a1->ptr = sg_reserve(a1->ptr, &a1->cap, a1->len + n, sizeof *a1->ptr, _Alignof(__typeof__(*a1->ptr))); \
                              (void)sg_udp_found(list, a1->ptr + a1->len); a1->len += n; }} \
-                             freeaddrinfo(list); return ({gives}){{ .tag = 0 }};",
+                             sg_freeaddrinfo(list); return ({gives}){{ .tag = 0 }};",
                             failed("sg_io_error(SG_HOST_NOT_FOUND)"),
                             failed("sg_io_error(code)")
                         ),
@@ -13917,7 +14351,7 @@ impl<'a> Emitter<'a> {
                 self.pre.push(format!(
                     "if ({wait}.state != SG_CANCELLED && !{wait}.code) {{ int64_t {wait}n = sg_udp_found({wait}.list, NULL); \
                      if ({wait}n > 0) {{ if ({wait}o->len + {wait}n > {wait}o->cap) {wait}o->ptr = sg_reserve({wait}o->ptr, &{wait}o->cap, {wait}o->len + {wait}n, sizeof *{wait}o->ptr, _Alignof(__typeof__(*{wait}o->ptr))); \
-                     (void)sg_udp_found({wait}.list, {wait}o->ptr + {wait}o->len); {wait}o->len += {wait}n; }} freeaddrinfo({wait}.list); }}"
+                     (void)sg_udp_found({wait}.list, {wait}o->ptr + {wait}o->len); {wait}o->len += {wait}n; }} sg_freeaddrinfo({wait}.list); }}"
                 ));
                 result(self, format!(
                     "({wait}.state == SG_CANCELLED ? ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }} : {wait}.code ? ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_error({wait}.code) }} }} : ({gives}){{ .tag = 0 }})"

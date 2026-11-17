@@ -1,0 +1,30 @@
+// A datagram sent to a port nobody listens on comes back as "port unreachable". A socket that is not
+// connected is not told of it: its next receive takes the next datagram that comes, on every system
+// (Windows would tell it, as a reset, unless the socket is set not to). A connected socket is told, as a
+// refused connection, on every system.
+async Result<void, IoError> told(SocketAddress nobody) {
+    var client = try UdpSocket.bind("127.0.0.1:0")
+    try client.connect(nobody)
+    try await client.sendAsync("anyone?".asBytes())
+    var buffer = byte[16]
+    var later = CancellationSource.after(2000)
+    match await client.receiveAsync(ref buffer, read later.token()) {
+        Ok(n) => print($"received {n}")
+        Error(cause) => print($"receive: {cause}")
+    }
+    return Ok()
+}
+
+Result<void, IoError> main() {
+    var gone = try UdpSocket.bind("127.0.0.1:0")
+    var nobody = gone.localAddress()
+    gone = try UdpSocket.bind("127.0.0.1:0")
+    var client = try UdpSocket.bind("127.0.0.1:0")
+    try client.sendTo("anyone?".asBytes(), nobody)
+    try gone.sendTo("hello".asBytes(), client.localAddress())
+    var buffer = byte[16]
+    var got = try client.receiveFrom(ref buffer)
+    print(string.fromUtf8(buffer[..got.count]) ?? "not text")
+    print(got.from == gone.localAddress())
+    return told(nobody).wait()
+}

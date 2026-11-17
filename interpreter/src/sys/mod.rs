@@ -10,3 +10,6 @@ pub(crate) use unix::*;
 mod windows;
 #[cfg(windows)]
 pub(crate) use windows::*;
+#[cfg(windows)]
+#[path = "net_windows.rs"]
+pub(crate) mod net;

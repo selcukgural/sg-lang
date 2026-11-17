@@ -5613,7 +5613,10 @@ impl<'a, 'e> Interp<'a, 'e> {
         };
         let flag = |at: usize| matches!(values[at], Value::Bool(true));
         let address = |at: usize| crate::net::address_of(flag(at), number(at + 1) as u64, number(at + 2) as u64, number(at + 3) as u16);
-        let io_failed = |error: std::io::Error| failed(io_cause(Some(&error), error.raw_os_error()));
+        let io_failed = |error: std::io::Error| {
+            let error = crate::net::udp_error(error);
+            failed(io_cause(Some(&error), error.raw_os_error()))
+        };
         let put = |into: &Value, numbers: &[u64]| {
             for (slot, value) in cells_of(into).iter().zip(numbers) {
                 *slot.borrow_mut() = Value::Int(IntTy::Ulong, i128::from(*value));
@@ -5626,11 +5629,14 @@ impl<'a, 'e> Interp<'a, 'e> {
         let cancelled = source.as_ref().is_some_and(|source| source.borrow().cancelled);
         let value = match call {
             SystemCall::UdpBind => match crate::net::udp_bind(address(0)) {
-                Ok(socket) => ok(Value::Int(IntTy::Long, i128::from(crate::sys::fd_of(socket)))),
+                Ok(socket) => ok(Value::Int(IntTy::Long, i128::from(crate::sys::udp_fd(socket)))),
                 Err(error) => io_failed(error),
             },
             SystemCall::UdpConnect => match socket().connect(address(1)) {
-                Ok(()) => ok(Value::Void),
+                Ok(()) => {
+                    crate::net::udp_connected(&socket());
+                    ok(Value::Void)
+                }
                 Err(error) => io_failed(error),
             },
             SystemCall::UdpSend | SystemCall::UdpSendAsync if cancelled => failed(io_cancelled()),

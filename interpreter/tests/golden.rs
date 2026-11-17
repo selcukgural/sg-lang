@@ -1847,3 +1847,72 @@ fn short_delays_are_short() {
     assert_eq!(lines[1], "true", "fifty delays of 1 ms took {}, less than 50 ms", lines[0]);
     assert_eq!(lines[2], "true", "fifty delays of 1 ms took {}: the clock of delays wakes late", lines[0]);
 }
+
+/// On Windows a listener and a datagram socket hold their port alone (`SO_EXCLUSIVEADDRUSE`): one
+/// bound to every address of the machine (`":0"`) does not have the port of `127.0.0.1` taken by
+/// another socket that asks to share it (`SO_REUSEADDR`), which Windows would otherwise let take it
+/// and receive what is sent there, whether the program is interpreted or compiled.
+#[cfg(windows)]
+#[test]
+fn ports_are_held_alone() {
+    use std::io::{BufRead, Write};
+
+    #[link(name = "ws2_32")]
+    extern "system" {
+        fn socket(family: i32, kind: i32, protocol: i32) -> usize;
+        fn setsockopt(s: usize, level: i32, name: i32, value: *const u8, len: i32) -> i32;
+        fn bind(s: usize, name: *const u8, len: i32) -> i32;
+        fn closesocket(s: usize) -> i32;
+    }
+    // Whether a socket that asks to share the port (`SO_REUSEADDR`) may bind 127.0.0.1:`port`, while
+    // another socket has the port on every address.
+    let shared_bind = |kind: i32, port: u16| -> bool {
+        // Winsock is started by std's first socket.
+        drop(std::net::UdpSocket::bind("127.0.0.1:0").unwrap());
+        // SAFETY: plain calls of Winsock on a socket made and closed here.
+        unsafe {
+            let s = socket(2, kind, 0);
+            assert_ne!(s, !0, "no socket");
+            let one: i32 = 1;
+            setsockopt(s, 0xffff, 4, (&one as *const i32).cast(), 4);
+            let mut at = [0u8; 16];
+            at[0] = 2;
+            at[2..4].copy_from_slice(&port.to_be_bytes());
+            at[4..8].copy_from_slice(&[127, 0, 0, 1]);
+            let bound = bind(s, at.as_ptr(), 16) == 0;
+            closesocket(s);
+            bound
+        }
+    };
+    // What the check sees: a socket of std, which does not hold its port alone, is taken.
+    let plain = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    assert!(shared_bind(2, plain.local_addr().unwrap().port()), "a socket that asks to share the port should take one not held alone");
+    drop(plain);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("ports-alone");
+    std::fs::create_dir_all(&work).unwrap();
+    let source = "Result<void, IoError> main() {\n    var listener = try TcpListener.bind(\":0\")\n    var datagrams = try UdpSocket.bind(\":0\")\n    print(listener.port())\n    print(datagrams.port())\n    try Stdout.flush()\n    var line = \"\"\n    _ = try Stdin.readLine(ref line)\n    return Ok()\n}\n";
+    let file = work.join("ports.sg");
+    std::fs::write(&file, source).unwrap();
+    let code = sg::emit_c_sources(&sg::Sources::single(source, "ports.sg"), false).unwrap();
+    let c_file = work.join("ports.c");
+    std::fs::write(&c_file, code).unwrap();
+    let binary = program_at(&work, "ports");
+    let cc = c_command().args(["-std=c11", "-O1", "-o"]).arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
+    assert!(cc.status.success(), "{}", String::from_utf8_lossy(&cc.stderr));
+    let ways = [("interpreted", std::process::Command::new(env!("CARGO_BIN_EXE_sg")).arg(&file).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap()),
+        ("compiled", std::process::Command::new(&binary).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap())];
+    for (how, mut child) in ways {
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut port = |what: &str| -> u16 {
+            let mut line = String::new();
+            out.read_line(&mut line).unwrap();
+            line.trim().parse().unwrap_or_else(|_| panic!("{how}: no port of the {what}: {line:?}"))
+        };
+        let (listener, datagrams) = (port("listener"), port("datagram socket"));
+        assert!(!shared_bind(1, listener), "{how}: another socket took the port of the listener");
+        assert!(!shared_bind(2, datagrams), "{how}: another socket took the port of the datagram socket");
+        child.stdin.take().unwrap().write_all(b"\n").unwrap();
+        assert!(child.wait().unwrap().success(), "{how}: the program failed");
+    }
+}
