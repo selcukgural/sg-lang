@@ -1,7 +1,43 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+use std::path::PathBuf;
+
 use sg::Stop;
+
+/// Takes the folders `-L` names out of the words (`-L folder` or `-Lfolder`), each checked and
+/// made absolute. `None` after the error is written.
+fn take_folders(words_left: &mut Vec<String>) -> Option<Vec<PathBuf>> {
+    let mut dirs = Vec::new();
+    let mut rest = Vec::new();
+    let mut words = std::mem::take(words_left).into_iter();
+    while let Some(word) = words.next() {
+        let written = match word.strip_prefix("-L") {
+            Some("") => match words.next() {
+                Some(folder) => folder,
+                None => {
+                    eprintln!("error: -L names a folder: `-L folder`");
+                    return None;
+                }
+            },
+            Some(folder) => folder.to_string(),
+            None => {
+                rest.push(word);
+                continue;
+            }
+        };
+        match sg::link::folder(&written) {
+            Ok(dir) => dirs.push(dir),
+            Err(error) => {
+                eprintln!("error: {error}");
+                return None;
+            }
+        }
+    }
+    *words_left = rest;
+    Some(dirs)
+}
+
 
 /// Writes the program as C. Without `out` the C goes to the output; with it, the C compiler
 /// turns it into a program of that name. `release`: integer overflow wraps and the C compiler
@@ -27,14 +63,15 @@ struct Machine {
     flags: Vec<String>,
 }
 
-fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &Machine) -> ExitCode {
-    let sources = match sg::load(std::path::Path::new(path), made == Made::Tests) {
+fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &Machine, dirs: &[PathBuf]) -> ExitCode {
+    let mut sources = match sg::load(std::path::Path::new(path), made == Made::Tests) {
         Ok(sources) => sources,
         Err(error) => {
             eprintln!("error: {error}");
             return ExitCode::from(2);
         }
     };
+    sources.lib_dirs = dirs.to_vec();
     let name = library_name(path);
     let emitted = match made {
         Made::Tests => sg::emit_c_tests(&sources, !release).map(|code| (code, None)),
@@ -83,7 +120,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     }
     match made {
         Made::Program | Made::Tests => {
-            cc.arg("-o").arg(&out).arg(&c_file).args(&libs).arg("-lm").arg("-pthread");
+            cc.arg("-o").arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).arg("-lm").arg("-pthread");
         }
         Made::Static => {
             cc.args(["-fPIC", "-c", "-o"]).arg(&object).arg(&c_file);
@@ -103,7 +140,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         // unloaded: the threads of its tasks would run on in code that is gone (Linux keeps it
         // with `nodelete`; macOS does not unload a library with variables of its threads).
         Made::Shared => {
-            cc.args(["-fPIC", "-shared", "-fvisibility=hidden", "-o"]).arg(&out).arg(&c_file).args(&libs).arg("-lm").arg("-pthread");
+            cc.args(["-fPIC", "-shared", "-fvisibility=hidden", "-o"]).arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).arg("-lm").arg("-pthread");
             if cfg!(target_os = "macos") {
                 let file = std::path::Path::new(&out).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
                 cc.arg(format!("-Wl,-install_name,@rpath/{file}"));
@@ -134,11 +171,13 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         }
         (_, status) => status,
     };
+    // The libraries as a program that links this one gives them: the folders of `-L` first.
+    let with_folders: Vec<String> = dirs.iter().map(|dir| format!("-L{}", dir.display())).chain(libs.iter().cloned()).collect();
     match status {
         Ok(status) if status.success() && made == Made::Freestanding => {
             let links = match libs.is_empty() {
                 true => String::new(),
-                false => format!(", with {}", libs.join(" ")),
+                false => format!(", with {}", with_folders.join(" ")),
             };
             println!("built {out} for a machine without an operating system; link it with the code that starts the machine{links}; it takes nothing of C's library, and of the C compiler's own only what that compiler calls on its own (GCC's atomics on 64-bit Arm, `-lgcc`)");
             ExitCode::SUCCESS
@@ -151,7 +190,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
                 return ExitCode::FAILURE;
             }
             let linked = match made {
-                Made::Static => libs.iter().cloned().chain(["-lm".to_string(), "-pthread".to_string()]).fold(out.clone(), |line, flag| format!("{line} {flag}")),
+                Made::Static => with_folders.iter().cloned().chain(["-lm".to_string(), "-pthread".to_string()]).fold(out.clone(), |line, flag| format!("{line} {flag}")),
                 _ => {
                     let dir = std::path::Path::new(&out).parent().map(|dir| dir.display().to_string()).filter(|dir| !dir.is_empty()).unwrap_or_else(|| ".".to_string());
                     format!("-L{dir} -l{name}")
@@ -161,6 +200,10 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             ExitCode::SUCCESS
         }
         Ok(_) if !libs.is_empty() => {
+            if let Some(diag) = sg::missing_library(&sources, made == Made::Tests, matches!(made, Made::Static | Made::Shared)) {
+                eprint!("{}", diag.render_in(&sources));
+                return ExitCode::FAILURE;
+            }
             eprintln!("error: the C compiler could not build the program; is every library it links ({}) installed where the C compiler looks?", libs.join(" "));
             ExitCode::FAILURE
         }
@@ -189,9 +232,9 @@ fn library_name(path: &str) -> String {
 
 /// The test command on compiled code: the tests are built into a program next to the other
 /// temporary files, that program is run, and its exit code is given on.
-fn test_compiled(path: &str) -> ExitCode {
+fn test_compiled(path: &str, dirs: &[PathBuf]) -> ExitCode {
     let binary = std::env::temp_dir().join(format!("sg-test-{}", std::process::id()));
-    let built = build(path, Some(binary.to_string_lossy().into_owned()), false, Made::Tests, &Machine::default());
+    let built = build(path, Some(binary.to_string_lossy().into_owned()), false, Made::Tests, &Machine::default(), dirs);
     if built != ExitCode::SUCCESS {
         return built;
     }
@@ -223,17 +266,45 @@ fn main() -> ExitCode {
     // A word that is not UTF-8 is left as it is for the program, which checks it.
     let words: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let args: Vec<String> = words.iter().map(|word| word.to_string_lossy().into_owned()).collect();
-    const USAGE: &str = "usage: sg <file.sg | folder> [args...]                            runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled]                    runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a) or shared, and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding]\n                                                                  prints the C";
-    let (path, tests) = match args.as_slice() {
-        [command, path] if command == "test" => (path, true),
-        [command, first, second] if command == "test" && (first == "--compiled" || second == "--compiled") => {
-            return test_compiled(if first == "--compiled" { second } else { first });
+    const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a) or shared, and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding]\n                                                                  prints the C";
+    let usage = || {
+        eprintln!("{USAGE}");
+        ExitCode::from(2)
+    };
+    // The folders `-L` names before the program, whose own words come after it.
+    let mut lead = 0;
+    while let Some(word) = args.get(lead) {
+        match word.as_str() {
+            "-L" => lead += 2,
+            _ if word.starts_with("-L") => lead += 1,
+            _ => break,
+        }
+    }
+    let (path, tests, dirs, skip) = match args.as_slice() {
+        [command, rest @ ..] if command == "test" => {
+            let mut rest = rest.to_vec();
+            let Some(dirs) = take_folders(&mut rest) else { return ExitCode::from(2) };
+            match rest.as_slice() {
+                [path] if path != "--compiled" => (path.clone(), true, dirs, 0),
+                [first, second] if first == "--compiled" || second == "--compiled" => {
+                    return test_compiled(if first == "--compiled" { second } else { first }, &dirs);
+                }
+                _ => return usage(),
+            }
         }
         [command, rest @ ..] if command == "build" || command == "emit-c" => {
+            // What follows `--` is C's, `-L` too.
+            let split = rest.iter().position(|word| word == "--").unwrap_or(rest.len());
+            let mut ours = rest[..split].to_vec();
+            let Some(dirs) = take_folders(&mut ours) else { return ExitCode::from(2) };
+            if command == "emit-c" && !dirs.is_empty() {
+                return usage();
+            }
+            ours.extend(rest[split..].iter().cloned());
             // A debug build checks integer overflow; `--release` wraps and optimises.
             let (mut path, mut out, mut release, mut made, mut twice) = (None, None, false, Made::Program, false);
             let mut machine = Machine::default();
-            let mut rest = rest.iter();
+            let mut rest = ours.iter();
             while let Some(arg) = rest.next() {
                 let kind = match arg.as_str() {
                     "--test" => Some(Made::Tests),
@@ -260,8 +331,7 @@ fn main() -> ExitCode {
             // A target and flags of C are for a machine without an operating system.
             let stray = made != Made::Freestanding && (machine.target.is_some() || !machine.flags.is_empty());
             let Some(path) = path.filter(|_| !twice && !stray) else {
-                eprintln!("{USAGE}");
-                return ExitCode::from(2);
+                return usage();
             };
             let name = library_name(path);
             let stem = match made {
@@ -272,27 +342,32 @@ fn main() -> ExitCode {
                 _ => std::path::Path::new(path).file_stem().map(|stem| stem.to_string_lossy().into_owned()),
             };
             let out = (command == "build").then(|| out.or(stem).unwrap_or_else(|| "a.out".to_string()));
-            return build(path, out, release, made, &machine);
+            return build(path, out, release, made, &machine, &dirs);
         }
-        [command, ..] if command == "test" => {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
+        [..] if lead < args.len() => {
+            let mut before = args[..lead].to_vec();
+            let Some(dirs) = take_folders(&mut before) else { return ExitCode::from(2) };
+            (args[lead].clone(), false, dirs, lead)
         }
-        [path, ..] => (path, false),
-        [] => {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
+        [..] if lead > 0 => {
+            let mut before = args.to_vec();
+            if take_folders(&mut before).is_none() {
+                return ExitCode::from(2);
+            }
+            return usage();
         }
+        _ => return usage(),
     };
     // A folder is a program whose root module is every file in it; the test command then runs
     // the tests of every module under it.
-    let sources = match sg::load(std::path::Path::new(path), tests) {
+    let mut sources = match sg::load(std::path::Path::new(&path), tests) {
         Ok(sources) => sources,
         Err(error) => {
             eprintln!("error: {error}");
             return ExitCode::from(2);
         }
     };
+    sources.lib_dirs = dirs;
 
     let mut out = std::io::BufWriter::new(std::io::stdout());
     // A failed test is reported like an error of the program: exit code 1.
@@ -302,7 +377,7 @@ fn main() -> ExitCode {
             let mut err = std::io::stderr();
             let input_is_terminal = std::io::stdin().is_terminal();
             let input_waits = input_waits();
-            let program_args = words.into_iter().skip(1).map(bytes).collect();
+            let program_args = words.into_iter().skip(skip + 1).map(bytes).collect();
             let world = sg::World { args: program_args, input: Box::new(std::io::stdin()), input_is_terminal, input_waits, err: &mut err };
             sg::run_sources_in(&sources, &mut out, world)
         }

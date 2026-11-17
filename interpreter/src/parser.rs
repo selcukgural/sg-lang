@@ -26,7 +26,7 @@ pub fn parse(src: &str) -> Res<Program> {
 /// belongs to. What a module defines gets its full name here: `Product` in the folder `stock`
 /// is `stock.Product`.
 pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> {
-    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default(), library: false, freestanding: false, left_out: Default::default() };
+    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default(), library: false, freestanding: false, left_out: Default::default(), lib_dirs: Vec::new() };
     for (start, end, module) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
         let mut parser = Parser { src, toks, i: 0, struct_literals: true };
@@ -383,24 +383,42 @@ impl<'a> Parser<'a> {
     /// each declared on a line of its own, with no body. `extern { }` is the C library itself.
     fn extern_block(&mut self, program: &mut Program) -> Res<()> {
         let start = self.bump().span;
-        let lib = match self.peek().clone() {
-            Tok::Str(name) => {
-                self.bump();
-                Some(name)
+        // `extern "z", "zlib"`: the names a library has on the systems, the first found linked.
+        let mut names = Vec::new();
+        if let Tok::Str(name) = self.peek().clone() {
+            self.bump();
+            names.push(name);
+            while self.eat(&Tok::Comma) {
+                match self.peek().clone() {
+                    Tok::Str(name) => {
+                        self.bump();
+                        names.push(name);
+                    }
+                    _ => return Err(self.unexpected("the name of a library")),
+                }
             }
-            _ => None,
-        };
+        }
         let span = Span::new(start.start, self.prev_end());
         // `./native.c`: a C file of the module's folder, in place of a library.
-        let (lib, file) = match lib {
-            Some(written) if written.starts_with("./") => (None, Some(c_file_path(&written, span)?)),
-            Some(written) if written.ends_with(".c") => {
+        if let Some(written) = names.iter().find(|written| written.starts_with("./") || written.ends_with(".c")) {
+            if names.len() > 1 {
+                return Err(Diag::error(span, format!("`{written}` is a C file, and an `extern` block takes one C file or the names of one library"))
+                    .hint("a C file and a library are two `extern` blocks"));
+            }
+        }
+        let (libs, file) = match names.pop() {
+            Some(written) if names.is_empty() && written.starts_with("./") => (Vec::new(), Some(c_file_path(&written, span)?)),
+            Some(written) if names.is_empty() && written.ends_with(".c") => {
                 return Err(Diag::error(span, format!("`{written}` is not the name of a library, nor a C file of this module"))
                     .hint(format!("a C file beside the program is written from the module's folder: `extern \"./{}\"`", written.trim_start_matches('/'))))
             }
-            other => (other, None),
+            Some(last) => {
+                names.push(last);
+                (names, None)
+            }
+            None => (Vec::new(), None),
         };
-        let foreign = Foreign { lib, file, path: None, span };
+        let foreign = Foreign { libs, file, path: None, span };
         program.blocks.push((String::new(), foreign.clone()));
         self.open_brace()?;
         self.skip_newlines();

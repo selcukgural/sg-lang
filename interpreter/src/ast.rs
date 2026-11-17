@@ -42,6 +42,9 @@ pub struct Program {
     /// leaves out: those that need a system, which nothing it calls reaches. Filled in by the
     /// checker.
     pub left_out: std::collections::BTreeSet<String>,
+    /// The folders `-L` names, where the libraries the `extern` blocks name are looked for
+    /// first: absolute, in the order they were given.
+    pub lib_dirs: Vec<std::path::PathBuf>,
 }
 
 /// One file: where its text lies, the module it belongs to (empty for the root, otherwise the
@@ -194,7 +197,9 @@ pub struct Func {
 /// of the module's folder, compiled with the program.
 #[derive(Clone)]
 pub struct Foreign {
-    pub lib: Option<String>,
+    /// The names of the library, as the systems call it (`extern "z", "zlib"`): the first one
+    /// the C compiler finds is linked. Empty for a C file or for C's own library.
+    pub libs: Vec<String>,
     /// `./native.c` as written: a C file beside the program, in place of a library.
     pub file: Option<String>,
     /// Where that file lies, found once the program is read. Set before the checker runs.

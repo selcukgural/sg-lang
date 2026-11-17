@@ -1408,6 +1408,22 @@ CLong back = (CLong)next                         // panics where it does not fit
 CLong big = 3000000000                           // error: a number for C's long fits in 32 bits
 ```
 
+A library has a name on each system: zlib is `-lz` on Linux and macOS and `zlib.lib` on Windows. A block gives
+them all, and the first one the C compiler finds is linked; `-L folder` names a folder looked in first, where the
+program also looks when it starts:
+
+```
+extern "z", "zlib" {                             // the first name found is linked
+    uint crc32(uint crc, raw byte buf, uint len)
+}
+```
+
+```
+sg build main.sg -L /opt/zlib/lib                // looked in when linked and when the program starts
+sg -L /opt/zlib/lib main.sg                      // the interpreter: before the file, whose words follow it
+sg test main.sg --compiled -L /opt/zlib/lib
+```
+
 A struct of plain data is laid out as C lays it out, and goes to C and comes back by value. A type of C whose
 insides SG does not see is declared in the `extern` block without a body, and is only pointed at:
 

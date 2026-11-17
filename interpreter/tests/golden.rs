@@ -1422,3 +1422,115 @@ static void misuse(int32_t how) {
         }
     }
 }
+
+/// `-L folder`: the libraries of the `extern` blocks are looked for there when a program is
+/// linked and when it starts, by the interpreter, a built program and the program of tests; of
+/// the names a block gives, the first found is linked. A folder that is not there, or that
+/// others may write into, is an error. The program of tests starts itself again for each test
+/// from the path the system gives, also when it was started by a name found on `PATH`.
+#[cfg(unix)]
+#[test]
+fn library_folders() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let sg_bin = env!("CARGO_BIN_EXE_sg");
+    let work = root.join("target").join("library-folders");
+    let _ = std::fs::remove_dir_all(&work);
+    let lib = work.join("lib");
+    let bin = work.join("bin");
+    let elsewhere = work.join("elsewhere");
+    for dir in [&lib, &bin, &elsewhere] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(lib.join("folder.c"), "int sgfolder_twice(int n) { return n * 2; }\n").unwrap();
+    let file = if cfg!(target_os = "macos") { "libsgfolder.dylib" } else { "libsgfolder.so" };
+    let mut cc = std::process::Command::new("cc");
+    cc.args(["-shared", "-fPIC", "-o"]).arg(lib.join(file)).arg(lib.join("folder.c"));
+    if cfg!(target_os = "macos") {
+        cc.arg("-Wl,-install_name,@rpath/libsgfolder.dylib");
+    }
+    let made = cc.output().unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let block = "extern \"sgfolder_none\", \"sgfolder\" {\n    int sgfolder_twice(int n)\n}\n";
+    std::fs::write(work.join("p.sg"), format!("{block}\nvoid main() {{\n    print(unsafe sgfolder_twice(21))\n}}\n")).unwrap();
+    std::fs::write(work.join("t.sg"), format!("{block}\ntest \"twice\" {{\n    assert(unsafe sgfolder_twice(21) == 42)\n}}\n")).unwrap();
+    let sg = |args: &[&str]| std::process::Command::new(sg_bin).args(args).current_dir(&work).env_remove("LD_LIBRARY_PATH").env_remove("DYLD_LIBRARY_PATH").output().unwrap();
+    let said = |run: &std::process::Output| format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+
+    // The interpreter, both ways of writing it.
+    for args in [&["-L", "lib", "p.sg"][..], &["-Llib", "p.sg"][..]] {
+        let run = sg(args);
+        assert_eq!(said(&run), "42\n", "sg {args:?}");
+    }
+    // A built program finds the library where it starts, without `LD_LIBRARY_PATH`.
+    let run = sg(&["build", "p.sg", "-L", "lib", "-o", "bin/p"]);
+    assert!(run.status.success(), "{}", said(&run));
+    let run = std::process::Command::new(bin.join("p")).current_dir(&elsewhere).env_remove("LD_LIBRARY_PATH").env_remove("DYLD_LIBRARY_PATH").output().unwrap();
+    assert_eq!(said(&run), "42\n");
+    // The tests, interpreted and compiled.
+    for args in [&["test", "-L", "lib", "t.sg"][..], &["test", "t.sg", "--compiled", "-L", "lib"][..]] {
+        let run = sg(args);
+        assert!(run.status.success() && said(&run).contains("ok    twice"), "sg {args:?}: {}", said(&run));
+    }
+    // The program of tests started by a name found on `PATH`, from another folder.
+    let run = sg(&["build", "t.sg", "--test", "-L", "lib", "-o", "bin/tests-of-folders"]);
+    assert!(run.status.success(), "{}", said(&run));
+    let run = std::process::Command::new("tests-of-folders").current_dir(&elsewhere).env("PATH", &bin).output().unwrap();
+    assert!(run.status.success() && said(&run).contains("ok    twice"), "{}", said(&run));
+
+    // Without the folder neither name is found, and the error says so at the block.
+    let run = sg(&["p.sg"]);
+    assert!(said(&run).contains("none of the libraries this `extern` block names was found: `sgfolder_none`, `sgfolder`"), "{}", said(&run));
+    let run = sg(&["build", "p.sg", "-o", "bin/q"]);
+    assert!(!run.status.success() && said(&run).contains("none of the libraries"), "{}", said(&run));
+    // A folder that is not there, and one others may write into.
+    let run = sg(&["-L", "nowhere", "p.sg"]);
+    assert_eq!((run.status.code(), said(&run)), (Some(2), "error: -L nowhere: no such folder\n".to_string()));
+    let open = work.join("open");
+    std::fs::create_dir_all(&open).unwrap();
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let run = sg(&["build", "p.sg", "-L", "open", "-o", "bin/q"]);
+    assert!(run.status.code() == Some(2) && said(&run).contains("-L open: others may write into this folder"), "{}", said(&run));
+    // `emit-c` links nothing.
+    let run = sg(&["emit-c", "p.sg", "-L", "lib"]);
+    assert_eq!(run.status.code(), Some(2));
+}
+
+/// The count of blocks a debug build keeps, tried on programs made to leak: a block taken and
+/// never given back, one given back that was not taken, and a block a test leaves. A count that
+/// does not see them must not let the programs pass. A release build has no count.
+#[test]
+fn block_count_sees_a_leak() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("block-count");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let program = "void main() {\n    var words = List<string>()\n    words.add(\"one\".repeat(3))\n    print(words.length())\n}\n";
+    let tests = "test \"a test\" {\n    var words = List<string>()\n    words.add(\"one\".repeat(3))\n    assert(words.length() == 1)\n}\n";
+    let check = "#if SG_COUNT\n    if (sg_blocks_left(\"the program\", 0)) return 1;";
+    let cases = [
+        ("taken", program, false, check, format!("    (void)malloc(24);\n{check}"), "leak: the program ended with 1 block of memory never given back"),
+        ("given", program, false, check, format!("    free((malloc)(24));\n{check}"), "leak: the program gave back 1 block of memory more than it took"),
+        ("test", tests, true, "    test->run();\n", "    test->run();\n    (void)malloc(24);\n".to_string(), "leak: the test ended with 1 block of memory never given back"),
+    ];
+    for (name, source, tests, find, put, report) in cases {
+        let sources = sg::Sources::single(source, &format!("{name}.sg"));
+        let code = match tests {
+            true => sg::emit_c_tests(&sources, true),
+            false => sg::emit_c_sources(&sources, true),
+        }
+        .unwrap();
+        assert!(code.contains(find), "{name}: the place to leak at is not in the C");
+        let c_file = work.join(format!("{name}.c"));
+        std::fs::write(&c_file, code.replacen(find, &put, 1)).unwrap();
+        let binary = work.join(name);
+        let cc = std::process::Command::new("cc").args(["-std=c11", "-o"]).arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+        assert!(cc.status.success(), "{name}: {}", String::from_utf8_lossy(&cc.stderr));
+        let run = std::process::Command::new(&binary).output().unwrap();
+        let said = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+        assert!(!run.status.success() && said.contains(report) && said.contains("note: safe SG gives back every block it takes, so this is a mistake in sg"), "{name}: the count of blocks does not see a leak that is there, so it cannot be trusted:\n{said}");
+    }
+    let release = sg::emit_c_sources(&sg::Sources::single(program, "release.sg"), false).unwrap();
+    assert!(release.contains("#define SG_COUNT 0\n"));
+}

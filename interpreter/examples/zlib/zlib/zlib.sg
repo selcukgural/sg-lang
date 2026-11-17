@@ -2,7 +2,8 @@
 // uses it writes no `unsafe`. Each call compresses or decompresses a whole buffer at once.
 
 // zlib's `uLong` is C's `unsigned long`: `CULong`, 64 bits on Linux and macOS, 32 on Windows.
-extern "z" {
+// The library is `libz` on Linux and macOS and `zlib.lib` on Windows: the first one found is linked.
+extern "z", "zlib" {
     CULong compressBound(CULong sourceLen)
     int compress2(raw byte dest, ref CULong destLen, raw byte source, CULong sourceLen, int level)
     int uncompress(raw byte dest, ref CULong destLen, raw byte source, CULong sourceLen)

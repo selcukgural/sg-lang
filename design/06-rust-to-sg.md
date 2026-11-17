@@ -211,6 +211,8 @@ Last brought up to date: 17 November 2026, the ninety-first slice.
 | `c_int`, `size_t`, `*const T`, `*mut T` in a signature | `int`, `nuint`, `read T` or `raw T`, `ref T` or `raw T` | built | `ref` and `read` last for the call; `raw T` when C keeps the address. No `char` (a byte is `byte`) |
 | `c_long`, `c_ulong` | `CLong`, `CULong` | built | Rust's are other names of `i64` or `i32` after the system, so code that compiles on Linux may not on Windows. SG's are types of their own: an `int` becomes one and one becomes a `long` on their own, a `long` crosses with a cast, a number written for one fits in 32 bits, and they have no arithmetic (`(long)r + 1`) |
 | `#[repr(C)] struct`, given and returned by value | a struct of plain data, given and returned by value | built | Every struct of plain data is laid out as C lays it out; no mark is written. Unions, bit fields, `packed` and `align` are below. A function of the program's own C file does not take a struct by value yet |
+| `#[cfg_attr(windows, link(name = "zlib"))]` and `#[cfg_attr(not(windows), link(name = "z"))]` | `extern "z", "zlib" { ... }` | built | The names a library has on the systems; the first one the C compiler finds is linked, asked by linking an empty program with it |
+| `cargo:rustc-link-search=native=/opt/lib` in a `build.rs`, `-L /opt/lib` to `rustc` | `sg build main.sg -L /opt/lib`, `sg -L /opt/lib main.sg`, `sg test ... -L /opt/lib` | built | Also written into the program as an `rpath`, so it runs without `LD_LIBRARY_PATH`, which Cargo does not do; a folder others may write into is an error |
 | `extern { type sqlite3; }`, an opaque `#[repr(C)] struct` | `extern "sqlite3" { struct sqlite3 }` | built | Only as `raw sqlite3`; `ref raw sqlite3` is C's `sqlite3**` |
 | the `cc` crate and a `build.rs` that compiles a C file | `extern "./native.c" { ... }` | built | Compiled in the same unit as the program, so a `static inline` function is inlined; no build script |
 | `extern { static mut optind: c_int; }` | `extern { int optind }` | built | Read and written inside `unsafe`, as an item of raw memory |
@@ -432,8 +434,9 @@ Last brought up to date: 17 November 2026, the ninety-first slice.
 | Rust | SG | Status | Note |
 |---|---|---|---|
 | `#[test] fn name()` | `test "name" { }` | built | At the top level of the file, next to the code |
-| `cargo test` | `sg test file.sg` | built | `sg test --compiled` runs them compiled |
+| `cargo test` | `sg test file.sg` | built | `sg test --compiled` runs them compiled, each test in a process of its own (the program starts itself again with `--only N`), where Rust's harness runs them on threads of one process |
 | `cargo run` | `sg file.sg` | built | The interpreter |
 | `cargo build`, `cargo build --release` | `sg build file.sg`, `sg build file.sg --release` | built | A debug build checks overflow and reports leaks |
 | a test that leaks `Rc` passes | the test fails with the leak report | built | |
+| a leak is seen only under a tool (LSan, Valgrind, Miri) | a debug build counts the blocks of its values and reports those not given back | built | On every system, Windows too, where there is no LSan; raw memory is not counted |
 | Cargo, crates.io | none yet | designed | No package manager yet |

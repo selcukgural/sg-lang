@@ -199,9 +199,11 @@ SQLite, libcurl, a server that ends on Ctrl-C, a library of SG for C, the kernel
 a binary header read with a union and bit fields. SG is to run on Linux, macOS and Windows: Linux and macOS came first,
 and nothing was built in a way Windows cannot take. How Windows is reached has been talked through (design/04,
 "Windows, the direction"): Windows 10 and 11 on x86-64 and 64-bit Arm, tested on GitHub's machines with Windows,
-two slices of what every system gains first (the first of them is written: C's `long`, a name kept inside its
-folder, the codes of 32 bits a program of Windows ends with, and the system's last error), then six slices of
-Windows, and a preview of the language after them.
+two slices of what every system gains first (both are written: C's `long`, a name kept inside its folder, the
+codes of 32 bits a program of Windows ends with, the system's last error; then `-L folder`, a library named by
+each of its names on the systems, tests run without `fork`, and a debug build that counts the blocks of its
+values and reports a leak on every system), then six slices of Windows, and a preview of the language after
+them.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is

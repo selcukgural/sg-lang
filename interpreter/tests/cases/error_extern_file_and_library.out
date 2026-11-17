@@ -1,0 +1,5 @@
+error: `./native.c` is a C file, and an `extern` block takes one C file or the names of one library
+  --> error_extern_file_and_library.sg:2:1
+ 2 | extern "./native.c", "z" {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: a C file and a library are two `extern` blocks

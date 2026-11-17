@@ -10939,13 +10939,18 @@ fn unwrap_unsafe(expr: &mut Expr) {
 }
 
 
-/// The name of a library is a name, so that nothing else reaches the C compiler.
+/// The name of a library is a name, so that nothing else reaches the C compiler; a block that
+/// names it more than once names it once.
 fn foreign_lib(foreign: &Foreign) -> Res<()> {
-    if let Some(lib) = &foreign.lib {
+    for (at, lib) in foreign.libs.iter().enumerate() {
         let fine = !lib.is_empty() && !lib.starts_with('-') && lib.chars().all(|c| c.is_ascii_alphanumeric() || "_-.+".contains(c));
         if !fine {
             return Err(Diag::error(foreign.span, format!("`{lib}` is not the name of a library"))
                 .note("a library is named as the C compiler links it, `extern \"z\"` for `-lz`: letters, digits and `_ - . +`"));
+        }
+        if foreign.libs[..at].contains(lib) {
+            return Err(Diag::error(foreign.span, format!("the library `{lib}` is named twice in this `extern` block"))
+                .note("the names are those the library has on the systems, tried in the order they are written"));
         }
     }
     Ok(())

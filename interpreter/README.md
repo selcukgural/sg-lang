@@ -55,7 +55,7 @@ of `tests/Containerfile` has them.
 | Tasks | `Task.run(work, x, share total)` starts `work(x, share total)` as a task and gives a `Task<R>`, `R` being what `work` returns; a `Func` can be started too. `t.wait()` waits for it and gives that value (`try t.wait()` passes its error on). A task that is not waited for on every path is a compile error, and so is `Task.run(...)` alone or dropped with `_ =`. What a task is given and gives back owns all it holds: no borrow, no `shared checked` value, no `Task` (the thread rule, also inside fields). In the interpreter a task runs on a thread of its own when it is waited for, so the output is the same on every run; compiled code starts a thread of the system for it at once. A panic inside one names the line that started it |
 | Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
 | Raw memory | `raw T` is an address that owns nothing and may be `null`; it points at plain data (numbers, `bool`, `char`, raw pointers, and arrays and structs of them), laid out as C lays it, or is a `raw void`. `Memory.allocate<T>(n)` gives room for `n` items, all zero (C's `calloc`, in the interpreter too). `p[i]` reads and writes an item (`p[i] = v`, `p[i].x += 1`), `p + n` and `p - n` move by items, `(raw byte)p` reads the memory as another type, `Memory.copy(source, target, count)` copies items (also over itself), `Memory.view(p, count)` looks at `count` items as a `read T[]` (C's memory added to a list in one copy, read as text where it lies), `Memory.viewRef(p, count)` writes them as a `ref T[]` (a buffer C wants filled), `Memory.readUnaligned(p)` and `Memory.writeUnaligned(p, v)` reach an item at any address, and `Memory.free(p)` gives the block back, or memory C gave with `malloc`; each of them is written inside `unsafe { ... }`, or with `unsafe` in front of a value (`var first = unsafe p[0]`), and an `unsafe` that nothing needs is an error. `p == q` and `p == null` need no `unsafe`, nor do `p < q` and `p - q` (the order of two addresses, and the count of items between them) and `(nuint)p` (an address as a number); `unsafe (raw T)n` makes a pointer out of a `nint` or a `nuint` (`(raw void)(nint)-1`). The interpreter checks every item against the block it came from and panics outside it, after `Memory.free` and through `null`; compiled code checks nothing of that, and a `raw T` is a `T*`. An item reached at an address that is not a multiple of the alignment of its type is a panic in the interpreter and in a debug build, and costs nothing in a release build. `Memory.sizeOf<T>()` and `Memory.alignOf<T>()` give what C has for a type of plain data. A window of `Memory.view` borrows the variable or the field that holds its pointer, so it does not outlive it; a count below 0, and `null` with items, are panics in both. A raw pointer does not go to another task |
-| Calling C | `extern "z" { int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen) }` declares functions of C, a block for each library (linked as `-lz`; `extern { }` is the C library itself), each called inside `unsafe`. A C function takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data (C's `T*` and `const T*`, for the time of the call; `ref raw T` is `T**`), a struct of plain data by value, laid out as C lays it out, and `read CString`, and gives a number, a `bool`, a `raw T`, a struct of plain data or nothing. `struct sqlite3` without a body in an `extern` block is a type of C that SG only points at (`raw sqlite3`). `CString.from(text)` gives a `Result<CString, TextError>`, an error for a zero byte inside; `unsafe string.fromCString(p)` copies what C ended with a zero byte and checks that it is UTF-8. `buffer.pointer()` on a list, an array or a slice of plain data is written only as an argument of a C function. The functions are private to their module unless `public` is written on one, so a module can hide a library behind a safe interface, and a `Disposable` type gives back what C made when it ends (`examples/zlib`, whose `Deflater` holds zlib's stream). `extern "./native.c" { ... }` names a C file of the module's folder in place of a library: it is compiled with the program, in the same unit, so its macros, `static inline` functions, builtins and assembly are reached through functions it declares, and an inline one is inlined; a library block of the module (`extern "z" { }`, also empty) links what the file needs. `int opterr` in an `extern` block, without parentheses, is a variable of C, read and written inside `unsafe` (`unsafe opterr`, `unsafe { opterr = 0 }`, `unsafe { origin.y = 4 }`) as an item of raw memory. `C.errno()` gives what the last call of C left in `errno`, read right after it, `C.setErrno(n)` sets what the next one finds, and `IoError.fromErrno(n)` makes an `IoError` of it; `C.lastError()` and `C.setLastError(n)` are the system's last error (`errno` on Linux and macOS, `GetLastError` on Windows), made an `IoError` by `IoError.fromCode(n)`, and the one taken for the other is an error. C's `long` and `unsigned long` are `CLong` and `CULong` (64 bits on Linux and macOS, 32 on Windows): an `int` becomes one and one becomes a `long` on their own, a `long` crosses with a cast, a number written for one fits in 32 bits, and they are compared and printed but have no arithmetic. `int snprintf(raw byte s, nuint n, read CString format, ...)` declares a function that takes a varying count of arguments: each value after the parameters says the type C reads, so a `byte`, a `bool` or a `float` there, and a number or `null` written without a type, are errors whose hint is the cast (`(long)30`). The interpreter builds a small library of wrappers with `cc` and opens it with `dlopen`; compiled code calls C directly. While a call of C waits, the other tasks run, in the interpreter too. `examples/sqlite` and `examples/curl` wrap SQLite and libcurl in modules whose users write no `unsafe` |
+| Calling C | `extern "z" { int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen) }` declares functions of C, a block for each library (linked as `-lz`; `extern { }` is the C library itself), each called inside `unsafe`. `extern "z", "zlib" { }` gives the names a library has on the systems, and the first one the C compiler finds is linked; `-L folder` (on `sg build`, `sg test`, and before the file on `sg -L folder main.sg`) names a folder looked in first, written into the program so that it runs without `LD_LIBRARY_PATH`. A C function takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data (C's `T*` and `const T*`, for the time of the call; `ref raw T` is `T**`), a struct of plain data by value, laid out as C lays it out, and `read CString`, and gives a number, a `bool`, a `raw T`, a struct of plain data or nothing. `struct sqlite3` without a body in an `extern` block is a type of C that SG only points at (`raw sqlite3`). `CString.from(text)` gives a `Result<CString, TextError>`, an error for a zero byte inside; `unsafe string.fromCString(p)` copies what C ended with a zero byte and checks that it is UTF-8. `buffer.pointer()` on a list, an array or a slice of plain data is written only as an argument of a C function. The functions are private to their module unless `public` is written on one, so a module can hide a library behind a safe interface, and a `Disposable` type gives back what C made when it ends (`examples/zlib`, whose `Deflater` holds zlib's stream). `extern "./native.c" { ... }` names a C file of the module's folder in place of a library: it is compiled with the program, in the same unit, so its macros, `static inline` functions, builtins and assembly are reached through functions it declares, and an inline one is inlined; a library block of the module (`extern "z" { }`, also empty) links what the file needs. `int opterr` in an `extern` block, without parentheses, is a variable of C, read and written inside `unsafe` (`unsafe opterr`, `unsafe { opterr = 0 }`, `unsafe { origin.y = 4 }`) as an item of raw memory. `C.errno()` gives what the last call of C left in `errno`, read right after it, `C.setErrno(n)` sets what the next one finds, and `IoError.fromErrno(n)` makes an `IoError` of it; `C.lastError()` and `C.setLastError(n)` are the system's last error (`errno` on Linux and macOS, `GetLastError` on Windows), made an `IoError` by `IoError.fromCode(n)`, and the one taken for the other is an error. C's `long` and `unsigned long` are `CLong` and `CULong` (64 bits on Linux and macOS, 32 on Windows): an `int` becomes one and one becomes a `long` on their own, a `long` crosses with a cast, a number written for one fits in 32 bits, and they are compared and printed but have no arithmetic. `int snprintf(raw byte s, nuint n, read CString format, ...)` declares a function that takes a varying count of arguments: each value after the parameters says the type C reads, so a `byte`, a `bool` or a `float` there, and a number or `null` written without a type, are errors whose hint is the cast (`(long)30`). The interpreter builds a small library of wrappers with `cc` and opens it with `dlopen`; compiled code calls C directly. While a call of C waits, the other tasks run, in the interpreter too. `examples/sqlite` and `examples/curl` wrap SQLite and libcurl in modules whose users write no `unsafe` |
 | The layout of C | `union Bits { uint word` / `float number }` holds one field at a time in the same bytes: built with one (`Bits { number = 1.5 }`), written whole (`bits.word = 3`), read inside `unsafe` (`unsafe bits.word`), never lent. `uint version : 4` is a bit field of a struct, signed or not, `bool` too, and `uint _ : 4` leaves bits empty; a value that does not fit is a panic, as overflow is (the lowest bits in a release build). `packed struct Header { ... }` has no padding, and its fields are copied out, not lent. `align(64) struct Slot { ... }` lies at a multiple of 64 bytes wherever it is kept, on the heap too. Each is laid out as C lays it out on the machine, Windows' rules for bit fields included. `Header.fromBytes(bytes)` reads a struct of integers, fractions, bit fields and unions out of exactly as many bytes as it takes, with no `unsafe` (`examples/headers`: a BMP header and an IPv4 header) |
 | C calling SG | `export int compareInts(raw void a, raw void b) { ... }` is a function C calls by the name written, without its module: it takes and gives only the types C has (integers, `float`, `double`, `bool`, `raw T`, `CFunc`, structs of plain data by value), and SG calls it by its name too. `CFunc<raw void, raw void, int>` is a pointer to a function as C calls it, plain data that may be `null`: the name of an `export` function or of a function of C is one (`unsafe qsort((raw void)items, n, 4, compareInts)`, `CFunc<int, int> f = abs`), `unsafe (CFunc<int, int>)p` takes one from a `raw void` (`dlsym`), `(raw void)f` gives it back, and every call through one is inside `unsafe`; calling a `null` one is a panic. The state a callback reaches goes through C's `void*`: `unsafe Memory.addressOf(ref state)` gives the address of a variable or a field, and `unsafe (ref State)data` (or `read`) lends it again inside the callback; the interpreter keeps the addresses it gave and panics on a wrong type, a value that ended or moved, or an address it did not give. A C file of the program calls an `export` function by its name. A panic inside one ends the process with its message, since nothing unwinds through C; the interpreter runs one only on a thread that is in a call of C, and compiled code on any thread. A `lock` block does not call C when an `export` function waits. A struct or an enum of SG that is not plain data goes to C by its address: an `export` function gives it as `T*` (C keeps it), takes it back as `T*` or `T*?` (it ends there; `T*?` takes `NULL`), and is lent it as `read T` or `ref T` for the call; `read CString` is C's `const char*`, which `string.fromCString(text)` copies with no `unsafe`. `NULL` where none is taken is a panic; the interpreter also keeps every address it gave and panics on one it did not give, of another type, given back already, or lent against the rules of borrowing |
 | A library of SG for C | `sg build folder --library` gives `libfolder.a`, `--shared` gives `libfolder.so` (`.dylib` on macOS), each with `folder.h`, the header of its `export` functions: the types C holds by their address declared without fields (`typedef struct Calculator Calculator;`), plain structs laid out as SG lays them out, pointers to functions written out, `extern "C"` for C++ and a macro for Windows' DLLs. A library has no `main` and at least one `export` function; only those are seen from outside, so two libraries of SG live in one program, each with its runtime, which starts what it needs on first use from any thread. A panic aborts. A shared library is not unloaded. `examples/calclib` is a calculator called from `main.c` |
@@ -87,7 +87,7 @@ of `tests/Containerfile` has them.
 | Function values | `Func<int, bool>`: the address of a named function, the last type is what it returns (`Func<void>` takes and returns nothing). The name of a function is the value (`apply(double, 5)`, `Func<int, int> f = double`); it is copied freely, kept in variables, fields, variants and lists, and called like a function: `f(4)`, `this.onClick(read this.label)` |
 | Built-ins | `print(x)`, `printError(x)` (the same, to the standard error), `panic("...")`, `assert(condition)`, `exit(code)` (ends the program with that code), `same(a, b)` (two `shared` values point to one object) |
 | Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`, and `File.openAppend(path)` one that writes after what the file holds. A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left), `lines()` (each line as a `Result<string, IoError>`) `readBytes(ref buffer)` (bytes into the buffer, as many as it holds unless the end comes first, and how many: a `Result<nint, IoError>`) and `readSome(ref buffer)` (what the block holds, or what one read of the system gives when it is empty; how many, 0 at the end); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `writeBytes(bytes)` (a `read byte[]` as it is), `flush()` and `close()`, each with a `Result<void, IoError>`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `AlreadyExists` / `NotDirectory` / `DirectoryNotEmpty` / `InvalidInput` / `InvalidText(long position)` / `Other(int code) }`, with the variants of the network and `Cancelled` |
-| Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A test that passes and leaves `shared` values alive fails with the leak report. A normal run leaves the tests out |
+| Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A test that passes and leaves `shared` values alive fails with the leak report. Compiled (`sg test --compiled`), each test runs in a process of its own, the program of tests started again with `--only N`; a debug build counts the blocks of its values, and a program or a test that ends with some not given back fails with a report. A normal run leaves the tests out |
 | Comparing by name | `a.compare(b)` on numbers, `char` and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
 | Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic. `tryToInt()` and the others give `null` where a cast would panic, `wrappingToInt()` and the others keep the bits that fit; `min`, `max` |
 | Fractional methods | `abs`, `sqrt`, `floor`, `ceil`, `round`, `truncate`, `isNaN`, `isInfinite`; `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pow`, `fusedMultiplyAdd`, `min`, `max`; `tryToInt()` and the others |
@@ -1460,7 +1460,9 @@ name), approved on 13 November 2026:
     does not see that leak or cannot be run: a check that checks nothing does not pass. A program the C
     compiler rejects under the sanitizers is a failure too, where it was skipped before. With
     `SG_NO_SANITIZERS=1` both are left out and the test says so. Cost: about half a minute more for
-    `cargo test`. The path on Linux was first run in the fifty-eighth slice (382, 383).
+    `cargo test`. The path on Linux was first run in the fifty-eighth slice (382, 383). *(17 November 2026,
+    the ninety-sixth slice: a debug build counts the blocks of its values itself, on every system, and
+    reports those not given back; the sanitizers still look after it, 975-978.)*
 
 Choices made in the twenty-ninth slice (the test command on compiled code), approved on 13 November 2026:
 
@@ -1470,7 +1472,8 @@ Choices made in the twenty-ninth slice (the test command on compiled code), appr
     build, so overflow is checked as it is by the interpreter.
 84. **Each `test` block runs in a process of its own**, as the design decided: a panic ends that test and
     the ones after it still run. The program starts a copy of itself for each test (`fork`) and waits for
-    it. For now that is POSIX only; it does not build on Windows.
+    it. For now that is POSIX only; it does not build on Windows. *(17 November 2026, the ninety-sixth
+    slice: the program starts itself again with `--only N` through `posix_spawn`, with no `fork`, 972.)*
 85. **The report is the interpreter's, letter for letter**: `ok    name` or `FAIL  name` with the reason
     under it (the panic with its source line, or `error: ...`), the module in front of a test of a
     module, the count at the end, and the exit code 1 if a test failed. What a test prints comes before
@@ -4014,7 +4017,9 @@ direction in "Calling C, the direction"); 529 and 530 come from the slice, and a
      compiler through it (`extern "z -o x"` is an error). Only the libraries of the functions a program
      calls are linked. Compiled, they are written on the first line of the C (`/* sg-link: -lz */`), where
      `sg build` and the tests read them; `-lm` is given to every program already. `sg build -L path` for
-     a library the C compiler does not find by itself, `pkg-config` and frameworks come later.
+     a library the C compiler does not find by itself, `pkg-config` and frameworks come later. *(17
+     November 2026, the ninety-sixth slice: `-L folder`, and `extern "z", "zlib"` for a library of several
+     names, 963-971.)*
 520. **What a C function takes and gives**, decided before the slice, with three details from it: the
      integer types, `float`, `double` and `bool` as their C types; `raw T` as `T*`; `ref T` as `T*` and
      `read T` as `const T*` of plain data, for the time of the call; `read CString` as `const char*`. It
@@ -6383,6 +6388,86 @@ author before the slice and approved on 17 November 2026, 944 with them:
      `last_os_error`, `from_raw_os_error`, `ExitStatus::code`, a name from outside), the README of the
      repository. Nothing is measured: no arithmetic is added, and a cast is the one every integer has.
 
+Choices made in the ninety-sixth slice (where libraries lie, the names of a library, tests without `fork`,
+the count of blocks), the second of the slices of 04's "Windows, the direction" (938, 939, 941), written on
+Linux and macOS. 963 to 979 were put to the author before the slice and approved on 17 November 2026:
+
+963. **`-L folder`** is taken by `sg build`, by `sg test` (interpreted and `--compiled`) and by a program the
+     interpreter runs, where it comes before the file (`sg -L lib main.sg words...`), since the words after
+     the file are the program's. `-L folder` and `-Lfolder` are both taken, as C's compilers take them, and
+     several are looked in in the order they are written. `sg emit-c` takes none: it links nothing. In
+     `sg build ... -- flags`, what follows `--` is C's, a `-L` too.
+964. **A folder that is not there is an error** (`error: -L lib: no such folder`, exit code 2), as is a file.
+     A relative folder is read from the working folder and given to the C compiler absolute.
+965. **The program looks there when it starts too**: on Linux and macOS each folder is written into the
+     program as an `rpath`, absolute, so it runs without `LD_LIBRARY_PATH`; the interpreter's wrappers the
+     same. Zig does it; C's compilers and Rust do not. A path relative to the program (`$ORIGIN`) is not
+     written. Windows has no `rpath`: where a DLL is looked for is the slice of C on Windows (101).
+966. **A folder others may write into is an error**: a library put there would run inside the program that
+     looks there when it starts. "Others" are the group and everyone (`/tmp` among them); the hint is
+     `chmod go-w`. A path with `$` or `:` is an error too, since the loader reads them as words of its own.
+967. **What a program that links a library of SG is told** names the folders: `sg build --library` says
+     `libapp.a -L/opt/z/lib -lz -lm -pthread`, and `--freestanding` the same after "with".
+968. **`extern "z", "zlib" { }`** names a library by the names it has on the systems, with commas. A block
+     names one C file or the names of one library: `extern "./native.c", "z"` is an error, and so is a name
+     written twice in a block, or none after a comma. Each name is checked as 519 checks one.
+969. **The first one the C compiler finds is linked**, the names asked in the order they are written: an
+     empty program is linked with the folders of `-L` and `-l` of the name, and the first that links is the
+     one. SG does not look on the disk itself, since only the compiler knows where it looks, and on macOS the
+     libraries of the system are stubs in its SDK, not files. The question is asked only for a block with
+     several names, once for each name in a run; the interpreter asks it the same way. Without an operating
+     system nothing is linked by `sg`, so there the first name is the one said.
+970. **When none is found**, the error is at the block: `none of the libraries this extern block names was
+     found: z, zlib`, a note with the flags tried and the folders looked in (those of `-L`, then where the C
+     compiler looks), and the hint `-L folder`.
+971. **A library of one name that is not found** is said the same way, at its block (`the library sgdemo
+     was not found`), where the message was "is every library installed where the C compiler looks?". The
+     libraries are asked one by one only once the link has failed, so a build that links pays nothing.
+972. **`sg test --compiled` without `fork`**: the program of tests starts itself again for each test with
+     `--only N` (87), through `posix_spawn` on Linux and macOS (`CreateProcessW` on Windows). The path it
+     starts is the one the system gives (`/proc/self/exe`, `_NSGetExecutablePath`), not `argv[0]`, which
+     is only the name it was started by, perhaps one found on `PATH`.
+973. **What the test sees is what it saw**: its output and its input are the program's, its standard error
+     goes to a pipe and is written under its `FAIL` line, and the two ends of the pipe are closed in it as
+     it starts, so it holds nothing else of the program's.
+974. **The tests still run one after the other.** Each test now starts a program where a `fork` copied one:
+     on macOS 200 tests take 0.25 s where they took 0.14 s, on Linux 0.039 s where they took 0.023 s: about
+     half a millisecond more for each test on macOS, a tenth of one on Linux. Running them at once is in
+     "Not here yet".
+975. **A debug build counts the blocks of its values**, on every system: each block the runtime takes for a
+     text, a list, a map, a `T*`, a `shared` value or a task adds one to a count, each it gives back takes
+     one away, atomically. Not counted: raw memory (`Memory.allocate` and `Memory.free`, since C's blocks
+     go back that way too), what C and the program's C files take, the blocks the runtime keeps while a
+     thread or the process lives (the block a thread prints values in, the blocks of `Stdout` and
+     `Stderr`, the pool of threads, the slots of the network, the clock of delays, a source of
+     cancellation the clock holds), and a program without an operating system. A release build has no
+     count. Only the number of blocks, not their bytes, which would need a header on each block.
+976. **It is looked at where the `shared` values are**: when `main` returns, when a test ends (in its own
+     process, against the count when it began), and when a library is unloaded. Not after `exit(code)` or a
+     panic, which end the process with its values.
+977. **One report**: when `shared` values hold each other up, their report alone, since their blocks are in
+     the count too. Otherwise `leak: the program ended with 3 blocks of memory never given back` and the
+     note `safe SG gives back every block it takes, so this is a mistake in sg`; a count below zero is
+     `gave back 2 blocks of memory more than it took`. The program ends with 1, the test fails.
+978. **The tests**: every program `cargo test` compiles in a debug build is run with the count, the
+     sanitizers' leak check (LSan, `leaks` on macOS) still after it, and none reports a leak.
+     `block_count_sees_a_leak` makes three programs leak on purpose in their C (a block taken, one given
+     back that was not taken, a block a test leaves) and fails if the count does not see them, and checks
+     that a release build has none. `library_folders` builds a shared library of C in a folder of its own
+     and runs a block of two names against it through the interpreter, a built program started from
+     another folder without `LD_LIBRARY_PATH`, the tests interpreted and compiled, and the program of tests
+     started by a name found on `PATH`; with the errors of a folder that is not there, one others may write
+     into, and none found. `ok_extern_names` links C's math library by the second of its names;
+     `error_extern_none_found`, `_name_twice`, `_file_and_library`, `_name_after_comma`, and
+     `error_extern_no_library` with its new message. `examples/zlib` names zlib `"z", "zlib"`. On Linux no
+     check is missing; the line that names a check a system does not have comes with Windows.
+     `cargo test` passes on macOS and on Linux in a container, where 352 of 1438 programs compile through
+     C, 78 of them under the thread sanitizer, and 26 of 32 programs of tests.
+979. **Documents**: this list, the tables at the top, the notes on 82, 84 and 519, "Not here yet", "Next";
+     04 ("Tests" and "Libraries" as built), 02 (the names of a library, `-L`), 06 (`#[link(name)]`,
+     `rustc-link-search`, `rpath`, the test harness), the README of the repository. Only 974 is measured:
+     the speed of a program does not change, the count is in debug builds alone.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -6535,7 +6620,7 @@ check off.
   needs runs right there; compiled tests run under the thread sanitizer.
 - **Of calling C**: a `va_list` (`vprintf`), a function
   of SG that takes `...`, and a `CFunc` to a function that takes it (753); the address of a `CString`
-  kept by C, `sg build -L path` for a library the C compiler does not find by itself, `pkg-config`,
+  kept by C, a folder of libraries looked in relative to the program's own place (`$ORIGIN`), `pkg-config`,
   frameworks of macOS, Windows. A C function whose name the C library gives another symbol (`stat` on
   some systems) is bound to the plain name. A variable of C is lent to nothing (`ref opterr`), and its
   address is not taken. The C files of one program share one unit, so two of them cannot both define a
@@ -6546,6 +6631,9 @@ check off.
   C's other types of a size that differs (`size_t` is `nuint` already, `wchar_t` is 16 bits on Windows)
   have no type of their own;
   the interpreter runs a function C calls only on a thread that is in a call of C (736).
+- **Of tests**: running the compiled tests at once, several processes side by side (974); the bytes and
+  the places of the blocks a debug build reports as not given back, which a build under the sanitizers
+  shows (975).
 - **Of signals**: the signals of faults (SIGSEGV and the others), SIGALRM, SIGCHLD and those of job control
   (SIGTSTP, SIGCONT, SIGTTIN, SIGTTOU); real-time signals and the value they carry; how many of one kind
   came (796 for one that comes as the last listener of its kind ends); a signal to a group of processes.
@@ -6811,7 +6899,8 @@ Windows has been talked through (04, "Windows, the direction", choices 928-942):
 x86-64 and 64-bit Arm, built by Clang with C's library inside the program, tested by GitHub's machines with
 Windows on every push to its branch. What does not need Windows comes first, on Linux and macOS: the
 ninety-fifth slice is written: `CLong` and `CULong` (C's `long`, 32 bits on Windows), `Path.joinInside`,
-`ExitStatus.Code(int)`, `C.lastError()` and `IoError.fromErrno` (943-962). Next is the ninety-sixth: `-L`, an `extern` block
-named by several names of its library, `sg test --compiled` without `fork`, and a count of the runtime's
-blocks that reports a leak on every system. Then six slices of Windows: the base, threads and tasks, the
+`ExitStatus.Code(int)`, `C.lastError()` and `IoError.fromErrno` (943-962); the ninety-sixth is written:
+`-L folder`, an `extern` block named by several names of its library, `sg test --compiled` without `fork`,
+and a count of the blocks of values that reports a leak on every system (963-979). Next are six slices of
+Windows: the base, threads and tasks, the
 network, other programs and signals, C, and everything tested and measured on both machines.

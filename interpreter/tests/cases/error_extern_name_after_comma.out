@@ -1,0 +1,4 @@
+error: expected the name of a library, found `{`
+  --> error_extern_name_after_comma.sg:2:13
+ 2 | extern "z", {
+   |             ^

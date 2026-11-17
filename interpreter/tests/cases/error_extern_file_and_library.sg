@@ -1,0 +1,8 @@
+// An `extern` block takes one C file or the names of one library, not both.
+extern "./native.c", "z" {
+    int twice(int n)
+}
+
+void main() {
+    print(unsafe twice(21))
+}

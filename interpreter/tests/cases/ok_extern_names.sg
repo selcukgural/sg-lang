@@ -1,0 +1,12 @@
+// A library has a name on each system (zlib is `-lz` on Linux and macOS, `zlib.lib` on Windows):
+// an `extern` block gives them all, and the first one the C compiler finds is linked. Here the
+// first name is found nowhere, and C's math library is linked by its second.
+extern "nosuchlibxyz", "m" {
+    double cos(double x)
+    double sqrt(double x)
+}
+
+void main() {
+    print(unsafe cos(0.0))
+    print(unsafe sqrt(2.0))
+}

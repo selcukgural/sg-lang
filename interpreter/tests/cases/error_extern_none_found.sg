@@ -1,0 +1,9 @@
+// A library has a name on each system; of the names an `extern` block gives, the first one the C
+// compiler finds is linked. When it finds none, the error names each one and where it looked.
+extern "nosuchlibxyz", "nosuchlibxyz2" {
+    int nosuchfunction(int n)
+}
+
+void main() {
+    print(unsafe nosuchfunction(1))
+}

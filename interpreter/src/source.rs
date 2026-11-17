@@ -71,13 +71,15 @@ pub struct Sources {
     pub files: Vec<SourceFile>,
     /// The folder the modules are looked for in; `None` for a program that is one text.
     root: Option<PathBuf>,
+    /// The folders `-L` names (see `Program::lib_dirs`).
+    pub lib_dirs: Vec<PathBuf>,
 }
 
 impl Sources {
     /// A program that is one text.
     pub fn single(src: &str, path: &str) -> Sources {
         let file = SourceFile { path: path.to_string(), module: String::new(), start: 0, end: src.len(), tested: true };
-        let mut sources = Sources { text: src.to_string(), files: vec![file], root: None };
+        let mut sources = Sources { text: src.to_string(), files: vec![file], root: None, lib_dirs: Vec::new() };
         sources.add_std();
         sources
     }
@@ -149,7 +151,7 @@ impl Sources {
             return None;
         }
         let files = self.files.iter().map(|file| SourceFile { path: file.path.clone(), module: file.module.clone(), ..*file }).collect();
-        let mut all = Sources { text: self.text.clone(), files, root: None };
+        let mut all = Sources { text: self.text.clone(), files, root: None, lib_dirs: self.lib_dirs.clone() };
         for module in modules {
             let folder = module.split('.').fold(root.clone(), |folder, part| folder.join(part));
             for file in sg_files(&folder) {
@@ -236,7 +238,7 @@ fn named_paths(text: &str, range: Span) -> Vec<String> {
 pub fn load(path: &Path, every_module: bool) -> Result<Sources, String> {
     let shown = |path: &Path| path.to_string_lossy().into_owned();
     let read = |path: &Path| std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", shown(path)));
-    let mut sources = Sources { text: String::new(), files: Vec::new(), root: None };
+    let mut sources = Sources { text: String::new(), files: Vec::new(), root: None, lib_dirs: Vec::new() };
     let root = if path.is_dir() {
         let files = sg_files(path);
         if files.is_empty() {

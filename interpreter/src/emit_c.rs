@@ -573,6 +573,67 @@ const RUNTIME: &str = r#"#ifndef SG_FREESTANDING
 #endif
 #endif
 
+/* A debug build counts the blocks it takes for values and gives back, on every system, and a
+   program or a test that ends with some still taken is reported (`sg_blocks_left`). Raw memory
+   (`Memory.allocate`, `Memory.free`) is not counted, since C's blocks go back that way too and
+   the other way round: it calls C's functions through `sg_c_free` and the others. Nor are the
+   blocks the runtime keeps while a thread or the process lives (`SG_KEPT`), nor those of the C
+   files of the program, before which the names are C's again. */
+#ifndef SG_COUNT
+#define SG_COUNT 0
+#endif
+/* C's own functions, for raw memory: in parentheses no macro of the count replaces them; without
+   an operating system they are the program's allocator. */
+#if SG_FREESTANDING
+#define sg_c_calloc(count, size) calloc(count, size)
+#define sg_c_aligned_alloc(align, size) aligned_alloc(align, size)
+#define sg_c_free(p) free(p)
+#else
+#define sg_c_calloc(count, size) (calloc)(count, size)
+#define sg_c_aligned_alloc(align, size) (aligned_alloc)(align, size)
+#define sg_c_free(p) (free)(p)
+#endif
+#if SG_COUNT
+static int64_t sg_blocks;
+static inline void* sg_counted(void* p) {
+    if (p) __atomic_fetch_add(&sg_blocks, 1, __ATOMIC_RELAXED);
+    return p;
+}
+static inline void* sg_counted_realloc(void* old, size_t size) {
+    void* p = (realloc)(old, size);
+    if (p && !old) __atomic_fetch_add(&sg_blocks, 1, __ATOMIC_RELAXED);
+    return p;
+}
+static inline void sg_counted_free(void* p) {
+    if (p) __atomic_fetch_sub(&sg_blocks, 1, __ATOMIC_RELAXED);
+    (free)(p);
+}
+#define malloc(size) sg_counted((malloc)(size))
+#define calloc(count, size) sg_counted((calloc)(count, size))
+#define aligned_alloc(align, size) sg_counted((aligned_alloc)(align, size))
+#define realloc(old, size) sg_counted_realloc(old, size)
+#define free(p) sg_counted_free(p)
+/* The blocks the runtime keeps for as long as a thread or the process lives, or until its clock
+   lets them go, which are no value's: each part of the runtime says when it takes one and when
+   it gives one back (`SG_KEPT`). */
+static int64_t sg_kept;
+#define SG_KEPT(n) ((void)__atomic_fetch_add(&sg_kept, (n), __ATOMIC_RELAXED))
+static inline int64_t sg_blocks_now(void) { return __atomic_load_n(&sg_blocks, __ATOMIC_RELAXED) - __atomic_load_n(&sg_kept, __ATOMIC_RELAXED); }
+/* The blocks still taken when the program, a test or a library ends, against those taken
+   before it began. True if there were any. */
+static bool sg_blocks_left(const char* ended, int64_t before) {
+    int64_t left = sg_blocks_now() - before;
+    if (left == 0) return false;
+    fflush(stdout);
+    if (left > 0) fprintf(stderr, "leak: %s ended with %lld %s of memory never given back\n", ended, (long long)left, left == 1 ? "block" : "blocks");
+    else fprintf(stderr, "leak: %s gave back %lld %s of memory more than it took\n", ended, (long long)-left, left == -1 ? "block" : "blocks");
+    fputs("  note: safe SG gives back every block it takes, so this is a mistake in sg\n", stderr);
+    return true;
+}
+#else
+#define SG_KEPT(n) ((void)0)
+#endif
+
 /* A panic ends the process. A library (`sg build --library` or `--shared`) aborts: other
    threads of the program that loaded it may be running, and C's `exit` would run that
    program's `atexit` functions under them. Without an operating system the panic goes to the
@@ -614,6 +675,8 @@ static inline void* sg_alloc(size_t size, size_t align) {
     return aligned_alloc(align, (size + align - 1) & ~(align - 1));
 }
 static inline void sg_aligned_free(void* p) { free(p); }
+/* Raw memory aligned beyond 16 bytes, given back as `Memory.allocate` made it, not counted. */
+static inline void sg_raw_aligned_free(void* p) { sg_c_free(p); }
 
 /* The generated code puts every operation in parentheses. */
 #if defined(__clang__)
@@ -1503,11 +1566,26 @@ static _Thread_local sg_string sg_scratch = { (uint8_t*)"", 0, 0 };
 static sg_string sg_scratch = { (uint8_t*)"", 0, 0 };
 #endif
 #define SG_SCRATCH_KEPT 65536
+#if SG_COUNT
+/* Whether this thread's block is counted as kept. */
+#if SG_THREADS
+static _Thread_local bool sg_scratch_kept = false;
+#else
+static bool sg_scratch_kept = false;
+#endif
+#endif
 static inline void sg_scratch_back(int64_t to) {
     if (sg_scratch.len > to) sg_scratch.len = to;
+#if SG_COUNT
+    if (sg_scratch.cap > 0 && !sg_scratch_kept) { sg_scratch_kept = true; SG_KEPT(1); }
+#endif
     if (__builtin_expect(sg_scratch.cap > SG_SCRATCH_KEPT, 0) && sg_scratch.len == 0) {
         free(sg_scratch.ptr);
         sg_scratch = (sg_string){ (uint8_t*)"", 0, 0 };
+#if SG_COUNT
+        sg_scratch_kept = false;
+        SG_KEPT(-1);
+#endif
     }
 }
 /* Text inside another value is written in quotes, so that the parts can be told apart. */
@@ -1820,7 +1898,7 @@ static void* sg_raw_alloc(int64_t n, size_t size, size_t align, const char* ty, 
     if (size != 0 && (uint64_t)n > (uint64_t)(PTRDIFF_MAX - (align > 16 ? align : 16)) / size)
         sg_panicf(loc, "`Memory.allocate` is asked for more memory than an address can count: %lld items of `%s`", (long long)n, ty);
     size_t bytes = (n ? (size_t)n : 1) * (size ? size : 1);
-    void* p = align <= 16 ? calloc(1, bytes) : sg_alloc(bytes, align);
+    void* p = align <= 16 ? sg_c_calloc(1, bytes) : sg_c_aligned_alloc(align, (bytes + align - 1) & ~(align - 1));
     if (!p) sg_panicf(loc, "`Memory.allocate` found no memory for %lld items of `%s`", (long long)n, ty);
     if (align > 16) memset(p, 0, bytes);
     return p;
@@ -2362,6 +2440,9 @@ static void* sg_task_main(void* p) {
     sg_task_now = task;
     task->run(task);
     if (sg_scratch.cap > 0) free(sg_scratch.ptr);
+#if SG_COUNT
+    if (sg_scratch_kept) SG_KEPT(-1);
+#endif
     sg_task_ended(task);
     return NULL;
 }
@@ -2527,6 +2608,7 @@ static void sg_pool_size(void) {
 #endif
     sg_worker* all = aligned_alloc(64, (size_t)most * sizeof(sg_worker));
     if (!all) abort();
+    SG_KEPT(1);
     memset(all, 0, (size_t)most * sizeof(sg_worker));
     for (int i = 0; i < most; i++) {
         pthread_cond_init(&all[i].wake, NULL);
@@ -3041,6 +3123,7 @@ static void sg_clock_put(sg_delay* d, int64_t ms, const char* loc) {
     }
     d->due = sg_now() + ms * 1000000;
     d->order = sg_clock_order++;
+    if (!sg_heap) SG_KEPT(1);
     if (sg_heap_len == sg_heap_cap) sg_heap = sg_grow(sg_heap, &sg_heap_cap, sizeof *sg_heap, _Alignof(__typeof__(*sg_heap)));
     sg_heap_set(sg_heap_len, d);
     sg_heap_len++;
@@ -3140,6 +3223,7 @@ static void sg_cancel_now(sg_cancel* c) {
 static void sg_cancel_clock_over(sg_delay* d) {
     sg_cancel* c = (sg_cancel*)((char*)d - offsetof(sg_cancel, clock));
     sg_cancel_held(c);
+    SG_KEPT(-1);
     sg_cancel_less(c);
 }
 /* `CancellationSource.after(ms)`: the clock holds the source until it cancels it. */
@@ -3151,6 +3235,7 @@ static sg_cancel* sg_cancel_after(int32_t ms, const char* loc) {
         return c;
     }
     c->refs = 2;
+    SG_KEPT(1);
     c->clock.over = sg_cancel_clock_over;
     c->clock.state = SG_WAITING;
     pthread_mutex_lock(&sg_clock_lock);
@@ -3926,6 +4011,7 @@ static sg_slot* sg_slot_make(int fd) {
     if (!block) {
         block = calloc(SG_SLOT_BLOCK, sizeof *block);
         if (!block) abort();
+        SG_KEPT(1);
         __atomic_store_n(&sg_slots[fd / SG_SLOT_BLOCK], block, __ATOMIC_RELEASE);
     }
     pthread_mutex_unlock(&sg_loop_lock);
@@ -5610,6 +5696,11 @@ static int sg_writer_out(sg_writer* w) {
 static int sg_writer_wrote(sg_writer* w) {
     if (w->failed) { w->buf.len = 0; return w->failed; }
     if (w->std) {
+#if SG_COUNT
+        /* The block of `Stdout` or `Stderr` lives as long as the process. */
+        static bool kept[3];
+        if (w->buf.cap > 0 && !kept[w->std]) { kept[w->std] = true; SG_KEPT(1); }
+#endif
         if (w->std == 2) fflush(stdout);
         size_t len = (size_t)w->buf.len;
         w->buf.len = 0;
@@ -6090,23 +6181,57 @@ static inline bool sg_reader_try(sg_reader* r) { return r != &sg_stdin || pthrea
 "#;
 
 /// What a program of tests ends with: each `test` block runs in a process of its own, so a
-/// panic ends that test and not the ones after it. What the test writes as it stops (the
-/// panic, or the error a `try` met) is caught and written under its `FAIL` line. With
-/// `--only N` the program runs one test in this process and ends with 0 if it passed, which
-/// is how a test is looked at on its own (for leaks, in a debugger).
+/// panic ends that test and not the ones after it. The program starts itself again for each
+/// test with `--only N`, on every system (Windows has no `fork`): with it, the program runs that
+/// one test and ends with 0 if it passed, which is also how a test is looked at on its own (for
+/// leaks, in a debugger). What the test writes to the standard error as it stops (the panic, or
+/// the error a `try` met) is caught and written under its `FAIL` line; its output and its input
+/// are the program's.
 const TEST_RUNNER: &str = r#"
+#include <fcntl.h>
+#include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+extern char** environ;
 
 typedef struct { const char* name; void (*run)(void); } sg_test;
 static int sg_run_test(const sg_test* test) {
     sg_test_error = 0;
+#if SG_COUNT
+    int64_t before = sg_blocks_now();
+#endif
     test->run();
     fflush(stdout);
 #ifdef SG_LEAKS
     if (sg_test_error == 0 && sg_leaks("the test")) return 1;
 #endif
+#if SG_COUNT
+    if (sg_test_error == 0 && sg_blocks_left("the test", before)) return 1;
+#endif
     return sg_test_error;
+}
+/* The path of this program as the system knows it: `argv[0]` is only what started it, which
+   may be a name found on `PATH`. */
+static char* sg_self_path(void) {
+#ifdef __APPLE__
+    uint32_t size = 0;
+    _NSGetExecutablePath(NULL, &size);
+    char* path = malloc(size);
+    if (!path || _NSGetExecutablePath(path, &size) != 0) abort();
+    return path;
+#else
+    for (size_t cap = 256;; cap *= 2) {
+        char* path = malloc(cap);
+        if (!path) abort();
+        ssize_t n = readlink("/proc/self/exe", path, cap);
+        if (n < 0) { perror("the path of the program of tests"); exit(2); }
+        if ((size_t)n < cap) { path[n] = '\0'; return path; }
+        free(path);
+    }
+#endif
 }
 static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) {
     sg_in_tests = true;
@@ -6115,33 +6240,40 @@ static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) 
         if (only < 0 || only >= count) return 3;
         return sg_run_test(&tests[only]);
     }
+    char* self = sg_self_path();
     int failed = 0;
     for (int i = 0; i < count; i++) {
         int ends[2];
         fflush(stdout);
         fflush(stderr);
+        /* Both ends are closed in the child as it starts; it writes to its copy of one. */
         if (pipe(ends) != 0) { perror("pipe"); return 2; }
-        pid_t child = fork();
-        if (child < 0) { perror("fork"); return 2; }
-        if (child == 0) {
-            close(ends[0]);
-            dup2(ends[1], 2);
-            close(ends[1]);
-            exit(sg_run_test(&tests[i]));
-        }
+        fcntl(ends[0], F_SETFD, FD_CLOEXEC);
+        fcntl(ends[1], F_SETFD, FD_CLOEXEC);
+        char number[24];
+        snprintf(number, sizeof number, "%d", i);
+        char* child_argv[] = { self, "--only", number, NULL };
+        posix_spawn_file_actions_t actions;
+        posix_spawn_file_actions_init(&actions);
+        posix_spawn_file_actions_adddup2(&actions, ends[1], 2);
+        pid_t child;
+        int code = posix_spawn(&child, self, &actions, NULL, child_argv, environ);
+        posix_spawn_file_actions_destroy(&actions);
         close(ends[1]);
+        if (code != 0) { errno = code; perror("the program of tests could not start itself"); return 2; }
         size_t len = 0, cap = 256;
         char* reason = malloc(cap);
         if (!reason) abort();
         for (;;) {
             if (len == cap) { cap *= 2; reason = realloc(reason, cap); if (!reason) abort(); }
             ssize_t got = read(ends[0], reason + len, cap - len);
+            if (got < 0 && errno == EINTR) continue;
             if (got <= 0) break;
             len += (size_t)got;
         }
         close(ends[0]);
         int status = 0;
-        waitpid(child, &status, 0);
+        while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
         while (len > 0 && (reason[len - 1] == '\n' || reason[len - 1] == ' ')) len--;
         if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
             printf("ok    %s\n", tests[i].name);
@@ -6153,6 +6285,7 @@ static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) 
         }
         free(reason);
     }
+    free(self);
     if (failed == 0) printf("%d test(s) passed\n", count);
     else printf("%d of %d test(s) failed\n", failed, count);
     return failed == 0 ? 0 : 1;
@@ -6289,7 +6422,8 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     // files it takes in. What a C file gives is reached through functions written after it.
     let used = crate::ffi::used(prog, tests);
     emitter.addressed = crate::ffi::c_values(prog, tests).addressed;
-    let (mut libs, c_files) = crate::ffi::links(prog, &used);
+    let (blocks, c_files) = crate::ffi::links(prog, &used);
+    let mut libs = crate::link::choose(prog, &blocks)?;
     let mut after_c = String::new();
     for var in &prog.cvars {
         if used.contains(&var.name) {
@@ -6351,8 +6485,8 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         ),
         // A library starts when it is loaded: C's constructor, which every compiler the
         // language uses knows, Clang on Windows too.
-        None if prog.library => "#ifdef SG_LEAKS\nstatic void sg_library_end(void) { (void)sg_leaks(\"the library\"); }\n#endif\n\
-             __attribute__((constructor)) static void sg_library_start(void) {\n#ifdef SG_LEAKS\n    atexit(sg_library_end);\n#endif\n}\n"
+        None if prog.library => "#if defined(SG_LEAKS) || SG_COUNT\nstatic void sg_library_end(void) {\n#ifdef SG_LEAKS\n    if (sg_leaks(\"the library\")) return;\n#endif\n#if SG_COUNT\n    (void)sg_blocks_left(\"the library\", 0);\n#endif\n}\n#endif\n\
+             __attribute__((constructor)) static void sg_library_start(void) {\n#if defined(SG_LEAKS) || SG_COUNT\n    atexit(sg_library_end);\n#endif\n}\n"
             .to_string(),
         // Without an operating system, the code that starts the machine calls the `export`
         // functions.
@@ -6379,13 +6513,16 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     // A program with tasks or `locked` values runs on several threads.
     let threads = emitter.made.contains("tasks") || emitter.made.contains("threads");
-    // glibc keeps `flockfile`, `clock_gettime` and `O_CLOEXEC` out of strict C11 unless POSIX is
-    // asked for.
-    let mut out = match threads || emitter.made.contains("clock") || emitter.made.contains("io") {
+    // glibc keeps `flockfile`, `clock_gettime`, `O_CLOEXEC` and `readlink` (which the program of
+    // tests finds itself with) out of strict C11 unless POSIX is asked for.
+    let mut out = match threads || tests || emitter.made.contains("clock") || emitter.made.contains("io") {
         true => "#if defined(__linux__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n".to_string(),
         false => String::new(),
     };
     let _ = writeln!(out, "#define SG_THREADS {}", u8::from(threads));
+    // A debug build counts the blocks of its values; without an operating system nothing ends
+    // to report them.
+    let _ = writeln!(out, "#define SG_COUNT {}", u8::from(checked && !prog.freestanding));
     if prog.library {
         out.push_str("#define SG_LIBRARY 1\n");
     }
@@ -6509,7 +6646,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     out.push_str(&start);
     // The C files last, so that what they define touches none of the program.
     if !c_files.is_empty() {
-        out.push_str("\n/* The C files of the program. */\n");
+        out.push_str("\n/* The C files of the program, which take and give back with C's own functions. */\n#if SG_COUNT\n#undef malloc\n#undef calloc\n#undef aligned_alloc\n#undef realloc\n#undef free\n#endif\n");
         for file in &c_files {
             out.push_str(&crate::ffi::include_line(file));
         }
@@ -7255,7 +7392,7 @@ const MOVED_TAG: usize = 255;
 
 /// What `main` does after it has returned and its values are gone: a `shared` value still
 /// alive holds itself up, and is reported (only a debug build keeps the list, see `sg_leaks`).
-const LEAKS: &str = "#ifdef SG_LEAKS\n    if (sg_leaks(\"the program\")) return 1;\n#endif\n";
+const LEAKS: &str = "#ifdef SG_LEAKS\n    if (sg_leaks(\"the program\")) return 1;\n#endif\n#if SG_COUNT\n    if (sg_blocks_left(\"the program\", 0)) return 1;\n#endif\n";
 
 /// What computing an expression can do besides giving its value. It decides whether the
 /// order in which two expressions are computed can be seen.
@@ -14737,9 +14874,9 @@ impl<'a> Emitter<'a> {
                     match args[0].ty.strip_borrow() {
                         Ty::Raw(item) if **item != Ty::Void => {
                             let ctype = self.ctype(item, expr.span)?;
-                            Ok(format!("(_Alignof({ctype}) > 16 ? sg_aligned_free({pointer}) : free({pointer}))"))
+                            Ok(format!("(_Alignof({ctype}) > 16 ? sg_raw_aligned_free({pointer}) : sg_c_free({pointer}))"))
                         }
-                        _ => Ok(format!("free({pointer})")),
+                        _ => Ok(format!("sg_c_free({pointer})")),
                     }
                 }
                 Callee::Atomic { op, order, failure } => self.atomic(*op, *order, *failure, recv, args, head, expr),

@@ -227,9 +227,9 @@ fn foreign_of<'p>(prog: &'p Program, name: &str) -> &'p crate::ast::Foreign {
 /// The libraries a program that uses C links, and the C files it compiles. The libraries of a
 /// module are linked when anything of C in it is used: a C file of the module may need them
 /// (`extern "curl" { }`). A C file is compiled when something its block declares is used.
-pub fn links(prog: &Program, used: &[String]) -> (BTreeSet<String>, BTreeSet<String>) {
+pub fn links<'p>(prog: &'p Program, used: &[String]) -> (Vec<&'p crate::ast::Foreign>, BTreeSet<String>) {
     let modules: BTreeSet<&str> = used.iter().map(|name| crate::ast::module_of(name)).collect();
-    let libs = prog.blocks.iter().filter(|(module, _)| modules.contains(module.as_str())).filter_map(|(_, foreign)| foreign.lib.clone()).collect();
+    let libs = prog.blocks.iter().filter(|(module, foreign)| modules.contains(module.as_str()) && !foreign.libs.is_empty()).map(|(_, foreign)| foreign).collect();
     let files = used.iter().filter_map(|name| foreign_of(prog, name).path.clone()).collect();
     (libs, files)
 }
@@ -260,7 +260,8 @@ impl Library {
         if used.is_empty() && values.throughs.is_empty() && !values.exports {
             return Ok(Library::default());
         }
-        let (libs, files) = links(prog, &used);
+        let (blocks, files) = links(prog, &used);
+        let libs = crate::link::choose(prog, &blocks)?;
         // As in compiled code: the declarations, then the C files, then what reaches into them.
         let mut head = String::from("#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n");
         head.push_str(crate::raw::C_ALIGNED);
@@ -303,6 +304,9 @@ impl Library {
             None => prog.funcs.iter().find(|func| func.export).map_or(crate::diag::Span::new(0, 0), |func| func.name_span),
         };
         let failed = |why: String| {
+            if let Some(missing) = crate::link::missing(prog, &blocks) {
+                return missing;
+            }
             let linked: Vec<String> = libs.iter().map(|lib| format!("`-l{lib}`")).collect();
             let diag = Diag::error(span, "the functions of C this program uses could not be built and linked");
             let diag = match linked.is_empty() {
@@ -312,7 +316,7 @@ impl Library {
             diag.note(why)
         };
         let dir = private_dir().map_err(|error| failed(format!("no folder for the library could be made: {error}")))?;
-        let built = build(&dir, &text, &libs, !files.is_empty());
+        let built = build(&dir, &text, &libs, &prog.lib_dirs, !files.is_empty());
         let opened = built.and_then(|library| {
             let path = CString::new(library.as_os_str().as_encoded_bytes()).map_err(|_| "the path of the library holds a zero byte".to_string())?;
             // SAFETY: `path` ends in a zero byte; the library was built here from the text above.
@@ -608,7 +612,7 @@ fn scalar_type(ty: &Ty) -> &'static str {
 }
 
 /// A new folder in the temporary folder that only this user can open.
-fn private_dir() -> std::io::Result<PathBuf> {
+pub(crate) fn private_dir() -> std::io::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
     let base = std::env::temp_dir();
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_nanos());
@@ -625,7 +629,7 @@ fn private_dir() -> std::io::Result<PathBuf> {
 
 /// Writes the wrappers into `dir` and builds them into a shared library there, in the C of
 /// compiled code (C11).
-fn build(dir: &Path, text: &str, libs: &BTreeSet<String>, c_files: bool) -> Result<PathBuf, String> {
+fn build(dir: &Path, text: &str, libs: &BTreeSet<String>, lib_dirs: &[PathBuf], c_files: bool) -> Result<PathBuf, String> {
     let source = dir.join("wrappers.c");
     let library = dir.join("wrappers.so");
     std::fs::write(&source, text).map_err(|error| format!("the wrappers could not be written: {error}"))?;
@@ -635,6 +639,8 @@ fn build(dir: &Path, text: &str, libs: &BTreeSet<String>, c_files: bool) -> Resu
     // A function missing from the libraries is an error here on Linux too, as it is on macOS.
     #[cfg(target_os = "linux")]
     cc.arg("-Wl,--no-undefined");
+    // The folders of `-L`, looked in when the wrappers are linked and when they are opened.
+    cc.args(crate::link::folder_flags(lib_dirs, true));
     for lib in libs {
         cc.arg(format!("-l{lib}"));
     }

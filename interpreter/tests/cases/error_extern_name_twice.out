@@ -1,0 +1,5 @@
+error: the library `z` is named twice in this `extern` block
+  the names are those the library has on the systems, tried in the order they are written
+  --> error_extern_name_twice.sg:2:1
+ 2 | extern "z", "zlib", "z" {
+   | ^^^^^^^^^^^^^^^^^^^^^^^

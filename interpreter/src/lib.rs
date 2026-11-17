@@ -13,6 +13,7 @@ pub mod freestanding;
 pub mod interp;
 pub mod input;
 pub mod lexer;
+pub mod link;
 pub mod net;
 pub mod parser;
 pub mod raw;
@@ -44,6 +45,7 @@ fn parse(sources: &Sources, tests: bool) -> Result<ast::Program, Diag> {
     let mut prog = parser::parse_files(&sources.text, &files)?;
     prog.tests.retain(|test| !tests || sources.file_at(test.name_span.start).tested);
     c_files(&mut prog, sources)?;
+    prog.lib_dirs = sources.lib_dirs.clone();
     Ok(prog)
 }
 
@@ -215,6 +217,19 @@ pub fn emit_c_tests(sources: &Sources, checked: bool) -> Result<String, Diag> {
     on_large_stack(|| {
         let prog = check_all(sources, true)?;
         emit_c::emit(&prog, sources, checked, true)
+    })
+}
+
+/// Once the C compiler could not link the program: the library it did not find, said at the
+/// `extern` block that names it. `None` if each one is there.
+pub fn missing_library(sources: &Sources, tests: bool, library: bool) -> Option<Diag> {
+    on_large_stack(|| {
+        let mut prog = parse(sources, tests).ok()?;
+        prog.library = library;
+        check::check(&mut prog, &sources.text, tests).ok()?;
+        let used = ffi::used(&prog, tests);
+        let (blocks, _) = ffi::links(&prog, &used);
+        link::missing(&prog, &blocks)
     })
 }
 

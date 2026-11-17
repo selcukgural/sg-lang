@@ -1,0 +1,8 @@
+// After a comma comes another name of the library.
+extern "z", {
+    uint crc32(uint crc, raw byte buf, uint len)
+}
+
+void main() {
+    print(unsafe crc32(0, null, 0))
+}
