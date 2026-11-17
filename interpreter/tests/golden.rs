@@ -1504,14 +1504,22 @@ fn shutdown_on_signals_windows() {
                 }
             }
             // A server the event did not reach would hold the test: it is stopped after 30 s.
+            // A close posted to a console window just made can be lost (seen once on GitHub's
+            // machine of x86-64): it is posted again every 3 s. A second one that did arrive would
+            // be a second `Terminate`, which the lines expected below do not have.
             let mut waited = 0;
+            let mut closes = 1;
             let status = loop {
                 if let Some(status) = child.try_wait().unwrap() {
                     break status;
                 }
                 if waited == 300 {
                     let _ = child.kill();
-                    panic!("{way}, {scenario}: the server did not end; it said {said:?}");
+                    panic!("{way}, {scenario}: the server did not end; it said {said:?} (closes posted: {closes})");
+                }
+                if scenario == "closed" && waited % 30 == 29 {
+                    let _ = std::process::Command::new(&sender).args([&pid[..], CLOSE]).creation_flags(CREATE_NO_WINDOW).status();
+                    closes += 1;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 waited += 1;

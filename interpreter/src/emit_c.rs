@@ -5991,6 +5991,7 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
     }
     if (code) {
         free(app);
+        free(dir);
         sg_drop_string(&line);
         return code;
     }
