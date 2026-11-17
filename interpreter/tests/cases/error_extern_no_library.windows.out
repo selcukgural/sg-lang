@@ -1,0 +1,6 @@
+error: the library `nosuchlibxyz` was not found
+  looked for with `-lnosuchlibxyz` where the C compiler `clang` looks
+  --> error_extern_no_library.sg:1:1
+ 1 | extern "nosuchlibxyz" {
+   | ^^^^^^^^^^^^^^^^^^^^^
+  hint: `-L folder` names a folder where the library lies

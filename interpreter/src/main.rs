@@ -44,7 +44,8 @@ fn take_folders(words_left: &mut Vec<String>) -> Option<Vec<PathBuf>> {
 /// optimises; otherwise a debug build, which checks. `tests`: the program that runs the `test`
 /// blocks instead of `main`; with a folder, those of every module in it.
 /// What `sg build` makes: a program, the program that runs the tests, a library C calls,
-/// static (`.a`) or shared (`.so`, `.dylib` on macOS), or the object of a program that runs
+/// static (`.a`, `.lib` on Windows) or shared (`.so`, `.dylib` on macOS, `.dll` with its
+/// `.dll.lib` on Windows), or the object of a program that runs
 /// without an operating system (`.o`), which the code that starts the machine is linked with.
 #[derive(Clone, Copy, PartialEq)]
 enum Made {
@@ -146,8 +147,12 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         Made::Program | Made::Tests => {
             cc.arg("-o").arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
         }
+        // Code that may be placed anywhere is all Windows has.
         Made::Static => {
-            cc.args(["-fPIC", "-c", "-o"]).arg(&object).arg(&c_file);
+            if !cfg!(windows) {
+                cc.arg("-fPIC");
+            }
+            cc.args(["-c", "-o"]).arg(&object).arg(&c_file);
         }
         // Without an operating system: only the headers C promises there, nothing of C's library
         // assumed, and no guard of the stack, which would call into it. Each function and each
@@ -163,6 +168,12 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         // Only the `export` functions are seen from outside. A shared library is never
         // unloaded: the threads of its tasks would run on in code that is gone (Linux keeps it
         // with `nodelete`; macOS does not unload a library with variables of its threads).
+        // On Windows only what is exported from the DLL is seen anyway, and its import library is
+        // `x.dll.lib`, beside it (Rust's name: `x.lib` is the static one).
+        Made::Shared if cfg!(windows) => {
+            cc.args(["-shared", "-o"]).arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
+            cc.arg(format!("-Wl,/IMPLIB:{out}.lib"));
+        }
         Made::Shared => {
             cc.args(["-fPIC", "-shared", "-fvisibility=hidden", "-o"]).arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
             if cfg!(target_os = "macos") {
@@ -179,16 +190,17 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         // The static library is the object alone, in an archive made new.
         (Made::Static, Ok(status)) if status.success() => {
             let _ = std::fs::remove_file(&out);
-            let archived = std::process::Command::new("ar").arg("rcs").arg(&out).arg(&object).status();
+            let archiver = if cfg!(windows) { "llvm-lib" } else { "ar" };
+            let archived = sg::cc::archive(std::path::Path::new(&out), &object).status();
             let _ = std::fs::remove_dir_all(&objects);
             match archived {
                 Ok(archived) if archived.success() => Ok(archived),
                 Ok(_) => {
-                    eprintln!("error: `ar` could not make {out}");
+                    eprintln!("error: `{archiver}` could not make {out}");
                     return ExitCode::FAILURE;
                 }
                 Err(error) => {
-                    eprintln!("error: cannot run `ar`: {error}");
+                    eprintln!("error: cannot run `{archiver}`: {error}");
                     return ExitCode::FAILURE;
                 }
             }
@@ -207,6 +219,12 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             ExitCode::SUCCESS
         }
         Ok(status) if status.success() => {
+            // Windows has no `rpath`: the DLLs of the libraries of `-L` go beside the program.
+            if cfg!(windows) && matches!(made, Made::Program | Made::Tests | Made::Shared) {
+                for line in sg::link::copy_dlls(&libs, dirs, std::path::Path::new(&out)) {
+                    eprintln!("{line}");
+                }
+            }
             let Some(header) = header else { return ExitCode::SUCCESS };
             let header_path = std::path::Path::new(&out).with_file_name(format!("{name}.h"));
             if let Err(error) = std::fs::write(&header_path, header) {
@@ -214,13 +232,20 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
                 return ExitCode::FAILURE;
             }
             let linked = match made {
+                // On Windows the libraries of the system are named inside the library itself.
+                Made::Static if cfg!(windows) => with_folders.iter().fold(out.clone(), |line, flag| format!("{line} {flag}")),
                 Made::Static => with_folders.iter().cloned().chain(["-lm".to_string(), "-pthread".to_string()]).fold(out.clone(), |line, flag| format!("{line} {flag}")),
+                Made::Shared if cfg!(windows) => format!("{out}.lib"),
                 _ => {
                     let dir = std::path::Path::new(&out).parent().map(|dir| dir.display().to_string()).filter(|dir| !dir.is_empty()).unwrap_or_else(|| ".".to_string());
                     format!("-L{dir} -l{name}")
                 }
             };
-            println!("built {out} and {}; a program links it with `{linked}`", header_path.display());
+            match made {
+                // A program finds a DLL in its own folder or in the system's.
+                Made::Shared if cfg!(windows) => println!("built {out}, {out}.lib and {}; a program links it with `{linked}`, and finds {out} beside itself", header_path.display()),
+                _ => println!("built {out} and {}; a program links it with `{linked}`", header_path.display()),
+            }
             ExitCode::SUCCESS
         }
         Ok(_) if !libs.is_empty() => {
@@ -257,15 +282,28 @@ fn library_name(path: &str) -> String {
 /// The test command on compiled code: the tests are built into a program next to the other
 /// temporary files, that program is run, and its exit code is given on.
 fn test_compiled(path: &str, dirs: &[PathBuf]) -> ExitCode {
-    let binary = sg::cc::program_file(&std::env::temp_dir().join(format!("sg-test-{}", std::process::id())).to_string_lossy());
-    let built = build(path, Some(binary.clone()), false, Made::Tests, &Machine::default(), dirs);
-    if built != ExitCode::SUCCESS {
-        return built;
+    let stem = std::env::temp_dir().join(format!("sg-test-{}", std::process::id()));
+    // On Windows in a folder of its own, where the DLLs of `-L` are copied beside it.
+    let folder = cfg!(windows).then(|| stem.clone());
+    if let Some(folder) = &folder {
+        if let Err(error) = std::fs::create_dir(folder) {
+            eprintln!("error: cannot make {}: {error}", folder.display());
+            return ExitCode::FAILURE;
+        }
     }
-    let status = std::process::Command::new(&binary).status();
+    let binary = sg::cc::program_file(&folder.as_ref().map_or(stem, |folder| folder.join("tests")).to_string_lossy());
+    let built = build(path, Some(binary.clone()), false, Made::Tests, &Machine::default(), dirs);
+    let status = match built == ExitCode::SUCCESS {
+        true => Some(std::process::Command::new(&binary).status()),
+        false => None,
+    };
     let _ = std::fs::remove_file(&binary);
     // What a debugger reads, which a debug build writes beside the program on Windows.
     let _ = std::fs::remove_file(std::path::Path::new(&binary).with_extension("pdb"));
+    if let Some(folder) = &folder {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+    let Some(status) = status else { return built };
     match status {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
@@ -348,7 +386,7 @@ fn main() -> ExitCode {
     // A word that is not UTF-8 is left as it is for the program, which checks it.
     let words: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let args: Vec<String> = words.iter().map(|word| word.to_string_lossy().into_owned()).collect();
-    const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a) or shared, and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding]\n                                                                  prints the C";
+    const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a, .lib) or shared (.so, .dylib, .dll), and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding]\n                                                                  prints the C";
     let usage = || {
         eprintln!("{USAGE}");
         ExitCode::from(2)
@@ -417,7 +455,9 @@ fn main() -> ExitCode {
             };
             let name = library_name(path);
             let stem = match made {
+                Made::Static if cfg!(windows) => Some(format!("{name}.lib")),
                 Made::Static => Some(format!("lib{name}.a")),
+                Made::Shared if cfg!(windows) => Some(format!("{name}.dll")),
                 Made::Shared if cfg!(target_os = "macos") => Some(format!("lib{name}.dylib")),
                 Made::Shared => Some(format!("lib{name}.so")),
                 Made::Freestanding => Some(format!("{name}.o")),

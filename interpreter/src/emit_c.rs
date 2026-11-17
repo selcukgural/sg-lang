@@ -957,6 +957,30 @@ static bool sg_blocks_left(const char* ended, int64_t before) {
 #else
 #define SG_EXPORT __attribute__((visibility("default")))
 #endif
+/* On Windows the C names the libraries of the system the runtime calls, so that a function of C
+   an `extern` block declares without a library is found in them as in C's own, and a static
+   library built from SG brings them to the program that links it. A library nothing is taken
+   from is not loaded. C's `printf`, `snprintf`, `sscanf` and their kin are functions in a header
+   of Microsoft's C library, not in the library itself: `legacy_stdio_definitions` has them for
+   an `extern` block that declares one. */
+#if defined(_WIN32)
+#pragma comment(lib, "legacy_stdio_definitions")
+#pragma comment(lib, "kernel32")
+#pragma comment(lib, "advapi32")
+#pragma comment(lib, "ws2_32")
+#pragma comment(lib, "bcrypt")
+#pragma comment(lib, "ntdll")
+#endif
+
+/* `C.lastError()` and `C.setLastError(n)`: the system's last error, `GetLastError` on Windows and
+   `errno` on Linux and macOS. */
+#if defined(_WIN32)
+#define SG_LAST_ERROR() ((int32_t)GetLastError())
+#define SG_SET_LAST_ERROR(n) SetLastError((DWORD)(n))
+#else
+#define SG_LAST_ERROR() ((int32_t)errno)
+#define SG_SET_LAST_ERROR(n) ((void)(errno = (int)(n)))
+#endif
 
 /* The error of a call of the system that failed. A call that failed and left `errno` at 0
    would otherwise read as success to the code that asked, with what it was to fill unset. */
@@ -8936,9 +8960,11 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
             prog.tests.len()
         ),
         // A library starts when it is loaded: C's constructor, which every compiler the
-        // language uses knows, Clang on Windows too.
+        // language uses knows, Clang on Windows too. A DLL holds itself loaded until the
+        // process ends (`GET_MODULE_HANDLE_EX_FLAG_PIN`): the threads of its tasks would run on
+        // in code that is gone; in a program the call does nothing.
         None if prog.library => "#if defined(SG_LEAKS) || SG_COUNT\nstatic void sg_library_end(void) {\n#ifdef SG_LEAKS\n    if (sg_leaks(\"the library\")) return;\n#endif\n#if SG_COUNT\n    (void)sg_blocks_left(\"the library\", 0);\n#endif\n}\n#endif\n\
-             __attribute__((constructor)) static void sg_library_start(void) {\n#if defined(SG_LEAKS) || SG_COUNT\n    atexit(sg_library_end);\n#endif\n}\n"
+             __attribute__((constructor)) static void sg_library_start(void) {\n#if defined(_WIN32)\n    HMODULE self;\n    (void)GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN, (LPCWSTR)(void*)&sg_library_start, &self);\n#endif\n#if defined(SG_LEAKS) || SG_COUNT\n    atexit(sg_library_end);\n#endif\n}\n"
             .to_string(),
         // Without an operating system, the code that starts the machine calls the `export`
         // functions.
@@ -17423,10 +17449,12 @@ impl<'a> Emitter<'a> {
                 // `errno` as C has it: nothing of the runtime runs between a call of C and the
                 // statements after it that changes it.
                 // On Linux and macOS the system's last error is `errno` too.
-                Callee::Memory(MemoryCall::Errno | MemoryCall::LastError) => Ok("((int32_t)errno)".to_string()),
+                Callee::Memory(MemoryCall::Errno) => Ok("((int32_t)errno)".to_string()),
+                Callee::Memory(MemoryCall::LastError) => Ok("SG_LAST_ERROR()".to_string()),
                 // The address of the value where it lies.
                 Callee::Memory(MemoryCall::AddressOf) => Ok(format!("((void*)({}))", self.value(&args[0])?)),
-                Callee::Memory(MemoryCall::SetErrno | MemoryCall::SetLastError) => Ok(format!("(void)(errno = (int)({}))", self.first(&args[0], head)?)),
+                Callee::Memory(MemoryCall::SetErrno) => Ok(format!("(void)(errno = (int)({}))", self.first(&args[0], head)?)),
+                Callee::Memory(MemoryCall::SetLastError) => Ok(format!("SG_SET_LAST_ERROR({})", self.first(&args[0], head)?)),
                 // A number of `errno` is the system's code on Linux and macOS.
                 Callee::Memory(MemoryCall::IoErrorOf | MemoryCall::IoErrorOfErrno) => {
                     self.io_error(expr.span)?;

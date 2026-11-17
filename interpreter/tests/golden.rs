@@ -179,6 +179,29 @@ fn c_command() -> std::process::Command {
     command
 }
 
+/// The folders where the libraries of the examples lie on this machine, from `SG_TEST_LIB_DIRS`,
+/// as `PATH` lists folders: on the CI of Windows the `lib` and `bin` of vcpkg. Linux and macOS
+/// find them where the C compiler looks.
+fn test_lib_dirs() -> Vec<PathBuf> {
+    std::env::var_os("SG_TEST_LIB_DIRS").map(|dirs| std::env::split_paths(&dirs).filter(|dir| !dir.as_os_str().is_empty()).collect()).unwrap_or_default()
+}
+
+/// What links the libraries of a program: the folders of `test_lib_dirs`, then the `-l` of its
+/// `extern` blocks. On Windows, which has no `rpath`, their DLLs are copied beside `binary`, as
+/// `sg build` copies them.
+fn libraries_of(code: &str, binary: &Path) -> Vec<std::ffi::OsString> {
+    let dirs = test_lib_dirs();
+    let libs = sg::emit_c::link_flags(code);
+    if cfg!(windows) {
+        for line in sg::link::copy_dlls(&libs, &dirs, binary) {
+            assert!(!line.starts_with("warning"), "{line}");
+        }
+    }
+    let mut flags = sg::link::folder_flags(&dirs, true);
+    flags.extend(libs.into_iter().map(Into::into));
+    flags
+}
+
 /// What the C compiler is given after the C file to link a program on this system.
 fn system_libs(work: &Path) -> Vec<String> {
     sg::cc::link_flags(work).unwrap()
@@ -267,7 +290,9 @@ fn run_file(path: &Path) -> String {
         false => {
             let args = given.args.iter().map(|arg| arg.clone().into_bytes()).collect();
             let world = sg::World { args, input: Box::new(std::io::Cursor::new(given.input)), input_is_terminal: false, input_waits: false, err: &mut err };
-            sg::run_sources_in(&sg::Sources::single(&src, ""), &mut out, world)
+            let mut sources = sg::Sources::single(&src, "");
+            sources.lib_dirs = test_lib_dirs();
+            sg::run_sources_in(&sources, &mut out, world)
         }
     };
     let mut text = String::from_utf8(out).unwrap();
@@ -285,7 +310,8 @@ fn run_file(path: &Path) -> String {
 /// A program of several files: `path` is its main file, or its folder. With `tests` the test
 /// command is run on it. The folder the program is in is left out of the paths in the output.
 fn run_program(path: &Path, tests: bool, within: &Path) -> String {
-    let sources = sg::load(path, tests).unwrap();
+    let mut sources = sg::load(path, tests).unwrap();
+    sources.lib_dirs = test_lib_dirs();
     let mut out = Vec::new();
     let mut err = Vec::new();
     // What a program writes to its standard error, and the exit code it gives, are kept as
@@ -599,7 +625,7 @@ fn compiled() {
         // listens for signals (their relay is a thread).
         let threads = code.contains("#define SG_THREADS 1") || code.contains("#define SG_SIGNALS_ASYNC");
         std::fs::write(&c_file, &code).unwrap();
-        let cc = c_command().args(["-std=c11", "-O1", "-ffp-contract=off"]).args(warnings(&stem)).arg("-o").arg(&binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).args(system_libs(&work)).output().unwrap();
+        let cc = c_command().args(["-std=c11", "-O1", "-ffp-contract=off"]).args(warnings(&stem)).arg("-o").arg(&binary).arg(&c_file).args(libraries_of(&code, &binary)).args(system_libs(&work)).output().unwrap();
         if !cc.status.success() {
             failures.push(format!("--- {name}: the C compiler rejected it\n{}", String::from_utf8_lossy(&cc.stderr)));
             continue;
@@ -671,7 +697,7 @@ fn compiled() {
                 .arg("-o")
                 .arg(&checked_binary)
                 .arg(&c_file)
-                .args(sg::emit_c::link_flags(&code))
+                .args(libraries_of(&code, &checked_binary))
                 .args(system_libs(&work))
                 .output()
                 .unwrap();
@@ -717,7 +743,7 @@ fn compiled() {
                 .args(["-std=c11", "-O1", "-g", "-ffp-contract=off", "-fsanitize=thread", "-o"])
                 .arg(&raced_binary)
                 .arg(&c_file)
-                .args(sg::emit_c::link_flags(&code))
+                .args(libraries_of(&code, &raced_binary))
                 .arg("-lm")
                 .arg("-pthread")
                 .output()
@@ -1097,7 +1123,7 @@ fn compiled_tests() {
         }
         let mut rejected = false;
         for (binary, flags) in &builds {
-            let cc = c_command().args(["-std=c11", "-ffp-contract=off"]).args(flags).arg("-o").arg(binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).args(system_libs(&work)).output().unwrap();
+            let cc = c_command().args(["-std=c11", "-ffp-contract=off"]).args(flags).arg("-o").arg(binary).arg(&c_file).args(libraries_of(&code, binary)).args(system_libs(&work)).output().unwrap();
             if !cc.status.success() {
                 failures.push(format!("--- {name}: the C compiler rejected it ({})\n{}", flags.join(" "), String::from_utf8_lossy(&cc.stderr)));
                 rejected = true;
@@ -1160,17 +1186,6 @@ fn compiled_tests() {
 /// that is in a call of C; compiled code runs it on any thread.
 #[test]
 fn callbacks_end_the_process() {
-    match waits_on_windows("callbacks_end_the_process") {
-        Some(why) => eprintln!("callbacks_end_the_process waits on Windows: {why}"),
-        #[cfg(unix)]
-        None => callbacks_end_the_process_here(),
-        #[cfg(not(unix))]
-        None => {}
-    }
-}
-
-#[cfg(unix)]
-fn callbacks_end_the_process_here() {
     const PANICS: &str = r#"
 extern {
     void qsort(raw void base, nuint count, nuint size, CFunc<raw void, raw void, int> compare)
@@ -1201,9 +1216,26 @@ void main() {
 }
 "#;
     const THREAD_C: &str = r#"
-#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
+#ifdef _WIN32
+#include <windows.h>
+
+static DWORD WINAPI run(void* arg) {
+    (void)arg;
+    calledBack(7);
+    return 0;
+}
+
+static int32_t onThread(void) {
+    HANDLE thread = CreateThread(NULL, 0, run, NULL, 0, NULL);
+    if (!thread) return -1;
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+    return 0;
+}
+#else
+#include <pthread.h>
 
 static void* run(void* arg) {
     (void)arg;
@@ -1217,6 +1249,7 @@ static int32_t onThread(void) {
     pthread_join(thread, NULL);
     return 0;
 }
+#endif
 "#;
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let work = root.join("target").join("callbacks-end");
@@ -1240,15 +1273,11 @@ static int32_t onThread(void) {
     assert!(said.starts_with("error: C called `calledBack` on a thread where the interpreter is in no call of C\n"), "interpreter: {said}");
     assert_eq!(elsewhere.status.code(), Some(1));
 
-    if std::process::Command::new("cc").arg("--version").output().is_err() {
-        eprintln!("no C compiler (`cc`) found: the back end is not tested");
-        return;
-    }
     for (dir, stdout, code) in [("panics", "before\n", Some(1)), ("thread", "called back with 7\n0\n", Some(0))] {
         let sources = sg::load(&work.join(dir), false).unwrap();
-        let (c_file, binary) = (work.join(dir).join("out.c"), work.join(dir).join("out"));
+        let (c_file, binary) = (work.join(dir).join("out.c"), program_at(&work.join(dir), "out"));
         std::fs::write(&c_file, sg::emit_c_sources(&sources, true).unwrap()).unwrap();
-        let cc = std::process::Command::new("cc").args(["-std=c11", "-O1"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+        let cc = c_command().args(["-std=c11", "-O1"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
         assert!(cc.status.success(), "the C compiler rejected {dir}:\n{}", String::from_utf8_lossy(&cc.stderr));
         let ran = std::process::Command::new(&binary).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&ran.stdout), stdout, "compiled {dir}: {}", String::from_utf8_lossy(&ran.stderr));
@@ -1503,23 +1532,18 @@ fn shutdown_on_signals_windows() {
                     assert_eq!(conn.read_to_end(&mut rest).unwrap_or(0), 0, "{way}, {scenario}: the connection was not cut");
                 }
             }
-            // A server the event did not reach would hold the test: it is stopped after 30 s.
-            // A close posted to a console window just made can be lost (seen once on GitHub's
-            // machine of x86-64): it is posted again every 3 s. A second one that did arrive would
-            // be a second `Terminate`, which the lines expected below do not have.
+            // A server the event did not reach would hold the test: it is stopped after 30 s. What
+            // it has loaded is said with it: a console program with `user32` is told of a closed
+            // console otherwise than one without.
             let mut waited = 0;
-            let mut closes = 1;
             let status = loop {
                 if let Some(status) = child.try_wait().unwrap() {
                     break status;
                 }
                 if waited == 300 {
+                    let loaded = std::process::Command::new("tasklist").args(["/m", "/fi", &format!("PID eq {pid}")]).output().map(|out| String::from_utf8_lossy(&out.stdout).into_owned()).unwrap_or_default();
                     let _ = child.kill();
-                    panic!("{way}, {scenario}: the server did not end; it said {said:?} (closes posted: {closes})");
-                }
-                if scenario == "closed" && waited % 30 == 29 {
-                    let _ = std::process::Command::new(&sender).args([&pid[..], CLOSE]).creation_flags(CREATE_NO_WINDOW).status();
-                    closes += 1;
+                    panic!("{way}, {scenario}: the server did not end; it said {said:?}; it had loaded:\n{loaded}");
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 waited += 1;
@@ -1661,45 +1685,39 @@ fn shutdown_on_signals_here() {
 /// it; and the checker asks of a library what it gives C.
 #[test]
 fn libraries() {
-    match waits_on_windows("libraries") {
-        Some(why) => eprintln!("libraries waits on Windows: {why}"),
-        #[cfg(unix)]
-        None => libraries_here(),
-        #[cfg(not(unix))]
-        None => {}
-    }
-}
-
-#[cfg(unix)]
-fn libraries_here() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    if std::process::Command::new("cc").arg("--version").output().is_err() {
-        eprintln!("no C compiler (`cc`) found: libraries are not tested");
-        return;
-    }
     let sg_bin = env!("CARGO_BIN_EXE_sg");
     let work = root.join("target").join("libraries");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).unwrap();
     let example = root.join("examples/calclib");
     let expected = std::fs::read_to_string(example.join("main.out")).unwrap();
+    // A program of C is linked as a program of SG is, with what this system needs after it.
+    let system = system_libs(&work);
     let cc = |args: &[&std::ffi::OsStr]| {
-        let made = std::process::Command::new("cc").args(["-std=c11"]).args(args).output().unwrap();
+        let made = c_command().args(["-std=c11"]).args(args).args(&system).output().unwrap();
         assert!(made.status.success(), "the C compiler rejected {args:?}:\n{}", String::from_utf8_lossy(&made.stderr));
     };
+    // What a program that links the static library defines first on Windows (see the header).
+    let static_define: &std::ffi::OsStr = if cfg!(windows) { "-DCALCLIB_STATIC".as_ref() } else { "-DCALCLIB_NOTHING".as_ref() };
     let sg = |args: &[&str], dir: &Path| {
         let made = std::process::Command::new(sg_bin).arg("build").args(args).current_dir(dir).output().unwrap();
         assert!(made.status.success(), "sg build {args:?}: {}{}", String::from_utf8_lossy(&made.stdout), String::from_utf8_lossy(&made.stderr));
         String::from_utf8_lossy(&made.stdout).into_owned()
     };
     let main_c = example.join("main.c");
+    // What a program of C prints with `printf`: on Windows its standard output is text, and
+    // C's library ends each line with `\r\n` there.
+    let printed = |out: &[u8]| String::from_utf8_lossy(out).replace("\r\n", "\n");
 
     // The static library, debug and release, and the shared one.
     for (dir, flag, release) in [("static", "--library", false), ("release", "--library", true), ("shared", "--shared", false)] {
         let out = work.join(dir);
         std::fs::create_dir_all(&out).unwrap();
         let file = match flag {
+            "--library" if cfg!(windows) => "calclib.lib".to_string(),
             "--library" => "libcalclib.a".to_string(),
+            _ if cfg!(windows) => "calclib.dll".to_string(),
             _ if cfg!(target_os = "macos") => "libcalclib.dylib".to_string(),
             _ => "libcalclib.so".to_string(),
         };
@@ -1708,38 +1726,38 @@ fn libraries_here() {
             args.push("--release");
         }
         let said = sg(&args, &out);
-        assert!(said.starts_with(&format!("built {file} and ")), "{said}");
+        assert!(said.starts_with(&format!("built {file}")) && said.contains(" and "), "{said}");
         let header = std::fs::read_to_string(out.join("calclib.h")).unwrap();
         assert!(header.contains("typedef struct Calculator Calculator;") && header.contains("CALCLIB_API int32_t calc_eval(Calculator *calc, const char *text, double *out);"), "{header}");
-        let program = out.join("calc");
+        let program = program_at(&out, "calc");
         let mut flags: Vec<std::ffi::OsString> = ["-Wall", "-Wextra", "-Werror", "-pedantic", "-o"].iter().map(Into::into).collect();
         flags.push(program.clone().into());
         flags.push("-I".into());
         flags.push(out.clone().into());
         flags.push(main_c.clone().into());
         match flag {
-            "--library" => flags.extend([out.join(&file).into(), "-lm".into(), "-pthread".into()]),
+            "--library" => flags.extend([static_define.into(), out.join(&file).into()]),
+            // The program lies beside the DLL, where Windows looks for it.
+            _ if cfg!(windows) => flags.push(out.join(format!("{file}.lib")).into()),
             _ => flags.extend([format!("-L{}", out.display()).into(), "-lcalclib".into(), format!("-Wl,-rpath,{}", out.display()).into()]),
         }
         cc(&flags.iter().map(|flag| flag.as_os_str()).collect::<Vec<_>>());
         let ran = std::process::Command::new(&program).output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&ran.stdout), expected, "{dir}: {}", String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(printed(&ran.stdout), expected, "{dir}: {}", String::from_utf8_lossy(&ran.stderr));
         assert!(ran.status.success(), "{dir}: {}", String::from_utf8_lossy(&ran.stderr));
         // Only the functions of the header are seen from outside.
-        let names = std::process::Command::new("nm").arg("-g").arg(out.join(&file)).output().unwrap();
-        let defined: Vec<String> = String::from_utf8_lossy(&names.stdout)
-            .lines()
-            .filter(|line| line.contains(" T "))
-            .map(|line| line.rsplit(' ').next().unwrap().trim_start_matches('_').to_string())
-            .collect();
+        let defined = seen_from_outside(&out.join(&file), flag == "--shared");
         assert!(!defined.is_empty() && defined.iter().all(|name| name.starts_with("calc_")), "{dir} shows more than its functions: {defined:?}");
-        if dir == "static" && std::env::var_os("SG_NO_SANITIZERS").is_none() {
+        if dir == "static" && cfg!(windows) {
+            eprintln!("a library built from SG is run under the sanitizers on Linux and macOS, not on Windows");
+        }
+        if dir == "static" && std::env::var_os("SG_NO_SANITIZERS").is_none() && !cfg!(windows) {
             // The same C under the sanitizers, as one program, and looked at for leaks.
             let code = std::process::Command::new(sg_bin).args(["emit-c", example.to_str().unwrap(), "--library"]).output().unwrap();
             assert!(code.status.success());
             std::fs::write(out.join("calclib.c"), &code.stdout).unwrap();
             let sanitized = out.join("calc-san");
-            cc(&["-O1".as_ref(), "-g".as_ref(), "-fsanitize=address,undefined".as_ref(), "-fno-sanitize-recover=all".as_ref(), "-I".as_ref(), out.as_os_str(), "-o".as_ref(), sanitized.as_os_str(), main_c.as_os_str(), out.join("calclib.c").as_os_str(), "-lm".as_ref(), "-pthread".as_ref()]);
+            cc(&["-O1".as_ref(), "-g".as_ref(), "-fsanitize=address,undefined".as_ref(), "-fno-sanitize-recover=all".as_ref(), "-I".as_ref(), out.as_os_str(), "-o".as_ref(), sanitized.as_os_str(), main_c.as_os_str(), out.join("calclib.c").as_os_str()]);
             let ran = std::process::Command::new(&sanitized).output().unwrap();
             assert_eq!(String::from_utf8_lossy(&ran.stdout), expected, "under the sanitizers: {}", String::from_utf8_lossy(&ran.stderr));
             leak_check_sees_a_leak(&work);
@@ -1762,31 +1780,43 @@ fn libraries_here() {
         "#include <stdio.h>\n#include \"calclib.h\"\n#include \"words.h\"\nint main(void) {\n    Calculator *calc = calc_new();\n    double value = 0;\n    calc_eval(calc, \"6 * 7\", &value);\n    printf(\"%g %d %ld\\n\", value, (int)words_distinct(\"to be or not to be\"), words_next(41L));\n    calc_free(calc);\n    return 0;\n}\n",
     )
     .unwrap();
+    let (calclib, words) = match cfg!(windows) {
+        true => ("calclib.lib", "other.lib"),
+        false => ("libcalclib.a", "libother.a"),
+    };
     sg(&[example.to_str().unwrap(), "--library"], &other);
-    sg(&["words.sg", "--library", "-o", "libother.a"], &other);
+    sg(&["words.sg", "--library", "-o", words], &other);
     let header = std::fs::read_to_string(other.join("words.h")).unwrap();
     assert!(header.contains("long words_next(long at);"), "{header}");
-    let both = other.join("both");
-    cc(&["-Wall".as_ref(), "-Werror".as_ref(), "-I".as_ref(), other.as_os_str(), "-o".as_ref(), both.as_os_str(), other.join("both.c").as_os_str(), other.join("libcalclib.a").as_os_str(), other.join("libother.a").as_os_str(), "-lm".as_ref(), "-pthread".as_ref()]);
+    let both = program_at(&other, "both");
+    cc(&["-Wall".as_ref(), "-Werror".as_ref(), static_define, "-DWORDS_STATIC".as_ref(), "-I".as_ref(), other.as_os_str(), "-o".as_ref(), both.as_os_str(), other.join("both.c").as_os_str(), other.join(calclib).as_os_str(), other.join(words).as_os_str()]);
     let ran = std::process::Command::new(&both).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "42 4 42\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(printed(&ran.stdout), "42 4 42\n", "{}", String::from_utf8_lossy(&ran.stderr));
 
     // C calls the library from threads of its own, each with a calculator, under the thread
     // sanitizer: the runtime starts what it needs on first use, from any thread.
     let threads_c = work.join("threads.c");
     std::fs::write(
         &threads_c,
-        "#include <pthread.h>\n#include <stdio.h>\n#include \"calclib.h\"\nstatic void *work(void *arg) {\n    (void)arg;\n    Calculator *calc = calc_new();\n    double sum = 0, value = 0;\n    for (int i = 0; i < 20; i++) {\n        calc_set(calc, \"i\", i);\n        calc_eval(calc, \"x = i * 2\", &value);\n    }\n    calc_sum(calc, \"k + x\", \"k\", 1, 100, &sum);\n    calc_free(calc);\n    return (void *)(long)sum;\n}\nint main(void) {\n    pthread_t threads[4];\n    for (int i = 0; i < 4; i++) pthread_create(&threads[i], NULL, work, NULL);\n    long total = 0;\n    for (int i = 0; i < 4; i++) { void *got; pthread_join(threads[i], &got); total += (long)got; }\n    printf(\"%ld\\n\", total);\n    return 0;\n}\n",
+        "#include <stdio.h>\n#include \"calclib.h\"\nstatic long sum_of(void) {\n    Calculator *calc = calc_new();\n    double sum = 0, value = 0;\n    for (int i = 0; i < 20; i++) {\n        calc_set(calc, \"i\", i);\n        calc_eval(calc, \"x = i * 2\", &value);\n    }\n    calc_sum(calc, \"k + x\", \"k\", 1, 100, &sum);\n    calc_free(calc);\n    return (long)sum;\n}\n#ifdef _WIN32\n#include <windows.h>\nstatic long sums[4];\nstatic DWORD WINAPI work(void *arg) {\n    *(long *)arg = sum_of();\n    return 0;\n}\nint main(void) {\n    HANDLE threads[4];\n    for (int i = 0; i < 4; i++) threads[i] = CreateThread(NULL, 0, work, &sums[i], 0, NULL);\n    WaitForMultipleObjects(4, threads, TRUE, INFINITE);\n    long total = 0;\n    for (int i = 0; i < 4; i++) { CloseHandle(threads[i]); total += sums[i]; }\n    printf(\"%ld\\n\", total);\n    return 0;\n}\n#else\n#include <pthread.h>\nstatic void *work(void *arg) {\n    (void)arg;\n    return (void *)sum_of();\n}\nint main(void) {\n    pthread_t threads[4];\n    for (int i = 0; i < 4; i++) pthread_create(&threads[i], NULL, work, NULL);\n    long total = 0;\n    for (int i = 0; i < 4; i++) { void *got; pthread_join(threads[i], &got); total += (long)got; }\n    printf(\"%ld\\n\", total);\n    return 0;\n}\n#endif\n",
     )
     .unwrap();
-    if std::env::var_os("SG_NO_SANITIZERS").is_none() {
+    // Windows has no thread sanitizer: there the threads run the static library as it is.
+    if cfg!(windows) {
+        let threads = program_at(&work, "threads");
+        let static_dir = work.join("static");
+        cc(&[static_define, "-I".as_ref(), static_dir.as_os_str(), "-o".as_ref(), threads.as_os_str(), threads_c.as_os_str(), static_dir.join("calclib.lib").as_os_str()]);
+        let ran = std::process::Command::new(&threads).output().unwrap();
+        assert_eq!(printed(&ran.stdout), "35400\n", "{}", String::from_utf8_lossy(&ran.stderr));
+        eprintln!("thread sanitizer: not on Windows; the threads of C ran the library without it");
+    } else if std::env::var_os("SG_NO_SANITIZERS").is_none() {
         race_check_sees_a_race(&work);
         let racy = work.join("threads-tsan");
         let static_dir = work.join("static");
-        cc(&["-O1".as_ref(), "-g".as_ref(), "-fsanitize=thread".as_ref(), "-I".as_ref(), static_dir.as_os_str(), "-o".as_ref(), racy.as_os_str(), threads_c.as_os_str(), static_dir.join("calclib.c").as_os_str(), "-lm".as_ref(), "-pthread".as_ref()]);
+        cc(&["-O1".as_ref(), "-g".as_ref(), "-fsanitize=thread".as_ref(), "-I".as_ref(), static_dir.as_os_str(), "-o".as_ref(), racy.as_os_str(), threads_c.as_os_str(), static_dir.join("calclib.c").as_os_str()]);
         let ran = std::process::Command::new(&racy).output().unwrap();
         // Each thread: 5050 + 100 * 38.
-        assert_eq!(String::from_utf8_lossy(&ran.stdout), "35400\n", "{}", String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(printed(&ran.stdout), "35400\n", "{}", String::from_utf8_lossy(&ran.stderr));
         assert!(ran.status.success() && !String::from_utf8_lossy(&ran.stderr).contains("ThreadSanitizer"), "{}", String::from_utf8_lossy(&ran.stderr));
     }
 
@@ -1794,17 +1824,23 @@ fn libraries_here() {
     // C's `exit` and the program's `atexit` functions do not run.
     let panics_c = work.join("panics.c");
     std::fs::write(&panics_c, "#include <stdio.h>\n#include \"calclib.h\"\nint main(void) {\n    double value = 0;\n    printf(\"before\\n\");\n    fflush(stdout);\n    calc_eval(NULL, \"1\", &value);\n    printf(\"after\\n\");\n    return 0;\n}\n").unwrap();
-    let panics = work.join("panics");
+    let panics = program_at(&work, "panics");
     let static_dir = work.join("static");
-    cc(&["-I".as_ref(), static_dir.as_os_str(), "-o".as_ref(), panics.as_os_str(), panics_c.as_os_str(), static_dir.join("libcalclib.a").as_os_str(), "-lm".as_ref(), "-pthread".as_ref()]);
+    cc(&[static_define, "-I".as_ref(), static_dir.as_os_str(), "-o".as_ref(), panics.as_os_str(), panics_c.as_os_str(), static_dir.join(if cfg!(windows) { "calclib.lib" } else { "libcalclib.a" }).as_os_str()]);
     let ran = std::process::Command::new(&panics).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "before\n");
-    let said = String::from_utf8_lossy(&ran.stderr);
+    assert_eq!(printed(&ran.stdout), "before\n");
+    // The message goes through C's `stderr`, which the program of C keeps as text on Windows.
+    let said = printed(&ran.stderr);
     assert!(said.starts_with("panic: C gave `null` to `calc_eval`, which takes a `ref Calculator`\n") && said.contains("api.sg:"), "{said}");
+    // `abort`: the signal 6 on Linux and macOS; on Windows C's library ends the process at once
+    // (`__fastfail`), with 0xC0000409, as a panic of Rust that aborts does.
+    #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
         assert_eq!(ran.status.signal(), Some(6), "a panic in a library aborts: {:?}", ran.status);
     }
+    #[cfg(windows)]
+    assert_eq!(ran.status.code(), Some(0xC000_0409_u32 as i32), "a panic in a library aborts: {:?}", ran.status);
 
     // What the checker asks of a library.
     for (name, text, message) in [
@@ -1831,23 +1867,38 @@ fn libraries_here() {
     assert!(!made.status.success() && said.contains("the header of the library would name two types `Item`"), "{said}");
 }
 
+/// The names a library built from SG lets others see: the functions it defines, by `nm`, or on
+/// Windows by LLVM's `llvm-nm` for a static library (without what Microsoft's headers define
+/// inline) and `llvm-readobj` for what a DLL exports.
+fn seen_from_outside(file: &Path, shared: bool) -> Vec<String> {
+    let tool = |name: &str| -> std::ffi::OsString {
+        if !cfg!(windows) {
+            return name.into();
+        }
+        let beside = sg::cc::compiler().ok().and_then(|cc| Path::new(&cc).parent().map(|dir| dir.join(format!("{name}.exe")))).filter(|path| path.exists());
+        beside.map_or_else(|| name.into(), PathBuf::into_os_string)
+    };
+    if cfg!(windows) && shared {
+        let read = std::process::Command::new(tool("llvm-readobj")).arg("--coff-exports").arg(file).output().unwrap();
+        assert!(read.status.success(), "llvm-readobj: {}", String::from_utf8_lossy(&read.stderr));
+        return String::from_utf8_lossy(&read.stdout).lines().filter_map(|line| line.trim().strip_prefix("Name: ")).map(str::to_string).collect();
+    }
+    let names = std::process::Command::new(tool(if cfg!(windows) { "llvm-nm" } else { "nm" })).arg("-g").arg(file).output().unwrap();
+    assert!(names.status.success(), "nm: {}", String::from_utf8_lossy(&names.stderr));
+    let listed = String::from_utf8_lossy(&names.stdout).into_owned();
+    let defined = listed.lines().filter(|line| line.contains(" T ")).map(|line| line.rsplit(' ').next().unwrap().trim_start_matches('_').to_string());
+    // Microsoft's headers of C define `printf` and its kin inline, and every object that calls
+    // one carries them, each once in the program however many objects do: not names of SG.
+    let microsofts = |name: &String| cfg!(windows) && (name.contains("printf") || name.contains("scanf") || name.starts_with("local_stdio"));
+    defined.filter(|name| !microsofts(name)).collect()
+}
+
 /// The interpreter keeps the values it gave C by their address, and checks what C gives back:
 /// an address it did not give, one of another type, one given back already, one lent in a way
 /// the rules of borrowing forbid, and `null` where none is taken are panics. Compiled code
 /// checks `null` only.
 #[test]
 fn handles_misused() {
-    match waits_on_windows("handles_misused") {
-        Some(why) => eprintln!("handles_misused waits on Windows: {why}"),
-        #[cfg(unix)]
-        None => handles_misused_here(),
-        #[cfg(not(unix))]
-        None => {}
-    }
-}
-
-#[cfg(unix)]
-fn handles_misused_here() {
     const PROGRAM: &str = r#"
 extern "./native.c" {
     void misuse(int how)
@@ -1939,14 +1990,11 @@ static void misuse(int32_t how) {
         assert!(all.starts_with(said), "case {how}: {all}");
         assert_eq!(ran.status.code(), Some(if how == "0" { 0 } else { 1 }), "case {how}: {all}");
     }
-    if std::process::Command::new("cc").arg("--version").output().is_err() {
-        return;
-    }
     // Compiled, the program checks `null` alone, with the same message and its hint.
     let sources = sg::load(&work.join("main.sg"), false).unwrap();
-    let (c_file, binary) = (work.join("out.c"), work.join("out"));
+    let (c_file, binary) = (work.join("out.c"), program_at(&work, "out"));
     std::fs::write(&c_file, sg::emit_c_sources(&sources, true).unwrap()).unwrap();
-    let cc = std::process::Command::new("cc").args(["-std=c11", "-O1"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+    let cc = c_command().args(["-std=c11", "-O1"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
     assert!(cc.status.success(), "{}", String::from_utf8_lossy(&cc.stderr));
     for (how, said) in [cases[0], cases[6], cases[7]] {
         let ran = std::process::Command::new(&binary).arg(how).output().unwrap();
@@ -1965,18 +2013,6 @@ static void misuse(int32_t how) {
 /// from the path the system gives, also when it was started by a name found on `PATH`.
 #[test]
 fn library_folders() {
-    match waits_on_windows("library_folders") {
-        Some(why) => eprintln!("library_folders waits on Windows: {why}"),
-        #[cfg(unix)]
-        None => library_folders_here(),
-        #[cfg(not(unix))]
-        None => {}
-    }
-}
-
-#[cfg(unix)]
-fn library_folders_here() {
-    use std::os::unix::fs::PermissionsExt;
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let sg_bin = env!("CARGO_BIN_EXE_sg");
     let work = root.join("target").join("library-folders");
@@ -1986,12 +2022,27 @@ fn library_folders_here() {
     let elsewhere = work.join("elsewhere");
     for dir in [&lib, &bin, &elsewhere] {
         std::fs::create_dir_all(dir).unwrap();
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
-    std::fs::write(lib.join("folder.c"), "int sgfolder_twice(int n) { return n * 2; }\n").unwrap();
-    let file = if cfg!(target_os = "macos") { "libsgfolder.dylib" } else { "libsgfolder.so" };
-    let mut cc = std::process::Command::new("cc");
-    cc.args(["-shared", "-fPIC", "-o"]).arg(lib.join(file)).arg(lib.join("folder.c"));
+    std::fs::write(lib.join("folder.c"), "#ifdef _WIN32\n__declspec(dllexport)\n#endif\nint sgfolder_twice(int n) { return n * 2; }\n").unwrap();
+    // On Windows a DLL, `sgfolder.dll`, and the import library a program links, `sgfolder.lib`.
+    let file = if cfg!(windows) {
+        "sgfolder.dll"
+    } else if cfg!(target_os = "macos") {
+        "libsgfolder.dylib"
+    } else {
+        "libsgfolder.so"
+    };
+    let mut cc = c_command();
+    cc.arg("-shared");
+    if !cfg!(windows) {
+        cc.arg("-fPIC");
+    }
+    cc.arg("-o").arg(lib.join(file)).arg(lib.join("folder.c"));
     if cfg!(target_os = "macos") {
         cc.arg("-Wl,-install_name,@rpath/libsgfolder.dylib");
     }
@@ -2008,10 +2059,16 @@ fn library_folders_here() {
         let run = sg(args);
         assert_eq!(said(&run), "42\n", "sg {args:?}");
     }
-    // A built program finds the library where it starts, without `LD_LIBRARY_PATH`.
+    // A built program finds the library where it starts, without `LD_LIBRARY_PATH`; on Windows,
+    // which has no `rpath`, the DLL is copied beside it.
     let run = sg(&["build", "p.sg", "-L", "lib", "-o", "bin/p"]);
     assert!(run.status.success(), "{}", said(&run));
-    let run = std::process::Command::new(bin.join("p")).current_dir(&elsewhere).env_remove("LD_LIBRARY_PATH").env_remove("DYLD_LIBRARY_PATH").output().unwrap();
+    if cfg!(windows) {
+        assert!(said(&run).contains("sgfolder.dll beside the program") && bin.join("sgfolder.dll").exists(), "{}", said(&run));
+        let again = sg(&["build", "p.sg", "-L", "lib", "-o", "bin/p"]);
+        assert!(again.status.success() && !said(&again).contains("copied"), "the same DLL is not copied twice: {}", said(&again));
+    }
+    let run = std::process::Command::new(program_at(&bin, "p")).current_dir(&elsewhere).env_remove("LD_LIBRARY_PATH").env_remove("DYLD_LIBRARY_PATH").output().unwrap();
     assert_eq!(said(&run), "42\n");
     // The tests, interpreted and compiled.
     for args in [&["test", "-L", "lib", "t.sg"][..], &["test", "t.sg", "--compiled", "-L", "lib"][..]] {
@@ -2029,14 +2086,18 @@ fn library_folders_here() {
     assert!(said(&run).contains("none of the libraries this `extern` block names was found: `sgfolder_none`, `sgfolder`"), "{}", said(&run));
     let run = sg(&["build", "p.sg", "-o", "bin/q"]);
     assert!(!run.status.success() && said(&run).contains("none of the libraries"), "{}", said(&run));
-    // A folder that is not there, and one others may write into.
+    // A folder that is not there, and on Linux and macOS one others may write into.
     let run = sg(&["-L", "nowhere", "p.sg"]);
     assert_eq!((run.status.code(), said(&run)), (Some(2), "error: -L nowhere: no such folder\n".to_string()));
-    let open = work.join("open");
-    std::fs::create_dir_all(&open).unwrap();
-    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
-    let run = sg(&["build", "p.sg", "-L", "open", "-o", "bin/q"]);
-    assert!(run.status.code() == Some(2) && said(&run).contains("-L open: others may write into this folder"), "{}", said(&run));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let open = work.join("open");
+        std::fs::create_dir_all(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let run = sg(&["build", "p.sg", "-L", "open", "-o", "bin/q"]);
+        assert!(run.status.code() == Some(2) && said(&run).contains("-L open: others may write into this folder"), "{}", said(&run));
+    }
     // `emit-c` links nothing.
     let run = sg(&["emit-c", "p.sg", "-L", "lib"]);
     assert_eq!(run.status.code(), Some(2));

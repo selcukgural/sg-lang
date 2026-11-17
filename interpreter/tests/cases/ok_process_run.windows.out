@@ -1,0 +1,20 @@
+printed before the program writes
+[two words]
+[$HOME]
+[*]
+[; ls]
+[`id`]
+[%PATH%]
+[a"b]
+exit 3: the program exited with code 3
+exit 0: done
+exit 1: the program exited with code 1
+exit 3: exited with code 3, success false
+exit 0: exited with code 0, success true
+code 7
+missing: NotFound
+missing path: NotFound
+empty: NotFound
+hello from a script
+runnable: done
+folder: NotFound

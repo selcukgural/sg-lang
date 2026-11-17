@@ -1,0 +1,23 @@
+// Variables of C read and written from SG: a text, a number and an array of a C file of the
+// program, the same on every system.
+extern "./native.c" {
+    raw byte greeting
+    int counter
+    double[3] scale
+    int bumped()
+}
+
+void main() {
+    var text = unsafe string.fromCString(greeting) ?? return
+    print(text)
+    print(unsafe counter)
+    unsafe {
+        counter = 99
+    }
+    print(unsafe bumped())
+    print(unsafe counter)
+    unsafe {
+        scale[1] = 4.0
+        print(scale[0] + scale[1] + scale[2])
+    }
+}

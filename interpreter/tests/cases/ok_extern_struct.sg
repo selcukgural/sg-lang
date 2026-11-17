@@ -3,14 +3,14 @@
 extern {
     struct FILE
     Div div(int numer, int denom)
-    LongDiv ldiv(nint numer, nint denom)
+    LongDiv ldiv(CLong numer, CLong denom)
     raw byte inet_ntoa(Address address)
     raw FILE tmpfile()
     int fputs(read CString text, raw FILE stream)
     void rewind(raw FILE stream)
     raw byte fgets(raw byte line, int size, raw FILE stream)
     int fclose(raw FILE stream)
-    nint strtol(read CString text, ref raw byte end, int base)
+    CLong strtol(read CString text, ref raw byte end, int base)
 }
 
 struct Div {
@@ -18,9 +18,10 @@ struct Div {
     int rem
 }
 
+// `ldiv_t`: two of C's `long`, 32 bits on Windows.
 struct LongDiv {
-    nint quot
-    nint rem
+    CLong quot
+    CLong rem
 }
 
 // `struct in_addr`: an IPv4 address, in the order of the network.

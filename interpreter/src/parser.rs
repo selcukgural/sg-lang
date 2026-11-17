@@ -26,7 +26,7 @@ pub fn parse(src: &str) -> Res<Program> {
 /// belongs to. What a module defines gets its full name here: `Product` in the folder `stock`
 /// is `stock.Product`.
 pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> {
-    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default(), library: false, freestanding: false, left_out: Default::default(), lib_dirs: Vec::new() };
+    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default(), library: false, freestanding: false, left_out: Default::default(), lib_dirs: Vec::new(), home: None };
     for (start, end, module) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
         let mut parser = Parser { src, toks, i: 0, struct_literals: true };

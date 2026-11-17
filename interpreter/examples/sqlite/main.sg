@@ -1,6 +1,9 @@
 // A library of C behind a safe module: `sqlite/database.sg` and `sqlite/statement.sg` declare
 // the functions of SQLite and call them inside `unsafe`; this file does not. Run it with
 // `sg examples/sqlite/main.sg`, its tests with `sg test examples/sqlite`.
+// On Windows the library comes from vcpkg (`vcpkg install sqlite3 --triplet x64-windows`), its
+// folders given with `-L`: `sg -L <vcpkg>\installed\x64-windows\lib -L <vcpkg>\installed\x64-windows\bin
+// examples/sqlite/main.sg`; `sg build` with the same folders copies the DLLs beside the program.
 use sqlite
 
 Result<void, SqliteError> main() {

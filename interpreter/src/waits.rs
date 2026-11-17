@@ -476,6 +476,22 @@ fn calls_c(expr: &Expr) -> Option<Span> {
     }
 }
 
+thread_local! {
+    /// Whether the walk sees only the branch of this system of an `if` on the operating system
+    /// (see `walk_here`).
+    static HERE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Walks a statement as `walk_stmt` does, but of an `if` on the operating system
+/// (`OperatingSystem.isWindows()`) only the branch of the system the program is built for: what
+/// is built from it, as the C of compiled code is, may call only what this system has. The
+/// checker walks both.
+pub(crate) fn walk_here<'a>(stmt: &'a Stmt, each: &mut dyn FnMut(&'a Expr)) {
+    let before = HERE_ONLY.with(|here| here.replace(true));
+    walk_stmt(stmt, each, &mut |_| {});
+    HERE_ONLY.with(|here| here.set(before));
+}
+
 /// Walks a block: `each` sees every expression, `lock` every `lock` statement.
 pub(crate) fn walk_block<'a>(block: &'a Block, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn FnMut(Span)) {
     for stmt in block {
@@ -489,6 +505,17 @@ pub(crate) fn walk_stmt<'a>(stmt: &'a Stmt, each: &mut dyn FnMut(&'a Expr), lock
         StmtKind::Assign { target, value, .. } => {
             walk_expr(target, each, lock);
             walk_expr(value, each, lock);
+        }
+        StmtKind::If { cond: Expr { kind: ExprKind::Call { callee: Callee::Os(os), .. } | ExprKind::Method { callee: Callee::Os(os), .. }, .. }, then, els, .. }
+            if HERE_ONLY.with(|here| here.get()) =>
+        {
+            let taken = match os.here() {
+                true => Some(then),
+                false => els.as_ref(),
+            };
+            if let Some(taken) = taken {
+                walk_block(taken, each, lock);
+            }
         }
         StmtKind::If { cond, then, els, .. } => {
             walk_expr(cond, each, lock);

@@ -1,50 +1,10 @@
 # What does not run on Windows yet, and the slice that brings it (design/04, "Windows, the direction").
-# A program listed here must be refused on Windows by the checker as waiting for that slice; one that
-# runs is an error until it is taken off. A name with `*` at its end stands for every name that starts so.
+# A program listed here had to be refused on Windows by the checker as waiting for its slice, and one
+# that ran was an error until it was taken off; since C (101) no program is left, only files of tests.
+# A name with `*` at its end stands for every name that starts so.
 # Each slice takes its lines away; after the last the list is empty. The base (97), tasks, threads
-# and locks (98), the network and async input and output (99), and other programs and signals (100)
-# have come.
-
-# 101: C
-bare  # 101: C
-calclib  # 101: C
-callbacks  # 101: C
-cfile  # 101: C
-curl  # 101: C
-error_extern_no_library  # 101: C
-error_extern_none_found  # 101: C
-handles  # 101: C
-headers  # 101: C
-kernel  # 101: C
-ok_c_call_tasks  # 101: C
-ok_c_callbacks  # 101: C
-ok_c_errno  # 101: C
-ok_c_getopt  # 101: C
-ok_c_long  # 101: C
-ok_c_varargs  # 101: C
-ok_directory  # 101: C
-ok_environment  # 101: C
-ok_extern_cstring  # 101: C
-ok_extern_libc  # 101: C
-ok_extern_module  # 101: C
-ok_extern_names  # 101: C
-ok_extern_struct  # 101: C
-ok_extern_zlib  # 101: C
-ok_files  # 101: C
-ok_process_run  # 101: C
-panic_cfunc_null  # 101: C
-panic_unsafe_lend_ended  # 101: C
-panic_unsafe_lend_moved  # 101: C
-panic_unsafe_lend_type  # 101: C
-sqlite  # 101: C
-varargs  # 101: C
-zlib  # 101: C
-
-# Tests of the harness that are about a later slice as a whole.
-callbacks_end_the_process  # 101: C
-libraries  # 101: C
-handles_misused  # 101: C
-library_folders  # 101: C
+# and locks (98), the network and async input and output (99), other programs and signals (100),
+# and C (101) have come.
 
 # Files of tests that wait for the last slice as a whole: a program without an operating system and the
 # kernel (Clang's targets, QEMU), and the layouts of C checked against the C compiler of this machine.

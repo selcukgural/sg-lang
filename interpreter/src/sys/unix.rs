@@ -385,9 +385,46 @@ pub(crate) unsafe fn udp_of_fd(fd: RawFd) -> std::net::UdpSocket {
 }
 
 extern "C" {
-    pub(crate) fn dlopen(path: *const std::ffi::c_char, flags: std::ffi::c_int) -> *mut std::ffi::c_void;
-    pub(crate) fn dlsym(handle: *mut std::ffi::c_void, name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
-    pub(crate) fn dlerror() -> *const std::ffi::c_char;
+    fn dlopen(path: *const std::ffi::c_char, flags: std::ffi::c_int) -> *mut std::ffi::c_void;
+    fn dlsym(handle: *mut std::ffi::c_void, name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    fn dlerror() -> *const std::ffi::c_char;
+}
+
+/// What `dlerror` says, as text.
+fn dl_error() -> String {
+    // SAFETY: `dlerror` gives a text that ends in a zero byte, or `null`.
+    let text = unsafe { dlerror() };
+    if text.is_null() {
+        return "nothing".to_string();
+    }
+    // SAFETY: as above.
+    unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy().into_owned()
+}
+
+/// Opens the library of wrappers at `path`, every symbol found now (`RTLD_NOW`), so that a
+/// missing one is an error here and not in the middle of the run. The libraries it needs are
+/// found where it was linked to look (`rpath`), so `_folders` is not needed here.
+pub(crate) fn open_library(path: &std::path::Path, _folders: &[std::path::PathBuf]) -> Result<*mut std::ffi::c_void, String> {
+    /// The same value on Linux and macOS.
+    const RTLD_NOW: std::ffi::c_int = 2;
+    let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| "the path of the library holds a zero byte".to_string())?;
+    // SAFETY: `path` ends in a zero byte; the library was built by the interpreter.
+    let handle = unsafe { dlopen(path.as_ptr(), RTLD_NOW) };
+    match handle.is_null() {
+        true => Err(format!("`dlopen` says: {}", dl_error())),
+        false => Ok(handle),
+    }
+}
+
+/// The address of `name` in a library `open_library` opened.
+pub(crate) fn library_symbol(handle: *mut std::ffi::c_void, name: &str) -> Result<*mut std::ffi::c_void, String> {
+    let symbol = std::ffi::CString::new(name).expect("no zero byte");
+    // SAFETY: `handle` is open and `symbol` ends in a zero byte.
+    let found = unsafe { dlsym(handle, symbol.as_ptr()) };
+    match found.is_null() {
+        true => Err(format!("`dlsym` says: {}", dl_error())),
+        false => Ok(found),
+    }
 }
 
 /// The folder for files that do not have to stay, as the system gives it. Only Windows asks:

@@ -6,6 +6,8 @@ extern {
     int abs(int n)
     raw void dlopen(raw byte path, int flags)
     raw void dlsym(raw void handle, read CString name)
+    raw void LoadLibraryExA(read CString name, raw void file, uint flags)
+    raw void GetProcAddress(raw void module, read CString name)
 }
 
 export int compareInts(raw void a, raw void b) {
@@ -95,9 +97,17 @@ void main() {
     // The address of a function of C, and one found by its name.
     CFunc<int, int> f = abs
     print(unsafe f(-12))
-    var library = unsafe dlopen(null, 2)
     var name = CString.from("abs") ?? panic("no zero byte in it")
-    var g = unsafe (CFunc<int, int>)dlsym(library, read name)
+    raw void address = null
+    if OperatingSystem.isWindows() {
+        // Windows has no `dlopen`: the function is looked for in the C library of the system
+        // (from `System32`, 0x800), whose `abs` is another copy than the one the program uses.
+        var system = CString.from("ucrtbase.dll") ?? panic("no zero byte in it")
+        address = unsafe GetProcAddress(LoadLibraryExA(read system, null, 0x800), read name)
+    } else {
+        address = unsafe dlsym(dlopen(null, 2), read name)
+    }
+    var g = unsafe (CFunc<int, int>)address
     print(unsafe g(-13))
     print(f == g)
     print((raw void)f != null)

@@ -1,7 +1,21 @@
 // The variables of the environment, read with `Environment.get`. The test sets one through C, as no
-// SG program can.
+// SG program can: with bytes of UTF-8 on Linux and macOS, with units of UTF-16 on Windows, where a
+// lone surrogate is what is not text.
 extern {
     int setenv(read CString name, raw byte value, int overwrite)
+    int SetEnvironmentVariableW(raw ushort name, raw ushort value)
+}
+
+// A name of ASCII in units of UTF-16, ended by a zero.
+raw ushort wide(read string ascii) {
+    var bytes = ascii.asBytes()
+    var units = Memory.allocate<ushort>(bytes.length() + 1)
+    for i in 0..bytes.length() {
+        unsafe {
+            units[i] = (ushort)bytes[i]
+        }
+    }
+    return units
 }
 
 void show(read string name) {
@@ -21,19 +35,37 @@ void main() {
     var home = Environment.get("SG_NO_SUCH_VARIABLE_2718") ?? "/nowhere"
     print(home)
 
-    var name = CString.from("SG_TEST_TEXT") ?? panic("zero byte")
-    var p = Memory.allocate<byte>(8)
-    unsafe {
-        p[0] = 0x63
-        p[1] = 0x61
-        p[2] = 0x66
-        p[3] = 0xc3
-        p[4] = 0xa9
-        _ = setenv(read name, p, 1)
-        p[1] = 0xff
-        var bad = CString.from("SG_TEST_BYTES") ?? panic("zero byte")
-        _ = setenv(read bad, p, 1)
-        Memory.free(p)
+    if OperatingSystem.isWindows() {
+        var text = wide("SG_TEST_TEXT")
+        var bytes = wide("SG_TEST_BYTES")
+        var v = Memory.allocate<ushort>(8)
+        unsafe {
+            v[0] = 0x63
+            v[1] = 0x61
+            v[2] = 0x66
+            v[3] = 0xe9
+            _ = SetEnvironmentVariableW(text, v)
+            v[1] = 0xd800
+            _ = SetEnvironmentVariableW(bytes, v)
+            Memory.free(v)
+            Memory.free(text)
+            Memory.free(bytes)
+        }
+    } else {
+        var name = CString.from("SG_TEST_TEXT") ?? panic("zero byte")
+        var p = Memory.allocate<byte>(8)
+        unsafe {
+            p[0] = 0x63
+            p[1] = 0x61
+            p[2] = 0x66
+            p[3] = 0xc3
+            p[4] = 0xa9
+            _ = setenv(read name, p, 1)
+            p[1] = 0xff
+            var bad = CString.from("SG_TEST_BYTES") ?? panic("zero byte")
+            _ = setenv(read bad, p, 1)
+            Memory.free(p)
+        }
     }
     show("SG_TEST_TEXT")
     show("SG_TEST_BYTES")

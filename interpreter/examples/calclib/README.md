@@ -33,6 +33,18 @@ sg build examples/calclib --shared -o build/libcalclib.so      # libcalclib.dyli
 cc -std=c11 -Ibuild -o calc examples/calclib/main.c -Lbuild -lcalclib -Wl,-rpath,build
 ```
 
+On Windows, with Clang and the libraries of Microsoft's C (`-fms-runtime-lib=static`, as `sg build` uses
+them), the static library is `calclib.lib`, and a program that links it defines `CALCLIB_STATIC` before
+the header; the shared one is `calclib.dll` with its import library `calclib.dll.lib`, and the program finds
+the DLL beside itself:
+
+```
+sg build examples/calclib --library -o build/calclib.lib
+clang -std=c11 -fuse-ld=lld -fms-runtime-lib=static -DCALCLIB_STATIC -Ibuild -o calc.exe examples/calclib/main.c build/calclib.lib
+sg build examples/calclib --shared -o build/calclib.dll
+clang -std=c11 -fuse-ld=lld -fms-runtime-lib=static -Ibuild -o build/calc.exe examples/calclib/main.c build/calclib.dll.lib
+```
+
 `sg build` says what a program links. `--release` builds it optimised, with integer overflow wrapping
 instead of being checked.
 

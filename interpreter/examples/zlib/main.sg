@@ -1,6 +1,9 @@
 // A library of C behind a safe module: `zlib/zlib.sg` and `zlib/stream.sg` declare the
 // functions of zlib and call them inside `unsafe`; this file does not. Run it with
 // `sg examples/zlib/main.sg`, its tests with `sg test examples/zlib`.
+// On Windows the library comes from vcpkg (`vcpkg install zlib --triplet x64-windows`), its
+// folders given with `-L`: `sg -L <vcpkg>\installed\x64-windows\lib -L <vcpkg>\installed\x64-windows\bin
+// examples/zlib/main.sg`; `sg build` with the same folders copies the DLLs beside the program.
 use zlib
 
 Result<void, ZlibError> main() {

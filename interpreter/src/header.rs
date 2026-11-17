@@ -48,7 +48,8 @@ pub fn header(prog: &Program, name: &str, links: &[String]) -> String {
     let _ = writeln!(text, "   Written by `sg build`; it is written again with the library, so it is not changed by hand.");
     let static_links = if links.is_empty() { String::new() } else { format!(" {}", links.join(" ")) };
     let _ = writeln!(text, "   A program links the static library with `lib{name}.a{static_links} -lm -pthread`,");
-    let _ = writeln!(text, "   and the shared one with `-l{name}`. */");
+    let _ = writeln!(text, "   and the shared one with `-l{name}`. On Windows it links `{name}.lib{static_links}`, with");
+    let _ = writeln!(text, "   {guard}_STATIC defined, or `{name}.dll.lib`, and finds `{name}.dll` beside itself. */");
     let _ = writeln!(text, "#ifndef {guard}_H\n#define {guard}_H\n");
     text.push_str("#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n\n");
     let _ = writeln!(text, "/* On Windows a program that uses the DLL imports its functions; one that links the static");

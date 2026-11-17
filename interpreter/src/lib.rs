@@ -17,7 +17,6 @@ pub mod lexer;
 pub mod link;
 pub mod net;
 pub mod parser;
-pub mod pending;
 pub mod raw;
 pub mod shortest;
 #[cfg(unix)]
@@ -53,6 +52,7 @@ fn parse(sources: &Sources, tests: bool) -> Result<ast::Program, Diag> {
     prog.tests.retain(|test| !tests || sources.file_at(test.name_span.start).tested);
     c_files(&mut prog, sources)?;
     prog.lib_dirs = sources.lib_dirs.clone();
+    prog.home = sources.files.first().and_then(|file| std::path::Path::new(&file.path).parent()).and_then(|folder| std::path::absolute(if folder.as_os_str().is_empty() { std::path::Path::new(".") } else { folder }).ok());
     Ok(prog)
 }
 
@@ -69,7 +69,12 @@ fn c_files(prog: &mut ast::Program, sources: &Sources) -> Result<(), Diag> {
         let source = &sources.file_at(foreign.span.start).path;
         let folder = std::path::Path::new(source).parent().map(std::path::Path::to_path_buf).unwrap_or_default();
         let place = folder.join(&written[2..]);
-        let path = match std::fs::canonicalize(&place) {
+        // On Windows without `\\?\`, which the C compiler does not take in an `#include`.
+        let whole = match cfg!(windows) {
+            true => std::path::absolute(&place),
+            false => std::fs::canonicalize(&place),
+        };
+        let path = match whole {
             Ok(path) if path.is_file() => path,
             _ => {
                 return Err(Diag::error(foreign.span, format!("there is no C file `{written}` beside this file"))

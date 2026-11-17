@@ -1,0 +1,40 @@
+create: done
+create again: AlreadyExists
+create without the folders on the way: NotFound
+createAll: done
+createAll again: done
+true
+tree:
+  B File
+  a File
+  a b File
+  a.txt File
+  b.txt File
+  link Link
+  sub Directory
+  ä File
+createAll through a file: NotDirectory
+createAll of a file: AlreadyExists
+list a file: NotDirectory
+list a missing folder: NotFound
+File 5 true
+Directory
+false
+true
+false
+info of a missing file: NotFound
+delete: DirectoryNotEmpty
+delete a file: NotDirectory
+deleteAll of a link: NotDirectory
+deleteAll of a file: NotDirectory
+deleteAll: done
+false
+still here
+deleteAll again: NotFound
+delete an empty folder: done
+false
+true
+true
+true
+true
+false

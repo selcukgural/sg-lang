@@ -14,9 +14,13 @@ void show(read string what, Result<void, IoError> done) {
 }
 
 // Whether the system lets the file run: the permission `File.copy` copies.
-bool runs(read string path) {
+// Whether the mode the script was given is there: that it may run (`X_OK`) on Linux and macOS,
+// that it may not be written (not `W_OK`) on Windows, whose only mode is read-only.
+bool kept(read string path) {
     var name = CString.from(path) ?? panic("zero byte")
-    // X_OK
+    if OperatingSystem.isWindows() {
+        return unsafe access(read name, 2) != 0
+    }
     return unsafe access(read name, 1) == 0
 }
 
@@ -51,11 +55,16 @@ Result<void, IoError> main(List<string> args) {
     var script = Path.join(read dir, "run.sh")
     try File.writeText(read script, "echo hi\n")
     var name = CString.from(read script) ?? panic("zero byte")
-    print(unsafe chmod(read name, 0x1ed))
+    // 0755, or on Windows read-only (`_S_IREAD`).
+    ushort mode = 0x1ed
+    if OperatingSystem.isWindows() {
+        mode = 0x100
+    }
+    print(unsafe chmod(read name, mode))
     var copied = Path.join(read dir, "run-copy.sh")
     show("copy the script", File.copy(read script, read copied))
-    print(runs(read copied))
-    print(runs(read c))
+    print(kept(read copied))
+    print(kept(read c))
 
     // A deleted file is gone; a folder is not a file.
     show("delete c", File.delete(read c))

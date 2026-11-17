@@ -1,8 +1,8 @@
 # The tests on Windows (design/04, "Windows, the direction"): every push to the branch of Windows
 # runs `cargo test` on x86-64 and on 64-bit Arm. Nobody waits for them: what they find is noted and
 # made right before a release, when Windows is tested whole. Linux and macOS are tested where the
-# code is written. The only action is GitHub's own checkout, pinned to its commit; the token only
-# reads.
+# code is written. The only actions are GitHub's own checkout and cache, pinned to their commits;
+# the token only reads.
 name: windows
 
 on:
@@ -40,5 +40,40 @@ jobs:
           $clang = (Get-Command clang -ErrorAction SilentlyContinue).Source
           if (-not $clang) { $clang = 'C:\Program Files\LLVM\bin\clang.exe' }
           & $clang --version
+      # The libraries of the examples and tests (zlib, SQLite, curl) come from vcpkg as DLLs with
+      # their import libraries (design/04, "Windows, the direction"; choices 1053 and 1064). The
+      # vcpkg of GitHub's image is taken where it is there, else vcpkg at a fixed commit; what it
+      # builds is kept between runs by GitHub's cache, under the commit of vcpkg.
+      - name: vcpkg
+        id: vcpkg
+        env:
+          PINNED: 9eec002df1cd109f8f104cd966a763daf9751489 # 2026.10.16
+          ARCHIVES: ${{ runner.temp }}\vcpkg-archives
+          FRESH: ${{ runner.temp }}\vcpkg
+        run: |
+          $root = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $root -or -not (Test-Path "$root\vcpkg.exe")) {
+            git clone --quiet https://github.com/microsoft/vcpkg.git $env:FRESH
+            git -C $env:FRESH checkout --quiet $env:PINNED
+            & "$env:FRESH\bootstrap-vcpkg.bat" -disableMetrics
+            $root = $env:FRESH
+          }
+          New-Item -ItemType Directory -Force $env:ARCHIVES | Out-Null
+          "root=$root" >> $env:GITHUB_OUTPUT
+          "commit=$(git -C $root rev-parse HEAD)" >> $env:GITHUB_OUTPUT
+          "VCPKG_DEFAULT_BINARY_CACHE=$env:ARCHIVES" >> $env:GITHUB_ENV
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}\vcpkg-archives
+          key: vcpkg-${{ runner.arch }}-${{ steps.vcpkg.outputs.commit }}-zlib-sqlite3-curl
+      - name: Libraries
+        env:
+          VCPKG_ROOT: ${{ steps.vcpkg.outputs.root }}
+        run: |
+          $triplet = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64-windows' } else { 'x64-windows' }
+          & "$env:VCPKG_ROOT\vcpkg.exe" install zlib sqlite3 curl --triplet $triplet --disable-metrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installed = "$env:VCPKG_ROOT\installed\$triplet"
+          "SG_TEST_LIB_DIRS=$installed\lib;$installed\bin" >> $env:GITHUB_ENV
       - name: Tests
         run: cargo test --release

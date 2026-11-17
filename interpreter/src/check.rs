@@ -1283,9 +1283,8 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     // What lies in raw memory is laid out from the types of the fields.
     prog.plain = plain_types(&structs);
     crate::waits::check(prog)?;
-    // Windows is held to what it runs today (`pending`); a program without an operating system
-    // to the rule of its own, there as elsewhere.
-    if prog.freestanding || cfg!(windows) {
+    // A program without an operating system is held to the rule of its own.
+    if prog.freestanding {
         // The types the program writes in its signatures and its fields.
         let mut declared: Vec<(Span, Ty)> = Vec::new();
         let own = |name: &str| module_of(name) != crate::source::STD_MODULE;
@@ -1312,10 +1311,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 signature(&mut declared, method, &info.methods[&method.name]);
             }
         }
-        prog.left_out = match prog.freestanding {
-            true => crate::freestanding::check(prog, &declared)?,
-            false => crate::pending::check(prog, &declared)?,
-        };
+        prog.left_out = crate::freestanding::check(prog, &declared)?;
     }
     let bodies = prog.funcs.iter().filter(|func| func.foreign.is_none()).map(|func| &func.body);
     let methods = prog.structs.iter().flat_map(|decl| &decl.methods).chain(prog.enums.iter().flat_map(|decl| &decl.methods)).map(|method| &method.body);

@@ -566,6 +566,10 @@ thread_local! {
     static ENDING: Flag<bool> = const { Flag::new(false) };
 }
 
+/// Where the system's last error of a fiber is kept (see `Interp::errno`): on Windows beside
+/// `errno`, elsewhere `errno` itself.
+const LAST_ERROR: usize = if cfg!(windows) { 1 } else { 0 };
+
 /// What C calls for an `export` function of the program, through the stub the library of
 /// wrappers has for it: on a thread in a call of C, the interpreter of that call runs the
 /// function. C is not unwound through: a panic ends the process (see `Interp::die`).
@@ -1897,7 +1901,7 @@ pub fn run_program<'a>(prog: &'a Program, sources: &'a crate::source::Sources, o
     let ffi = crate::ffi::Library::open(prog, false).map_err(Stop::Diag)?;
     let io = shared(out, world, ffi, sources);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: 0, locking: 0, atomics: 0 };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0 };
         let result = run_main(&mut interp);
         interp.end_fibers();
         result
@@ -1958,7 +1962,7 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let ffi = crate::ffi::Library::open(prog, true).map_err(Stop::Diag)?;
     let io = shared(out, world, ffi, sources);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: 0, locking: 0, atomics: 0 };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0 };
         run_each_test(&mut interp, prog, sources)
     })
 }
@@ -2083,10 +2087,11 @@ struct Interp<'a, 'e> {
     /// Where the files of the language's own module start in the text: they come after the
     /// program's. A panic in them is shown at the call that came from outside (see `call`).
     std_from: usize,
-    /// The `errno` of this fiber: what the last call of C left, and what the next one starts
-    /// with (`C.errno()`, `C.setErrno(n)`). Kept here, since the interpreter's own work between
-    /// two calls of C may change the system's.
-    errno: i32,
+    /// The `errno` of this fiber and, on Windows, its last error of the system
+    /// (`GetLastError`): what the last call of C left, and what the next one starts with
+    /// (`C.errno()`, `C.setErrno(n)`, `C.lastError()`, `C.setLastError(n)`). Kept here, since
+    /// the interpreter's own work between two calls of C may change the system's.
+    errno: [i32; 2],
     /// How many `lock` blocks this fiber is inside: an atomic operation there does not give the
     /// turn away, since no other task may take a lock this one holds.
     locking: usize,
@@ -2939,7 +2944,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             plain: self.plain,
             foreign: self.foreign,
             std_from: self.std_from,
-            errno: 0,
+            errno: [0; 2],
             locking: 0,
             atomics: 0,
         };
@@ -4560,8 +4565,8 @@ impl<'a, 'e> Interp<'a, 'e> {
         // of C does is the program's to answer for: it is called inside `unsafe`.
         unsafe {
             match through {
-                None => io.ffi.wrapper(name)(addresses.as_mut_ptr(), room, &mut errno),
-                Some(address) => io.ffi.through(&crate::ffi::through_key(&params, &ret))(address as *mut std::ffi::c_void, addresses.as_mut_ptr(), room, &mut errno),
+                None => io.ffi.wrapper(name)(addresses.as_mut_ptr(), room, errno.as_mut_ptr()),
+                Some(address) => io.ffi.through(&crate::ffi::through_key(&params, &ret))(address as *mut std::ffi::c_void, addresses.as_mut_ptr(), room, errno.as_mut_ptr()),
             }
         }
         ENTERED.with(|entered| entered.set(before));
@@ -4662,10 +4667,16 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// `Memory.free(p)` and `Memory.copy(source, target, count)`.
     fn memory(&mut self, call: MemoryCall, args: &'a [Expr], span: Span, frame: &mut Frame) -> Res<Value> {
         match call {
-            // On Linux and macOS the system's last error is `errno` too.
-            MemoryCall::Errno | MemoryCall::LastError => Ok(Value::Int(IntTy::Int, self.errno as i128)),
-            MemoryCall::SetErrno | MemoryCall::SetLastError => {
-                self.errno = self.int(&args[0], frame)? as i32;
+            // On Linux and macOS the system's last error is `errno` too; on Windows it is
+            // `GetLastError`, kept beside it.
+            MemoryCall::Errno => Ok(Value::Int(IntTy::Int, self.errno[0] as i128)),
+            MemoryCall::LastError => Ok(Value::Int(IntTy::Int, self.errno[LAST_ERROR] as i128)),
+            MemoryCall::SetErrno => {
+                self.errno[0] = self.int(&args[0], frame)? as i32;
+                Ok(Value::Void)
+            }
+            MemoryCall::SetLastError => {
+                self.errno[LAST_ERROR] = self.int(&args[0], frame)? as i32;
                 Ok(Value::Void)
             }
             // The address of the cell of the value, kept with its type for `(ref T)data`.

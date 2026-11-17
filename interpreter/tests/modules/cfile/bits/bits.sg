@@ -5,8 +5,9 @@ extern "./bits.c" {
     uint crc_of(read CString text)
 }
 
-// What `bits.c` calls: nothing of it is declared here.
-extern "z" {
+// What `bits.c` calls: nothing of it is declared here. zlib is `-lz`, or on Windows `zlib.lib`
+// of vcpkg.
+extern "z", "zlib" {
 }
 
 public int countBits(ulong n) {

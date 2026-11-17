@@ -20,7 +20,8 @@ void main() {
     print(count)
     print(string.fromUtf8(buffer[..(nint)count]) ?? "not text")
 
-    var format = CString.from("%d|%ld|%.3f|%s|%u|%zu") ?? panic("no zero byte")
+    // A `long` is C's `long long` (`%lld`): C's `long` is 32 bits on Windows.
+    var format = CString.from("%d|%lld|%.3f|%s|%u|%zu") ?? panic("no zero byte")
     var word = CString.from("tea") ?? panic("no zero byte")
     long big = 5000000000
     double third = 1.0 / 3.0
@@ -41,7 +42,7 @@ void main() {
     var pointer = CString.from("%p") ?? panic("no zero byte")
     count = unsafe snprintf(buffer.pointer(), 128, read pointer, none)
     var shown = string.fromUtf8(buffer[..(nint)count]) ?? "not text"
-    print(shown == "0x0" || shown == "(nil)")
+    print(shown == "0x0" || shown == "(nil)" || shown == "0000000000000000")
 
     // A `read CString` and a `raw byte` are one type of C, and each goes over as itself: the
     // text of the one, the address the other holds.
@@ -62,7 +63,7 @@ void main() {
 
     // `sscanf` writes into what it is lent.
     var input = CString.from("12 4096 0.25") ?? panic("no zero byte")
-    var scan = CString.from("%d %ld %lf") ?? panic("no zero byte")
+    var scan = CString.from("%d %lld %lf") ?? panic("no zero byte")
     int a = 0
     long l = 0
     double d = 0

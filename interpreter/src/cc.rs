@@ -30,6 +30,16 @@ pub fn compiler() -> Result<String, String> {
     Ok("cc".to_string())
 }
 
+/// The C compiler as a message names it: `cc`, or on Windows `clang` whatever folder it is in.
+pub fn shown(compiler: &str) -> String {
+    Path::new(compiler).file_stem().map_or_else(|| compiler.to_string(), |stem| stem.to_string_lossy().into_owned())
+}
+
+/// The C compiler as a message names it, when it is not known which one was found.
+pub fn shown_here() -> String {
+    compiler().map_or_else(|_| if cfg!(windows) { "clang".to_string() } else { "cc".to_string() }, |compiler| shown(&compiler))
+}
+
 /// What the C compiler is given before the C file: on Windows LLVM's linker, and C's library
 /// linked into the program, so that it needs nothing installed to run. A debug build on Windows
 /// also writes what a debugger reads beside the program (`x.pdb`).
@@ -46,22 +56,9 @@ pub fn compile_flags(debug: bool) -> Vec<String> {
 
 /// The manifest every program carries on Windows: C's functions take and give text as UTF-8
 /// (from Windows 10 1903), a path may be longer than 260 characters, and the program is one of
-/// Windows 10 and 11.
-pub const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
-    <application>
-      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
-    </application>
-  </compatibility>
-  <application xmlns="urn:schemas-microsoft-com:asm.v3">
-    <windowsSettings>
-      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
-      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
-    </windowsSettings>
-  </application>
-</assembly>
-"#;
+/// Windows 10 and 11. The interpreter carries it too (`build.rs`), so that C it calls reads a
+/// path as compiled code does.
+pub const MANIFEST: &str = include_str!("sg.manifest");
 
 /// What the C compiler is given after the C file to link a program: C's math library and threads
 /// on Linux and macOS. On Windows the manifest, written into `work`; 8 MB of stack for the main
@@ -82,6 +79,24 @@ pub fn link_flags(work: &Path) -> std::io::Result<Vec<String>> {
         "-Wl,/MANIFESTUAC:NO".to_string(),
         "-Wl,/DEPENDENTLOADFLAG:0x1000".to_string(),
     ])
+}
+
+/// What makes a static library of an object: `ar` on Linux and macOS; on Windows LLVM's
+/// `llvm-lib`, from the folder of the C compiler when it is named with one, else from `PATH`.
+pub fn archive(out: &Path, object: &Path) -> std::process::Command {
+    if !cfg!(windows) {
+        let mut ar = std::process::Command::new("ar");
+        ar.arg("rcs").arg(out).arg(object);
+        return ar;
+    }
+    let lib = compiler()
+        .ok()
+        .and_then(|cc| Path::new(&cc).parent().filter(|dir| !dir.as_os_str().is_empty()).map(|dir| dir.join("llvm-lib.exe")))
+        .filter(|lib| lib.exists())
+        .map_or_else(|| "llvm-lib".into(), |lib| lib.into_os_string());
+    let mut made = std::process::Command::new(lib);
+    made.arg("/nologo").arg(format!("/out:{}", out.display())).arg(object);
+    made
 }
 
 /// The file of a program: on Windows with `.exe` when the name has no extension.

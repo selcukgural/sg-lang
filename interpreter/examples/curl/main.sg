@@ -1,6 +1,9 @@
 // A library of C behind a safe module: `curl/client.sg` declares the functions of libcurl and
 // calls them inside `unsafe`; this file does not. `sg examples/curl/main.sg https://example.com`
 // fetches a page; the tests, `sg test examples/curl`, run against servers of their own.
+// On Windows the library comes from vcpkg (`vcpkg install curl --triplet x64-windows`), its
+// folders given with `-L`: `sg -L <vcpkg>\installed\x64-windows\lib -L <vcpkg>\installed\x64-windows\bin
+// examples/curl/main.sg`; `sg build` with the same folders copies the DLLs beside the program.
 use curl
 
 Result<void, CurlError> main(List<string> args) {

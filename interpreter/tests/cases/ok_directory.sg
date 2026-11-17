@@ -2,6 +2,7 @@
 // the first word of the command line.
 extern {
     int symlink(read CString target, read CString path)
+    byte CreateSymbolicLinkA(read CString path, read CString target, uint flags)
 }
 
 void show(read string what, Result<void, IoError> done) {
@@ -22,7 +23,13 @@ Result<void, IoError> list(read string path) {
 void link(read string target, read string path) {
     var to = CString.from(target) ?? panic("zero byte")
     var at = CString.from(path) ?? panic("zero byte")
-    if unsafe symlink(read to, read at) != 0 {
+    if OperatingSystem.isWindows() {
+        // A link to a folder (1), made without the right of an administrator where Windows lets
+        // it (2); the names are UTF-8, as the program's manifest says.
+        if unsafe CreateSymbolicLinkA(read at, read to, 3) == 0 {
+            panic("no link")
+        }
+    } else if unsafe symlink(read to, read at) != 0 {
         panic("no link")
     }
 }

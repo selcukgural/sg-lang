@@ -213,7 +213,10 @@ millisecond waits about a millisecond. The third is written: the network, datagr
 output run there, a listener holds its port alone, and a datagram that came back is told as on Linux and
 macOS. The fourth is written: other programs and signals run there, a program started with its words quoted
 as it reads them back and a batch file only by its extension, its arguments escaped, and Ctrl-C, Ctrl-Break
-and the console closed come as `Interrupt` and `Terminate`.
+and the console closed come as `Interrupt` and `Terminate`. The fifth is written: C runs there, a DLL is
+looked for only beside the program, in the folders it is given and in the system's, a folder of SG is built
+into a `.lib` or a `.dll` that a program of C links, and the examples of zlib, SQLite and curl take their
+libraries from vcpkg.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is

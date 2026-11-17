@@ -1,4 +1,6 @@
-// `getopt` of the C library, which answers through its variables `optarg` and `optind`.
+// `getopt` of the C library, which answers through its variables `optarg` and `optind`. Windows'
+// C library has no `getopt`: there the program says so (`tests/modules/cvariables` reads and writes
+// variables of C on every system).
 extern {
     int getopt(int count, raw raw byte words, read CString options)
     raw byte optarg
@@ -25,35 +27,39 @@ raw raw byte words(read List<string> list) {
 }
 
 void main() {
-    var list = List<string> { "tool", "-v", "-o", "out.txt", "-x", "in.txt" }
-    var argv = words(read list)
-    var options = CString.from("vo:") ?? return
-    // From the first word on, whatever an earlier scan left.
-    unsafe {
-        opterr = 0
-        optind = 1
-    }
-    while true {
-        int found = unsafe getopt((int)list.length(), argv, read options)
-        if found == -1 {
-            break
-        }
-        if found == (int)'o' {
-            var value = unsafe string.fromCString(optarg) ?? return
-            print($"-o {value}")
-        } else if found == (int)'v' {
-            print("-v")
-        } else {
-            print($"unknown, {found}")
-        }
-    }
-    print($"the first word that is no option: {unsafe optind}")
-    for at in 0..list.length() + 1 {
+    if OperatingSystem.isWindows() {
+        print("getopt: not in the C library of Windows")
+    } else {
+        var list = List<string> { "tool", "-v", "-o", "out.txt", "-x", "in.txt" }
+        var argv = words(read list)
+        var options = CString.from("vo:") ?? return
+        // From the first word on, whatever an earlier scan left.
         unsafe {
-            Memory.free(argv[at])
+            opterr = 0
+            optind = 1
         }
-    }
-    unsafe {
-        Memory.free(argv)
+        while true {
+            int found = unsafe getopt((int)list.length(), argv, read options)
+            if found == -1 {
+                break
+            }
+            if found == (int)'o' {
+                var value = unsafe string.fromCString(optarg) ?? return
+                print($"-o {value}")
+            } else if found == (int)'v' {
+                print("-v")
+            } else {
+                print($"unknown, {found}")
+            }
+        }
+        print($"the first word that is no option: {unsafe optind}")
+        for at in 0..list.length() + 1 {
+            unsafe {
+                Memory.free(argv[at])
+            }
+        }
+        unsafe {
+            Memory.free(argv)
+        }
     }
 }

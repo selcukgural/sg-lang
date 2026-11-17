@@ -4,31 +4,27 @@
 //! is read, and the language takes no dependency (such as libffi) to do it. So, before the
 //! program runs, it writes a small C file with a wrapper for each function of C the program
 //! calls, all with one signature, `void w(void **args, void *ret)`, builds it as a shared
-//! library with `cc`, linked with the libraries the `extern` blocks name, and opens it with
-//! `dlopen`. A call writes each argument into a slot of its own, as the C type it is, and hands
+//! library with the C compiler (a DLL on Windows), linked with the libraries the `extern` blocks
+//! name, and opens it. A call writes each argument into a slot of its own, as the C type it is, and hands
 //! the wrapper the addresses of the slots.
 //!
 //! The library is built in a folder of its own that only this user can open, made new for
 //! each run and removed once the library is open: a library left where another user could
-//! write would run that user's code. Nothing is kept between runs.
+//! write would run that user's code. Nothing is kept between runs. On Windows a DLL that is
+//! loaded cannot be deleted: its folder is removed by the next interpreter that starts.
 
 use std::collections::{BTreeSet, HashMap};
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
 
 use crate::ast::{short_name, Callee, ExprKind, Program};
 use crate::diag::Diag;
 use crate::types::{FloatTy, IntTy, Ty};
 
-use crate::sys::{dlerror, dlopen, dlsym};
-
-/// `dlopen`: every symbol is found when the library is opened, so a missing one is an error
-/// there and not in the middle of the run. The same value on Linux and macOS.
-const RTLD_NOW: c_int = 2;
-
-/// What a wrapper is: it puts the program's `errno` in place, reads each argument from the
-/// slot whose address it is given, calls the function, writes what it gives into `ret`, and
-/// keeps `errno` as the call left it.
+/// What a wrapper is: it puts the program's `errno` in place (and on Windows its last error of
+/// the system, the second of the two numbers), reads each argument from the slot whose address it
+/// is given, calls the function, writes what it gives into `ret`, and keeps both as the call left
+/// them.
 pub type Wrapper = unsafe extern "C" fn(*mut *mut c_void, *mut c_void, *mut c_int);
 
 /// What gives the address of a variable of C, or of a function of C.
@@ -63,6 +59,31 @@ pub struct Library {
 /// One value as C takes it: eight bytes, enough for any argument, and aligned for each.
 pub type Slot = u64;
 
+/// What the C file of the wrappers starts with besides its declarations: what is seen from
+/// outside the library (on Windows only what is exported from a DLL), and how a call of C takes
+/// the program's `errno` and gives it back, `sg_e[0]`, with, on Windows, the system's last error
+/// (`GetLastError`), `sg_e[1]`. The functions of Windows are declared under names of the wrappers'
+/// own, so that a C file of the program that includes `windows.h` meets no second declaration.
+/// The libraries of the system are those compiled code names (see `emit_c`), and with them the
+/// functions of C's `printf` and its kin, which Microsoft's C library has only in a header.
+const WINDOWS_HEAD: &str = "#ifdef _WIN32\n\
+#pragma comment(lib, \"legacy_stdio_definitions\")\n\
+#pragma comment(lib, \"kernel32\")\n\
+#pragma comment(lib, \"advapi32\")\n\
+#pragma comment(lib, \"ws2_32\")\n\
+#pragma comment(lib, \"bcrypt\")\n\
+#pragma comment(lib, \"ntdll\")\n\
+#define SG_W __declspec(dllexport)\n\
+unsigned long sg_get_last_error(void) SG_C(\"GetLastError\");\n\
+void sg_set_last_error(unsigned long code) SG_C(\"SetLastError\");\n\
+#define SG_ENTER_C(e) (errno = (e)[0], sg_set_last_error((unsigned long)(e)[1]))\n\
+#define SG_LEAVE_C(e) ((e)[0] = errno, (e)[1] = (int)sg_get_last_error())\n\
+#else\n\
+#define SG_W\n\
+#define SG_ENTER_C(e) (errno = (e)[0])\n\
+#define SG_LEAVE_C(e) ((e)[0] = errno)\n\
+#endif\n";
+
 /// What wraps one function of C (or gives the address of one variable), in the C file of the
 /// wrappers.
 #[allow(clippy::too_many_arguments)]
@@ -86,7 +107,7 @@ fn wrapper_text(prog: &Program, name: &str, number: usize, addressed: bool, call
                 format!("sg_cv_{c_name}")
             }
         };
-        text.push_str(&format!("void *sg_v{number}(void) {{ return (void*)&{place}; }}\n"));
+        text.push_str(&format!("SG_W void *sg_v{number}(void) {{ return (void*)&{place}; }}\n"));
         return;
     }
     let (declared_params, ret) = &prog.foreign[name];
@@ -127,10 +148,10 @@ fn wrapper_text(prog: &Program, name: &str, number: usize, addressed: bool, call
         Ty::Struct(_) => format!("(void)sg_r; **({}**)sg_a[{}] = {call};", c_type(ret), params.len()),
         _ => format!("*({}*)sg_r = {call};", c_type(ret)),
     };
-    text.push_str(&format!("void sg_w{number}(void **sg_a, void *sg_r, int *sg_e) {{ (void)sg_a; errno = *sg_e; {body} *sg_e = errno; }}\n"));
+    text.push_str(&format!("SG_W void sg_w{number}(void **sg_a, void *sg_r, int *sg_e) {{ (void)sg_a; SG_ENTER_C(sg_e); {body} SG_LEAVE_C(sg_e); }}\n"));
     // Its name is a `CFunc` somewhere: the address of the function itself.
     if addressed {
-        text.push_str(&format!("void *sg_f{number}(void) {{ return (void*)&{callee}; }}\n"));
+        text.push_str(&format!("SG_W void *sg_f{number}(void) {{ return (void*)&{callee}; }}\n"));
     }
 }
 
@@ -168,7 +189,7 @@ fn through_text(params: &[Ty], ret: &Ty, number: usize, plain: &crate::raw::Plai
         Ty::Struct(_) => format!("(void)sg_r; **({}**)sg_a[{}] = {call};", c_type(ret), params.len()),
         _ => format!("*({}*)sg_r = {call};", c_type(ret)),
     };
-    text.push_str(&format!("void sg_t{number}(void *sg_p, void **sg_a, void *sg_r, int *sg_e) {{ (void)sg_a; errno = *sg_e; {body} *sg_e = errno; }}\n"));
+    text.push_str(&format!("SG_W void sg_t{number}(void *sg_p, void **sg_a, void *sg_r, int *sg_e) {{ (void)sg_a; SG_ENTER_C(sg_e); {body} SG_LEAVE_C(sg_e); }}\n"));
 }
 
 /// Whether C files of the program are told about this `export` function before them: not
@@ -195,7 +216,7 @@ fn export_text(name: &str, params: &[Ty], ret: &Ty, number: usize, plain: &crate
     let list = if named.is_empty() { "void".to_string() } else { named.join(", ") };
     if declared_to_c(params, ret) {
         let bare = if c_types.is_empty() { "void".to_string() } else { c_types.join(", ") };
-        head.push_str(&format!("{} {c_name}({bare});\n", c_type(ret)));
+        head.push_str(&format!("SG_W {} {c_name}({bare});\n", c_type(ret)));
     }
     let mut addresses: Vec<String> = (0..params.len()).map(|at| format!("(void*)&sg_a{at}")).collect();
     addresses.push("0".to_string());
@@ -204,7 +225,7 @@ fn export_text(name: &str, params: &[Ty], ret: &Ty, number: usize, plain: &crate
         _ => (format!(" {} sg_r;", c_type(ret)), ("(void*)&sg_r".to_string(), " return sg_r;".to_string())),
     };
     text.push_str(&format!(
-        "{} {c_name}({list}) {{{room} void *sg_args[] = {{ {} }}; sg_enter({number}, \"{c_name}\", sg_args, {});{} }}\n",
+        "SG_W {} {c_name}({list}) {{{room} void *sg_args[] = {{ {} }}; sg_enter({number}, \"{c_name}\", sg_args, {});{} }}\n",
         c_type(ret),
         addresses.join(", "),
         back.0,
@@ -262,6 +283,7 @@ impl Library {
         let mut head = String::from("#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n");
         head.push_str(crate::raw::C_ALIGNED);
         head.push_str("#include <stdint.h>\n#include <errno.h>\n#ifdef __APPLE__\n#define SG_C(name) __asm__(\"_\" name)\n#else\n#define SG_C(name) __asm__(name)\n#endif\n");
+        head.push_str(WINDOWS_HEAD);
         // The structs and the types of functions C is given or gives, each defined once.
         let mut types: BTreeSet<String> = BTreeSet::new();
         // A C function declared in two modules is one function of C.
@@ -284,7 +306,7 @@ impl Library {
         }
         let exports: Vec<(String, Vec<Ty>, Ty)> = prog.exported.iter().map(|(name, (params, ret))| (name.clone(), params.clone(), ret.clone())).collect();
         if !exports.is_empty() {
-            after.push_str("static void (*sg_enter)(int, const char*, void**, void*);\nvoid sg_set_enter(void (*enter)(int, const char*, void**, void*)) { sg_enter = enter; }\n");
+            after.push_str("static void (*sg_enter)(int, const char*, void**, void*);\nSG_W void sg_set_enter(void (*enter)(int, const char*, void**, void*)) { sg_enter = enter; }\n");
         }
         for (number, (name, params, ret)) in exports.iter().enumerate() {
             export_text(name, params, ret, number, &prog.plain, &mut types, &mut head, &mut after);
@@ -311,29 +333,22 @@ impl Library {
             };
             diag.note(why)
         };
+        #[cfg(windows)]
+        crate::sys::remove_old_libraries();
         let dir = private_dir().map_err(|error| failed(format!("no folder for the library could be made: {error}")))?;
         let built = build(&dir, &text, &libs, &prog.lib_dirs, !files.is_empty());
-        let opened = built.and_then(|library| {
-            let path = CString::new(library.as_os_str().as_encoded_bytes()).map_err(|_| "the path of the library holds a zero byte".to_string())?;
-            // SAFETY: `path` ends in a zero byte; the library was built here from the text above.
-            let handle = unsafe { dlopen(path.as_ptr(), RTLD_NOW) };
-            if handle.is_null() {
-                return Err(format!("`dlopen` says: {}", last_error()));
-            }
-            Ok(handle)
-        });
-        let _ = std::fs::remove_dir_all(&dir);
+        // The program's own folder, then those of `-L`: where Windows looks for the DLLs the
+        // library needs. Linux and macOS find them where the library was linked to look.
+        let folders: Vec<PathBuf> = prog.home.iter().chain(&prog.lib_dirs).cloned().collect();
+        let opened = built.and_then(|library| crate::sys::open_library(&library, &folders));
+        // A DLL that is loaded cannot be deleted: on Windows its folder goes when an interpreter
+        // starts after this one has ended (`remove_old_libraries`).
+        if !cfg!(windows) {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
         let handle = opened.map_err(failed)?;
         let mut library = Library { exports, ..Library::default() };
-        let symbol_of = |name: String| -> Result<*mut c_void, Diag> {
-            let symbol = CString::new(name).expect("no zero byte");
-            // SAFETY: `handle` is open and `symbol` ends in a zero byte.
-            let found = unsafe { dlsym(handle, symbol.as_ptr()) };
-            if found.is_null() {
-                return Err(failed(format!("`dlsym` says: {}", last_error())));
-            }
-            Ok(found)
-        };
+        let symbol_of = |name: String| -> Result<*mut c_void, Diag> { crate::sys::library_symbol(handle, &name).map_err(failed) };
         for (number, (key, _)) in values.throughs.iter().enumerate() {
             let found = symbol_of(format!("sg_t{number}"))?;
             // SAFETY: each wrapper that calls through an address was written with this signature.
@@ -358,12 +373,7 @@ impl Library {
         let keys = fixed.iter().map(|name| (*name).clone()).chain(calls.keys().cloned());
         for (number, name) in keys.enumerate() {
             let is_var = prog.cvar_types.contains_key(&name);
-            let symbol = CString::new(format!("sg_{}{number}", if is_var { 'v' } else { 'w' })).expect("no zero byte");
-            // SAFETY: `handle` is open and `symbol` ends in a zero byte.
-            let found = unsafe { dlsym(handle, symbol.as_ptr()) };
-            if found.is_null() {
-                return Err(failed(format!("`dlsym` says: {}", last_error())));
-            }
+            let found = symbol_of(format!("sg_{}{number}", if is_var { 'v' } else { 'w' }))?;
             if is_var {
                 // SAFETY: each address function was written with this signature.
                 let address = unsafe { std::mem::transmute::<*mut c_void, Address>(found) };
@@ -490,18 +500,19 @@ pub fn c_values(prog: &Program, tests: bool) -> CValues {
     found
 }
 
-/// Shows `each` every expression in the bodies of the program, and of its tests with `tests`.
+/// Shows `each` every expression in the bodies of the program, and of its tests with `tests`;
+/// of an `if` on the operating system only the branch of this one.
 fn each_expr<'p>(prog: &'p Program, tests: bool, each: &mut dyn FnMut(&'p crate::ast::Expr)) {
     let methods = prog.structs.iter().flat_map(|decl| &decl.methods).chain(prog.enums.iter().flat_map(|decl| &decl.methods));
     for func in prog.funcs.iter().chain(methods) {
         for stmt in &func.body {
-            crate::waits::walk_stmt(stmt, each, &mut |_| {});
+            crate::waits::walk_here(stmt, each);
         }
     }
     if tests {
         for test in &prog.tests {
             for stmt in &test.body {
-                crate::waits::walk_stmt(stmt, each, &mut |_| {});
+                crate::waits::walk_here(stmt, each);
             }
         }
     }
@@ -610,15 +621,25 @@ fn scalar_type(ty: &Ty) -> &'static str {
 pub(crate) use crate::sys::private_dir;
 
 /// Writes the wrappers into `dir` and builds them into a shared library there, in the C of
-/// compiled code (C11).
+/// compiled code (C11), with the C compiler compiled code is built with. On Windows the library
+/// is a DLL linked with C's library as a DLL (`/MD`), the one the interpreter itself uses, so
+/// that memory C gives goes back with `Memory.free` and the other way round, and `errno` is one.
 fn build(dir: &Path, text: &str, libs: &BTreeSet<String>, lib_dirs: &[PathBuf], c_files: bool) -> Result<PathBuf, String> {
     let source = dir.join("wrappers.c");
-    let library = dir.join("wrappers.so");
+    let library = dir.join(if cfg!(windows) { "wrappers.dll" } else { "wrappers.so" });
     std::fs::write(&source, text).map_err(|error| format!("the wrappers could not be written: {error}"))?;
-    let mut cc = std::process::Command::new("cc");
+    let compiler = crate::cc::compiler()?;
+    let shown = crate::cc::shown(&compiler);
+    let mut cc = std::process::Command::new(&compiler);
     // No warnings: compiled code is built without them too.
-    cc.args(["-std=c11", "-shared", "-fPIC", "-fno-builtin", "-w", "-o"]).arg(&library).arg(&source);
-    // A function missing from the libraries is an error here on Linux too, as it is on macOS.
+    cc.args(["-std=c11", "-shared", "-fno-builtin", "-w"]);
+    match cfg!(windows) {
+        true => cc.args(["-fuse-ld=lld", "-fms-runtime-lib=dll"]),
+        false => cc.arg("-fPIC"),
+    };
+    cc.arg("-o").arg(&library).arg(&source);
+    // A function missing from the libraries is an error here on Linux too, as it is on macOS
+    // and Windows.
     #[cfg(target_os = "linux")]
     cc.arg("-Wl,--no-undefined");
     // The folders of `-L`, looked in when the wrappers are linked and when they are opened.
@@ -626,29 +647,20 @@ fn build(dir: &Path, text: &str, libs: &BTreeSet<String>, lib_dirs: &[PathBuf], 
     for lib in libs {
         cc.arg(format!("-l{lib}"));
     }
-    let output = cc.output().map_err(|error| format!("the C compiler `cc` could not be run: {error}"))?;
+    let output = cc.output().map_err(|error| format!("the C compiler `{shown}` could not be run: {error}"))?;
     if !output.status.success() {
         if !c_files {
-            return Err("the C compiler `cc` could not build the wrappers with them: a library or a function is missing".to_string());
+            return Err(format!("the C compiler `{shown}` could not build the wrappers with them: a library or a function is missing"));
         }
         // What the C compiler said about a C file of the program is the program's to read.
         let said = String::from_utf8_lossy(&output.stderr);
         let lines: Vec<&str> = said.lines().filter(|line| !line.contains("wrappers.c")).take(12).collect();
-        let mut why = "the C compiler `cc` could not build the wrappers with them: a library or a function is missing, or a C file has a mistake".to_string();
+        let mut why = format!("the C compiler `{shown}` could not build the wrappers with them: a library or a function is missing, or a C file has a mistake");
         if !lines.is_empty() {
-            why.push_str(&format!("; `cc` says:\n{}", lines.join("\n")));
+            why.push_str(&format!("; `{shown}` says:\n{}", lines.join("\n")));
         }
         return Err(why);
     }
     Ok(library)
 }
 
-fn last_error() -> String {
-    // SAFETY: `dlerror` gives a text that ends in a zero byte, or `null`.
-    let text = unsafe { dlerror() };
-    if text.is_null() {
-        return "nothing".to_string();
-    }
-    // SAFETY: as above.
-    unsafe { CStr::from_ptr(text) }.to_string_lossy().into_owned()
-}

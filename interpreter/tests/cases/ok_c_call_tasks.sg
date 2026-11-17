@@ -2,6 +2,7 @@
 // on threads of their own in compiled code. A function C calls back during it runs in its turn.
 extern {
     int usleep(uint microseconds)
+    void Sleep(uint milliseconds)
     void qsort(raw void base, nuint count, nuint size, CFunc<raw void, raw void, int> compare)
 }
 
@@ -26,16 +27,25 @@ int square(int n) {
     return n * n
 }
 
+// Waits in C: `usleep` on Linux and macOS, `Sleep` on Windows.
+void pause(uint ms) {
+    if OperatingSystem.isWindows() {
+        unsafe Sleep(ms)
+    } else {
+        _ = unsafe usleep(ms * 1000)
+    }
+}
+
 // A task that waits in C, while the task beside it runs.
 int sleeper(int ms) {
-    _ = unsafe usleep((uint)ms * 1000)
+    pause((uint)ms)
     print("the sleeper is back from C")
     return ms
 }
 
 void main() {
     var task = Task.run(twice, 21)
-    _ = unsafe usleep(100000)
+    pause(100)
     print("main is back from C")
     print(task.wait())
 

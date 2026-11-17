@@ -1,6 +1,9 @@
 // Programs run and waited for: `Command` with `run` and `status`. The words reach the program as
 // they are written, an end with anything but 0 is an error of `run`, and `status` tells every end.
-// The folder is the first word of the command line.
+// The folder is the first word of the command line. The program started is `sg-test-tool`
+// (tests/tool), whose words are its steps; a program stopped by a signal, and a file that may not
+// run until its mode says so, are only on Linux and macOS, where `sh` is there too. On Windows a
+// batch file runs when it is named with its extension.
 extern {
     int chmod(read CString path, ushort mode)
 }
@@ -19,6 +22,12 @@ void ended(read string what, Result<ExitStatus, IoError> done) {
     }
 }
 
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
 Command shell(read string script) {
     var sh = Command("sh")
     sh.arg("-c")
@@ -26,24 +35,27 @@ Command shell(read string script) {
     return sh
 }
 
+Command exits(int code) {
+    return tool(read List<string> { $"exit={code}".toString() })
+}
+
 Result<void, ProcessError> main(List<string> args) {
     var dir = args[0].clone()
     print("printed before the program writes")
-    var echo = Command("echo")
-    echo.arg("two words")
-    echo.args(read List<string> { "$HOME", "*", "; ls", "`id`" })
-    try echo.run()
+    try tool(read List<string> { "args", "two words", "$HOME", "*", "; ls", "`id`", "%PATH%", "a\"b" }).run()
 
-    show("exit 3", shell("exit 3").run())
-    show("true", Command("true").run())
-    show("false", Command("false").run())
-    ended("exit 3", shell("exit 3").status())
-    ended("exit 0", shell("exit 0").status())
-    ended("kill -9", shell("kill -9 $$").status())
-    ended("kill", shell("kill $$").status())
+    show("exit 3", exits(3).run())
+    show("exit 0", exits(0).run())
+    show("exit 1", exits(1).run())
+    ended("exit 3", exits(3).status())
+    ended("exit 0", exits(0).status())
+    if !OperatingSystem.isWindows() {
+        ended("kill -9", shell("kill -9 $$").status())
+        ended("kill", shell("kill $$").status())
+    }
 
     // The error of `run` is a value: what it says, and its parts.
-    match shell("exit 7").run() {
+    match exits(7).run() {
         Error(Failed(Code(code))) => print($"code {code}")
         _ => print("unexpected")
     }
@@ -55,12 +67,22 @@ Result<void, ProcessError> main(List<string> args) {
     show("missing", Command("no-such-program-anywhere").run())
     show("missing path", Command("/no/such/program").run())
     show("empty", Command("").run())
-    var script = Path.join(read dir, "hello.sh")
-    _ = File.writeText(read script, "#!/bin/sh\necho hello from a script\n")
-    show("not runnable", Command(read script).run())
-    var name = CString.from(read script) ?? panic("zero byte")
-    _ = unsafe chmod(read name, 0x1ed)
-    show("runnable", Command(read script).run())
+    if OperatingSystem.isWindows() {
+        var script = Path.join(read dir, "hello.bat")
+        _ = File.writeText(read script, "@echo hello from a script\n")
+        // `cmd.exe` ends its lines with `\r\n`.
+        match Command(read script).output() {
+            Ok(text) => print($"{text.trimEnd()}\nrunnable: done")
+            Error(cause) => print($"runnable: {cause}")
+        }
+    } else {
+        var script = Path.join(read dir, "hello.sh")
+        _ = File.writeText(read script, "#!/bin/sh\necho hello from a script\n")
+        show("not runnable", Command(read script).run())
+        var name = CString.from(read script) ?? panic("zero byte")
+        _ = unsafe chmod(read name, 0x1ed)
+        show("runnable", Command(read script).run())
+    }
     show("folder", Command(read dir).run())
     return Ok()
 }

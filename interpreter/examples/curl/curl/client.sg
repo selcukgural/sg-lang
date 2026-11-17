@@ -6,7 +6,8 @@
 // request and on each redirect; certificates are always checked; a response is cut off past
 // `maxBytes`, and a request past `timeoutMs`.
 
-extern "curl" {
+// `-lcurl`, or on Windows `libcurl.lib`, as vcpkg names it.
+extern "curl", "libcurl" {
     struct CURL
     struct curl_slist
     int curl_global_init(CLong flags)

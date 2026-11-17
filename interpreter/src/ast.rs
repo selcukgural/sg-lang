@@ -45,6 +45,9 @@ pub struct Program {
     /// The folders `-L` names, where the libraries the `extern` blocks name are looked for
     /// first: absolute, in the order they were given.
     pub lib_dirs: Vec<std::path::PathBuf>,
+    /// The folder of the program's first file, absolute: on Windows the interpreter looks for
+    /// the DLLs of its libraries there, as a program built from it looks in its own folder.
+    pub home: Option<std::path::PathBuf>,
 }
 
 /// One file: where its text lies, the module it belongs to (empty for the root, otherwise the

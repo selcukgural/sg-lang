@@ -4,7 +4,7 @@
 //! through std's `Command`, which quotes the command line as compiled code does and escapes the
 //! arguments of a batch file the same way.
 
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_char, c_void};
 use std::os::windows::ffi::OsStrExt;
 use std::sync::OnceLock;
 
@@ -51,6 +51,7 @@ extern "system" {
     fn GetSystemTimePreciseAsFileTime(time: *mut u64);
     fn LoadLibraryExW(name: *const u16, file: Handle, flags: u32) -> Handle;
     fn GetProcAddress(module: Handle, name: *const c_char) -> *mut c_void;
+    fn AddDllDirectory(folder: *const u16) -> *mut c_void;
     fn CreateFileW(name: *const u16, access: u32, share: u32, security: *const c_void, disposition: u32, flags: u32, template: Handle) -> Handle;
     fn CloseHandle(handle: Handle) -> Bool;
     fn GetFileInformationByHandle(handle: Handle, info: *mut ByHandleFileInformation) -> Bool;
@@ -62,6 +63,7 @@ extern "system" {
     fn GetTempPathW(length: u32, buffer: *mut u16) -> u32;
     fn LocalFree(memory: Handle) -> Handle;
     fn OpenProcess(access: u32, inherit: Bool, pid: u32) -> Handle;
+    fn GetExitCodeProcess(process: Handle, code: *mut u32) -> Bool;
     fn TerminateProcess(process: Handle, code: u32) -> Bool;
     fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
 }
@@ -275,15 +277,41 @@ pub(crate) unsafe fn udp_of_fd(fd: RawFd) -> std::net::UdpSocket {
     super::net::udp_of(fd)
 }
 
-/// Libraries of C, which come in a later slice: none opens yet.
-pub(crate) unsafe fn dlopen(_path: *const c_char, _flags: c_int) -> *mut c_void {
-    std::ptr::null_mut()
+/// Opens the library of wrappers at `path`. It and the DLLs it needs are looked for in the
+/// `folders` (the program's own and those of `-L`) and in `System32`, never in the folder the
+/// interpreter works in or on `PATH`: a DLL put there would run inside it. The folders stay
+/// added for the process, as the library stays loaded.
+pub(crate) fn open_library(path: &std::path::Path, folders: &[std::path::PathBuf]) -> Result<*mut c_void, String> {
+    const SEARCH_USER_DIRS: u32 = 0x400;
+    const SEARCH_SYSTEM32: u32 = 0x800;
+    for folder in folders {
+        // `AddDllDirectory` takes a path without `\\?\`.
+        let text = folder.to_string_lossy();
+        let plain = text.strip_prefix(r"\\?\UNC\").map(|rest| format!(r"\\{rest}")).or_else(|| text.strip_prefix(r"\\?\").map(str::to_string)).unwrap_or_else(|| text.to_string());
+        let name = wide(&plain);
+        // SAFETY: the name ends with a zero.
+        if unsafe { AddDllDirectory(name.as_ptr()) }.is_null() {
+            return Err(format!("the folder {plain} cannot be looked in for DLLs: {}", last_error()));
+        }
+    }
+    let name = wide(&path.to_string_lossy());
+    // SAFETY: the name ends with a zero; the library stays loaded for the process.
+    let module = unsafe { LoadLibraryExW(name.as_ptr(), std::ptr::null_mut(), SEARCH_USER_DIRS | SEARCH_SYSTEM32) };
+    match module.is_null() {
+        true => Err(format!("`LoadLibraryExW` says: {}", last_error())),
+        false => Ok(module),
+    }
 }
-pub(crate) unsafe fn dlsym(_handle: *mut c_void, _name: *const c_char) -> *mut c_void {
-    std::ptr::null_mut()
-}
-pub(crate) unsafe fn dlerror() -> *const c_char {
-    c"calls of C come to Windows in the 101st slice".as_ptr()
+
+/// The address of `name` in a library `open_library` opened.
+pub(crate) fn library_symbol(handle: *mut c_void, name: &str) -> Result<*mut c_void, String> {
+    let symbol = std::ffi::CString::new(name).expect("no zero byte");
+    // SAFETY: `handle` is a module that is loaded and `symbol` ends in a zero byte.
+    let found = unsafe { GetProcAddress(handle, symbol.as_ptr()) };
+    match found.is_null() {
+        true => Err(format!("`GetProcAddress` says of `{name}`: {}", last_error())),
+        false => Ok(found),
+    }
 }
 
 /// Codes of the system the interpreter gives itself where the system gave none: no such file
@@ -512,8 +540,43 @@ pub(crate) fn temp_folder() -> String {
 }
 
 /// A new folder in the temporary folder that only this user can open.
+/// Removes the folders of the libraries of wrappers that interpreters which have ended left
+/// (see `crate::ffi`). Each folder is named after the process that made it (`private_dir`); one
+/// of a process that still runs is left alone, since its DLL may be about to be loaded.
+pub(crate) fn remove_old_libraries() {
+    const QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    const ACCESS_DENIED: i32 = 5;
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(pid) = name.strip_prefix("sg-ffi-").and_then(|rest| rest.split_once('-')).and_then(|(pid, _)| pid.parse::<u32>().ok()) else { continue };
+        if pid == std::process::id() || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        // SAFETY: a handle that is given is closed below.
+        let process = unsafe { OpenProcess(QUERY_LIMITED_INFORMATION, 0, pid) };
+        let running = match process.is_null() {
+            // A process of another user is one that runs.
+            true => last_error().raw_os_error() == Some(ACCESS_DENIED),
+            false => {
+                let mut code = 0u32;
+                // SAFETY: `process` is open; it is closed once.
+                let asked = unsafe { GetExitCodeProcess(process, &mut code) } != 0;
+                unsafe { CloseHandle(process) };
+                !asked || code == STILL_ACTIVE
+            }
+        };
+        if !running {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// A new folder that only this user may open, named after this process (`sg-ffi-<pid>-...`),
+/// so that `remove_old_libraries` tells whose it is.
 pub(crate) fn private_dir() -> std::io::Result<std::path::PathBuf> {
-    let template = std::env::temp_dir().join("sg-ffi-XXXXXX");
+    let template = std::env::temp_dir().join(format!("sg-ffi-{}-XXXXXX", std::process::id()));
     make_temp(&template.to_string_lossy()).map(std::path::PathBuf::from)
 }
 
