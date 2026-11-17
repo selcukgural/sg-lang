@@ -1,0 +1,29 @@
+// A task that has just begun to wait sees the wait over at once, goes on, ends and is freed by
+// the task that awaits it: the thread that ended the wait must be done with both by then. Built
+// with `-DSG_PAUSE_WAKES` (`compiled_small_pools`), the thread that ends a wait pauses before it
+// wakes the task, and a task that has just begun to wait looks once more after a pause, so the
+// sanitizers see a task freed too early.
+async int leaf() {
+    await Task.delay(1)
+    return 1
+}
+
+async int parent() {
+    var below = leaf()
+    return await below + 1
+}
+
+async void main() {
+    long total = 0
+    for _ in 0..300 {
+        var tasks = List<Task<int>>()
+        for _ in 0..40 {
+            tasks.add(parent())
+        }
+        var sums = await Task.whenAll(tasks)
+        for sum in read sums {
+            total += (long)sum
+        }
+    }
+    print(total)
+}

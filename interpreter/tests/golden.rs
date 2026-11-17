@@ -987,7 +987,10 @@ fn interpreted_input_cancel() {
 /// thread and of two (`SG_POOL_MOST`, which no program sets): the thread that waits on the loop
 /// of the network is then soon the only one, and a task that a thread outside the pool wakes
 /// meanwhile has to wake the loop to run; and a thousand tasks woken at once fill the queue of a
-/// thread (`ok_pool_queues`). Under the thread sanitizer when it is there.
+/// thread (`ok_pool_queues`). Under the thread sanitizer when it is there. Then once more
+/// with the pauses of `-DSG_PAUSE_WAKES` (see `ok_wake_races`), under the thread sanitizer and
+/// under the address sanitizer: a task freed while the thread that ended its wait still wakes
+/// it is seen there.
 #[test]
 fn compiled_small_pools() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -998,19 +1001,27 @@ fn compiled_small_pools() {
     std::fs::create_dir_all(&work).unwrap();
     let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
     let mut failures = Vec::new();
-    for stem in ["ok_net_wakes_from_thread", "ok_pool_queues", "ok_net_echo", "ok_net_cancel", "ok_net_slots", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel"] {
+    for stem in ["ok_net_wakes_from_thread", "ok_pool_queues", "ok_net_echo", "ok_net_cancel", "ok_net_slots", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel", "ok_wake_races"] {
         let source = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.sg"))).unwrap();
         let expected = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.out"))).unwrap();
         let c_file = work.join(format!("{stem}.c"));
         std::fs::write(&c_file, sg::emit_c(&source, &format!("{stem}.sg"), true).unwrap()).unwrap();
-        for most in [1, 2] {
-            let binary = program_at(&work, &format!("{stem}-{most}"));
+        // (the most threads of the pool, the pauses, the address sanitizer in place of the thread one)
+        for (most, paused, address) in [(1, false, false), (2, false, false), (2, true, false), (2, true, true)] {
+            if paused && !sanitizers {
+                continue;
+            }
+            let label = format!("{stem}-{most}{}{}", if paused { "-paused" } else { "" }, if address { "-address" } else { "" });
+            let binary = program_at(&work, &label);
             let mut cc = c_command();
             cc.args(["-std=c11", "-O1", "-g"]).arg(format!("-DSG_POOL_MOST={most}"));
+            if paused {
+                cc.arg("-DSG_PAUSE_WAKES");
+            }
             // As in `compiled`, the thread sanitizer's build is not held to the warnings: gcc warns
             // that it does not follow `atomic_thread_fence`, which the counts of `shared` use.
             // Windows has no thread sanitizer: there the others look.
-            if sanitizers && cfg!(windows) {
+            if sanitizers && (cfg!(windows) || address) {
                 cc.args(sanitizer_flags(&work));
             } else if sanitizers {
                 cc.arg("-fsanitize=thread");
@@ -1022,7 +1033,7 @@ fn compiled_small_pools() {
             let run = std::process::Command::new(&binary).current_dir(&work).env("PATH", tool_path()).stdin(std::process::Stdio::null()).output().unwrap();
             let actual = format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
             if actual != expected {
-                failures.push(format!("--- {stem} with a pool of {most}\nexpected:\n{expected}\nactual:\n{actual}"));
+                failures.push(format!("--- {label}\nexpected:\n{expected}\nactual:\n{actual}"));
             }
         }
     }

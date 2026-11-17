@@ -7103,6 +7103,30 @@ and approved on 17 November 2026; what the slice found besides is said with the 
      `layouts`, `kernel` and the four new and opened tests of `golden` pass; the whole of `cargo test` on
      Windows is the CI's. New: `needs_nothing_of_128_bits`, `bench/run.py`, `bench/windows`.
 
+A fix between the hundred-and-second and the hundred-and-third slices: a task freed while it was woken.
+Found by the tests of the hundred-and-third on Linux, where the thread sanitizer saw the clock of delays wake
+a task that was freed on another thread (`ok_pool_queues`, a pool of two). It was a real use of freed memory,
+not a report of the sanitizer alone: with a pause put where a thread can be taken off the processor, the
+address sanitizer sees it every time. 1120 to 1123 were put to the author and approved on 17 November 2026:
+
+1120. **A wait of its own** (a socket, a program, a signal, work on a thread of its own, on every system): the
+     thread that ends it sets `settled` to 2, wakes the task and sets it to 1 last. A task that sees 2 waits
+     for the 1; until then the wait and the task may still be touched. Before, `settled` was 1 before the
+     wake, and the task could go on, end and be freed before the wake wrote into it.
+1121. **A delay**: the clock ends it under its lock, wakes the task and lets the lock go; the task that sees
+     the delay over takes the lock once, so it goes on only after the clock is done with it. One lock is
+     taken when a delay is over.
+1122. **A task that ends**: whoever awaits it is woken while the task says `SG_ENDING`, and `SG_ENDED` comes
+     after the wake; `await`, `wait` and a list of tasks that see `SG_ENDING` wait the moment until
+     `SG_ENDED`. Input and output did so already (`done` 2, then 1), and a list of tasks is told under its
+     lock.
+1123. **The test**: `-DSG_PAUSE_WAKES` builds the runtime with a pause of 2 ms where the waker has told the
+     end and not yet woken the task, and where a task has just begun to wait, after which it looks again.
+     `compiled_small_pools` builds its programs so a second time, under the thread sanitizer and under the
+     address sanitizer, and with them `ok_wake_races` (twelve thousand times a task that ends at once after a
+     delay, freed by the one that awaits it). Without the fix of 1121 the address sanitizer sees a use of
+     freed memory and the thread sanitizer a race; without that of 1122 the thread sanitizer a race.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept

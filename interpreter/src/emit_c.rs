@@ -2879,6 +2879,28 @@ enum { SG_THREAD, SG_ASYNC, SG_DELAY };
    the pool, running, running and woken meanwhile (it runs once more), ended. */
 enum { SG_IDLE, SG_QUEUED, SG_RUNNING, SG_WOKEN, SG_FINISHED };
 #define SG_ENDED ((void*)(uintptr_t)2)
+/* The task has ended, and the thread that saw it end is waking the task that awaits it: the
+   one that awaits waits for `SG_ENDED`, which is that thread's last touch of either task. */
+#define SG_ENDING ((void*)(uintptr_t)6)
+/* Only in the tests (`-DSG_PAUSE_WAKES`): the thread that ends a wait pauses between telling it
+   and waking the task, and a task that has just begun to wait looks once more after a pause,
+   as threads taken off the processor there would. A task that went on before its waker had let
+   it go would be freed under the waker, which the sanitizers then see. */
+#ifdef SG_PAUSE_WAKES
+static void sg_wake_pause(void) {
+#if defined(_WIN32)
+    Sleep(2);
+#else
+    struct timespec t = { 0, 2000000 };
+    nanosleep(&t, NULL);
+#endif
+}
+#define SG_WAKE_PAUSE() sg_wake_pause()
+#define SG_LINGER() sg_wake_pause()
+#else
+#define SG_WAKE_PAUSE() ((void)0)
+#define SG_LINGER() ((void)0)
+#endif
 /* Where a task is started: the name of its function (`NULL` for a function value, whose name is
    found by its address, see `sg_func_name`) and the line. */
 typedef struct { const char* name; const char* at; } sg_site;
@@ -2921,10 +2943,15 @@ static void sg_group_told(sg_group* g, sg_task* t) {
     sg_cnd_broadcast(&g->c);
     sg_mtx_unlock(&g->m);
 }
-/* The task has ended: whoever waits for it goes on. The task may be freed at once, so nothing
-   of it is touched after the exchange (a group takes it out only once it is told). */
+/* The task has ended: whoever waits for it goes on. The task may be freed once `SG_ENDED` is
+   in it, so nothing of it is touched after that (a group takes it out only once it is told). An
+   async task that awaits it is woken while `SG_ENDING` holds it back: until then it may not go
+   on, end and be freed under this thread. */
 static void sg_task_ended(sg_task* t) {
-    void* w = __atomic_exchange_n(&t->waiter, SG_ENDED, __ATOMIC_ACQ_REL);
+    void* w = __atomic_exchange_n(&t->waiter, SG_ENDING, __ATOMIC_ACQ_REL);
+    if (!w || ((uintptr_t)w & 3) == SG_GROUP || ((uintptr_t)w & 1)) {
+        __atomic_store_n(&t->waiter, SG_ENDED, __ATOMIC_RELEASE);
+    }
     if (!w) return;
     if (((uintptr_t)w & 3) == SG_GROUP) {
         sg_group_told((sg_group*)((uintptr_t)w - SG_GROUP), t);
@@ -2935,12 +2962,22 @@ static void sg_task_ended(sg_task* t) {
         sg_cnd_signal(&p->c);
         sg_mtx_unlock(&p->m);
     } else {
+        SG_WAKE_PAUSE();
         sg_wake((sg_task*)w);
+        __atomic_store_n(&t->waiter, SG_ENDED, __ATOMIC_RELEASE);
     }
+}
+/* What waits for a task when it is seen ending: the moment until `SG_ENDED`. */
+static inline void* sg_ended_settle(sg_task* t, void* w) {
+    while (w == SG_ENDING) {
+        sg_yield();
+        w = __atomic_load_n(&t->waiter, __ATOMIC_ACQUIRE);
+    }
+    return w;
 }
 /* Code that is not async waits for an async task or a delay: its thread sleeps until it ends. */
 static void sg_park(sg_task* t) {
-    if (__atomic_load_n(&t->waiter, __ATOMIC_ACQUIRE) == SG_ENDED) return;
+    if (sg_ended_settle(t, __atomic_load_n(&t->waiter, __ATOMIC_ACQUIRE)) == SG_ENDED) return;
     sg_parked p;
     sg_mtx_init(&p.m);
     sg_cnd_init(&p.c);
@@ -2950,6 +2987,8 @@ static void sg_park(sg_task* t) {
         sg_mtx_lock(&p.m);
         while (!p.ended) sg_cnd_wait(&p.c, &p.m);
         sg_mtx_unlock(&p.m);
+    } else {
+        (void)sg_ended_settle(t, none);
     }
     sg_mtx_destroy(&p.m);
     sg_cnd_destroy(&p.c);
@@ -2958,10 +2997,17 @@ static void sg_park(sg_task* t) {
    does; it is the only one that can wait for it, since a task is waited for once. */
 static bool sg_ready(sg_task* t) {
     void* w = __atomic_load_n(&t->waiter, __ATOMIC_ACQUIRE);
-    if (w == SG_ENDED) return true;
-    if (w == (void*)sg_job_now) return false;
-    void* none = NULL;
-    return !__atomic_compare_exchange_n(&t->waiter, &none, (void*)sg_job_now, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    if (!w) {
+        void* none = NULL;
+        if (__atomic_compare_exchange_n(&t->waiter, &none, (void*)sg_job_now, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            /* It may end at once: looked at again, as when this task runs again before it is woken. */
+            SG_LINGER();
+            w = __atomic_load_n(&t->waiter, __ATOMIC_ACQUIRE);
+        } else {
+            w = none;
+        }
+    }
+    return sg_ended_settle(t, w) == SG_ENDED;
 }
 
 static SG_THREAD_MAIN(sg_task_main, p) {
@@ -3011,7 +3057,10 @@ static void sg_group_add(sg_group** slot, sg_task* t) {
         *slot = g;
     }
     void* none = NULL;
-    if (!__atomic_compare_exchange_n(&t->waiter, &none, (void*)((uintptr_t)g + SG_GROUP), false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) sg_group_told(g, t);
+    if (!__atomic_compare_exchange_n(&t->waiter, &none, (void*)((uintptr_t)g + SG_GROUP), false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        (void)sg_ended_settle(t, none);
+        sg_group_told(g, t);
+    }
 }
 static void sg_group_free(sg_group* g) {
     if (!g) return;
@@ -3602,16 +3651,21 @@ static void sg_heap_remove(sg_delay* d) {
     sg_heap_up(i);
     sg_heap_down(moved->at);
 }
-/* The clock's lock is held. The delay may be freed by `over`. */
+/* The clock's lock is held. The delay may be freed by `over`. A task that awaits the delay
+   sees it over and then takes the clock's lock once (`sg_delay_over`), so it goes on only after
+   this has woken it. */
 static void sg_delay_end(sg_delay* d, int how) {
-    __atomic_store_n(&d->state, how, __ATOMIC_RELEASE);
     if (d->token) {
         if (d->prev) d->prev->next = d->next;
         else d->token->first = d->next;
         if (d->next) d->next->prev = d->prev;
     }
-    if (d->over) d->over(d);
-    else sg_wake(d->job);
+    void (*over)(sg_delay*) = d->over;
+    sg_task* job = d->job;
+    __atomic_store_n(&d->state, how, __ATOMIC_RELEASE);
+    SG_WAKE_PAUSE();
+    if (over) over(d);
+    else sg_wake(job);
 }
 /* The clock's lock is held, and let go while it sleeps: for `ns`, or until it is told of a
    sooner delay (`ns` below zero: only that). On Windows a timer of high resolution keeps the
@@ -3712,6 +3766,18 @@ static void sg_delay_start(sg_delay* d, int32_t ms, bool told, sg_cancel* token,
     sg_mtx_unlock(&sg_clock_lock);
 }
 static inline int sg_delay_state(sg_delay* d) { return __atomic_load_n(&d->state, __ATOMIC_ACQUIRE); }
+/* `await Task.delay(ms)`: whether the delay is over. Whoever ended it held the clock's lock
+   until the task was woken: taking the lock once waits for that, so the task does not go on,
+   end and get freed while it is being woken. */
+static inline bool sg_delay_over(sg_delay* d) {
+    if (sg_delay_state(d) == SG_WAITING) {
+        SG_LINGER();
+        if (sg_delay_state(d) == SG_WAITING) return false;
+    }
+    sg_mtx_lock(&sg_clock_lock);
+    sg_mtx_unlock(&sg_clock_lock);
+    return true;
+}
 
 /* `Task.delay(ms)` kept as a task: it ends when the delay is over. */
 typedef struct { sg_task head; sg_delay delay; } sg_delay_task;
@@ -4664,18 +4730,24 @@ static void sg_sig_tell(sg_sig_listener* l) {
         sg_wait_unlink(&x->w);
         __atomic_store_n(&x->w.d.state, SG_OVER, __ATOMIC_RELEASE);
         job = x->w.d.job;
-        __atomic_store_n(&x->w.settled, 1, __ATOMIC_RELEASE);
+        __atomic_store_n(&x->w.settled, 2, __ATOMIC_RELEASE);
     }
     sg_mtx_unlock(&sg_clock_lock);
-    if (job) sg_wake(job);
+    if (job) {
+        SG_WAKE_PAUSE();
+        sg_wake(job);
+        __atomic_store_n(&x->w.settled, 1, __ATOMIC_RELEASE);
+    }
 }
 /* A cancel, under the clock's lock: the task goes on, and the signal that comes later stays. */
 static void sg_sig_cut(sg_delay* d) {
     sg_sig_wait* x = (sg_sig_wait*)d;
     x->l->waiter = NULL;
     sg_task* job = d->job;
-    __atomic_store_n(&x->w.settled, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&x->w.settled, 2, __ATOMIC_RELEASE);
+    SG_WAKE_PAUSE();
     sg_wake(job);
+    __atomic_store_n(&x->w.settled, 1, __ATOMIC_RELEASE);
 }
 static void sg_sig_wait_start(sg_sig_wait* x, int64_t id, sg_cancel* token) {
     x->l = (sg_sig_listener*)(intptr_t)id;
@@ -4944,8 +5016,10 @@ static void sg_wait_ready(sg_wait* w) {
     } else {
         __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
     }
-    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
+    SG_WAKE_PAUSE();
     sg_wake(job);
+    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
 }
 /* Under the lock of its slot: socket `fd` is ready (`bits`: 1 it can be read, 2 written), which
    goes into its slot, and the tasks that wait for it there are taken out, onto `woken`. */
@@ -4999,15 +5073,21 @@ static void sg_proc_ready(sg_wait* w) {
         if (mine) {
             sg_wait_unlink(w);
             __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
-            __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+            __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
         }
         sg_mtx_unlock(&sg_clock_lock);
-        if (mine) sg_wake(job);
+        if (mine) {
+            SG_WAKE_PAUSE();
+            sg_wake(job);
+            __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        }
         return;
     }
     __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
-    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
+    SG_WAKE_PAUSE();
     sg_wake(job);
+    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
 }
 #endif
 #if defined(_WIN32)
@@ -5196,8 +5276,10 @@ static void sg_loop_round(bool wait) {
     while (w) {
         sg_wait* next = w->cut;
         sg_task* job = w->d.job;
-        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
+        SG_WAKE_PAUSE();
         sg_wake(job);
+        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
         w = next;
     }
 }
@@ -5273,8 +5355,10 @@ static void sg_wait_cut(sg_delay* d) {
     sg_mtx_unlock(m);
     if (mine) {
         sg_task* job = d->job;
-        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
+        SG_WAKE_PAUSE();
         sg_wake(job);
+        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
     }
 }
 /* The task running now waits for socket `fd` to be ready (`write`: to take bytes), after a call
@@ -5597,11 +5681,15 @@ static VOID CALLBACK sg_proc_ended(PVOID p, BOOLEAN timed_out) {
         sg_wait_unlink(w);
         __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
         job = w->d.job;
-        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
     }
     HANDLE wait = a->wait;
     sg_mtx_unlock(&sg_clock_lock);
-    if (job) sg_wake(job);
+    if (job) {
+        SG_WAKE_PAUSE();
+        sg_wake(job);
+        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    }
     UnregisterWait(wait);
     CloseHandle(a->process);
     /* Outside the count of blocks: one may be out when the program ends. */
@@ -5612,8 +5700,10 @@ static void sg_proc_cut(sg_delay* d) {
     sg_wait* w = (sg_wait*)d;
     ((sg_proc_away*)(void*)w->on.away)->waiter = NULL;
     sg_task* job = d->job;
-    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
+    SG_WAKE_PAUSE();
     sg_wake(job);
+    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
 }
 /* The task running now waits for the end of the program with handle `child`. A wait the system
    refuses is over at once: the program is then waited for where it is taken away. */
@@ -8237,8 +8327,9 @@ static inline bool sg_io_done(sg_io* io) {
 
 /* A wait of an async task, in its frame: for a socket (`fd`, on the loop of the network) or for
    work on a thread that the task may leave (`away`; not `far`, which Windows' headers take as a word of their own). The delay is what a cancel ends, on the list
-   of its token, and what holds the task to wake. Whoever ends the wait sets `settled` last, and
-   only then does the task go on: until then the wait may still be looked at. */
+   of its token, and what holds the task to wake. Whoever ends the wait sets `settled` to 2, wakes
+   the task and sets it to 1 last, and only then does the task go on: until then the wait, and
+   the task, may still be looked at. A task that sees 2 waits for the 1. */
 typedef struct sg_wait {
     sg_delay d;
     union { int fd; struct sg_far* away; } on;
@@ -8255,7 +8346,20 @@ typedef struct sg_wait {
     int posted;
     struct sg_wait* cut;
 } sg_wait;
-static inline bool sg_wait_settled(sg_wait* w) { return __atomic_load_n(&w->settled, __ATOMIC_ACQUIRE); }
+static inline bool sg_wait_settled(sg_wait* w) {
+    int settled = __atomic_load_n(&w->settled, __ATOMIC_ACQUIRE);
+    if (settled == 0) {
+        SG_LINGER();
+        settled = __atomic_load_n(&w->settled, __ATOMIC_ACQUIRE);
+        if (settled == 0) return false;
+    }
+    /* Its waker is waking it: the task goes on at the 1 that is the waker's last touch. */
+    while (settled == 2) {
+        sg_yield();
+        settled = __atomic_load_n(&w->settled, __ATOMIC_ACQUIRE);
+    }
+    return true;
+}
 static inline int sg_wait_state(sg_wait* w) { return __atomic_load_n(&w->d.state, __ATOMIC_ACQUIRE); }
 static void sg_wait_init(sg_wait* w, void (*over)(sg_delay*)) {
     w->d.job = sg_job_now;
@@ -8310,24 +8414,32 @@ static void sg_far_main(sg_io* io) {
         sg_wait_unlink(w);
         __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
         job = w->d.job;
-        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
     }
     sg_mtx_unlock(&sg_clock_lock);
     if (w && keep) {
+        SG_WAKE_PAUSE();
         sg_wake(job);
+        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
         return;
     }
     if (!w && f->lost) f->lost(f);
     free(f);
-    if (job) sg_wake(job);
+    if (w) {
+        SG_WAKE_PAUSE();
+        sg_wake(job);
+        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    }
 }
 /* A cancel, under the clock's lock: the work is left to its thread, and the task goes on. */
 static void sg_far_cut(sg_delay* d) {
     sg_wait* w = (sg_wait*)d;
     w->on.away->waiter = NULL;
     sg_task* job = d->job;
-    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
+    SG_WAKE_PAUSE();
     sg_wake(job);
+    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
 }
 /* The task running now waits for `f`, which then starts: SG_WAITING, or SG_CANCELLED when the
    token is cancelled (the work does not start, and is freed). */
@@ -8451,12 +8563,16 @@ static void sg_lap_fill_main(sg_io* io) {
         sg_wait_unlink(w);
         __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
         job = w->d.job;
-        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+        __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
     }
     /* The reader may free the read from here on. */
     __atomic_store_n(&f->got.over, 1, __ATOMIC_RELEASE);
     sg_mtx_unlock(&sg_clock_lock);
-    if (job) sg_wake(job);
+    if (job) {
+        SG_WAKE_PAUSE();
+        sg_wake(job);
+        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    }
 }
 /* A cancel, under the clock's lock: the task goes on, and the call of the thread is cancelled. */
 static void sg_lap_cut(sg_delay* d) {
@@ -8466,8 +8582,10 @@ static void sg_lap_cut(sg_delay* d) {
     __atomic_store_n(&f->got.stop, 1, __ATOMIC_SEQ_CST);
     CancelIoEx(sg_handle(f->fd), NULL);
     sg_task* job = d->job;
-    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&w->settled, 2, __ATOMIC_RELEASE);
+    SG_WAKE_PAUSE();
     sg_wake(job);
+    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
 }
 /* The block of the reader cannot answer the read: SG_WAITING when the task waits for the thread
    that fills it, SG_CANCELLED, SG_OVER at the end, or -1 when the block is full and the read is
@@ -15328,7 +15446,7 @@ impl<'a> Emitter<'a> {
                 let loc = self.loc(inner.span);
                 self.pre.push(format!("sg_delay {delay}; sg_delay_start(&{delay}, {ms}, {told}, {token}, {loc});"));
                 self.resume_point(expr.span);
-                self.pre.push(format!("if (sg_delay_state(&{delay}) == SG_WAITING) return false;"));
+                self.pre.push(format!("if (!sg_delay_over(&{delay})) return false;"));
                 match told {
                     true => {
                         let ctype = self.ctype(&expr.ty, expr.span)?;
