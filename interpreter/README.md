@@ -3525,7 +3525,8 @@ compiled code), approved on 15 November 2026:
      print come in the order their times decide. The tests that wait compare their lines as they are, with
      times far enough apart: `ok_cancel_delay` waits ten times longer now (steps of 100 ms; its lines
      changed, and the interpreter sleeps 0.6 s more for it). Where the order is open, `.unordered` (380) is
-     there.
+     there. Later four times longer again (steps of 400 ms, at least 120 ms between two lines): 50 ms was
+     too little on the loaded machines of the CI of Windows, where a third tick came after the cancel.
 426. **A source and its tokens are one block**: an atomic count of owners (the source, each token, and the
      clock while `CancellationSource.after` waits), a flag, and the delays that look at it;
      `CancellationToken.None` is no pointer. `cancel` takes the clock's lock and ends those delays in the
