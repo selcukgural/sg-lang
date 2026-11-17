@@ -1,6 +1,13 @@
 // What a program writes, kept as text: `output`, with an input of its own given by `input`. The
 // input is written while the output is read, so a program that reads all of it before it writes
 // does not stop either side; one that stops reading early is no error. Its standard error is ours.
+// The program started is `sg-test-tool` (tests/tool), whose words are its steps.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
 void show(read string what, Result<string, ProcessError> done) {
     match done {
         Ok(text) => print($"{what}: [{text.trim()}] {text.length()} bytes")
@@ -8,48 +15,39 @@ void show(read string what, Result<string, ProcessError> done) {
     }
 }
 
-Command shell(read string script) {
-    var sh = Command("sh")
-    sh.arg("-c")
-    sh.arg(script)
-    return sh
-}
-
 Result<void, ProcessError> main() {
-    var upper = Command("tr")
-    upper.args(read List<string> { "a-z", "A-Z" })
+    var upper = tool(read List<string> { "upper" })
     upper.input("shout, please\n")
-    show("tr", upper.output())
+    show("upper", upper.output())
 
     // Without `input` the program reads nothing.
-    show("cat", Command("cat").output())
+    show("cat", tool(read List<string> { "cat" }).output())
 
     // Four megabytes through `cat`: more than a pipe holds either way.
     var big = "0123456789abcdef".repeat(262144)
-    var cat = Command("cat")
+    var cat = tool(read List<string> { "cat" })
     cat.input(read big)
     var back = try cat.output()
     print($"cat gave back {back.length()} bytes, the same: {back == big}")
 
-    // A program that reads none of a large input.
-    var deaf = Command("true")
+    // A program that reads none of a large input, and one that reads five bytes of it.
+    var deaf = tool(read List<string> {})
     deaf.input(read big)
-    show("true", deaf.output())
-    var early = shell("head -c 5")
+    show("deaf", deaf.output())
+    var early = tool(read List<string> { "head=5" })
     early.input(read big)
     show("head", early.output())
 
     // An end with anything but 0 is an error, whatever was written; the standard error is ours.
-    show("failed", shell("echo partial; echo to the standard error >&2; exit 4").output())
+    show("failed", tool(read List<string> { "out=partial", "err=to the standard error", "exit=4" }).output())
     // Bytes that are not UTF-8: where the first one is.
-    show("bytes", shell("printf 'ab\\377'").output())
+    show("bytes", tool(read List<string> { "bad" }).output())
     // `run` with an input.
-    var count = Command("wc")
-    count.arg("-c")
+    var count = tool(read List<string> { "count" })
     count.input("12345")
     var counted = try count.output()
-    print($"wc counted {counted.trim()}")
-    var sort = Command("sort")
+    print($"counted {counted.trim()}")
+    var sort = tool(read List<string> { "sort" })
     sort.input("pear\napple\nfig\n")
     try sort.run()
     return Ok()

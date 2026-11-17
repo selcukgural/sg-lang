@@ -1,6 +1,6 @@
 //! What Windows does not run yet. Windows is reached slice by slice (the order is in the
-//! decisions, "Windows, the direction"): the base first, then tasks and the network (all three
-//! in), other programs and C. Until its slice has come, what a program writes of the rest is an error where it is
+//! decisions, "Windows, the direction"): the base, tasks, the network, other programs and
+//! signals (all in), then C. Until its slice has come, what a program writes of the rest is an error where it is
 //! written when the program is built or run on Windows, and a call of a function of the
 //! language's own module that needs it is an error at the call, as a program built without an
 //! operating system is told (`freestanding`). Each slice takes its part out of here; after the
@@ -16,10 +16,9 @@ use crate::types::Ty;
 type Res<T> = Result<T, Diag>;
 
 /// The part of the language a slice brings to Windows, as the message names it.
-const PROGRAMS: &str = "other programs and signals come to Windows in the 100th slice";
 const C: &str = "calls of C come to Windows in the 101st slice";
 
-const NOTE: &str = "Windows is reached slice by slice: it has its base (memory, printing, files and paths, the clock, random numbers, the environment), tasks, threads and locks, and the network and async input and output";
+const NOTE: &str = "Windows is reached slice by slice: it has its base (memory, printing, files and paths, the clock, random numbers, the environment), tasks, threads and locks, the network and async input and output, and other programs and signals";
 
 /// What a type holds that Windows does not run yet.
 fn type_needs(ty: &Ty) -> Option<String> {
@@ -38,28 +37,10 @@ fn type_needs(ty: &Ty) -> Option<String> {
 
 /// What an expression does by itself that Windows does not run yet, with where.
 fn needs(expr: &Expr) -> Option<(Span, String)> {
-    let programs = |what: &str| Some(format!("{what} is not on Windows yet: {PROGRAMS}"));
     let c = |what: &str| Some(format!("{what} is not on Windows yet: {C}"));
     let (span, what) = match &expr.kind {
         ExprKind::Call { name_span, callee, .. } | ExprKind::Method { name_span, callee, .. } => {
             let what = match callee {
-                Callee::System(call) => match call {
-                    SystemCall::Executable
-                    | SystemCall::Run
-                    | SystemCall::Start
-                    | SystemCall::Wait
-                    | SystemCall::WaitAsync
-                    | SystemCall::Signal
-                    | SystemCall::PipeReader
-                    | SystemCall::PipeWriter => programs("running another program"),
-                    SystemCall::SignalListen
-                    | SystemCall::SignalNext
-                    | SystemCall::SignalNextAsync
-                    | SystemCall::SignalStop
-                    | SystemCall::SignalRaise
-                    | SystemCall::SignalNumber => programs("a signal"),
-                    _ => None,
-                },
                 Callee::Extern | Callee::Variadic(_) | Callee::CValue(_) | Callee::CFieldValue(..) => c("a function or a variable of C"),
                 Callee::Memory(MemoryCall::AddressOf) => c("`Memory.addressOf`"),
                 _ => None,

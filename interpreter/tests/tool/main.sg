@@ -1,0 +1,148 @@
+// The program the tests of other programs start, the same on Linux, macOS and Windows, where
+// `sh`, `cat` and their kin are not. The test harness builds it once and puts its folder first on
+// `PATH`, as `sg-test-tool`. Each word of its command line is a step, done in order:
+//
+//   out=TEXT    TEXT and a new line to the output    err=TEXT  the same to the standard error
+//   bad         the bytes `ab` and 0xFF to the output exit=N    ends with the code N
+//   cat         the input to the output, as it comes upper     the input, in capitals
+//   sort        the lines of the input, sorted        count     how many bytes the input has
+//   head=N      the first N bytes of the input, and no more read of it
+//   line        one line of the input, as `got: LINE`
+//   sleep=MS    waits MS milliseconds                 env=NAME  `NAME=value`, or `NAME unset`
+//   is=NAME     `NAME is set`, or `NAME unset`        pwd       the folder it works in
+//   args        each word after it as `[word]`
+//   listen      listens for `Interrupt`, `Terminate` and `Hangup`, says `ready`, and when one
+//               comes says `caught` and ends with 5
+async Result<void, IoError> main(List<string> args) {
+    nint at = 0
+    while at < args.length() {
+        var step = args[at].clone()
+        at += 1
+        var value = ""
+        var name = step.clone()
+        var index = step.indexOf('=') ?? -1
+        if index >= 0 {
+            value = step[index + 1..].clone()
+            name = step[..index].clone()
+        }
+        match name {
+            "out" => {
+                try await Stdout.writeLineAsync(read value)
+                try await Stdout.flushAsync()
+            }
+            "err" => try await Stderr.writeLineAsync(read value)
+            "bad" => {
+                var bytes = byte[3] { 'a', 'b', 0xFF }
+                try await Stdout.writeBytesAsync(read bytes)
+                try await Stdout.flushAsync()
+            }
+            "exit" => exit((byte)number(read value))
+            "cat" => try await copy(false)
+            "upper" => try await copy(true)
+            "sort" => {
+                var lines = List<string>()
+                var line = ""
+                while try await Stdin.readLineAsync(ref line) {
+                    lines.add(line.clone())
+                }
+                lines.sort()
+                for item in read lines {
+                    try await Stdout.writeLineAsync(read item)
+                }
+                try await Stdout.flushAsync()
+            }
+            "count" => {
+                var text = try await Stdin.readTextAsync()
+                try await Stdout.writeLineAsync($"{text.length()}")
+                try await Stdout.flushAsync()
+            }
+            "head" => {
+                var block = byte[4096]
+                var want = (nint)number(read value)
+                var got = try await Stdin.readBytesAsync(ref block[..want])
+                try await Stdout.writeBytesAsync(block[..got])
+                try await Stdout.flushAsync()
+            }
+            "line" => {
+                var line = ""
+                _ = try await Stdin.readLineAsync(ref line)
+                try await Stdout.writeLineAsync($"got: {line}")
+                try await Stdout.flushAsync()
+            }
+            "sleep" => await Task.delay(number(read value))
+            "env" => {
+                match Environment.get(read value) {
+                    Ok(text) => try await Stdout.writeLineAsync($"{value}={text}")
+                    Error(_) => try await Stdout.writeLineAsync($"{value} unset")
+                }
+                try await Stdout.flushAsync()
+            }
+            "is" => {
+                match Environment.get(read value) {
+                    Ok(_) => try await Stdout.writeLineAsync($"{value} is set")
+                    Error(_) => try await Stdout.writeLineAsync($"{value} unset")
+                }
+                try await Stdout.flushAsync()
+            }
+            "pwd" => {
+                var here = try Directory.current()
+                try await Stdout.writeLineAsync(read here)
+                try await Stdout.flushAsync()
+            }
+            "args" => {
+                while at < args.length() {
+                    try await Stdout.writeLineAsync($"[{args[at]}]")
+                    at += 1
+                }
+                try await Stdout.flushAsync()
+            }
+            "listen" => {
+                var listener = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate, Signal.Hangup })
+                try await Stdout.writeLineAsync("ready")
+                try await Stdout.flushAsync()
+                _ = await listener.nextAsync()
+                try await Stdout.writeLineAsync("caught")
+                try await Stdout.flushAsync()
+                exit(5)
+            }
+            _ => {
+                try await Stderr.writeLineAsync($"sg-test-tool: no step `{step}`")
+                exit(2)
+            }
+        }
+    }
+    return Ok()
+}
+
+// The input to the output as it comes, in capitals when `upper`.
+async Result<void, IoError> copy(bool upper) {
+    var block = byte[4096]
+    while true {
+        var got = try await Stdin.readSomeAsync(ref block)
+        if got == 0 {
+            break
+        }
+        if upper {
+            for i in 0..got {
+                if block[i] >= 'a' && block[i] <= 'z' {
+                    block[i] -= 32
+                }
+            }
+        }
+        try await Stdout.writeBytesAsync(block[..got])
+        try await Stdout.flushAsync()
+    }
+    return Ok()
+}
+
+// The number a step was given.
+int number(read string text) {
+    match int.parse(text) {
+        Ok(n) => return n
+        Error(_) => {
+            print($"sg-test-tool: `{text}` is not a number")
+            exit(2)
+            return 0
+        }
+    }
+}

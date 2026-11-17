@@ -1,11 +1,11 @@
-tr: [SHOUT, PLEASE] 14 bytes
+upper: [SHOUT, PLEASE] 14 bytes
 cat: [] 0 bytes
 cat gave back 4194304 bytes, the same: true
-true: [] 0 bytes
+deaf: [] 0 bytes
 head: [01234] 5 bytes
 failed: the program exited with code 4
 bytes: InvalidText(2)
-wc counted 5
+counted 5
 apple
 fig
 pear

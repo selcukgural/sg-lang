@@ -1716,7 +1716,11 @@ A program built without an operating system (`--freestanding`) is on none of the
 
 `Command` runs another program and waits for it to end. There is no shell: each argument reaches the program as it
 is written, so a text from outside never becomes a command of its own. A name without `/` is looked for in the
-folders of `PATH` that start with `/`.
+folders of `PATH` that start with `/`. On Windows a name without `/`, `\` or a drive is looked for as `name.exe`
+(unless it has an extension) in the absolute folders of `PATH`, never in the folder the program works in; the
+words go on one command line, quoted so that the program reads them back as they were written; a `.bat` or
+`.cmd` runs only when named with its extension, through `cmd.exe`, its arguments escaped (a line break in one is
+`InvalidInput`).
 
 ```
 var git = Command("git")
@@ -1741,7 +1745,9 @@ var sorted = try sort.output()
 `PermissionDenied`, `InvalidInput` for a zero byte in a word) or wrote something that is not text, and
 `Failed(ExitStatus status)` when it ended with anything but 0. `status` takes no end for an error and gives the
 `ExitStatus`: `Code(int code)` or `Signal(int number)`; a code with its highest bit set, as Windows gives
-(`0xC0000005`), is printed in hex. A program started while files are open gets none of them.
+(`0xC0000005`), is printed in hex. A program started while files are open gets none of them. Windows has no
+signals to send: there `kill`, `terminate` and `signal` end the program with the code 1, and `Signal` never
+comes back from `status`.
 
 `start` starts the program and goes on. The streams asked for with `pipeInput`, `pipeOutput` and `pipeError` are
 taken out of the `Process` it gives, once each, and `wait` gives how the program ended:
@@ -1798,7 +1804,9 @@ Several signals of one kind before a call are one, kinds come in the order they 
 gets it. Once the last listener of a kind ends, the kind does what it did before, so the next Ctrl-C ends the
 program again. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`, with no
 numbers, since they differ between systems. A server that stops cleanly cancels its accepts on the first signal
-and waits for the connections it has (`examples/shutdown`).
+and waits for the connections it has (`examples/shutdown`). On Windows `Interrupt` is Ctrl-C and Ctrl-Break, and
+`Terminate` is the console closed, the user logging off and the system shutting down, after which the program has
+the few seconds Windows gives it to end; the other kinds never come there, and listening for them is no error.
 
 ### Atomic values and `volatile`
 

@@ -2,25 +2,8 @@
 # A program listed here must be refused on Windows by the checker as waiting for that slice; one that
 # runs is an error until it is taken off. A name with `*` at its end stands for every name that starts so.
 # Each slice takes its lines away; after the last the list is empty. The base (97), tasks, threads
-# and locks (98), and the network and async input and output (99) have come.
-
-# 100: other programs and signals
-ok_process_async  # 100: other programs and signals
-ok_process_cancel  # 100: other programs and signals
-ok_process_descriptors  # 100: other programs and signals
-ok_process_drop  # 100: other programs and signals
-ok_process_environment  # 100: other programs and signals
-ok_process_kill  # 100: other programs and signals
-ok_process_output  # 100: other programs and signals
-ok_process_start  # 100: other programs and signals
-ok_process_talk  # 100: other programs and signals
-ok_signals_async  # 100: other programs and signals
-ok_signals_default  # 100: other programs and signals
-ok_signals_kept  # 100: other programs and signals
-ok_signals_next  # 100: other programs and signals
-ok_signals_process  # 100: other programs and signals
-panic_signals_listen_nothing  # 100: other programs and signals
-shutdown  # 100: other programs and signals
+# and locks (98), the network and async input and output (99), and other programs and signals (100)
+# have come.
 
 # 101: C
 bare  # 101: C
@@ -59,8 +42,6 @@ zlib  # 101: C
 
 # Tests of the harness that are about a later slice as a whole.
 callbacks_end_the_process  # 101: C
-process_path_lookup  # 100: other programs and signals
-shutdown_on_signals  # 100: other programs and signals
 libraries  # 101: C
 handles_misused  # 101: C
 library_folders  # 101: C

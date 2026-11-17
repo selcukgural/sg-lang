@@ -1207,6 +1207,9 @@ fn io_cause(error: Option<&std::io::Error>, code: Option<i32>) -> Value {
             5 => variant(5, vec![Value::Int(IntTy::Int, code as i128)]),
             at => variant(at, Vec::new()),
         },
+        // An argument std refuses before the system sees it (a line break for a batch file of
+        // Windows): `InvalidInput`, as compiled code gives it.
+        None if error.is_some_and(|error| error.kind() == std::io::ErrorKind::InvalidInput) => variant(15, Vec::new()),
         // An error that did not come from the system: EIO.
         None if error.is_some() => variant(5, vec![Value::Int(IntTy::Int, 5)]),
         None => Value::Void,
@@ -5426,9 +5429,14 @@ impl<'a, 'e> Interp<'a, 'e> {
         let _ = self.io.world.borrow_mut().err.flush();
         let mut child = match command.spawn() {
             Ok(child) => child,
-            Err(error) => return Ok(failed(io_cause(Some(&error), error.raw_os_error()))),
+            Err(error) => {
+                let error = crate::sys::not_started(error, &values[2]);
+                return Ok(failed(io_cause(Some(&error), error.raw_os_error())));
+            }
         };
-        let mut made = [i128::from(child.id()), -1, -1, -1];
+        // The number, the three ends kept here, and what names the program to the calls of the
+        // system: the number again, which the interpreter keeps its children by on every system.
+        let mut made = [i128::from(child.id()), -1, -1, -1, i128::from(child.id())];
         if let Some(feed) = child.stdin.take() {
             match input {
                 2 => {
@@ -5779,7 +5787,10 @@ impl<'a, 'e> Interp<'a, 'e> {
         let _ = self.io.world.borrow_mut().err.flush();
         let mut child = match command.spawn() {
             Ok(child) => child,
-            Err(error) => return Ok(failed(io_cause(Some(&error), error.raw_os_error()))),
+            Err(error) => {
+                let error = crate::sys::not_started(error, &values[2]);
+                return Ok(failed(io_cause(Some(&error), error.raw_os_error())));
+            }
         };
         let feed = child.stdin.take();
         let mut out_pipe = child.stdout.take().expect("piped");

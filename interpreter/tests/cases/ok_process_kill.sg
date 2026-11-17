@@ -1,9 +1,15 @@
 // Stopping a program: `kill` sends the signal 9, `terminate` the signal 15, which a program may
 // catch to end in its own way. A program that has ended is not stopped again: it keeps its number
-// until it is waited for.
+// until it is waited for. Windows has no polite stop: both end the program with the code 1. The
+// program started is `sg-test-tool` (tests/tool), whose words are its steps.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
 Result<void, ProcessError> main() {
-    var sleep = Command("sleep")
-    sleep.arg("10")
+    var sleep = tool(read List<string> { "sleep=10000" })
     var killed = try sleep.start()
     killed.kill()
     print(try killed.wait())
@@ -11,26 +17,26 @@ Result<void, ProcessError> main() {
     asked.terminate()
     print(try asked.wait())
 
-    // `true` has ended by the time the other program has; `kill` then does nothing.
-    var done = try Command("true").start()
-    var pause = Command("sleep")
-    pause.arg("0.2")
-    try pause.run()
+    // The first has ended by the time the other one has; `kill` then does nothing.
+    var done = try tool(read List<string> {}).start()
+    try tool(read List<string> { "sleep=200" }).run()
     done.kill()
     print(try done.wait())
 
-    // A shell that catches the polite stop, once it says it is ready for it.
-    var sh = Command("sh")
-    sh.args(read List<string> { "-c", "trap 'echo caught; kill $!; exit 5' TERM; echo ready; sleep 10 & wait" })
-    sh.pipeOutput()
-    var shell = try sh.start()
-    var output = shell.takeOutput() ?? panic("the output was asked for")
+    // A program that catches the polite stop, once it says it is ready for it.
+    var listening = tool(read List<string> { "listen" })
+    listening.pipeOutput()
+    var listener = try listening.start()
+    var output = listener.takeOutput() ?? panic("the output was asked for")
     var line = ""
     _ = try output.readLine(ref line)
     print(line)
-    shell.terminate()
-    _ = try output.readLine(ref line)
-    print(line)
-    print(try shell.wait())
+    listener.terminate()
+    if try output.readLine(ref line) {
+        print(line)
+    } else {
+        print("its output ended")
+    }
+    print(try listener.wait())
     return Ok()
 }

@@ -1,24 +1,24 @@
 // The environment and the folder a program gets: a table of its own, made from ours with the
 // changes of `setVariable`, `removeVariable` and `clearVariables`, while ours stays as it is; and
 // `directory`. What the system cannot take is `InvalidInput`. The folder is the first word of the
-// command line.
+// command line. The program started is `sg-test-tool` (tests/tool), whose words are its steps. On
+// Windows a cleared table still has `SystemRoot`, without which Winsock does not start.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
 void show(read string what, Result<string, ProcessError> done) {
     match done {
-        Ok(text) => print($"{what}: [{text.trim()}]")
+        Ok(text) => print($"{what}: [{text.trim().replaceAll("\n", ", ")}]")
         Error(cause) => print($"{what}: {cause}")
     }
 }
 
-Command shell(read string script) {
-    var sh = Command("sh")
-    sh.arg("-c")
-    sh.arg(script)
-    return sh
-}
-
 Result<void, ProcessError> main(List<string> args) {
     var dir = args[0].clone()
-    var greet = shell("echo \"${GREETING-unset} ${OTHER-unset}\"")
+    var greet = tool(read List<string> { "env=GREETING", "env=OTHER" })
     greet.setVariable("GREETING", "hello")
     greet.setVariable("GREETING", "hello again")
     greet.setVariable("OTHER", "there")
@@ -27,46 +27,41 @@ Result<void, ProcessError> main(List<string> args) {
     print($"ours: {Environment.get("GREETING") is Error(Missing)}")
 
     // Ours is handed on: `PATH` is there unless the table starts empty.
-    var path = shell("test -n \"$PATH\" && echo has PATH")
-    show("inherited", path.output())
-    var clean = Command("/usr/bin/env")
+    show("inherited", tool(read List<string> { "is=PATH" }).output())
+    var clean = tool(read List<string> { "env=ONLY", "env=BEFORE", "is=PATH", "is=SystemRoot" })
     clean.setVariable("BEFORE", "dropped")
     clean.clearVariables()
     clean.setVariable("ONLY", "this")
     show("cleared", clean.output())
-    var empty = Command("/usr/bin/env")
-    empty.clearVariables()
-    show("nothing", empty.output())
-    var spaces = Command("/usr/bin/env")
+    var spaces = tool(read List<string> { "env=A", "env=B" })
     spaces.clearVariables()
-    spaces.setVariable("A", "x = y; $z")
+    spaces.setVariable("A", "x = y; $z %PATH%")
     spaces.setVariable("B", "")
     show("as written", spaces.output())
 
-    var bad = Command("true")
+    var bad = tool(read List<string> {})
     bad.setVariable("A=B", "c")
     show("name with =", bad.output())
-    var nameless = Command("true")
+    var nameless = tool(read List<string> {})
     nameless.setVariable("", "c")
     show("empty name", nameless.output())
-    var zero = Command("echo")
+    var zero = tool(read List<string> { "args" })
     zero.arg("a\0b")
     show("zero byte", zero.output())
-    var zeroValue = Command("true")
+    var zeroValue = tool(read List<string> {})
     zeroValue.setVariable("A", "a\0b")
     show("zero in a value", zeroValue.output())
 
     // The folder it works in; ours stays.
     var folder = Path.join(read dir, "inner")
     try Directory.create(read folder)
-    var pwd = Command("pwd")
+    var pwd = tool(read List<string> { "pwd" })
     pwd.directory(read folder)
     var inner = try pwd.output()
-    print($"in inner: {inner.trim().endsWith("/inner")}")
-    var here = Command("pwd")
-    var ours = try here.output()
+    print($"in inner: {Path.fileName(inner.trim()) == "inner"}")
+    var ours = try tool(read List<string> { "pwd" }).output()
     print($"ours stays: {ours.trim() != inner.trim()}")
-    var missing = Command("pwd")
+    var missing = tool(read List<string> { "pwd" })
     var gone = Path.join(read dir, "missing")
     missing.directory(read gone)
     show("missing folder", missing.output())

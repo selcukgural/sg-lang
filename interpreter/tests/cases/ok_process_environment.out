@@ -1,10 +1,8 @@
-set twice, removed: [hello again unset]
+set twice, removed: [GREETING=hello again, OTHER unset]
 ours: true
-inherited: [has PATH]
-cleared: [ONLY=this]
-nothing: []
-as written: [A=x = y; $z
-B=]
+inherited: [PATH is set]
+cleared: [ONLY=this, BEFORE unset, PATH unset, SystemRoot unset]
+as written: [A=x = y; $z %PATH%, B=]
 name with =: InvalidInput
 empty name: InvalidInput
 zero byte: InvalidInput

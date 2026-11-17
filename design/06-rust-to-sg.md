@@ -343,7 +343,7 @@ Last brought up to date: 17 November 2026, the ninety-first slice.
 
 | Rust | SG | Status | Note |
 |---|---|---|---|
-| `Command::new("git")` | `var git = Command("git")` | built | No shell, as in Rust. A name without `/` is looked for only in the folders of `PATH` that start with `/`, as Go does since 1.19; Rust also runs a program found through `.` or a relative folder |
+| `Command::new("git")` | `var git = Command("git")` | built | No shell, as in Rust. A name without `/` is looked for only in the folders of `PATH` that start with `/`, as Go does since 1.19; Rust also runs a program found through `.` or a relative folder. On Windows only the absolute folders of `PATH`, with `.exe` added, where Rust also looks in the folder of the program and in the folders of the system; a batch file is escaped as Rust escapes it since 1.77.2 |
 | `.arg("log")`, `.args(["-1", "--oneline"])` | `git.arg("log")`, `git.args(read words)` | built | One call per line: the methods change the command (`ref this`) and give nothing, so they are not chained |
 | `.current_dir(dir)` | `git.directory(read dir)` | built | A relative path of the program is taken from our folder, not from the program's |
 | `.env(k, v)`, `.env_remove(k)`, `.env_clear()` | `git.setVariable(k, v)`, `git.removeVariable(k)`, `git.clearVariables()` | built | A table of the program's own; ours is never changed. A name with `=` or a zero byte is `IoError.InvalidInput` when it runs, as Rust's `InvalidInput` |
@@ -357,7 +357,8 @@ Last brought up to date: 17 November 2026, the ninety-first slice.
 | `drop(stdin)` to send the end of the input | `try input.close()` | built | The writer is `Closable`; writing after the program stopped reading gives `IoError.ConnectionReset`, never the signal |
 | `child.wait()?` | `try process.wait()` | built | Takes the `Process`, closing the input it still holds first, as Rust's `wait` does, and letting go of its readers |
 | a `Child` dropped (the program goes on, a zombie once it ends) | a compile error; on a way out with an error, the program is stopped | built | A `Process` in a local variable is waited for on every path; one that ends without that (an error, a field) is stopped with the signal 9 and waited for, as tokio's `kill_on_drop(true)` |
-| `child.kill()?` | `process.kill()` | built | Gives nothing: a program not waited for keeps its number, so the signal cannot reach another one |
+| `child.kill()?` | `process.kill()` | built | Gives nothing: a program not waited for keeps its number, so the signal cannot reach another one. On Windows `TerminateProcess` with the code 1, as Rust's |
+| `env_clear()` | `command.clearVariables()` | built | On Windows the program keeps `SystemRoot`, as Go keeps it and Rust does not: without it Winsock does not start there |
 | `libc::kill(pid, SIGTERM)` | `process.terminate()` | built | The polite stop, which the program may catch |
 | `child.id()` | `process.id()` | built | |
 | `child.try_wait()` | none | designed | A wait with a time limit is `waitAsync` with a token of `CancellationSource.after(ms)` |
@@ -372,7 +373,8 @@ Last brought up to date: 17 November 2026, the ninety-first slice.
 | `tokio::signal::unix::signal(SignalKind::interrupt())?` | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt })` | built | One listener may take several kinds; while it lives they do not end the program. Once the last listener of a kind ends, the kind does what it did before, where Tokio keeps its handler for good |
 | `sig.recv().await` | `await signals.nextAsync(read token)` | built | Gives `Result<Signal, Cancelled>`; a cancel ends the wait, and a signal that comes later stays. Several of one kind before a call are one, as in Tokio |
 | `signal_hook::iterator::Signals::new([SIGINT, SIGTERM])?`, `.forever()` | `signals.next()` in a loop | built | Waits on the thread, which an async function does not do |
-| `tokio::signal::ctrl_c().await` | `var ctrlC = Signals.listen(read List<Signal> { Signal.Interrupt })`, then `await ctrlC.nextAsync()` | built | Listening starts at `listen`, so a Ctrl-C that comes before the `await` is not lost |
+| `tokio::signal::ctrl_c().await` | `var ctrlC = Signals.listen(read List<Signal> { Signal.Interrupt })`, then `await ctrlC.nextAsync()` | built | Listening starts at `listen`, so a Ctrl-C that comes before the `await` is not lost. On Windows Ctrl-C and Ctrl-Break both, as Tokio's `ctrl_c` |
+| `tokio::signal::windows::ctrl_close()`, `ctrl_logoff()`, `ctrl_shutdown()` | `Signals.listen(read List<Signal> { Signal.Terminate })` | built | One kind for the three, as Go has it; the program is held while it ends, within the time Windows gives |
 | `ctrlc::set_handler(move \|\| ...)` | a task that awaits `nextAsync`, then cancels a source | built | No handler of the program's own; `examples/shutdown` stops its server that way |
 | `libc::raise(libc::SIGUSR1)` | `Signals.raise(Signal.User1)` | built | What was printed is written out first |
 | `libc::sigaction` with a handler of one's own | an `export` function given to `sigaction` inside `unsafe` | built | Nothing is checked inside it; when it and a listener take one signal, the last one set wins |

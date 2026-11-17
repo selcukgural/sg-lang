@@ -1,0 +1,16 @@
+// The words reach the program as they are written, on every system: no shell reads them, and on
+// Windows, where a program is given one line, the line is quoted so that the program reads the
+// same words back (a quote, backslashes before a quote and at the end, an empty word, a tab).
+// The program started is `sg-test-tool` (tests/tool), which writes each word after `args` as
+// `[word]`.
+Result<void, ProcessError> main() {
+    var words = Command("sg-test-tool")
+    words.arg("args")
+    words.args(read List<string> {
+        "two words", "", "a\"b", "\"", "back\\slash", "end\\", "end\\\\", "\\\"", "a\\\\\"b", "tab\there",
+        "$HOME", "*", "%PATH%", "; ls", "`id`", "^&|<>", "é ü 中"
+    })
+    var said = try words.output()
+    print(said.trim())
+    return Ok()
+}

@@ -1,9 +1,15 @@
 // A cancel stops the program it ends the wait for: `statusAsync`, `outputAsync` and `waitAsync`
-// give `Cancelled`, and the program ends by the signal 9. With a token cancelled before the call,
-// the program does not start.
+// give `Cancelled`, and the program is stopped. With a token cancelled before the call, the
+// program does not start. The program started is `sg-test-tool` (tests/tool), whose words are its
+// steps.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
 async Result<void, ProcessError> main() {
-    var sleep = Command("sleep")
-    sleep.arg("10")
+    var sleep = tool(read List<string> { "sleep=10000" })
     var soon = CancellationSource.after(100)
     if await sleep.statusAsync(read soon.token()) is Error(cause) {
         print($"status: {cause}")
@@ -20,13 +26,11 @@ async Result<void, ProcessError> main() {
 
     var before = CancellationSource()
     before.cancel()
-    var marker = Command("sh")
-    marker.args(read List<string> { "-c", "echo started" })
-    if await marker.runAsync(read before.token()) is Error(cause) {
+    if await tool(read List<string> { "out=started" }).runAsync(read before.token()) is Error(cause) {
         print($"run: {cause}")
     }
     var never = CancellationSource.after(10000)
-    var status = try await Command("true").statusAsync(read never.token())
+    var status = try await tool(read List<string> {}).statusAsync(read never.token())
     print(status)
     return Ok()
 }

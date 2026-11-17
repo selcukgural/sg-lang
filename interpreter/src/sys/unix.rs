@@ -197,6 +197,11 @@ pub(crate) fn wait_unreaped(pid: i64) {
 
 /// How a program ended, as `System.run` and `System.wait` give it: 0 and the code, or 1 and the
 /// signal that stopped it.
+/// Why a program did not start, as the system said it.
+pub(crate) fn not_started(error: std::io::Error, _folder: &Value) -> std::io::Error {
+    error
+}
+
 pub(crate) fn ended_as(status: std::process::ExitStatus) -> (i64, i64) {
     use std::os::unix::process::ExitStatusExt;
     match (status.code(), status.signal()) {

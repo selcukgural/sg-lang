@@ -211,7 +211,9 @@ Windows does not run yet is a compile error that names the slice that brings it.
 Windows is written too: tasks, threads, locks, atomics and async functions run there, and a delay of a
 millisecond waits about a millisecond. The third is written: the network, datagrams and async input and
 output run there, a listener holds its port alone, and a datagram that came back is told as on Linux and
-macOS.
+macOS. The fourth is written: other programs and signals run there, a program started with its words quoted
+as it reads them back and a batch file only by its extension, its arguments escaped, and Ctrl-C, Ctrl-Break
+and the console closed come as `Interrupt` and `Terminate`.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is

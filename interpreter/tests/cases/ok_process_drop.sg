@@ -1,14 +1,14 @@
-// A `Process` that ends without being waited for stops its program with the signal 9: on a way
-// out with an error, and in a field of a struct that ends. Had the shells gone on, they would
-// write after a third of a second.
+// A `Process` that ends without being waited for stops its program: on a way out with an error, and
+// in a field of a struct that ends. Had the programs gone on, they would write after a third of a
+// second. The program started is `sg-test-tool` (tests/tool), whose words are its steps.
 struct Holder {
     Process process
 }
 
 Command late(read string word) {
-    var sh = Command("sh")
-    sh.args(read List<string> { "-c", $"sleep 0.3; echo {word} survived".toString() })
-    return sh
+    var command = Command("sg-test-tool")
+    command.args(read List<string> { "sleep=300", $"out={word} survived".toString() })
+    return command
 }
 
 Result<void, IoError> leave() {
@@ -31,8 +31,8 @@ void main() {
         }
         Error(cause) => print($"{cause}")
     }
-    var pause = Command("sleep")
-    pause.arg("0.6")
+    var pause = Command("sg-test-tool")
+    pause.arg("sleep=600")
     _ = pause.status()
     print("done")
 }

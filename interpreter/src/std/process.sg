@@ -261,12 +261,12 @@ public struct Command {
     Result<Process, IoError> begin(read this, long input, bool output, bool error) {
         try this.valid()
         var path = try this.found()
-        var made = long[4]
+        var made = long[5]
         try System.start(
             read path, read this.words, read this.folder, this.clear, read this.names, read this.values, read this.kept,
             input, read this.text, output, error, ref made
         )
-        var process = Process { pid = made[0], input = null, output = null, error = null, ended = false }
+        var process = Process { pid = made[0], handle = made[4], input = null, output = null, error = null, ended = false }
         if made[1] >= 0 {
             process.input = System.writer(made[1])
         }
@@ -334,14 +334,22 @@ public struct Command {
     }
 
     // The path of the program: a name looked for in `PATH`, or a path made to start from the folder
-    // this program works in when the program works in another one.
+    // this program works in when the program works in another one. On Windows `\` and a drive
+    // (`C:`) make a path too, and a name without an extension is looked for as `name.exe`. Only
+    // the folders of `PATH` that are absolute are looked in, and never the folder this program
+    // works in, where a program put by someone else could be run. A path on Windows gets `.exe`
+    // too when it has no extension, as Rust gives it.
     Result<string, IoError> found(read this) {
-        if this.program.contains('/') {
-            if this.program.startsWith('/') || this.folder.length() == 0 {
-                return Ok(this.program.clone())
+        var name = this.program.clone()
+        if OperatingSystem.isWindows() && name.length() > 0 && Path.extension(read name).length() == 0 {
+            name = $"{name}.exe".toString()
+        }
+        if Command.isPath(read this.program) {
+            if Command.isAbsolute(read name) || this.folder.length() == 0 {
+                return Ok(name)
             }
             var here = try Directory.current()
-            return Ok(Path.join(read here, read this.program))
+            return Ok(Path.join(read here, read name))
         }
         if this.program.length() == 0 {
             return Error(IoError.NotFound)
@@ -353,11 +361,11 @@ public struct Command {
         }
         // A file that is there and cannot be run is told only when no folder has one that can.
         var denied = false
-        for folder in folders.split(':') {
-            if !folder.startsWith('/') {
+        for folder in Command.pathFolders(read folders) {
+            if !Command.isAbsolute(read folder) {
                 continue
             }
-            var path = Path.join(folder, read this.program)
+            var path = Path.join(read folder, read name)
             match System.executable(read path) {
                 1 => return Ok(path)
                 2 => denied = true
@@ -369,6 +377,50 @@ public struct Command {
         }
         return Error(IoError.NotFound)
     }
+
+    // Whether the program is named by a path, not looked for: it holds a separator, or on
+    // Windows a drive (`C:tool.exe`).
+    bool isPath(read string program) {
+        if OperatingSystem.isWindows() {
+            return program.contains('/') || program.contains('\\') || program.contains(':')
+        }
+        return program.contains('/')
+    }
+
+    // Whether the path does not depend on the folder this program works in: it starts at `/` on
+    // Linux and macOS; on Windows at a drive with a separator (`C:\`) or a share (`\\server\share\`),
+    // not at a separator alone (`\tools`), which is on the drive of that folder, nor at a drive
+    // alone (`C:tools`), which is in the folder that drive works in.
+    bool isAbsolute(read string path) {
+        if OperatingSystem.isWindows() {
+            return Path.rootLength(path) >= 3
+        }
+        return path.startsWith('/')
+    }
+
+    // The folders of `PATH`: apart at `:` on Linux and macOS; on Windows at `;`, where a folder
+    // may be quoted to hold a `;` and the quotes are not part of it, as Rust and Go read it.
+    List<string> pathFolders(read string text) {
+        var folders = List<string>()
+        if !OperatingSystem.isWindows() {
+            for folder in text.split(':') {
+                folders.add(folder.clone())
+            }
+            return folders
+        }
+        nint start = 0
+        var quoted = false
+        for i in 0..text.length() {
+            if text[i] == '"' {
+                quoted = !quoted
+            } else if text[i] == ';' && !quoted {
+                folders.add(text[start..i].replaceAll("\"", ""))
+                start = i + 1
+            }
+        }
+        folders.add(text[start..].replaceAll("\"", ""))
+        return folders
+    }
 }
 
 // A program `start` started, which runs while this one goes on. It is waited for with `wait` or
@@ -378,6 +430,9 @@ public struct Command {
 public struct Process : Disposable {
     // The number the system knows the program by.
     long pid
+    // What names the program to the calls of the system: the number on Linux and macOS, its
+    // handle on Windows, which names it, and no other, until it is waited for.
+    long handle
     // The pipes not taken out yet.
     StreamWriter? input
     StreamReader? output
@@ -409,20 +464,23 @@ public struct Process : Disposable {
     }
 
     // Stops the program at once: the signal 9, which it cannot catch. It is still waited for, and
-    // ends with `ExitStatus.Signal(9)` unless it had ended before. Once it has ended, nothing.
+    // ends with `ExitStatus.Signal(9)` unless it had ended before. Once it has ended, nothing. On
+    // Windows it ends with `ExitStatus.Code(1)`.
     public void kill(read this) {
-        System.signal(this.pid, 9)
+        System.signal(this.handle, 9)
     }
 
-    // Asks the program to stop: the signal 15, which it may catch to end in its own way.
+    // Asks the program to stop: the signal 15, which it may catch to end in its own way. Windows has
+    // no such request to send: there the program is stopped as `kill` stops it.
     public void terminate(read this) {
-        System.signal(this.pid, 15)
+        System.signal(this.handle, 15)
     }
 
     // Sends the program a signal: `Signal.Interrupt` is what Ctrl-C at a terminal sends it. Once it
-    // has ended, nothing.
+    // has ended, nothing. On Windows every signal stops the program as `kill` does, but
+    // `Signal.WindowChange`, which does nothing.
     public void signal(read this, Signal signal) {
-        System.signal(this.pid, signalNumber(signal))
+        System.signal(this.handle, signalNumber(signal))
     }
 
     // Waits for the program to end and gives how it ended. The input it still holds is closed
@@ -431,7 +489,7 @@ public struct Process : Disposable {
     public Result<ExitStatus, IoError> wait(this) {
         this.leave()
         var ended = long[2]
-        System.wait(this.pid, ref ended)
+        System.wait(this.handle, ref ended)
         this.ended = true
         return Ok(Process.status(read ended))
     }
@@ -440,7 +498,7 @@ public struct Process : Disposable {
     public async Result<ExitStatus, IoError> waitAsync(this, read CancellationToken token) {
         this.leave()
         var ended = long[2]
-        try await System.waitAsync(this.pid, read token, ref ended)
+        try await System.waitAsync(this.handle, read token, ref ended)
         this.ended = true
         return Ok(Process.status(read ended))
     }
@@ -464,9 +522,9 @@ public struct Process : Disposable {
     // process that has ended and was never asked how.
     void dispose(ref this) {
         if !this.ended {
-            System.signal(this.pid, 9)
+            System.signal(this.handle, 9)
             var ended = long[2]
-            System.wait(this.pid, ref ended)
+            System.wait(this.handle, ref ended)
         }
     }
 }

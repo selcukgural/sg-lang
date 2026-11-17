@@ -763,10 +763,88 @@ static char* sg_from_wide(const wchar_t* w, int64_t n, int64_t* len) {
     return out;
 }
 
+/* The words of a command line of Windows, by the rules of C's library since 2008, as Rust reads
+   them: the program's name up to a space or a tab outside quotes, its quotes dropped; then words
+   apart where a space or a tab is outside quotes; `2n` backslashes and a quote are `n` and the
+   quote opens or closes, `2n+1` and a quote are `n` and the quote itself; other backslashes are
+   themselves; `""` inside quotes is a quote. Written here, not taken from `CommandLineToArgvW`,
+   whose library brings `user32` along, and a console program that has `user32` is not told of
+   the user logging off or of the system shutting down. `out` holds each word ended by a zero;
+   `*n` counts them. */
+static wchar_t* sg_split_command_line(const wchar_t* line, wchar_t*** words, int* n) {
+    size_t len = wcslen(line);
+    /* An empty line names no program: its name is then the path of its file. */
+    size_t room = len == 0 ? 32768 : len + 2;
+    wchar_t* out = (malloc)(room * sizeof(wchar_t));
+    wchar_t** list = (malloc)((len / 2 + 3) * sizeof(wchar_t*));
+    if (!out || !list) abort();
+    size_t at = 0, k = 0;
+    int count = 0;
+    if (len == 0) {
+        DWORD got = GetModuleFileNameW(NULL, out, (DWORD)room);
+        out[got < room ? got : 0] = 0;
+        list[count++] = out;
+        *words = list;
+        *n = count;
+        return out;
+    }
+    bool quoted = false;
+    list[count++] = out;
+    for (; at < len; at++) {
+        wchar_t c = line[at];
+        if (c == L'"') { quoted = !quoted; continue; }
+        if ((c == L' ' || c == L'\t') && !quoted) break;
+        out[k++] = c;
+    }
+    out[k++] = 0;
+    while (at < len && (line[at] == L' ' || line[at] == L'\t')) at++;
+    if (at < len) {
+        size_t start = k;
+        bool any = false;
+        quoted = false;
+        while (at < len) {
+            wchar_t c = line[at++];
+            if ((c == L' ' || c == L'\t') && !quoted) {
+                out[k++] = 0;
+                list[count++] = out + start;
+                start = k;
+                any = false;
+                while (at < len && (line[at] == L' ' || line[at] == L'\t')) at++;
+                continue;
+            }
+            any = true;
+            if (c == L'\\') {
+                size_t slashes = 1;
+                while (at < len && line[at] == L'\\') { slashes++; at++; }
+                if (at < len && line[at] == L'"') {
+                    for (size_t i = 0; i < slashes / 2; i++) out[k++] = L'\\';
+                    if (slashes % 2 == 1) { out[k++] = L'"'; at++; }
+                } else {
+                    for (size_t i = 0; i < slashes; i++) out[k++] = L'\\';
+                }
+            } else if (c == L'"' && quoted) {
+                if (at < len && line[at] == L'"') { out[k++] = L'"'; at++; }
+                else if (at < len) quoted = false;
+                else break;
+            } else if (c == L'"') {
+                quoted = true;
+            } else {
+                out[k++] = c;
+            }
+        }
+        if (k > start || any || quoted) {
+            out[k++] = 0;
+            list[count++] = out + start;
+        }
+    }
+    *words = list;
+    *n = count;
+    return out;
+}
+
 /* What a program does first on Windows: its streams in binary mode, so that `\n` is written as
    it is; no window and no report of Windows when it aborts; and the words of its command line
    from Windows' own UTF-16, as UTF-8, whatever the code page. */
-#pragma comment(lib, "shell32")
 static void sg_start(int* argc, char*** argv) {
     _setmode(0, _O_BINARY);
     _setmode(1, _O_BINARY);
@@ -774,8 +852,8 @@ static void sg_start(int* argc, char*** argv) {
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     if (!argc) return;
     int n = 0;
-    wchar_t** words = CommandLineToArgvW(GetCommandLineW(), &n);
-    if (!words) return;
+    wchar_t** words = NULL;
+    wchar_t* block = sg_split_command_line(GetCommandLineW(), &words, &n);
     char** utf8 = (malloc)(sizeof(char*) * ((size_t)n + 1));
     if (!utf8) abort();
     for (int i = 0; i < n; i++) {
@@ -783,7 +861,8 @@ static void sg_start(int* argc, char*** argv) {
         utf8[i] = sg_from_wide(words[i], (int64_t)wcslen(words[i]), &len);
     }
     utf8[n] = NULL;
-    LocalFree(words);
+    (free)(words);
+    (free)(block);
     /* The words live as long as the process, as C's own do. */
     *argc = n;
     *argv = utf8;
@@ -4135,7 +4214,7 @@ static sg_reader sg_net_reader(sg_socket* s, int64_t limit, const char* loc) {
     }
     uint8_t* block = malloc(65536);
     if (!block) abort();
-    return (sg_reader){ s->fd, block, 0, 0, 0, false, s, 65536, limit, false, 0, false };
+    return (sg_reader){ s->fd, block, 0, 0, 0, false, s, 65536, limit, false, 0, false SG_READER_REST };
 }
 "#;
 
@@ -4308,13 +4387,20 @@ static inline int64_t sg_udp_found(const sg_addrinfo* list, uint64_t* out) {
 /// `SG_SIGNALS_ASYNC`) is woken as one waiting for a thread is. A kind whose last listener ends does
 /// what it did before the first. Added after the async runtimes.
 const SIGNALS_RUNTIME: &str = r#"
+#if !defined(_WIN32)
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#endif
 #define SG_SIG_KINDS 7
-/* The kinds, in the order of the variants of `Signal`. */
+/* The kinds, in the order of the variants of `Signal`. Windows has no numbers of its own: those
+   of Linux stand for them, for `Process.signal`, where only `WindowChange` (28) is told apart. */
+#if defined(_WIN32)
+static const int sg_sig_numbers[SG_SIG_KINDS] = { 2, 15, 1, 3, 10, 12, 28 };
+#else
 static const int sg_sig_numbers[SG_SIG_KINDS] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2, SIGWINCH };
+#endif
 #if SG_SIGNALS_ASYNC
 struct sg_sig_wait;
 #endif
@@ -4333,6 +4419,7 @@ typedef struct sg_sig_listener {
 static sg_mtx sg_sig_lock = SG_MTX_INIT;
 static sg_sig_listener* sg_sig_first = NULL;
 static int sg_sig_counts[SG_SIG_KINDS];
+#if !defined(_WIN32)
 static struct sigaction sg_sig_before[SG_SIG_KINDS];
 /* Neither end blocks. The read end is read only under `sg_sig_lock`, so a kind read from it has been
    handed on once the lock is free. */
@@ -4352,6 +4439,7 @@ static void sg_sig_handler(int number) {
     }
     errno = saved;
 }
+#endif
 static int sg_sig_pop(sg_sig_listener* l) {
     int k = l->pending[0];
     l->count--;
@@ -4361,6 +4449,41 @@ static int sg_sig_pop(sg_sig_listener* l) {
 #if SG_SIGNALS_ASYNC
 static void sg_sig_tell(sg_sig_listener* l);
 #endif
+/* `sg_sig_lock` is held: a signal of kind `k` goes to its listeners, each of which keeps a kind
+   once. */
+static void sg_sig_hand(int k) {
+    for (sg_sig_listener* l = sg_sig_first; l; l = l->next) {
+        if (!(l->mask & (1 << k))) continue;
+        bool kept = false;
+        for (int j = 0; j < l->count; j++) kept = kept || l->pending[j] == k;
+        if (!kept) l->pending[l->count++] = (uint8_t)k;
+        sg_cnd_broadcast(&l->came);
+#if SG_SIGNALS_ASYNC
+        sg_sig_tell(l);
+#endif
+    }
+}
+#if defined(_WIN32)
+/* The handler of the console, which Windows runs on a thread of its own, so it hands the signal on
+   itself: Ctrl-C and Ctrl-Break are `Interrupt`; the console closed, the user logging off and the
+   system shutting down are `Terminate`. With no listener of the kind, Windows does what it does
+   by default (the program ends). Windows ends the program once the handler returns from a
+   `Terminate`, so then it does not return: the program ends in its own way, within the few
+   seconds Windows gives it. */
+static BOOL WINAPI sg_sig_console(DWORD event) {
+    int k = event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT ? 0
+          : event == CTRL_CLOSE_EVENT || event == CTRL_LOGOFF_EVENT || event == CTRL_SHUTDOWN_EVENT ? 1 : -1;
+    if (k < 0) return FALSE;
+    sg_mtx_lock(&sg_sig_lock);
+    bool heard = sg_sig_counts[k] > 0;
+    if (heard) sg_sig_hand(k);
+    sg_mtx_unlock(&sg_sig_lock);
+    if (!heard) return FALSE;
+    if (k == 1) for (;;) Sleep(INFINITE);
+    return TRUE;
+}
+static bool sg_sig_installed = false;
+#else
 /* `sg_sig_lock` is held: what the pipe holds goes to the listeners of each kind. */
 static void sg_sig_hand_on(void) {
     uint8_t got[64];
@@ -4368,19 +4491,7 @@ static void sg_sig_hand_on(void) {
         ssize_t n = read(sg_sig_read_end, got, sizeof got);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) return;
-        for (ssize_t i = 0; i < n; i++) {
-            int k = got[i];
-            for (sg_sig_listener* l = sg_sig_first; l; l = l->next) {
-                if (!(l->mask & (1 << k))) continue;
-                bool kept = false;
-                for (int j = 0; j < l->count; j++) kept = kept || l->pending[j] == k;
-                if (!kept) l->pending[l->count++] = (uint8_t)k;
-                sg_cnd_broadcast(&l->came);
-#if SG_SIGNALS_ASYNC
-                sg_sig_tell(l);
-#endif
-            }
-        }
+        for (ssize_t i = 0; i < n; i++) sg_sig_hand(got[i]);
         /* Fewer than asked for: the pipe was empty after them. */
         if (n < (ssize_t)sizeof got) return;
     }
@@ -4396,13 +4507,26 @@ static SG_THREAD_MAIN(sg_sig_relay, unused) {
         sg_mtx_unlock(&sg_sig_lock);
     }
 }
-/* `System.signalListen(mask)`: the first listener makes the pipe and starts the thread. */
+#endif
+/* `System.signalListen(mask)`: the first listener makes the pipe and starts the thread (on
+   Windows, sets the handler of the console). */
 static int64_t sg_sig_listen(int32_t mask) {
     sg_sig_listener* l = calloc(1, sizeof *l);
     if (!l) abort();
     sg_cnd_init(&l->came);
     l->mask = mask;
     sg_mtx_lock(&sg_sig_lock);
+#if defined(_WIN32)
+    if (!sg_sig_installed) {
+        if (!SetConsoleCtrlHandler(sg_sig_console, TRUE)) sg_panicf("", "the system refused to tell the program of Ctrl-C (os error %lu)\n", (unsigned long)GetLastError());
+        sg_sig_installed = true;
+    }
+    /* A program started with Ctrl-C ignored (Windows hands that on to the programs a program
+       starts) is told of it again while it listens, as a listener on Linux and macOS takes the
+       place of an ignored signal. */
+    if ((mask & 1) && sg_sig_counts[0] == 0) SetConsoleCtrlHandler(NULL, FALSE);
+    for (int k = 0; k < SG_SIG_KINDS; k++) if (mask & (1 << k)) sg_sig_counts[k]++;
+#else
     if (sg_sig_read_end < 0) {
         int ends[2];
         if (pipe(ends) != 0) sg_panicf("", "the system refused a pipe for the signals: %s (os error %d)\n", strerror(errno), errno);
@@ -4426,6 +4550,7 @@ static int64_t sg_sig_listen(int32_t mask) {
             sigaction(sg_sig_numbers[k], &a, &sg_sig_before[k]);
         }
     }
+#endif
     l->next = sg_sig_first;
     if (sg_sig_first) sg_sig_first->prev = l;
     sg_sig_first = l;
@@ -4440,7 +4565,11 @@ static void sg_sig_stop(int64_t id) {
     else sg_sig_first = l->next;
     if (l->next) l->next->prev = l->prev;
     for (int k = 0; k < SG_SIG_KINDS; k++) {
+#if defined(_WIN32)
+        if (l->mask & (1 << k)) sg_sig_counts[k]--;
+#else
         if ((l->mask & (1 << k)) && --sg_sig_counts[k] == 0) sigaction(sg_sig_numbers[k], &sg_sig_before[k], NULL);
+#endif
     }
     sg_mtx_unlock(&sg_sig_lock);
     sg_cnd_destroy(&l->came);
@@ -4451,10 +4580,23 @@ static void sg_sig_stop(int64_t id) {
    first. */
 static void sg_sig_raise(int32_t kind) {
     fflush(stdout);
+#if defined(_WIN32)
+    /* Handed on here when someone listens; otherwise the default of the signal: the program ends
+       as Ctrl-C ends it (STATUS_CONTROL_C_EXIT), and `WindowChange` does nothing. */
+    sg_mtx_lock(&sg_sig_lock);
+    bool heard = sg_sig_counts[kind] > 0;
+    if (heard) sg_sig_hand(kind);
+    sg_mtx_unlock(&sg_sig_lock);
+    if (!heard && kind != 6) {
+        fflush(stderr);
+        ExitProcess(0xC000013A);
+    }
+#else
     (void)raise(sg_sig_numbers[kind]);
     sg_mtx_lock(&sg_sig_lock);
     if (sg_sig_read_end >= 0) sg_sig_hand_on();
     sg_mtx_unlock(&sg_sig_lock);
+#endif
 }
 /* `System.signalNext(listener)`. */
 static int64_t sg_sig_next(int64_t id) {
@@ -5368,13 +5510,23 @@ static int sg_reader_net(sg_reader* r, int need, int64_t want, sg_wait* w, sg_ca
 /// The reader of a pipe from another program: a reader of a connection that owns its socket and
 /// has no longest line, so that it reads, waits and is cancelled as one. After `NET_RUNTIME`.
 const PROCESS_PIPES_RUNTIME: &str = r#"
+#if defined(_WIN32)
+/* On Windows the end here is overlapped (`SG_LAPPED`): read as a file is, and an async read on a
+   thread of input and output that a cancel ends (`sg_lap_wait`). */
+static sg_reader sg_proc_reader(int64_t fd) {
+    uint8_t* block = malloc(65536);
+    if (!block) abort();
+    return (sg_reader){ (int)fd, block, 0, 0, 0, false, NULL, 65536, INT64_MAX, false, 0, false SG_READER_REST };
+}
+#else
 static sg_reader sg_proc_reader(int64_t fd) {
     sg_socket* s = malloc(sizeof *s);
     uint8_t* block = malloc(65536);
     if (!s || !block) abort();
     *s = (sg_socket){ (int)fd, false };
-    return (sg_reader){ (int)fd, block, 0, 0, 0, false, s, 65536, INT64_MAX, false, 0, true };
+    return (sg_reader){ (int)fd, block, 0, 0, 0, false, s, 65536, INT64_MAX, false, 0, true SG_READER_REST };
 }
+#endif
 "#;
 
 /// `System.waitAsync`: the end of the program is waited for on the loop of the network, as a socket
@@ -5383,6 +5535,87 @@ static sg_reader sg_proc_reader(int64_t fd) {
 /// takes it away once the loop has woken it. Where Linux has no pidfd, a thread of input and output
 /// waits instead (`waitid` with `WNOWAIT`). After `NET_ASYNC_RUNTIME`.
 const PROCESS_ASYNC_RUNTIME: &str = r#"
+#if defined(_WIN32)
+/* On Windows the end of the program is waited for by the pool of threads of the system
+   (`RegisterWaitForSingleObject`, as Tokio and libuv wait for it), on a handle of its own, so
+   that no thread is held for each program; its call back wakes the task. A cancel leaves the
+   wait to come to its end, as the program is stopped then, and the wait lets itself go. */
+typedef struct sg_proc_away { HANDLE process; HANDLE wait; sg_wait* waiter; } sg_proc_away;
+/* `state`: SG_WAITING, SG_OVER or SG_CANCELLED. */
+typedef struct { sg_wait w; int state; } sg_io_proc;
+static VOID CALLBACK sg_proc_ended(PVOID p, BOOLEAN timed_out) {
+    (void)timed_out;
+    sg_proc_away* a = p;
+    sg_mtx_lock(&sg_clock_lock);
+    sg_wait* w = a->waiter;
+    a->waiter = NULL;
+    sg_task* job = NULL;
+    if (w) {
+        sg_wait_unlink(w);
+        __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
+        job = w->d.job;
+        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    }
+    HANDLE wait = a->wait;
+    sg_mtx_unlock(&sg_clock_lock);
+    if (job) sg_wake(job);
+    UnregisterWait(wait);
+    CloseHandle(a->process);
+    /* Outside the count of blocks: one may be out when the program ends. */
+    (free)(a);
+}
+/* A cancel, under the clock's lock: the task goes on. */
+static void sg_proc_cut(sg_delay* d) {
+    sg_wait* w = (sg_wait*)d;
+    ((sg_proc_away*)(void*)w->on.away)->waiter = NULL;
+    sg_task* job = d->job;
+    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    sg_wake(job);
+}
+/* The task running now waits for the end of the program with handle `child`. A wait the system
+   refuses is over at once: the program is then waited for where it is taken away. */
+static void sg_proc_wait_start(sg_io_proc* x, int64_t child, sg_cancel* token, const char* loc) {
+    (void)loc;
+    sg_wait_init(&x->w, sg_proc_cut);
+    if (sg_cancelled(token)) { x->state = SG_CANCELLED; return; }
+    sg_proc_away* a = (calloc)(1, sizeof *a);
+    if (!a) abort();
+    if (!DuplicateHandle(GetCurrentProcess(), (HANDLE)(intptr_t)child, GetCurrentProcess(), &a->process, SYNCHRONIZE, FALSE, 0)) {
+        (free)(a);
+        x->state = SG_OVER;
+        return;
+    }
+    x->w.on.away = (struct sg_far*)(void*)a;
+    sg_mtx_lock(&sg_clock_lock);
+    if (token && token->cancelled) {
+        sg_mtx_unlock(&sg_clock_lock);
+        CloseHandle(a->process);
+        (free)(a);
+        x->state = SG_CANCELLED;
+        return;
+    }
+    if (token) sg_wait_link(&x->w, token);
+    a->waiter = &x->w;
+    /* Under the clock's lock, which the call back takes first: it sees the wait it lets go of. */
+    if (!RegisterWaitForSingleObject(&a->wait, a->process, sg_proc_ended, a, INFINITE, WT_EXECUTEONLYONCE)) {
+        a->waiter = NULL;
+        sg_wait_unlink(&x->w);
+        sg_mtx_unlock(&sg_clock_lock);
+        CloseHandle(a->process);
+        (free)(a);
+        x->state = SG_OVER;
+        return;
+    }
+    sg_mtx_unlock(&sg_clock_lock);
+    x->state = SG_WAITING;
+}
+static bool sg_proc_wait_ready(sg_io_proc* x) {
+    if (x->state != SG_WAITING) return true;
+    if (!sg_wait_settled(&x->w)) return false;
+    x->state = sg_wait_state(&x->w);
+    return true;
+}
+#else
 #if defined(__linux__)
 #include <sys/syscall.h>
 #endif
@@ -5477,9 +5710,505 @@ static bool sg_proc_wait_ready(sg_io_proc* x) {
     if (x->pidfd >= 0) { close(x->pidfd); x->pidfd = -1; }
     return true;
 }
+#endif
 "#;
 
 const PROCESS_RUNTIME: &str = r#"
+#if defined(_WIN32)
+/* Other programs on Windows (choices 1032 to 1041): `CreateProcessW`, the command line quoted
+   as C's library reads it back, a batch file through `cmd.exe` with its arguments escaped as
+   Rust escapes them, an environment block of UTF-16, and named pipes whose end here is
+   overlapped. A program is kept by its handle (`made[4]`), which names it until it is waited
+   for. */
+
+/* `System.executable(path)`: 1 for a file, 0 for none (a folder is none). Windows has no right
+   to run a file apart from the right to read it: whether the file runs, `CreateProcessW` says. */
+static int64_t sg_proc_executable(sg_str path) {
+    int code = 0;
+    wchar_t* name = sg_wide(path, &code);
+    if (!name) return 0;
+    DWORD attributes = GetFileAttributesW(name);
+    free(name);
+    return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+}
+/* Text of UTF-8 as UTF-16 ended by a zero, in a block of `malloc`. */
+static wchar_t* sg_proc_wide(const uint8_t* ptr, int64_t len) {
+    int n = len > 0 ? MultiByteToWideChar(CP_UTF8, 0, (const char*)ptr, (int)len, NULL, 0) : 0;
+    wchar_t* w = malloc(((size_t)n + 1) * sizeof(wchar_t));
+    if (!w) abort();
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, (const char*)ptr, (int)len, w, n);
+    w[n] = 0;
+    return w;
+}
+/* An argument as C's library reads it back, as Rust writes it: quoted when it is empty or holds a
+   space or a tab; a quote in it after `n` backslashes is written after `2n+1`, and the
+   backslashes before the closing quote are doubled. */
+static void sg_proc_arg(sg_string* line, const uint8_t* p, int64_t n) {
+    bool quote = n == 0;
+    for (int64_t i = 0; i < n; i++) quote = quote || p[i] == ' ' || p[i] == '\t';
+    if (quote) sg_put(line, (const uint8_t*)"\"", 1);
+    int64_t slashes = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (p[i] == '\\') {
+            slashes++;
+        } else {
+            if (p[i] == '"') for (int64_t k = 0; k <= slashes; k++) sg_put(line, (const uint8_t*)"\\", 1);
+            slashes = 0;
+        }
+        sg_put(line, p + i, 1);
+    }
+    if (quote) {
+        for (int64_t k = 0; k < slashes; k++) sg_put(line, (const uint8_t*)"\\", 1);
+        sg_put(line, (const uint8_t*)"\"", 1);
+    }
+}
+/* An argument of a batch file, escaped for `cmd.exe` as Rust escapes it since CVE-2024-24576:
+   quoted unless each character is a letter, a digit, one of `#$*+-./:?@\_` or not ASCII (and
+   not a control character); a quote doubled; `%` written `%%cd:~,%`, so that no variable is put
+   in its place. A `\r` or a `\n` cannot be passed: ERROR_INVALID_PARAMETER, `InvalidInput`. */
+static int sg_proc_bat_arg(sg_string* line, const uint8_t* p, int64_t n) {
+    bool quote = n == 0 || p[n - 1] == '\\';
+    for (int64_t i = 0; i < n; i++) {
+        uint8_t c = p[i];
+        if (c == '\r' || c == '\n') return ERROR_INVALID_PARAMETER;
+        bool plain = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c != 0 && strchr("$#*+-./:?@\\_", c));
+        if (c < 0x80 && !plain) quote = true;
+        /* U+0080 to U+009F, the control characters past ASCII. */
+        if (c == 0xC2 && i + 1 < n && p[i + 1] >= 0x80 && p[i + 1] <= 0x9F) quote = true;
+    }
+    if (quote) sg_put(line, (const uint8_t*)"\"", 1);
+    int64_t slashes = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (p[i] == '\\') {
+            slashes++;
+        } else {
+            if (p[i] == '"') {
+                for (int64_t k = 0; k < slashes; k++) sg_put(line, (const uint8_t*)"\\", 1);
+                sg_put(line, (const uint8_t*)"\"", 1);
+            } else if (p[i] == '%') {
+                sg_put(line, (const uint8_t*)"%%cd:~,", 7);
+            }
+            slashes = 0;
+        }
+        sg_put(line, p + i, 1);
+    }
+    if (quote) {
+        for (int64_t k = 0; k < slashes; k++) sg_put(line, (const uint8_t*)"\\", 1);
+        sg_put(line, (const uint8_t*)"\"", 1);
+    }
+    return 0;
+}
+/* Whether the path, made whole by Windows (a dot or a space at its end dropped, as Windows drops
+   them when it runs the file), ends with `.bat` or `.cmd`, in any case. */
+static bool sg_proc_batch(const wchar_t* path) {
+    DWORD n = GetFullPathNameW(path, 0, NULL, NULL);
+    if (n == 0) return false;
+    wchar_t* full = malloc((size_t)n * sizeof(wchar_t));
+    if (!full) abort();
+    DWORD len = GetFullPathNameW(path, n, full, NULL);
+    bool batch = len >= 4 && len < n && (_wcsicmp(full + len - 4, L".bat") == 0 || _wcsicmp(full + len - 4, L".cmd") == 0);
+    free(full);
+    return batch;
+}
+/* The length of the name of a variable `name=value`; a name may start with `=` (`=C:`, the
+   folder a program works in on that drive). */
+static size_t sg_env_name(const wchar_t* entry) {
+    const wchar_t* equals = entry[0] ? wcschr(entry + 1, L'=') : NULL;
+    return equals ? (size_t)(equals - entry) : wcslen(entry);
+}
+/* Names of variables are compared as Windows compares them, without case. */
+static int sg_env_compare(const wchar_t* a, size_t an, const wchar_t* b, size_t bn) {
+    return CompareStringOrdinal(a, (int)an, b, (int)bn, TRUE) - CSTR_EQUAL;
+}
+static int sg_env_order(const void* x, const void* y) {
+    const wchar_t* a = *(const wchar_t* const*)x;
+    const wchar_t* b = *(const wchar_t* const*)y;
+    return sg_env_compare(a, sg_env_name(a), b, sg_env_name(b));
+}
+/* The block of the environment the program gets, or NULL for this program's: this program's
+   variables, unless `clear`, without the names a change was made to, then the last value given
+   to each name kept; names without case; sorted, as Windows wants it. A cleared environment gets
+   `SystemRoot` back when no change gave it, as Go gives it: without it Winsock does not start in
+   the program. */
+static wchar_t* sg_proc_env_block(bool clear, const sg_string* names, const sg_string* values, const bool* kept, int64_t changes) {
+    if (!clear && changes == 0) return NULL;
+    wchar_t* own = clear ? NULL : GetEnvironmentStringsW();
+    int64_t own_count = 0;
+    for (const wchar_t* e = own; e && *e; e += wcslen(e) + 1) own_count++;
+    wchar_t** wide_names = malloc(sizeof(wchar_t*) * (size_t)(changes + 1));
+    wchar_t** entries = malloc(sizeof(wchar_t*) * (size_t)(own_count + changes + 2));
+    wchar_t** made = malloc(sizeof(wchar_t*) * (size_t)(changes + 2));
+    if (!wide_names || !entries || !made) abort();
+    for (int64_t j = 0; j < changes; j++) wide_names[j] = sg_proc_wide(names[j].ptr, names[j].len);
+    int64_t n = 0, m = 0;
+    for (const wchar_t* e = own; e && *e; e += wcslen(e) + 1) {
+        size_t len = sg_env_name(e);
+        bool changed = false;
+        for (int64_t j = 0; j < changes && !changed; j++) changed = sg_env_compare(wide_names[j], wcslen(wide_names[j]), e, len) == 0;
+        if (!changed) entries[n++] = (wchar_t*)e;
+    }
+    bool root = false;
+    for (int64_t i = 0; i < n && !root; i++) root = sg_env_compare(entries[i], sg_env_name(entries[i]), L"SystemRoot", 10) == 0;
+    for (int64_t j = 0; j < changes; j++) {
+        bool last = true;
+        for (int64_t k = j + 1; k < changes && last; k++) last = sg_env_compare(wide_names[j], wcslen(wide_names[j]), wide_names[k], wcslen(wide_names[k])) != 0;
+        if (!kept[j] || !last) continue;
+        root = root || sg_env_compare(wide_names[j], wcslen(wide_names[j]), L"SystemRoot", 10) == 0;
+        wchar_t* value = sg_proc_wide(values[j].ptr, values[j].len);
+        size_t a = wcslen(wide_names[j]), b = wcslen(value);
+        wchar_t* entry = malloc((a + b + 2) * sizeof(wchar_t));
+        if (!entry) abort();
+        memcpy(entry, wide_names[j], a * sizeof(wchar_t));
+        entry[a] = L'=';
+        memcpy(entry + a + 1, value, (b + 1) * sizeof(wchar_t));
+        free(value);
+        entries[n++] = entry;
+        made[m++] = entry;
+    }
+    if (clear && !root) {
+        DWORD len = GetEnvironmentVariableW(L"SystemRoot", NULL, 0);
+        if (len > 0) {
+            wchar_t* entry = malloc((11 + (size_t)len) * sizeof(wchar_t));
+            if (!entry) abort();
+            memcpy(entry, L"SystemRoot=", 11 * sizeof(wchar_t));
+            if (GetEnvironmentVariableW(L"SystemRoot", entry + 11, len) > 0) {
+                entries[n++] = entry;
+                made[m++] = entry;
+            } else {
+                free(entry);
+            }
+        }
+    }
+    qsort(entries, (size_t)n, sizeof(wchar_t*), sg_env_order);
+    size_t total = 1;
+    for (int64_t i = 0; i < n; i++) total += wcslen(entries[i]) + 1;
+    if (n == 0) total = 2;
+    wchar_t* block = malloc(total * sizeof(wchar_t));
+    if (!block) abort();
+    size_t at = 0;
+    for (int64_t i = 0; i < n; i++) {
+        size_t len = wcslen(entries[i]) + 1;
+        memcpy(block + at, entries[i], len * sizeof(wchar_t));
+        at += len;
+    }
+    if (n == 0) block[at++] = 0;
+    block[at] = 0;
+    for (int64_t j = 0; j < changes; j++) free(wide_names[j]);
+    for (int64_t i = 0; i < m; i++) free(made[i]);
+    free(wide_names);
+    free(entries);
+    free(made);
+    if (own) FreeEnvironmentStringsW(own);
+    return block;
+}
+static volatile LONG sg_pipe_count = 0;
+/* A pipe for another program: its end there (`theirs`) is synchronous, as a program expects, and
+   made to be inherited; the end here is overlapped, inherited by none, and kept with its lowest
+   bit set (`SG_LAPPED`). A named pipe, as Rust makes one, since an anonymous pipe cannot be
+   overlapped: its name is new (its first instance, or the call fails, so no one who made it
+   first is joined) and no other machine may open it. `ours_reads`: the program writes into it. */
+static int sg_proc_pipe(bool ours_reads, int* ours, HANDLE* theirs) {
+    for (int tries = 0;; tries++) {
+        wchar_t name[96];
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        swprintf(name, 96, L"\\\\.\\pipe\\sg-%lu-%ld-%llx", (unsigned long)GetCurrentProcessId(), (long)InterlockedIncrement(&sg_pipe_count), (unsigned long long)now.QuadPart);
+        HANDLE mine = CreateNamedPipeW(name, (ours_reads ? PIPE_ACCESS_INBOUND : PIPE_ACCESS_OUTBOUND) | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
+                                       PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 65536, 65536, 0, NULL);
+        if (mine == INVALID_HANDLE_VALUE) {
+            DWORD code = GetLastError();
+            if (code == ERROR_ACCESS_DENIED && tries < 10) continue;
+            return code ? (int)code : ERROR_GEN_FAILURE;
+        }
+        SECURITY_ATTRIBUTES inherited = { sizeof inherited, NULL, TRUE };
+        HANDLE other = CreateFileW(name, ours_reads ? GENERIC_WRITE : GENERIC_READ | FILE_WRITE_ATTRIBUTES, 0, &inherited, OPEN_EXISTING, 0, NULL);
+        if (other == INVALID_HANDLE_VALUE) {
+            int code = sg_win_error();
+            CloseHandle(mine);
+            return code;
+        }
+        *ours = (int)(intptr_t)mine + 1;
+        *theirs = other;
+        return 0;
+    }
+}
+/* A handle of this program as one the program it starts inherits, or NULL for none. */
+static HANDLE sg_proc_inherit(HANDLE h) {
+    HANDLE copy = NULL;
+    if (!h || h == INVALID_HANDLE_VALUE) return NULL;
+    return DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &copy, 0, TRUE, DUPLICATE_SAME_ACCESS) ? copy : NULL;
+}
+/* Starts the program at `path`. Its input is this program's (`input` 0), nothing (1, `NUL`) or a
+   pipe (2); its output and its standard error are pipes when `out` and `err` say so, otherwise
+   this program's. `ends` gets the ends of the pipes this program keeps, or -1. What was printed
+   goes out first. Only the three streams reach the program (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`),
+   inheritable only for the call. A word or a name with a quote in it, which cannot be written,
+   and a `\r` or a `\n` for a batch file, are ERROR_INVALID_PARAMETER. */
+static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
+                         const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
+                         int64_t input, bool out, bool err, HANDLE* process, DWORD* pid, int ends[3]) {
+    for (int i = 0; i < 3; i++) ends[i] = -1;
+    int code = 0;
+    wchar_t* app = sg_wide(path, &code);
+    if (!app) return code;
+    sg_string line = SG_LIT("", 0);
+    if (sg_proc_batch(app)) {
+        /* `cmd.exe` from the folder of the system, never from `PATH`. */
+        UINT n = GetSystemDirectoryW(NULL, 0);
+        free(app);
+        app = malloc(((size_t)n + 9) * sizeof(wchar_t));
+        if (!app) abort();
+        UINT len = GetSystemDirectoryW(app, n);
+        memcpy(app + len, L"\\cmd.exe", 9 * sizeof(wchar_t));
+        if ((path.len > 0 && memchr(path.ptr, '"', (size_t)path.len)) || (path.len > 0 && path.ptr[path.len - 1] == '\\')) code = ERROR_INVALID_PARAMETER;
+        sg_put(&line, (const uint8_t*)"cmd.exe /e:ON /v:OFF /d /c \"\"", 29);
+        sg_put(&line, path.ptr, path.len);
+        sg_put(&line, (const uint8_t*)"\"", 1);
+        for (int64_t i = 1; i < count && !code; i++) {
+            sg_put(&line, (const uint8_t*)" ", 1);
+            code = sg_proc_bat_arg(&line, words[i].ptr, words[i].len);
+        }
+        sg_put(&line, (const uint8_t*)"\"", 1);
+    } else {
+        /* The name is quoted and not escaped, as Rust writes it: a quote cannot be in it. */
+        if (words[0].len > 0 && memchr(words[0].ptr, '"', (size_t)words[0].len)) code = ERROR_INVALID_PARAMETER;
+        sg_put(&line, (const uint8_t*)"\"", 1);
+        sg_put(&line, words[0].ptr, words[0].len);
+        sg_put(&line, (const uint8_t*)"\"", 1);
+        for (int64_t i = 1; i < count; i++) {
+            sg_put(&line, (const uint8_t*)" ", 1);
+            sg_proc_arg(&line, words[i].ptr, words[i].len);
+        }
+    }
+    wchar_t* dir = NULL;
+    if (!code && folder.len > 0) dir = sg_wide(folder, &code);
+    /* A folder that is not there is `NotFound` and a file `NotDirectory`, as on Linux and macOS;
+       Windows would say ERROR_DIRECTORY of both. */
+    if (dir) {
+        DWORD attributes = GetFileAttributesW(dir);
+        if (attributes == INVALID_FILE_ATTRIBUTES) code = sg_win_error();
+        else if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) code = ERROR_DIRECTORY;
+    }
+    if (code) {
+        free(app);
+        sg_drop_string(&line);
+        return code;
+    }
+    wchar_t* wline = sg_proc_wide(line.ptr, line.len);
+    sg_drop_string(&line);
+    wchar_t* env = sg_proc_env_block(clear, names, values, kept, changes);
+    HANDLE given[3] = { NULL, NULL, NULL };
+    if (input == 0) {
+        given[0] = sg_proc_inherit(GetStdHandle(STD_INPUT_HANDLE));
+    } else if (input == 1) {
+        SECURITY_ATTRIBUTES inherited = { sizeof inherited, NULL, TRUE };
+        given[0] = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherited, OPEN_EXISTING, 0, NULL);
+        if (given[0] == INVALID_HANDLE_VALUE) { given[0] = NULL; code = sg_win_error(); }
+    } else {
+        code = sg_proc_pipe(false, &ends[0], &given[0]);
+    }
+    if (!code) {
+        if (out) code = sg_proc_pipe(true, &ends[1], &given[1]);
+        else given[1] = sg_proc_inherit(GetStdHandle(STD_OUTPUT_HANDLE));
+    }
+    if (!code) {
+        if (err) code = sg_proc_pipe(true, &ends[2], &given[2]);
+        else given[2] = sg_proc_inherit(GetStdHandle(STD_ERROR_HANDLE));
+    }
+    if (!code) {
+        HANDLE list[3];
+        int listed = 0;
+        for (int i = 0; i < 3; i++) if (given[i]) list[listed++] = given[i];
+        STARTUPINFOEXW start;
+        memset(&start, 0, sizeof start);
+        start.StartupInfo.cb = listed ? sizeof start : sizeof start.StartupInfo;
+        start.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        start.StartupInfo.hStdInput = given[0];
+        start.StartupInfo.hStdOutput = given[1];
+        start.StartupInfo.hStdError = given[2];
+        void* attributes = NULL;
+        if (listed) {
+            SIZE_T size = 0;
+            InitializeProcThreadAttributeList(NULL, 1, 0, &size);
+            attributes = malloc(size);
+            if (!attributes) abort();
+            start.lpAttributeList = attributes;
+            if (!InitializeProcThreadAttributeList(start.lpAttributeList, 1, 0, &size) ||
+                !UpdateProcThreadAttribute(start.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, list, (SIZE_T)listed * sizeof(HANDLE), NULL, NULL))
+                code = sg_win_error();
+        }
+        if (!code) {
+            fflush(stdout);
+            fflush(stderr);
+            PROCESS_INFORMATION child;
+            DWORD flags = CREATE_UNICODE_ENVIRONMENT | (listed ? EXTENDED_STARTUPINFO_PRESENT : 0);
+            if (CreateProcessW(app, wline, NULL, NULL, listed > 0, flags, env, dir, &start.StartupInfo, &child)) {
+                CloseHandle(child.hThread);
+                *process = child.hProcess;
+                *pid = child.dwProcessId;
+            } else {
+                code = sg_win_error();
+            }
+        }
+        if (attributes) {
+            DeleteProcThreadAttributeList(start.lpAttributeList);
+            free(attributes);
+        }
+    }
+    for (int i = 0; i < 3; i++) if (given[i]) CloseHandle(given[i]);
+    if (code) {
+        for (int i = 0; i < 3; i++) if (ends[i] >= 0) { sg_sys_close(ends[i]); ends[i] = -1; }
+    }
+    free(app);
+    free(wline);
+    free(env);
+    free(dir);
+    return code;
+}
+/* Writes `text` to the input of the program while what it writes to its output is read into
+   `kept`, so that neither waits for the other: a call out on each end at once, overlapped,
+   waited for together. A program that stops reading its input ends the writing, without an
+   error. */
+static int sg_proc_pump(int in, sg_str text, int out, sg_string* kept) {
+    int code = 0;
+    int64_t sent = 0;
+    if (in >= 0 && text.len == 0) { sg_sys_close(in); in = -1; }
+    OVERLAPPED wo, ro;
+    memset(&wo, 0, sizeof wo);
+    memset(&ro, 0, sizeof ro);
+    wo.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    ro.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!wo.hEvent || !ro.hEvent) abort();
+    bool writing = false, reading = false;
+    while (in >= 0 || out >= 0) {
+        if (in >= 0 && !writing) {
+            ResetEvent(wo.hEvent);
+            int64_t left = text.len - sent;
+            if (WriteFile(sg_handle(in), text.ptr + sent, left > 0x40000000 ? 0x40000000 : (DWORD)left, NULL, &wo) || GetLastError() == ERROR_IO_PENDING) writing = true;
+            else { sg_sys_close(in); in = -1; }
+        }
+        if (out >= 0 && !reading) {
+            sg_room(kept, 65536);
+            ResetEvent(ro.hEvent);
+            int64_t room = kept->cap - kept->len;
+            if (ReadFile(sg_handle(out), kept->ptr + kept->len, room > 0x40000000 ? 0x40000000 : (DWORD)room, NULL, &ro) || GetLastError() == ERROR_IO_PENDING) {
+                reading = true;
+            } else {
+                DWORD e = GetLastError();
+                if (e != ERROR_BROKEN_PIPE && e != ERROR_HANDLE_EOF) code = e ? (int)e : ERROR_GEN_FAILURE;
+                sg_sys_close(out);
+                out = -1;
+            }
+        }
+        HANDLE events[2];
+        DWORD n = 0;
+        if (writing) events[n++] = wo.hEvent;
+        if (reading) events[n++] = ro.hEvent;
+        if (n == 0) continue;
+        WaitForMultipleObjects(n, events, FALSE, INFINITE);
+        DWORD moved = 0;
+        if (writing && WaitForSingleObject(wo.hEvent, 0) == WAIT_OBJECT_0) {
+            writing = false;
+            if (GetOverlappedResult(sg_handle(in), &wo, &moved, FALSE)) sent += moved;
+            if (sent >= text.len || moved == 0) { sg_sys_close(in); in = -1; }
+        }
+        if (reading && WaitForSingleObject(ro.hEvent, 0) == WAIT_OBJECT_0) {
+            reading = false;
+            if (GetOverlappedResult(sg_handle(out), &ro, &moved, FALSE)) {
+                kept->len += moved;
+            } else {
+                DWORD e = GetLastError();
+                if (e != ERROR_BROKEN_PIPE && e != ERROR_HANDLE_EOF) code = e ? (int)e : ERROR_GEN_FAILURE;
+                sg_sys_close(out);
+                out = -1;
+            }
+        }
+    }
+    CloseHandle(wo.hEvent);
+    CloseHandle(ro.hEvent);
+    return code;
+}
+/* Waits for the program to end and lets go of its handle: `ended` gets 0 and its code, of 32
+   bits; Windows ends a program with no signal. */
+static int sg_proc_reap(int64_t child, int64_t* ended) {
+    HANDLE h = (HANDLE)(intptr_t)child;
+    WaitForSingleObject(h, INFINITE);
+    DWORD code = 0;
+    int failed = GetExitCodeProcess(h, &code) ? 0 : sg_win_error();
+    CloseHandle(h);
+    ended[0] = 0;
+    ended[1] = (int32_t)code;
+    return failed;
+}
+/* `System.signal`: Windows has no polite stop to send another program, so every signal but
+   `WindowChange` (28 here, which does nothing) ends it with the code 1, as Rust's `kill` does.
+   Once it has ended, nothing. */
+static void sg_proc_signal(int64_t child, int32_t number) {
+    if (number == 28) return;
+    TerminateProcess((HANDLE)(intptr_t)child, 1);
+}
+/* `System.run`: starts the program and waits for it to end. Its input is this program's (`input`
+   0), nothing (1) or `text` (2); its output is a pipe read into `output` when it is given,
+   otherwise this program's; its standard error is this program's. */
+static int sg_proc_run(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
+                       const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
+                       int64_t input, sg_str text, sg_string* output, int64_t* ended) {
+    HANDLE child = NULL;
+    DWORD pid = 0;
+    int ends[3];
+    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, input, output != NULL, false, &child, &pid, ends);
+    if (code) return code;
+    int pumped = (ends[0] >= 0 || ends[1] >= 0) ? sg_proc_pump(ends[0], text, ends[1], output) : 0;
+    code = sg_proc_reap((int64_t)(intptr_t)child, ended);
+    return code ? code : pumped;
+}
+/* The text `input` gave a program that `start` started, written into its input by a thread of
+   its own while the program runs, which then closes the pipe. A program that ends before it read
+   all of it is no error. */
+typedef struct { int fd; uint8_t* text; int64_t len; } sg_proc_feed;
+static SG_THREAD_MAIN(sg_proc_feed_main, p) {
+    sg_proc_feed* f = p;
+    (void)sg_write_pipe(f->fd, f->text, f->len);
+    sg_sys_close(f->fd);
+    free(f->text);
+    free(f);
+    return SG_THREAD_END;
+}
+/* `System.start`: starts the program and goes on. Its input is this program's (`input` 0),
+   nothing (1), `text` (2) or a pipe kept here (3); its output and its standard error are pipes kept
+   here when `out` and `err` say so. `made` gets the number of the program, the ends kept here (the
+   input, the output, the standard error, or -1) and its handle. */
+static int sg_proc_start(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
+                         const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
+                         int64_t input, sg_str text, bool out, bool err, int64_t* made) {
+    HANDLE child = NULL;
+    DWORD pid = 0;
+    int ends[3];
+    int code = sg_proc_spawn(path, words, count, folder, clear, names, values, kept, changes, input >= 2 ? 2 : input, out, err, &child, &pid, ends);
+    if (code) return code;
+    if (input == 2) {
+        sg_proc_feed* f = malloc(sizeof *f);
+        uint8_t* copy = malloc((size_t)text.len + 1);
+        if (!f || !copy) abort();
+        if (text.len > 0) memcpy(copy, text.ptr, (size_t)text.len);
+        *f = (sg_proc_feed){ ends[0], copy, text.len };
+        sg_thread thread;
+        if (sg_thread_start(&thread, sg_proc_feed_main, f, true) != 0) {
+            fprintf(stderr, "the system refused a thread to write the input of a program\n");
+            abort();
+        }
+        ends[0] = -1;
+    }
+    made[0] = pid;
+    for (int i = 0; i < 3; i++) made[i + 1] = ends[i];
+    made[4] = (int64_t)(intptr_t)child;
+    return 0;
+}
+/* The writer of the input of a program that `start` started. */
+static sg_writer sg_proc_writer(int64_t fd) {
+    return (sg_writer){ (int)fd, 0, 0, { (uint8_t*)"", 0, 0 }, 1 };
+}
+#else
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -5702,14 +6431,19 @@ static int sg_proc_spawn(sg_str path, const sg_string* words, int64_t count, sg_
 }
 /* Waits for the program to end and takes it away: `ended` gets 0 and the code, or 1 and the signal
    that stopped it. */
-static int sg_proc_reap(pid_t child, int64_t* ended) {
+static int sg_proc_reap(int64_t child, int64_t* ended) {
     int status = 0;
-    while (waitpid(child, &status, 0) < 0) {
+    while (waitpid((pid_t)child, &status, 0) < 0) {
         if (errno != EINTR) return sg_os_error();
     }
     ended[0] = WIFSIGNALED(status) ? 1 : 0;
     ended[1] = WIFSIGNALED(status) ? WTERMSIG(status) : WEXITSTATUS(status);
     return 0;
+}
+/* `System.signal`: the program is not taken away before it is waited for, so its number is still
+   its own. */
+static void sg_proc_signal(int64_t child, int32_t number) {
+    (void)kill((pid_t)child, number);
 }
 /* `System.run`: starts the program and waits for it to end. Its input is this program's (`input`
    0), nothing (1) or `text` (2); its output is a pipe read into `output` when it is given,
@@ -5739,8 +6473,9 @@ static SG_THREAD_MAIN(sg_proc_feed_main, p) {
 }
 /* `System.start`: starts the program and goes on. Its input is this program's (`input` 0),
    nothing (1), `text` (2) or a pipe kept here (3); its output and its standard error are pipes kept
-   here when `out` and `err` say so. `made` gets the number of the program and the ends kept here
-   (the input, the output, the standard error), or -1. */
+   here when `out` and `err` say so. `made` gets the number of the program, the ends kept here
+   (the input, the output, the standard error, or -1) and the number again, which is what names
+   the program on Linux and macOS (its handle on Windows). */
 static int sg_proc_start(sg_str path, const sg_string* words, int64_t count, sg_str folder, bool clear,
                          const sg_string* names, const sg_string* values, const bool* kept, int64_t changes,
                          int64_t input, sg_str text, bool out, bool err, int64_t* made) {
@@ -5766,6 +6501,7 @@ static int sg_proc_start(sg_str path, const sg_string* words, int64_t count, sg_
     }
     made[0] = child;
     for (int i = 0; i < 3; i++) made[i + 1] = ends[i];
+    made[4] = child;
     return 0;
 }
 /* The writer of the input of a program that `start` started. */
@@ -5775,6 +6511,7 @@ static sg_writer sg_proc_writer(int64_t fd) {
 #endif
     return (sg_writer){ (int)fd, 0, 0, { (uint8_t*)"", 0, 0 }, 1 };
 }
+#endif
 "#;
 
 const FILES_RUNTIME: &str = r#"
@@ -6448,8 +7185,23 @@ static char* sg_owned_from_wide(const wchar_t* w, int64_t n, int64_t* len) {
 static inline int sg_win_error(void) { DWORD code = GetLastError(); return code ? (int)code : ERROR_GEN_FAILURE; }
 /* A handle is kept where a descriptor is on Linux and macOS: Windows gives handles of 32 bits
    that may be cut to that size and widened back (so that 32- and 64-bit programs can share them).
-   The input is 0. */
-static inline HANDLE sg_handle(int fd) { return fd == 0 ? GetStdHandle(STD_INPUT_HANDLE) : (HANDLE)(intptr_t)fd; }
+   The input is 0. The end of a pipe this program keeps of another program's input or output is
+   opened for overlapped calls (see `PROCESS_RUNTIME`) and kept with its lowest bit set, which no
+   handle has: a read or a write of it waits for its own call (`SG_LAPPED`). */
+#define SG_LAPPED(fd) ((fd) > 2 && ((fd) & 1))
+static inline HANDLE sg_handle(int fd) { return fd == 0 ? GetStdHandle(STD_INPUT_HANDLE) : (HANDLE)(intptr_t)(SG_LAPPED(fd) ? fd - 1 : fd); }
+/* One call on an overlapped handle, waited for on the handle itself (one call at a time is out
+   on each end): what it moved goes into `*done`. */
+static int sg_lapped_call(int fd, void* bytes, DWORD n, DWORD* done, bool write) {
+    OVERLAPPED o;
+    memset(&o, 0, sizeof o);
+    HANDLE h = sg_handle(fd);
+    *done = 0;
+    BOOL ok = write ? WriteFile(h, bytes, n, NULL, &o) : ReadFile(h, bytes, n, NULL, &o);
+    if (!ok && GetLastError() != ERROR_IO_PENDING) return sg_win_error();
+    if (!GetOverlappedResult(h, &o, done, TRUE)) return sg_win_error();
+    return 0;
+}
 /* A path as Windows takes it: UTF-16 ended by a zero, in a block of `malloc`. One of 248
    characters or more is made whole and given with `\\?\` in front, as Rust gives it, so that
    it opens whether long paths are turned on or not. A path with a zero byte in it is not found,
@@ -6577,6 +7329,13 @@ static int sg_sys_read(int fd, uint8_t* to, int64_t n, int64_t* got) {
     }
     DWORD read = 0;
     *got = 0;
+    if (SG_LAPPED(fd)) {
+        int code = sg_lapped_call(fd, to, n > 0x40000000 ? 0x40000000 : (DWORD)n, &read, false);
+        if (code == ERROR_BROKEN_PIPE || code == ERROR_HANDLE_EOF) return 0;
+        if (code) return code;
+        *got = read;
+        return 0;
+    }
     if (!ReadFile(sg_handle(fd), to, n > 0x40000000 ? 0x40000000 : (DWORD)n, &read, NULL)) {
         DWORD code = GetLastError();
         if (code == ERROR_BROKEN_PIPE || code == ERROR_HANDLE_EOF) return 0;
@@ -6664,7 +7423,13 @@ static int sg_read_file(sg_str path, uint8_t** bytes, int64_t* len) {
 static int sg_write_all(int fd, const uint8_t* bytes, int64_t len) {
     while (len > 0) {
         DWORD put = 0;
-        if (!WriteFile(sg_handle(fd), bytes, len > 0x40000000 ? 0x40000000 : (DWORD)len, &put, NULL)) return sg_win_error();
+        DWORD n = len > 0x40000000 ? 0x40000000 : (DWORD)len;
+        if (SG_LAPPED(fd)) {
+            int code = sg_lapped_call(fd, (void*)bytes, n, &put, true);
+            if (code) return code;
+        } else if (!WriteFile(sg_handle(fd), bytes, n, &put, NULL)) {
+            return sg_win_error();
+        }
         bytes += put;
         len -= put;
     }
@@ -6738,9 +7503,54 @@ static int sg_write_file(sg_str path, const uint8_t* bytes, int64_t len, bool ap
    a connection is, so that an async read waits on the loop and a cancel ends the wait; it owns
    its `sock` (`own`), and has no longest line. */
 struct sg_socket_s;
-typedef struct { int fd; uint8_t* block; int64_t at, len, done; bool ended; struct sg_socket_s* sock; int64_t cap, limit; bool too_long; int64_t checked; bool own; } sg_reader;
+#if defined(_WIN32)
+/* An async read of the pipe of another program out on a thread of input and output, into the
+   free end of the block of its reader (see `ASYNC_IO_RUNTIME`): `over` is set last, by the
+   thread; `stop` asks it to cancel its call. The reader takes in what it read before it reads
+   again (`sg_lap_settle`). */
+typedef struct sg_lap_got { int code; int64_t got; int over; int stop; } sg_lap_got;
+#endif
+typedef struct { int fd; uint8_t* block; int64_t at, len, done; bool ended; struct sg_socket_s* sock; int64_t cap, limit; bool too_long; int64_t checked; bool own;
+#if defined(_WIN32)
+    sg_lap_got* fill;
+#endif
+} sg_reader;
+/* What comes after the fields every system has, in a reader written out field by field. */
+#if defined(_WIN32)
+#define SG_READER_REST , NULL
+#else
+#define SG_READER_REST
+#endif
+#if defined(_WIN32)
+#define SG_FILL_OUT(r) ((r)->fill != NULL)
+/* What the read out on a thread gave goes into the reader: the bytes, the end, or the error. One
+   that was cancelled before anything came gives nothing. */
+static int sg_lap_settle(sg_reader* r) {
+    sg_lap_got* g = r->fill;
+    if (!g) return 0;
+    while (!__atomic_load_n(&g->over, __ATOMIC_ACQUIRE)) SwitchToThread();
+    int code = g->code;
+    int64_t got = g->got;
+    r->fill = NULL;
+    free(g);
+    if (code == ERROR_OPERATION_ABORTED) return 0;
+    if (code) return code;
+    if (got == 0) r->ended = true;
+    else r->len += got;
+    return 0;
+}
+/* The read out on a thread is cancelled and waited for. */
+static void sg_lap_end(sg_reader* r) {
+    if (!r->fill) return;
+    __atomic_store_n(&r->fill->stop, 1, __ATOMIC_SEQ_CST);
+    CancelIoEx(sg_handle(r->fd), NULL);
+    (void)sg_lap_settle(r);
+}
+#else
+#define SG_FILL_OUT(r) false
+#endif
 static uint8_t sg_in_block[65536];
-static sg_reader sg_stdin = { 0, sg_in_block, 0, 0, 0, false, NULL, 65536, 0, false, 0, false };
+static sg_reader sg_stdin = { 0, sg_in_block, 0, 0, 0, false, NULL, 65536, 0, false, 0, false SG_READER_REST };
 /* Where the first byte that is not UTF-8 lies in the bytes `from` to `to` of the block, from
    `from`, or -1. A line is checked with the rest of the block, at once, from where the check
    stands: the lines after it inside the part known to be text cost nothing, where a check of
@@ -6873,6 +7683,9 @@ static int sg_sock_line(sg_reader* r, sg_string* line, bool* more, int64_t* bad,
 #endif
 static int sg_reader_fill(sg_reader* r) {
     if (sg_in_after_fill(r)) return 0;
+#if defined(_WIN32)
+    if (r->fill) return sg_lap_settle(r);
+#endif
     if (r == &sg_stdin) {
         if (sg_in_terminal < 0) sg_in_terminal = sg_sys_terminal(0);
         if (sg_in_terminal) fflush(stdout);
@@ -6986,7 +7799,7 @@ static int sg_read_bytes(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
             continue;
         }
         if (r->ended) break;
-        if (len - n < 65536 || sg_in_after_fill(r)) {
+        if (len - n < 65536 || sg_in_after_fill(r) || SG_FILL_OUT(r)) {
             code = sg_reader_fill(r);
             if (code) break;
             continue;
@@ -7041,7 +7854,7 @@ static int sg_open_reader(sg_str path, sg_reader* out) {
     if (sg_sys_is_folder(fd)) { sg_sys_close(fd); return ERROR_DIRECTORY_NOT_SUPPORTED; }
     uint8_t* block = malloc(65536);
     if (!block) abort();
-    *out = (sg_reader){ fd, block, 0, 0, 0, false, NULL, 65536, 0, false, 0, false };
+    *out = (sg_reader){ fd, block, 0, 0, 0, false, NULL, 65536, 0, false, 0, false SG_READER_REST };
     return 0;
 }
 #else
@@ -7056,7 +7869,7 @@ static int sg_open_reader(sg_str path, sg_reader* out) {
     if (fstat(fd, &info) == 0 && S_ISDIR(info.st_mode)) { close(fd); return EISDIR; }
     uint8_t* block = malloc(65536);
     if (!block) abort();
-    *out = (sg_reader){ fd, block, 0, 0, 0, false, NULL, 65536, 0, false, 0, false };
+    *out = (sg_reader){ fd, block, 0, 0, 0, false, NULL, 65536, 0, false, 0, false SG_READER_REST };
     return 0;
 }
 #endif
@@ -7074,6 +7887,9 @@ static inline void sg_drop_owned_sock(sg_reader* r) {
 }
 static inline void sg_drop_reader(sg_reader* r) {
     if (!r->block) return;
+#if defined(_WIN32)
+    sg_lap_end(r);
+#endif
     if (r->own) sg_drop_owned_sock(r);
     else if (!r->sock) sg_sys_close(r->fd);
     free(r->block);
@@ -7558,6 +8374,90 @@ static int sg_in_wait(sg_wait* w, sg_cancel* token, const char* loc) {
     if (join) return SG_WAITING;
     return sg_cancelled(token) ? SG_CANCELLED : -1;
 }
+#if defined(_WIN32)
+/* The pipe of another program on Windows, whose end here is overlapped (`SG_LAPPED`): an async
+   read that its block cannot answer has a thread read once into the free end of the block, as
+   the input does, and waits for it. A cancel ends the wait at once and cancels the call of the
+   thread (`CancelIoEx`); what came before the cancel stays in the block for the next read, and
+   a call cancelled before anything came took nothing. `stop` is set before the cancel, and looked
+   at by the thread after it made its call, so a cancel that comes before the call is not lost. */
+typedef struct { sg_lap_got got; sg_far away; int fd; uint8_t* into; int64_t room; } sg_lap_fill;
+static inline sg_lap_fill* sg_lap_of(sg_far* f) { return (sg_lap_fill*)((char*)f - offsetof(sg_lap_fill, away)); }
+static void sg_lap_fill_main(sg_io* io) {
+    sg_lap_fill* f = sg_lap_of((sg_far*)io);
+    HANDLE h = sg_handle(f->fd);
+    OVERLAPPED o;
+    memset(&o, 0, sizeof o);
+    DWORD got = 0;
+    int code = 0;
+    if (!ReadFile(h, f->into, f->room > 0x40000000 ? 0x40000000 : (DWORD)f->room, NULL, &o) && GetLastError() != ERROR_IO_PENDING) {
+        code = sg_win_error();
+    } else {
+        if (__atomic_load_n(&f->got.stop, __ATOMIC_SEQ_CST)) CancelIoEx(h, &o);
+        if (!GetOverlappedResult(h, &o, &got, TRUE)) code = sg_win_error();
+    }
+    if (code == ERROR_BROKEN_PIPE || code == ERROR_HANDLE_EOF) code = 0;
+    f->got.code = code;
+    f->got.got = code ? 0 : (int64_t)got;
+    sg_mtx_lock(&sg_clock_lock);
+    sg_wait* w = f->away.waiter;
+    f->away.waiter = NULL;
+    sg_task* job = NULL;
+    if (w) {
+        sg_wait_unlink(w);
+        __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
+        job = w->d.job;
+        __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    }
+    /* The reader may free the read from here on. */
+    __atomic_store_n(&f->got.over, 1, __ATOMIC_RELEASE);
+    sg_mtx_unlock(&sg_clock_lock);
+    if (job) sg_wake(job);
+}
+/* A cancel, under the clock's lock: the task goes on, and the call of the thread is cancelled. */
+static void sg_lap_cut(sg_delay* d) {
+    sg_wait* w = (sg_wait*)d;
+    sg_lap_fill* f = sg_lap_of(w->on.away);
+    f->away.waiter = NULL;
+    __atomic_store_n(&f->got.stop, 1, __ATOMIC_SEQ_CST);
+    CancelIoEx(sg_handle(f->fd), NULL);
+    sg_task* job = d->job;
+    __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
+    sg_wake(job);
+}
+/* The block of the reader cannot answer the read: SG_WAITING when the task waits for the thread
+   that fills it, SG_CANCELLED, SG_OVER at the end, or -1 when the block is full and the read is
+   to be done on a thread. A read out before was taken in by the caller (`sg_lap_settle`). */
+static int sg_lap_wait(sg_reader* r, sg_wait* w, sg_cancel* token, const char* loc) {
+    if (sg_cancelled(token)) return SG_CANCELLED;
+    if (r->ended) return SG_OVER;
+    if (r->at > 0) {
+        memmove(r->block, r->block + r->at, (size_t)(r->len - r->at));
+        r->len -= r->at;
+        r->at = 0;
+    }
+    if (r->len >= 65536) return -1;
+    sg_lap_fill* f = calloc(1, sizeof *f);
+    if (!f) abort();
+    f->fd = r->fd;
+    f->into = r->block + r->len;
+    f->room = 65536 - r->len;
+    sg_wait_init(w, sg_lap_cut);
+    w->on.away = &f->away;
+    sg_mtx_lock(&sg_clock_lock);
+    if (token && token->cancelled) {
+        sg_mtx_unlock(&sg_clock_lock);
+        free(f);
+        return SG_CANCELLED;
+    }
+    if (token) sg_wait_link(w, token);
+    f->away.waiter = w;
+    sg_mtx_unlock(&sg_clock_lock);
+    r->fill = &f->got;
+    sg_io_put(&f->away.io, sg_lap_fill_main, NULL, loc);
+    return SG_WAITING;
+}
+#endif
 /* What a writer's async methods cannot do in place: write the block out, then `bytes` straight
    (a `writeBytesAsync` of 64 KB or more); with `w` NULL, close the writer `held`, moved here
    (`closeAsync`). `r`: the error code, or 0. */
@@ -13854,9 +14754,9 @@ impl<'a> Emitter<'a> {
                         Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long))))),
                     ],
                     format!(
-                        "int64_t made[4] = {{ 0, -1, -1, -1 }}; \
+                        "int64_t made[5] = {{ 0, -1, -1, -1, 0 }}; \
                          int code = sg_proc_start(a0, a1->ptr, a1->len, a2, a3, a4->ptr, a5->ptr, a6->ptr, a4->len, a7, a8, a9, a10, made); \
-                         if (code) {} for (int64_t i = 0; i < 4 && i < a11.len; i++) a11.ptr[i] = made[i]; return ({gives}){{ .tag = 0 }};",
+                         if (code) {} for (int64_t i = 0; i < 5 && i < a11.len; i++) a11.ptr[i] = made[i]; return ({gives}){{ .tag = 0 }};",
                         failed("sg_io_error(code)")
                     ),
                 )
@@ -13866,12 +14766,12 @@ impl<'a> Emitter<'a> {
                 (
                     "sg_system_wait",
                     vec![Ty::Int(IntTy::Long), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))],
-                    "int64_t ended[2] = { 0, 0 }; (void)sg_proc_reap((pid_t)a0, ended); for (int64_t i = 0; i < 2 && i < a1.len; i++) a1.ptr[i] = ended[i];".to_string(),
+                    "int64_t ended[2] = { 0, 0 }; (void)sg_proc_reap(a0, ended); for (int64_t i = 0; i < 2 && i < a1.len; i++) a1.ptr[i] = ended[i];".to_string(),
                 )
             }
             SystemCall::Signal => {
                 self.made.insert("process".to_string());
-                ("sg_system_signal", vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)], "(void)kill((pid_t)a0, a1);".to_string())
+                ("sg_system_signal", vec![Ty::Int(IntTy::Long), Ty::Int(IntTy::Int)], "sg_proc_signal(a0, a1);".to_string())
             }
             SystemCall::SignalListen | SystemCall::SignalNext | SystemCall::SignalStop | SystemCall::SignalRaise | SystemCall::SignalNumber => {
                 self.made.insert("signals".to_string());
@@ -14291,7 +15191,7 @@ impl<'a> Emitter<'a> {
                 let ctype = self.ctype(&expr.ty, expr.span)?;
                 let reaped = self.temp();
                 self.pre.push(format!(
-                    "int64_t {reaped}[2]; {reaped}[0] = {reaped}[1] = 0; if ({wait}.state != SG_CANCELLED) {{ (void)sg_proc_reap((pid_t)({pid}), {reaped}); \
+                    "int64_t {reaped}[2]; {reaped}[0] = {reaped}[1] = 0; if ({wait}.state != SG_CANCELLED) {{ (void)sg_proc_reap({pid}, {reaped}); \
                      for (int64_t i = 0; i < 2 && i < ({ended}).len; i++) ({ended}).ptr[i] = {reaped}[i]; }}"
                 ));
                 result(self, format!("({wait}.state == SG_CANCELLED ? ({ctype}){{ .tag = 1, .u.v1 = {{ sg_io_cancelled() }} }} : ({ctype}){{ .tag = 0 }})"))
@@ -14685,6 +15585,18 @@ impl<'a> Emitter<'a> {
                 ),
                 None => String::new(),
             };
+            // The pipe of another program on Windows: a thread fills the block while the task
+            // waits, and a cancel ends the wait and the call (`sg_lap_wait`).
+            let lapped = match &reader {
+                Some(_) => format!(
+                    "\n#if defined(_WIN32)\n if (SG_LAPPED(x->a0->fd)) for (;;) {{ int code = sg_lap_settle(x->a0); \
+                     if (code) {{ x->r = ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_error(code) }} }}; x->io.done = 1; return; }} \
+                     if ({fname}_n({gets}, &x->r)) {{ x->io.done = 1; return; }} \
+                     int st = sg_lap_wait(x->a0, &x->w, x->tk, loc); \
+                     if (st == SG_WAITING) {{ x->mode = 1; return; }} if (st == SG_CANCELLED) {{ {cancelled} }} if (st != SG_OVER) break; }}\n#endif\n"
+                ),
+                None => String::new(),
+            };
             let now = match &reader {
                 Some(_) => format!(
                     " for (;;) {{ if (!sg_reader_try(x->a0)) break; if ({fname}_n({gets}, &x->r)) {{ SG_IN_GIVE(x->a0); x->io.done = 1; return; }} \
@@ -14696,7 +15608,7 @@ impl<'a> Emitter<'a> {
             let _ = writeln!(
                 self.glue,
                 "static void sg_io_go_{fname}(sg_io_{fname}* x, const char* loc) {{ x->mode = 0; \
-                 if (x->cancelled) {{ {cancelled} }}{net}{now} \
+                 if (x->cancelled) {{ {cancelled} }}{net}{lapped}{now} \
                  sg_io_start(&x->io, sg_io_run_{fname}, loc); }}\n\
                  static bool sg_io_ready_{fname}(sg_io_{fname}* x, const char* loc) {{ if (x->mode == 0) return sg_io_done(&x->io); \
                  if (!sg_wait_settled(&x->w)) return false; \

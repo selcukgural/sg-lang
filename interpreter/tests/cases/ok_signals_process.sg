@@ -1,27 +1,40 @@
 // A program started with `Command` is sent a signal by its name, whatever its number is on this
-// system.
+// system. On Windows a signal stops the program with the code 1, as `kill` does: Windows has no
+// signal to send another program. The program started is `sg-test-tool` (tests/tool), whose words
+// are its steps.
+Command tool(read string[] steps) {
+    var command = Command("sg-test-tool")
+    command.args(steps)
+    return command
+}
+
 Result<void, ProcessError> main() {
-    var sleep = Command("sleep")
-    sleep.arg("10")
+    var sleep = tool(read List<string> { "sleep=10000" })
     var interrupted = try sleep.start()
     interrupted.signal(Signal.Interrupt)
     print(try interrupted.wait())
     var stopped = try sleep.start()
     stopped.signal(Signal.Terminate)
     print(try stopped.wait())
+    // `WindowChange` ends no program: one that does not listen for it lets it pass.
+    var resized = try tool(read List<string> { "sleep=300" }).start()
+    resized.signal(Signal.WindowChange)
+    print(try resized.wait())
 
-    // A shell that catches `Hangup`, once it says it is ready for it.
-    var sh = Command("sh")
-    sh.args(read List<string> { "-c", "trap 'echo caught; kill $!; exit 3' HUP; echo ready; sleep 10 & wait" })
-    sh.pipeOutput()
-    var shell = try sh.start()
-    var output = shell.takeOutput() ?? panic("the output was asked for")
+    // A program that catches `Hangup`, once it says it is ready for it.
+    var listening = tool(read List<string> { "listen" })
+    listening.pipeOutput()
+    var listener = try listening.start()
+    var output = listener.takeOutput() ?? panic("the output was asked for")
     var line = ""
     _ = try output.readLine(ref line)
     print(line)
-    shell.signal(Signal.Hangup)
-    _ = try output.readLine(ref line)
-    print(line)
-    print(try shell.wait())
+    listener.signal(Signal.Hangup)
+    if try output.readLine(ref line) {
+        print(line)
+    } else {
+        print("its output ended")
+    }
+    print(try listener.wait())
     return Ok()
 }

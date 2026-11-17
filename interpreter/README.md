@@ -69,8 +69,8 @@ of `tests/Containerfile` has them.
 | Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. All three are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into). `Path.join(a, b)` gives a new path; `Path.joinInside(folder, name)` a `Result<string, IoError>` that is an `InvalidInput` for a name that could lead out of the folder on any system (`..`, a root, a `\`, a `:`, a device of Windows); `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
-| Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(int code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `signal(Signal.Interrupt)` sends it a signal by its name, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
-| Signals | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })`: while the listener lives, those signals do not end the program; `signals.next()` waits for the next and gives it, `await signals.nextAsync(read token)` without holding the thread. Several of one kind before a call are one; every listener gets each signal it listens for. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`. `Signals.raise(signal)` sends one to this program. Written in SG in the module `std`; the handler only writes into a pipe, and a thread hands each signal on |
+| Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(int code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. On Windows the same through `CreateProcessW`: a name without an extension is looked for as `name.exe` in the absolute folders of `PATH` (apart at `;`, a quoted folder taken whole) and never in the folder the program works in; the words go on one command line, quoted so that the program reads them back as written; a `.bat` or `.cmd` runs only when named with its extension, through `cmd.exe`, its arguments escaped as Rust escapes them, a line break in one an `InvalidInput`; a cleared environment keeps `SystemRoot`; a code with its highest bit set is written in hex (`exited with code 0xC0000005`); `kill`, `terminate` and `signal` end the program with the code 1, since Windows has no polite stop to send (`Signal.WindowChange` does nothing). `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `signal(Signal.Interrupt)` sends it a signal by its name, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
+| Signals | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })`: while the listener lives, those signals do not end the program; `signals.next()` waits for the next and gives it, `await signals.nextAsync(read token)` without holding the thread. Several of one kind before a call are one; every listener gets each signal it listens for. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`. `Signals.raise(signal)` sends one to this program. Written in SG in the module `std`; the handler only writes into a pipe, and a thread hands each signal on. On Windows `Interrupt` is Ctrl-C and Ctrl-Break, `Terminate` the console closed, the user logging off and the system shutting down (the program is then held until it ends, within the few seconds Windows gives); the others never come there, and `raise` hands them to listeners all the same; with no listener a raised signal ends the program as Ctrl-C does (`0xC000013A`), and `WindowChange` does nothing |
 | Atomic values | `atomic T` for an integer, `bool`, `float`, `double` or `raw T`, made with `atomic 0` and written anywhere a value is (a field, a local, a list, an array `atomic uint[4] { ... }`, raw memory as `Memory.allocate<atomic long>(n)` or `(raw atomic int)p`); tasks share one as `new shared atomic 0` or in a `shared` struct, since its methods work through `read` and `shared`. `count.load()`, `count.store(v)`, `count.exchange(v)`, `count.compareExchange(expected, desired)` and `compareExchangeWeak` (a `Result<T, T>`: `Ok` with the value it wrote over, `Error` with the one it found), `count.fetchAdd(n)` and `fetchSub` on numbers (the value before; overflow is a panic in a debug build and wraps in a release build, `wrappingFetchAdd` wraps in both), `fetchAnd`, `fetchOr`, `fetchXor` on integers and `bool`. Each is sequentially consistent unless an order follows the values, written as a variant: `count.load(MemoryOrder.Acquire)`, `count.compareExchange(a, b, MemoryOrder.AcquireRelease, MemoryOrder.Relaxed)`; an order the operation cannot keep is a compile error. `Atomic.fence(order)`, `Atomic.compilerFence(order)`, `Atomic.spinLoop()`. `struct Pool : unsafe Sendable` goes to another task with its raw pointers, as its writer promises. `examples/queue` is a queue without locks for many producers and many consumers, with no `unsafe` |
 | `volatile` | `unsafe Memory.readVolatile(regs[0].status)` and `unsafe Memory.writeVolatile(regs[0].control, 1)`: a place in raw memory read or written once, where it is written, for the registers of a device; it orders nothing between tasks |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
@@ -6730,6 +6730,113 @@ approved on 17 November 2026:
      on several threads without the thread sanitizer, 16 programs of tests, and 58 lines of
      `tests/windows-pending.txt` wait for their slices. New: `ok_udp_unreachable`, `ports_are_held_alone`.
 
+Choices made in the hundredth slice (other programs and signals on Windows), the fourth of the slices of
+Windows (933, 934), on the branch `windows`. 1032 to 1049 were put to the author before the slice and
+approved on 17 November 2026:
+
+1032. **A program is looked for** as on Linux and macOS, with what Windows adds: a name without `/`, `\` or
+     a drive is looked for in the folders of `PATH`, apart at `;` (a folder in quotes is taken whole, as
+     Rust and Go read it), as `name.exe` when it has no extension (a path without one gets `.exe` too,
+     as Rust gives it, since `CreateProcessW` adds none); only absolute folders are looked in
+     (`C:\tools`, `\\server\share`, not `\tools` or `C:tools`), and never the folder the program works
+     in or the folder of the system unless `PATH` names it. Rust also looks in the folder of the program
+     and in the folders of the system; Go tries every extension of `PATHEXT`. Written in SG
+     (`Command.found`, `pathFolders`, `isAbsolute`).
+1033. **The command line** is written so that C's library reads the words back as they were given, by
+     Rust's rules: a word is quoted when it is empty or holds a space or a tab, a quote after `n`
+     backslashes is written after `2n+1`, and the backslashes before a closing quote are doubled. The name
+     is quoted and not escaped; one with a quote in it is an `InvalidInput`.
+1034. **A batch file** (`.bat`, `.cmd`, in any case, the path made whole first so that a dot or a space
+     at its end does not hide the extension) runs only when named with its extension, through `cmd.exe`
+     from the folder of the system (`cmd.exe /e:ON /v:OFF /d /c ""script" args"`), each argument escaped as
+     Rust escapes it since CVE-2024-24576: quoted unless every character is plain, a quote doubled, `%`
+     written `%%cd:~,%` so that no variable takes its place. A `\r` or a `\n` in an argument, which would
+     end the command, is an `InvalidInput`, as a script name with a quote or a `\` at its end is.
+1035. **Pipes** are named pipes, as Rust makes them: a new name of this program each time, made as the
+     first instance of that name, so that one made by someone else is never joined, and refused to other
+     machines. The end of the other program is synchronous, as programs expect; the end here is
+     overlapped, kept with its lowest bit set (no handle has it), and every read and write of it waits for
+     its own call. An async read of it is made on a thread of input and output into the free end of the
+     reader's block; a cancel ends the wait at once and cancels the call (`CancelIoEx`), and what came
+     before stays in the block for the next read: so the call is never left to read on, and nothing is
+     lost. This is where the slice left the direction of 934, which named `CancelSynchronousIo`: on a
+     synchronous handle its cancel can race the call it is meant for. `run` with an input and its output
+     both kept writes and reads at once, two overlapped calls waited for together.
+1036. **What the program inherits** is its three streams and nothing else: each is a copy made inheritable
+     for the call and listed for it (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`), closed after it; an input of
+     nothing is `NUL`. The program shares this program's console, and is not put in a group of its own,
+     so Ctrl-C at the console reaches both, as at a terminal of Linux and macOS.
+1037. **The environment** goes as a block of UTF-16, sorted as Windows wants it; names are matched without
+     case (`Path` and `PATH` are one). A cleared environment gets `SystemRoot` back when no change gave
+     it, as Go gives it (Rust does not): without it Winsock does not start in the program.
+1038. **A program is named by its handle**, which `Process` keeps beside its number (`handle`; on Linux
+     and macOS the number again), so no other program can take its name before it is waited for. `wait`
+     waits for the handle, takes the code (32 bits) and closes it; `ExitStatus.Signal` never comes on
+     Windows. A folder to work in that is not there is `NotFound` and a file `NotDirectory`, as elsewhere,
+     where Windows says the same of both.
+1039. **`kill`, `terminate` and `signal`** end the program with `TerminateProcess` and the code 1 (933);
+     `Signal.WindowChange` does nothing. Once the program has ended, nothing.
+1040. **`waitAsync`** waits on the pool of threads of the system (`RegisterWaitForSingleObject`, once, on a
+     handle of its own), as Tokio and libuv wait; its call back wakes the task, so no thread is held for
+     each program. A cancel wakes the task at once and leaves the wait to its end, when it lets itself go.
+     The interpreter waits on a thread, as on Linux and macOS.
+1041. **`System.executable`** is 1 for a file and 0 for none or a folder: Windows has no right to run a
+     file apart from the right to read it, and starting it says the rest (`PermissionDenied`, or
+     `Other(193)` for a file that is not a program).
+1042. **Signals** come through the handler of the console (`SetConsoleCtrlHandler`), set by the first
+     listener: Ctrl-C and Ctrl-Break are `Interrupt`; the console closed, the user logging off and the
+     system shutting down are `Terminate`. Windows runs the handler on a thread of its own, so it hands the
+     signal on itself, with no pipe and no relay. With no listener of the kind it lets Windows do what it
+     does by default. After a `Terminate` it does not return, since Windows ends the program once it does:
+     the program ends in its own way, within the few seconds Windows gives it.
+1043. **The command line is read by the runtime**, by the rules of 1033 read the other way (Rust's reader),
+     not by `CommandLineToArgvW`: its library, `shell32`, brings `user32` along, and a console program
+     that has `user32` is not told of the user logging off or of the system shutting down. `shell32` is no
+     longer linked. `ok_process_words` sends seventeen words through a command line and reads them back.
+1044. **`Signals.raise` on Windows** hands the signal to the listeners of its kind, as elsewhere; with none,
+     the program ends as Ctrl-C ends it (`0xC000013A`, `STATUS_CONTROL_C_EXIT`), what was printed written
+     out first, and `WindowChange` does nothing.
+1045. **`sg-test-tool`** (`tests/tool/main.sg`) is the program the tests of other programs start, on every
+     system, in place of `sh`, `cat`, `sort` and their kin, which Windows does not have: each word of its
+     command line is a step (`out=TEXT`, `exit=N`, `cat`, `sort`, `head=N`, `sleep=MS`, `env=NAME`, `pwd`,
+     `args`, `listen` and more). The harness builds it once with `sg build` and puts its folder first on
+     `PATH`; a program that starts other programs or listens for signals runs in a process of its own,
+     interpreted too. The tests of other programs and signals were written again on it; what differs on
+     Windows is in `.windows.out` (a program stopped ends with the code 1; a cleared environment has
+     `SystemRoot`; a signal raised with no listener ends with `0xC000013A`). `ok_process_descriptors` also
+     checks, on every system, that a program started later does not hold the end of a pipe of another
+     one (else `cat` would not see the end of its input); its shell that tries each descriptor from 3 up
+     runs on Linux and macOS only.
+1046. **Tests of Windows** in the harness: `process_path_lookup` on Windows (`.`, an empty part, a relative
+     folder and `\folder` not looked in, a quoted folder with `;` looked in, `.exe` added, a batch file with
+     `%PATH%`, quotes and an empty word, one named without its extension not found, a line break refused, a
+     code `0xC0000005` in hex), interpreted and compiled; `shutdown_on_signals` on Windows: the server runs
+     with a console of its own, and a small program of C attaches to it and raises Ctrl-C (twice
+     Ctrl-Break to cut a connection) or closes its window, interpreted and compiled: a closed console is
+     `Terminate`, and the server ends cleanly with 0 within the time Windows gives. The close was put to
+     be tried by hand; it runs in the harness instead. On the machine the tests ran over `ssh`, whose
+     programs start with Ctrl-C ignored, which Windows hands on: a listener of `Interrupt` turns that off
+     (`SetConsoleCtrlHandler(NULL, FALSE)`), as a listener on Linux and macOS takes the place of an
+     ignored signal. Unlike there, the ignoring does not come back when the last listener ends: Windows
+     does not tell whether it was on.
+1047. **The interpreter** starts programs through std's `Command` with the path SG found: std writes the
+     command line and escapes a batch file as 1033 and 1034 do (its name is the path, not the name given),
+     makes no handle inheritable, and reads an overlapped pipe through `File`, waiting for its call. A
+     cleared environment gets `SystemRoot` there too. Signals are `src/sys/signals_windows.rs`, the
+     functions of Windows declared there, no crate. A read of a pipe there is not cut short by a cancel,
+     on Linux and macOS either: `outputAsync` cancelled waits for the program to end its output.
+1048. **`tests/windows-pending.txt`** has no line of the 100th: sixteen programs and two tests of the harness
+     run on Windows.
+1049. **Documents**: this list, other programs and signals in the table above, "Not here yet", "Next"; 04
+     ("Signals", "Other programs" and "The runtime" as built), 02, 06, the README of the repository.
+     Nothing is measured (102). `cargo test` passes on macOS and on Linux in a container (355 of 1441
+     programs compile through C, 80 of them under the thread sanitizer, 26 of 32 programs of tests). On
+     Windows 11 on 64-bit Arm the programs of this slice ran interpreted and compiled, and `golden`,
+     `modules`, `compiled_tests`, `compiled_small_pools`, `process_path_lookup` and `shutdown_on_signals`
+     pass; the whole of `cargo test` on Windows is the CI's from this slice on, so that a slice does not
+     wait for the machine. `tests/windows-pending.txt` keeps 41 lines, of C's slice and the last. New:
+     `tests/tool`, `ok_process_words`, five `.windows.out`.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -6834,10 +6941,13 @@ check off.
 
 ## Not here yet
 
-- **Of Windows**, after its first three slices: other programs and signals (100); C, `-L` (a path of Windows has a
+- **Of Windows**, after its first four slices: C, `-L` (a path of Windows has a
   `:`, which the check of a folder refuses), `--library` and `--shared` (101); `--freestanding` and the
   kernel, and the tests of C's layouts (`tests/layouts.rs`), which are run on Linux and macOS for Windows'
-  rules already (102, `tests/windows-pending.txt`). No thread sanitizer there (1011).
+  rules already (102, `tests/windows-pending.txt`). No thread sanitizer there (1011). Job objects, so that a
+  program started ends with the one that started it (934), and services of Windows (933). A test of the
+  console closed (`Terminate`) runs only by hand (1046). `ok_process_run` still starts `sh` and calls C's
+  `chmod`: it gets a form for Windows with C's slice.
 - **Of datagrams**: multicast, sending to every host of a network (broadcast), the options of a socket (the
   time to live, the size of its buffers), a look at a datagram that leaves it in the socket (`peek`), and the
   zone of a v6 address (`fe80::1%en0`), so a link-local address cannot be answered (648).
@@ -7174,5 +7284,8 @@ The second is written too: tasks, threads, locks, atomics and the async schedule
 of a millisecond waits about a millisecond there, and a write to the console holds its stream (999-1014).
 The third is written: the network and async input and output run on Windows, the loop asking the driver
 under the sockets on a completion port, a port held alone, and a datagram that came back told as Linux
-and macOS tell it (1015-1031). Next are other programs and signals, C, and everything tested and
-measured on both machines.
+and macOS tell it (1015-1031). The fourth is written: other programs and signals run on Windows, a
+program started through `CreateProcessW` with its words quoted as it reads them back, a batch file only
+by its extension and escaped, named pipes overlapped on our end, Ctrl-C, Ctrl-Break and the console
+closed as `Interrupt` and `Terminate`, and a command line read without `shell32` (1032-1049). Next are C,
+and everything tested and measured on both machines.

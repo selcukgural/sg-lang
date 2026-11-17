@@ -1,5 +1,6 @@
 // A program talked to while it runs: one task writes the input of `cat` while `main` reads its
-// output, each through a stream of its own, the async way.
+// output, each through a stream of its own, the async way. The program started is `sg-test-tool`
+// (tests/tool), whose words are its steps.
 async Result<void, IoError> feed(StreamWriter input, int count) {
     var i = 0
     while i < count {
@@ -11,7 +12,8 @@ async Result<void, IoError> feed(StreamWriter input, int count) {
 }
 
 async Result<void, ProcessError> main() {
-    var cat = Command("cat")
+    var cat = Command("sg-test-tool")
+    cat.arg("cat")
     cat.pipeInput()
     cat.pipeOutput()
     var process = try cat.start()

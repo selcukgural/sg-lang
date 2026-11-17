@@ -1,0 +1,12 @@
+set twice, removed: [GREETING=hello again, OTHER unset]
+ours: true
+inherited: [PATH is set]
+cleared: [ONLY=this, BEFORE unset, PATH unset, SystemRoot is set]
+as written: [A=x = y; $z %PATH%, B=]
+name with =: InvalidInput
+empty name: InvalidInput
+zero byte: InvalidInput
+zero in a value: InvalidInput
+in inner: true
+ours stays: true
+missing folder: NotFound

@@ -7,6 +7,30 @@ use std::path::{Path, PathBuf};
 mod pending;
 use pending::waits_on_windows;
 
+/// `PATH` as the tests of other programs see it: the folder of `sg-test-tool` (`tests/tool`) first,
+/// the program they start in place of `sh`, `cat` and their kin, which Windows does not have. It
+/// is built once, with `sg build`; a test that needs it fails when it cannot be built.
+fn tool_path() -> std::ffi::OsString {
+    static PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let folder = root.join("target").join("tool");
+        std::fs::create_dir_all(&folder).unwrap();
+        let built = std::process::Command::new(env!("CARGO_BIN_EXE_sg"))
+            .arg("build")
+            .arg(root.join("tests").join("tool").join("main.sg"))
+            .arg("-o")
+            .arg(folder.join("sg-test-tool"))
+            .output()
+            .unwrap();
+        assert!(built.status.success(), "sg-test-tool, which the tests of other programs start, could not be built:\n{}{}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr));
+        let mut folders = vec![folder];
+        folders.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        std::env::join_paths(folders).unwrap()
+    })
+    .clone()
+}
+
 /// What a program is given besides its source: the words of its command line, one on each
 /// line of the `.args` file next to it, and its input, the `.in` file. `{dir}` in a word is a
 /// folder of its own that the program can write into; the folder is written back as `{dir}`
@@ -208,14 +232,33 @@ fn exit_line(code: Option<i32>) -> String {
 fn run_file(path: &Path) -> String {
     let src = std::fs::read_to_string(path).unwrap();
     let name = path.file_name().unwrap().to_string_lossy();
-    // A signal reaches the whole process, and one no listener is left for ends it: a program
-    // that sends signals runs in a process of its own, as compiled code does.
-    if name.contains("signals") {
-        let run = default_signals(&mut std::process::Command::new(env!("CARGO_BIN_EXE_sg"))).arg(&*name).current_dir(path.parent().unwrap()).stdin(std::process::Stdio::null()).output().unwrap();
-        return format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
-    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let given = given(path, &root.join("target").join("io").join("interpreted"));
+    // A signal reaches the whole process, and one no listener is left for ends it: a program
+    // that sends signals runs in a process of its own, as compiled code does. So does one that
+    // starts other programs, which finds `sg-test-tool` on the `PATH` of its own process.
+    if name.contains("signals") || name.contains("process") {
+        let mut child = default_signals(&mut std::process::Command::new(env!("CARGO_BIN_EXE_sg")))
+            .arg(&*name)
+            .args(&given.args)
+            .current_dir(path.parent().unwrap())
+            .env("PATH", tool_path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let input = given.input.clone();
+        let feeding = std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = stdin.write_all(&input);
+        });
+        let run = child.wait_with_output().unwrap();
+        feeding.join().unwrap();
+        let text = format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
+        return with_slashes(&text.replace(&given.dir.display().to_string(), "{dir}"));
+    }
     let mut out = Vec::new();
     let mut err = Vec::new();
     // A file named `tests_...` is run by the test command.
@@ -291,7 +334,7 @@ fn left_behind(plain: &Path, sanitized: &Path, args: &[&str], input: &Path) -> O
     let stdin = || std::fs::File::open(input).map_or_else(|_| std::process::Stdio::null(), std::process::Stdio::from);
     if cfg!(target_os = "macos") {
         let _ = sanitized;
-        let run = match std::process::Command::new("leaks").arg("--atExit").arg("--").arg(plain).args(args).stdin(stdin()).output() {
+        let run = match std::process::Command::new("leaks").arg("--atExit").arg("--").arg(plain).args(args).stdin(stdin()).env("PATH", tool_path()).output() {
             Ok(run) => run,
             Err(error) => return Some(format!("the `leaks` tool could not be run: {error}")),
         };
@@ -303,7 +346,7 @@ fn left_behind(plain: &Path, sanitized: &Path, args: &[&str], input: &Path) -> O
             None => Some(format!("`leaks` gave no count:\n{report}{}", String::from_utf8_lossy(&run.stderr))),
         }
     } else {
-        let run = match std::process::Command::new(sanitized).args(args).stdin(stdin()).env("ASAN_OPTIONS", "detect_leaks=1").output() {
+        let run = match std::process::Command::new(sanitized).args(args).stdin(stdin()).env("ASAN_OPTIONS", "detect_leaks=1").env("PATH", tool_path()).output() {
             Ok(run) => run,
             Err(error) => return Some(format!("the sanitized program could not be run: {error}")),
         };
@@ -571,6 +614,7 @@ fn compiled() {
             let mut child = default_signals(&mut std::process::Command::new(binary))
                 .args(&given.args)
                 .env("ASAN_OPTIONS", "detect_leaks=0")
+                .env("PATH", tool_path())
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -963,7 +1007,7 @@ fn compiled_small_pools() {
             }
             let built = cc.arg("-o").arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
             assert!(built.status.success(), "the C compiler rejected {stem}:\n{}", String::from_utf8_lossy(&built.stderr));
-            let run = std::process::Command::new(&binary).current_dir(&work).stdin(std::process::Stdio::null()).output().unwrap();
+            let run = std::process::Command::new(&binary).current_dir(&work).env("PATH", tool_path()).stdin(std::process::Stdio::null()).output().unwrap();
             let actual = format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
             if actual != expected {
                 failures.push(format!("--- {stem} with a pool of {most}\nexpected:\n{expected}\nactual:\n{actual}"));
@@ -1221,9 +1265,81 @@ fn process_path_lookup() {
         Some(why) => eprintln!("process_path_lookup waits on Windows: {why}"),
         #[cfg(unix)]
         None => process_path_lookup_here(),
-        #[cfg(not(unix))]
-        None => {}
+        #[cfg(windows)]
+        None => process_path_lookup_windows(),
     }
+}
+
+/// The same on Windows, with what Windows adds (choices 1032 to 1034): a name without an extension
+/// is looked for as `name.exe`; `.`, an empty part, a relative folder and a folder of the drive
+/// the program works in (`\bin`) are not looked in; a quoted folder is; a batch file runs only
+/// when named with its extension, through `cmd.exe`, its arguments escaped (`%` is not a variable,
+/// a quote stays in its argument), and an argument with a line break is `InvalidInput`; a code
+/// with its highest bit set is written in hex.
+#[cfg(windows)]
+fn process_path_lookup_windows() {
+    const PROGRAM: &str = r#"
+void show(read string what, Result<string, ProcessError> done) {
+    match done {
+        Ok(text) => print($"{what}: {text.trim().replaceAll("\r\n", " | ")}")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+Command says(read string program, read string word) {
+    var command = Command(program)
+    command.arg(read $"out={word}".toString())
+    return command
+}
+
+void main() {
+    show("found", says("found", "found").output())
+    show("with its extension", says("found.exe", "found").output())
+    show("quoted folder", says("quoted", "quoted").output())
+    show("here", says("here", "here").output())
+    show("relative", says("relative", "relative").output())
+    show("rooted", says("rooted", "rooted").output())
+    show("with a slash", says(".\\here", "here").output())
+    var batch = Command("hello.bat")
+    batch.args(read List<string> { "a b", "50%PATH%", "say \"hi\"", "" })
+    show("batch", batch.output())
+    show("batch without its extension", Command("hello").output())
+    var broken = Command("hello.cmd")
+    broken.arg("two\nlines")
+    show("a line break", broken.output())
+    show("crash code", Command("crash.bat").output())
+}
+"#;
+    const EXPECTED: &str = "found: found\nwith its extension: found\nquoted folder: quoted\nhere: NotFound\nrelative: NotFound\nrooted: NotFound\nwith a slash: here\n\
+                            batch: [a b] [50%PATH%] [say \"\"hi\"\"] []\nbatch without its extension: NotFound\na line break: InvalidInput\n\
+                            crash code: the program exited with code 0xC0000005\n";
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("process-path");
+    let _ = std::fs::remove_dir_all(&work);
+    for folder in ["bin", "ok", "with;semicolon", "rooted"] {
+        std::fs::create_dir_all(work.join(folder)).unwrap();
+    }
+    // `sg-test-tool` under each name: it says the word it is given.
+    let tool = std::env::split_paths(&tool_path()).next().unwrap().join("sg-test-tool.exe");
+    for path in ["here.exe", "bin/relative.exe", "ok/found.exe", "with;semicolon/quoted.exe", "rooted/rooted.exe"] {
+        std::fs::copy(&tool, work.join(path)).unwrap();
+    }
+    std::fs::write(work.join("ok/hello.bat"), "@echo [%~1] [%~2] [%~3] [%~4]\r\n").unwrap();
+    std::fs::copy(work.join("ok/hello.bat"), work.join("ok/hello.cmd")).unwrap();
+    std::fs::write(work.join("ok/crash.bat"), "@exit /b -1073741819\r\n").unwrap();
+    let source = work.join("main.sg");
+    std::fs::write(&source, PROGRAM).unwrap();
+    let system = std::env::var("SystemRoot").unwrap();
+    // `\rooted` is a folder of the drive the program works in: not absolute, not looked in.
+    let rooted = work.join("rooted").to_string_lossy()[2..].to_string();
+    let path = format!(".;;bin;{rooted};\"{}\";{};{system}\\System32", work.join("with;semicolon").display(), work.join("ok").display());
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_sg")).arg(&source).current_dir(&work).env("PATH", &path).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), EXPECTED, "interpreter: {}", String::from_utf8_lossy(&run.stderr));
+    let binary = work.join("main.exe");
+    let built = std::process::Command::new(env!("CARGO_BIN_EXE_sg")).arg("build").arg(&source).arg("-o").arg(&binary).output().unwrap();
+    assert!(built.status.success(), "sg build: {}", String::from_utf8_lossy(&built.stderr));
+    let run = std::process::Command::new(&binary).current_dir(&work).env("PATH", &path).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), EXPECTED, "compiled: {}", String::from_utf8_lossy(&run.stderr));
 }
 
 #[cfg(unix)]
@@ -1284,8 +1400,140 @@ fn shutdown_on_signals() {
         Some(why) => eprintln!("shutdown_on_signals waits on Windows: {why}"),
         #[cfg(unix)]
         None => shutdown_on_signals_here(),
-        #[cfg(not(unix))]
-        None => {}
+        #[cfg(windows)]
+        None => shutdown_on_signals_windows(),
+    }
+}
+
+/// `examples/shutdown` on Windows, interpreted and compiled, sent Ctrl-C and Ctrl-Break as a
+/// console sends them, and its console closed (choice 1046). The server runs with a console of its
+/// own; a small program of C attaches to that console and raises the event there, or closes its
+/// window, so the tests do not lose their own console. A closed console is `Terminate`.
+#[cfg(windows)]
+fn shutdown_on_signals_windows() {
+    use std::io::{BufRead, Read, Write};
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    const CTRL_C: &str = "0";
+    const CTRL_BREAK: &str = "1";
+    const CLOSE: &str = "close";
+    const SENDER: &str = "#include <windows.h>\n#include <stdlib.h>\n#include <string.h>\n\
+        static BOOL WINAPI kept(DWORD event) { (void)event; return TRUE; }\n\
+        int main(int argc, char** argv) {\n\
+            if (argc != 3) return 2;\n\
+            FreeConsole();\n\
+            if (!AttachConsole((DWORD)atoi(argv[1]))) return 3;\n\
+            SetConsoleCtrlHandler(kept, TRUE);\n\
+            if (strcmp(argv[2], \"close\") == 0) {\n\
+                HWND window = GetConsoleWindow();\n\
+                FreeConsole();\n\
+                return window && PostMessageA(window, WM_CLOSE, 0, 0) ? 0 : 5;\n\
+            }\n\
+            return GenerateConsoleCtrlEvent((DWORD)atoi(argv[2]), 0) ? 0 : 4;\n\
+        }\n";
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let example = root.join("examples/shutdown");
+    let work = root.join("target").join("shutdown");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("sender.c"), SENDER).unwrap();
+    let sender = program_at(&work, "sender");
+    let cc = c_command().arg("-o").arg(&sender).arg(work.join("sender.c")).args(system_libs(&work)).arg("-luser32").output().unwrap();
+    assert!(cc.status.success(), "the C compiler rejected the sender:\n{}", String::from_utf8_lossy(&cc.stderr));
+    let binary = program_at(&work, "shutdown");
+    let built = std::process::Command::new(env!("CARGO_BIN_EXE_sg")).arg("build").arg(example.join("main.sg")).arg("-o").arg(&binary).output().unwrap();
+    assert!(built.status.success(), "sg build: {}", String::from_utf8_lossy(&built.stderr));
+    let ways: Vec<(&str, Vec<std::ffi::OsString>)> = vec![("interpreted", vec![env!("CARGO_BIN_EXE_sg").into(), example.join("main.sg").into()]), ("compiled", vec![binary.into()])];
+    for (way, command) in &ways {
+        for scenario in ["idle", "one open", "cut", "closed"] {
+            // A console closed is one with a window to close.
+            let mut child = std::process::Command::new(&command[0])
+                .args(&command[1..])
+                .arg("127.0.0.1:0")
+                .creation_flags(if scenario == "closed" { CREATE_NEW_CONSOLE } else { CREATE_NO_WINDOW })
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let pid = child.id().to_string();
+            let send = |event: &str| {
+                let sent = std::process::Command::new(&sender).args([&pid[..], event]).creation_flags(CREATE_NO_WINDOW).status().unwrap();
+                assert!(sent.success(), "{way}, {scenario}: the event could not be raised ({sent})");
+            };
+            let (lines, heard) = std::sync::mpsc::channel();
+            let stdout = child.stdout.take().unwrap();
+            std::thread::spawn(move || {
+                for line in std::io::BufReader::new(stdout).lines() {
+                    if lines.send(line.unwrap()).is_err() {
+                        break;
+                    }
+                }
+            });
+            let next = || heard.recv_timeout(std::time::Duration::from_secs(20)).unwrap_or_else(|_| panic!("{way}, {scenario}: the server said nothing more"));
+            let first = next();
+            let port: u16 = first.strip_prefix("listening on port ").and_then(|port| port.parse().ok()).unwrap_or_else(|| panic!("{way}, {scenario}: {first}"));
+            let mut said = vec![first];
+            let talk = |conn: &mut std::net::TcpStream, text: &str| {
+                conn.write_all(text.as_bytes()).unwrap();
+                let mut back = vec![0u8; text.len()];
+                conn.read_exact(&mut back).unwrap();
+                assert_eq!(back, text.as_bytes(), "{way}, {scenario}: the echo");
+            };
+            match scenario {
+                "idle" => send(CTRL_C),
+                "closed" => send(CLOSE),
+                "one open" => {
+                    let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                    talk(&mut conn, "hello");
+                    send(CTRL_C);
+                    said.push(next());
+                    talk(&mut conn, "still served");
+                }
+                _ => {
+                    let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                    talk(&mut conn, "hello");
+                    send(CTRL_BREAK);
+                    said.push(next());
+                    send(CTRL_BREAK);
+                    said.push(next());
+                    let mut rest = Vec::new();
+                    conn.set_read_timeout(Some(std::time::Duration::from_secs(20))).unwrap();
+                    assert_eq!(conn.read_to_end(&mut rest).unwrap_or(0), 0, "{way}, {scenario}: the connection was not cut");
+                }
+            }
+            // A server the event did not reach would hold the test: it is stopped after 30 s.
+            let mut waited = 0;
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                if waited == 300 {
+                    let _ = child.kill();
+                    panic!("{way}, {scenario}: the server did not end; it said {said:?}");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                waited += 1;
+            };
+            said.extend(heard.iter());
+            let mut errors = String::new();
+            child.stderr.take().unwrap().read_to_string(&mut errors).unwrap();
+            let expected: &[&str] = match scenario {
+                "idle" => &["Interrupt: no new connections, waiting for the open ones", "stopped cleanly after 0 connection(s)"],
+                "closed" => &["Terminate: no new connections, waiting for the open ones", "stopped cleanly after 0 connection(s)"],
+                "one open" => &["Interrupt: no new connections, waiting for the open ones", "stopped cleanly after 1 connection(s)"],
+                _ => &[
+                    "Interrupt: no new connections, waiting for the open ones",
+                    "Interrupt again: cutting the open connections",
+                    "a connection was cut",
+                    "stopped cleanly after 1 connection(s)",
+                ],
+            };
+            assert_eq!(&said[1..], expected, "{way}, {scenario}; standard error: {errors}");
+            assert_eq!(status.code(), Some(0), "{way}, {scenario}: {errors}");
+            assert!(errors.is_empty(), "{way}, {scenario}: {errors}");
+        }
     }
 }
 

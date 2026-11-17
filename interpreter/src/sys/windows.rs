@@ -1,8 +1,8 @@
 //! What the interpreter asks Windows: random bytes, the clocks and the calls of the file system,
 //! as compiled code asks them, through the functions of Windows declared here (no crate); the
-//! network is in `net_windows.rs`. Other programs and signals come in a later slice; until then
-//! nothing reaches them,
-//! since the checker refuses a program that uses them (`pending`).
+//! network is in `net_windows.rs`, the signals in `signals_windows.rs`. Other programs are started
+//! through std's `Command`, which quotes the command line as compiled code does and escapes the
+//! arguments of a batch file the same way.
 
 use std::ffi::{c_char, c_int, c_void};
 use std::os::windows::ffi::OsStrExt;
@@ -61,6 +61,9 @@ extern "system" {
     fn GetFullPathNameW(name: *const u16, length: u32, buffer: *mut u16, file: *mut *mut u16) -> u32;
     fn GetTempPathW(length: u32, buffer: *mut u16) -> u32;
     fn LocalFree(memory: Handle) -> Handle;
+    fn OpenProcess(access: u32, inherit: Bool, pid: u32) -> Handle;
+    fn TerminateProcess(process: Handle, code: u32) -> Bool;
+    fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
 }
 
 #[link(name = "advapi32")]
@@ -140,40 +143,126 @@ pub(crate) fn clock(wall: bool) -> i128 {
     i128::from(count) * 1_000_000_000 / i128::from(frequency.max(1))
 }
 
-/// What a later slice brings: nothing reaches it, since the checker refuses the program first.
-#[cold]
-fn pending(what: &str) -> ! {
-    panic!("{what} is not on Windows yet, and the checker should have refused the program")
+/// `System.executable`: 1 for a file, 0 for none (a folder is none). Windows has no right to run a
+/// file apart from the right to read it: whether it runs, starting it says.
+pub(crate) fn executable(path: &str) -> i128 {
+    match std::fs::metadata(path) {
+        Ok(info) if info.is_file() => 1,
+        _ => 0,
+    }
 }
 
-pub(crate) fn executable(_path: &str) -> i128 {
-    pending("running another program")
+/// The command of `System.run` and `System.start`: the program at the path, the words after its
+/// name (std writes the path as the name, quoted), the folder and the environment, whose names
+/// have no case; and where its input comes from (the number the call was given). A cleared
+/// environment gets `SystemRoot` back when no change gave it, as compiled code gives it. Only the
+/// three streams reach the program: std makes every handle it opens one no program inherits.
+pub(crate) fn command_of(values: &[Value]) -> (std::process::Command, i128) {
+    let text = |at: usize| match &values[at] {
+        Value::Str(text) => text.to_string(),
+        _ => unreachable!("the checker makes it text"),
+    };
+    let items = |at: usize| match &values[at] {
+        Value::List(items) => items.borrow().iter().map(|item| item.borrow().clone()).collect::<Vec<Value>>(),
+        _ => unreachable!("the checker makes it a list"),
+    };
+    let texts = |at: usize| {
+        items(at)
+            .into_iter()
+            .map(|item| match item {
+                Value::Str(text) => text.to_string(),
+                _ => unreachable!("the checker makes it a list of texts"),
+            })
+            .collect::<Vec<String>>()
+    };
+    let words = texts(1);
+    let mut command = std::process::Command::new(text(0));
+    command.args(&words[1..]);
+    let folder = text(2);
+    if !folder.is_empty() {
+        command.current_dir(folder);
+    }
+    let names = texts(4);
+    if matches!(values[3], Value::Bool(true)) {
+        command.env_clear();
+        if !names.iter().any(|name| name.eq_ignore_ascii_case("SystemRoot")) {
+            if let Some(root) = std::env::var_os("SystemRoot") {
+                command.env("SystemRoot", root);
+            }
+        }
+    }
+    let kept = items(6);
+    for ((name, value), kept) in names.iter().zip(texts(5)).zip(kept) {
+        match kept {
+            Value::Bool(true) => command.env(name, value),
+            _ => command.env_remove(name),
+        };
+    }
+    let input = match &values[7] {
+        Value::Int(_, input) => *input,
+        _ => unreachable!("the checker makes it a number"),
+    };
+    (command, input)
 }
 
-pub(crate) fn command_of(_values: &[Value]) -> (std::process::Command, i128) {
-    pending("running another program")
+const SYNCHRONIZE: u32 = 0x0010_0000;
+const PROCESS_TERMINATE: u32 = 0x0001;
+
+/// Waits until program `pid` has ended. Its number names no other program meanwhile: the
+/// interpreter keeps its handle until it is waited for.
+pub(crate) fn wait_unreaped(pid: i64) {
+    // SAFETY: the handle is closed once waited for.
+    unsafe {
+        let process = OpenProcess(SYNCHRONIZE, 0, pid as u32);
+        if !process.is_null() {
+            WaitForSingleObject(process, u32::MAX);
+            CloseHandle(process);
+        }
+    }
 }
 
-pub(crate) fn wait_unreaped(_pid: i64) {
-    pending("running another program")
+/// How a program ended, as `System.run` and `System.wait` give it: 0 and its code, of 32 bits.
+/// Why a program did not start: a folder to work in that is not there is `NotFound` and a file
+/// `NotDirectory`, as on Linux and macOS, where Windows says `ERROR_DIRECTORY` of both.
+pub(crate) fn not_started(error: std::io::Error, folder: &Value) -> std::io::Error {
+    let Value::Str(folder) = folder else { return error };
+    let folder = folder.to_string();
+    if error.raw_os_error() != Some(NOT_DIR) || folder.is_empty() {
+        return error;
+    }
+    std::fs::metadata(&folder).err().unwrap_or(error)
 }
 
-pub(crate) fn ended_as(_status: std::process::ExitStatus) -> (i64, i64) {
-    pending("running another program")
+pub(crate) fn ended_as(status: std::process::ExitStatus) -> (i64, i64) {
+    (0, i64::from(status.code().unwrap_or(0)))
 }
 
-pub(crate) fn signal(_pid: i64, _signal: i64) {
-    pending("a signal")
+/// `System.signal`: every signal but `WindowChange` (28, which does nothing) ends the program with
+/// the code 1, since Windows has no polite stop to send another program.
+pub(crate) fn signal(pid: i64, signal: i64) {
+    if signal == 28 {
+        return;
+    }
+    // SAFETY: the handle is closed after the call.
+    unsafe {
+        let process = OpenProcess(PROCESS_TERMINATE, 0, pid as u32);
+        if !process.is_null() {
+            TerminateProcess(process, 1);
+            CloseHandle(process);
+        }
+    }
 }
 
 /// The descriptor of a pipe or a socket, and the file or the socket of one: a socket is its
 /// handle, cut to 32 bits (see `net::number_of`).
 pub(crate) type RawFd = i32;
-pub(crate) fn fd_of<T>(_: T) -> RawFd {
-    pending("a pipe")
+pub(crate) fn fd_of<T: std::os::windows::io::IntoRawHandle>(owned: T) -> RawFd {
+    owned.into_raw_handle() as isize as RawFd
 }
-pub(crate) unsafe fn file_of_fd(_fd: RawFd) -> std::fs::File {
-    pending("a pipe")
+/// # Safety
+/// `fd` is a handle that is open and owned by nothing else.
+pub(crate) unsafe fn file_of_fd(fd: RawFd) -> std::fs::File {
+    std::os::windows::io::FromRawHandle::from_raw_handle(fd as isize as Handle)
 }
 /// The number of a datagram socket the interpreter keeps, which it owns from here.
 pub(crate) fn udp_fd(socket: std::net::UdpSocket) -> RawFd {

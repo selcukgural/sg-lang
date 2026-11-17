@@ -1,5 +1,9 @@
-// A program started while files, a socket and a reader are open gets none of them: only its input,
-// its output and its standard error. The folder is the first word of the command line.
+// A program started while files, a socket, a reader and the end of a pipe to another program are
+// open gets none of them: only its input, its output and its standard error. A program that got the
+// end of the input of `cat` would keep `cat` from seeing the end of its input until it ended
+// itself, five seconds later. On Linux and macOS a shell also tries to write to each descriptor
+// from 3 up. The folder is the first word of the command line; the program started is
+// `sg-test-tool` (tests/tool), whose words are its steps.
 Result<void, ProcessError> main(List<string> args) {
     var dir = args[0].clone()
     var path = Path.join(read dir, "open.txt")
@@ -9,11 +13,29 @@ Result<void, ProcessError> main(List<string> args) {
     var reader = try File.openText(read path)
     var appender = try File.openAppend(read path)
     var listener = try TcpListener.bind("127.0.0.1:0")
-    // The program tries to write to each descriptor from 3 up: one it got would take it.
-    var sh = Command("sh")
-    sh.arg("-c")
-    sh.arg("for fd in 3 4 5 6 7 8 9; do if { true >&$fd; } 2>/dev/null; then echo \"open: $fd\"; fi; done; echo checked")
-    try sh.run()
+
+    var cat = Command("sg-test-tool")
+    cat.arg("cat")
+    cat.pipeInput()
+    var reading = try cat.start()
+    var input = reading.takeInput() ?? panic("the input was asked for")
+    var sleep = Command("sg-test-tool")
+    sleep.arg("sleep=5000")
+    var sleeping = try sleep.start()
+    try input.close()
+    var started = Instant.now()
+    print(try reading.wait())
+    print($"the end came at once: {started.elapsed() < Duration.fromSeconds(2)}")
+    sleeping.kill()
+    _ = try sleeping.wait()
+
+    if !OperatingSystem.isWindows() {
+        // The program tries to write to each descriptor from 3 up: one it got would take it.
+        var sh = Command("sh")
+        sh.arg("-c")
+        sh.arg("for fd in 3 4 5 6 7 8 9; do if { true >&$fd; } 2>/dev/null; then echo \"open: $fd\"; fi; done; echo checked")
+        try sh.run()
+    }
     print(listener.port() > 0)
     var line = ""
     _ = try reader.readLine(ref line)
