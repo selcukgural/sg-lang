@@ -207,7 +207,9 @@ them. The first slice of Windows is written: the interpreter runs there, and `sg
 program that prints to the console in UTF-8 without touching its code page, reads and writes files, lists,
 moves and deletes them as on Linux, reads the clock, random bytes, its command line and the environment, and
 runs its tests; a program can ask which system it is built for (`OperatingSystem.isWindows()`), and what
-Windows does not run yet is a compile error that names the slice that brings it.
+Windows does not run yet is a compile error that names the slice that brings it. The second slice of
+Windows is written too: tasks, threads, locks, atomics and async functions run there, and a delay of a
+millisecond waits about a millisecond.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is

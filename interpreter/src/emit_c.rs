@@ -593,7 +593,9 @@ const RUNTIME: &str = r#"#ifndef SG_FREESTANDING
    of Linux or macOS shows it; the code page of the console is not changed. A stream that is a
    file or a pipe gets the bytes as they are (in binary mode, set by `sg_start`). The functions of
    C that write to `stdout` and `stderr` come here (the macros below), so that the program's C
-   writes the same as elsewhere. */
+   writes the same as elsewhere. A write to a console holds the lock of its stream, as C's own
+   writes do: a line of one task is not cut by another's, the bytes kept of a split character are
+   one stream's at a time, and a panic, which holds the streams to the end, is written alone. */
 static int sg_con_state[3];
 static uint8_t sg_con_held[3][4];
 static int sg_con_held_n[3];
@@ -678,8 +680,10 @@ static void sg_con_write(int i, const uint8_t* p, size_t n) {
 static size_t sg_win_fwrite(const void* p, size_t size, size_t count, FILE* f) {
     int i = sg_con_index(f);
     if (!sg_con_is(i)) return (fwrite)(p, size, count, f);
+    _lock_file(f);
     (fflush)(f);
     sg_con_write(i, (const uint8_t*)p, size * count);
+    _unlock_file(f);
     return count;
 }
 static int sg_win_vfprintf(FILE* f, const char* format, va_list args) {
@@ -697,8 +701,10 @@ static int sg_win_vfprintf(FILE* f, const char* format, va_list args) {
         (vsnprintf)(text, (size_t)n + 1, format, again);
     }
     va_end(again);
+    _lock_file(f);
     (fflush)(f);
     sg_con_write(i, (const uint8_t*)text, (size_t)n);
+    _unlock_file(f);
     if (text != local) (free)(text);
     return n;
 }
@@ -718,7 +724,13 @@ static int sg_win_printf(const char* format, ...) {
 }
 static int sg_win_fputs(const char* text, FILE* f) { sg_win_fwrite(text, 1, strlen(text), f); return 0; }
 static int sg_win_fputc(int c, FILE* f) { char b = (char)c; sg_win_fwrite(&b, 1, 1, f); return c; }
-static int sg_win_puts(const char* text) { sg_win_fputs(text, stdout); return sg_win_fputc('\n', stdout); }
+static int sg_win_puts(const char* text) {
+    _lock_file(stdout);
+    sg_win_fputs(text, stdout);
+    int c = sg_win_fputc('\n', stdout);
+    _unlock_file(stdout);
+    return c;
+}
 #define fwrite(p, size, count, f) sg_win_fwrite(p, size, count, f)
 #define vfprintf(f, format, args) sg_win_vfprintf(f, format, args)
 #define fprintf(f, ...) sg_win_fprintf(f, __VA_ARGS__)
@@ -929,6 +941,131 @@ static inline void sg_raw_aligned_free(void* p) { sg_c_free(p); }
 /* A panic is never the usual path: its code is kept out of the way of the code that runs. */
 #define SG_COLD __attribute__((cold, noinline))
 
+/* Threads, locks and conditions, the one way the runtime reaches them (`SG_SYNC`: a program with
+   threads of its own or of the runtime): pthread on Linux and macOS; on Windows a slim
+   reader/writer lock taken only one way, its condition variable and `_beginthreadex`. A lock is
+   given back by the thread that took it, which a `lock` block, that never waits, makes sure of.
+   A condition with a time waits on the monotonic clock (`sg_cnd_init_timed`); on Windows its
+   time is counted in milliseconds, rounded up. A thread has 8 MB of stack, as the main thread
+   has, reserved and taken as it is used. */
+#if SG_SYNC
+#define SG_THREAD_STACK ((size_t)8 << 20)
+#if defined(_WIN32)
+#include <process.h>
+typedef SRWLOCK sg_mtx;
+typedef CONDITION_VARIABLE sg_cnd;
+typedef HANDLE sg_thread;
+#define SG_MTX_INIT SRWLOCK_INIT
+#define SG_CND_INIT CONDITION_VARIABLE_INIT
+#define SG_THREAD_MAIN(name, arg) unsigned __stdcall name(void* arg)
+#define SG_THREAD_END 0
+typedef unsigned (__stdcall* sg_thread_body)(void*);
+static inline void sg_mtx_init(sg_mtx* m) { InitializeSRWLock(m); }
+static inline void sg_mtx_destroy(sg_mtx* m) { (void)m; }
+static inline void sg_mtx_lock(sg_mtx* m) { AcquireSRWLockExclusive(m); }
+static inline void sg_mtx_unlock(sg_mtx* m) { ReleaseSRWLockExclusive(m); }
+static inline bool sg_mtx_trylock(sg_mtx* m) { return TryAcquireSRWLockExclusive(m) != 0; }
+static inline void sg_cnd_init(sg_cnd* c) { InitializeConditionVariable(c); }
+static inline void sg_cnd_init_timed(sg_cnd* c) { InitializeConditionVariable(c); }
+static inline void sg_cnd_destroy(sg_cnd* c) { (void)c; }
+static inline void sg_cnd_wait(sg_cnd* c, sg_mtx* m) { SleepConditionVariableSRW(c, m, INFINITE, 0); }
+/* Whether the condition was told (or woke on its own) before `ns` were over. */
+static inline bool sg_cnd_wait_ns(sg_cnd* c, sg_mtx* m, int64_t ns) {
+    int64_t ms = ns <= 0 ? 0 : (ns + 999999) / 1000000;
+    if (ms >= (int64_t)INFINITE) ms = (int64_t)INFINITE - 1;
+    return SleepConditionVariableSRW(c, m, (DWORD)ms, 0) || GetLastError() != ERROR_TIMEOUT;
+}
+static inline void sg_cnd_signal(sg_cnd* c) { WakeConditionVariable(c); }
+static inline void sg_cnd_broadcast(sg_cnd* c) { WakeAllConditionVariable(c); }
+static inline void sg_yield(void) { SwitchToThread(); }
+/* The cores the system has on, in every group of them. */
+static inline int sg_cores(void) {
+    DWORD n = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    return n > 0 ? (int)n : 1;
+}
+/* 0, or the error of C's library. A thread nobody joins has its handle closed at once. */
+static int sg_thread_start(sg_thread* thread, sg_thread_body body, void* arg, bool detached) {
+    errno = 0;
+    uintptr_t h = _beginthreadex(NULL, (unsigned)SG_THREAD_STACK, body, arg, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    if (!h) return errno ? errno : EAGAIN;
+    if (detached) CloseHandle((HANDLE)h);
+    else *thread = (HANDLE)h;
+    return 0;
+}
+static inline void sg_thread_join(sg_thread thread) {
+    if (WaitForSingleObject(thread, INFINITE) != WAIT_OBJECT_0) abort();
+    CloseHandle(thread);
+}
+#else
+#include <pthread.h>
+#include <sched.h>
+#include <time.h>
+#include <unistd.h>
+typedef pthread_mutex_t sg_mtx;
+typedef pthread_cond_t sg_cnd;
+typedef pthread_t sg_thread;
+#define SG_MTX_INIT PTHREAD_MUTEX_INITIALIZER
+#define SG_CND_INIT PTHREAD_COND_INITIALIZER
+#define SG_THREAD_MAIN(name, arg) void* name(void* arg)
+#define SG_THREAD_END NULL
+typedef void* (*sg_thread_body)(void*);
+static inline void sg_mtx_init(sg_mtx* m) { if (pthread_mutex_init(m, NULL) != 0) abort(); }
+static inline void sg_mtx_destroy(sg_mtx* m) { pthread_mutex_destroy(m); }
+static inline void sg_mtx_lock(sg_mtx* m) { pthread_mutex_lock(m); }
+static inline void sg_mtx_unlock(sg_mtx* m) { pthread_mutex_unlock(m); }
+static inline bool sg_mtx_trylock(sg_mtx* m) { return pthread_mutex_trylock(m) == 0; }
+static inline void sg_cnd_init(sg_cnd* c) { pthread_cond_init(c, NULL); }
+static inline void sg_cnd_init_timed(sg_cnd* c) {
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+#if !defined(__APPLE__)
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+#endif
+    pthread_cond_init(c, &attr);
+    pthread_condattr_destroy(&attr);
+}
+static inline void sg_cnd_destroy(sg_cnd* c) { pthread_cond_destroy(c); }
+static inline void sg_cnd_wait(sg_cnd* c, sg_mtx* m) { pthread_cond_wait(c, m); }
+/* Whether the condition was told (or woke on its own) before `ns` were over. */
+static inline bool sg_cnd_wait_ns(sg_cnd* c, sg_mtx* m, int64_t ns) {
+    struct timespec t;
+#if defined(__APPLE__)
+    t.tv_sec = (time_t)(ns / 1000000000);
+    t.tv_nsec = (long)(ns % 1000000000);
+    return pthread_cond_timedwait_relative_np(c, m, &t) != ETIMEDOUT;
+#else
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    int64_t at = (int64_t)t.tv_nsec + ns % 1000000000;
+    t.tv_sec += (time_t)(ns / 1000000000 + at / 1000000000);
+    t.tv_nsec = (long)(at % 1000000000);
+    return pthread_cond_timedwait(c, m, &t) != ETIMEDOUT;
+#endif
+}
+static inline void sg_cnd_signal(sg_cnd* c) { pthread_cond_signal(c); }
+static inline void sg_cnd_broadcast(sg_cnd* c) { pthread_cond_broadcast(c); }
+static inline void sg_yield(void) { sched_yield(); }
+static inline int sg_cores(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int)n : 1;
+}
+/* 0, or the error the system gave. */
+static int sg_thread_start(sg_thread* thread, sg_thread_body body, void* arg, bool detached) {
+    pthread_attr_t attr;
+    int code = pthread_attr_init(&attr);
+    if (code == 0) {
+        code = pthread_attr_setstacksize(&attr, SG_THREAD_STACK);
+        if (code == 0 && detached) code = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        if (code == 0) code = pthread_create(thread, &attr, body, arg);
+        pthread_attr_destroy(&attr);
+    }
+    return code;
+}
+static inline void sg_thread_join(sg_thread thread) {
+    if (pthread_join(thread, NULL) != 0) abort();
+}
+#endif
+#endif
+
 /* A program with tasks or `locked` values runs on several threads (see `TASK_RUNTIME`). Each
    thread knows the task it runs, so that a panic names the line that started it; a panic holds
    the output from its first line to the end of the process, so that two panics do not mix and
@@ -940,9 +1077,8 @@ static inline void sg_raw_aligned_free(void* p) { sg_c_free(p); }
    thread asleep in `wait` (its lowest bit set), the group of the list of tasks it is in (its
    second bit set), or `SG_ENDED`. `later` is the task that ended after it in its group. */
 #if SG_THREADS
-#include <pthread.h>
 typedef struct sg_task {
-    pthread_t thread;
+    sg_thread thread;
     const char* name;
     const char* at;
     void (*run)(struct sg_task*);
@@ -953,11 +1089,19 @@ typedef struct sg_task {
     void* closing;
     int kind;
     int state;
+    /* Whether the block of the task came aligned beyond 16 bytes, by what it holds: its
+       arguments may be, and they are not in the type that frees it (`sg_task_free`). */
+    bool aligned;
 } sg_task;
 static _Thread_local sg_task* sg_task_now = NULL;
 static void sg_panic_start(void) {
+#if defined(_WIN32)
+    _lock_file(stdout);
+    _lock_file(stderr);
+#else
     flockfile(stdout);
     flockfile(stderr);
+#endif
     fflush(stdout);
 }
 #define SG_PANIC_START() sg_panic_start()
@@ -2375,10 +2519,10 @@ typedef struct sg_live { struct sg_live* prev; struct sg_live* next; const char*
 static sg_live sg_alive = { &sg_alive, &sg_alive, NULL, NULL, NULL };
 #if SG_THREADS
 /* The mutex of a `locked` value: taken by `lock`, in front of the counts. */
-typedef struct { pthread_mutex_t m; } __attribute__((aligned(16))) sg_mutex;
-static pthread_mutex_t sg_alive_lock __attribute__((unused)) = PTHREAD_MUTEX_INITIALIZER;
-#define SG_ALIVE_TAKE() pthread_mutex_lock(&sg_alive_lock)
-#define SG_ALIVE_GIVE() pthread_mutex_unlock(&sg_alive_lock)
+typedef struct { sg_mtx m; } __attribute__((aligned(16))) sg_mutex;
+static sg_mtx sg_alive_lock __attribute__((unused)) = SG_MTX_INIT;
+#define SG_ALIVE_TAKE() sg_mtx_lock(&sg_alive_lock)
+#define SG_ALIVE_GIVE() sg_mtx_unlock(&sg_alive_lock)
 #else
 typedef struct { char none; } __attribute__((aligned(16))) sg_mutex;
 #define SG_ALIVE_TAKE() ((void)0)
@@ -2403,7 +2547,7 @@ static void* sg_rc_new(size_t size, int how, const sg_kind* kind, const char* ma
     *sg_rc_of(p) = (sg_rc){ 1, 1 };
     if ((how & 3) == 1) *sg_lock_of(p) = (sg_lock){ NULL, NULL };
 #if SG_THREADS
-    if ((how & 3) == 2 && pthread_mutex_init(&sg_mutex_of(p)->m, NULL) != 0) abort();
+    if ((how & 3) == 2) sg_mtx_init(&sg_mutex_of(p)->m);
 #endif
 #if SG_TRACK
     sg_live* live = (sg_live*)block;
@@ -2441,7 +2585,7 @@ static inline void sg_rc_unweak(void* p, int how) {
     if (__atomic_fetch_sub(&sg_rc_of(p)->weak, 1, __ATOMIC_RELEASE) != 1) return;
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
 #if SG_THREADS
-    if ((how & 3) == 2) pthread_mutex_destroy(&sg_mutex_of(p)->m);
+    if ((how & 3) == 2) sg_mtx_destroy(&sg_mutex_of(p)->m);
 #endif
     if (how >> 2) sg_aligned_free((char*)p - sg_front(how));
     else free((char*)p - sg_front(how));
@@ -2516,8 +2660,8 @@ static void sg_change_reserved(sg_guard* g) {
 #if SG_THREADS
 /* `lock`: a value is taken by its mutex. Two or more are taken in the order of their addresses,
    so two tasks that lock the same values never wait for each other in a circle. */
-static inline void sg_take(void* p) { pthread_mutex_lock(&sg_mutex_of(p)->m); }
-static inline void sg_give(void* p) { pthread_mutex_unlock(&sg_mutex_of(p)->m); }
+static inline void sg_take(void* p) { sg_mtx_lock(&sg_mutex_of(p)->m); }
+static inline void sg_give(void* p) { sg_mtx_unlock(&sg_mutex_of(p)->m); }
 static inline void sg_take_two(void* a, void* b) {
     if ((uintptr_t)a < (uintptr_t)b) { sg_take(a); sg_take(b); }
     else { sg_take(b); sg_take(a); }
@@ -2607,9 +2751,6 @@ static bool sg_leaks(const char* ended) {
 /// source is a count of owners, a flag, and the delays that look at it.
 const TASK_RUNTIME: &str = r#"
 #include <stddef.h>
-#include <time.h>
-#include <unistd.h>
-#define SG_TASK_STACK ((size_t)8 << 20)
 enum { SG_THREAD, SG_ASYNC, SG_DELAY };
 /* What an async task is doing (`sg_task.state`): waiting for something, waiting for a thread of
    the pool, running, running and woken meanwhile (it runs once more), ended. */
@@ -2629,28 +2770,17 @@ SG_COLD static _Noreturn void sg_refused(int code, const char* what, const char*
     fprintf(stderr, "panic: the system refused a thread for %s: %s (os error %d)\n", what, strerror(code), code);
     sg_die(at);
 }
-static int sg_thread_start(pthread_t* thread, void* (*body)(void*), void* arg, bool detached) {
-    pthread_attr_t attr;
-    int code = pthread_attr_init(&attr);
-    if (code == 0) {
-        code = pthread_attr_setstacksize(&attr, SG_TASK_STACK);
-        if (code == 0 && detached) code = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        if (code == 0) code = pthread_create(thread, &attr, body, arg);
-        pthread_attr_destroy(&attr);
-    }
-    return code;
-}
 
 /* A thread asleep until a task ends. */
-typedef struct { pthread_mutex_t m; pthread_cond_t c; bool ended; } sg_parked;
+typedef struct { sg_mtx m; sg_cnd c; bool ended; } sg_parked;
 /* The group of a list of tasks (`List<Task<R>>`): each task in the list tells it when it ends,
    and the group keeps them in the order they ended until `Task.whenAny` takes one out, or
    `Task.whenAll` all of them. Whoever waits there is woken: an async task (`job`), or threads
    asleep on `c`. A task tells its group last thing, under the lock, so a group is freed only
    after every task in it has told it. */
 typedef struct sg_group {
-    pthread_mutex_t m;
-    pthread_cond_t c;
+    sg_mtx m;
+    sg_cnd c;
     sg_task* first;
     sg_task* last;
     int64_t ended;
@@ -2658,15 +2788,15 @@ typedef struct sg_group {
 } sg_group;
 #define SG_GROUP 2
 static void sg_group_told(sg_group* g, sg_task* t) {
-    pthread_mutex_lock(&g->m);
+    sg_mtx_lock(&g->m);
     t->later = NULL;
     if (g->last) g->last->later = t;
     else g->first = t;
     g->last = t;
     g->ended++;
     if (g->job) sg_wake(g->job);
-    pthread_cond_broadcast(&g->c);
-    pthread_mutex_unlock(&g->m);
+    sg_cnd_broadcast(&g->c);
+    sg_mtx_unlock(&g->m);
 }
 /* The task has ended: whoever waits for it goes on. The task may be freed at once, so nothing
    of it is touched after the exchange (a group takes it out only once it is told). */
@@ -2677,10 +2807,10 @@ static void sg_task_ended(sg_task* t) {
         sg_group_told((sg_group*)((uintptr_t)w - SG_GROUP), t);
     } else if ((uintptr_t)w & 1) {
         sg_parked* p = (sg_parked*)((uintptr_t)w - 1);
-        pthread_mutex_lock(&p->m);
+        sg_mtx_lock(&p->m);
         p->ended = true;
-        pthread_cond_signal(&p->c);
-        pthread_mutex_unlock(&p->m);
+        sg_cnd_signal(&p->c);
+        sg_mtx_unlock(&p->m);
     } else {
         sg_wake((sg_task*)w);
     }
@@ -2689,17 +2819,17 @@ static void sg_task_ended(sg_task* t) {
 static void sg_park(sg_task* t) {
     if (__atomic_load_n(&t->waiter, __ATOMIC_ACQUIRE) == SG_ENDED) return;
     sg_parked p;
-    pthread_mutex_init(&p.m, NULL);
-    pthread_cond_init(&p.c, NULL);
+    sg_mtx_init(&p.m);
+    sg_cnd_init(&p.c);
     p.ended = false;
     void* none = NULL;
     if (__atomic_compare_exchange_n(&t->waiter, &none, (void*)((uintptr_t)&p + 1), false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-        pthread_mutex_lock(&p.m);
-        while (!p.ended) pthread_cond_wait(&p.c, &p.m);
-        pthread_mutex_unlock(&p.m);
+        sg_mtx_lock(&p.m);
+        while (!p.ended) sg_cnd_wait(&p.c, &p.m);
+        sg_mtx_unlock(&p.m);
     }
-    pthread_mutex_destroy(&p.m);
-    pthread_cond_destroy(&p.c);
+    sg_mtx_destroy(&p.m);
+    sg_cnd_destroy(&p.c);
 }
 /* `await t`: whether the task has ended. If not, the async task running now is woken when it
    does; it is the only one that can wait for it, since a task is waited for once. */
@@ -2711,7 +2841,7 @@ static bool sg_ready(sg_task* t) {
     return !__atomic_compare_exchange_n(&t->waiter, &none, (void*)sg_job_now, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 }
 
-static void* sg_task_main(void* p) {
+static SG_THREAD_MAIN(sg_task_main, p) {
     sg_task* task = p;
     sg_task_now = task;
     task->run(task);
@@ -2720,7 +2850,7 @@ static void* sg_task_main(void* p) {
     if (sg_scratch_kept) SG_KEPT(-1);
 #endif
     sg_task_ended(task);
-    return NULL;
+    return SG_THREAD_END;
 }
 static void sg_task_start(sg_task* task, void (*run)(sg_task*), const char* name, const char* at) {
     task->name = name;
@@ -2733,9 +2863,15 @@ static void sg_task_start(sg_task* task, void (*run)(sg_task*), const char* name
 }
 /* `wait`, and the drop of a task on a way out with an error: a thread is joined; for the
    others this thread sleeps until they end. After `await` it is quick: the task has ended. */
+/* The block of a task given back, as it was taken: on Windows one aligned beyond 16 bytes goes
+   back through `_aligned_free`. */
+static inline void sg_task_free(void* t) {
+    if (((sg_task*)t)->aligned) sg_aligned_free(t);
+    else free(t);
+}
 static inline void sg_task_join(sg_task* task) {
     if (task->kind != SG_THREAD) sg_park(task);
-    else if (pthread_join(task->thread, NULL) != 0) abort();
+    else sg_thread_join(task->thread);
 }
 
 /* `tasks.add(task)`: the task tells the group of the list when it ends, or now, if it has. */
@@ -2744,8 +2880,8 @@ static void sg_group_add(sg_group** slot, sg_task* t) {
     if (!g) {
         g = malloc(sizeof(sg_group));
         if (!g) abort();
-        pthread_mutex_init(&g->m, NULL);
-        pthread_cond_init(&g->c, NULL);
+        sg_mtx_init(&g->m);
+        sg_cnd_init(&g->c);
         g->first = g->last = NULL;
         g->ended = 0;
         g->job = NULL;
@@ -2756,8 +2892,8 @@ static void sg_group_add(sg_group** slot, sg_task* t) {
 }
 static void sg_group_free(sg_group* g) {
     if (!g) return;
-    pthread_mutex_destroy(&g->m);
-    pthread_cond_destroy(&g->c);
+    sg_mtx_destroy(&g->m);
+    sg_cnd_destroy(&g->c);
     free(g);
 }
 /* The first task of the group that ended, taken out of it; NULL if none has. */
@@ -2774,34 +2910,34 @@ static sg_task* sg_group_pop(sg_group* g) {
    task running now is woken when one does. */
 static bool sg_group_all(sg_group* g, int64_t n) {
     if (n == 0) return true;
-    pthread_mutex_lock(&g->m);
+    sg_mtx_lock(&g->m);
     bool all = g->ended == n;
     g->job = all ? NULL : sg_job_now;
-    pthread_mutex_unlock(&g->m);
+    sg_mtx_unlock(&g->m);
     return all;
 }
 /* `await Task.whenAny(ref tasks)`: the first task to end, taken out of the group, or NULL; then
    the async task running now is woken when one ends. */
 static sg_task* sg_group_any(sg_group* g) {
-    pthread_mutex_lock(&g->m);
+    sg_mtx_lock(&g->m);
     sg_task* t = sg_group_pop(g);
     g->job = t ? NULL : sg_job_now;
-    pthread_mutex_unlock(&g->m);
+    sg_mtx_unlock(&g->m);
     return t;
 }
 /* The same for code that is not async, and for the drop of a list that still holds tasks (on a
    way out with an error): the thread sleeps. */
 static void sg_group_park_all(sg_group* g, int64_t n) {
     if (n == 0) return;
-    pthread_mutex_lock(&g->m);
-    while (g->ended < n) pthread_cond_wait(&g->c, &g->m);
-    pthread_mutex_unlock(&g->m);
+    sg_mtx_lock(&g->m);
+    while (g->ended < n) sg_cnd_wait(&g->c, &g->m);
+    sg_mtx_unlock(&g->m);
 }
 static sg_task* sg_group_park_any(sg_group* g) {
-    pthread_mutex_lock(&g->m);
+    sg_mtx_lock(&g->m);
     sg_task* t;
-    while (!(t = sg_group_pop(g))) pthread_cond_wait(&g->c, &g->m);
-    pthread_mutex_unlock(&g->m);
+    while (!(t = sg_group_pop(g))) sg_cnd_wait(&g->c, &g->m);
+    sg_mtx_unlock(&g->m);
     return t;
 }
 SG_COLD static _Noreturn void sg_when_any_empty(const char* loc) {
@@ -2840,14 +2976,14 @@ typedef struct sg_worker {
     sg_task* ring[SG_RING];
     /* Under `sg_pool_lock`: the thread is asleep (on `sg_pool_asleep`), in the loop of the
        network, and woken to search. */
-    _Alignas(64) pthread_cond_t wake;
+    _Alignas(64) sg_cnd wake;
     struct sg_worker* next_asleep;
     bool asleep;
     bool driving;
     bool notified;
     uint32_t rand;
 } sg_worker;
-static pthread_mutex_t sg_pool_lock = PTHREAD_MUTEX_INITIALIZER;
+static sg_mtx sg_pool_lock = SG_MTX_INIT;
 /* The queue the threads share, and its length, read without the lock. */
 static sg_task* sg_pool_first = NULL;
 static sg_task* sg_pool_last = NULL;
@@ -2871,7 +3007,7 @@ static _Thread_local sg_worker* sg_worker_now = NULL;
 static _Thread_local bool sg_lifo_on = true;
 static _Thread_local bool sg_driving_now = false;
 static void sg_job_run(sg_task* job);
-static void* sg_worker_main(void* self);
+static SG_THREAD_MAIN(sg_worker_main, self);
 /* Under the lock: the threads the pool may have, the number of cores. */
 static void sg_pool_size(void) {
     if (sg_workers) return;
@@ -2879,15 +3015,14 @@ static void sg_pool_size(void) {
     /* For the tests alone: a pool of one or two threads is soon busy everywhere. */
     int most = SG_POOL_MOST;
 #else
-    long cores = sysconf(_SC_NPROCESSORS_ONLN);
-    int most = cores > 0 ? (int)cores : 1;
+    int most = sg_cores();
 #endif
-    sg_worker* all = aligned_alloc(64, (size_t)most * sizeof(sg_worker));
+    sg_worker* all = sg_alloc((size_t)most * sizeof(sg_worker), 64);
     if (!all) abort();
     SG_KEPT(1);
     memset(all, 0, (size_t)most * sizeof(sg_worker));
     for (int i = 0; i < most; i++) {
-        pthread_cond_init(&all[i].wake, NULL);
+        sg_cnd_init(&all[i].wake);
         all[i].rand = 0x9e3779b9u * (uint32_t)(i + 1);
     }
     sg_workers = all;
@@ -2924,12 +3059,12 @@ static void sg_ring_push(sg_worker* w, sg_task* job) {
             else first = t;
             last = t;
         }
-        pthread_mutex_lock(&sg_pool_lock);
+        sg_mtx_lock(&sg_pool_lock);
         if (sg_pool_last) sg_pool_last->next = first;
         else sg_pool_first = first;
         sg_pool_last = last;
         __atomic_add_fetch(&sg_pool_shared, SG_RING / 2 + 1, __ATOMIC_RELEASE);
-        pthread_mutex_unlock(&sg_pool_lock);
+        sg_mtx_unlock(&sg_pool_lock);
         return;
     }
 }
@@ -2972,7 +3107,7 @@ static sg_task* sg_ring_steal(sg_worker* w, sg_worker* from) {
    ring as well (the queue over the threads, half a ring at most). */
 static sg_task* sg_pool_take_shared(sg_worker* w, bool more) {
     if (__atomic_load_n(&sg_pool_shared, __ATOMIC_ACQUIRE) == 0) return NULL;
-    pthread_mutex_lock(&sg_pool_lock);
+    sg_mtx_lock(&sg_pool_lock);
     sg_task* job = sg_pool_first;
     if (job) {
         int64_t n = 1;
@@ -2993,7 +3128,7 @@ static sg_task* sg_pool_take_shared(sg_worker* w, bool more) {
         if (!sg_pool_first) sg_pool_last = NULL;
         __atomic_sub_fetch(&sg_pool_shared, 1, __ATOMIC_RELEASE);
     }
-    pthread_mutex_unlock(&sg_pool_lock);
+    sg_mtx_unlock(&sg_pool_lock);
     return job;
 }
 /* Work is there: one more thread searches, unless one does or none is asleep. A thread asleep is
@@ -3002,10 +3137,10 @@ static void sg_pool_notify(const char* at) {
     int most = __atomic_load_n(&sg_pool_most, __ATOMIC_ACQUIRE);
     uint64_t state = __atomic_fetch_add(&sg_pool_state, 0, __ATOMIC_SEQ_CST);
     if (state >= SG_SEARCHING || (uint32_t)state >= (uint32_t)most) return;
-    pthread_mutex_lock(&sg_pool_lock);
+    sg_mtx_lock(&sg_pool_lock);
     state = __atomic_load_n(&sg_pool_state, __ATOMIC_SEQ_CST);
     if (state >= SG_SEARCHING || (uint32_t)state >= (uint32_t)most) {
-        pthread_mutex_unlock(&sg_pool_lock);
+        sg_mtx_unlock(&sg_pool_lock);
         return;
     }
     sg_worker** at_w = &sg_pool_asleep;
@@ -3021,22 +3156,22 @@ static void sg_pool_notify(const char* at) {
         w->notified = true;
         bool driving = w->driving;
         void (*kick)(void) = __atomic_load_n(&sg_pool_kick, __ATOMIC_ACQUIRE);
-        if (!driving) pthread_cond_signal(&w->wake);
-        pthread_mutex_unlock(&sg_pool_lock);
+        if (!driving) sg_cnd_signal(&w->wake);
+        sg_mtx_unlock(&sg_pool_lock);
         if (driving) kick();
         return;
     }
     int i = sg_pool_threads;
     if (i >= most) {
         __atomic_sub_fetch(&sg_pool_state, SG_SEARCHING + 1, __ATOMIC_SEQ_CST);
-        pthread_mutex_unlock(&sg_pool_lock);
+        sg_mtx_unlock(&sg_pool_lock);
         return;
     }
     __atomic_store_n(&sg_pool_threads, i + 1, __ATOMIC_RELEASE);
-    pthread_t thread;
+    sg_thread thread;
     int code = sg_thread_start(&thread, sg_worker_main, &sg_workers[i], true);
     if (code != 0) sg_refused(code, "the pool of async tasks", at ? at : "");
-    pthread_mutex_unlock(&sg_pool_lock);
+    sg_mtx_unlock(&sg_pool_lock);
 }
 /* Whether any task waits for a thread: the last thread to stop searching looks once more before
    it sleeps, since a task put meanwhile woke nobody. */
@@ -3083,28 +3218,28 @@ static void sg_pool_round(sg_worker* w, bool wait) {
 /* A thread with nothing to do sleeps, or waits on the loop of the network if no thread does,
    until it is woken to search or the loop wakes tasks for it. It says whether it searches. */
 static bool sg_pool_park(sg_worker* w, bool searching) {
-    pthread_mutex_lock(&sg_pool_lock);
+    sg_mtx_lock(&sg_pool_lock);
     uint64_t before = __atomic_fetch_sub(&sg_pool_state, (searching ? SG_SEARCHING : 0) + 1, __ATOMIC_SEQ_CST);
     w->asleep = true;
     w->notified = false;
     w->next_asleep = sg_pool_asleep;
     sg_pool_asleep = w;
-    pthread_mutex_unlock(&sg_pool_lock);
+    sg_mtx_unlock(&sg_pool_lock);
     if (searching && before >> 32 == 1 && sg_pool_any_work()) sg_pool_notify(NULL);
-    pthread_mutex_lock(&sg_pool_lock);
+    sg_mtx_lock(&sg_pool_lock);
     for (;;) {
         if (w->notified) {
-            pthread_mutex_unlock(&sg_pool_lock);
+            sg_mtx_unlock(&sg_pool_lock);
             return true;
         }
         int none = 0;
         if (__atomic_load_n(&sg_pool_driver, __ATOMIC_ACQUIRE) && __atomic_compare_exchange_n(&sg_pool_driving, &none, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
             w->driving = true;
-            pthread_mutex_unlock(&sg_pool_lock);
+            sg_mtx_unlock(&sg_pool_lock);
             sg_driving_now = true;
             sg_pool_driver(true);
             sg_driving_now = false;
-            pthread_mutex_lock(&sg_pool_lock);
+            sg_mtx_lock(&sg_pool_lock);
             w->driving = false;
             __atomic_store_n(&sg_pool_driving, 0, __ATOMIC_RELEASE);
             if (w->notified || !sg_worker_has(w)) continue;
@@ -3117,11 +3252,11 @@ static bool sg_pool_park(sg_worker* w, bool searching) {
             }
             w->asleep = false;
             __atomic_add_fetch(&sg_pool_state, 1, __ATOMIC_SEQ_CST);
-            pthread_mutex_unlock(&sg_pool_lock);
+            sg_mtx_unlock(&sg_pool_lock);
             if (sg_ring_len(w) > 1) sg_pool_notify(NULL);
             return false;
         }
-        pthread_cond_wait(&w->wake, &sg_pool_lock);
+        sg_cnd_wait(&w->wake, &sg_pool_lock);
     }
 }
 /* The next task of this thread: its slot, its ring, the shared queue; the shared queue first
@@ -3146,7 +3281,7 @@ static void sg_pool_run(sg_worker* w, sg_task* job) {
     sg_lifo_on = true;
 }
 /* A thread of the pool, started to search. */
-static void* sg_worker_main(void* self) {
+static SG_THREAD_MAIN(sg_worker_main, self) {
     sg_worker* w = self;
     sg_worker_now = w;
     bool searching = true;
@@ -3175,7 +3310,7 @@ static void* sg_worker_main(void* self) {
         if (wake) sg_pool_notify(job->at);
         sg_pool_run(w, job);
     }
-    return NULL;
+    return SG_THREAD_END;
 }
 /* A task can run: on this thread's slot (the one there before goes on its ring) or ring, or on
    the shared queue from outside the pool. Nothing of a task is read once it is there: another
@@ -3197,24 +3332,24 @@ static void sg_pool_put(sg_task* job) {
         return;
     }
     const char* at = job->at;
-    pthread_mutex_lock(&sg_pool_lock);
+    sg_mtx_lock(&sg_pool_lock);
     sg_pool_size();
     job->next = NULL;
     if (sg_pool_last) sg_pool_last->next = job;
     else sg_pool_first = job;
     sg_pool_last = job;
     __atomic_add_fetch(&sg_pool_shared, 1, __ATOMIC_RELEASE);
-    pthread_mutex_unlock(&sg_pool_lock);
+    sg_mtx_unlock(&sg_pool_lock);
     sg_pool_notify(at);
 }
 /* The loop of the network is open (`round` and `kick`, see `NET_ASYNC_RUNTIME`): a thread
    searches and, finding nothing, waits on it; if every thread is busy, the first done does. */
 static void sg_pool_drive(void (*round)(bool wait), void (*kick)(void), const char* at) {
-    pthread_mutex_lock(&sg_pool_lock);
+    sg_mtx_lock(&sg_pool_lock);
     sg_pool_size();
     __atomic_store_n(&sg_pool_kick, kick, __ATOMIC_RELEASE);
     __atomic_store_n(&sg_pool_driver, round, __ATOMIC_RELEASE);
-    pthread_mutex_unlock(&sg_pool_lock);
+    sg_mtx_unlock(&sg_pool_lock);
     sg_pool_notify(at);
 }
 /* Whatever an async task waited for is there: it runs again, now if it is waiting, or once
@@ -3292,18 +3427,24 @@ typedef struct sg_cancel {
     sg_delay clock;
 } sg_cancel;
 
-static pthread_mutex_t sg_clock_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t sg_clock_wait;
+static sg_mtx sg_clock_lock = SG_MTX_INIT;
+#if defined(_WIN32)
+static HANDLE sg_clock_timer;
+static HANDLE sg_clock_told;
+SG_COLD static _Noreturn void sg_refused_timer(const char* at) {
+    SG_PANIC_START();
+    fprintf(stderr, "panic: the system refused a timer for the clock of delays (os error %lu)\n", (unsigned long)GetLastError());
+    sg_die(at);
+}
+#else
+static sg_cnd sg_clock_wait;
+#endif
 static bool sg_clock_started = false;
 static sg_delay** sg_heap = NULL;
 static int64_t sg_heap_len = 0;
 static int64_t sg_heap_cap = 0;
 static int64_t sg_clock_order = 0;
-static int64_t sg_now(void) {
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
-}
+static int64_t sg_now(void) { return sg_clock(CLOCK_MONOTONIC); }
 static inline bool sg_sooner(const sg_delay* a, const sg_delay* b) { return a->due < b->due || (a->due == b->due && a->order < b->order); }
 static inline void sg_heap_set(int64_t i, sg_delay* d) { sg_heap[i] = d; d->at = i; }
 static void sg_heap_up(int64_t i) {
@@ -3349,26 +3490,41 @@ static void sg_delay_end(sg_delay* d, int how) {
     if (d->over) d->over(d);
     else sg_wake(d->job);
 }
+/* The clock's lock is held, and let go while it sleeps: for `ns`, or until it is told of a
+   sooner delay (`ns` below zero: only that). On Windows a timer of high resolution keeps the
+   time, and an event tells it; the time of a condition variable is counted there in ticks of the
+   system's timer, about 16 ms. */
 static void sg_clock_sleep(int64_t ns) {
-    struct timespec t;
-#if defined(__APPLE__)
-    t.tv_sec = (time_t)(ns / 1000000000);
-    t.tv_nsec = (long)(ns % 1000000000);
-    pthread_cond_timedwait_relative_np(&sg_clock_wait, &sg_clock_lock, &t);
+#if defined(_WIN32)
+    HANDLE both[2] = { sg_clock_told, sg_clock_timer };
+    DWORD count = 1;
+    if (ns >= 0) {
+        LARGE_INTEGER due;
+        due.QuadPart = ns >= 100 ? -(ns / 100) : -1;
+        if (SetWaitableTimer(sg_clock_timer, &due, 0, NULL, NULL, FALSE)) count = 2;
+    }
+    sg_mtx_unlock(&sg_clock_lock);
+    WaitForMultipleObjects(count, both, FALSE, count == 2 ? INFINITE : (ns >= 0 ? (DWORD)(ns / 1000000 + 1) : INFINITE));
+    sg_mtx_lock(&sg_clock_lock);
 #else
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    int64_t at = (int64_t)t.tv_nsec + ns % 1000000000;
-    t.tv_sec += (time_t)(ns / 1000000000 + at / 1000000000);
-    t.tv_nsec = (long)(at % 1000000000);
-    pthread_cond_timedwait(&sg_clock_wait, &sg_clock_lock, &t);
+    if (ns < 0) sg_cnd_wait(&sg_clock_wait, &sg_clock_lock);
+    else (void)sg_cnd_wait_ns(&sg_clock_wait, &sg_clock_lock, ns);
 #endif
 }
-static void* sg_clock_main(void* unused) {
+/* The clock's lock is held: the clock is told of a delay sooner than the one it sleeps for. */
+static inline void sg_clock_poke(void) {
+#if defined(_WIN32)
+    SetEvent(sg_clock_told);
+#else
+    sg_cnd_signal(&sg_clock_wait);
+#endif
+}
+static SG_THREAD_MAIN(sg_clock_main, unused) {
     (void)unused;
-    pthread_mutex_lock(&sg_clock_lock);
+    sg_mtx_lock(&sg_clock_lock);
     for (;;) {
         if (sg_heap_len == 0) {
-            pthread_cond_wait(&sg_clock_wait, &sg_clock_lock);
+            sg_clock_sleep(-1);
             continue;
         }
         sg_delay* first = sg_heap[0];
@@ -3380,19 +3536,19 @@ static void* sg_clock_main(void* unused) {
             sg_clock_sleep(first->due - now);
         }
     }
-    return NULL;
+    return SG_THREAD_END;
 }
 /* Puts a delay of `ms` on the clock; the clock's lock is held. */
 static void sg_clock_put(sg_delay* d, int64_t ms, const char* loc) {
     if (!sg_clock_started) {
-        pthread_condattr_t attr;
-        pthread_condattr_init(&attr);
-#if !defined(__APPLE__)
-        pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+#if defined(_WIN32)
+        sg_clock_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        sg_clock_told = CreateEventW(NULL, FALSE, FALSE, NULL);
+        if (!sg_clock_timer || !sg_clock_told) sg_refused_timer(loc);
+#else
+        sg_cnd_init_timed(&sg_clock_wait);
 #endif
-        pthread_cond_init(&sg_clock_wait, &attr);
-        pthread_condattr_destroy(&attr);
-        pthread_t thread;
+        sg_thread thread;
         int code = sg_thread_start(&thread, sg_clock_main, NULL, true);
         if (code != 0) sg_refused(code, "the clock of delays", loc);
         sg_clock_started = true;
@@ -3404,7 +3560,7 @@ static void sg_clock_put(sg_delay* d, int64_t ms, const char* loc) {
     sg_heap_set(sg_heap_len, d);
     sg_heap_len++;
     sg_heap_up(sg_heap_len - 1);
-    if (d->at == 0) pthread_cond_signal(&sg_clock_wait);
+    if (d->at == 0) sg_clock_poke();
 }
 /* `await Task.delay(ms)` and `await Task.delay(ms, read token)`, in the frame of the async
    function. A delay of 0, and one whose token is cancelled, is over at once and does not wait. */
@@ -3418,7 +3574,7 @@ static void sg_delay_start(sg_delay* d, int32_t ms, bool told, sg_cancel* token,
     if (token && __atomic_load_n(&token->cancelled, __ATOMIC_ACQUIRE)) { d->state = SG_CANCELLED; return; }
     if (ms == 0) { d->state = SG_OVER; return; }
     d->state = SG_WAITING;
-    pthread_mutex_lock(&sg_clock_lock);
+    sg_mtx_lock(&sg_clock_lock);
     if (token && token->cancelled) {
         d->state = SG_CANCELLED;
     } else {
@@ -3430,7 +3586,7 @@ static void sg_delay_start(sg_delay* d, int32_t ms, bool told, sg_cancel* token,
         }
         sg_clock_put(d, ms, loc);
     }
-    pthread_mutex_unlock(&sg_clock_lock);
+    sg_mtx_unlock(&sg_clock_lock);
 }
 static inline int sg_delay_state(sg_delay* d) { return __atomic_load_n(&d->state, __ATOMIC_ACQUIRE); }
 
@@ -3442,6 +3598,7 @@ static sg_task* sg_delay_task_new(int32_t ms, const char* loc) {
     sg_delay_task* t = malloc(sizeof *t);
     if (!t) abort();
     t->head.kind = SG_DELAY;
+    t->head.aligned = false;
     t->head.name = NULL;
     t->head.at = NULL;
     t->head.waiter = ms == 0 ? SG_ENDED : NULL;
@@ -3449,9 +3606,9 @@ static sg_task* sg_delay_task_new(int32_t ms, const char* loc) {
         t->delay.over = sg_delay_task_over;
         t->delay.token = NULL;
         t->delay.state = SG_WAITING;
-        pthread_mutex_lock(&sg_clock_lock);
+        sg_mtx_lock(&sg_clock_lock);
         sg_clock_put(&t->delay, ms, loc);
-        pthread_mutex_unlock(&sg_clock_lock);
+        sg_mtx_unlock(&sg_clock_lock);
     }
     return &t->head;
 }
@@ -3492,9 +3649,9 @@ static void sg_cancel_held(sg_cancel* c) {
     }
 }
 static void sg_cancel_now(sg_cancel* c) {
-    pthread_mutex_lock(&sg_clock_lock);
+    sg_mtx_lock(&sg_clock_lock);
     sg_cancel_held(c);
-    pthread_mutex_unlock(&sg_clock_lock);
+    sg_mtx_unlock(&sg_clock_lock);
 }
 static void sg_cancel_clock_over(sg_delay* d) {
     sg_cancel* c = (sg_cancel*)((char*)d - offsetof(sg_cancel, clock));
@@ -3514,9 +3671,9 @@ static sg_cancel* sg_cancel_after(int32_t ms, const char* loc) {
     SG_KEPT(1);
     c->clock.over = sg_cancel_clock_over;
     c->clock.state = SG_WAITING;
-    pthread_mutex_lock(&sg_clock_lock);
+    sg_mtx_lock(&sg_clock_lock);
     sg_clock_put(&c->clock, ms, loc);
-    pthread_mutex_unlock(&sg_clock_lock);
+    sg_mtx_unlock(&sg_clock_lock);
     return c;
 }
 "#;
@@ -3974,13 +4131,13 @@ typedef struct sg_sig_listener {
     int mask;
     int count;
     uint8_t pending[SG_SIG_KINDS];
-    pthread_cond_t came;
+    sg_cnd came;
 #if SG_SIGNALS_ASYNC
     /* The task that awaits a signal: under the clock's lock. */
     struct sg_sig_wait* waiter;
 #endif
 } sg_sig_listener;
-static pthread_mutex_t sg_sig_lock = PTHREAD_MUTEX_INITIALIZER;
+static sg_mtx sg_sig_lock = SG_MTX_INIT;
 static sg_sig_listener* sg_sig_first = NULL;
 static int sg_sig_counts[SG_SIG_KINDS];
 static struct sigaction sg_sig_before[SG_SIG_KINDS];
@@ -4025,7 +4182,7 @@ static void sg_sig_hand_on(void) {
                 bool kept = false;
                 for (int j = 0; j < l->count; j++) kept = kept || l->pending[j] == k;
                 if (!kept) l->pending[l->count++] = (uint8_t)k;
-                pthread_cond_broadcast(&l->came);
+                sg_cnd_broadcast(&l->came);
 #if SG_SIGNALS_ASYNC
                 sg_sig_tell(l);
 #endif
@@ -4036,23 +4193,23 @@ static void sg_sig_hand_on(void) {
     }
 }
 /* The relay: it waits for the pipe, then hands on what it holds, which `raise` may have done first. */
-static void* sg_sig_relay(void* unused) {
+static SG_THREAD_MAIN(sg_sig_relay, unused) {
     (void)unused;
     struct pollfd p = { sg_sig_read_end, POLLIN, 0 };
     for (;;) {
-        if (poll(&p, 1, -1) < 0 && errno != EINTR) return NULL;
-        pthread_mutex_lock(&sg_sig_lock);
+        if (poll(&p, 1, -1) < 0 && errno != EINTR) return SG_THREAD_END;
+        sg_mtx_lock(&sg_sig_lock);
         sg_sig_hand_on();
-        pthread_mutex_unlock(&sg_sig_lock);
+        sg_mtx_unlock(&sg_sig_lock);
     }
 }
 /* `System.signalListen(mask)`: the first listener makes the pipe and starts the thread. */
 static int64_t sg_sig_listen(int32_t mask) {
     sg_sig_listener* l = calloc(1, sizeof *l);
     if (!l) abort();
-    pthread_cond_init(&l->came, NULL);
+    sg_cnd_init(&l->came);
     l->mask = mask;
-    pthread_mutex_lock(&sg_sig_lock);
+    sg_mtx_lock(&sg_sig_lock);
     if (sg_sig_read_end < 0) {
         int ends[2];
         if (pipe(ends) != 0) sg_panicf("", "the system refused a pipe for the signals: %s (os error %d)\n", strerror(errno), errno);
@@ -4062,12 +4219,8 @@ static int64_t sg_sig_listen(int32_t mask) {
         fcntl(ends[1], F_SETFL, O_NONBLOCK);
         sg_sig_read_end = ends[0];
         __atomic_store_n(&sg_sig_write_end, ends[1], __ATOMIC_RELEASE);
-        pthread_attr_t attr;
-        pthread_t thread;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        int code = pthread_create(&thread, &attr, sg_sig_relay, NULL);
-        pthread_attr_destroy(&attr);
+        sg_thread thread;
+        int code = sg_thread_start(&thread, sg_sig_relay, NULL, true);
         if (code) sg_panicf("", "the system refused a thread for the signals: %s (os error %d)\n", strerror(code), code);
     }
     for (int k = 0; k < SG_SIG_KINDS; k++) {
@@ -4083,21 +4236,21 @@ static int64_t sg_sig_listen(int32_t mask) {
     l->next = sg_sig_first;
     if (sg_sig_first) sg_sig_first->prev = l;
     sg_sig_first = l;
-    pthread_mutex_unlock(&sg_sig_lock);
+    sg_mtx_unlock(&sg_sig_lock);
     return (int64_t)(intptr_t)l;
 }
 /* `System.signalStop(listener)`. */
 static void sg_sig_stop(int64_t id) {
     sg_sig_listener* l = (sg_sig_listener*)(intptr_t)id;
-    pthread_mutex_lock(&sg_sig_lock);
+    sg_mtx_lock(&sg_sig_lock);
     if (l->prev) l->prev->next = l->next;
     else sg_sig_first = l->next;
     if (l->next) l->next->prev = l->prev;
     for (int k = 0; k < SG_SIG_KINDS; k++) {
         if ((l->mask & (1 << k)) && --sg_sig_counts[k] == 0) sigaction(sg_sig_numbers[k], &sg_sig_before[k], NULL);
     }
-    pthread_mutex_unlock(&sg_sig_lock);
-    pthread_cond_destroy(&l->came);
+    sg_mtx_unlock(&sg_sig_lock);
+    sg_cnd_destroy(&l->came);
     free(l);
 }
 /* `System.signalRaise(kind)`: C's `raise`, to this thread, so the handler has written the kind when
@@ -4106,17 +4259,17 @@ static void sg_sig_stop(int64_t id) {
 static void sg_sig_raise(int32_t kind) {
     fflush(stdout);
     (void)raise(sg_sig_numbers[kind]);
-    pthread_mutex_lock(&sg_sig_lock);
+    sg_mtx_lock(&sg_sig_lock);
     if (sg_sig_read_end >= 0) sg_sig_hand_on();
-    pthread_mutex_unlock(&sg_sig_lock);
+    sg_mtx_unlock(&sg_sig_lock);
 }
 /* `System.signalNext(listener)`. */
 static int64_t sg_sig_next(int64_t id) {
     sg_sig_listener* l = (sg_sig_listener*)(intptr_t)id;
-    pthread_mutex_lock(&sg_sig_lock);
-    while (l->count == 0) pthread_cond_wait(&l->came, &sg_sig_lock);
+    sg_mtx_lock(&sg_sig_lock);
+    while (l->count == 0) sg_cnd_wait(&l->came, &sg_sig_lock);
     int k = sg_sig_pop(l);
-    pthread_mutex_unlock(&sg_sig_lock);
+    sg_mtx_unlock(&sg_sig_lock);
     return k;
 }
 #if SG_SIGNALS_ASYNC
@@ -4125,7 +4278,7 @@ static int64_t sg_sig_next(int64_t id) {
 typedef struct sg_sig_wait { sg_wait w; sg_sig_listener* l; int state; int kind; } sg_sig_wait;
 /* `sg_sig_lock` is held, and a signal came: the task that awaits one goes on. */
 static void sg_sig_tell(sg_sig_listener* l) {
-    pthread_mutex_lock(&sg_clock_lock);
+    sg_mtx_lock(&sg_clock_lock);
     sg_sig_wait* x = l->waiter;
     sg_task* job = NULL;
     if (x) {
@@ -4135,7 +4288,7 @@ static void sg_sig_tell(sg_sig_listener* l) {
         job = x->w.d.job;
         __atomic_store_n(&x->w.settled, 1, __ATOMIC_RELEASE);
     }
-    pthread_mutex_unlock(&sg_clock_lock);
+    sg_mtx_unlock(&sg_clock_lock);
     if (job) sg_wake(job);
 }
 /* A cancel, under the clock's lock: the task goes on, and the signal that comes later stays. */
@@ -4151,12 +4304,12 @@ static void sg_sig_wait_start(sg_sig_wait* x, int64_t id, sg_cancel* token) {
     x->kind = -1;
     sg_wait_init(&x->w, sg_sig_cut);
     if (sg_cancelled(token)) { x->state = SG_CANCELLED; return; }
-    pthread_mutex_lock(&sg_sig_lock);
+    sg_mtx_lock(&sg_sig_lock);
     if (x->l->count > 0) {
         x->kind = sg_sig_pop(x->l);
         x->state = SG_OVER;
     } else {
-        pthread_mutex_lock(&sg_clock_lock);
+        sg_mtx_lock(&sg_clock_lock);
         if (token && token->cancelled) {
             x->state = SG_CANCELLED;
         } else {
@@ -4164,9 +4317,9 @@ static void sg_sig_wait_start(sg_sig_wait* x, int64_t id, sg_cancel* token) {
             x->l->waiter = x;
             x->state = SG_WAITING;
         }
-        pthread_mutex_unlock(&sg_clock_lock);
+        sg_mtx_unlock(&sg_clock_lock);
     }
-    pthread_mutex_unlock(&sg_sig_lock);
+    sg_mtx_unlock(&sg_sig_lock);
 }
 static bool sg_sig_wait_ready(sg_sig_wait* x) {
     if (x->state == SG_WAITING) {
@@ -4174,9 +4327,9 @@ static bool sg_sig_wait_ready(sg_sig_wait* x) {
         x->state = sg_wait_state(&x->w);
     }
     if (x->state == SG_OVER && x->kind < 0) {
-        pthread_mutex_lock(&sg_sig_lock);
+        sg_mtx_lock(&sg_sig_lock);
         x->kind = sg_sig_pop(x->l);
-        pthread_mutex_unlock(&sg_sig_lock);
+        sg_mtx_unlock(&sg_sig_lock);
     }
     return true;
 }
@@ -4237,7 +4390,7 @@ const NET_ASYNC_RUNTIME: &str = r#"
 #else
 #include <sys/event.h>
 #endif
-static pthread_mutex_t sg_loop_lock = PTHREAD_MUTEX_INITIALIZER;
+static sg_mtx sg_loop_lock = SG_MTX_INIT;
 static int sg_loop_open_now = 0;
 static int sg_loop = -1;
 static int sg_loop_pipe[2];
@@ -4265,8 +4418,8 @@ typedef struct {
     sg_wait* waits[2];
 } sg_slot;
 static sg_slot* sg_slots[SG_SLOT_BLOCKS];
-static pthread_mutex_t sg_slot_locks[SG_SLOT_LOCKS];
-static inline pthread_mutex_t* sg_slot_lock(int fd) { return &sg_slot_locks[fd & (SG_SLOT_LOCKS - 1)]; }
+static sg_mtx sg_slot_locks[SG_SLOT_LOCKS];
+static inline sg_mtx* sg_slot_lock(int fd) { return &sg_slot_locks[fd & (SG_SLOT_LOCKS - 1)]; }
 /* The slot of socket `fd`, NULL when its block is not made yet. */
 static inline sg_slot* sg_slot_at(int fd) {
     if (fd < 0 || fd >= SG_SLOT_BLOCK * SG_SLOT_BLOCKS) return NULL;
@@ -4282,7 +4435,7 @@ static inline uint32_t sg_slot_tick(int fd) {
 static sg_slot* sg_slot_make(int fd) {
     sg_slot* s = sg_slot_at(fd);
     if (s || fd < 0 || fd >= SG_SLOT_BLOCK * SG_SLOT_BLOCKS) return s;
-    pthread_mutex_lock(&sg_loop_lock);
+    sg_mtx_lock(&sg_loop_lock);
     sg_slot* block = __atomic_load_n(&sg_slots[fd / SG_SLOT_BLOCK], __ATOMIC_RELAXED);
     if (!block) {
         block = calloc(SG_SLOT_BLOCK, sizeof *block);
@@ -4290,7 +4443,7 @@ static sg_slot* sg_slot_make(int fd) {
         SG_KEPT(1);
         __atomic_store_n(&sg_slots[fd / SG_SLOT_BLOCK], block, __ATOMIC_RELEASE);
     }
-    pthread_mutex_unlock(&sg_loop_lock);
+    sg_mtx_unlock(&sg_loop_lock);
     return &block[fd % SG_SLOT_BLOCK];
 }
 /* Socket `fd` is closed (see `sg_net_close`): its slot is let go of first, so a socket that then
@@ -4298,13 +4451,13 @@ static sg_slot* sg_slot_make(int fd) {
 static void sg_slot_forget(int fd) {
     sg_slot* s = sg_slot_at(fd);
     if (!s) return;
-    pthread_mutex_t* m = sg_slot_lock(fd);
-    pthread_mutex_lock(m);
+    sg_mtx* m = sg_slot_lock(fd);
+    sg_mtx_lock(m);
     s->gen++;
     s->on = 0;
     s->ready = 0;
     __atomic_store_n(&s->nb, 0, __ATOMIC_RELAXED);
-    pthread_mutex_unlock(m);
+    sg_mtx_unlock(m);
 }
 /* A datagram socket stops blocking the first time an async call uses it, as a connection does,
    and the async calls try it without `MSG_DONTWAIT`: macOS gives `EAGAIN` to that flag while
@@ -4323,12 +4476,12 @@ static inline void sg_udp_nonblock(int fd) {
 static void sg_wait_ready(sg_wait* w) {
     sg_task* job = w->d.job;
     if (w->told) {
-        pthread_mutex_lock(&sg_clock_lock);
+        sg_mtx_lock(&sg_clock_lock);
         if (w->d.state == SG_WAITING) {
             sg_wait_unlink(w);
             __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
         }
-        pthread_mutex_unlock(&sg_clock_lock);
+        sg_mtx_unlock(&sg_clock_lock);
     } else {
         __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
     }
@@ -4341,8 +4494,8 @@ static void sg_slot_event(uint64_t tag, int bits) {
     int fd = (int)((uint32_t)tag >> 1);
     sg_slot* s = sg_slot_at(fd);
     if (!s || !bits) return;
-    pthread_mutex_t* m = sg_slot_lock(fd);
-    pthread_mutex_lock(m);
+    sg_mtx* m = sg_slot_lock(fd);
+    sg_mtx_lock(m);
     sg_wait* woken = NULL;
     if (s->gen == (uint32_t)(tag >> 32)) {
         s->ready |= (uint8_t)bits;
@@ -4360,7 +4513,7 @@ static void sg_slot_event(uint64_t tag, int bits) {
             }
         }
     }
-    pthread_mutex_unlock(m);
+    sg_mtx_unlock(m);
     /* A task woken may end its wait at once: the next is read first. */
     while (woken) {
         sg_wait* next = woken->after;
@@ -4373,14 +4526,14 @@ static void sg_proc_ready(sg_wait* w) {
     (void)__atomic_load_n(&w->posted, __ATOMIC_ACQUIRE);
     sg_task* job = w->d.job;
     if (w->told) {
-        pthread_mutex_lock(&sg_clock_lock);
+        sg_mtx_lock(&sg_clock_lock);
         bool mine = w->d.state == SG_WAITING;
         if (mine) {
             sg_wait_unlink(w);
             __atomic_store_n(&w->d.state, SG_OVER, __ATOMIC_RELEASE);
             __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
         }
-        pthread_mutex_unlock(&sg_clock_lock);
+        sg_mtx_unlock(&sg_clock_lock);
         if (mine) sg_wake(job);
         return;
     }
@@ -4426,10 +4579,10 @@ static void sg_loop_round(bool wait) {
         }
     }
     /* The waits a cancel ended: the events above were the last that could name them. */
-    pthread_mutex_lock(&sg_loop_lock);
+    sg_mtx_lock(&sg_loop_lock);
     sg_wait* w = sg_loop_cut;
     sg_loop_cut = NULL;
-    pthread_mutex_unlock(&sg_loop_lock);
+    sg_mtx_unlock(&sg_loop_lock);
     while (w) {
         sg_wait* next = w->cut;
         sg_task* job = w->d.job;
@@ -4446,7 +4599,7 @@ static void sg_loop_kick(void) {
 }
 static void sg_loop_open(const char* loc) {
     if (__atomic_load_n(&sg_loop_open_now, __ATOMIC_ACQUIRE)) return;
-    pthread_mutex_lock(&sg_loop_lock);
+    sg_mtx_lock(&sg_loop_lock);
     if (!sg_loop_open_now) {
 #if defined(__linux__)
         sg_loop = epoll_create1(EPOLL_CLOEXEC);
@@ -4458,7 +4611,7 @@ static void sg_loop_open(const char* loc) {
             fcntl(sg_loop_pipe[i], F_SETFL, fcntl(sg_loop_pipe[i], F_GETFL) | O_NONBLOCK);
             fcntl(sg_loop_pipe[i], F_SETFD, FD_CLOEXEC);
         }
-        for (int i = 0; i < SG_SLOT_LOCKS; i++) pthread_mutex_init(&sg_slot_locks[i], NULL);
+        for (int i = 0; i < SG_SLOT_LOCKS; i++) sg_mtx_init(&sg_slot_locks[i]);
 #if defined(__linux__)
         struct epoll_event e = { .events = EPOLLIN, .data.u64 = 0 };
         epoll_ctl(sg_loop, EPOLL_CTL_ADD, sg_loop_pipe[0], &e);
@@ -4472,7 +4625,7 @@ static void sg_loop_open(const char* loc) {
         sg_pool_drive(sg_loop_round, sg_loop_kick, loc);
         __atomic_store_n(&sg_loop_open_now, 1, __ATOMIC_RELEASE);
     }
-    pthread_mutex_unlock(&sg_loop_lock);
+    sg_mtx_unlock(&sg_loop_lock);
 }
 /* Socket `fd` goes on the loop for `bit` (1 reading, 2 writing), under the lock of its slot: both
    at once on Linux; one filter at a time with kqueue, which a pipe may not have both of. */
@@ -4495,8 +4648,8 @@ static int sg_slot_arm(int fd, sg_slot* s, int bit) {
    loop took out already is woken by the loop. */
 static void sg_wait_cut(sg_delay* d) {
     sg_wait* w = (sg_wait*)d;
-    pthread_mutex_t* m = sg_slot_lock(w->on.fd);
-    pthread_mutex_lock(m);
+    sg_mtx* m = sg_slot_lock(w->on.fd);
+    sg_mtx_lock(m);
     bool mine = w->listed;
     if (mine) {
         sg_wait** at = &sg_slot_at(w->on.fd)->waits[w->write ? 1 : 0];
@@ -4504,7 +4657,7 @@ static void sg_wait_cut(sg_delay* d) {
         *at = w->after;
         w->listed = false;
     }
-    pthread_mutex_unlock(m);
+    sg_mtx_unlock(m);
     if (mine) {
         sg_task* job = d->job;
         __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
@@ -4528,14 +4681,14 @@ static int sg_wait_start(sg_wait* w, int fd, bool write, uint32_t seen, sg_cance
     int bit = write ? 2 : 1;
     int code = 0;
     if (token) {
-        pthread_mutex_lock(&sg_clock_lock);
+        sg_mtx_lock(&sg_clock_lock);
         if (token->cancelled) {
-            pthread_mutex_unlock(&sg_clock_lock);
+            sg_mtx_unlock(&sg_clock_lock);
             return SG_CANCELLED;
         }
     }
-    pthread_mutex_t* m = sg_slot_lock(fd);
-    pthread_mutex_lock(m);
+    sg_mtx* m = sg_slot_lock(fd);
+    sg_mtx_lock(m);
     if (!(s->on & bit)) code = sg_slot_arm(fd, s, bit);
     if (!code) {
         if ((s->ready & bit) && __atomic_load_n(&s->tick, __ATOMIC_RELAXED) != seen) {
@@ -4548,8 +4701,8 @@ static int sg_wait_start(sg_wait* w, int fd, bool write, uint32_t seen, sg_cance
             if (token) sg_wait_link(w, token);
         }
     }
-    pthread_mutex_unlock(m);
-    if (token) pthread_mutex_unlock(&sg_clock_lock);
+    sg_mtx_unlock(m);
+    if (token) sg_mtx_unlock(&sg_clock_lock);
     return code ? code : SG_WAITING;
 }
 
@@ -4836,10 +4989,10 @@ static void sg_proc_cut(sg_delay* d) {
     EV_SET(&k, w->on.fd, EVFILT_PROC, EV_DELETE, 0, 0, NULL);
     kevent(sg_loop, &k, 1, NULL, 0, NULL);
 #endif
-    pthread_mutex_lock(&sg_loop_lock);
+    sg_mtx_lock(&sg_loop_lock);
     w->cut = sg_loop_cut;
     sg_loop_cut = w;
-    pthread_mutex_unlock(&sg_loop_lock);
+    sg_mtx_unlock(&sg_loop_lock);
     sg_loop_kick();
 }
 /* The task running now waits for the end of program `pid`. */
@@ -4872,7 +5025,7 @@ static void sg_proc_wait_start(sg_io_proc* x, int64_t pid, sg_cancel* token, con
     __atomic_store_n(&x->w.posted, 1, __ATOMIC_RELEASE);
     int code = 0;
     if (token) {
-        pthread_mutex_lock(&sg_clock_lock);
+        sg_mtx_lock(&sg_clock_lock);
         if (token->cancelled) {
             code = -1;
         } else {
@@ -4880,7 +5033,7 @@ static void sg_proc_wait_start(sg_io_proc* x, int64_t pid, sg_cancel* token, con
             code = sg_proc_arm(&x->w);
             if (code) sg_wait_unlink(&x->w);
         }
-        pthread_mutex_unlock(&sg_clock_lock);
+        sg_mtx_unlock(&sg_clock_lock);
     } else {
         code = sg_proc_arm(&x->w);
     }
@@ -5148,13 +5301,13 @@ static int sg_proc_run(sg_str path, const sg_string* words, int64_t count, sg_st
    its own while the program runs, which then closes the pipe. A program that ends before it read
    all of it is no error. */
 typedef struct { int fd; uint8_t* text; int64_t len; } sg_proc_feed;
-static void* sg_proc_feed_main(void* p) {
+static SG_THREAD_MAIN(sg_proc_feed_main, p) {
     sg_proc_feed* f = p;
     (void)sg_write_pipe(f->fd, f->text, f->len);
     close(f->fd);
     free(f->text);
     free(f);
-    return NULL;
+    return SG_THREAD_END;
 }
 /* `System.start`: starts the program and goes on. Its input is this program's (`input` 0),
    nothing (1), `text` (2) or a pipe kept here (3); its output and its standard error are pipes kept
@@ -5176,15 +5329,11 @@ static int sg_proc_start(sg_str path, const sg_string* words, int64_t count, sg_
         if (!f || !copy) abort();
         if (text.len > 0) memcpy(copy, text.ptr, (size_t)text.len);
         *f = (sg_proc_feed){ ends[0], copy, text.len };
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_t thread;
-        if (pthread_create(&thread, &attr, sg_proc_feed_main, f) != 0) {
+        sg_thread thread;
+        if (sg_thread_start(&thread, sg_proc_feed_main, f, true) != 0) {
             fprintf(stderr, "the system refused a thread to write the input of a program\n");
             abort();
         }
-        pthread_attr_destroy(&attr);
         ends[0] = -1;
     }
     made[0] = child;
@@ -6184,17 +6333,17 @@ static int64_t sg_block_bad(sg_reader* r, int64_t from, int64_t to) {
 static int sg_in_terminal = -1;
 /* Where several tasks run, one of them at a time reads the input. */
 #if SG_THREADS
-static pthread_mutex_t sg_in_lock = PTHREAD_MUTEX_INITIALIZER;
-#define SG_IN_TAKE(r) do { if ((r) == &sg_stdin) pthread_mutex_lock(&sg_in_lock); } while (0)
-#define SG_IN_GIVE(r) do { if ((r) == &sg_stdin) pthread_mutex_unlock(&sg_in_lock); } while (0)
+static sg_mtx sg_in_lock = SG_MTX_INIT;
+#define SG_IN_TAKE(r) do { if ((r) == &sg_stdin) sg_mtx_lock(&sg_in_lock); } while (0)
+#define SG_IN_GIVE(r) do { if ((r) == &sg_stdin) sg_mtx_unlock(&sg_in_lock); } while (0)
 /* A thread of input and output that reads the input into its block for an async read (see
    `sg_in_wait`): while it is out, a read that would read the input waits for it, so what it
    reads comes first. Under `sg_in_lock`. */
 static void* sg_in_filling = NULL;
-static pthread_cond_t sg_in_filled = PTHREAD_COND_INITIALIZER;
+static sg_cnd sg_in_filled = SG_CND_INIT;
 static inline bool sg_in_after_fill(sg_reader* r) {
     if (r != &sg_stdin || !sg_in_filling) return false;
-    while (sg_in_filling) pthread_cond_wait(&sg_in_filled, &sg_in_lock);
+    while (sg_in_filling) sg_cnd_wait(&sg_in_filled, &sg_in_lock);
     return r->at < r->len || r->ended;
 }
 #else
@@ -6721,46 +6870,30 @@ typedef struct sg_io {
 } sg_io;
 #define SG_IO_MOST 512
 #define SG_IO_KEEP_NS ((int64_t)10 * 1000000000)
-static pthread_mutex_t sg_io_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t sg_io_wait;
+static sg_mtx sg_io_lock = SG_MTX_INIT;
+static sg_cnd sg_io_wait;
 static bool sg_io_started = false;
 static sg_io* sg_io_first = NULL;
 static sg_io* sg_io_last = NULL;
 static int64_t sg_io_queued = 0;
 static int sg_io_threads = 0;
 static int sg_io_idle = 0;
-/* Waits on the condition for at most `ns`, on the monotonic clock: what `pthread_cond_timedwait`
-   gives. */
-static int sg_io_sleep(int64_t ns) {
-    struct timespec t;
-#if defined(__APPLE__)
-    t.tv_sec = (time_t)(ns / 1000000000);
-    t.tv_nsec = (long)(ns % 1000000000);
-    return pthread_cond_timedwait_relative_np(&sg_io_wait, &sg_io_lock, &t);
-#else
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    int64_t at = (int64_t)t.tv_nsec + ns % 1000000000;
-    t.tv_sec += (time_t)(ns / 1000000000 + at / 1000000000);
-    t.tv_nsec = (long)(at % 1000000000);
-    return pthread_cond_timedwait(&sg_io_wait, &sg_io_lock, &t);
-#endif
-}
-static void* sg_io_main(void* unused) {
+static SG_THREAD_MAIN(sg_io_main, unused) {
     (void)unused;
-    pthread_mutex_lock(&sg_io_lock);
+    sg_mtx_lock(&sg_io_lock);
     for (;;) {
         if (!sg_io_first) {
             sg_io_idle++;
-            int code = sg_io_sleep(SG_IO_KEEP_NS);
+            bool told = sg_cnd_wait_ns(&sg_io_wait, &sg_io_lock, SG_IO_KEEP_NS);
             sg_io_idle--;
-            if (!sg_io_first && code == ETIMEDOUT) break;
+            if (!sg_io_first && !told) break;
             continue;
         }
         sg_io* io = sg_io_first;
         sg_io_first = io->next;
         if (!sg_io_first) sg_io_last = NULL;
         sg_io_queued--;
-        pthread_mutex_unlock(&sg_io_lock);
+        sg_mtx_unlock(&sg_io_lock);
         /* Once it is marked done, the task may go on and its frame be gone: the task to wake is
            read first. */
         sg_task* job = io->job;
@@ -6773,11 +6906,11 @@ static void* sg_io_main(void* unused) {
             sg_wake(job);
             __atomic_store_n(&io->done, 1, __ATOMIC_RELEASE);
         }
-        pthread_mutex_lock(&sg_io_lock);
+        sg_mtx_lock(&sg_io_lock);
     }
     sg_io_threads--;
-    pthread_mutex_unlock(&sg_io_lock);
-    return NULL;
+    sg_mtx_unlock(&sg_io_lock);
+    return SG_THREAD_END;
 }
 /* The async task running now hands the work over and then waits until it is done. A thread is
    started when the work queued is more than the threads that have nothing to do; a system that
@@ -6787,15 +6920,9 @@ static void sg_io_put(sg_io* io, void (*work)(sg_io*), sg_task* job, const char*
     io->work = work;
     io->next = NULL;
     io->done = 0;
-    pthread_mutex_lock(&sg_io_lock);
+    sg_mtx_lock(&sg_io_lock);
     if (!sg_io_started) {
-        pthread_condattr_t attr;
-        pthread_condattr_init(&attr);
-#if !defined(__APPLE__)
-        pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
-#endif
-        pthread_cond_init(&sg_io_wait, &attr);
-        pthread_condattr_destroy(&attr);
+        sg_cnd_init_timed(&sg_io_wait);
         sg_io_started = true;
     }
     if (sg_io_last) sg_io_last->next = io;
@@ -6803,18 +6930,18 @@ static void sg_io_put(sg_io* io, void (*work)(sg_io*), sg_task* job, const char*
     sg_io_last = io;
     sg_io_queued++;
     if (sg_io_queued > sg_io_idle && sg_io_threads < SG_IO_MOST) {
-        pthread_t thread;
+        sg_thread thread;
         int code = sg_thread_start(&thread, sg_io_main, NULL, true);
         if (code == 0) sg_io_threads++;
         else if (sg_io_threads == 0) sg_refused(code, "input and output", loc);
     }
-    if (sg_io_idle > 0) pthread_cond_signal(&sg_io_wait);
-    pthread_mutex_unlock(&sg_io_lock);
+    if (sg_io_idle > 0) sg_cnd_signal(&sg_io_wait);
+    sg_mtx_unlock(&sg_io_lock);
 }
 static inline void sg_io_start(sg_io* io, void (*work)(sg_io*), const char* loc) { sg_io_put(io, work, sg_job_now, loc); }
 static inline bool sg_io_done(sg_io* io) {
     int done;
-    while ((done = __atomic_load_n(&io->done, __ATOMIC_ACQUIRE)) == 2) sched_yield();
+    while ((done = __atomic_load_n(&io->done, __ATOMIC_ACQUIRE)) == 2) sg_yield();
     return done;
 }
 
@@ -6885,7 +7012,7 @@ static void sg_far_main(sg_io* io) {
     /* A task woken below may free the work at once: nothing of it is read after. */
     bool keep = f->keep;
     f->run(f);
-    pthread_mutex_lock(&sg_clock_lock);
+    sg_mtx_lock(&sg_clock_lock);
     sg_wait* w = f->waiter;
     f->waiter = NULL;
     sg_task* job = NULL;
@@ -6895,7 +7022,7 @@ static void sg_far_main(sg_io* io) {
         job = w->d.job;
         __atomic_store_n(&w->settled, 1, __ATOMIC_RELEASE);
     }
-    pthread_mutex_unlock(&sg_clock_lock);
+    sg_mtx_unlock(&sg_clock_lock);
     if (w && keep) {
         sg_wake(job);
         return;
@@ -6917,15 +7044,15 @@ static void sg_far_cut(sg_delay* d) {
 static int sg_far_start(sg_far* f, sg_wait* w, sg_cancel* token, const char* loc) {
     sg_wait_init(w, sg_far_cut);
     w->on.far = f;
-    pthread_mutex_lock(&sg_clock_lock);
+    sg_mtx_lock(&sg_clock_lock);
     if (token && token->cancelled) {
-        pthread_mutex_unlock(&sg_clock_lock);
+        sg_mtx_unlock(&sg_clock_lock);
         free(f);
         return SG_CANCELLED;
     }
     if (token) sg_wait_link(w, token);
     f->waiter = w;
-    pthread_mutex_unlock(&sg_clock_lock);
+    sg_mtx_unlock(&sg_clock_lock);
     sg_io_put(&f->io, sg_far_main, NULL, loc);
     return SG_WAITING;
 }
@@ -6950,13 +7077,13 @@ static void sg_in_fill_run(sg_far* f) {
     if (sg_in_terminal < 0) sg_in_terminal = isatty(0);
     ssize_t got;
     do got = read(0, x->into, (size_t)x->room); while (got < 0 && errno == EINTR);
-    pthread_mutex_lock(&sg_in_lock);
+    sg_mtx_lock(&sg_in_lock);
     if (got > 0) sg_stdin.len += got;
     else if (got == 0) sg_stdin.ended = true;
     else sg_in_failed = true;
     sg_in_filling = NULL;
-    pthread_cond_broadcast(&sg_in_filled);
-    pthread_mutex_unlock(&sg_in_lock);
+    sg_cnd_broadcast(&sg_in_filled);
+    sg_mtx_unlock(&sg_in_lock);
 }
 /* `sg_in_lock` is held, and the block cannot answer the read: SG_WAITING when the task waits for
    the thread that fills it, SG_CANCELLED, SG_OVER when it can be looked at again, or -1 when the
@@ -6986,13 +7113,13 @@ static int sg_in_wait(sg_wait* w, sg_cancel* token, const char* loc) {
     }
     sg_wait_init(w, sg_far_cut);
     w->on.far = &f->far;
-    pthread_mutex_lock(&sg_clock_lock);
+    sg_mtx_lock(&sg_clock_lock);
     bool join = !f->far.waiter && !(token && token->cancelled);
     if (join) {
         if (token) sg_wait_link(w, token);
         f->far.waiter = w;
     }
-    pthread_mutex_unlock(&sg_clock_lock);
+    sg_mtx_unlock(&sg_clock_lock);
     if (start) sg_io_put(&f->far.io, sg_far_main, NULL, loc);
     if (join) return SG_WAITING;
     return sg_cancelled(token) ? SG_CANCELLED : -1;
@@ -7053,7 +7180,7 @@ static void sg_closing_run(sg_io* io) {
 /* The async read done in place: the input is taken for it if no other task has it; a task
    that has it may be waiting for the system, so then the read goes to a thread. `SG_IN_GIVE`
    lets it go. */
-static inline bool sg_reader_try(sg_reader* r) { return r != &sg_stdin || pthread_mutex_trylock(&sg_in_lock) == 0; }
+static inline bool sg_reader_try(sg_reader* r) { return r != &sg_stdin || sg_mtx_trylock(&sg_in_lock); }
 "#;
 
 /// What a program of tests ends with: each `test` block runs in a process of its own, so a
@@ -7316,7 +7443,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         guard_decls: Vec::new(),
         reserving: None,
         sites: Vec::new(),
-        funcs: prog.funcs.iter().filter(|func| !func.is_async && func.foreign.is_none()).map(|func| func.name.as_str()).collect(),
+        funcs: prog.funcs.iter().filter(|func| !func.is_async && func.foreign.is_none() && !prog.left_out.contains(&func.name)).map(|func| func.name.as_str()).collect(),
         asyncs: prog.funcs.iter().filter(|func| func.is_async).map(|func| func.name.as_str()).collect(),
         foreign: prog.funcs.iter().filter_map(|func| func.foreign.as_ref().map(|foreign| (func.name.as_str(), foreign))).collect(),
         addressed: std::collections::BTreeSet::new(),
@@ -7501,8 +7628,16 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         let _ = writeln!(emitter.glue_protos, "static const char* sg_func_name(void (*f)(void));");
         let _ = writeln!(emitter.glue, "static const char* sg_func_name(void (*f)(void)) {{ (void)f;{tests} return \"?\"; }}");
     }
-    // A program with tasks or `locked` values runs on several threads.
+    // A program with tasks or `locked` values runs on several threads. The clock of delays
+    // reads the monotonic clock (`sg_clock`).
     let threads = emitter.made.contains("tasks") || emitter.made.contains("threads");
+    if emitter.made.contains("tasks") {
+        emitter.made.insert("clock".to_string());
+    }
+    // Threads and locks are reached through one layer (`sg_mtx`, `sg_thread_start`): for the
+    // program's threads, and for those of the runtime that write the input of another program
+    // and hand on signals.
+    let sync = threads || emitter.made.contains("process") || emitter.made.contains("signals");
     // glibc keeps `flockfile`, `clock_gettime`, `O_CLOEXEC` and `readlink` (which the program of
     // tests finds itself with) out of strict C11 unless POSIX is asked for.
     let mut out = match threads || tests || emitter.made.contains("clock") || emitter.made.contains("io") {
@@ -7510,6 +7645,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         false => String::new(),
     };
     let _ = writeln!(out, "#define SG_THREADS {}", u8::from(threads));
+    let _ = writeln!(out, "#define SG_SYNC {}", u8::from(sync));
     // A debug build counts the blocks of its values; without an operating system nothing ends
     // to report them.
     let _ = writeln!(out, "#define SG_COUNT {}", u8::from(checked && !prog.freestanding));
@@ -9269,8 +9405,8 @@ impl<'a> Emitter<'a> {
                 let back = if take.is_empty() { "" } else { " return v;" };
                 let _ = writeln!(self.glue_protos, "static inline {task}* sg_move_{name}({task}** v);\nstatic void sg_drop_{name}({task}** v);\nstatic inline {gives} sg_wait_{name}({task}* t);");
                 let _ = writeln!(self.glue, "static inline {task}* sg_move_{name}({task}** v) {{ {task}* out = *v; *v = NULL; return out; }}");
-                let _ = writeln!(self.glue, "static void sg_drop_{name}({task}** v) {{ {task}* t = *v; if (!t) return; *v = NULL; sg_task_join(&t->head); {drop_result}free(t); }}");
-                let _ = writeln!(self.glue, "static inline {gives} sg_wait_{name}({task}* t) {{ sg_task_join(&t->head); {take}free(t);{back} }}");
+                let _ = writeln!(self.glue, "static void sg_drop_{name}({task}** v) {{ {task}* t = *v; if (!t) return; *v = NULL; sg_task_join(&t->head); {drop_result}sg_task_free(t); }}");
+                let _ = writeln!(self.glue, "static inline {gives} sg_wait_{name}({task}* t) {{ sg_task_join(&t->head); {take}sg_task_free(t);{back} }}");
             }
             // A function value is the address of a function: one pointer. So is a pointer to a
             // function of C, whose types are C's.
@@ -10895,7 +11031,7 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(bodies, "static bool a_run_{name}(sg_task* t) {{ {job}* j = ({job}*)t; if (!a_poll_{name}(&j->frame)) return false;{result} return true; }}");
         let _ = writeln!(
             bodies,
-            "{start} {{\n    {job}* j = sg_alloc(sizeof *j, _Alignof({job}));\n    if (!j) abort();\n    a_init_{name}(&j->frame{gives});\n    sg_job_start(&j->base.head, a_run_{name}, site->name, site->at);\n    return &j->base;\n}}"
+            "{start} {{\n    {job}* j = sg_alloc(sizeof *j, _Alignof({job}));\n    if (!j) abort();\n    j->base.head.aligned = _Alignof({job}) > 16;\n    a_init_{name}(&j->frame{gives});\n    sg_job_start(&j->base.head, a_run_{name}, site->name, site->at);\n    return &j->base;\n}}"
         );
         bodies.push_str(&defines);
         let _ = writeln!(bodies, "{poll} {{");
@@ -14181,7 +14317,7 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(self.glue, "static void sg_go_{name}(sg_task* task) {{ {run}* r = ({run}*)task; {body} }}");
         let _ = writeln!(
             self.glue,
-            "static {task}* {starter}(const sg_site* site, {fctype} f{takes}) {{\n    {run}* r = sg_alloc(sizeof *r, _Alignof({run}));\n    if (!r) abort();\n    r->f = f;{puts}\n    \
+            "static {task}* {starter}(const sg_site* site, {fctype} f{takes}) {{\n    {run}* r = sg_alloc(sizeof *r, _Alignof({run}));\n    if (!r) abort();\n    r->base.head.aligned = _Alignof({run}) > 16;\n    r->f = f;{puts}\n    \
              sg_task_start(&r->base.head, sg_go_{name}, site->name ? site->name : sg_func_name((void (*)(void))f), site->at);\n    return &r->base;\n}}"
         );
         Ok(starter)

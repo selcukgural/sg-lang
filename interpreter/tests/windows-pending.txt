@@ -1,86 +1,42 @@
 # What does not run on Windows yet, and the slice that brings it (design/04, "Windows, the direction").
 # A program listed here must be refused on Windows by the checker as waiting for that slice; one that
 # runs is an error until it is taken off. A name with `*` at its end stands for every name that starts so.
-# Each slice takes its lines away; after the last the list is empty.
-
-# 98: tasks, threads and locks
-error_unread_lock  # 98: tasks, threads and locks
-leak_locked_cycle  # 98: tasks, threads and locks
-ok_align  # 98: tasks, threads and locks
-ok_async_error_exit  # 98: tasks, threads and locks
-ok_async_files  # 98: tasks, threads and locks
-ok_async_io_tasks  # 98: tasks, threads and locks
-ok_async_method  # 98: tasks, threads and locks
-ok_async_module  # 98: tasks, threads and locks
-ok_async_order  # 98: tasks, threads and locks
-ok_async_places  # 98: tasks, threads and locks
-ok_async_results  # 98: tasks, threads and locks
-ok_async_stdin  # 98: tasks, threads and locks
-ok_async_tasks_inside  # 98: tasks, threads and locks
-ok_async_writer_drop  # 98: tasks, threads and locks
-ok_async_writer  # 98: tasks, threads and locks
-ok_atomic_raw  # 98: tasks, threads and locks
-ok_atomic_tasks  # 98: tasks, threads and locks
-ok_cancel_check  # 98: tasks, threads and locks
-ok_cancel_delay  # 98: tasks, threads and locks
-ok_disposable  # 98: tasks, threads and locks
-ok_for_try_await  # 98: tasks, threads and locks
-ok_lock_returns  # 98: tasks, threads and locks
-ok_lock_together  # 98: tasks, threads and locks
-ok_lock_ways_out  # 98: tasks, threads and locks
-ok_net_cancel  # 98: tasks, threads and locks
-ok_pool_queues  # 98: tasks, threads and locks
-ok_process_async  # 98: tasks, threads and locks
-ok_process_cancel  # 98: tasks, threads and locks
-ok_process_talk  # 98: tasks, threads and locks
-ok_random_seeded  # 98: tasks, threads and locks
-ok_raw_async  # 98: tasks, threads and locks
-ok_signals_async  # 98: tasks, threads and locks
-ok_task_counter  # 98: tasks, threads and locks
-ok_task_files  # 98: tasks, threads and locks
-ok_task_kinds  # 98: tasks, threads and locks
-ok_task_list_threads  # 98: tasks, threads and locks
-ok_task_list  # 98: tasks, threads and locks
-ok_task_order  # 98: tasks, threads and locks
-ok_task_streams  # 98: tasks, threads and locks
-ok_task_wait_unnamed  # 98: tasks, threads and locks
-ok_time_clock  # 98: tasks, threads and locks
-ok_udp_async  # 98: tasks, threads and locks
-panic_async_delay_negative  # 98: tasks, threads and locks
-panic_async  # 98: tasks, threads and locks
-panic_cancel_after_negative  # 98: tasks, threads and locks
-panic_cancel_delay_negative  # 98: tasks, threads and locks
-panic_lock_same_value  # 98: tasks, threads and locks
-panic_task_inner  # 98: tasks, threads and locks
-panic_task  # 98: tasks, threads and locks
-panic_when_any_empty  # 98: tasks, threads and locks
-queue  # 98: tasks, threads and locks
-tests_async  # 98: tasks, threads and locks
-tests_std_module  # 98: tasks, threads and locks
-tests_tasks  # 98: tasks, threads and locks
+# Each slice takes its lines away; after the last the list is empty. The base (97) and tasks, threads
+# and locks (98) have come.
 
 # 99: the network and async input and output
+ok_async_files  # 99: the network and async input and output
+ok_async_io_tasks  # 99: the network and async input and output
+ok_async_stdin  # 99: the network and async input and output
+ok_async_writer  # 99: the network and async input and output
+ok_async_writer_drop  # 99: the network and async input and output
 ok_net_address  # 99: the network and async input and output
+ok_net_cancel  # 99: the network and async input and output
 ok_net_echo  # 99: the network and async input and output
 ok_net_errors  # 99: the network and async input and output
-ok_net_lines_sync  # 99: the network and async input and output
 ok_net_lines  # 99: the network and async input and output
+ok_net_lines_sync  # 99: the network and async input and output
 ok_net_slots  # 99: the network and async input and output
 ok_net_sync  # 99: the network and async input and output
 ok_net_wakes_from_thread  # 99: the network and async input and output
+ok_process_async  # 99: the network and async input and output
 ok_process_descriptors  # 99: the network and async input and output
+ok_process_talk  # 99: the network and async input and output
 ok_text_blocks  # 99: the network and async input and output
 ok_udp_address  # 99: the network and async input and output
+ok_udp_async  # 99: the network and async input and output
 ok_udp_sync  # 99: the network and async input and output
 panic_net_reader_limit  # 99: the network and async input and output
 shutdown  # 99: the network and async input and output
 
 # 100: other programs and signals
+ok_process_cancel  # 100: other programs and signals
 ok_process_drop  # 100: other programs and signals
 ok_process_environment  # 100: other programs and signals
 ok_process_kill  # 100: other programs and signals
 ok_process_output  # 100: other programs and signals
 ok_process_start  # 100: other programs and signals
+ok_signals_async  # 100: other programs and signals
 ok_signals_default  # 100: other programs and signals
 ok_signals_kept  # 100: other programs and signals
 ok_signals_next  # 100: other programs and signals
@@ -126,7 +82,6 @@ zlib  # 101: C
 compiled_input_waits_alone  # 99: the network and async input and output
 compiled_input_cancel  # 99: the network and async input and output
 interpreted_input_cancel  # 99: the network and async input and output
-compiled_small_pools  # 98: tasks, threads and locks
 callbacks_end_the_process  # 101: C
 process_path_lookup  # 100: other programs and signals
 shutdown_on_signals  # 100: other programs and signals

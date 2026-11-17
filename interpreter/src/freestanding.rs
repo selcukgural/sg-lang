@@ -124,9 +124,10 @@ pub(crate) struct Rule {
     pub needs: fn(&Expr) -> Option<(Span, String)>,
     /// What a type holds that the rule forbids.
     pub type_needs: fn(&Ty) -> Option<String>,
-    /// What a `lock` block and an async function are, as the message says them.
-    pub lock: &'static str,
-    pub async_fn: &'static str,
+    /// What a `lock` block and an async function are, as the message says them, when the rule
+    /// forbids them.
+    pub lock: Option<&'static str>,
+    pub async_fn: Option<&'static str>,
     /// The error of what the program writes itself.
     pub direct: fn(&str) -> String,
     /// The error of a call of a function of the language's own module: its name and what it does.
@@ -140,8 +141,8 @@ pub(crate) struct Rule {
 const FREESTANDING: Rule = Rule {
     needs,
     type_needs: system_type,
-    lock: "a `lock` block takes a lock of the system",
-    async_fn: "an async function runs on the tasks of the system",
+    lock: Some("a `lock` block takes a lock of the system"),
+    async_fn: Some("an async function runs on the tasks of the system"),
     direct: |what| format!("{what}, and this program is built without an operating system"),
     call: |callee, what| format!("`{callee}` needs an operating system: {what}, and this program is built without one"),
     note: NOTE,
@@ -165,13 +166,13 @@ fn scan(body_of: &Block, is_async: bool, name_span: Span, rule: &Rule) -> Body {
             lock.get_or_insert(span);
         },
     );
-    if let Some(span) = lock {
+    if let (Some(span), Some(what)) = (lock, rule.lock) {
         if body.itself.as_ref().is_none_or(|(first, _)| span.start < first.start) {
-            body.itself = Some((span, rule.lock.to_string()));
+            body.itself = Some((span, what.to_string()));
         }
     }
-    if is_async {
-        body.itself = Some((name_span, rule.async_fn.to_string()));
+    if let (true, Some(what)) = (is_async, rule.async_fn) {
+        body.itself = Some((name_span, what.to_string()));
     }
     body
 }

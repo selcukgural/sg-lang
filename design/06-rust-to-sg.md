@@ -250,7 +250,7 @@ Last brought up to date: 17 November 2026, the ninety-first slice.
 | Rust | SG | Status | Note |
 |---|---|---|---|
 | `Arc::new(Mutex::new(v))` on a value you already have | `new shared locked v` | built | `v` is moved in; a value is locked from where it is made, never later in place |
-| `thread::spawn(move \|\| work(x))` | `Task.run(work, x)` | built | The function and what it is given are written apart |
+| `thread::spawn(move \|\| work(x))` | `Task.run(work, x)` | built | The function and what it is given are written apart. A thread of 8 MB of stack on every system, Windows included (`_beginthreadex`), and a lock is an `SRWLOCK` there, as Rust's `Mutex` is |
 | `JoinHandle<R>` | `Task<R>` | built | |
 | `h.join().unwrap()` | `t.wait()` | built | A panic stops the process, so there is nothing to unwrap |
 | dropping a `JoinHandle` (the thread goes on) | a compile error | built | Every task is waited for on every path |
@@ -276,7 +276,7 @@ Last brought up to date: 17 November 2026, the ninety-first slice.
 | `static`, `thread_local!` | none | not in SG | No global variables: what tasks share is in the arguments of `Task.run` |
 | `async fn`, `.await` | `async int f()`, `await t`, `await f(x)` | built | C#'s behaviour: a call starts the task at once; a call alone on a line is an error. Compiled as Rust compiles it ("Async, the direction") |
 | `tokio::spawn(f(x))` | `var t = f(x)` (no `await`) | built | What it is given follows the thread rule; `await f(read x)` can borrow, as an awaited future does |
-| `tokio::time::sleep(d).await` | `await Task.delay(ms)` | built | |
+| `tokio::time::sleep(d).await` | `await Task.delay(ms)` | built | On Windows the clock sleeps on a timer of high resolution, so a delay of 1 ms waits about 1 ms, not a tick of 16 ms |
 | `block_on(f())` | `f().wait()` in code that is not async | built | `wait` in an async function is an error |
 | `spawn_blocking(work)` | `await Task.run(work, x)` | built | A call that holds the thread in an async function is an error, followed through the calls |
 | `Box::pin(f(n - 1)).await` | `var t = f(n - 1)`, then `await t` | built | An async function that awaits itself is an error |

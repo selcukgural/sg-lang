@@ -6541,7 +6541,8 @@ November 2026; at 980 the author chose that every program may ask, not only the 
 993. **The tests on Windows** build with Clang as `sg build` does. The address and undefined-behaviour
      sanitizers are tried once on a few lines: where one is missing the output says so (the check of
      undefined behaviour then runs without its runtime, a fault stopping the program; on Windows 11 on
-     64-bit Arm with LLVM 23 both are there), and leaks are
+     64-bit Arm with LLVM 23 the address sanitizer is not there, its libraries are not in LLVM's folder, so
+     only that check runs: corrected in the ninety-eighth slice, which first wrote both), and leaks are
      looked at by the count of blocks of each debug build, since LeakSanitizer is not on Windows; the line
      says that and that the thread sanitizer is not there either. On every system the programs the tests
      start get the default action of `Interrupt` and `Quit`: a shell that starts `cargo test` in the
@@ -6572,9 +6573,80 @@ November 2026; at 980 the author chose that every program may ask, not only the 
      (`cfg!(windows)`, `Path::join` on Windows), the README of the repository. Nothing is measured.
      `cargo test` passes on macOS, on Linux in a container (353 of 1439 programs compile through C, 78
      of them under the thread sanitizer, 26 of 32 programs of tests) and on Windows 11 on 64-bit Arm,
-     where 254 programs compile through C and run under the address and undefined-behaviour sanitizers,
-     which Clang has there, 12 programs of tests, and the 124 lines of `tests/windows-pending.txt` wait
+     where 254 programs compile through C and run under the check of undefined behaviour without its
+     runtime, the address sanitizer not being there (this said both until the ninety-eighth slice), 12
+     programs of tests, and the 124 lines of `tests/windows-pending.txt` wait
      for their slices. New: `ok_path_roots`.
+
+Choices made in the ninety-eighth slice (threads, tasks, locks, atomics and the async scheduler on Windows),
+the second of the slices of Windows (935, 937), on the branch `windows`. 999 to 1014 were put to the author
+before the slice and approved on 17 November 2026:
+
+999. **One layer for threads**: every lock, condition and thread of the runtime goes through `sg_mtx`,
+     `sg_cnd` and `sg_thread_start` (`SG_SYNC`, in a program with threads of its own or the runtime's, for the
+     input of another program or for signals); on Linux and macOS each is the pthread call it was, on Windows
+     Win32's. The parts of the network and of other programs are written so too, so the next slices only
+     add what is theirs. No header of Windows takes pthread's names: a library of C linked in the 101st
+     slice may bring its own pthread (winpthreads), and the names would clash.
+1000. **A lock is an `SRWLOCK`**, taken only exclusively, as Rust's `Mutex` takes it on Windows: it needs no
+     call to be made or freed and is the size of a pointer. It is given back by the thread that took it,
+     which a `lock` block, that never waits, makes sure of. `try` is `TryAcquireSRWLockExclusive`.
+1001. **A condition is a `CONDITION_VARIABLE`**: its wait with a time (a thread of input and output that has
+     had nothing to do for 10 seconds ends) is counted in milliseconds, rounded up. The two ways of Linux and
+     macOS to wait on the monotonic clock are one function now (`sg_cnd_wait_ns`).
+1002. **A thread** comes from `_beginthreadex`, with 8 MB of stack reserved and taken as it is used
+     (`STACK_SIZE_PARAM_IS_A_RESERVATION`), as Linux maps it; a thread nobody waits for has its handle closed
+     at once, and `wait` waits for the handle and closes it. When the system refuses one, the panic is the
+     one of Linux and macOS, with the error of C's library.
+1003. **The pool has a thread for each core** the system has on, in every group of them
+     (`GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)`), as `_SC_NPROCESSORS_ONLN` counts them on Linux.
+1004. **Smaller things**: a thread that yields calls `SwitchToThread`; the threads of the pool are kept in a
+     block of `sg_alloc`, since Windows' C has no `aligned_alloc`; `_Thread_local` is Clang's on Windows too.
+1005. **The clock of delays** sleeps on Windows on a timer of high resolution
+     (`CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`, from Windows 10 1803) and an event that tells it of a sooner
+     delay, both waited for at once; elsewhere on its condition, as before. A condition variable on Windows
+     wakes only at a tick of the system's timer, about 16 ms, and `timeBeginPeriod` would change that for
+     the whole system. A system that refuses the timer is a panic, as one that refuses a thread. The clock
+     reads `Instant`'s clock (`sg_clock`).
+1006. **A write to the console holds its stream's lock** (`_lock_file`) on Windows, as C's own writes do: the
+     bytes kept of a character cut between two writes belong to one stream, and the line of one task is not
+     cut by another's; a panic takes the same locks (`flockfile` elsewhere) and is written alone. Tried by
+     hand on Windows 11 on 64-bit Arm through a console (`ssh -tt`, which gives a pseudo console): eight
+     tasks wrote 300 lines each with letters of two, three and four bytes, and all 2400 came out whole. The
+     same program built without the lock came out whole too: a line of `print` is one write, so that try
+     does not reach the bytes the lock guards, and no test sees them; the lock is there by reading the code.
+1007. **Atomics and `volatile`** are what they were: an atomic value is at most 8 bytes, which both machines
+     change in one instruction, and Clang reads `volatile` as C does, not as Microsoft's compiler can.
+1008. **The scheduler** of the eighty-first to eighty-third slices is the same on Windows: the queues of the
+     threads, the shared queue, the threads asleep. Its wait in the loop of the network comes in the 99th.
+1009. **On Windows now**: `Task.run` and `wait`, `locked` and `lock`, `atomic`, async functions and `await`,
+     `Task.delay`, cancellation, `Task.whenAll` and `Task.whenAny`, lists of tasks. A cancel that stops a
+     wait for the console, the network or another program comes with those.
+1010. **`tests/windows-pending.txt`** has no line of the 98th: 43 programs of its block run on Windows; nine
+     wait for the 99th (`File.readAsync` and the async streams, as 04 orders them) and two for the 100th, each
+     moved to the slice the first error names.
+1011. **No thread sanitizer on Windows** (935): there a program on several threads runs under the sanitizers
+     the machine has (993), and the tests say how many ran without the thread sanitizer
+     (`thread sanitizer: not on Windows; N program(s) on several threads ran without it`).
+     `compiled_small_pools` runs on every system now, with the compiler `sg build` uses.
+1012. **The interpreter** needed nothing: its tasks are Rust's threads and its clock its own.
+1013. **Tests**: `short_delays_are_short` (every system): fifty delays of 1 ms end within half a second and
+     each waits its millisecond. On Windows 11 on 64-bit Arm they take about 97 ms; with a timer of the
+     usual resolution about 875 ms, which the test does not let pass. The programs that came off the list
+     found two things on Windows. The block of a task whose arguments are aligned beyond 16 bytes
+     (`Task.run(bump, slot)` with an `align(64)` struct, `ok_align`) came from `_aligned_malloc` and went
+     back through `free`, which Windows ends the program for: the type the task is freed as does not hold
+     its arguments, so a task now keeps how its block was taken (`sg_task_free`). And the names of
+     functions a task can be started through (`sg_func_name`) listed functions of the language's own
+     module that are left out of the C on Windows (`ok_exit_status`, `ok_std_value_dropped`); they are left
+     out there too.
+1014. **Documents**: this list, "Not here yet", "Next"; 04 ("The runtime" and "Tests" as built), 06 (tasks and
+     delays on Windows), the README of the repository. Nothing is measured. `cargo test` passes on macOS,
+     on Linux in a container (353 of 1439 programs compile through C, 78 of them under the thread
+     sanitizer, 26 of 32 programs of tests) and on Windows 11 on 64-bit Arm, where 293 programs compile
+     through C and run under the check of undefined behaviour (the address sanitizer is not there), 41 of
+     them on several threads without the thread sanitizer, and 80 lines of `tests/windows-pending.txt`
+     wait for their slices. New: `short_delays_are_short`.
 
 ## Slower than C, and could be better
 
@@ -6680,12 +6752,11 @@ check off.
 
 ## Not here yet
 
-- **Of Windows**, after its first slice: tasks, `locked` and async (98); the network and async input and
-  output, a cancelled wait for the console among them (99); other programs and signals (100); C, `-L`
-  (a path of Windows has a `:`, which the check of a folder refuses), `--library` and `--shared` (101);
-  `--freestanding` and the kernel, and the tests of C's layouts (`tests/layouts.rs`), which are run on
-  Linux and macOS for Windows' rules already (102, `tests/windows-pending.txt`). The character a console
-  write keeps for the next is kept for each stream, not for each thread, until threads come (98).
+- **Of Windows**, after its first two slices: the network and async input and output, a cancelled wait
+  for the console among them (99); other programs and signals (100); C, `-L` (a path of Windows has a
+  `:`, which the check of a folder refuses), `--library` and `--shared` (101); `--freestanding` and the
+  kernel, and the tests of C's layouts (`tests/layouts.rs`), which are run on Linux and macOS for Windows'
+  rules already (102, `tests/windows-pending.txt`). No thread sanitizer there (1011).
 - **Of datagrams**: multicast, sending to every host of a network (broadcast), the options of a socket (the
   time to live, the size of its buffers), a look at a datagram that leaves it in the socket (`peek`), and the
   zone of a v6 address (`fe80::1%en0`), so a link-local address cannot be answered (648).
@@ -7018,5 +7089,6 @@ and a count of the blocks of values that reports a leak on every system (963-979
 follow; the first, the base, is written: the interpreter and compiled programs run there with the console,
 files and paths, the clock, random bytes and the environment, `OperatingSystem.isWindows()` tells a
 program its system, and what Windows does not run yet is a compile error that names its slice (980-998).
-Next are threads and tasks, the network, other programs and signals, C, and everything tested and measured
-on both machines.
+The second is written too: tasks, threads, locks, atomics and the async scheduler run on Windows, a delay
+of a millisecond waits about a millisecond there, and a write to the console holds its stream (999-1014).
+Next are the network, other programs and signals, C, and everything tested and measured on both machines.

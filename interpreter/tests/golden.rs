@@ -506,6 +506,8 @@ fn compiled() {
     let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
     let mut sanitized = 0;
     let mut raced = 0;
+    // Programs on several threads that ran without the thread sanitizer, which Windows has not.
+    let mut unraced = 0;
     let mut compiled = 0;
     let mut ended_in_panic = 0;
     let mut ended_by_signal = 0;
@@ -658,8 +660,11 @@ fn compiled() {
         }
 
         // A program on several threads once more under the thread sanitizer: two threads that
-        // reach the same memory without a lock between them would stop it here.
-        if sanitizers && threads {
+        // reach the same memory without a lock between them would stop it here. Windows has no
+        // thread sanitizer: what was not checked there is counted, and said below.
+        if sanitizers && threads && cfg!(windows) {
+            unraced += 1;
+        } else if sanitizers && threads {
             if raced == 0 {
                 race_check_sees_a_race(&work);
             }
@@ -689,7 +694,8 @@ fn compiled() {
     // Leaks. First the check itself: it has to see a leak that is there.
     let mut leak_free = leak_free_counted;
     if sanitizers && cfg!(windows) {
-        eprintln!("leaks: looked at by the count of blocks of each debug build (LeakSanitizer is not on Windows); thread sanitizer: not on Windows");
+        eprintln!("leaks: looked at by the count of blocks of each debug build (LeakSanitizer is not on Windows)");
+        eprintln!("thread sanitizer: not on Windows; {unraced} program(s) on several threads ran without it");
     }
     if sanitizers && !cfg!(windows) {
         leak_check_sees_a_leak(&work);
@@ -923,43 +929,39 @@ fn interpreted_input_cancel_here() {
 /// thread (`ok_pool_queues`). Under the thread sanitizer when it is there.
 #[test]
 fn compiled_small_pools() {
-    match waits_on_windows("compiled_small_pools") {
-        Some(why) => eprintln!("compiled_small_pools waits on Windows: {why}"),
-        #[cfg(unix)]
-        None => compiled_small_pools_here(),
-        #[cfg(not(unix))]
-        None => {}
-    }
-}
-
-#[cfg(unix)]
-fn compiled_small_pools_here() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    if std::process::Command::new("cc").arg("--version").output().is_err() {
-        eprintln!("no C compiler (`cc`) found: the back end is not tested");
-        return;
+    if let Err(error) = sg::cc::compiler() {
+        panic!("{error}: the back end cannot be tested");
     }
     let work = root.join("target").join("compiled-pools");
     std::fs::create_dir_all(&work).unwrap();
     let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
     let mut failures = Vec::new();
+    let mut waiting = 0;
     for stem in ["ok_net_wakes_from_thread", "ok_pool_queues", "ok_net_echo", "ok_net_cancel", "ok_net_slots", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel"] {
+        if waits_on_windows(stem).is_some() {
+            waiting += 1;
+            continue;
+        }
         let source = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.sg"))).unwrap();
         let expected = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.out"))).unwrap();
         let c_file = work.join(format!("{stem}.c"));
         std::fs::write(&c_file, sg::emit_c(&source, &format!("{stem}.sg"), true).unwrap()).unwrap();
         for most in [1, 2] {
-            let binary = work.join(format!("{stem}-{most}"));
-            let mut cc = std::process::Command::new("cc");
+            let binary = program_at(&work, &format!("{stem}-{most}"));
+            let mut cc = c_command();
             cc.args(["-std=c11", "-O1", "-g"]).arg(format!("-DSG_POOL_MOST={most}"));
             // As in `compiled`, the thread sanitizer's build is not held to the warnings: gcc warns
             // that it does not follow `atomic_thread_fence`, which the counts of `shared` use.
-            if sanitizers {
+            // Windows has no thread sanitizer: there the others look.
+            if sanitizers && cfg!(windows) {
+                cc.args(sanitizer_flags(&work));
+            } else if sanitizers {
                 cc.arg("-fsanitize=thread");
             } else {
                 cc.args(warnings(stem));
             }
-            let built = cc.arg("-o").arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+            let built = cc.arg("-o").arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
             assert!(built.status.success(), "the C compiler rejected {stem}:\n{}", String::from_utf8_lossy(&built.stderr));
             let run = std::process::Command::new(&binary).current_dir(&work).stdin(std::process::Stdio::null()).output().unwrap();
             let actual = format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
@@ -967,6 +969,12 @@ fn compiled_small_pools_here() {
                 failures.push(format!("--- {stem} with a pool of {most}\nexpected:\n{expected}\nactual:\n{actual}"));
             }
         }
+    }
+    if waiting > 0 {
+        eprintln!("{waiting} program(s) of small pools wait for later slices on Windows (tests/windows-pending.txt)");
+    }
+    if sanitizers && cfg!(windows) {
+        eprintln!("thread sanitizer: not on Windows; the programs of small pools ran under the others");
     }
     assert!(failures.is_empty(), "{} program(s) differ:\n{}", failures.len(), failures.join("\n"));
 }
@@ -1814,4 +1822,28 @@ fn block_count_sees_a_leak() {
     }
     let release = sg::emit_c_sources(&sg::Sources::single(program, "release.sg"), false).unwrap();
     assert!(release.contains("#define SG_COUNT 0\n"));
+}
+
+/// A delay waits about as long as it was asked for, also a short one: fifty delays of one
+/// millisecond end well within half a second. A clock that wakes only at the ticks of the
+/// system's timer (about 16 ms on Windows, where `Task.delay` takes a timer of high resolution)
+/// would take some 800 ms. Each delay waits at least its millisecond.
+#[test]
+fn short_delays_are_short() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("short-delays");
+    std::fs::create_dir_all(&work).unwrap();
+    let source = "async void main() {\n    var start = Instant.now()\n    for _ in 0..50 {\n        await Task.delay(1)\n    }\n    var waited = start.elapsed()\n    print(waited)\n    print(waited >= Duration.fromMilliseconds(50))\n    print(waited < Duration.fromMilliseconds(500))\n}\n";
+    let code = sg::emit_c_sources(&sg::Sources::single(source, "delays.sg"), false).unwrap();
+    let c_file = work.join("delays.c");
+    std::fs::write(&c_file, code).unwrap();
+    let binary = program_at(&work, "delays");
+    let cc = c_command().args(["-std=c11", "-O1", "-o"]).arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
+    assert!(cc.status.success(), "{}", String::from_utf8_lossy(&cc.stderr));
+    let run = std::process::Command::new(&binary).output().unwrap();
+    let said = String::from_utf8_lossy(&run.stdout).into_owned();
+    let lines: Vec<&str> = said.lines().collect();
+    assert!(run.status.success() && lines.len() == 3, "{said}{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(lines[1], "true", "fifty delays of 1 ms took {}, less than 50 ms", lines[0]);
+    assert_eq!(lines[2], "true", "fifty delays of 1 ms took {}: the clock of delays wakes late", lines[0]);
 }
