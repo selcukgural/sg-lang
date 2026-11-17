@@ -1,0 +1,9 @@
+error: the value of `Now` is found when the program is compiled, and what it runs starts or waits for a task
+  a value that cannot be found when the program is compiled is found when the program runs, by a function it calls
+  --> error_comptime_async.sg:10:17
+ 10 | const int Now = now()
+    |                 ^^^
+  `now` starts or waits for a task here:
+  --> error_comptime_async.sg:7:17
+ 7 |     return task.wait()
+   |                 ^^^^

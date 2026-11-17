@@ -1,0 +1,13 @@
+struct Huge : Copyable {
+    long[1048576] items
+}
+
+Huge huge() {
+    return Huge { items = long[1048576] }
+}
+
+const Huge[9] Many = { huge(), huge(), huge(), huge(), huge(), huge(), huge(), huge(), huge() }
+
+void main() {
+    print(Many[0].items[0])
+}

@@ -1,0 +1,9 @@
+int grow(int n) {
+    return n * 1000000000
+}
+
+const int Grown = grow(5)
+
+void main() {
+    print(Grown)
+}

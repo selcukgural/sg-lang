@@ -1,0 +1,10 @@
+const int A = f()
+const int B = A + 1
+
+int f() {
+    return B
+}
+
+void main() {
+    print(A)
+}

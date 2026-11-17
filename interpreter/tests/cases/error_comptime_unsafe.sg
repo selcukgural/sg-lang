@@ -1,0 +1,12 @@
+int peek() {
+    var slot = Memory.allocate<int>(1)
+    var value = unsafe slot[0]
+    unsafe Memory.free(slot)
+    return value
+}
+
+const int Peeked = peek()
+
+void main() {
+    print(Peeked)
+}

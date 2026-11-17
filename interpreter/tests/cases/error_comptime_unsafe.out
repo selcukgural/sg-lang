@@ -1,0 +1,9 @@
+error: the value of `Peeked` is found when the program is compiled, and what it runs allocates raw memory
+  a value that cannot be found when the program is compiled is found when the program runs, by a function it calls
+  --> error_comptime_unsafe.sg:8:20
+ 8 | const int Peeked = peek()
+   |                    ^^^^
+  `peek` allocates raw memory here:
+  --> error_comptime_unsafe.sg:2:16
+ 2 |     var slot = Memory.allocate<int>(1)
+   |                ^^^^^^^^^^^^^^^^^^^^^^^

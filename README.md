@@ -161,7 +161,7 @@ digits after the point: `$"{crc:x8} {price,8:F2}"`); structs, enums with methods
 patterns, on text, joined with `or` and in ranges (`Add(Number(0), right)`, `"if" => ...`, `'a'..='z' or '_'`,
 `null`), and `is` whose names reach along `&&` (`if int.parse(read text) is Ok(n) && n > 0`) and, for `is not`,
 past an `if` that leaves (`if int.parse(read text) is not Ok(n) { return }`); `T*`, `T?`
-(narrowed along `&&` and `||`, under `!` and after `while x is null`) and `Result` with `try` and `??`; `List`, `HashMap` and `HashSet`; fixed-size arrays (`int[8]`) and slices (`read byte[]`); consts known when the program is compiled (`const int BlockSize = 4096`, a table `const uint[] Masks = { 1, 3, 7 }` kept once where the program only reads, the bytes of a file with `embed("logo.gif")`, a const as the count of an array and as a pattern), with bytes
+(narrowed along `&&` and `||`, under `!` and after `while x is null`) and `Result` with `try` and `??`; `List`, `HashMap` and `HashSet`; fixed-size arrays (`int[8]`) and slices (`read byte[]`); consts known when the program is compiled (`const int BlockSize = 4096`, a table `const uint[] Masks = { 1, 3, 7 }` kept once where the program only reads, the bytes of a file with `embed("logo.gif")`, a const as the count of an array and as a pattern, and a const given the value of any function, run when the program is compiled: `const int[256] Crc = crcTable()`), with bytes
 gathered into a list in one copy (`buffer.addAll(piece)`), numbers read out of bytes and written into them in
 either order (`ushort.fromLittleEndian(data[6..8])`, `n.toBigEndian()`), and ranges sorted where they are (`xs[2..5].sort()`);
 function values; ownership, moves and the borrow check; several owners of one value (`shared T`, `share x`,
@@ -221,7 +221,7 @@ into a `.lib` or a `.dll` that a program of C links, and the examples of zlib, S
 libraries from vcpkg. The sixth and last is written: everything is tested there, the program without an
 operating system and the kernel in QEMU included, and the benchmarks are measured against C on Windows too:
 most take the time of C, and those that lean on Windows' C library (`printf`, `fgets`, its wide
-characters) are several times faster in SG. Before a preview of the language, what it and its library still lack beside C23: consts first (written), then a const given the value of a call, statics, and the rest.
+characters) are several times faster in SG. Before a preview of the language, what it and its library still lack beside C23: consts first, then a const given the value of a call (both written), statics, and the rest.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is

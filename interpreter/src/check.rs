@@ -1220,10 +1220,17 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     prog.plain = plain_types(&structs);
     let mut const_table = ConstTable { embeds: prog.embeds.iter().map(|embed| embed.bytes.as_ref().map_or(0, |bytes| bytes.len())).collect(), ..ConstTable::default() };
     for decl in &prog.consts {
-        let ty = const_type(decl, &names, &structs, &enums, &copyable, &const_table.embeds)?;
+        let ty = const_type(decl, &names, &structs, &enums, &copyable, &const_table.embeds, &sigs)?;
         // What a module shows the others is made of what they can see.
         if decl.public && !module_of(&decl.name).is_empty() {
             exposes(short_name(&decl.name), decl.name_span, &ty, &names)?;
+        }
+        // What a const holds is written into the program: at most 64 MB. Known from the type,
+        // before anything runs, except for a text.
+        let size = type_bytes(&ty, &structs, &enums);
+        if size > crate::EMBED_LIMIT {
+            return Err(Diag::error(decl.ty.span, format!("a `{ty}` takes {} MB, and a const takes at most 64 MB", size.div_ceil(1 << 20)))
+                .note("a const is written into the program; a larger value is found when the program runs, by a function it calls"));
         }
         const_table.types.insert(decl.name.clone(), ty);
     }
@@ -1267,16 +1274,20 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         })?;
         constant_only(&decl.init)?;
     }
-    for (name, value) in crate::interp::find_consts(prog, src)? {
+    // A const whose initializer calls a function (or names a const that does) is found once
+    // the bodies it reaches are checked; the others are found now, before any body.
+    let called = called_consts(prog);
+    let plain: HashSet<String> = prog.consts.iter().map(|decl| decl.name.clone()).filter(|name| !called.contains(name)).collect();
+    for (name, value) in crate::interp::find_consts(prog, src, &plain)? {
         let ty = const_table.types[&name].clone();
         const_table.values.insert(name, (ty, value));
     }
     prog.const_values = const_table.values.clone();
 
-    let body = |func: &mut Func, sig: &FuncSig, owner: Option<&str>| -> Res<crate::unread::Seen> {
+    let body = |func: &mut Func, sig: &FuncSig, owner: Option<&str>, const_table: &ConstTable| -> Res<crate::unread::Seen> {
         let mut checker = Checker {
             names: &names,
-            consts: &const_table,
+            consts: const_table,
             in_const: false,
             copyable: &copyable,
             formattable: &formattable,
@@ -1352,24 +1363,50 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
         Ok(checker.seen)
     };
-    // What each body was found to use, in the order of the bodies, for the rule of values
-    // that are never read: it comes last, after every other error.
-    let mut seen = Vec::new();
-    for func in prog.funcs.iter_mut().filter(|func| func.foreign.is_none()) {
-        seen.push(body(func, &sigs[&func.name], None)?);
+    // Every body, in order: the functions, then the methods of the structs and of the enums.
+    let mut places = Vec::new();
+    places.extend(prog.funcs.iter().enumerate().filter(|(_, func)| func.foreign.is_none()).map(|(index, _)| Place::Func(index)));
+    for (index, decl) in prog.structs.iter().enumerate() {
+        places.extend((0..decl.methods.len()).map(|method| Place::Struct(index, method)));
     }
-    for decl in &mut prog.structs {
-        let owner = decl.name.as_str();
-        for method in &mut decl.methods {
-            seen.push(body(method, &structs[owner].methods[&method.name], Some(owner))?);
-        }
+    for (index, decl) in prog.enums.iter().enumerate() {
+        places.extend((0..decl.methods.len()).map(|method| Place::Enum(index, method)));
     }
-    for decl in &mut prog.enums {
-        let owner = decl.name.as_str();
-        for method in &mut decl.methods {
-            seen.push(body(method, &enums[owner].methods[&method.name], Some(owner))?);
-        }
+    let owners: Vec<Option<String>> = places.iter().map(|place| place.owner(prog)).collect();
+    let place_sigs: Vec<&FuncSig> = places
+        .iter()
+        .map(|place| match *place {
+            Place::Func(index) => &sigs[&prog.funcs[index].name],
+            Place::Struct(owner, method) => &structs[&prog.structs[owner].name].methods[&prog.structs[owner].methods[method].name],
+            Place::Enum(owner, method) => &enums[&prog.enums[owner].name].methods[&prog.enums[owner].methods[method].name],
+        })
+        .collect();
+    let mut finding = Finding {
+        by_name: places.iter().enumerate().map(|(index, place)| (place.called_by(prog), index)).collect(),
+        places,
+        owners,
+        sigs: place_sigs,
+        pending: HashMap::new(),
+        // What each body was found to use, in the order of the bodies, for the rule of values
+        // that are never read: it comes last, after every other error.
+        seen: Vec::new(),
+        stack: Vec::new(),
+    };
+    for index in 0..finding.places.len() {
+        finding.seen.push(None);
+        finding.check_body(index, prog, &const_table, &body, !called.is_empty())?;
     }
+    // The consts that call functions, then the bodies that needed what one of them holds.
+    for decl in prog.consts.iter().map(|decl| decl.name.clone()).filter(|name| called.contains(name)).collect::<Vec<_>>() {
+        finding.find(&decl, prog, &mut const_table, &body, src)?;
+    }
+    let mut left: Vec<usize> = finding.pending.keys().copied().collect();
+    left.sort();
+    for index in left {
+        finding.check_body(index, prog, &const_table, &body, false)?;
+    }
+    prog.const_values = const_table.values.clone();
+    let mut seen: Vec<crate::unread::Seen> = finding.seen.into_iter().map(|found| found.expect("every body is checked")).collect();
     if tests {
         seen.extend(check_tests(prog, &names, &const_table, &sets, &structs, &enums, &sigs, src)?);
     }
@@ -1423,6 +1460,205 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         prog.sizes.insert(at, count);
     }
     Ok(())
+}
+
+/// Where a body lies in the program: a function, or a method of a struct or of an enum.
+#[derive(Clone, Copy)]
+enum Place {
+    Func(usize),
+    Struct(usize, usize),
+    Enum(usize, usize),
+}
+
+impl Place {
+    fn func(self, prog: &Program) -> &Func {
+        match self {
+            Place::Func(index) => &prog.funcs[index],
+            Place::Struct(owner, method) => &prog.structs[owner].methods[method],
+            Place::Enum(owner, method) => &prog.enums[owner].methods[method],
+        }
+    }
+
+    fn func_mut(self, prog: &mut Program) -> &mut Func {
+        match self {
+            Place::Func(index) => &mut prog.funcs[index],
+            Place::Struct(owner, method) => &mut prog.structs[owner].methods[method],
+            Place::Enum(owner, method) => &mut prog.enums[owner].methods[method],
+        }
+    }
+
+    fn owner(self, prog: &Program) -> Option<String> {
+        match self {
+            Place::Func(_) => None,
+            Place::Struct(owner, _) => Some(prog.structs[owner].name.clone()),
+            Place::Enum(owner, _) => Some(prog.enums[owner].name.clone()),
+        }
+    }
+
+    /// The name a call reaches the body by: `name`, `Owner.name`.
+    fn called_by(self, prog: &Program) -> String {
+        match self.owner(prog) {
+            Some(owner) => format!("{owner}.{}", self.func(prog).name),
+            None => self.func(prog).name.clone(),
+        }
+    }
+}
+
+type CheckBody<'b> = dyn Fn(&mut Func, &FuncSig, Option<&str>, &ConstTable) -> Res<crate::unread::Seen> + 'b;
+
+/// The bodies of the program as they are checked, and the consts that call functions as they are
+/// found: a body that needs what such a const holds (a text, a pattern, the count of an array)
+/// waits for it, and such a const waits for the bodies it reaches.
+struct Finding<'s> {
+    places: Vec<Place>,
+    by_name: HashMap<String, usize>,
+    owners: Vec<Option<String>>,
+    sigs: Vec<&'s FuncSig>,
+    /// The bodies that wait, each for the const it needs; they are left as they were written.
+    pending: HashMap<usize, String>,
+    seen: Vec<Option<crate::unread::Seen>>,
+    /// The consts being found, the outer first.
+    stack: Vec<String>,
+}
+
+impl Finding<'_> {
+    /// Checks the body numbered `index`. With `may_wait`, one that needs what a const not found
+    /// yet holds is left as written, to be checked once that const is found.
+    fn check_body(&mut self, index: usize, prog: &mut Program, consts: &ConstTable, body: &CheckBody, may_wait: bool) -> Res<()> {
+        let place = self.places[index];
+        let written = may_wait.then(|| place.func(prog).clone());
+        NEEDED.with(|needed| needed.borrow_mut().take());
+        let checked = body(place.func_mut(prog), self.sigs[index], self.owners[index].as_deref(), consts);
+        // A body that met a const not found yet is checked again later, whatever it ended in:
+        // what it found without that const is not what it finds with it.
+        let needed = NEEDED.with(|needed| needed.borrow_mut().take());
+        match (needed, written) {
+            (Some(needed), Some(written)) => {
+                *place.func_mut(prog) = written;
+                self.pending.insert(index, needed);
+                Ok(())
+            }
+            (Some(needed), None) => unreachable!("`{needed}` is found before a body that cannot wait is checked"),
+            (None, _) => {
+                self.seen[index] = Some(checked?);
+                self.pending.remove(&index);
+                Ok(())
+            }
+        }
+    }
+
+    /// Finds what the const `name`, whose initializer calls functions, holds: the bodies it
+    /// reaches are checked and the consts they read found first, then what it runs is checked
+    /// to give the same on every machine, and the interpreter runs it.
+    fn find(&mut self, name: &str, prog: &mut Program, table: &mut ConstTable, body: &CheckBody, src: &str) -> Res<()> {
+        if table.values.contains_key(name) {
+            return Ok(());
+        }
+        let at = prog.consts.iter().position(|decl| decl.name == name).expect("a const of the program");
+        let shown = |full: &str| full.split('#').next().map(|written| short_name(written).to_string()).unwrap_or_default();
+        if let Some(from) = self.stack.iter().position(|each| each == name) {
+            let path: Vec<String> = self.stack[from..].iter().chain(std::iter::once(&name.to_string())).map(|each| format!("`{}`", shown(each))).collect();
+            return Err(Diag::error(prog.consts[at].name_span, format!("the value of `{}` needs itself: {}", shown(name), path.join(" -> ")))
+                .note("a const reads what another holds, directly or in a function it calls")
+                .hint("a const is given a value that does not lead back to it"));
+        }
+        self.stack.push(name.to_string());
+        loop {
+            let (unchecked, needed) = {
+                let waiting: HashSet<String> = self.pending.keys().map(|index| self.places[*index].called_by(prog)).collect();
+                let bodies: HashMap<String, &Func> = self.places.iter().enumerate().filter(|(index, _)| !self.pending.contains_key(index)).map(|(_, place)| (place.called_by(prog), place.func(prog))).collect();
+                let reach = crate::comptime::reach(&prog.consts[at].init, &bodies, &waiting);
+                let needed = reach.consts.iter().find(|each| !table.values.contains_key(*each)).cloned();
+                if reach.unchecked.is_none() && needed.is_none() {
+                    crate::comptime::check(&prog.consts[at].init, &shown(name), &reach, &bodies)?;
+                    break;
+                }
+                (reach.unchecked, needed)
+            };
+            match (unchecked, needed) {
+                (Some(waiting), _) => {
+                    let index = self.by_name[&waiting];
+                    let needed = self.pending[&index].clone();
+                    self.find(&needed, prog, table, body, src)?;
+                    self.check_body(index, prog, table, body, true)?;
+                }
+                (None, Some(needed)) => self.find(&needed, prog, table, body, src)?,
+                (None, None) => unreachable!("left the loop above"),
+            }
+        }
+        let decl = &prog.consts[at];
+        let value = crate::interp::find_called(prog, src, &table.values, decl)?;
+        let size = held_bytes(&value);
+        if size > crate::EMBED_LIMIT {
+            return Err(Diag::error(decl.init.span, format!("the value of `{}` takes {} MB, and a const takes at most 64 MB", shown(name), size.div_ceil(1 << 20)))
+                .note("a const is written into the program; a larger value is found when the program runs, by a function it calls"));
+        }
+        let ty = table.types[name].clone();
+        table.values.insert(name.to_string(), (ty, value));
+        self.stack.pop();
+        Ok(())
+    }
+}
+
+/// How many bytes a value of the type of a const takes in the program, a text not counted.
+fn type_bytes(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>) -> u64 {
+    match ty {
+        Ty::Int(int) => u64::from(int.bits() / 8),
+        Ty::Float(FloatTy::Float) | Ty::Char => 4,
+        Ty::Float(_) => 8,
+        Ty::Bool => 1,
+        Ty::Array(item, count) => type_bytes(item, structs, enums).saturating_mul(*count as u64),
+        Ty::Struct(name) => structs[name].fields.iter().map(|(_, field)| type_bytes(field, structs, enums)).fold(0, u64::saturating_add),
+        Ty::Enum(name) => 8 + enums[name].variants.iter().map(|(_, fields)| fields.iter().map(|(_, field)| type_bytes(field, structs, enums)).fold(0, u64::saturating_add)).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// How many bytes a value of a const takes in the program.
+fn held_bytes(value: &ConstVal) -> u64 {
+    match value {
+        ConstVal::Int(ty, _) => u64::from(ty.bits() / 8),
+        ConstVal::Float(FloatTy::Float, _) | ConstVal::Char(_) => 4,
+        ConstVal::Float(..) => 8,
+        ConstVal::Bool(_) => 1,
+        ConstVal::Str(text) => text.len() as u64,
+        ConstVal::Bytes(bytes) => bytes.len() as u64,
+        ConstVal::Array(items) | ConstVal::Struct(_, items) => items.iter().map(held_bytes).sum(),
+        ConstVal::Enum(_, _, items) => 8 + items.iter().map(held_bytes).sum::<u64>(),
+    }
+}
+
+/// The consts whose initializers call a function or a method, or name a const that does.
+fn called_consts(prog: &Program) -> HashSet<String> {
+    fn calls(expr: &Expr, names: &mut Vec<String>) -> bool {
+        let mut found = match &expr.kind {
+            ExprKind::Call { .. } => true,
+            ExprKind::Method { name, args, .. } => !(name == "length" && args.is_empty()),
+            ExprKind::Const(full) => {
+                names.push(full.clone());
+                false
+            }
+            _ => false,
+        };
+        crate::sums::children(expr, &mut |child| found |= calls(child, names));
+        found
+    }
+    let mut named: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut called = HashSet::new();
+    for decl in &prog.consts {
+        let mut names = Vec::new();
+        if calls(&decl.init, &mut names) {
+            called.insert(decl.name.clone());
+        }
+        named.insert(&decl.name, names);
+    }
+    loop {
+        let more: Vec<String> = named.iter().filter(|(name, reads)| !called.contains(**name) && reads.iter().any(|read| called.contains(read))).map(|(name, _)| name.to_string()).collect();
+        if more.is_empty() {
+            return called;
+        }
+        called.extend(more);
+    }
 }
 
 /// What a program built without an operating system has: no `main`, since the code that starts
@@ -2038,13 +2274,14 @@ fn early_value(expr: &Expr, decl: &ConstDecl, consts: &HashMap<&str, &ConstDecl>
                 false => Err(format!("{found} does not fit in {}", to.name())),
             }
         }
+        ExprKind::Call { .. } | ExprKind::Method { .. } => Err("its value is found by a call, which runs once the types are known".to_string()),
         _ => Err(made_of.to_string()),
     }
 }
 
 /// The type of a const, with the count of `T[]` taken from `embed` (`{ ... }` was counted by the
 /// parser). What it holds is plain data the program can read from every thread.
-fn const_type(decl: &ConstDecl, names: &Names, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, copyable: &HashSet<String>, embeds: &[usize]) -> Res<Ty> {
+fn const_type(decl: &ConstDecl, names: &Names, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, copyable: &HashSet<String>, embeds: &[usize], sigs: &HashMap<String, FuncSig>) -> Res<Ty> {
     let written = &decl.ty;
     if written.mode.is_some() {
         return Err(Diag::error(written.span, "a const is not declared with `read` or `ref`: it is lent where it is used")
@@ -2057,10 +2294,19 @@ fn const_type(decl: &ConstDecl, names: &Names, structs: &HashMap<String, StructI
     }
     let mut ty = resolve_type(&whole, names, false)?;
     if counted {
-        let count = match &decl.init.kind {
-            ExprKind::Embed(index) => embeds[*index],
+        // A function that gives an array tells the count in its type: `int[256] crcTable()`.
+        let returned = match &decl.init.kind {
+            ExprKind::Call { name, name_span, .. } => match names.full(name, *name_span)?.and_then(|full| sigs.get(&full)) {
+                Some(FuncSig { ret: Ty::Array(_, count), .. }) => Some(*count),
+                _ => None,
+            },
+            _ => None,
+        };
+        let count = match (&decl.init.kind, returned) {
+            (ExprKind::Embed(index), _) => embeds[*index],
+            (_, Some(count)) => count,
             _ => {
-                return Err(Diag::error(written.span, "the count of the items of `T[]` is taken from `{ ... }` or from `embed`")
+                return Err(Diag::error(written.span, "the count of the items of `T[]` is taken from `{ ... }`, from `embed` or from the array a function returns")
                     .hint("write the count: `T[N]`"));
             }
         };
@@ -2108,11 +2354,13 @@ fn not_const_type(ty: &Ty, top: bool, structs: &HashMap<String, StructInfo>, enu
 }
 
 /// What a const is given is known when the program is compiled: numbers, texts, other consts,
-/// operators, casts, and arrays, structs and enums built of them.
+/// operators, casts, calls, and arrays, structs and enums built of them.
 fn constant_only(expr: &Expr) -> Res<()> {
     match &expr.kind {
-        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Const(_) | ExprKind::Embed(_) | ExprKind::Constant { .. } => Ok(()),
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Const(_) | ExprKind::Embed(_) | ExprKind::Constant { .. } | ExprKind::FuncRef(_) => Ok(()),
         ExprKind::Unary(_, inner) | ExprKind::Cast { expr: inner, .. } | ExprKind::Widen(_, inner) | ExprKind::Load(inner) | ExprKind::Field { recv: inner, .. } => constant_only(inner),
+        // What a call is given: `distinct(Digits)` lends the array as a slice.
+        ExprKind::AsSlice(inner) | ExprKind::Borrow { expr: inner, .. } | ExprKind::Unbox(inner) => constant_only(inner),
         ExprKind::Binary(_, left, right) | ExprKind::Index { recv: left, index: right, .. } => {
             constant_only(left)?;
             constant_only(right)
@@ -2120,13 +2368,20 @@ fn constant_only(expr: &Expr) -> Res<()> {
         ExprKind::Array { args, items, .. } => args.iter().chain(items.iter().flatten()).try_for_each(constant_only),
         ExprKind::StructLit { fields, .. } => fields.iter().try_for_each(|field| constant_only(&field.value)),
         ExprKind::Variant { args, .. } => args.iter().try_for_each(constant_only),
-        // The count of the items of a const array, or the bytes of a text.
-        ExprKind::Method { recv, name, args, .. } if name == "length" && args.is_empty() => constant_only(recv),
+        // A call runs when the program is compiled; what the function does is checked with
+        // the bodies it reaches (see `comptime`).
+        ExprKind::Call { args, .. } => args.iter().try_for_each(constant_only),
+        ExprKind::Method { recv, args, .. } => {
+            // `Size.square(3)`, `int.parse(text)`: a name before the dot here is a type, since
+            // a const sees no variable.
+            if !matches!(recv.kind, ExprKind::Var(_)) {
+                constant_only(recv)?;
+            }
+            args.iter().try_for_each(constant_only)
+        }
         ExprKind::Var(name) => Err(Diag::error(expr.span, format!("`{name}` is a variable, and the value of a const is found when the program is compiled"))),
-        ExprKind::Call { .. } | ExprKind::Method { .. } => Err(Diag::error(expr.span, "a const is not given the value of a call yet")
-            .note("the value of a const is found when the program is compiled")),
         _ => Err(Diag::error(expr.span, "this is not known when the program is compiled, and a const is given its value then")
-            .note("a const is made of numbers, texts, other consts, operators, casts, and arrays, structs and enums of them")),
+            .note("a const is made of numbers, texts, other consts, operators, casts, calls, and arrays, structs and enums of them")),
     }
 }
 
@@ -2258,6 +2513,15 @@ thread_local! {
     /// The count each `[Name]` in a type stood for, by where the name is written, and the full
     /// name of the const.
     static SIZES: std::cell::RefCell<std::collections::BTreeMap<usize, (usize, String)>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    /// A const, not found yet, whose value a body needed: the body is checked again once it is.
+    static NEEDED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The error of a body that needs what a const not found yet holds; the body waits for it (see
+/// `Finding`), and the error is not shown.
+fn needs(full: &str, span: Span) -> Diag {
+    NEEDED.with(|needed| *needed.borrow_mut() = Some(full.to_string()));
+    Diag::error(span, "this needs a const that is not found yet")
 }
 
 /// Why a value may not go to another task, for the messages of the thread rule.
@@ -3586,6 +3850,7 @@ impl<'a> Checker<'a> {
             if let Some(full) = self.const_named(&written.clone(), span)? {
                 expr.kind = match (&self.consts.types.get(&full), self.consts.values.get(&full)) {
                     (_, Some((_, ConstVal::Str(text)))) => ExprKind::Str(text.clone()),
+                    (Some(Ty::Str), None) if !self.in_const => return Err(needs(&full, span)),
                     _ => ExprKind::Const(full),
                 };
                 return Ok(());
@@ -5585,6 +5850,7 @@ impl<'a> Checker<'a> {
                     if let Some(full) = self.const_named(count, index.span)? {
                         match self.consts.values.get(&full) {
                             Some((_, ConstVal::Int(_, value))) => index.kind = ExprKind::Int(*value, IntTy::Nint),
+                            None if !self.in_const && matches!(self.consts.types.get(&full), Some(Ty::Int(_))) => return Err(needs(&full, index.span)),
                             _ => {
                                 return Err(Diag::error(index.span, format!("`{count}` cannot give the count of an array: it is a `{}`", self.consts.types[&full]))
                                     .note("the count of an array is a number or an integer `const`"));
@@ -7496,7 +7762,8 @@ impl<'a> Checker<'a> {
                     return Ok(());
                 }
                 let Some(full) = self.const_named(name, span)? else { return Ok(()) };
-                pattern.kind = match &self.consts.values[&full].1 {
+                let Some((_, value)) = self.consts.values.get(&full) else { return Err(needs(&full, span)) };
+                pattern.kind = match value {
                     ConstVal::Int(_, value) => PatternKind::Int(*value),
                     ConstVal::Char(value) => PatternKind::Char(*value),
                     ConstVal::Str(text) => PatternKind::Str(text.clone()),

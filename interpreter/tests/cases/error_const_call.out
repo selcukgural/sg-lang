@@ -1,5 +1,0 @@
-error: a const is not given the value of a call yet
-  the value of a const is found when the program is compiled
-  --> error_const_call.sg:5:18
- 5 | const int Size = size()
-   |                  ^^^^^^

@@ -1,0 +1,157 @@
+// Consts found by calling functions when the program is compiled: a table, recursion, a
+// text, a struct and its methods, an enum method, a list and a set, a `Result`, a random
+// number drawn from a seed, and consts of a block and of a test. Each is used as a value, a
+// text, a pattern and the count of an array, as a const of plain numbers is.
+
+struct Size : Copyable, Formattable {
+    int width
+    int height
+
+    Size square(int side) {
+        return Size { width = side, height = side }
+    }
+
+    int area(read this) {
+        return this.width * this.height
+    }
+
+    void format(read this, ref Formatter f) {
+        f.write($"{this.width}x{this.height}")
+    }
+}
+
+enum Level : Copyable {
+    Low
+    High(int level)
+
+    int weight(read this) {
+        return match this {
+            Low => 1
+            High(n) => n * 10
+        }
+    }
+}
+
+string describe(Size s) {
+    return $"size {s}".toString()
+}
+
+int distinct(read int[] items) {
+    var seen = HashSet<int>()
+    var order = List<int>()
+    for item in items {
+        if seen.add(item) {
+            order.add(item)
+        }
+    }
+    return (int)order.length()
+}
+
+Result<int, NumberError> parsed() {
+    var n = try int.parse("42")
+    return Ok(n + 1)
+}
+
+int orZero() {
+    return parsed() ?? 0
+}
+
+const Size Square = Size.square(Side)
+const int Side = 3
+const int Area = Square.area()
+const string Described = describe(Square)
+const int[] Digits = { 1, 2, 2, 3, 3, 3 }
+const int Distinct = distinct(Digits)
+const int Heavy = Level.High(4).weight()
+const int Parsed = orZero()
+const int[] Squares = squares()
+
+int[5] squares() {
+    var out = int[5]
+    for i in 0..5 {
+        out[i] = i * i
+    }
+    return out
+}
+
+string greeting() {
+    return Described
+}
+
+int[256] crcTable() {
+    var table = int[256]
+    for i in 0..256 {
+        var c = i
+        for _ in 0..8 {
+            if (c & 1) != 0 {
+                c = (c >> 1) ^ 0x6db88320
+            } else {
+                c = c >> 1
+            }
+        }
+        table[i] = c
+    }
+    return table
+}
+
+int fib(int n) {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+string banner(int width) {
+    var text = "+"
+    for _ in 0..width {
+        text.write("-")
+    }
+    text.write("+")
+    return text
+}
+
+
+long seeded() {
+    var random = Random.fromSeed(7)
+    return random.nextLong(0, 1000000)
+}
+
+const int[256] Crc = crcTable()
+const int Fib20 = fib(20)
+const string Banner = banner(Side * 2)
+const long Seeded = seeded()
+const double Root = (2.0).sqrt()
+
+void main() {
+    const int Local = Side * Area + Square.area()
+    print(Square)
+    print(Area)
+    print(Described)
+    print(greeting())
+    print(Distinct)
+    print(Heavy)
+    print(Parsed)
+    print(Local)
+    print(Squares[4])
+    print(Squares.length())
+    print(Crc[1])
+    print(Crc[255])
+    print(Fib20)
+    print(Banner)
+    print(Root)
+    // The same function, called when the program runs, finds the same value.
+    print(Seeded == seeded())
+    print(Crc[255] == crcTable()[255])
+    match 6765 {
+        Fib20 => print("a pattern")
+        _ => print("no")
+    }
+    var buffer = byte[Side]
+    print(buffer.length())
+}
+
+test "the consts" {
+    const int Twice = Area * 2
+    assert(Twice == 18)
+    assert(Parsed == 43)
+}

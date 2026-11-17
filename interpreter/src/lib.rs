@@ -5,6 +5,7 @@
 pub mod ast;
 pub mod cc;
 pub mod check;
+pub mod comptime;
 pub mod diag;
 pub mod emit_c;
 pub mod exhaust;

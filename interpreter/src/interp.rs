@@ -2114,13 +2114,20 @@ pub struct Consts<'a> {
     cells: RefCell<HashMap<String, Cell>>,
     /// The consts being found, the outer first: one that needs itself is found here.
     finding: RefCell<Vec<String>>,
+    /// While a const that calls functions is found when the program is compiled: the steps it
+    /// may still take (each block run and each call is one).
+    steps: Option<std::cell::Cell<u64>>,
 }
 
 impl<'a> Consts<'a> {
     fn given(prog: &'a Program) -> Consts<'a> {
-        Consts { inits: HashMap::new(), given: &prog.const_values, embeds: &prog.embeds, cells: RefCell::new(HashMap::new()), finding: RefCell::new(Vec::new()) }
+        Consts { inits: HashMap::new(), given: &prog.const_values, embeds: &prog.embeds, cells: RefCell::new(HashMap::new()), finding: RefCell::new(Vec::new()), steps: None }
     }
 }
+
+/// How many steps finding the value of one const may take when the program is compiled: a
+/// count, not a time, so that every machine finds the same or stops at the same place.
+pub const CONST_STEPS: u64 = 100_000_000;
 
 /// A value of a const as the interpreter holds it.
 fn value_of(found: &ConstVal) -> Value {
@@ -2162,34 +2169,62 @@ fn const_of(found: &Value) -> ConstVal {
     }
 }
 
-/// Finds the value of every const of the program, as the checker has checked its initializer:
-/// the interpreter runs it, and a const it names is found first. A panic on the way (an
-/// overflow, an index out of range) is a compile error, which tells the const it was found for.
-pub fn find_consts(prog: &Program, src: &str) -> Result<BTreeMap<String, ConstVal>, Diag> {
+/// Finds the value of each const of the program named in `only`, as the checker has checked its
+/// initializer: the interpreter runs it, and a const it names is found first. A panic on the
+/// way (an overflow, an index out of range) is a compile error, which tells the const it was
+/// found for. These consts call no function: they are found before the bodies are checked.
+pub fn find_consts(prog: &Program, src: &str, only: &std::collections::HashSet<String>) -> Result<BTreeMap<String, ConstVal>, Diag> {
+    let none = BTreeMap::new();
+    let decls: Vec<&ConstDecl> = prog.consts.iter().filter(|decl| only.contains(&decl.name)).collect();
+    run_consts(prog, src, &none, &decls, false)
+}
+
+/// Finds the value of the const `decl`, whose initializer calls functions, once the checker has
+/// checked every function it reaches and found every const they read (`given`). It may take
+/// `CONST_STEPS` steps.
+pub fn find_called(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)>, decl: &ConstDecl) -> Result<ConstVal, Diag> {
+    let found = run_consts(prog, src, given, &[decl], true)?;
+    Ok(found.into_values().next().expect("the one const asked for"))
+}
+
+fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)>, decls: &[&ConstDecl], counted: bool) -> Result<BTreeMap<String, ConstVal>, Diag> {
     let sources = crate::source::Sources::single(src, "");
     let mut sink = std::io::sink();
     let mut err = std::io::sink();
     let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err: &mut err };
     let io = shared(&mut sink, world, crate::ffi::Library::default(), &sources);
-    let none = BTreeMap::new();
-    let mut consts = Consts { inits: HashMap::new(), given: &none, embeds: &prog.embeds, cells: RefCell::new(HashMap::new()), finding: RefCell::new(Vec::new()) };
-    consts.inits = prog.consts.iter().map(|decl| (decl.name.as_str(), &decl.init)).collect();
+    let steps = counted.then(|| std::cell::Cell::new(CONST_STEPS));
+    let mut consts = Consts { inits: HashMap::new(), given, embeds: &prog.embeds, cells: RefCell::new(HashMap::new()), finding: RefCell::new(Vec::new()), steps };
+    consts.inits = decls.iter().map(|decl| (decl.name.as_str(), &decl.init)).collect();
     let funcs = prog.funcs.iter().map(|func| (func.name.as_str(), func)).collect();
+    let mut methods: HashMap<&str, HashMap<&str, &Func>> = HashMap::new();
+    for decl in &prog.structs {
+        methods.insert(&decl.name, decl.methods.iter().map(|method| (method.name.as_str(), method)).collect());
+    }
+    for decl in &prog.enums {
+        methods.insert(&decl.name, decl.methods.iter().map(|method| (method.name.as_str(), method)).collect());
+    }
     let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods: HashMap::new(), structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
         let mut found = BTreeMap::new();
-        for decl in &prog.consts {
+        for decl in decls {
+            let name = decl.local.clone().unwrap_or_else(|| short_name(&decl.name).to_string());
             match interp.const_cell(&decl.name, decl.name_span) {
                 Ok(slot) => {
                     found.insert(decl.name.clone(), const_of(&slot.borrow()));
                 }
+                Err(Unwind::Stop(Stop::Diag(_))) if consts.steps.as_ref().is_some_and(|left| left.get() == 0) => {
+                    ENDING.with(|ending| ending.set(false));
+                    return Err(Diag::error(decl.init.span, format!("finding the value of `{name}` takes more than {} steps", group_digits(CONST_STEPS)))
+                        .note("a const is found when the program is compiled, in at most that many steps, so that every machine finds the same")
+                        .note("a value that takes longer to find is found when the program runs, by a function it calls"));
+                }
                 Err(Unwind::Stop(Stop::Diag(mut diag))) => {
                     ENDING.with(|ending| ending.set(false));
                     if diag.kind == crate::diag::Kind::Panic {
-                        let name = decl.local.clone().unwrap_or_else(|| short_name(&decl.name).to_string());
                         diag.kind = crate::diag::Kind::Error;
                         diag.msg = format!("the value of `{name}` is found when the program is compiled, and this stops it: {}", diag.msg);
                     }
@@ -2200,6 +2235,19 @@ pub fn find_consts(prog: &Program, src: &str) -> Result<BTreeMap<String, ConstVa
         }
         Ok(found)
     })
+}
+
+/// `100000000` as `100 000 000`.
+fn group_digits(count: u64) -> String {
+    let digits = count.to_string();
+    let mut out = String::new();
+    for (position, digit) in digits.chars().enumerate() {
+        if position > 0 && (digits.len() - position).is_multiple_of(3) {
+            out.push(' ');
+        }
+        out.push(digit);
+    }
+    out
 }
 
 /// How many atomic operations a fiber does before the turn goes to the next one that is ready;
@@ -3151,6 +3199,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     }
 
     fn call(&mut self, func: &'a Func, this: Option<Value>, args: Vec<Value>, call_span: Span) -> Res<Value> {
+        self.step(call_span)?;
         if self.depth == MAX_DEPTH {
             return Err(Diag::panic(call_span, format!("stack overflow: more than {MAX_DEPTH} nested calls"))
                 .note(format!("last called: `{}`", func.name))
@@ -3207,7 +3256,20 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
     }
 
+    /// One step of a const found when the program is compiled; once they are all taken, the
+    /// run stops (the checker tells why).
+    fn step(&self, span: Span) -> Res<()> {
+        if let Some(steps) = &self.consts.steps {
+            match steps.get() {
+                0 => return Err(Diag::panic(span, "out of steps").into()),
+                left => steps.set(left - 1),
+            }
+        }
+        Ok(())
+    }
+
     fn block(&mut self, block: &'a Block, frame: &mut Frame) -> Res<Flow> {
+        self.step(block.first().map_or(Span::new(0, 0), |stmt| stmt.span))?;
         frame.scopes.push(Scope::default());
         let mut flow = Flow::Next;
         for stmt in block {

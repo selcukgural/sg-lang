@@ -224,6 +224,7 @@ pub struct FieldDecl {
     pub bits: Option<(u64, Span)>,
 }
 
+#[derive(Clone)]
 pub struct Func {
     pub public: bool,
     /// Written with `async`: a call gives a `Task` of what `ret` names, and the body can
@@ -278,6 +279,7 @@ pub struct CVarDecl {
 
 /// One name after `from`: a parameter (`input`), the source of the type a method belongs to
 /// (`source`), or the source of a parameter's type (`lx.source`).
+#[derive(Clone)]
 pub struct FromItem {
     pub name: String,
     pub source: Option<String>,
@@ -828,6 +830,7 @@ pub enum Suffix {
     Slice,
 }
 
+#[derive(Clone)]
 pub struct Param {
     pub ty: TypeExpr,
     pub name: String,
@@ -836,11 +839,13 @@ pub struct Param {
 
 pub type Block = Vec<Stmt>;
 
+#[derive(Clone)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
 }
 
+#[derive(Clone)]
 pub enum StmtKind {
     /// `var x = e` or `int x = e`
     Let { ty: Option<TypeExpr>, name: String, name_span: Span, init: Expr },
@@ -877,12 +882,14 @@ pub enum StmtKind {
 }
 
 /// One value of a `lock` block and the name of what it holds.
+#[derive(Clone)]
 pub struct LockItem {
     pub value: Expr,
     pub name: String,
     pub name_span: Span,
 }
 
+#[derive(Clone)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
@@ -893,6 +900,7 @@ pub struct Expr {
     pub moved: bool,
 }
 
+#[derive(Clone)]
 pub enum ExprKind {
     /// The type is decided by the checker from where the literal is used.
     Int(i128, IntTy),
@@ -1043,6 +1051,7 @@ pub enum IndexKind {
 }
 
 /// One item between the braces of a collection: `1`, or `{"x", 10}` for a key and a value.
+#[derive(Clone)]
 pub struct Item {
     pub values: Vec<Expr>,
     pub braced: bool,
@@ -1061,6 +1070,7 @@ pub enum TryKind {
 
 /// One arm of a `match`: `Circle(r) when r > 0 => body`. The body is a single expression
 /// (`value` alone), a statement such as `return`, or a block whose last line may be the value.
+#[derive(Clone)]
 pub struct Arm {
     pub pattern: Pattern,
     pub guard: Option<Expr>,
@@ -1147,6 +1157,7 @@ impl Pattern {
     }
 }
 
+#[derive(Clone)]
 pub struct FieldInit {
     pub name: String,
     pub span: Span,
@@ -1158,6 +1169,7 @@ pub struct FieldInit {
 // A value is far larger than a piece of text, as it was before the spec came; a formatted
 // text has few parts, and a box for each value would cost more than it saves.
 #[allow(clippy::large_enum_variant)]
+#[derive(Clone)]
 pub enum InterpPart {
     Text(String),
     /// A value, and how it is written when the text says more than "as `print` writes it".

@@ -1,0 +1,5 @@
+error: the value of `Banner` takes 69 MB, and a const takes at most 64 MB
+  a const is written into the program; a larger value is found when the program runs, by a function it calls
+  --> error_comptime_text_size.sg:5:23
+ 5 | const string Banner = banner()
+   |                       ^^^^^^^^

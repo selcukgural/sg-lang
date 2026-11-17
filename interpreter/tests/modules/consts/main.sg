@@ -1,4 +1,5 @@
-// Consts of another module, the count of an array from one, and the bytes of a file.
+// Consts of another module, the count of an array from one, the bytes of a file, and consts
+// found by calling functions of another module.
 
 use limits
 
@@ -18,6 +19,12 @@ void main() {
     print(Logo.length())
     print(Logo[0])
     print(Logo[7])
+    print(Powers[3])
+    print(Label)
+    match "up to 8 items" {
+        Label => print("the label")
+        _ => print("another text")
+    }
 }
 
 test "the limits" {

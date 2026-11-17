@@ -1,0 +1,9 @@
+double wave(double x) {
+    return x.sin()
+}
+
+const double Wave = wave(1.0)
+
+void main() {
+    print(Wave)
+}

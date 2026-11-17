@@ -1,0 +1,9 @@
+error: the value of `Size` is found when the program is compiled, and what it runs reads or writes a file
+  a value that cannot be found when the program is compiled is found when the program runs, by a function it calls
+  --> error_comptime_file.sg:9:18
+ 9 | const int Size = size()
+   |                  ^^^^
+  `size` calls `load`, which reads or writes a file here:
+  --> error_comptime_file.sg:2:17
+ 2 |     return File.readText("x.txt") ?? ""
+   |                 ^^^^^^^^

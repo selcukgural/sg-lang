@@ -1,0 +1,11 @@
+const int[] Items = { 1, 2, 3 }
+
+int pick(read int[] items, nint at) {
+    return items[at]
+}
+
+const int Picked = pick(Items, 3)
+
+void main() {
+    print(Picked)
+}

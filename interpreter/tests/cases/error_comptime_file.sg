@@ -1,0 +1,13 @@
+string load() {
+    return File.readText("x.txt") ?? ""
+}
+
+int size() {
+    return (int)load().length()
+}
+
+const int Size = size()
+
+void main() {
+    print(Size)
+}

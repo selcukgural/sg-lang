@@ -1,0 +1,10 @@
+int count() {
+    print("counting")
+    return 1
+}
+
+const int Counted = count()
+
+void main() {
+    print(Counted)
+}

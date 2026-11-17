@@ -1,0 +1,14 @@
+async int later() {
+    return 1
+}
+
+int now() {
+    var task = later()
+    return task.wait()
+}
+
+const int Now = now()
+
+void main() {
+    print(Now)
+}

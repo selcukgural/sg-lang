@@ -1,0 +1,10 @@
+error: the value of `Wave` is found when the program is compiled, and what it runs calls `sin`
+  the C library of each system finds the last bit of `sin` in its own way, and the program could find another value when it runs
+  a value that cannot be found when the program is compiled is found when the program runs, by a function it calls
+  --> error_comptime_sin.sg:5:21
+ 5 | const double Wave = wave(1.0)
+   |                     ^^^^
+  `wave` calls `sin` here:
+  --> error_comptime_sin.sg:2:14
+ 2 |     return x.sin()
+   |              ^^^

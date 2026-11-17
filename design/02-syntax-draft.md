@@ -1376,6 +1376,8 @@ const uint[] Masks = { 0x1, 0x3, 0x7, 0xF }              // the items counted: u
 const byte[] Logo = embed("logo.gif")                    // the bytes of the file beside this one
 const string Greeting = "hello"
 const Point Origin = Point { x = 0, y = 0 }              // a Copyable struct of numbers
+const int[256] Crc = crcTable()                          // any function, run when the program is compiled
+const int[] Squares = squares()                          // counted from what it returns: int[5] squares()
 
 var buffer = byte[BlockSize]                             // an integer const gives the count of an array
 struct Ring { int[BlockSize] items }
@@ -1393,9 +1395,20 @@ Masks[0] = 1                                             // error: `Masks` is a 
 
 A const holds numbers, `bool`, `char`, a text, and arrays, structs and enums of numbers, `bool` and `char`;
 not a `List`, an owned text or a pointer. Its value is made of numbers, texts, other consts, operators,
-casts, arrays, structs and variants; an overflow there is a compile error. A local never takes the name of a
-const it sees. In compiled code a number is written where it is used, and a table is one `static const`,
-which nothing copies. The rules are in the decisions file ("Consts", "Consts, as built").
+casts, arrays, structs, variants and calls; an overflow there is a compile error. A function called there
+runs when the program is compiled, with no mark on it: it may use a `List`, a `HashMap` or a `string` inside,
+and the checker refuses, with the calls that lead there, what would not give the same value on every machine:
+
+```
+string load() { return File.readText("table.txt") ?? "" }
+int size() { return (int)load().length() }
+const int Size = size()                                  // error: what it runs reads or writes a file
+                                                         //   `size` calls `load`, which reads or writes a file here
+```
+
+A local never takes the name of a const it sees. In compiled code a number is written where it is used, and
+a table is one `static const`, which nothing copies. The rules are in the decisions file ("Consts", "Consts,
+as built", "Calls in a const").
 
 ### Raw memory and calling C
 

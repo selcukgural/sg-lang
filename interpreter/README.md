@@ -31,7 +31,7 @@ macOS, whose own Clang knows only its own processor: `brew install llvm lld qemu
 `CC=$(brew --prefix llvm)/bin/clang PATH=$(brew --prefix lld)/bin:$PATH cargo test`. On Linux the image
 of `tests/Containerfile` has them.
 
-## What runs today (17 November 2026)
+## What runs today (18 November 2026)
 
 | Area | Supported |
 |---|---|
@@ -50,7 +50,7 @@ of `tests/Containerfile` has them.
 | Text of a collection | `print(xs)`, `$"{xs}"`: `[1, 2, 3]`, `{"ada": 36}`, `{1, 2, 3}`, when the items can be written as text |
 | `HashSet<T>` | Built in; an item is what a key of a `HashMap` can be. `HashSet<int>()`, `HashSet<int> { 1, 2 }`; `set.add(v)` gives `true` if the item was not there, `set.contains(v)`, `set.remove(v)` gives `true` if it was there, `set.length()`, `set.clear()` |
 | Arrays | `int[8] values`: a fixed number of items, kept where the value is (in the variable, inside the struct), with the length in the type. Built as `int[3] { 1, 2, 3 }` (the items), `byte[16](255)` (one value in every item) or `byte[16]` (zeros: 0, `false`, `null`). `xs[i]` to read and to write, `xs.length()`, `xs.get(i)`, `xs.indexOf(v)`, `xs.contains(v)`, `xs.sort()`, `xs.reverse()`, `==`, `print`. An array of items that can be copied is copied like a number; any other is moved |
-| Consts | `const int BlockSize = 4096`, at the top of a file (`public const` for other modules) or in a block, where it is seen to the end of the block. A number, `bool`, `char`, a text, or an array, a struct or an enum of numbers, `bool` and `char` (`: Copyable`). `const int[] Primes = { 2, 3, 5, 7 }` counts the items, `const byte[] Logo = embed("logo.gif")` holds the bytes of a file beside the source. The value is found when the program is compiled: numbers, texts, other consts, operators, casts, `MinValue` and the others, arrays, structs and variants built of them, `.length()` and an item or a field of a const; an overflow there is a compile error. An integer const gives the count of an array (`byte[BlockSize]`, `int[N](0)`), and a const of a number, a `char`, a text or a `bool` is a pattern (`match tag { Trailer => ... }`). An array, a struct or an enum is lent where it is used, for the whole run, and never changed (`var copy = Masks` copies it); in compiled code it is one `static const`, which nothing copies |
+| Consts | `const int BlockSize = 4096`, at the top of a file (`public const` for other modules) or in a block, where it is seen to the end of the block. A number, `bool`, `char`, a text, or an array, a struct or an enum of numbers, `bool` and `char` (`: Copyable`). `const int[] Primes = { 2, 3, 5, 7 }` counts the items, `const byte[] Logo = embed("logo.gif")` holds the bytes of a file beside the source. The value is found when the program is compiled: numbers, texts, other consts, operators, casts, `MinValue` and the others, arrays, structs and variants built of them, `.length()` and an item or a field of a const, and calls: `const int[256] Crc = crcTable()` runs any function when the program is compiled, whose body, and those of the functions it calls, may not read or write, look at the clock or the system, use raw memory, C, tasks or a `Func`, or call `sin` and its kin (an error shows the calls that lead there), within 100 000 000 steps and 64 MB; an overflow or a panic there is a compile error. An integer const gives the count of an array (`byte[BlockSize]`, `int[N](0)`), and a const of a number, a `char`, a text or a `bool` is a pattern (`match tag { Trailer => ... }`). An array, a struct or an enum is lent where it is used, for the whole run, and never changed (`var copy = Masks` copies it); in compiled code it is one `static const`, which nothing copies |
 | Slices | `read T[]` looks at items that something else owns, `ref T[]` can also write them. `read xs` and `ref xs` give one where a slice is expected, for a `List<T>` and a `T[N]`; a range gives one too: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` for a range that is written through. `s[i]`, `s.length()`, `s.get(i)`, `s.indexOf(v)`, `s.contains(v)`, `==`, `print`, `for`; `s.sort()` and `s.reverse()` through a `ref T[]`, and on a range in front of them: `xs[2..5].sort()` puts those items of `xs` in order where they are. `text.asBytes()` looks at a text as a `read byte[]`; `string.fromUtf8(bytes)` looks at bytes as text and gives a `Result<read string, TextError>` |
 | `for` over a collection | `for x in xs` hands the collection over and `x` owns each item; `for x in read xs` and `for x in ref xs` lend, and so does a collection that is already borrowed. Over a `HashMap` the variable has a `key` and a `value`; a `HashSet` is gone over by hand-over or `read`. An array is gone over like a list; a slice lends its items |
 | `is` | `if s is Circle(r) { ... }`, `if e is Add(Number(0), right) { ... }`, `if e is Add(l, _) or Mul(l, _) { ... }`, `while next() is not End { ... }`. The names reach along `&&`: `if int.parse(read text) is Ok(n) && n > 0 { ... }`, `return s is Circle(r) && r > 10`. The names of `is not` are seen where it fails: `if int.parse(read text) is not Ok(n) { return }` and `n` after it, `if r is not Ok(n) \|\| n < 0 { return }`, `else`, and after `while r is not Ok(n) { ... }` |
@@ -7134,7 +7134,7 @@ address sanitizer sees it every time. 1120 to 1123 were put to the author and ap
 Choices made in the hundred-and-third slice (consts). 1080 to 1087, 1098 and 1099 were put to the author
 before the slice and approved on 17 November 2026; they are in the decisions file ("Consts"). What building
 them asked for besides, from 1109 (1088 to 1097 are the statics of the hundred-and-fifth slice, 1100 to 1108
-the calls in a const of the hundred-and-fourth). They wait for approval:
+the calls in a const of the hundred-and-fourth). Approved on 17 November 2026:
 
 1109. **A const array, struct or enum is a `read` borrow** where it is used, of the one value, which lasts
      for the run: `Masks[i]` reads it where it lies, `sum(Masks)` lends it as a slice, a function with no
@@ -7175,6 +7175,61 @@ the calls in a const of the hundred-and-fourth). They wait for approval:
      and "Consts, as built"), 06. Tests: `ok_consts`, 30 `error_const_*`, the program `tests/modules/consts`
      (a const of another module, the count of an array from one, `embed`, a test) and
      `error_const_exposes` with the module `hidden`. `cargo test` passes on macOS and on Linux in a container (359 of 1476 programs compile through C, 81 of them under the thread sanitizer, 28 of 34 programs of tests). Found by them: an array read only for its length (`buffer.length()`) left its variable unused in C, which GCC refuses; the array is now named all the same, with no cost.
+
+Choices made in the hundred-and-fourth slice (calls in a const). 1100 to 1108 were put to the author before
+the slice and approved on 17 November 2026; they are in the decisions file ("Calls in a const"). What building
+them asked for besides, from 1124. Approved on 18 November 2026:
+
+1124. **Two times to find a const.** One that calls no function is found before the bodies are checked, as
+     in the hundred-and-third slice; one that calls (or names a const that calls) once the bodies are checked.
+     A body that needs what such a const holds before it is found (a text, which is written where it is
+     used; a pattern; `byte[Count]`) is left as written and checked again once it is. So the order of the
+     consts and of the functions in the file does not matter.
+1125. **The count of an array in a type** (`int[Count] items` in a field, in a signature) cannot come from a
+     const that calls: the types come before the bodies, and the error says so (`` `Count` cannot give the
+     count of an array: its value is found by a call, which runs once the types are known ``). In an
+     expression (`byte[Count]`) it can. Rust lets a `const fn` give the length of an array type; we would have
+     to check bodies before types.
+1126. **What is written is checked, not what runs**: every function a call of the initializer reaches, and
+     the `format`, `equals`, `hash`, `compare` and `dispose` of each struct and enum whose value is there,
+     which run with no call written. A barred call on a line that never runs is still an error, as in Rust's
+     `const fn`; a const that reaches itself through a function is an error the same way (`` `A` -> `B` ->
+     `A` ``). The message names the first function the initializer calls and shows the place where the
+     barred thing is written (`` `size` calls `load`, which reads or writes a file here ``); inside the
+     language's own module it stops at the call the program wrote (`` `draw` calls `Random.fromSystem`, which
+     draws random bytes of the system ``).
+1127. **What is barred, written out for the language**: besides 1102, `exit`, calling an `async` function (it
+     starts a task), cancelling, `Memory.allocate` and every value of a `raw T`, which covers what `unsafe`
+     does with raw memory, and a variable of C. An `atomic` value is in: no other task can see it there.
+1128. **Of the fractions**, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `log`, `log2`, `log10`
+     and `pow` are barred (1106 named four; the others are rounded by the same C library). `sqrt`, `floor`,
+     `ceil`, `round`, `truncate`, `abs`, `min`, `max`, `fusedMultiplyAdd`, reading a number out of a text and
+     printing one are in: their result is exact or correctly rounded everywhere, and printing is our own.
+1129. **A step** is a block run or a function called: a loop with an empty body still counts. The hundred
+     million steps take about 14 seconds in the interpreter on the author's Mac; the error is `` finding the
+     value of `Spun` takes more than 100 000 000 steps ``. The note says such a value is found when the program
+     runs; with the statics of the next slice it will name `static`.
+1130. **The 64 MB are known from the type**, before anything runs, for every const (`const long[10000000]
+     Zeros = long[10000000]` is an error now too): `` a `Huge[9]` takes 72 MB ``. A text is measured once found.
+1131. **`const int[] Squares = squares()`** takes the count from the array the function returns
+     (`int[5] squares()`), as 1098 takes it from `{ ... }` and 1099 from `embed`. A direct call of a function
+     only.
+1132. **A hash table at compile time is the table of the run**: its entries in the order they came, so a const
+     built from what a `HashMap` holds is the same on every compile, and the same as the function gives when
+     the program runs.
+1133. **What an initializer may be**: the same as before (numbers, texts, consts, operators, casts, arrays,
+     structs, variants), now with calls of functions, of a type's function (`Size.square(3)`) and of methods on
+     a const (`Square.area()`), whose arguments are of the same; the name of a function is one too. A `match`,
+     a `$"..."` or a loop goes in the function.
+1134. **Documents and tests**: this list, the table above, "Not here yet", "Next"; 02 ("Consts"), 04 ("Calls in
+     a const" and "Calls in a const, as built", and "comptime" in "Deliberately deferred"), 06; the root
+     README. Tests: `ok_comptime` (a table, recursion, a text, a struct and its methods, an enum method, a
+     list and a set, `Result`, `Random.fromSeed`, a const of a block and of a test, as a value, a text, a
+     pattern and the count of an array, and the same functions called when the program runs),
+     `error_const_counted` changed, `error_const_call` removed (it is allowed now), 16 `error_comptime_*`,
+     `tests/modules/consts` with two consts found by functions another module does not see, and
+     `const_steps_run_out` in `golden.rs` (apart from the cases: it takes seconds). `cargo test` passes on macOS and on Linux in a container (360 of 1492
+     programs compile through C, 81 of them under the thread sanitizer, 28 of 34 programs of tests).
 
 ## Slower than C, and could be better
 
@@ -7296,9 +7351,8 @@ check off.
 
 ## Not here yet
 
-- **Of consts**: a const given the value of a call comes in the next slice (1100 to 1108); a text inside an
-  array, a struct or an enum (1110); an array of arrays, as anywhere. Statics come after the calls (1088 to
-  1097).
+- **Of consts**: a text inside an array, a struct or an enum (1110); an array of arrays, as anywhere; the
+  count of an array in a type from a const that calls a function (1125). Statics come next (1088 to 1097).
 - **Of Windows**, after its six slices: no thread sanitizer there (1011), and a library built from SG is not run
   under the sanitizers there (1062). Job objects, so that a program started ends with the one that started
   it (934), and services of Windows (933). A DLL a DLL of `-L` needs and that lies elsewhere is not copied
@@ -7659,6 +7713,8 @@ Windows' C library several times faster (1068-1079). Before a preview of the lan
 language and its library still lack beside C. Consts first, decided with the statics before them (1080-1099):
 the hundred-and-third slice is written: `const` at the top of a file and in a block, arrays whose items are
 counted, the bytes of a file with `embed`, the count of an array from a const and a const in a pattern, its
-value found when the program is compiled and kept in compiled code as one `static const` (1109-1119). Next a
-const given the value of a call, found the same way (1100-1108), then statics (1088-1097), then the lacks of
-the language and of its library measured against C23.
+value found when the program is compiled and kept in compiled code as one `static const` (1109-1119). The
+hundred-and-fourth is written: a const given the value of any function, run by the interpreter when the
+program is compiled, with what the function and those it calls do checked to give the same value on every
+machine (1100-1108, 1124-1134). Next statics (1088-1097), then the lacks of the language and of its library
+measured against C23.

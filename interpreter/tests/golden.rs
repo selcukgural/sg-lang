@@ -2150,6 +2150,17 @@ fn block_count_sees_a_leak() {
 /// millisecond end well within half a second. A clock that wakes only at the ticks of the
 /// system's timer (about 16 ms on Windows, where `Task.delay` takes a timer of high resolution)
 /// would take some 800 ms. Each delay waits at least its millisecond.
+/// A const found when the program is compiled takes at most 100 000 000 steps, so that every
+/// machine stops at the same place. Here, apart from the cases: reaching the end takes seconds,
+/// which the cases would spend once for the interpreter and once more for the back end.
+#[test]
+fn const_steps_run_out() {
+    let source = "int spin() {\n    var n = 0\n    while n >= 0 {\n        n = n + 1 - 1\n    }\n    return n\n}\n\nconst int Spun = spin()\n\nvoid main() {\n    print(Spun)\n}\n";
+    let error = sg::emit_c(source, "spin.sg", true).expect_err("a const that never ends is refused");
+    assert_eq!(error.msg, "finding the value of `Spun` takes more than 100 000 000 steps");
+    assert_eq!(&source[error.span.start..error.span.end], "spin()");
+}
+
 #[test]
 fn short_delays_are_short() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

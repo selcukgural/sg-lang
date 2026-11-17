@@ -1,0 +1,14 @@
+int count() {
+    return 4
+}
+
+const int Count = count()
+
+struct Window {
+    int[Count] items
+}
+
+void main() {
+    var window = Window { items = int[4] }
+    print(window.items[0])
+}
