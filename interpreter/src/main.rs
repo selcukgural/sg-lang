@@ -63,8 +63,13 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     let level = if release { "-O2" } else { "-O0" };
     // No fused multiply-add: a fractional result is the same as in the interpreter. `-lm`
     // for the math functions (`sqrt`, `fmod`), `-pthread` for the threads of tasks.
-    // A machine named by its target is compiled for by Clang, which knows them all.
-    let mut cc = std::process::Command::new(if machine.target.is_some() { "clang" } else { "cc" });
+    // A machine named by its target is compiled for by Clang, which knows them all: the one `CC`
+    // names, as C's builds have it, or the first `clang` of the path.
+    let compiler = match machine.target {
+        Some(_) => std::env::var("CC").ok().filter(|cc| !cc.is_empty()).unwrap_or_else(|| "clang".to_string()),
+        None => "cc".to_string(),
+    };
+    let mut cc = std::process::Command::new(&compiler);
     cc.args(["-std=c11", level, "-ffp-contract=off"]);
     // A library is code that may be placed anywhere, so that the static one goes into a
     // program that is (PIE) and into a shared library too.
@@ -84,9 +89,11 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             cc.args(["-fPIC", "-c", "-o"]).arg(&object).arg(&c_file);
         }
         // Without an operating system: only the headers C promises there, nothing of C's library
-        // assumed, and no guard of the stack, which would call into it.
+        // assumed, and no guard of the stack, which would call into it. Each function and each
+        // variable in a section of its own, as Rust has them, so that a link with
+        // `--gc-sections` leaves out what nothing calls.
         Made::Freestanding => {
-            cc.args(["-ffreestanding", "-fno-stack-protector", "-c"]);
+            cc.args(["-ffreestanding", "-fno-stack-protector", "-ffunction-sections", "-fdata-sections", "-c"]);
             if let Some(target) = &machine.target {
                 cc.arg(format!("--target={target}"));
             }
@@ -133,7 +140,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
                 true => String::new(),
                 false => format!(", with {}", libs.join(" ")),
             };
-            println!("built {out} for a machine without an operating system; link it with the code that starts the machine and the C compiler's own library (`-lgcc` or compiler-rt's builtins){links}");
+            println!("built {out} for a machine without an operating system; link it with the code that starts the machine{links}; it takes nothing of C's library, and of the C compiler's own only what that compiler calls on its own (GCC's atomics on 64-bit Arm, `-lgcc`)");
             ExitCode::SUCCESS
         }
         Ok(status) if status.success() => {
@@ -157,12 +164,17 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             eprintln!("error: the C compiler could not build the program; is every library it links ({}) installed where the C compiler looks?", libs.join(" "));
             ExitCode::FAILURE
         }
+        Ok(_) if machine.target.is_some() => {
+            let target = machine.target.as_deref().unwrap_or_default();
+            eprintln!("error: `{compiler}` did not build the program for `{target}`; if it does not know that machine (Apple's Clang knows only its own), `CC` names a Clang that does");
+            ExitCode::FAILURE
+        }
         Ok(_) => {
             eprintln!("error: the C compiler did not accept the program; this is a mistake in sg");
             ExitCode::FAILURE
         }
         Err(error) => {
-            eprintln!("error: cannot run the C compiler `cc`: {error}");
+            eprintln!("error: cannot run the C compiler `{compiler}`: {error}");
             ExitCode::FAILURE
         }
     }

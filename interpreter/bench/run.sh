@@ -88,3 +88,30 @@ checked=$(best "$out/$name-checked" /dev/null)
 c=$(best "$out/$name-c" /dev/null)
 ratio=$(python3 -c "print(f'{$release / $c:.2f}')")
 printf "%-10s %12s %12s %10s %14s\n" "$name" "$release" "$checked" "$c" "$ratio"
+
+# The kernel of `examples/kernel` against the same kernel written in C (`kernel.c`), by size: both
+# built with `-O2` for RISC-V, each function in a section of its own, and linked with the kernel's
+# linker script, leaving out what nothing calls (`--gc-sections`), the code and the data
+# that are loaded (`text`) compared, the stack and the zeroed memory left out. Booted in QEMU,
+# they must write the same, but the SG kernel's line about its heap. It needs a Clang that knows
+# RISC-V (`CC`), LLD and `qemu-system-riscv64`.
+kcc="${CC:-clang}"
+if "$kcc" --target=riscv64-unknown-elf -c -o /dev/null -x c /dev/null 2> /dev/null && command -v qemu-system-riscv64 > /dev/null; then
+    flags="--target=riscv64-unknown-elf -mcmodel=medany -march=rv64gc -mabi=lp64d"
+    CC="$kcc" ./target/release/sg build examples/kernel --freestanding --release --target riscv64-unknown-elf -o "$out/kernel-sg.o" -- -mcmodel=medany -march=rv64gc -mabi=lp64d > /dev/null
+    "$kcc" $flags -std=c11 -O2 -ffreestanding -fno-stack-protector -ffunction-sections -fdata-sections -c -o "$out/kernel-c.o" bench/kernel.c
+    for kind in sg c; do
+        "$kcc" $flags -nostdlib -fuse-ld=lld -Wl,--gc-sections -T examples/kernel/kernel.ld "$out/kernel-$kind.o" -o "$out/kernel-$kind.elf"
+        qemu-system-riscv64 -machine virt -bios none -m 128M -nographic -kernel "$out/kernel-$kind.elf" < /dev/null | tr -d '\r' | grep -v '^memory: ' > "$out/kernel-$kind.txt"
+    done
+    cmp -s "$out/kernel-sg.txt" "$out/kernel-c.txt" || { echo "kernel: the two kernels write different things"; exit 1; }
+    # `llvm-size` of the path, or the one beside that Clang.
+    ksize=$(command -v llvm-size || echo "$(dirname "$(command -v "$kcc")")/llvm-size")
+    size() { "$ksize" "$1" | awk 'NR == 2 { print $1 + $2 }'; }
+    sg=$(size "$out/kernel-sg.elf")
+    c=$(size "$out/kernel-c.elf")
+    ratio=$(python3 -c "print(f'{$sg / $c:.2f}')")
+    printf "%-10s %12s %12s %10s %14s\n" "kernel" "$sg B" "" "$c B" "$ratio"
+else
+    echo "kernel: not measured, it needs a Clang that knows RISC-V (CC), LLD and qemu-system-riscv64"
+fi

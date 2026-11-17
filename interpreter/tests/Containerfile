@@ -1,0 +1,12 @@
+# The image `cargo test` runs in on Linux: Rust, with Clang and LLD to build for a RISC-V machine
+# and QEMU to boot the kernel of `examples/kernel` (tests/kernel.rs). Built once, with the network,
+# from the folder of the repository:
+#   podman build -t sg-test -f interpreter/tests/Containerfile interpreter/tests
+# and then run without it, the repository given read-only and copied in:
+#   podman run --rm --network none --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
+#     -v "$PWD":/src:ro localhost/sg-test bash -c 'mkdir /work && cd /src && tar --exclude=./interpreter/target -cf - . | tar -xf - -C /work && cd /work/interpreter && cargo test --release'
+# (`SYS_PTRACE` for the leak sanitizer, which reads the program it watches.)
+FROM docker.io/library/rust:1.99.1
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends clang lld qemu-system-misc \
+ && rm -rf /var/lib/apt/lists/*

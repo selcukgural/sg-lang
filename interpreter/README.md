@@ -16,8 +16,15 @@ cargo run -- emit-c examples/primes.sg          # prints the C
 cargo test
 cargo run -- build examples/primes.sg --release # the same as a release build: optimised, overflow wraps
 cargo run -- build examples/bare --freestanding # an object for a machine without an operating system
+examples/kernel/run.sh                          # a RISC-V kernel booted in QEMU (Clang, LLD and QEMU)
 sh bench/run.sh                                 # compiled SG against C written by hand
 ```
+
+`cargo test` boots that kernel in QEMU too (`tests/kernel.rs`), so it needs a Clang that knows RISC-V
+(`CC`, or `clang`), LLD and `qemu-system-riscv64`, and fails, saying what to install, without them. On
+macOS, whose own Clang knows only its own processor: `brew install llvm lld qemu`, then
+`CC=$(brew --prefix llvm)/bin/clang PATH=$(brew --prefix lld)/bin:$PATH cargo test`. On Linux the image
+of `tests/Containerfile` has them.
 
 ## What runs today (17 November 2026)
 
@@ -53,6 +60,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | C calling SG | `export int compareInts(raw void a, raw void b) { ... }` is a function C calls by the name written, without its module: it takes and gives only the types C has (integers, `float`, `double`, `bool`, `raw T`, `CFunc`, structs of plain data by value), and SG calls it by its name too. `CFunc<raw void, raw void, int>` is a pointer to a function as C calls it, plain data that may be `null`: the name of an `export` function or of a function of C is one (`unsafe qsort((raw void)items, n, 4, compareInts)`, `CFunc<int, int> f = abs`), `unsafe (CFunc<int, int>)p` takes one from a `raw void` (`dlsym`), `(raw void)f` gives it back, and every call through one is inside `unsafe`; calling a `null` one is a panic. The state a callback reaches goes through C's `void*`: `unsafe Memory.addressOf(ref state)` gives the address of a variable or a field, and `unsafe (ref State)data` (or `read`) lends it again inside the callback; the interpreter keeps the addresses it gave and panics on a wrong type, a value that ended or moved, or an address it did not give. A C file of the program calls an `export` function by its name. A panic inside one ends the process with its message, since nothing unwinds through C; the interpreter runs one only on a thread that is in a call of C, and compiled code on any thread. A `lock` block does not call C when an `export` function waits. A struct or an enum of SG that is not plain data goes to C by its address: an `export` function gives it as `T*` (C keeps it), takes it back as `T*` or `T*?` (it ends there; `T*?` takes `NULL`), and is lent it as `read T` or `ref T` for the call; `read CString` is C's `const char*`, which `string.fromCString(text)` copies with no `unsafe`. `NULL` where none is taken is a panic; the interpreter also keeps every address it gave and panics on one it did not give, of another type, given back already, or lent against the rules of borrowing |
 | A library of SG for C | `sg build folder --library` gives `libfolder.a`, `--shared` gives `libfolder.so` (`.dylib` on macOS), each with `folder.h`, the header of its `export` functions: the types C holds by their address declared without fields (`typedef struct Calculator Calculator;`), plain structs laid out as SG lays them out, pointers to functions written out, `extern "C"` for C++ and a macro for Windows' DLLs. A library has no `main` and at least one `export` function; only those are seen from outside, so two libraries of SG live in one program, each with its runtime, which starts what it needs on first use from any thread. A panic aborts. A shared library is not unloaded. `examples/calclib` is a calculator called from `main.c` |
 | Without an operating system | `sg build folder --freestanding` gives `folder.o` for a kernel, a boot loader or a device: no `main`, the code that starts the machine calls the `export` functions; `--target riscv64-unknown-elf` compiles it with Clang for that machine, and what follows `--` goes to the C compiler. A panic gives its message to the program's `void onPanic(read string message)`, after which the processor waits; memory comes from its `raw byte allocate(nuint size, nuint align)` and goes back through `void release(raw byte block, nuint size, nuint align)`, and a program without them allocates nothing, which the build checks statement by statement. What needs a system (`print`, files, the clock, tasks, `HashMap`, `<math.h>`) is a compile error where it is written, also through a function of the language's own module. The object takes nothing of C's library: what the runtime used of it is written in, and `memcpy` and its kin are weak functions of its own. `examples/bare` runs with a machine of this computer |
+| A kernel | `examples/kernel` is a kernel for RISC-V that QEMU's `virt` machine boots in machine mode, with no firmware: it writes to the serial port, takes five interrupts of the timer and powers the machine off. The serial port, the timer and the device that powers off are driven in SG with `Memory.readVolatile` and `writeVolatile`; what SG has no words for (the start of the core, the vector of its traps, its own registers and `wfi`) is the C file beside it, compiled into the same object. The vector hands `onTrap` the kernel's state through `mscratch`, and the interrupt counts in an `atomic ulong`. An unexpected trap is a panic told on the serial port. `sg build` takes the Clang `CC` names; the object links alone, with nothing of the C compiler's library, and `--gc-sections` leaves out what nothing calls |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads, each with a queue of its own that the others steal from. A method is async too (`public async int total(read this)`): one that lends `this` is awaited where it is written, one that takes it by value may start as a task; `create`, `format`, `equals`, `hash` and `compare` are not async |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
@@ -418,7 +426,9 @@ SG from C takes a `void*` and checks it for `NULL`, and a panic ends in `abort` 
 ninety-third (without an operating system): the runtime is the same, with the little of C's library it
 used written in front of it (a `vsnprintf`, `strlen`, `memchr`, the bits of `frexp` and `ldexp`), the standard
 error a buffer that a panic gives to `onPanic`, `malloc` the program's `allocate`, and `memcpy` and its kin
-weak functions of the object (895-913).
+weak functions of the object (895-913). The ninety-fourth (a kernel in QEMU) added to it only the division of
+128 bits a C compiler calls its library for, weak in the same way, and a section of its own for each function
+(914-927).
 What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
@@ -6208,6 +6218,86 @@ before the slice as the others were. All were approved afterwards, the same day:
      02 and 06 (with Rust's `#![no_std]`, `#[panic_handler]` and `#[global_allocator]`), the README of the
      repository and the comments of the example.
 
+Choices made in the ninety-fourth slice (a kernel in QEMU), the tenth and last of the slices that reach what
+C reaches (04, "The kernel shown"). 914 to 926 were put to the author before the slice and approved on 17
+November 2026; 927 came up while it was written, and was approved afterwards, the same day:
+
+914. **The machine**: QEMU's `virt`, started with no firmware (`-bios none`), so that the kernel runs in
+     machine mode from 0x8000_0000 on one core: the start is the simplest, and the serial port and the
+     timer are plain. Supervisor mode under OpenSBI, Linux's way, would put calls of SBI between the kernel
+     and the timer; it waits ("Not here yet").
+915. **`examples/kernel`**: `main.sg` (`kernelMain`, `onTrap`, `onPanic`), `devices.sg` (the serial port,
+     the timer and the device that powers off), `heap.sg` (the allocator of `examples/bare` over the memory
+     after the kernel), `machine.c`, `kernel.ld` (where each part lies, the stack, the heap and the last page,
+     where the tests leave word), `kernel.out` and `run.sh`, which builds, links and boots it.
+916. **Only what SG has no words for is C**: `_start` (the cores but the first wait; a stack; the variables
+     of C that start at zero cleared; every trap sent to the vector; the unit of fractional numbers turned
+     on where the core has one; `kernelMain` called), the vector of traps (the registers a call may change
+     kept on the stack, the fractional ones with their state, `onTrap` called, `mret`), and the registers
+     of the core and `wfi` as `static inline` functions. It is `extern "./machine.c"`, compiled into the
+     same object (84's one door), so a file of assembly is not needed. The devices are SG: their registers
+     read and written with `Memory.readVolatile` and `writeVolatile` at addresses made pointers inside
+     `unsafe` (`(raw byte)0x1000_0000`).
+917. **The state an interrupt reaches**: there are no globals, so `kernelMain` keeps a `Kernel`, with an
+     `atomic ulong ticks`, and writes its address into the core's `mscratch` (`Memory.addressOf`); the
+     vector hands it to `onTrap(raw void state, ulong cause, ulong pc)`, which lends it again with
+     `unsafe (read Kernel)state` and changes only the atomic value. It is 85's way for a callback; Rust's is
+     a `static AtomicU64`. A pointer kept by each core fits more cores later, as xv6 keeps its own. Interrupts
+     are turned off before the `Kernel` ends.
+918. **What it does**: writes a greeting and the size of its heap with `$"..."`, sets the timer for 10 ms
+     (`mtime` counts at 10 MHz), turns its interrupt on and sleeps in `wfi`; the loop, not the handler,
+     writes `tick 1` to `tick 5` as the count grows, so the serial port is written from one place. Then
+     interrupts go off, the blocks of the heap are counted (all given back) and the test device of the
+     machine powers it off: QEMU ends with 0. Any other trap is a panic, "unexpected trap: a fault of a load
+     at 0x…", which `onPanic` writes to the serial port before it powers the machine off with 101.
+919. **The panic is tried too**: QEMU's `loader` device writes 1 into the last page of memory before the
+     machine starts; the kernel then reads where no memory and no device is, the core answers with a
+     fault, and the panic is told.
+920. **The link**: `sg build` gives an object as before (895), and `run.sh` and the test link it with
+     `clang -nostdlib -fuse-ld=lld -T kernel.ld`. A debug build divides numbers of 128 bits (the check of a
+     loop's sum, `sg_steps`), for which a C compiler calls `__divti3` in its own library, and Clang has
+     that library for RISC-V without a system almost nowhere (not in Homebrew's LLVM, not in Debian's
+     Clang). So the object has `__udivti3`, `__umodti3`, `__divti3` and `__modti3` itself, weak like
+     `memcpy` (905), a bit at a time by shifts of one place; the compiler's own take their place where
+     there is one, as with Rust's `compiler_builtins`. `sg build` no longer tells the link to add `-lgcc`
+     but for GCC's atomics on 64-bit ARM.
+921. **The C compiler for a target**: with `--target`, `sg build` runs the compiler `CC` names, as C's
+     builds have it (and Rust's `cc` crate), and `clang` without it. A compiler that fails there is told
+     it may not know the machine ("Apple's Clang knows only its own"), not that sg made a mistake.
+922. **The tests**: `tests/kernel.rs` builds the kernel debug and release under `-Wall -Wextra -Werror`,
+     links it with nothing but its object and boots it in `qemu-system-riscv64` for at most a minute: what
+     the serial port shows is `kernel.out`, the same for both, and QEMU ends with 0; asked for a fault, it
+     ends with 101 after the panic's lines. A Clang that does not know RISC-V, no LLD or no QEMU fails the
+     test with what to install, never a quiet pass. `tests/freestanding.rs` compiles for the targets the
+     Clang `CC` names knows, and `divides_as_the_compiler_does` holds the division of 920 to the C
+     compiler's for 200,000 pairs of every size and sign and the edges. `cargo test` passes on macOS
+     and on Linux, where 348 of 1417 programs compile through C, 77 of them under the thread sanitizer,
+     and 26 of 32 programs of tests; on both, `riscv64-unknown-elf` is now among the targets of
+     `tests/freestanding.rs`, and the kernel boots.
+923. **The machines**: on macOS QEMU came from Homebrew, beside its LLVM and LLD. On Linux the tests run in
+     an image made from `tests/Containerfile` (the Rust image with Clang, LLD and QEMU), built once with the
+     network and run without it; there the kernel is built by Clang 19 and LLD 19 and booted by QEMU 10.0,
+     on macOS by Homebrew's LLVM 23, LLD 22 and QEMU 11.1.
+924. **Measured by size**: QEMU's time says nothing of the kernel's, so `bench/run.sh` builds the same kernel
+     written in C (`bench/kernel.c`: the same `machine.c`, the devices through `volatile`, numbers written by
+     hand, no heap, no checks), both with `-O2` for `rv64gc`, and compares what is loaded. SG's is 5168
+     bytes, C's 2236: 2.31 times. The difference is a fixed part of the runtime, not of the kernel: the
+     `vsnprintf` that writes `$"..."` (about a kilobyte), the text of a panic with its place and line, the
+     check that it is UTF-8, and the heap. It is in "Slower than C".
+925. **The interpreter** does not change: it does not run a program built with `--freestanding` (908), and
+     every module of the kernel touches the machine.
+926. **The threshold is reached**: with the kernel, each of the seven programs of 04's threshold runs and
+     is tested (sqlite, libcurl, a server that ends on Ctrl-C, a library of SG for C, the kernel, a queue
+     without locks, a binary header read with a union and bit fields). The documents: this list, the table
+     at the top, "Not here yet", "Next", "Slower than C"; 04 ("The kernel shown, as built", the threshold
+     reached), 02 and 06 (Rust's `riscv-rt` entry, its `#[interrupt]` and `static AtomicU64`), the README of
+     the repository and the comments of the example. What comes next is Windows, talked through (718).
+927. **A section of its own for each function**: an object built with `--freestanding` is compiled with
+     `-ffunction-sections -fdata-sections`, as Rust's are by default, so that a link with `--gc-sections`
+     leaves out what nothing calls: the division of 920 in a release build, the weak `memcpy` a machine
+     does not call. The kernel's links use it; it took the kernel from 5866 bytes to 5168 (C's from 2252 to
+     2236).
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -6302,6 +6392,13 @@ check off.
   MB. Candidates: a check with vector instructions (as
   `simdutf` does), measured at 8.8 GB/s with NEON on arm64; on x86 it needs SSSE3, which a program has to
   look for when it starts.
+- **The size of a program without an operating system** (`kernel`, 2.31 times the same kernel in C, 5168
+  bytes against 2236, choice 924): the runtime's part is fixed, about three kilobytes: its own `vsnprintf`
+  writes each `$"..."` and each panic, the text of a panic carries its place and the line with a caret, and
+  the message is checked to be UTF-8 before `onPanic` has it. Candidates: writers of each kind of value
+  called directly instead of a format read at run time, and a short panic (the message and the place
+  without the line) for a build that asks for it, as Rust's `panic_immediate_abort` and
+  `-Zlocation-detail=none` do.
 
 ## Not here yet
 
@@ -6328,10 +6425,17 @@ check off.
   whose key would have to come from the machine; the functions of `<math.h>` written in SG or taken from
   the compiler's builtins where the machine has the instruction; `double.parse`; `{x:F}` beyond 18 digits
   or for a number too large or too small for the exact way, which is a panic (904); a C compiler other
-  than `cc` or Clang (`riscv64-unknown-elf-gcc`); a panic on a second core while the first is told is not
+  than `cc` or Clang for a target (`CC` names a Clang: a cross GCC, `riscv64-unknown-elf-gcc`, does not take
+  `--target`, 921); a panic on a second core while the first is told is not
   told (899); `memcpy` and its kin are loops of bytes (905); `sg test --compiled` of such a program; the
   tests of a root module whose `extern` block names functions of the machine, which the interpreter cannot
   link (908).
+- **Of the kernel**: supervisor mode, under OpenSBI or its own machine mode below it, and pages of virtual
+  memory (914); more than one core (the others wait in `_start`); interrupts of devices through the PLIC,
+  and so input from the serial port; a timer for each of several tasks; a kernel for 64-bit ARM or x86-64;
+  `sg build` linking it itself with a linker script, or taking a file of assembly (916, 920); the panic
+  of a second core while the first is told, and a fault inside `onTrap` (the vector would run on the same
+  stack again).
 - **Of a library built from SG**: constants in the header (C's program writes the numbers the functions
   give, as `main.c` does); a text given back to C other than into its buffer; a `T*` inside a plain struct
   or a list; a header of its own for a program's `export` functions; `pkg-config`; names of the header
@@ -6608,4 +6712,8 @@ a shared library of SG with its header, C holds values of SG by their address an
 `sg build --freestanding` gives an object for a machine without an operating system, which takes nothing of
 C's library, gives a panic to the program's `onPanic` and takes memory from its `allocate`; what needs a
 system is a compile error where it is written, and `examples/bare` runs with a machine of this computer
-(895-913). Next is a RISC-V kernel in QEMU.
+(895-913). The ninety-fourth is written: `examples/kernel` boots in QEMU's `virt` machine, writes to its
+serial port and takes interrupts of the timer, its devices driven in SG and only the instructions of the
+core in C, and links with nothing but its own object (914-927). With it, every program of the threshold
+runs and is tested, so the threshold of 04 is reached. Next is Windows, talked through (718), and then a
+preview of the language.

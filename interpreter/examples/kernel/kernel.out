@@ -1,0 +1,10 @@
+SG on RISC-V: a kernel in machine mode on QEMU's virt machine
+the heap has 127 MB
+the timer interrupts every 10 ms
+tick 1
+tick 2
+tick 3
+tick 4
+tick 5
+memory: 6 block(s) taken, 6 given back
+powering off

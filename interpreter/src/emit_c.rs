@@ -499,7 +499,61 @@ SG_FS_PLAIN int (memcmp)(const void* a, const void* b, size_t n) {
     for (; n; n--, x++, y++) if (*x != *y) return *x < *y ? -1 : 1;
     return 0;
 }
+
 "#;
+
+/// The division of 128 bits, as the C compiler's library has it, for a program without an
+/// operating system: written after `FREESTANDING_RUNTIME`.
+const FREESTANDING_DIVISION: &str = r#"
+/* The division of 128 bits the runtime does (`sg_steps`), which a C compiler calls a function of
+   its own library for: weak, so that the object links alone on a machine whose compiler has no
+   such library for it (Clang's compiler-rt is seldom built for RISC-V without a system), and the
+   library's own takes their place where there is one. A bit at a time, by shifts of one place,
+   which the compiler writes inline; the runtime never divides by zero. */
+static unsigned __int128 sg_fs_udivmod(unsigned __int128 n, unsigned __int128 d, unsigned __int128* rest) {
+    unsigned __int128 q = 0, r = 0;
+    for (int i = 0; i < 128; i++) {
+        r = r << 1 | n >> 127;
+        n <<= 1;
+        q <<= 1;
+        if (r >= d) { r -= d; q |= 1; }
+    }
+    *rest = r;
+    return q;
+}
+SG_FS_PLAIN unsigned __int128 __udivti3(unsigned __int128 a, unsigned __int128 b);
+SG_FS_PLAIN unsigned __int128 __umodti3(unsigned __int128 a, unsigned __int128 b);
+SG_FS_PLAIN __int128 __divti3(__int128 a, __int128 b);
+SG_FS_PLAIN __int128 __modti3(__int128 a, __int128 b);
+SG_FS_PLAIN unsigned __int128 __udivti3(unsigned __int128 a, unsigned __int128 b) {
+    unsigned __int128 r;
+    return sg_fs_udivmod(a, b, &r);
+}
+SG_FS_PLAIN unsigned __int128 __umodti3(unsigned __int128 a, unsigned __int128 b) {
+    unsigned __int128 r;
+    sg_fs_udivmod(a, b, &r);
+    return r;
+}
+SG_FS_PLAIN __int128 __divti3(__int128 a, __int128 b) {
+    unsigned __int128 r;
+    unsigned __int128 x = a < 0 ? -(unsigned __int128)a : (unsigned __int128)a;
+    unsigned __int128 y = b < 0 ? -(unsigned __int128)b : (unsigned __int128)b;
+    unsigned __int128 q = sg_fs_udivmod(x, y, &r);
+    return (__int128)((a < 0) != (b < 0) ? -q : q);
+}
+SG_FS_PLAIN __int128 __modti3(__int128 a, __int128 b) {
+    unsigned __int128 r;
+    unsigned __int128 x = a < 0 ? -(unsigned __int128)a : (unsigned __int128)a;
+    unsigned __int128 y = b < 0 ? -(unsigned __int128)b : (unsigned __int128)b;
+    sg_fs_udivmod(x, y, &r);
+    return (__int128)(a < 0 ? -r : r);
+}
+"#;
+
+/// The functions of `FREESTANDING_DIVISION`, for a test that holds them to the C compiler's.
+pub fn freestanding_division() -> &'static str {
+    FREESTANDING_DIVISION
+}
 
 /// What every compiled program starts with: the checks, written once.
 const RUNTIME: &str = r#"#ifndef SG_FREESTANDING
@@ -6417,6 +6471,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     if prog.freestanding {
         out.push_str(FREESTANDING_RUNTIME);
+        out.push_str(FREESTANDING_DIVISION);
     }
     if emitter.made.contains("shared") {
         // Without an operating system no program ends to report what it left.

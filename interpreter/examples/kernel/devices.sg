@@ -1,0 +1,72 @@
+// The devices of QEMU's `virt` machine the kernel drives, each at the address the machine puts it:
+// the serial port, the timer of the first core and the device that powers the machine off. Their
+// registers are read and written with `Memory.readVolatile` and `writeVolatile`, so that the C
+// compiler neither drops nor joins nor reorders an access; the addresses are numbers made into
+// pointers, which only `unsafe` does.
+
+// The serial port, a 16550 at 0x1000_0000: a byte written to its first register is sent once the
+// line's status (register 5) says it can take one (bit 5). QEMU shows what it sends on its
+// standard output (`-nographic`).
+struct Uart {
+    raw byte registers
+
+    Uart ofMachine() {
+        return Uart { registers = unsafe (raw byte)0x1000_0000 }
+    }
+
+    // Its interrupts off, 8 bits a character with no parity, and its queues on.
+    void start(read this) {
+        unsafe {
+            Memory.writeVolatile(this.registers[1], 0x00)
+            Memory.writeVolatile(this.registers[3], 0x03)
+            Memory.writeVolatile(this.registers[2], 0x07)
+        }
+    }
+
+    void write(read this, read string text) {
+        for b in text.asBytes() {
+            unsafe {
+                while (Memory.readVolatile(this.registers[5]) & 0x20) == 0 {
+                }
+                Memory.writeVolatile(this.registers[0], b)
+            }
+        }
+    }
+
+    // A text made to be written, which ends with it.
+    void say(read this, string text) {
+        this.write(read text)
+    }
+}
+
+// The timer of the first core, of the machine's CLINT: `mtime` counts at 10 MHz, and the core is
+// interrupted once it reaches `mtimecmp`. Each interrupt sets the next one `interval` later.
+struct Timer {
+    raw ulong time
+    raw ulong compare
+    ulong interval
+
+    Timer ofMachine(ulong interval) {
+        return unsafe Timer { time = (raw ulong)0x0200_bff8, compare = (raw ulong)0x0200_4000, interval = interval }
+    }
+
+    ulong now(read this) {
+        return unsafe Memory.readVolatile(this.time[0])
+    }
+
+    void startNext(read this) {
+        var next = this.now() + this.interval
+        unsafe Memory.writeVolatile(this.compare[0], next)
+    }
+}
+
+// The machine's test device (SiFive's), at 0x10_0000: 0x5555 written to it powers the machine off
+// and QEMU ends with 0; `(code << 16) | 0x3333` ends it with `code`.
+void powerOff(int code) {
+    var device = unsafe (raw uint)0x0010_0000
+    uint word = 0x5555
+    if code != 0 {
+        word = (uint)code << 16 | 0x3333
+    }
+    unsafe Memory.writeVolatile(device[0], word)
+}

@@ -1,0 +1,103 @@
+// A small kernel for RISC-V, booted by QEMU's `virt` machine with no firmware, in machine mode:
+//
+//   sg build examples/kernel --freestanding --target riscv64-unknown-elf -- -mcmodel=medany
+//   clang --target=riscv64-unknown-elf -nostdlib -fuse-ld=lld -Wl,--gc-sections \
+//       -T examples/kernel/kernel.ld kernel.o -o kernel.elf
+//   qemu-system-riscv64 -machine virt -bios none -m 128M -nographic -kernel kernel.elf
+//
+// (`run.sh` does all three.) It writes to the serial port, takes five interrupts of the timer,
+// 10 ms apart, and powers the machine off. The start of the core, the vector of its traps and
+// its own registers are the C of `machine.c`, compiled into the same object; the devices are
+// driven in SG (`devices.sg`), and its memory comes from `heap.sg`. A panic is written to the
+// serial port and ends QEMU with 101.
+extern "./machine.c" {
+    void machine_set_trap_state(raw void state)
+    void machine_enable_timer()
+    void machine_disable_interrupts()
+    void machine_wait()
+    raw byte machine_heap_start()
+    nuint machine_heap_size()
+    raw uint machine_asked()
+}
+
+// What the vector of traps reaches: there are no global variables, so its address is kept in the
+// core's `mscratch`, and `onTrap` lends it again. The interrupt counts in an atomic value, which
+// the kernel reads while interrupts come.
+struct Kernel {
+    atomic ulong ticks
+    Timer timer
+}
+
+// The cause of a trap that is the timer's interrupt: the top bit says an interrupt, 7 the timer.
+ulong timerInterrupt() {
+    return (ulong)1 << 63 | 7
+}
+
+// Where `_start` comes, on the first core, with a stack and nothing else.
+export void kernelMain() {
+    startHeap()
+    var uart = Uart.ofMachine()
+    uart.start()
+    uart.write("SG on RISC-V: a kernel in machine mode on QEMU's virt machine\n")
+    var size = unsafe machine_heap_size()
+    uart.say($"the heap has {size / 1024 / 1024} MB\n".toString())
+    if unsafe Memory.readVolatile(machine_asked()[0]) == 1 {
+        fault(read uart)
+    }
+    var kernel = Kernel { ticks = atomic 0, timer = Timer.ofMachine(100_000) }
+    unsafe machine_set_trap_state(Memory.addressOf(ref kernel))
+    kernel.timer.startNext()
+    unsafe machine_enable_timer()
+    uart.write("the timer interrupts every 10 ms\n")
+    ulong seen = 0
+    while seen < 5 {
+        unsafe machine_wait()
+        var now = kernel.ticks.load()
+        while seen < now && seen < 5 {
+            seen += 1
+            uart.say($"tick {seen}\n".toString())
+        }
+    }
+    // The state the vector reaches ends with this function: no interrupt may come after it.
+    unsafe machine_disable_interrupts()
+    var counts = heapCounts()
+    uart.say($"memory: {counts.taken} block(s) taken, {counts.given} given back\n".toString())
+    uart.write("powering off\n")
+    powerOff(0)
+}
+
+// Every trap: the timer's interrupt sets the next one and is counted; anything else, an
+// exception or an interrupt the kernel did not ask for, is a panic.
+export void onTrap(raw void state, ulong cause, ulong pc) {
+    if cause == timerInterrupt() {
+        var kernel = unsafe (read Kernel)state
+        _ = kernel.ticks.fetchAdd(1)
+        kernel.timer.startNext()
+        return
+    }
+    panic($"unexpected trap: {causeOf(cause)} at 0x{pc:x}")
+}
+
+string causeOf(ulong cause) {
+    return match cause {
+        2 => "an illegal instruction"
+        5 => "a fault of a load"
+        7 => "a fault of a store"
+        _ => $"cause {cause:x}".toString()
+    }
+}
+
+// What the tests ask for to see a panic told: a read where the machine has no memory and no
+// device (past its 128 MB), which the core answers with an exception.
+void fault(read Uart uart) {
+    uart.write("reading where nothing is\n")
+    var nowhere = unsafe (raw uint)0x9000_0000
+    _ = unsafe Memory.readVolatile(nowhere[0])
+}
+
+// The message of a panic, written to the serial port; then the machine is powered off.
+void onPanic(read string message) {
+    var uart = Uart.ofMachine()
+    uart.write(message)
+    powerOff(101)
+}

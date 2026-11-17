@@ -1852,6 +1852,48 @@ example is `interpreter/examples/bare`, run here by a machine of this computer.
 The processor that panics waits for ever once `onPanic` returns; the other cores go on running, and stopping them
 is the machine's, in `onPanic`.
 
+A kernel drives its devices in SG and keeps in C only what SG has no words for: the start of the core, the vector of
+its traps and its own registers, in a C file beside it that is compiled into the same object. There are no global
+variables, so the state an interrupt reaches is given to the handler by the vector, from a register of the core
+(`mscratch` on RISC-V):
+
+```
+extern "./machine.c" {                              // _start, the vector of traps, csrw, wfi
+    void machine_set_trap_state(raw void state)
+    void machine_enable_timer()
+    void machine_wait()
+}
+
+struct Kernel {
+    atomic ulong ticks                              // changed by the interrupt, read by the loop
+    Timer timer
+}
+
+export void kernelMain() {
+    var kernel = Kernel { ticks = atomic 0, timer = Timer.ofMachine(100_000) }
+    unsafe machine_set_trap_state(Memory.addressOf(ref kernel))
+    kernel.timer.startNext()
+    unsafe machine_enable_timer()
+    while kernel.ticks.load() < 5 {
+        unsafe machine_wait()
+    }
+    ...
+}
+
+export void onTrap(raw void state, ulong cause, ulong pc) {    // called by the vector for every trap
+    if cause == (ulong)1 << 63 | 7 {                // the timer's interrupt
+        var kernel = unsafe (read Kernel)state
+        _ = kernel.ticks.fetchAdd(1)
+        kernel.timer.startNext()                    // Memory.writeVolatile of `mtimecmp`
+        return
+    }
+    panic($"unexpected trap: cause {cause} at 0x{pc:x}")
+}
+```
+
+`sg build kernel --freestanding --target riscv64-unknown-elf` takes the Clang `CC` names; the object is linked with
+the kernel's linker script and nothing else. The full example is `interpreter/examples/kernel`, which QEMU boots.
+
 ### The network
 
 A `TcpListener` takes connections and a `TcpStream` receives and sends bytes; an address is one text,

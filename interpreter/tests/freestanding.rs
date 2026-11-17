@@ -23,6 +23,12 @@ fn files(prefix: &str) -> Vec<PathBuf> {
     found
 }
 
+/// The Clang that compiles for a machine named by its target: the one `CC` names, as `sg build`
+/// takes it, or the first `clang` of the path.
+fn cross_clang() -> String {
+    std::env::var("CC").ok().filter(|cc| !cc.is_empty()).unwrap_or_else(|| "clang".to_string())
+}
+
 fn has_cc() -> bool {
     Command::new("cc").arg("--version").output().is_ok()
 }
@@ -33,7 +39,7 @@ const WARNINGS: [&str; 4] = ["-Wall", "-Wextra", "-Werror", "-Wno-unused-functio
 /// Compiles C of a program without an operating system into an object, for this machine or for
 /// `target`.
 fn compile(c_file: &Path, object: &Path, target: Option<&str>, release: bool) {
-    let mut cc = Command::new(if target.is_some() { "clang" } else { "cc" });
+    let mut cc = Command::new(if target.is_some() { cross_clang() } else { "cc".to_string() });
     cc.args(["-std=c11", "-ffreestanding", "-fno-stack-protector", "-ffp-contract=off", "-c", if release { "-O2" } else { "-O0" }]).args(WARNINGS);
     if let Some(target) = target {
         cc.arg(format!("--target={target}"));
@@ -58,14 +64,15 @@ fn undefined_names_are_allowed(object: &Path, allowed: &[&str]) {
     }
 }
 
-/// The machines without an operating system this Clang compiles for, of those tried.
+/// The machines without an operating system this Clang (`CC`, or `clang`) compiles for, of
+/// those tried.
 fn targets() -> Vec<&'static str> {
     let probe = std::env::temp_dir().join(format!("sg-probe-{}.c", std::process::id()));
     std::fs::write(&probe, "int f(void) { return 1; }\n").unwrap();
     let found = ["aarch64-none-elf", "x86_64-none-elf", "riscv64-unknown-elf"]
         .into_iter()
         .filter(|target| {
-            Command::new("clang").args(["-ffreestanding", "-c", "-o", "/dev/null"]).arg(format!("--target={target}")).arg(&probe).output().is_ok_and(|made| made.status.success())
+            Command::new(cross_clang()).args(["-ffreestanding", "-c", "-o", "/dev/null"]).arg(format!("--target={target}")).arg(&probe).output().is_ok_and(|made| made.status.success())
         })
         .collect();
     let _ = std::fs::remove_file(&probe);
@@ -291,6 +298,70 @@ int main(void) {
     std::fs::write(work.join("cases.c"), cases).unwrap();
     let program = work.join("formats");
     let made = Command::new("cc").args(["-std=c11", "-Wno-format-truncation", "-o"]).arg(&program).arg(work.join("cases.c")).arg(work.join("ours.c")).output().unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let ran = Command::new(&program).output().unwrap();
+    assert!(ran.status.success() && String::from_utf8_lossy(&ran.stdout) == "same\n", "{}", String::from_utf8_lossy(&ran.stdout));
+}
+
+/// The division of 128 bits a program without an operating system has, in case the C compiler's
+/// library is missing, divides as that library does: for numbers of every size and sign, the
+/// smallest of them included.
+#[test]
+fn divides_as_the_compiler_does() {
+    if !has_cc() {
+        return;
+    }
+    let work = root().join("target").join("freestanding-division");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    // Under other names, so that the program's own `/` and `%` still go to the C compiler's.
+    let ours = format!(
+        "#include <stdint.h>\n#define SG_FS_PLAIN\n#define __udivti3 fs_udivti3\n#define __umodti3 fs_umodti3\n#define __divti3 fs_divti3\n#define __modti3 fs_modti3\n{}",
+        sg::emit_c::freestanding_division()
+    );
+    std::fs::write(work.join("ours.c"), ours).unwrap();
+    let cases = r#"#include <stdio.h>
+#include <stdint.h>
+typedef unsigned __int128 u128;
+typedef __int128 i128;
+u128 fs_udivti3(u128 a, u128 b);
+u128 fs_umodti3(u128 a, u128 b);
+i128 fs_divti3(i128 a, i128 b);
+i128 fs_modti3(i128 a, i128 b);
+static uint64_t state = 0x9e3779b97f4a7c15u;
+static uint64_t next(void) {
+    state ^= state << 13; state ^= state >> 7; state ^= state << 17;
+    return state;
+}
+/* A number of a random size: from a few bits to all 128. */
+static u128 sized(void) {
+    u128 n = (u128)next() << 64 | next();
+    return n >> (next() % 128);
+}
+int main(void) {
+    int failed = 0;
+    i128 smallest = (i128)((u128)1 << 127);
+    i128 edges[] = { 0, 1, -1, 2, -2, 7, -7, (i128)INT64_MAX, (i128)INT64_MIN, smallest, smallest + 1, -(smallest + 1) };
+    int count = (int)(sizeof edges / sizeof edges[0]);
+    for (int k = 0; k < 200000 + count * count; k++) {
+        u128 ua, ub;
+        if (k < count * count) { ua = (u128)edges[k / count]; ub = (u128)edges[k % count]; }
+        else { ua = sized(); ub = sized(); }
+        if (ub == 0) continue;
+        if (fs_udivti3(ua, ub) != ua / ub || fs_umodti3(ua, ub) != ua % ub) failed++;
+        i128 a = (i128)ua, b = (i128)ub;
+        /* The one quotient that does not fit, which the runtime never asks for. */
+        if (a == smallest && b == -1) continue;
+        if (fs_divti3(a, b) != a / b || fs_modti3(a, b) != a % b) failed++;
+    }
+    if (failed) { printf("%d differ\n", failed); return 1; }
+    printf("same\n");
+    return 0;
+}
+"#;
+    std::fs::write(work.join("cases.c"), cases).unwrap();
+    let program = work.join("division");
+    let made = Command::new("cc").args(["-std=c11", "-O2", "-o"]).arg(&program).args(WARNINGS).arg(work.join("cases.c")).arg(work.join("ours.c")).output().unwrap();
     assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
     let ran = Command::new(&program).output().unwrap();
     assert!(ran.status.success() && String::from_utf8_lossy(&ran.stdout) == "same\n", "{}", String::from_utf8_lossy(&ran.stdout));
