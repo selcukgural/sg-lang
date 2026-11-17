@@ -11,7 +11,8 @@ extern "./native.c" {
     CULong long_bits()
 }
 
-// A variable of the C library.
+// A variable of the C library: POSIX's, which Windows' C library does not have, so there it is
+// not linked (the `if` on `OperatingSystem.isWindows()` below) and the program says so.
 extern {
     int opterr
 }
@@ -47,14 +48,18 @@ void main() {
         origin.y = 40
     }
     print(unsafe origin.y)
-    unsafe {
-        opterr = 1
+    if OperatingSystem.isWindows() {
+        print("opterr: not in the C library of Windows")
+    } else {
+        unsafe {
+            opterr = 1
+        }
+        print(unsafe opterr)
+        unsafe {
+            opterr = 0
+        }
+        print(unsafe opterr)
     }
-    print(unsafe opterr)
-    unsafe {
-        opterr = 0
-    }
-    print(unsafe opterr)
     var tagged = Tagged { tag = 7, value = -5, mask = 0xffff }
     print(unsafe tagged_value(read tagged))
     print((ulong)unsafe long_bits() == (ulong)Memory.sizeOf<CLong>() * 8)

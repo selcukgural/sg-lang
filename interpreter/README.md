@@ -7000,8 +7000,10 @@ on the branch `windows`. 1050 to 1067 were put to the author before the slice an
      only mode Windows has, read-only, and `ok_process_run` runs a batch file. `ok_process_run` starts
      `sg-test-tool` in place of `sh`, `echo`, `true` and `false` on every system; a program stopped by a
      signal and a file that may not run until its mode says so stay on Linux and macOS. `getopt` is not in
-     Windows' C library: `ok_c_getopt` says so there, and the variables of C are read and written on every
-     system by `tests/modules/cvariables`, from a C file of its own.
+     Windows' C library: `ok_c_getopt` says so there, and so does `tests/modules/cfile` of `opterr`, the
+     variable of the C library it uses, in an `if` on `OperatingSystem.isWindows()` so that it is not linked
+     there (left out at first, which did not link on Windows); the variables of C are read and written on
+     every system by `tests/modules/cvariables`, from a C file of its own.
 1061. **Types of C's `long` in the tests** made right: `ldiv` and `strtol` take and give `CLong`, zlib's `crc32`
      `CULong`; `ok_c_varargs` writes a `long` with `%lld`, C's `long long`, and takes the way Windows prints
      `NULL` with `%p`. zlib is named `extern "z", "zlib"` and libcurl `extern "curl", "libcurl"`, as vcpkg
