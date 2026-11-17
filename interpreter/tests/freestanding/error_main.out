@@ -1,0 +1,5 @@
+error: a program without an operating system has no `main`: the code that starts the machine calls its `export` functions
+  --> error_main.sg:5:6
+ 5 | void main() {
+   |      ^^^^
+  hint: name the function the start code calls, and write `export` in front of it: `export void start() { ... }`

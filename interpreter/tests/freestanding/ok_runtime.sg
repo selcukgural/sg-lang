@@ -1,0 +1,103 @@
+// Much of the runtime in a program without an operating system: texts and their searches,
+// lists sorted, a struct and an enum written, fractional numbers written, the case of a
+// character, `shared` values, atomics, raw memory, `CString`, and `Duration` of the
+// language's own module. The machine of the test gives `board_write` and the memory.
+extern {
+    void board_write(raw byte text, nuint length)
+    raw byte board_memory()
+    nuint board_memory_size()
+}
+
+struct Point : Formattable {
+    int x
+    int y
+
+    void format(read this, ref Formatter f) {
+        f.write($"({this.x}, {this.y})")
+    }
+}
+
+enum Shape {
+    Circle(double r)
+    Square(double side)
+}
+
+struct Node {
+    int value
+}
+
+void say(string text) {
+    var bytes = text.asBytes()
+    unsafe board_write(bytes.pointer(), (nuint)bytes.length())
+    var newline = "\n".asBytes()
+    unsafe board_write(newline.pointer(), 1)
+}
+
+double area(Shape shape) {
+    return match shape {
+        Circle(r) => 3.0 * r * r
+        Square(side) => side * side
+    }
+}
+
+export void start() {
+    var words = List<string>()
+    for word in "pear apple fig banana".split(" ") {
+        words.add(word.clone())
+    }
+    words.sort()
+    say(string.join(", ", read words))
+    say($"{Point { x = 3, y = -4 }} {area(Shape.Circle(1.5))} {area(Shape.Square(0.1))}".toString())
+    say($"{2.0 / 3.0:F3} {1e21} {0.1 + 0.2} {(float)0.1} {255:X4} {-17,6}|".toString())
+    say("ğüşiöç straße".toUpper())
+    say("  trimmed  ".trim().replaceAll("m", "M"))
+    var first = new shared Node { value = 41 }
+    var other = share first
+    say($"{other.value + 1}".toString())
+    atomic int count = atomic 0
+    _ = count.fetchAdd(5)
+    say($"{count.load()}".toString())
+    var items = Memory.allocate<int>(4)
+    unsafe {
+        for i in 0..4 {
+            items[i] = (int)i * 7
+        }
+        say($"{items[3]}".toString())
+        Memory.free(items)
+    }
+    var c = CString.from("text") ?? panic("no zero byte")
+    say(string.fromCString(read c) ?? "")
+    var span = Duration.fromMilliseconds(90061001)
+    say($"{span}".toString())
+}
+
+raw Heap heap() {
+    return unsafe (raw Heap)board_memory()
+}
+
+struct Heap {
+    nuint used
+}
+
+raw byte allocate(nuint size, nuint align) {
+    var h = heap()
+    unsafe {
+        if h[0].used == 0 {
+            h[0].used = 64
+        }
+        var start = (h[0].used + align - 1) & ~(align - 1)
+        if start + size > board_memory_size() {
+            return null
+        }
+        h[0].used = start + size
+        return (raw byte)h + (nint)start
+    }
+}
+
+void release(raw byte block, nuint size, nuint align) {
+}
+
+void onPanic(read string message) {
+    var bytes = message.asBytes()
+    unsafe board_write(bytes.pointer(), (nuint)bytes.length())
+}

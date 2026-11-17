@@ -1,0 +1,5 @@
+error: a program without an operating system is started through its `export` functions, and this one has none
+  --> error_no_exports.sg:8:1
+ 8 | 
+   | ^
+  hint: `export void start() { ... }`, called by the code that starts the machine

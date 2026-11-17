@@ -1,0 +1,5 @@
+error: `allocate` calls `note`, which allocates memory, and memory comes from `allocate`
+  `allocate` and `release` are where every block of the program comes from and goes back to: inside them the program takes memory only from where they keep it
+  --> error_allocate_calls.sg:12:5
+ 12 |     _ = note(size)
+    |     ^^^^^^^^^^^^^^

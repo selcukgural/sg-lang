@@ -1,0 +1,23 @@
+// A function `allocate` calls takes memory too, which would call `allocate` again.
+extern {
+    raw byte board_memory()
+}
+
+int note(nuint size) {
+    var text = $"{size}".toString()
+    return (int)text.length()
+}
+
+raw byte allocate(nuint size, nuint align) {
+    _ = note(size)
+    return unsafe board_memory()
+}
+
+void release(raw byte block, nuint size, nuint align) {
+}
+
+export void start() {
+}
+
+void onPanic(read string message) {
+}

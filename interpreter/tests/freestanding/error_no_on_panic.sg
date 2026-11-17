@@ -1,0 +1,4 @@
+// A panic goes to `onPanic`, and this program has none.
+export int start(int a, int b) {
+    return a + b
+}

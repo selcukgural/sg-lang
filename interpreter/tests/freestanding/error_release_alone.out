@@ -1,0 +1,5 @@
+error: `release` has no `allocate`, which gives the memory
+  --> error_release_alone.sg:2:6
+ 2 | void release(raw byte block, nuint size, nuint align) {
+   |      ^^^^^^^
+  hint: `raw byte allocate(nuint size, nuint align) { ... }`

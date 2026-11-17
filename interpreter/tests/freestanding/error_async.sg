@@ -1,0 +1,10 @@
+// An async function runs on the tasks of the system.
+async int later() {
+    return 1
+}
+
+export void start() {
+}
+
+void onPanic(read string message) {
+}

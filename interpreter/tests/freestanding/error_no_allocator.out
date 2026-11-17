@@ -1,0 +1,6 @@
+error: this allocates memory, and this program has no `allocate`
+  a program built with `--freestanding` takes memory from its `allocate` and gives it back through its `release`: a text that is made, a `List`, `new`, a `shared` value, `Memory.allocate`, and what writes a struct into a text take some
+  --> error_no_allocator.sg:7:5
+ 7 |     var text = $"n is {n}".toString()
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `raw byte allocate(nuint size, nuint align)` and `void release(raw byte block, nuint size, nuint align)` give it memory

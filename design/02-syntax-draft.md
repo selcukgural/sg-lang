@@ -1815,6 +1815,43 @@ struct is not held by its address: C takes it by value, with its fields in the h
 are seen from outside, so two libraries of SG live in one program; the runtime starts on first use, from any thread.
 The full example is `interpreter/examples/calclib`, with a program of C that uses it.
 
+### Without an operating system
+
+`sg build kernel --freestanding --target riscv64-unknown-elf` gives `kernel.o`, which the code that starts the
+machine is linked with and calls. There is no `main`: the machine calls the `export` functions. Two names of the root
+module have a meaning there:
+
+```
+extern {                                            // what the machine gives, linked with it
+    void uart_write(raw byte text, nuint length)
+    raw byte heap_start()
+}
+
+export void kernelMain() {                          // called by the start code
+    var name = "hart"
+    var line = $"{name} 0 is up".toString()         // memory from `allocate`
+    ...
+}
+
+void onPanic(read string message) {                 // every panic ends here; then the processor waits
+    var bytes = message.asBytes()
+    unsafe uart_write(bytes.pointer(), (nuint)bytes.length())
+}
+
+raw byte allocate(nuint size, nuint align) { ... }  // where every text, list and `new` comes from
+void release(raw byte block, nuint size, nuint align) { ... }   // told the size `allocate` was asked
+```
+
+A program without `allocate` and `release` allocates nothing, and the build points at the statement that would.
+What needs an operating system is a compile error where it is written, also behind a function of the language's own
+module (`Instant.now` reads the clock of the system): `print`, files, the network, tasks and `async`, `lock`,
+`HashMap` and `HashSet`, the functions of `<math.h>`. The rest of the language is there, atomics and raw memory with
+`Memory.writeVolatile` for the registers of devices among it. The object takes nothing of C's library. The full
+example is `interpreter/examples/bare`, run here by a machine of this computer.
+
+The processor that panics waits for ever once `onPanic` returns; the other cores go on running, and stopping them
+is the machine's, in `onPanic`.
+
 ### The network
 
 A `TcpListener` takes connections and a `TcpStream` receives and sends bytes; an address is one text,

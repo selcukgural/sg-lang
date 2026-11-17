@@ -1,0 +1,10 @@
+// A `Task` runs on the threads of the system, also one a function is only given.
+int finish(Task<int> task) {
+    return task.wait()
+}
+
+export void start() {
+}
+
+void onPanic(read string message) {
+}

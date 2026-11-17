@@ -1,0 +1,7 @@
+// `print` writes to an output of the process, and there is none.
+export void start() {
+    print("hello")
+}
+
+void onPanic(read string message) {
+}

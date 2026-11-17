@@ -1,0 +1,9 @@
+// The machine starts the program through its `export` functions.
+export void start() {
+}
+
+void main() {
+}
+
+void onPanic(read string message) {
+}

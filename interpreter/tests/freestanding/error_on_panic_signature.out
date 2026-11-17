@@ -1,0 +1,5 @@
+error: `onPanic` is written `void onPanic(read string message)`
+  a panic gives `onPanic` its message; the processor waits for ever after it
+  --> error_on_panic_signature.sg:5:6
+ 5 | void onPanic(string message) {
+   |      ^^^^^^^

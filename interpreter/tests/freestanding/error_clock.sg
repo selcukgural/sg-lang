@@ -1,0 +1,8 @@
+// `Instant.now` reads the clock of the system: the error is at the call the program wrote.
+export long start() {
+    var now = Instant.now()
+    return 0
+}
+
+void onPanic(read string message) {
+}

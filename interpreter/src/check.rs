@@ -1086,6 +1086,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
         header_names(prog, &sigs, &structs, &exported)?;
     }
+    if prog.freestanding {
+        freestanding_rules(prog, &sigs, exported.is_empty(), src)?;
+    }
 
     for func in prog.funcs.iter().filter(|func| func.export) {
         let sig = &sigs[&func.name];
@@ -1127,7 +1130,12 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
 
     let root_end = prog.files.first().map_or(src.len(), |file| file.end);
     match prog.funcs.iter().find(|func| func.name == "main") {
-        None if tests || prog.library => {}
+        None if tests || prog.library || prog.freestanding => {}
+        // A program with an `onPanic` is one for a machine without an operating system.
+        None if prog.funcs.iter().any(|func| func.export) && prog.funcs.iter().any(|func| func.name == "onPanic") => {
+            return Err(Diag::error(Span::new(root_end, root_end), "there is no `main` function")
+                .hint("a program for a machine without an operating system, which starts it through its `export` functions, is built with `sg build <folder> --freestanding`"))
+        }
         None if prog.funcs.iter().any(|func| func.export) => {
             return Err(Diag::error(Span::new(root_end, root_end), "there is no `main` function")
                 .hint("a library that C calls through its `export` functions is built with `sg build <folder> --library`, or `--shared`"))
@@ -1275,6 +1283,35 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     // What lies in raw memory is laid out from the types of the fields.
     prog.plain = plain_types(&structs);
     crate::waits::check(prog)?;
+    if prog.freestanding {
+        // The types the program writes in its signatures and its fields.
+        let mut declared: Vec<(Span, Ty)> = Vec::new();
+        let own = |name: &str| module_of(name) != crate::source::STD_MODULE;
+        let signature = |declared: &mut Vec<(Span, Ty)>, func: &Func, sig: &FuncSig| {
+            declared.extend(func.params.iter().zip(&sig.params).map(|(param, ty)| (param.ty.span, ty.clone())));
+            declared.push((func.ret.span, sig.ret.clone()));
+        };
+        for func in prog.funcs.iter().filter(|func| func.foreign.is_none() && own(&func.name)) {
+            signature(&mut declared, func, &sigs[&func.name]);
+        }
+        for decl in prog.structs.iter().filter(|decl| own(&decl.name)) {
+            let info = &structs[&decl.name];
+            declared.extend(decl.fields.iter().zip(&info.fields).map(|(field, (_, ty))| (field.ty.span, ty.clone())));
+            for method in &decl.methods {
+                signature(&mut declared, method, &info.methods[&method.name]);
+            }
+        }
+        for decl in prog.enums.iter().filter(|decl| own(&decl.name)) {
+            let info = &enums[&decl.name];
+            for (variant, (_, fields)) in decl.variants.iter().zip(&info.variants) {
+                declared.extend(variant.fields.iter().zip(fields).map(|(field, (_, ty))| (field.ty.span, ty.clone())));
+            }
+            for method in &decl.methods {
+                signature(&mut declared, method, &info.methods[&method.name]);
+            }
+        }
+        prog.left_out = crate::freestanding::check(prog, &declared)?;
+    }
     let bodies = prog.funcs.iter().filter(|func| func.foreign.is_none()).map(|func| &func.body);
     let methods = prog.structs.iter().flat_map(|decl| &decl.methods).chain(prog.enums.iter().flat_map(|decl| &decl.methods)).map(|method| &method.body);
     let tested = prog.tests.iter().map(|test| &test.body).take(if tests { usize::MAX } else { 0 });
@@ -1282,6 +1319,52 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         crate::unread::check(body, seen, &|ty: &Ty| disposes(ty, &structs), src)?;
     }
     Ok(())
+}
+
+/// What a program built without an operating system has: no `main`, since the code that starts
+/// the machine calls its `export` functions, of which it has one at least; an `onPanic`, which
+/// a panic goes to; and, to allocate, an `allocate` with its `release`. All three are written in
+/// the root module, with these signatures.
+fn freestanding_rules(prog: &Program, sigs: &HashMap<String, FuncSig>, no_exports: bool, src: &str) -> Res<()> {
+    let root_end = prog.files.first().map_or(src.len(), |file| file.end);
+    let find = |name: &str| prog.funcs.iter().find(|func| func.name == name && func.foreign.is_none());
+    if let Some(main) = find("main") {
+        return Err(Diag::error(main.name_span, "a program without an operating system has no `main`: the code that starts the machine calls its `export` functions")
+            .hint("name the function the start code calls, and write `export` in front of it: `export void start() { ... }`"));
+    }
+    if no_exports {
+        return Err(Diag::error(Span::new(root_end, root_end), "a program without an operating system is started through its `export` functions, and this one has none")
+            .hint("`export void start() { ... }`, called by the code that starts the machine"));
+    }
+    let byte = Ty::Raw(Box::new(Ty::Int(IntTy::Byte)));
+    let nuint = Ty::Int(IntTy::Nuint);
+    let wanted = [
+        ("onPanic", vec![Ty::Read(Box::new(Ty::Str))], Ty::Void, "void onPanic(read string message)"),
+        ("allocate", vec![nuint.clone(), nuint.clone()], byte.clone(), "raw byte allocate(nuint size, nuint align)"),
+        ("release", vec![byte, nuint.clone(), nuint], Ty::Void, "void release(raw byte block, nuint size, nuint align)"),
+    ];
+    for (name, params, ret, written) in &wanted {
+        let Some(func) = find(name) else { continue };
+        let sig = &sigs[*name];
+        if func.is_async || func.export || sig.params != *params || sig.ret != *ret {
+            let diag = Diag::error(func.name_span, format!("`{name}` is written `{written}`"));
+            return Err(match *name {
+                "onPanic" => diag.note("a panic gives `onPanic` its message; the processor waits for ever after it"),
+                _ => diag.note("`allocate` and `release` are where a program without an operating system takes memory and gives it back: `release` is told the size and the alignment `allocate` was asked for"),
+            });
+        }
+    }
+    if find("onPanic").is_none() {
+        return Err(Diag::error(Span::new(root_end, root_end), "a program without an operating system has an `onPanic` function, which a panic goes to")
+            .hint("`void onPanic(read string message) { ... }`: it writes the message where it can be seen; the processor waits for ever after it"));
+    }
+    match (find("allocate"), find("release")) {
+        (Some(func), None) => Err(Diag::error(func.name_span, "`allocate` has no `release`, which gives the memory back")
+            .hint("`void release(raw byte block, nuint size, nuint align) { ... }`")),
+        (None, Some(func)) => Err(Diag::error(func.name_span, "`release` has no `allocate`, which gives the memory")
+            .hint("`raw byte allocate(nuint size, nuint align) { ... }`")),
+        _ => Ok(()),
+    }
 }
 
 /// Whether this is a raw pointer to a type of C declared in an `extern` block.

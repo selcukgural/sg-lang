@@ -1,0 +1,7 @@
+// A fractional number is read with C's library.
+export double start() {
+    return double.parse("2.5") ?? 0.0
+}
+
+void onPanic(read string message) {
+}

@@ -1,0 +1,4 @@
+ok    the ring keeps the last readings, the oldest first
+ok    the average of nothing is null
+ok    a reading is told against its limits
+3 test(s) passed

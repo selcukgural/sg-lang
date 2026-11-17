@@ -1,0 +1,83 @@
+// The last readings of a sensor, kept in a ring of a fixed size, and what they say: what a
+// small device keeps and reports. Nothing here needs an operating system; the text and the
+// lists take their memory from the program's `allocate`.
+
+// What one reading says against the limits of the sensor.
+public enum Level : Formattable {
+    Normal
+    High(int by)
+    Low(int by)
+
+    void format(read this, ref Formatter f) {
+        match this {
+            Normal => f.write("normal")
+            High(by) => f.write($"{by} over")
+            Low(by) => f.write($"{by} under")
+        }
+    }
+}
+
+public struct Log : Formattable {
+    List<int> ring
+    int capacity
+    int next
+    // Every reading ever added, also those the ring has let go.
+    public int seen
+
+    public Log create(int capacity) {
+        return Log { ring = List<int>(), capacity = capacity, next = 0, seen = 0 }
+    }
+
+    public void add(ref this, int reading) {
+        if this.ring.length() < (nint)this.capacity {
+            this.ring.add(reading)
+        } else {
+            this.ring[this.next] = reading
+        }
+        this.next = (this.next + 1) % this.capacity
+        this.seen += 1
+    }
+
+    public nint length(read this) {
+        return this.ring.length()
+    }
+
+    // The readings kept, the oldest first.
+    public List<int> inOrder(read this) {
+        var ordered = List<int>()
+        var start = 0
+        if this.ring.length() == (nint)this.capacity {
+            start = this.next
+        }
+        for i in 0..this.ring.length() {
+            ordered.add(this.ring[(start + (int)i) % (int)this.ring.length()])
+        }
+        return ordered
+    }
+
+    public int? average(read this) {
+        if this.ring.length() == 0 {
+            return null
+        }
+        long total = 0
+        for reading in read this.ring {
+            total += reading
+        }
+        return (int)(total / (long)this.ring.length())
+    }
+
+    void format(read this, ref Formatter f) {
+        f.write(this.inOrder())
+    }
+}
+
+// A reading against the limits `low` and `high`.
+public Level levelOf(int reading, int low, int high) {
+    if reading > high {
+        return Level.High(reading - high)
+    }
+    if reading < low {
+        return Level.Low(low - reading)
+    }
+    return Level.Normal
+}

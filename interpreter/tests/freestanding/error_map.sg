@@ -1,0 +1,15 @@
+// A `HashMap` draws the key of its hash from the random bytes of the system.
+int count(read List<int> items) {
+    var seen = HashSet<int>()
+    for item in items {
+        _ = seen.add(item)
+    }
+    return (int)seen.length()
+}
+
+export int start() {
+    return 0
+}
+
+void onPanic(read string message) {
+}

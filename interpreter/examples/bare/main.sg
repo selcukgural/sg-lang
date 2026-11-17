@@ -1,0 +1,84 @@
+// A program for a machine without an operating system: `sg build examples/bare --freestanding`
+// gives an object (`bare.o`) that the code that starts the machine is linked with and calls.
+// It has no `main`: the machine calls its `export` functions. A panic goes to `onPanic`, and the
+// memory of its texts and lists comes from `allocate` (in `heap.sg`), out of the memory the
+// machine gives. What it writes goes to the machine's console. The machine of the tests,
+// `machine.c`, is a program of a computer that has an operating system, so that it can be run
+// here; a kernel's start code calls the same functions.
+//
+// The log of readings it keeps (`log/log.sg`) needs no system, so its tests run as any others:
+// `sg test examples/bare`.
+use log
+
+// What the machine gives the program.
+extern {
+    void board_write(raw byte text, nuint length)
+    void board_stop(int code)
+    raw byte board_memory()
+    nuint board_memory_size()
+}
+
+void write(read string text) {
+    var bytes = text.asBytes()
+    unsafe board_write(bytes.pointer(), (nuint)bytes.length())
+}
+
+// A text made to be written, which ends with it.
+void say(string text) {
+    write(read text)
+}
+
+// The message of a panic, written to the console; the machine then stops. Were this to return,
+// the processor would wait for ever.
+void onPanic(read string message) {
+    write(message)
+    unsafe board_stop(101)
+}
+
+// The readings of the sensor in this run, as a device would take them one after the other.
+List<int> sample() {
+    var readings = List<int>()
+    var values = int[7] { 215, 230, 198, 251, 172, 226, 207 }
+    for value in values {
+        readings.add(value)
+    }
+    return readings
+}
+
+// Where the machine starts the program.
+export void start() {
+    say("SG without an operating system\n")
+    var log = Log(4)
+    for reading in sample() {
+        log.add(reading)
+        say($"{reading,4}: {levelOf(reading, 180, 240)}\n".toString())
+    }
+    say($"the last {log.length()} of {log.seen}: {log}, average {log.average() ?? 0}\n".toString())
+    var peak = new Peak { value = 0, at = -1 }
+    var ordered = log.inOrder()
+    for i in 0..ordered.length() {
+        if ordered[i] > peak.value {
+            peak.value = ordered[i]
+            peak.at = (int)i
+        }
+    }
+    say($"the highest kept is {peak.value}, reading {peak.at + 1} of them\n".toString())
+}
+
+// How memory went: every block was given back but one, the room the runtime writes a value of
+// a struct, an enum or a list into a text with (`{log}`), which it keeps for the next.
+export void report() {
+    var counts = heapCounts()
+    say($"memory: {counts.taken} block(s) taken, {counts.given} given back\n".toString())
+}
+
+// The reading at `index` of a fresh sample: past its end, a panic.
+export int readingAt(int index) {
+    var readings = sample()
+    return readings[index]
+}
+
+struct Peak {
+    int value
+    int at
+}

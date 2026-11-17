@@ -1,0 +1,26 @@
+test "the ring keeps the last readings, the oldest first" {
+    var log = Log(3)
+    var readings = int[5] { 1, 2, 3, 4, 5 }
+    for reading in readings {
+        log.add(reading)
+    }
+    assert(log.length() == 3)
+    assert(log.seen == 5)
+    assert($"{log}".toString() == "[3, 4, 5]")
+    var ordered = log.inOrder()
+    assert(ordered[0] == 3)
+}
+
+test "the average of nothing is null" {
+    var log = Log(2)
+    assert(log.average() is null)
+    log.add(7)
+    log.add(10)
+    assert((log.average() ?? 0) == 8)
+}
+
+test "a reading is told against its limits" {
+    assert($"{levelOf(250, 180, 240)}".toString() == "10 over")
+    assert($"{levelOf(175, 180, 240)}".toString() == "5 under")
+    assert($"{levelOf(200, 180, 240)}".toString() == "normal")
+}

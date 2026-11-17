@@ -1,0 +1,19 @@
+// `allocate` takes memory from where it keeps it, not from itself.
+extern {
+    raw byte board_memory()
+}
+
+raw byte allocate(nuint size, nuint align) {
+    var sizes = List<nuint>()
+    sizes.add(size)
+    return unsafe board_memory()
+}
+
+void release(raw byte block, nuint size, nuint align) {
+}
+
+export void start() {
+}
+
+void onPanic(read string message) {
+}

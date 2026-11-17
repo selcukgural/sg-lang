@@ -1,0 +1,29 @@
+// A panic whose `onPanic` returns: the processor waits for ever, and nothing after the panic
+// runs. A panic inside `onPanic` waits too, and is not told.
+extern {
+    void board_write(raw byte text, nuint length)
+}
+
+void write(read string text) {
+    var bytes = text.asBytes()
+    unsafe board_write(bytes.pointer(), (nuint)bytes.length())
+}
+
+int third(read int[] items) {
+    return items[3]
+}
+
+export void start() {
+    write("before\n")
+    var items = int[3] { 1, 2, 3 }
+    write("after ")
+    _ = third(read items)
+    write("not reached\n")
+}
+
+void onPanic(read string message) {
+    write(message)
+    write("onPanic ends\n")
+    var items = int[1] { 1 }
+    _ = third(read items)
+}

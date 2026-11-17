@@ -1,0 +1,7 @@
+start
+panic: overflow: 2000000000 * 2 does not fit in int
+  --> ok_panic_stops.sg:9:12
+ 9 |     return n * 2
+   |            ^^^^^
+  hint: `tryMultiply` gives `null` instead, and `wrappingMultiply` wraps around
+exit code 7

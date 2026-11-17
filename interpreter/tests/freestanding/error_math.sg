@@ -1,0 +1,7 @@
+// `sqrt` is a function of C's library.
+export double start(double x) {
+    return x.sqrt()
+}
+
+void onPanic(read string message) {
+}

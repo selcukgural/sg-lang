@@ -1,0 +1,6 @@
+// `onPanic` is given the message as a `read string`.
+export void start() {
+}
+
+void onPanic(string message) {
+}

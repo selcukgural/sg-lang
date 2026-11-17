@@ -1,0 +1,9 @@
+// `release` gives memory back to where `allocate` took it.
+void release(raw byte block, nuint size, nuint align) {
+}
+
+export void start() {
+}
+
+void onPanic(read string message) {
+}

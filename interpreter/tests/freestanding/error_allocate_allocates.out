@@ -1,0 +1,5 @@
+error: `allocate` allocates memory here, and memory comes from `allocate`
+  `allocate` and `release` are where every block of the program comes from and goes back to: inside them the program takes memory only from where they keep it
+  --> error_allocate_allocates.sg:8:5
+ 8 |     sizes.add(size)
+   |     ^^^^^^^^^^^^^^^

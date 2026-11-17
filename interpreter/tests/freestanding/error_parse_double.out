@@ -1,0 +1,5 @@
+error: a fractional number is read with C's library (`strtod`), and this program is built without an operating system
+  a program built with `--freestanding` runs where there is no operating system: what needs one is done through the machine itself, with raw memory and `Memory.writeVolatile`, or through a C file beside the program
+  --> error_parse_double.sg:3:19
+ 3 |     return double.parse("2.5") ?? 0.0
+   |                   ^^^^^

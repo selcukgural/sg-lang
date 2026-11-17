@@ -1,0 +1,9 @@
+// `Random.fromSystem` asks the system for random bytes; `Random.fromSeed` needs nothing.
+export long start() {
+    var seeded = Random.fromSeed(42)
+    var random = Random.fromSystem()
+    return seeded.nextLong(0, 10) + random.nextLong(0, 10)
+}
+
+void onPanic(read string message) {
+}

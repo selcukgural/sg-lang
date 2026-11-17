@@ -1,0 +1,13 @@
+// A text that is made takes memory, and this program has no `allocate`.
+extern {
+    void board_write(raw byte text, nuint length)
+}
+
+export void start(int n) {
+    var text = $"n is {n}".toString()
+    var bytes = text.asBytes()
+    unsafe board_write(bytes.pointer(), (nuint)bytes.length())
+}
+
+void onPanic(read string message) {
+}

@@ -7,17 +7,27 @@ use sg::Stop;
 /// turns it into a program of that name. `release`: integer overflow wraps and the C compiler
 /// optimises; otherwise a debug build, which checks. `tests`: the program that runs the `test`
 /// blocks instead of `main`; with a folder, those of every module in it.
-/// What `sg build` makes: a program, the program that runs the tests, or a library C calls,
-/// static (`.a`) or shared (`.so`, `.dylib` on macOS).
+/// What `sg build` makes: a program, the program that runs the tests, a library C calls,
+/// static (`.a`) or shared (`.so`, `.dylib` on macOS), or the object of a program that runs
+/// without an operating system (`.o`), which the code that starts the machine is linked with.
 #[derive(Clone, Copy, PartialEq)]
 enum Made {
     Program,
     Tests,
     Static,
     Shared,
+    Freestanding,
 }
 
-fn build(path: &str, out: Option<String>, release: bool, made: Made) -> ExitCode {
+/// How a program without an operating system is compiled: for the machine `target` names
+/// (Clang's `--target`), with `flags` given on to the C compiler as they are.
+#[derive(Default)]
+struct Machine {
+    target: Option<String>,
+    flags: Vec<String>,
+}
+
+fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &Machine) -> ExitCode {
     let sources = match sg::load(std::path::Path::new(path), made == Made::Tests) {
         Ok(sources) => sources,
         Err(error) => {
@@ -29,6 +39,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made) -> ExitCode
     let emitted = match made {
         Made::Tests => sg::emit_c_tests(&sources, !release).map(|code| (code, None)),
         Made::Program => sg::emit_c_sources(&sources, !release).map(|code| (code, None)),
+        Made::Freestanding => sg::emit_c_freestanding(&sources, !release).map(|code| (code, None)),
         Made::Static | Made::Shared => sg::emit_c_library(&sources, !release, &name).map(|(code, header)| (code, Some(header))),
     };
     let (code, header) = match emitted {
@@ -52,7 +63,8 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made) -> ExitCode
     let level = if release { "-O2" } else { "-O0" };
     // No fused multiply-add: a fractional result is the same as in the interpreter. `-lm`
     // for the math functions (`sqrt`, `fmod`), `-pthread` for the threads of tasks.
-    let mut cc = std::process::Command::new("cc");
+    // A machine named by its target is compiled for by Clang, which knows them all.
+    let mut cc = std::process::Command::new(if machine.target.is_some() { "clang" } else { "cc" });
     cc.args(["-std=c11", level, "-ffp-contract=off"]);
     // A library is code that may be placed anywhere, so that the static one goes into a
     // program that is (PIE) and into a shared library too.
@@ -70,6 +82,15 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made) -> ExitCode
         }
         Made::Static => {
             cc.args(["-fPIC", "-c", "-o"]).arg(&object).arg(&c_file);
+        }
+        // Without an operating system: only the headers C promises there, nothing of C's library
+        // assumed, and no guard of the stack, which would call into it.
+        Made::Freestanding => {
+            cc.args(["-ffreestanding", "-fno-stack-protector", "-c"]);
+            if let Some(target) = &machine.target {
+                cc.arg(format!("--target={target}"));
+            }
+            cc.args(&machine.flags).arg("-o").arg(&out).arg(&c_file);
         }
         // Only the `export` functions are seen from outside. A shared library is never
         // unloaded: the threads of its tasks would run on in code that is gone (Linux keeps it
@@ -107,6 +128,14 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made) -> ExitCode
         (_, status) => status,
     };
     match status {
+        Ok(status) if status.success() && made == Made::Freestanding => {
+            let links = match libs.is_empty() {
+                true => String::new(),
+                false => format!(", with {}", libs.join(" ")),
+            };
+            println!("built {out} for a machine without an operating system; link it with the code that starts the machine and the C compiler's own library (`-lgcc` or compiler-rt's builtins){links}");
+            ExitCode::SUCCESS
+        }
         Ok(status) if status.success() => {
             let Some(header) = header else { return ExitCode::SUCCESS };
             let header_path = std::path::Path::new(&out).with_file_name(format!("{name}.h"));
@@ -150,7 +179,7 @@ fn library_name(path: &str) -> String {
 /// temporary files, that program is run, and its exit code is given on.
 fn test_compiled(path: &str) -> ExitCode {
     let binary = std::env::temp_dir().join(format!("sg-test-{}", std::process::id()));
-    let built = build(path, Some(binary.to_string_lossy().into_owned()), false, Made::Tests);
+    let built = build(path, Some(binary.to_string_lossy().into_owned()), false, Made::Tests, &Machine::default());
     if built != ExitCode::SUCCESS {
         return built;
     }
@@ -182,7 +211,7 @@ fn main() -> ExitCode {
     // A word that is not UTF-8 is left as it is for the program, which checks it.
     let words: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let args: Vec<String> = words.iter().map(|word| word.to_string_lossy().into_owned()).collect();
-    const USAGE: &str = "usage: sg <file.sg | folder> [args...]                            runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled]                    runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a) or shared, and its header\n       sg emit-c <file.sg | folder> [--release] [--test | --library]\n                                                                  prints the C";
+    const USAGE: &str = "usage: sg <file.sg | folder> [args...]                            runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled]                    runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a) or shared, and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding]\n                                                                  prints the C";
     let (path, tests) = match args.as_slice() {
         [command, path] if command == "test" => (path, true),
         [command, first, second] if command == "test" && (first == "--compiled" || second == "--compiled") => {
@@ -191,17 +220,23 @@ fn main() -> ExitCode {
         [command, rest @ ..] if command == "build" || command == "emit-c" => {
             // A debug build checks integer overflow; `--release` wraps and optimises.
             let (mut path, mut out, mut release, mut made, mut twice) = (None, None, false, Made::Program, false);
+            let mut machine = Machine::default();
             let mut rest = rest.iter();
             while let Some(arg) = rest.next() {
                 let kind = match arg.as_str() {
                     "--test" => Some(Made::Tests),
                     "--library" => Some(Made::Static),
                     "--shared" => Some(Made::Shared),
+                    "--freestanding" => Some(Made::Freestanding),
                     _ => None,
                 };
                 match arg.as_str() {
                     "--release" => release = true,
                     "-o" => out = rest.next().cloned(),
+                    "--target" => machine.target = rest.next().cloned(),
+                    "--" => {
+                        machine.flags = rest.by_ref().cloned().collect();
+                    }
                     _ if kind.is_some() => {
                         twice |= made != Made::Program;
                         made = kind.expect("matched");
@@ -210,7 +245,9 @@ fn main() -> ExitCode {
                     _ => path = None,
                 }
             }
-            let Some(path) = path.filter(|_| !twice) else {
+            // A target and flags of C are for a machine without an operating system.
+            let stray = made != Made::Freestanding && (machine.target.is_some() || !machine.flags.is_empty());
+            let Some(path) = path.filter(|_| !twice && !stray) else {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
             };
@@ -219,10 +256,11 @@ fn main() -> ExitCode {
                 Made::Static => Some(format!("lib{name}.a")),
                 Made::Shared if cfg!(target_os = "macos") => Some(format!("lib{name}.dylib")),
                 Made::Shared => Some(format!("lib{name}.so")),
+                Made::Freestanding => Some(format!("{name}.o")),
                 _ => std::path::Path::new(path).file_stem().map(|stem| stem.to_string_lossy().into_owned()),
             };
             let out = (command == "build").then(|| out.or(stem).unwrap_or_else(|| "a.out".to_string()));
-            return build(path, out, release, made);
+            return build(path, out, release, made, &machine);
         }
         [command, ..] if command == "test" => {
             eprintln!("{USAGE}");

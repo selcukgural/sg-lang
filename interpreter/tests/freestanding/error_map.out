@@ -1,0 +1,5 @@
+error: a `HashSet` draws the key of its hash from the random bytes of the system, and this program is built without an operating system
+  a program built with `--freestanding` runs where there is no operating system: what needs one is done through the machine itself, with raw memory and `Memory.writeVolatile`, or through a C file beside the program
+  --> error_map.sg:3:16
+ 3 |     var seen = HashSet<int>()
+   |                ^^^^^^^^^^^^^^

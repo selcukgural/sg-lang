@@ -1,0 +1,5 @@
+error: `print` writes to an output of the process, and this program is built without an operating system
+  a program built with `--freestanding` runs where there is no operating system: what needs one is done through the machine itself, with raw memory and `Memory.writeVolatile`, or through a C file beside the program
+  --> error_print.sg:3:5
+ 3 |     print("hello")
+   |     ^^^^^

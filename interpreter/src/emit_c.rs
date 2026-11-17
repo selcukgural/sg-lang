@@ -146,8 +146,367 @@ type Res<T> = Result<T, Diag>;
 const FLOAT_WRITERS: [&str; 7] =
     ["sg_shortest", "sg_put_double", "sg_put_float", "sg_fixed", "sg_fcast_", "sg_assert_fail_d", "sg_assert_fail_f"];
 
+/// What a program built without an operating system (`sg build --freestanding`) has in place of
+/// the headers of the C library: only the headers C promises there, and the little of the C
+/// library the runtime uses, written here. What the runtime writes to the standard error is the
+/// text of a panic, gathered into one buffer for the program's `onPanic`; what it would write
+/// to the output goes nowhere (the checker refuses `print`). `malloc` and the others go to the
+/// program's `allocate` and `release` (see `FREESTANDING_RUNTIME`). `memcpy`, `memmove`,
+/// `memset` and `memcmp` are the compiler's builtins, which inline what they can and otherwise
+/// call the functions of those names, as a C compiler does on its own for a copy of a struct.
+const FREESTANDING_PRELUDE: &str = r#"#include <float.h>
+#include <limits.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/* The text of a panic, kept until the program's `onPanic` is given it; a longer one is cut. */
+#define SG_FS_ROOM 1024
+static char sg_fs_message[SG_FS_ROOM];
+static size_t sg_fs_length;
+typedef struct sg_fs_file sg_fs_file;
+#define FILE sg_fs_file
+#define stderr ((FILE*)1)
+#define stdout ((FILE*)2)
+
+/* The first panic is told and the processor waits for ever after it. A panic on another core
+   while one is told, or inside `onPanic`, waits too. */
+static int sg_fs_panicking;
+static void sg_fs_panic_start(void) {
+    if (__atomic_exchange_n(&sg_fs_panicking, 1, __ATOMIC_ACQ_REL)) for (;;) { }
+}
+#define SG_PANIC_START() sg_fs_panic_start()
+static _Noreturn void sg_fs_halt(void);
+#define SG_PANIC_END() sg_fs_halt()
+
+static size_t sg_fs_strlen(const char* s) { size_t n = 0; while (s[n]) n++; return n; }
+static void sg_fs_put(FILE* f, const char* p, size_t n) {
+    if (f != stderr) return;
+    size_t room = SG_FS_ROOM - 1 - sg_fs_length;
+    if (n > room) n = room;
+    for (size_t i = 0; i < n; i++) sg_fs_message[sg_fs_length++] = p[i];
+}
+static int sg_fs_fputs(const char* s, FILE* f) { sg_fs_put(f, s, sg_fs_strlen(s)); return 0; }
+static int sg_fs_fputc(int c, FILE* f) { char b = (char)c; sg_fs_put(f, &b, 1); return c; }
+static size_t sg_fs_fwrite(const void* p, size_t size, size_t count, FILE* f) { sg_fs_put(f, (const char*)p, size * count); return count; }
+static int sg_fs_fflush(FILE* f) { (void)f; return 0; }
+
+/* `vsnprintf` for the formats the runtime and the program write: `%d`, `%u`, `%x`, `%X` with
+   `l`, `ll` or `z`; `%c`, `%s`, `%%`; a width and a precision, written or given (`*`), and the
+   flags `-` and `0`. `%f` is the one way left to C's library of writing a fractional number, for more than 18
+   digits after the point or a number too large or too small for the exact way of `sg_fixed`:
+   here it is a panic. */
+static _Noreturn void sg_fs_no_fixed(void);
+typedef struct { char* out; size_t room; size_t n; } sg_fs_text;
+static void sg_fs_add(sg_fs_text* t, char c) { if (t->n + 1 < t->room) t->out[t->n] = c; t->n++; }
+static int sg_fs_vsnprintf(char* out, size_t room, const char* format, va_list args) {
+    sg_fs_text t = { out, room, 0 };
+    for (const char* f = format; *f; f++) {
+        if (*f != '%') { sg_fs_add(&t, *f); continue; }
+        f++;
+        bool left = false, zero = false;
+        for (;; f++) {
+            if (*f == '-') left = true;
+            else if (*f == '0') zero = true;
+            else break;
+        }
+        int width = 0;
+        if (*f == '*') { width = va_arg(args, int); if (width < 0) { left = true; width = -width; } f++; }
+        else while (*f >= '0' && *f <= '9') width = width * 10 + (*f++ - '0');
+        int precision = -1;
+        if (*f == '.') {
+            f++;
+            precision = 0;
+            if (*f == '*') { precision = va_arg(args, int); f++; }
+            else while (*f >= '0' && *f <= '9') precision = precision * 10 + (*f++ - '0');
+        }
+        int size = 0;
+        while (*f == 'l') { size++; f++; }
+        if (*f == 'z') { size = 3; f++; }
+        char digits[24];
+        const char* text = digits;
+        int len = 0;
+        bool negative = false, number = false;
+        switch (*f) {
+        case 'd': case 'i': {
+            long long v = size == 2 ? va_arg(args, long long) : size == 1 ? va_arg(args, long) : size == 3 ? (long long)va_arg(args, size_t) : va_arg(args, int);
+            negative = v < 0;
+            unsigned long long u = negative ? 0ULL - (unsigned long long)v : (unsigned long long)v;
+            char* at = digits + sizeof digits;
+            do { *--at = (char)('0' + u % 10); u /= 10; } while (u);
+            text = at;
+            len = (int)(digits + sizeof digits - at);
+            number = true;
+            break;
+        }
+        case 'u': case 'x': case 'X': {
+            unsigned long long u = size == 2 ? va_arg(args, unsigned long long) : size == 1 ? va_arg(args, unsigned long) : size == 3 ? va_arg(args, size_t) : va_arg(args, unsigned);
+            unsigned base = *f == 'u' ? 10 : 16;
+            const char* hex = *f == 'X' ? "0123456789ABCDEF" : "0123456789abcdef";
+            char* at = digits + sizeof digits;
+            do { *--at = hex[u % base]; u /= base; } while (u);
+            text = at;
+            len = (int)(digits + sizeof digits - at);
+            number = true;
+            break;
+        }
+        case 'c': digits[0] = (char)va_arg(args, int); len = 1; break;
+        case 's':
+            text = va_arg(args, const char*);
+            while ((precision < 0 || len < precision) && text[len]) len++;
+            break;
+        case '%': digits[0] = '%'; len = 1; break;
+        case 'f': sg_fs_no_fixed();
+        default: return -1;
+        }
+        /* A precision on a number is the digits it has at least, none for 0 with a precision of
+           0; with one, `0` is not read. */
+        if (number && precision == 0 && len == 1 && text[0] == '0') len = 0;
+        int least = number && precision > len ? precision - len : 0;
+        if (number && precision >= 0) zero = false;
+        int fill = width - len - least - (negative ? 1 : 0);
+        if (!left && !zero) for (; fill > 0; fill--) sg_fs_add(&t, ' ');
+        if (negative) sg_fs_add(&t, '-');
+        if (!left && zero) for (; fill > 0; fill--) sg_fs_add(&t, '0');
+        for (; least > 0; least--) sg_fs_add(&t, '0');
+        for (int i = 0; i < len; i++) sg_fs_add(&t, text[i]);
+        for (; fill > 0; fill--) sg_fs_add(&t, ' ');
+    }
+    if (room > 0) out[t.n < room ? t.n : room - 1] = 0;
+    return (int)t.n;
+}
+static int sg_fs_snprintf(char* out, size_t room, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    int n = sg_fs_vsnprintf(out, room, format, args);
+    va_end(args);
+    return n;
+}
+static int sg_fs_vfprintf(FILE* f, const char* format, va_list args) {
+    if (f != stderr) return 0;
+    size_t room = SG_FS_ROOM - sg_fs_length;
+    int n = sg_fs_vsnprintf(sg_fs_message + sg_fs_length, room, format, args);
+    if (n > 0) sg_fs_length += (size_t)n < room ? (size_t)n : room - 1;
+    return n;
+}
+static int sg_fs_fprintf(FILE* f, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    int n = sg_fs_vfprintf(f, format, args);
+    va_end(args);
+    return n;
+}
+#define strlen(s) sg_fs_strlen(s)
+#define fputs(s, f) sg_fs_fputs(s, f)
+#define fputc(c, f) sg_fs_fputc(c, f)
+#define fwrite(p, size, count, f) sg_fs_fwrite(p, size, count, f)
+#define fflush(f) sg_fs_fflush(f)
+#define vsnprintf sg_fs_vsnprintf
+#define snprintf sg_fs_snprintf
+#define vfprintf sg_fs_vfprintf
+#define fprintf sg_fs_fprintf
+#define printf(...) sg_fs_fprintf(stdout, __VA_ARGS__)
+#define puts(s) sg_fs_fputs(s, stdout)
+
+/* Memory comes from the program's `allocate` and goes back through its `release`, which are
+   told the size and the alignment `allocate` was asked for: they are kept in front of the
+   block, in 16 bytes (or as many as the alignment, when it is more). A program without them
+   allocates nothing (the build refuses what would), and these are never called. */
+#if SG_HEAP
+static uint8_t* f_allocate(uint64_t v_size, uint64_t v_align);
+static void f_release(uint8_t* v_block, uint64_t v_size, uint64_t v_align);
+static void* sg_fs_alloc(size_t size, size_t align) {
+    if (align < 16) align = 16;
+    if (size > SIZE_MAX - align) return NULL;
+    uint8_t* block = f_allocate(size + align, align);
+    if (!block) return NULL;
+    uint64_t* front = (uint64_t*)(block + align);
+    front[-2] = size + align;
+    front[-1] = align;
+    return front;
+}
+static void sg_fs_free(void* p) {
+    if (!p) return;
+    uint64_t* front = (uint64_t*)p;
+    f_release((uint8_t*)p - front[-1], front[-2], front[-1]);
+}
+static void* sg_fs_realloc(void* p, size_t size) {
+    if (!p) return sg_fs_alloc(size, 16);
+    uint64_t* front = (uint64_t*)p;
+    size_t had = (size_t)(front[-2] - front[-1]);
+    uint8_t* q = (uint8_t*)sg_fs_alloc(size, (size_t)front[-1]);
+    if (!q) return NULL;
+    for (size_t i = 0; i < had && i < size; i++) q[i] = ((uint8_t*)p)[i];
+    sg_fs_free(p);
+    return q;
+}
+#else
+static void* sg_fs_alloc(size_t size, size_t align) { (void)size; (void)align; return NULL; }
+static void sg_fs_free(void* p) { (void)p; }
+static void* sg_fs_realloc(void* p, size_t size) { (void)p; (void)size; return NULL; }
+#endif
+static void* sg_fs_calloc(size_t count, size_t size) {
+    if (size && count > SIZE_MAX / size) return NULL;
+    uint8_t* p = (uint8_t*)sg_fs_alloc(count * size, 16);
+    if (p) for (size_t i = 0; i < count * size; i++) p[i] = 0;
+    return p;
+}
+/* What runs out of memory ends in `abort`. */
+static _Noreturn void sg_fs_abort(void) {
+    sg_fs_panic_start();
+    sg_fs_fputs("panic: there is no memory left: `allocate` gave `null`\n", stderr);
+    sg_fs_halt();
+}
+#define malloc(n) sg_fs_alloc(n, 16)
+#define calloc(count, size) sg_fs_calloc(count, size)
+#define realloc(p, n) sg_fs_realloc(p, n)
+#define aligned_alloc(align, n) sg_fs_alloc(n, align)
+#define free(p) sg_fs_free(p)
+#define abort() sg_fs_abort()
+
+void* memcpy(void* restrict to, const void* restrict from, size_t n);
+void* memmove(void* to, const void* from, size_t n);
+void* memset(void* to, int c, size_t n);
+int memcmp(const void* a, const void* b, size_t n);
+static void* sg_fs_memchr(const void* p, int c, size_t n) {
+    const uint8_t* at = (const uint8_t*)p;
+    for (; n; n--, at++) if (*at == (uint8_t)c) return (void*)at;
+    return NULL;
+}
+#define memchr(p, c, n) sg_fs_memchr(p, c, n)
+/* `exit` is refused when the program is built; it is here so that the runtime reads. */
+#define exit(code) ((void)(code), sg_fs_halt())
+#define memcpy(to, from, n) __builtin_memcpy(to, from, n)
+#define memmove(to, from, n) __builtin_memmove(to, from, n)
+#define memset(to, c, n) __builtin_memset(to, c, n)
+#define memcmp(a, b, n) __builtin_memcmp(a, b, n)
+
+/* Of `<math.h>`, what the runtime itself uses; the functions a program would call are refused
+   when it is built. */
+#define isinf(x) __builtin_isinf(x)
+#define isnan(x) __builtin_isnan(x)
+#define isfinite(x) __builtin_isfinite(x)
+#define signbit(x) __builtin_signbit(x)
+#define fabs(x) __builtin_fabs(x)
+#define NAN __builtin_nan("")
+#define INFINITY __builtin_inf()
+static double sg_fs_frexp(double v, int* e);
+static double sg_fs_ldexp(double v, int e);
+#define frexp(v, e) sg_fs_frexp(v, e)
+#define ldexp(v, e) sg_fs_ldexp(v, e)
+/* `double.parse` is refused when the program is built; the runtime's reading of a fractional
+   number still reads, and GCC compiles it even when nothing calls it. */
+static _Noreturn void sg_fs_no_parse(void);
+static double sg_fs_strtod(const char* text, char** end) { (void)text; (void)end; sg_fs_no_parse(); }
+#define strtod(text, end) sg_fs_strtod(text, end)
+#define strtof(text, end) ((float)sg_fs_strtod(text, end))
+static int sg_fs_errno;
+#define errno sg_fs_errno
+#define EIO 5
+#define EINTR 4
+
+"#;
+
+/// The C a program built without an operating system has in place of the headers of the C
+/// library, for the test that holds its `vsnprintf` to the C library's.
+pub fn freestanding_prelude() -> &'static str {
+    FREESTANDING_PRELUDE
+}
+
+/// What a program built without an operating system has after the runtime: the end of a panic,
+/// which hands its text to the program's `onPanic`, and the functions of memory a C compiler
+/// calls, weak so that those of the machine's own code take their place.
+const FREESTANDING_RUNTIME: &str = r#"
+/* A text cut in the middle of a character is cut before it, so that `onPanic` is given UTF-8. */
+static void f_onPanic(sg_str v_message);
+static _Noreturn void sg_fs_halt(void) {
+    static int told;
+    if (!__atomic_exchange_n(&told, 1, __ATOMIC_ACQ_REL)) {
+        int64_t n = (int64_t)sg_fs_length;
+        int64_t bad = sg_utf8_bad((const uint8_t*)sg_fs_message, n);
+        f_onPanic((sg_str){ (const uint8_t*)sg_fs_message, bad >= 0 ? bad : n });
+    }
+    for (;;) { }
+}
+static _Noreturn void sg_fs_no_parse(void) {
+    sg_fs_fputs("panic: a fractional number is read with C's library, which a program without an operating system does not have\n", stderr);
+    sg_fs_halt();
+}
+static _Noreturn void sg_fs_no_fixed(void) {
+    sg_fs_fputs("panic: a fractional number is written with more than 18 digits after the point, or is too large or too small for that, and a program without an operating system writes it only with fewer\n", stderr);
+    sg_fs_halt();
+}
+/* `frexp` and `ldexp` by the bits of the number. */
+static double sg_fs_frexp(double v, int* e) {
+    *e = 0;
+    if (v == 0 || v != v || __builtin_isinf(v)) return v;
+    uint64_t bits;
+    __builtin_memcpy(&bits, &v, 8);
+    int exp = (int)(bits >> 52 & 0x7ff);
+    if (exp == 0) {
+        v *= 0x1p64;
+        __builtin_memcpy(&bits, &v, 8);
+        exp = (int)(bits >> 52 & 0x7ff) - 64;
+    }
+    *e = exp - 1022;
+    bits = (bits & ~(0x7ffULL << 52)) | (1022ULL << 52);
+    __builtin_memcpy(&v, &bits, 8);
+    return v;
+}
+static double sg_fs_ldexp(double v, int e) {
+    while (e > 1023) { v *= 0x1p1023; e -= 1023; if (__builtin_isinf(v)) return v; }
+    while (e < -1022) { v *= 0x1p-1022; e += 1022; if (v == 0) return v; }
+    uint64_t bits = (uint64_t)(e + 1023) << 52;
+    double scale;
+    __builtin_memcpy(&scale, &bits, 8);
+    return v * scale;
+}
+
+#if defined(__GNUC__) && !defined(__clang__)
+#define SG_FS_PLAIN __attribute__((weak, optimize("no-tree-loop-distribute-patterns")))
+#else
+#define SG_FS_PLAIN __attribute__((weak))
+#endif
+SG_FS_PLAIN void* (memcpy)(void* restrict to, const void* restrict from, size_t n) {
+    uint8_t* t = (uint8_t*)to;
+    const uint8_t* f = (const uint8_t*)from;
+    while (n--) *t++ = *f++;
+    return to;
+}
+SG_FS_PLAIN void* (memmove)(void* to, const void* from, size_t n) {
+    uint8_t* t = (uint8_t*)to;
+    const uint8_t* f = (const uint8_t*)from;
+    if (t < f) while (n--) *t++ = *f++;
+    else while (n--) t[n] = f[n];
+    return to;
+}
+SG_FS_PLAIN void* (memset)(void* to, int c, size_t n) {
+    uint8_t* t = (uint8_t*)to;
+    while (n--) *t++ = (uint8_t)c;
+    return to;
+}
+/* A C compiler for macOS writes a `memset` of zeros as `bzero`. */
+#if defined(__APPLE__)
+SG_FS_PLAIN void bzero(void* to, size_t n) {
+    uint8_t* t = (uint8_t*)to;
+    while (n--) *t++ = 0;
+}
+#endif
+SG_FS_PLAIN int (memcmp)(const void* a, const void* b, size_t n) {
+    const uint8_t* x = (const uint8_t*)a;
+    const uint8_t* y = (const uint8_t*)b;
+    for (; n; n--, x++, y++) if (*x != *y) return *x < *y ? -1 : 1;
+    return 0;
+}
+"#;
+
 /// What every compiled program starts with: the checks, written once.
-const RUNTIME: &str = r#"#include <math.h>
+const RUNTIME: &str = r#"#ifndef SG_FREESTANDING
+#define SG_FREESTANDING 0
+#endif
+#if !SG_FREESTANDING
+#include <math.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -158,14 +517,17 @@ const RUNTIME: &str = r#"#include <math.h>
 #if !(defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__))
 #include <sys/random.h>
 #endif
+#endif
 
 /* A panic ends the process. A library (`sg build --library` or `--shared`) aborts: other
    threads of the program that loaded it may be running, and C's `exit` would run that
-   program's `atexit` functions under them. */
+   program's `atexit` functions under them. Without an operating system the panic goes to the
+   program's `onPanic` (see `FREESTANDING_PRELUDE`). */
 #ifndef SG_LIBRARY
 #define SG_LIBRARY 0
 #endif
-#if SG_LIBRARY
+#if SG_FREESTANDING
+#elif SG_LIBRARY
 #define SG_PANIC_END() abort()
 #else
 #define SG_PANIC_END() exit(1)
@@ -253,7 +615,9 @@ static void sg_task_note(void) {
     fputs(sg_task_now->at, stderr);
 }
 #else
+#ifndef SG_PANIC_START
 #define SG_PANIC_START() fflush(stdout)
+#endif
 #define sg_task_note() ((void)0)
 #endif
 
@@ -827,7 +1191,12 @@ SG_COLD static _Noreturn void sg_no_entropy(const char* loc) {
     sg_die(loc);
 }
 static void sg_entropy(uint8_t* p, int64_t n, const char* loc) {
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+#if SG_FREESTANDING
+    /* Without a system there is none to ask; what needs it is refused when it is built. */
+    (void)p;
+    (void)n;
+    sg_no_entropy(loc);
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
     (void)loc;
     arc4random_buf(p, (size_t)n);
 #else
@@ -5786,6 +6155,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         tracked: HashSet::new(),
         at: false,
         site: None,
+        written_stmts: prog.freestanding.then(Vec::new),
+        in_func: String::new(),
+        func_bodies: Vec::new(),
     };
     // Every struct and enum is named first, so that a type can point at itself or at a later
     // one. Then the types themselves, each after the types it holds by value.
@@ -5875,6 +6247,10 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
             }
             continue;
         }
+        // Without an operating system, what of the language's own module needs one is left out.
+        if prog.left_out.contains(&func.name) {
+            continue;
+        }
         match func.is_async {
             true => emitter.async_func(func, None, &mut protos, &mut bodies)?,
             false => emitter.func(func, None, &mut protos, &mut bodies)?,
@@ -5885,6 +6261,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     for (owner, methods) in typed() {
         for method in methods {
+            if prog.left_out.contains(&format!("{owner}.{}", method.name)) {
+                continue;
+            }
             match method.is_async {
                 true => emitter.async_func(method, Some(owner), &mut protos, &mut bodies)?,
                 false => emitter.func(method, Some(owner), &mut protos, &mut bodies)?,
@@ -5919,6 +6298,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         None if prog.library => "#ifdef SG_LEAKS\nstatic void sg_library_end(void) { (void)sg_leaks(\"the library\"); }\n#endif\n\
              __attribute__((constructor)) static void sg_library_start(void) {\n#ifdef SG_LEAKS\n    atexit(sg_library_end);\n#endif\n}\n"
             .to_string(),
+        // Without an operating system, the code that starts the machine calls the `export`
+        // functions.
+        None if prog.freestanding => String::new(),
         None => unreachable!("the checker asks for `main`"),
         Some(main) => emitter.start(main)?,
     };
@@ -5969,6 +6351,13 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         .iter()
         .any(|text| FLOAT_WRITERS.iter().any(|name| text.contains(name)));
     let _ = writeln!(out, "#define SG_FLOATS {}", u8::from(floats));
+    if prog.freestanding {
+        let heap = prog.funcs.iter().any(|func| func.name == "allocate" && func.foreign.is_none());
+        let runtime = [RUNTIME, crate::unicode::c_runtime(), RAW_RUNTIME, FFI_RUNTIME, SHARED_RUNTIME, &emitter.glue, &emitter.types, &emitter.late_types];
+        freestanding_heap(heap, &runtime, emitter.written_stmts.as_deref().unwrap_or_default(), &emitter.func_bodies)?;
+        let _ = writeln!(out, "#define SG_FREESTANDING 1\n#define SG_HEAP {}", u8::from(heap));
+        out.push_str(FREESTANDING_PRELUDE);
+    }
     out.push_str(RUNTIME);
     if emitter.made.contains("unicode") {
         out.push_str(crate::unicode::c_runtime());
@@ -6026,8 +6415,12 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     if tests {
         out.push_str(TEST_SUPPORT);
     }
+    if prog.freestanding {
+        out.push_str(FREESTANDING_RUNTIME);
+    }
     if emitter.made.contains("shared") {
-        let _ = write!(out, "\n#define SG_TRACK {}", u8::from(checked));
+        // Without an operating system no program ends to report what it left.
+        let _ = write!(out, "\n#define SG_TRACK {}", u8::from(checked && !prog.freestanding));
         out.push_str(SHARED_RUNTIME);
     }
     out.push('\n');
@@ -6075,6 +6468,178 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         out.insert_str(0, &format!("/* sg-link: {} */\n", flags.join(" ")));
     }
     Ok(out)
+}
+
+/// The functions of a text of C, each with the names its body uses: a definition is a name, its
+/// parameters in parentheses and a body in braces, outside any braces. Comments, strings, the
+/// characters and the lines of the preprocessor are passed over.
+fn c_functions(text: &str) -> Vec<(String, HashSet<String>)> {
+    let bytes = text.as_bytes();
+    let mut found: Vec<(String, HashSet<String>)> = Vec::new();
+    let (mut at, mut braces, mut parens) = (0, 0usize, 0usize);
+    // The name in front of the first `(` outside braces, and whether the `)` that closes it
+    // came last.
+    let (mut named, mut closed): (Option<String>, bool) = (None, false);
+    let mut last_name: Option<String> = None;
+    let mut line_start = true;
+    while at < bytes.len() {
+        let c = bytes[at];
+        if line_start && c == b'#' {
+            // A line of the preprocessor, with the lines it goes on to.
+            while at < bytes.len() && !(bytes[at] == b'\n' && bytes[at - 1] != b'\\') {
+                at += 1;
+            }
+            continue;
+        }
+        if c == b'\n' {
+            line_start = true;
+            at += 1;
+            continue;
+        }
+        if !c.is_ascii_whitespace() {
+            line_start = false;
+        }
+        match c {
+            b'/' if bytes.get(at + 1) == Some(&b'*') => {
+                at = text[at + 2..].find("*/").map_or(bytes.len(), |end| at + 2 + end + 2);
+                continue;
+            }
+            b'/' if bytes.get(at + 1) == Some(&b'/') => {
+                at = text[at..].find('\n').map_or(bytes.len(), |end| at + end);
+                continue;
+            }
+            b'"' | b'\'' => {
+                at += 1;
+                while at < bytes.len() && bytes[at] != c {
+                    at += if bytes[at] == b'\\' { 2 } else { 1 };
+                }
+                at += 1;
+                closed = false;
+                continue;
+            }
+            _ if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = at;
+                while at < bytes.len() && (bytes[at].is_ascii_alphanumeric() || bytes[at] == b'_') {
+                    at += 1;
+                }
+                let name = &text[start..at];
+                if braces > 0 {
+                    if let Some((_, uses)) = found.last_mut() {
+                        uses.insert(name.to_string());
+                    }
+                }
+                last_name = Some(name.to_string());
+                closed = false;
+                continue;
+            }
+            b'(' => {
+                if braces == 0 && parens == 0 {
+                    named = last_name.take();
+                }
+                parens += 1;
+            }
+            b')' => {
+                parens = parens.saturating_sub(1);
+                closed = braces == 0 && parens == 0;
+                at += 1;
+                continue;
+            }
+            b'{' => {
+                if braces == 0 && closed {
+                    if let Some(name) = named.take() {
+                        found.push((name, HashSet::new()));
+                    }
+                }
+                braces += 1;
+            }
+            b'}' => braces = braces.saturating_sub(1),
+            _ => {}
+        }
+        if !c.is_ascii_whitespace() {
+            closed = false;
+            if c != b'(' {
+                last_name = None;
+            }
+        }
+        at += 1;
+    }
+    found
+}
+
+/// The names a piece of C uses.
+fn c_names(text: &str) -> HashSet<String> {
+    let mut wrapped = String::from("void sg_piece(void) {\n");
+    wrapped.push_str(text);
+    wrapped.push_str("\n}\n");
+    c_functions(&wrapped).into_iter().next().map(|(_, uses)| uses).unwrap_or_default()
+}
+
+/// Without an operating system memory comes only from the program's `allocate`: a program
+/// without one allocates nothing, and `allocate` and `release` themselves allocate nothing
+/// either, which would call `allocate` again. What allocates is found in the C: the functions
+/// of the runtime and the helpers that call `malloc` or another of its kind, directly or
+/// through each other; the functions of the language's own module that call them; then each
+/// statement of the program that calls one, or, inside `allocate` and `release`, a function of
+/// the program that does.
+fn freestanding_heap(heap: bool, runtime: &[&str], stmts: &[(Span, String, String)], bodies: &[(String, String, String)]) -> Res<()> {
+    let mut uses: HashMap<String, HashSet<String>> = HashMap::new();
+    for text in runtime {
+        uses.extend(c_functions(text));
+    }
+    let mut shown: HashMap<&str, &str> = HashMap::new();
+    for (cname, name, body) in bodies {
+        uses.insert(cname.clone(), c_names(body));
+        shown.insert(cname, name);
+    }
+    let mut allocating: HashSet<String> = ["malloc", "calloc", "realloc", "aligned_alloc"].iter().map(|name| name.to_string()).collect();
+    loop {
+        let more: Vec<String> = uses
+            .iter()
+            .filter(|(name, used)| !allocating.contains(*name) && used.iter().any(|used| allocating.contains(used)))
+            .map(|(name, _)| name.clone())
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        allocating.extend(more);
+    }
+    let note = "a program built with `--freestanding` takes memory from its `allocate` and gives it back through its `release`: a text that is made, a `List`, `new`, a `shared` value, `Memory.allocate`, and what writes a struct into a text take some";
+    let mut first: Option<(Span, &str, Option<&str>)> = None;
+    for (span, func, text) in stmts {
+        let in_own = shown.get(func.as_str()).is_some_and(|name| !name.starts_with("std:"));
+        let in_heap = matches!(shown.get(func.as_str()), Some(&"allocate" | &"release"));
+        if !in_own || (heap && !in_heap) {
+            continue;
+        }
+        let names = c_names(text);
+        // What the statement calls that allocates: a function of the program counts only
+        // inside `allocate` and `release`, where the whole chain matters.
+        let hit = names.iter().filter(|name| allocating.contains(*name)).find(|name| heap || shown.get(name.as_str()).is_none_or(|shown| shown.starts_with("std:")));
+        if let Some(hit) = hit {
+            if first.is_none_or(|(at, ..)| span.start < at.start) {
+                first = Some((*span, func, shown.get(hit.as_str()).copied()));
+            }
+        }
+    }
+    let Some((span, func, callee)) = first else { return Ok(()) };
+    let callee = callee.map(|name| name.trim_start_matches("std:"));
+    Err(match heap {
+        false => {
+            let diag = match callee {
+                Some(callee) => Diag::error(span, format!("`{callee}` allocates memory, and this program has no `allocate`")),
+                None => Diag::error(span, "this allocates memory, and this program has no `allocate`"),
+            };
+            diag.note(note).hint("`raw byte allocate(nuint size, nuint align)` and `void release(raw byte block, nuint size, nuint align)` give it memory")
+        }
+        true => {
+            let name = shown.get(func).copied().unwrap_or("allocate");
+            let diag = match callee {
+                Some(callee) => Diag::error(span, format!("`{name}` calls `{callee}`, which allocates memory, and memory comes from `allocate`")),
+                None => Diag::error(span, format!("`{name}` allocates memory here, and memory comes from `allocate`")),
+            };
+            diag.note("`allocate` and `release` are where every block of the program comes from and goes back to: inside them the program takes memory only from where they keep it")
+        }
+    })
 }
 
 fn not_yet(span: Span, what: &str) -> Diag {
@@ -6832,6 +7397,12 @@ struct Emitter<'a> {
     at: bool,
     /// Where the call being written is (see `call_at`).
     site: Option<Span>,
+    /// Built without an operating system: each statement written, with the C function it is in
+    /// and its C, so that what allocates is found (see `freestanding_heap`).
+    written_stmts: Option<Vec<(Span, String, String)>>,
+    /// The C function being written, and the C of each function with its name in SG.
+    in_func: String,
+    func_bodies: Vec<(String, String, String)>,
 }
 
 impl<'a> Emitter<'a> {
@@ -8981,8 +9552,17 @@ impl<'a> Emitter<'a> {
         self.ret = ret;
         self.temps = 0;
         self.scopes = vec![scope];
+        self.in_func = name.clone();
         let mut body = String::new();
         self.stmts(&func.body, 1, &mut body)?;
+        if self.written_stmts.is_some() {
+            let shown = match owner {
+                Some(owner) => format!("{}.{}", short_name(owner), func.name),
+                None => short_name(&func.name).to_string(),
+            };
+            let full = owner.map_or_else(|| func.name.clone(), |owner| format!("{owner}.{}", func.name));
+            self.func_bodies.push((name.clone(), if full.starts_with("std.") { format!("std:{shown}") } else { shown }, body.clone()));
+        }
         // What the function was given by value and still owns at its end.
         if !ends_by_leaving(&func.body) {
             for line in self.drops(0) {
@@ -9429,7 +10009,11 @@ impl<'a> Emitter<'a> {
     fn stmt(&mut self, stmt: &'a Stmt, depth: usize, out: &mut String) -> Res<()> {
         let from = self.guards.len();
         self.reserving = None;
+        let start = out.len();
         let written = self.stmt_in(stmt, depth, out);
+        if let (Some(stmts), Some(text)) = (&mut self.written_stmts, out.get(start..)) {
+            stmts.push((stmt.span, self.in_func.clone(), text.to_string()));
+        }
         self.end_guards(from);
         // The writers the statement dropped are closed before the next one.
         let leaves = matches!(stmt.kind, StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue);

@@ -9,6 +9,7 @@ pub mod emit_c;
 pub mod exhaust;
 pub mod header;
 pub mod ffi;
+pub mod freestanding;
 pub mod interp;
 pub mod input;
 pub mod lexer;
@@ -188,6 +189,23 @@ pub fn emit_c_library(sources: &Sources, checked: bool, name: &str) -> Result<(S
         let code = emit_c::emit(&prog, sources, checked, false)?;
         let links = emit_c::link_flags(&code);
         Ok((code, header::header(&prog, name, &links)))
+    })
+}
+
+/// The back end for a program built without an operating system (`sg build --freestanding`):
+/// its C has no `main` and includes only the headers C promises there; the code that starts
+/// the machine calls its `export` functions.
+pub fn emit_c_freestanding(sources: &Sources, checked: bool) -> Result<String, Diag> {
+    on_large_stack(|| {
+        let mut prog = parse(sources, false)?;
+        prog.freestanding = true;
+        if let Err(diag) = check::check(&mut prog, &sources.text, false) {
+            return Err(match missing_use(sources, &diag) {
+                Some(module) => diag.hint(format!("`use {module}` at the top of the file")),
+                None => diag,
+            });
+        }
+        emit_c::emit(&prog, sources, checked, false)
     })
 }
 

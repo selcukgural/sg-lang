@@ -1,0 +1,74 @@
+// Where the program's memory comes from: the block of memory the machine gives, with a `Heap`
+// at its start that keeps how much of it is taken, and the blocks given back, which a request
+// of the same size takes again. `release` is told the size and the alignment `allocate` was
+// asked for, so a block keeps nothing of its own.
+
+struct Heap {
+    // From the start of the memory: the `Heap`, then the blocks handed out so far.
+    nuint used
+    raw Free free
+    long taken
+    long given
+}
+
+// A block given back, kept where its memory is.
+struct Free {
+    raw Free next
+    nuint size
+}
+
+raw Heap heap() {
+    return unsafe (raw Heap)board_memory()
+}
+
+raw byte allocate(nuint size, nuint align) {
+    var h = heap()
+    unsafe {
+        // The memory starts empty: the `Heap` takes its first bytes.
+        if h[0].used == 0 {
+            h[0].used = (nuint)Memory.sizeOf<Heap>()
+        }
+        raw Free before = null
+        var at = h[0].free
+        while at != null {
+            if at[0].size == size && ((nuint)at & (align - 1)) == 0 {
+                if before == null {
+                    h[0].free = at[0].next
+                } else {
+                    before[0].next = at[0].next
+                }
+                h[0].taken += 1
+                return (raw byte)at
+            }
+            before = at
+            at = at[0].next
+        }
+        var start = (h[0].used + align - 1) & ~(align - 1)
+        if start + size > board_memory_size() {
+            return null
+        }
+        h[0].used = start + size
+        h[0].taken += 1
+        return (raw byte)h + (nint)start
+    }
+}
+
+void release(raw byte block, nuint size, nuint align) {
+    var h = heap()
+    unsafe {
+        var free = (raw Free)block
+        free[0] = Free { next = h[0].free, size = size }
+        h[0].free = free
+        h[0].given += 1
+    }
+}
+
+struct Counts {
+    long taken
+    long given
+}
+
+Counts heapCounts() {
+    var h = heap()
+    return unsafe Counts { taken = h[0].taken, given = h[0].given }
+}

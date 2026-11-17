@@ -1,0 +1,5 @@
+error: a `Task` runs on the threads of the system, and this program is built without an operating system
+  a program built with `--freestanding` runs where there is no operating system: what needs one is done through the machine itself, with raw memory and `Memory.writeVolatile`, or through a C file beside the program
+  --> error_task_param.sg:2:12
+ 2 | int finish(Task<int> task) {
+   |            ^^^^^^^^^

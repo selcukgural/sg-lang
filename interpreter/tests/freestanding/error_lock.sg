@@ -1,0 +1,14 @@
+// A `locked` value is taken with a lock of the system.
+struct Counter {
+    int count
+}
+
+export void start() {
+    var counter = new shared locked Counter { count = 0 }
+    lock counter as c {
+        c.count += 1
+    }
+}
+
+void onPanic(read string message) {
+}

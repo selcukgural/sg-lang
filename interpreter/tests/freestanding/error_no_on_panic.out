@@ -1,0 +1,5 @@
+error: a program without an operating system has an `onPanic` function, which a panic goes to
+  --> error_no_on_panic.sg:5:1
+ 5 | 
+   | ^
+  hint: `void onPanic(read string message) { ... }`: it writes the message where it can be seen; the processor waits for ever after it

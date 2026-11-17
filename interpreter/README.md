@@ -15,6 +15,7 @@ cargo run -- build examples/primes.sg -o primes # compiles it through C (needs `
 cargo run -- emit-c examples/primes.sg          # prints the C
 cargo test
 cargo run -- build examples/primes.sg --release # the same as a release build: optimised, overflow wraps
+cargo run -- build examples/bare --freestanding # an object for a machine without an operating system
 sh bench/run.sh                                 # compiled SG against C written by hand
 ```
 
@@ -51,6 +52,7 @@ sh bench/run.sh                                 # compiled SG against C written 
 | The layout of C | `union Bits { uint word` / `float number }` holds one field at a time in the same bytes: built with one (`Bits { number = 1.5 }`), written whole (`bits.word = 3`), read inside `unsafe` (`unsafe bits.word`), never lent. `uint version : 4` is a bit field of a struct, signed or not, `bool` too, and `uint _ : 4` leaves bits empty; a value that does not fit is a panic, as overflow is (the lowest bits in a release build). `packed struct Header { ... }` has no padding, and its fields are copied out, not lent. `align(64) struct Slot { ... }` lies at a multiple of 64 bytes wherever it is kept, on the heap too. Each is laid out as C lays it out on the machine, Windows' rules for bit fields included. `Header.fromBytes(bytes)` reads a struct of integers, fractions, bit fields and unions out of exactly as many bytes as it takes, with no `unsafe` (`examples/headers`: a BMP header and an IPv4 header) |
 | C calling SG | `export int compareInts(raw void a, raw void b) { ... }` is a function C calls by the name written, without its module: it takes and gives only the types C has (integers, `float`, `double`, `bool`, `raw T`, `CFunc`, structs of plain data by value), and SG calls it by its name too. `CFunc<raw void, raw void, int>` is a pointer to a function as C calls it, plain data that may be `null`: the name of an `export` function or of a function of C is one (`unsafe qsort((raw void)items, n, 4, compareInts)`, `CFunc<int, int> f = abs`), `unsafe (CFunc<int, int>)p` takes one from a `raw void` (`dlsym`), `(raw void)f` gives it back, and every call through one is inside `unsafe`; calling a `null` one is a panic. The state a callback reaches goes through C's `void*`: `unsafe Memory.addressOf(ref state)` gives the address of a variable or a field, and `unsafe (ref State)data` (or `read`) lends it again inside the callback; the interpreter keeps the addresses it gave and panics on a wrong type, a value that ended or moved, or an address it did not give. A C file of the program calls an `export` function by its name. A panic inside one ends the process with its message, since nothing unwinds through C; the interpreter runs one only on a thread that is in a call of C, and compiled code on any thread. A `lock` block does not call C when an `export` function waits. A struct or an enum of SG that is not plain data goes to C by its address: an `export` function gives it as `T*` (C keeps it), takes it back as `T*` or `T*?` (it ends there; `T*?` takes `NULL`), and is lent it as `read T` or `ref T` for the call; `read CString` is C's `const char*`, which `string.fromCString(text)` copies with no `unsafe`. `NULL` where none is taken is a panic; the interpreter also keeps every address it gave and panics on one it did not give, of another type, given back already, or lent against the rules of borrowing |
 | A library of SG for C | `sg build folder --library` gives `libfolder.a`, `--shared` gives `libfolder.so` (`.dylib` on macOS), each with `folder.h`, the header of its `export` functions: the types C holds by their address declared without fields (`typedef struct Calculator Calculator;`), plain structs laid out as SG lays them out, pointers to functions written out, `extern "C"` for C++ and a macro for Windows' DLLs. A library has no `main` and at least one `export` function; only those are seen from outside, so two libraries of SG live in one program, each with its runtime, which starts what it needs on first use from any thread. A panic aborts. A shared library is not unloaded. `examples/calclib` is a calculator called from `main.c` |
+| Without an operating system | `sg build folder --freestanding` gives `folder.o` for a kernel, a boot loader or a device: no `main`, the code that starts the machine calls the `export` functions; `--target riscv64-unknown-elf` compiles it with Clang for that machine, and what follows `--` goes to the C compiler. A panic gives its message to the program's `void onPanic(read string message)`, after which the processor waits; memory comes from its `raw byte allocate(nuint size, nuint align)` and goes back through `void release(raw byte block, nuint size, nuint align)`, and a program without them allocates nothing, which the build checks statement by statement. What needs a system (`print`, files, the clock, tasks, `HashMap`, `<math.h>`) is a compile error where it is written, also through a function of the language's own module. The object takes nothing of C's library: what the runtime used of it is written in, and `memcpy` and its kin are weak functions of its own. `examples/bare` runs with a machine of this computer |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads, each with a queue of its own that the others steal from. A method is async too (`public async int total(read this)`): one that lends `this` is awaited where it is written, one that takes it by value may start as a task; `create`, `format`, `equals`, `hash` and `compare` are not async |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
@@ -412,7 +414,11 @@ type in C, reached only through GCC's and Clang's `__atomic` builtins with the o
 volatile access is the place read or written through a `volatile` pointer (830-859). So was the
 ninety-first (a library built from SG): the unit of a program is a library once `main` gives way to a
 constructor, every name of the runtime being `static` already; an `export` function that takes a value of
-SG from C takes a `void*` and checks it for `NULL`, and a panic ends in `abort` (860-885).
+SG from C takes a `void*` and checks it for `NULL`, and a panic ends in `abort` (860-885). So was the
+ninety-third (without an operating system): the runtime is the same, with the little of C's library it
+used written in front of it (a `vsnprintf`, `strlen`, `memchr`, the bits of `frexp` and `ldexp`), the standard
+error a buffer that a panic gives to `onPanic`, `malloc` the program's `allocate`, and `memcpy` and its kin
+weak functions of the object (895-913).
 What is still missing is an error that names it (not silence): the few positions listed with the
 choices below (81, 111, 268).
 
@@ -6092,6 +6098,116 @@ has ended (A) rather than refused in the whole block as C# does (B):
      row of the Rust mapping (`let x = x.trim()` becomes `var trimmed = x.trim()`). Nothing is measured: no
      compiled code changes.
 
+Choices made in the ninety-third slice (building without an operating system), the ninth of the slices
+that reach what C reaches (04, "Without an operating system"). It was written on 17 November 2026 while
+the author was away, on their word to go on with the next work, so 895 to 913 were not put to them
+before the slice as the others were. All were approved afterwards, the same day:
+
+895. **`sg build folder --freestanding`** gives an object, `folder.o` (`-o` names it otherwise), not a
+     program: the code that starts the machine, its linker script and the C compiler's own library are the
+     machine's, and are linked with it. `--release` as for a program; `sg emit-c folder --freestanding`
+     prints the C. Rust's `#![no_std]` crate is a library for the same reason.
+896. **The machine**: `--target riscv64-unknown-elf` (or `aarch64-none-elf`, `x86_64-none-elf`, any triple)
+     compiles it with Clang for that machine, which knows them all with one binary; without it, `cc` for the
+     processor of this computer. What follows `--` goes to the C compiler as it is written: `-- -mcmodel=medany
+     -march=rv64gc`, `-mno-red-zone`, `-mgeneral-regs-only`. A target or `--` without `--freestanding` is
+     an error of the command line.
+897. **What C promises without a system**: the C is compiled with `-ffreestanding`, and includes only the
+     headers C has there (`stdint.h`, `stddef.h`, `stdbool.h`, `stdarg.h`, `limits.h`, `float.h`); nothing of
+     C's library is taken for granted. `-fno-stack-protector`, since the guard of the stack calls into C's
+     library when it fails.
+898. **No `main`, and `export` functions**: `main` is an error whose hint is an `export` function; one at
+     least is asked for, as of a library (861). The code that starts the machine calls them, with the
+     signatures of C an `export` function has (732).
+899. **`onPanic`**: `void onPanic(read string message)` in the root module is asked for. A panic gathers the
+     message a program with a system writes to its standard error (the panic, the place, the line, the
+     hint) into a buffer of 1024 bytes, cut before a character it would cut in half, and gives it to
+     `onPanic` once; the program writes it where the machine shows it. When `onPanic` returns, the
+     processor waits for ever (`for (;;) { }`); a panic inside `onPanic`, and one on another core while the
+     first is told, wait without being told. Cores that have not panicked go on running: stopping them, and putting
+     the processor to sleep instead of spinning (`wfi`, `hlt`), differ from one machine to the next, so they are
+     `onPanic`'s, as in Rust. Rust's `#[panic_handler]`, which cannot return; SG has no type for a function
+     that never returns, so the waiting is the runtime's.
+900. **`allocate` and `release`**: `raw byte allocate(nuint size, nuint align)` and `void release(raw byte
+     block, nuint size, nuint align)` in the root module, both or neither, are where every block comes from
+     and goes back to: texts, lists, `new`, `shared`, `Memory.allocate`. A block keeps its size and its
+     alignment in the 16 bytes in front of it (as many as its alignment when that is more), so `release` is
+     told what `allocate` was asked, as Rust's `GlobalAlloc` is told the layout; nothing else is kept. A
+     `null` from `allocate` is the panic "there is no memory left: `allocate` gave `null`".
+901. **A program without them allocates nothing**: a statement that would is an error there ("this allocates
+     memory, and this program has no `allocate`"), with the hint of the two signatures; a call of a function
+     of the language's own module that allocates is named. What allocates is read from the C the back end
+     wrote: the functions of the runtime and the helpers that call `malloc` or its kin, directly or through
+     each other, and the statements that call one. An `assert` on values that are written when it fails
+     allocates, and is refused too.
+902. **`allocate` and `release` allocate nothing**: a statement in them that allocates, or that calls a
+     function of the program that does, is an error; it would call `allocate` again.
+903. **What needs a system is an error where the program writes it**: `print`, `printError` and `exit`;
+     files, streams and `Stdin`; the network; tasks, `async`, `await`, `Task.delay` and cancellation;
+     `locked` values and `lock`; the clock (`Instant.now`, `DateTime.now`); the system's random bytes
+     (`SecureRandom`, `Random.fromSystem`); `HashMap` and `HashSet`, whose key is drawn from them; the
+     environment, folders, other programs and signals; `errno`; the functions of `<math.h>` (`sqrt`,
+     `floor`, `round`, `sin`, `pow` and the others) and `double.parse`, which is C's `strtod`. A type that
+     holds one of them in a signature or a field is an error too. A function of the language's own module
+     that needs a system is an error at the call the program wrote, saying why ("`Instant.now` needs an
+     operating system: it reads the clock of the system"); those of them nothing calls are left out of the
+     C. Everything else is there: numbers (with `abs`, `min` and `max` of fractional ones), text and its
+     methods, `List`, structs and enums, `match`, `Result`, `T*`, `shared`, `weak`, atomics, raw memory and
+     `volatile`, `extern` functions and C files, `export` and `CFunc`, `Duration`, `Random.fromSeed`, `Path`.
+904. **The little of C's library the runtime uses is written into the program**: a `vsnprintf` for the
+     conversions the runtime and the program write (a test holds it to the C library's for each of them),
+     `strlen`, `memchr`, and `frexp` and `ldexp` by the bits of the number; `isinf`, `signbit`, `fabs` and the
+     others are the compiler's builtins. The one way left to C's library, `%f` for more than 18 digits after
+     the point or a number too large or too small for the exact way (`{x:F20}`, `{1e30:F2}`), is a panic;
+     so is `strtod`, which only the refused `double.parse` reaches, but which GCC compiles in a debug build
+     even when nothing calls it.
+905. **`memcpy`, `memmove`, `memset` and `memcmp`** are defined in the object as weak functions, so that it
+     links alone and the machine's own take their place: a C compiler calls them for a copy of a struct
+     even without a system, as GCC documents, and Rust's `compiler_builtins` gives them too. They are loops
+     of bytes; on macOS `bzero` is one more. The C compiler's own library (`__udivti3` for the division of
+     128 bits the runtime does, and on 64-bit ARM GCC's atomics, `__aarch64_swp4_acq_rel`) comes from the
+     link, `-lgcc` or compiler-rt's builtins, which `sg build` says.
+906. **Machines of 64 bits**: the runtime holds a value of any integer type in `__int128`, which Clang and
+     GCC have only for 64-bit targets. A device of 32 bits (Cortex-M, RV32) waits ("Not here yet").
+907. **No report of `shared` values left alive**: a program without a system does not end.
+908. **The interpreter**: it does not run such a program (`sg folder` says it is built with
+     `--freestanding`), and cannot link a root whose `extern` block names functions of the machine; the
+     modules that need no machine are tested as any others (`sg test examples/bare/log`).
+909. **`examples/bare`**: a program for a machine without a system, run here by a machine of this
+     computer. `heap.sg` is an
+     allocator over the memory the machine gives, with a `Heap` at its start and the blocks given back in a
+     list that a request of the same size takes again; `onPanic` writes to the machine's console and stops
+     it. The module `log` keeps a ring of readings in a `List`, tells each against its limits with an enum
+     that is `Formattable`, and is tested in the interpreter and compiled. `start` writes with `$"..."` and
+     widths, keeps a `new` value, and `readingAt(7)` panics past the end of a list, told through `onPanic`,
+     after which the machine stops with 101. `report` counts the blocks: all are given back but one, the
+     room the runtime writes values into text with, which it keeps. `machine.c` is its machine for the
+     tests: a program of this computer that gives the memory, shows what is written and calls the
+     functions, as a kernel's start code would.
+910. **The tests**: `tests/freestanding.rs`. `refused`: seventeen programs the build refuses, each with its
+     message (`error_*.out`). `built_and_run`: `ok_runtime` (texts and their searches, a sort, a struct and
+     an enum written, fractional numbers, `{x:F3}`, `{n:X4}`, widths, the case of Unicode, `shared`, an
+     atomic, raw memory, `CString`, `Duration`), whose output is that of the interpreter for the same program
+     with `print`, and `ok_panic_stops` (an overflow told with its hint), each debug and release, compiled
+     with `-Wall -Wextra -Werror` for this computer and for `aarch64-none-elf`, `x86_64-none-elf` and
+     `riscv64-unknown-elf` where Clang knows them, `nm -u` seeing only the functions of the machine and those
+     of the compiler's library, then run with `board.c`. `waits_after_a_panic`: an `onPanic` that returns
+     and panics again leaves the program waiting. `bare`: `examples/bare` built by `sg build`, debug,
+     release and for each target, linked with `machine.c` under `-Wall -Wextra -Werror -pedantic`, and run.
+     `formats_as_printf_does`: the `vsnprintf` of 904 against the C library's. `cargo test` passes on
+     macOS and on Linux in a container (with GCC there), where 348 of 1417 programs compile through C, 77 of
+     them under the thread sanitizer, and 26 of 32 programs of tests, `examples/bare/log` among them. Clang
+     19 on Linux also compiled the C of `examples/bare` and of both programs for `riscv64-unknown-elf`,
+     `aarch64-none-elf` and `x86_64-none-elf` under `-Werror`, each taking only the machine's functions
+     from outside; GCC, for 64-bit ARM, takes its atomics from its library too (905).
+911. **Nothing is measured**: the code is the code a program with a system runs; only the loops of 905 are
+     new, and a machine gives its own.
+912. **Windows**: a program without an operating system has none of Windows either; Clang builds it the same
+     way there (826).
+913. **The documents**: this list, the table at the top, "Not here yet", the paragraph on the back end; 04,
+     02 and 06 (with Rust's `#![no_std]`, `#[panic_handler]` and `#[global_allocator]`), the README of the
+     repository and the comments of the example.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -6208,6 +6324,14 @@ check off.
 - **Of the layout of C**: `packed(2)` and the other packings of `#pragma pack`; an alignment written on one
   field; `Memory.offsetOf`; `toBytes`; bit fields in a union, and in a `packed` struct (808); a union or a
   struct without a name inside another; a struct by value to a function of the program's own C file (824).
+- **Of a program without an operating system**: machines of 32 bits (906); a `HashMap` and a `HashSet`,
+  whose key would have to come from the machine; the functions of `<math.h>` written in SG or taken from
+  the compiler's builtins where the machine has the instruction; `double.parse`; `{x:F}` beyond 18 digits
+  or for a number too large or too small for the exact way, which is a panic (904); a C compiler other
+  than `cc` or Clang (`riscv64-unknown-elf-gcc`); a panic on a second core while the first is told is not
+  told (899); `memcpy` and its kin are loops of bytes (905); `sg test --compiled` of such a program; the
+  tests of a root module whose `extern` block names functions of the machine, which the interpreter cannot
+  link (908).
 - **Of a library built from SG**: constants in the header (C's program writes the numbers the functions
   give, as `main.c` does); a text given back to C other than into its buffer; a `T*` inside a plain struct
   or a list; a header of its own for a program's `export` functions; `pkg-config`; names of the header
@@ -6480,5 +6604,8 @@ atomic values with the orders of C11, checked when the program is compiled, and 
 of raw memory; `examples/queue` is a queue without locks for many producers and many consumers written with
 no `unsafe` (830-859). The ninety-first is written: `sg build --library` and `--shared` make a static or
 a shared library of SG with its header, C holds values of SG by their address and lends them back, and
-`examples/calclib` is a calculator in SG that a program of C uses (860-885). Next is building without an
-operating system.
+`examples/calclib` is a calculator in SG that a program of C uses (860-885). The ninety-third is written:
+`sg build --freestanding` gives an object for a machine without an operating system, which takes nothing of
+C's library, gives a panic to the program's `onPanic` and takes memory from its `allocate`; what needs a
+system is a compile error where it is written, and `examples/bare` runs with a machine of this computer
+(895-913). Next is a RISC-V kernel in QEMU.

@@ -1,0 +1,5 @@
+error: `Random.fromSystem` needs an operating system: it asks the system for random bytes, and this program is built without one
+  a program built with `--freestanding` runs where there is no operating system: what needs one is done through the machine itself, with raw memory and `Memory.writeVolatile`, or through a C file beside the program
+  --> error_random.sg:4:25
+ 4 |     var random = Random.fromSystem()
+   |                         ^^^^^^^^^^

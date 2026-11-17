@@ -35,6 +35,13 @@ pub struct Program {
     /// Built as a library C calls (`sg build --library` or `--shared`): no `main`, and at
     /// least one `export` function.
     pub library: bool,
+    /// Built without an operating system (`sg build --freestanding`): no `main`, at least one
+    /// `export` function, the program's `onPanic`, and nothing that needs a system.
+    pub freestanding: bool,
+    /// The functions of the language's own module a program built without an operating system
+    /// leaves out: those that need a system, which nothing it calls reaches. Filled in by the
+    /// checker.
+    pub left_out: std::collections::BTreeSet<String>,
 }
 
 /// One file: where its text lies, the module it belongs to (empty for the root, otherwise the

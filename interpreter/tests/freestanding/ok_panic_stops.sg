@@ -1,0 +1,22 @@
+// A panic told through `onPanic`, which stops the machine: an overflow in a debug build, with
+// the hint that names the method that does not panic.
+extern {
+    void board_write(raw byte text, nuint length)
+    void board_stop(int code)
+}
+
+int twice(int n) {
+    return n * 2
+}
+
+export void start() {
+    var bytes = "start\n".asBytes()
+    unsafe board_write(bytes.pointer(), (nuint)bytes.length())
+    _ = twice(2000000000)
+}
+
+void onPanic(read string message) {
+    var bytes = message.asBytes()
+    unsafe board_write(bytes.pointer(), (nuint)bytes.length())
+    unsafe board_stop(7)
+}

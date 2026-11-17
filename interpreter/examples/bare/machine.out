@@ -1,0 +1,17 @@
+SG without an operating system
+ 215: normal
+ 230: normal
+ 198: normal
+ 251: 11 over
+ 172: 8 under
+ 226: normal
+ 207: normal
+the last 4 of 7: [251, 172, 226, 207], average 214
+the highest kept is 251, reading 1 of them
+memory: 16 block(s) taken, 15 given back
+the third reading: 198
+memory: 19 block(s) taken, 18 given back
+panic: index 7 is out of range: the length is 7
+  --> bare/main.sg:78:12
+ 78 |     return readings[index]
+    |            ^^^^^^^^^^^^^^^

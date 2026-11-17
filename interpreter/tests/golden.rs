@@ -234,6 +234,8 @@ fn modules() {
     entries.push(root.join("examples/shutdown"));
     entries.push(root.join("examples/queue"));
     entries.push(root.join("examples/calclib"));
+    // The module of `examples/bare` that needs no machine: its tests.
+    entries.push(root.join("examples/bare/log"));
     entries.sort();
     for path in entries {
         if path.extension().is_some_and(|ext| ext == "sg") {
@@ -794,6 +796,7 @@ fn compiled_tests() {
     folders.push(root.join("examples/shutdown"));
     folders.push(root.join("examples/queue"));
     folders.push(root.join("examples/calclib"));
+    folders.push(root.join("examples/bare/log"));
     folders.sort();
     for path in folders {
         if path.join("tests.out").exists() {
