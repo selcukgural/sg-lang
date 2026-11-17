@@ -6468,6 +6468,114 @@ Linux and macOS. 963 to 979 were put to the author before the slice and approved
      `rustc-link-search`, `rpath`, the test harness), the README of the repository. Only 974 is measured:
      the speed of a program does not change, the count is in debug builds alone.
 
+Choices made in the ninety-seventh slice (the base of Windows), the first of the slices of Windows in 04's
+"Windows, the direction" (929, 931, 932, 935, 937, 938, 939), written on the branch `windows` and tried on a
+machine with Windows on 64-bit Arm. 980 to 998 were put to the author before the slice and approved on 17
+November 2026; at 980 the author chose that every program may ask, not only the language's own module:
+
+980. **Which system**: `OperatingSystem.isWindows()`, `isLinux()` and `isMacOS()` give a `bool` known when the
+     program is built (C#'s `OperatingSystem.IsWindows()`, Rust's `cfg!(windows)`). Both branches of an `if`
+     on one are checked on every system; the C of only the branch of this system is written, so the other
+     may call what this system has not. A program built `--freestanding` is on none. `Path` and
+     `Directory.temp()` are written with them.
+981. **What Windows does not run yet is a compile error** where it is written, when the program is built,
+     run or tested on Windows: `the network is not on Windows yet: the network and async input and output
+     come to Windows in the 99th slice`, with a note that names what this slice brings. A call of a
+     function of the language's own module that needs it is the error at the call (`Command.output` needs
+     the hundredth slice), found as a program without an operating system finds them (`freestanding.rs`
+     holds both rules now, `pending.rs` the one of Windows), the bodies of `test` blocks too. Tasks,
+     `locked`, cancellation and async functions wait for the 98th; the network, UDP and the async reads
+     and writes for the 99th; `Command`, `Process` and `Signals` for the 100th; `extern`, `export`, `CFunc`,
+     `Memory.addressOf` and the variables of C for the 101st. Each slice takes its lines out.
+982. **One runtime**: Windows is in the same pieces of C as Linux and macOS, behind `#if defined(_WIN32)` in
+     the functions at their bottom (`sg_sys_read`, `sg_sys_open`, `sg_fs_delete`...); `windows.h` comes
+     with `WIN32_LEAN_AND_MEAN`. A handle is kept where a descriptor is: Windows gives handles that keep
+     their value in 32 bits.
+983. **The compiler on Windows**: `src/cc.rs` finds it (`CC`, `clang` on the `PATH`, LLVM's folder, else an
+     error that says to install LLVM and the Build Tools) and gives it `-fuse-ld=lld -fms-runtime-lib=static`
+     (C's library inside the program), `-g` in a debug build (`x.pdb` beside it), and when it links: 8 MB
+     of stack for the main thread (`/STACK`), a manifest (UTF-8 as C's code page, long paths, Windows 10
+     and 11) embedded by LLVM's linker, `/MANIFESTUAC:NO`, and `/DEPENDENTLOADFLAG:0x1000`. A program
+     is `x.exe` when `-o` names no extension. The tests build with the same.
+984. **The console**: what goes to the output or the standard error is written with `WriteConsoleW` when
+     that is a console, the UTF-8 turned into UTF-16, a character cut between two writes kept until it
+     is whole and a byte that is not UTF-8 shown as U+FFFD; the code page of the console is not changed.
+     C's `printf`, `fputs`, `fwrite` and their kin reach `stdout` and `stderr` through functions of the
+     runtime (macros on Windows only), so nothing the back end writes changes. Into a file or a pipe the
+     bytes go as they are. The interpreter does the same over Rust's stream, which would refuse the
+     byte.
+985. **The console's input**: read with `ReadConsoleW` and given as UTF-8, a pair of UTF-16 cut between two
+     reads kept; Ctrl-Z at the start of a line ends it. Only the reads that wait; one a token can cancel
+     comes with the 99th.
+986. **The command line and the environment**: the words come from `GetCommandLineW` and
+     `CommandLineToArgvW` as UTF-8 (on 1809 as on 11, whatever the manifest says), and a variable from
+     `GetEnvironmentVariableW`, its name matched without case. A half of a pair of UTF-16 that stands alone
+     becomes the bytes it would have (WTF-8), so it is the error of a text that is not UTF-8, at its place.
+     The interpreter reads Rust's `OsStr` the same way (`as_encoded_bytes`).
+987. **Files and paths** (932 built): every call is a `W` function; a path of 248 characters or more goes to
+     Windows made whole with `\\?\` in front, as Rust does it. A file is opened so that others may read,
+     write, rename and delete it; `File.delete` takes the name away at once (POSIX semantics) and deletes a
+     file that may only be read, as Linux does; `File.move` is `MoveFileExW` without replacing, `File.copy`
+     `CopyFileExW` that fails on a file there; `Directory.deleteAll` holds the handle of each folder it is in,
+     so none can be swapped for a link, and removes a link or a junction without following it;
+     `Directory.list` gives names in the order of their UTF-8, a junction as a link; `createTemp` makes a
+     folder whose list of access has one entry, its owner. The codes of Windows are told apart as Rust tells
+     them (`ERROR_SHARING_VIOLATION` stays `Other(32)`); a folder opened as a file is `IsDirectory` and a
+     file on the way `NotDirectory`, as on Linux. `Path` takes `/` and `\` and the roots `C:\`, `C:`,
+     `\\server\share\`, `\\?\C:\`; `join` keeps a separator the first path ends with and writes `\`
+     otherwise, and `Directory.temp()` is the folder Windows gives (`GetTempPath2W`).
+988. **The clock and random bytes**: `QueryPerformanceCounter`, `GetSystemTimePreciseAsFileTime`, and
+     `ProcessPrng` loaded from the folder of the system once, as Rust loads it.
+989. **Memory**: a block aligned beyond 16 bytes comes from `_aligned_malloc` and goes back through
+     `_aligned_free`, wherever the back end gives one back (`sg_free_as`: a list, a `T*`, a map, the sort);
+     before this slice the sort took the alignment from the size and freed it with `free`, which Windows
+     ends the program for. The count of blocks counts them too.
+990. **A panic** ends with code 1 as elsewhere; a library's `abort` shows no window and sends no report
+     (`_set_abort_behavior`), and the streams are binary from the start (`sg_start`).
+991. **`sg test --compiled`** starts itself with `CreateProcessW` and `--only N`, from the path Windows
+     gives; the child gets this program's input and output and a pipe for its standard error, and no
+     other handle (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`). A test that ends with no message says its code in
+     hex.
+992. **Line ends**: `.gitattributes` keeps `\n` in every text file on checkout (`* text=auto eol=lf`), the
+     inputs of the tests byte for byte as before; a file of SG with `\r\n` is read as it was.
+993. **The tests on Windows** build with Clang as `sg build` does. The address and undefined-behaviour
+     sanitizers are tried once on a few lines: where one is missing the output says so (the check of
+     undefined behaviour then runs without its runtime, a fault stopping the program; on Windows 11 on
+     64-bit Arm with LLVM 23 both are there), and leaks are
+     looked at by the count of blocks of each debug build, since LeakSanitizer is not on Windows; the line
+     says that and that the thread sanitizer is not there either. On every system the programs the tests
+     start get the default action of `Interrupt` and `Quit`: a shell that starts `cargo test` in the
+     background has both ignored, and an ignored signal stays ignored in every program started after it,
+     so `ok_signals_process` failed there (the language's `Command` hands an ignored signal on, as Rust's
+     and Go's do; the author kept it so).
+994. **An output of its own on Windows**: `name.windows.out` beside `name.out` where Windows prints
+     otherwise: `ok_path`, `ok_path_join_inside` and `ok_path_roots` (the separator) and `ok_bit_fields`
+     (Microsoft's layout of bit fields). `UPDATE_GOLDEN=1` on Windows writes one only where the output is
+     not that of `name.out`. The place of an error is compared with `/` (`--> stock\\items.sg` is shown
+     with `\\` on Windows).
+995. **`tests/windows-pending.txt`**: the programs and the tests that wait for a later slice, each with the
+     slice; a program listed must be refused on Windows with "is not on Windows yet", and one that runs is
+     an error until it is taken off. Every slice shortens it; after the last it is empty.
+996. **The CI**: `.github/workflows/windows.yml` runs `cargo test --release` on `windows-latest` and
+     `windows-11-arm` for every push to `windows`, with `contents: read`, GitHub's `actions/checkout` pinned
+     to its commit (`persist-credentials: false`) as the only action, and a time limit; the repository
+     already allows only GitHub's own actions, pinned. Decided at the end of the slice: nobody waits for
+     it, and the tests on Windows are run whole when a release is near, not after every slice (a run on
+     the machine of Windows takes most of an hour); while a slice of Windows is written, a few programs
+     are tried there.
+997. **The interpreter on Windows**: what it asks the system is in `src/sys/unix.rs` and `src/sys/windows.rs`,
+     Windows' functions declared there, with no crate; signals wait in `src/sys/signals_windows.rs`, the
+     network and the scheduler's wait behind `cfg(unix)` in `net.rs`, and what a later slice brings is
+     unreachable, since the checker refuses it first.
+998. **Documents**: this list, the tables at the top, "Not here yet" (821), "Next"; 04 ("Windows, the
+     direction" as built, a row for `OperatingSystem`), 02 ("Which system", paths on Windows), 06
+     (`cfg!(windows)`, `Path::join` on Windows), the README of the repository. Nothing is measured.
+     `cargo test` passes on macOS, on Linux in a container (353 of 1439 programs compile through C, 78
+     of them under the thread sanitizer, 26 of 32 programs of tests) and on Windows 11 on 64-bit Arm,
+     where 254 programs compile through C and run under the address and undefined-behaviour sanitizers,
+     which Clang has there, 12 programs of tests, and the 124 lines of `tests/windows-pending.txt` wait
+     for their slices. New: `ok_path_roots`.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -6572,6 +6680,12 @@ check off.
 
 ## Not here yet
 
+- **Of Windows**, after its first slice: tasks, `locked` and async (98); the network and async input and
+  output, a cancelled wait for the console among them (99); other programs and signals (100); C, `-L`
+  (a path of Windows has a `:`, which the check of a folder refuses), `--library` and `--shared` (101);
+  `--freestanding` and the kernel, and the tests of C's layouts (`tests/layouts.rs`), which are run on
+  Linux and macOS for Windows' rules already (102, `tests/windows-pending.txt`). The character a console
+  write keeps for the next is kept for each stream, not for each thread, until threads come (98).
 - **Of datagrams**: multicast, sending to every host of a network (broadcast), the options of a socket (the
   time to live, the size of its buffers), a look at a datagram that leaves it in the socket (`peek`), and the
   zone of a v6 address (`fe80::1%en0`), so a link-local address cannot be answered (648).
@@ -6586,8 +6700,7 @@ check off.
 - **Of raw memory**: a place in it lent (`read p[i]`, `ref p[i]`, a method called on `p[i]`, 511); items that
   own memory (the design's `put`, `take` and `moveItems`); `Memory.resize`; the address of a variable (85,
   `Memory.addressOf`). In the interpreter a window of `Memory.viewRef` over memory C gave does not see what
-  C writes there after it was made (819). On Windows, the blocks the runtime aligns beyond 16 bytes are to
-  be given back with `_aligned_free` where the back end frees them (821).
+  C writes there after it was made (819).
 - **Of the layout of C**: `packed(2)` and the other packings of `#pragma pack`; an alignment written on one
   field; `Memory.offsetOf`; `toBytes`; bit fields in a union, and in a `packed` struct (808); a union or a
   struct without a name inside another; a struct by value to a function of the program's own C file (824).
@@ -6901,6 +7014,9 @@ Windows on every push to its branch. What does not need Windows comes first, on 
 ninety-fifth slice is written: `CLong` and `CULong` (C's `long`, 32 bits on Windows), `Path.joinInside`,
 `ExitStatus.Code(int)`, `C.lastError()` and `IoError.fromErrno` (943-962); the ninety-sixth is written:
 `-L folder`, an `extern` block named by several names of its library, `sg test --compiled` without `fork`,
-and a count of the blocks of values that reports a leak on every system (963-979). Next are six slices of
-Windows: the base, threads and tasks, the
-network, other programs and signals, C, and everything tested and measured on both machines.
+and a count of the blocks of values that reports a leak on every system (963-979). Six slices of Windows
+follow; the first, the base, is written: the interpreter and compiled programs run there with the console,
+files and paths, the clock, random bytes and the environment, `OperatingSystem.isWindows()` tells a
+program its system, and what Windows does not run yet is a compile error that names its slice (980-998).
+Next are threads and tasks, the network, other programs and signals, C, and everything tested and measured
+on both machines.

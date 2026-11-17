@@ -8,8 +8,17 @@
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
-use std::os::unix::io::{AsRawFd, RawFd};
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+
+use crate::sys::RawFd;
+
+/// What the scheduler hears a thread through: a pair of sockets. Windows has the scheduler's
+/// wait in a later slice, and nothing that needs it runs there before.
+#[cfg(windows)]
+pub struct UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -112,6 +121,7 @@ pub fn lookup(host: &str) -> Option<Vec<IpAddr>> {
 /// for it.
 pub struct Done {
     ids: Mutex<Vec<u64>>,
+    #[cfg_attr(windows, allow(dead_code))]
     tell: Mutex<UnixStream>,
 }
 
@@ -123,6 +133,12 @@ pub struct Wake {
 }
 
 impl Wake {
+    #[cfg(windows)]
+    pub fn new() -> io::Result<Wake> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "tasks come to Windows in the 98th slice"))
+    }
+
+    #[cfg(unix)]
     pub fn new() -> io::Result<Wake> {
         let (hear, tell) = UnixStream::pair()?;
         hear.set_nonblocking(true)?;
@@ -130,6 +146,13 @@ impl Wake {
     }
 
     /// The work that has ended since the last time, in the order it ended.
+    #[cfg(windows)]
+    pub fn ended(&self) -> Vec<u64> {
+        std::mem::take(&mut *self.done.ids.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+
+    /// The work that has ended since the last time, in the order it ended.
+    #[cfg(unix)]
     pub fn ended(&self) -> Vec<u64> {
         let mut drained = [0u8; 64];
         while matches!(io::Read::read(&mut &self.hear, &mut drained), Ok(n) if n > 0) {}
@@ -141,10 +164,12 @@ impl Done {
     /// Work `id` has ended: the scheduler hears of it.
     pub fn tell(&self, id: u64) {
         self.ids.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(id);
+        #[cfg(unix)]
         let _ = io::Write::write(&mut &*self.tell.lock().unwrap_or_else(|poisoned| poisoned.into_inner()), &[1]);
     }
 }
 
+#[cfg(unix)]
 #[repr(C)]
 struct PollFd {
     fd: RawFd,
@@ -152,14 +177,17 @@ struct PollFd {
     revents: i16,
 }
 
+#[cfg(unix)]
 const POLLIN: i16 = 0x1;
+#[cfg(unix)]
 const POLLOUT: i16 = 0x4;
 
 #[cfg(target_os = "linux")]
 type Nfds = std::ffi::c_ulong;
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 type Nfds = std::ffi::c_uint;
 
+#[cfg(unix)]
 extern "C" {
     fn poll(fds: *mut PollFd, nfds: Nfds, timeout: std::ffi::c_int) -> std::ffi::c_int;
 }
@@ -167,6 +195,12 @@ extern "C" {
 /// Waits until one of the sockets is ready (`true` to write), or `limit` has gone by; `None`
 /// waits as long as it takes. Gives which are ready. A wait that a signal cut short gives
 /// none, and is waited again by the caller.
+#[cfg(windows)]
+pub fn wait(_sockets: &[(RawFd, bool)], _limit: Option<Duration>) -> Vec<bool> {
+    unreachable!("tasks come to Windows in the 98th slice, and the checker refuses them before")
+}
+
+#[cfg(unix)]
 pub fn wait(sockets: &[(RawFd, bool)], limit: Option<Duration>) -> Vec<bool> {
     let mut fds: Vec<PollFd> = sockets.iter().map(|&(fd, write)| PollFd { fd, events: if write { POLLOUT } else { POLLIN }, revents: 0 }).collect();
     let timeout = match limit {
@@ -183,6 +217,12 @@ pub fn wait(sockets: &[(RawFd, bool)], limit: Option<Duration>) -> Vec<bool> {
 }
 
 /// The descriptor a wait looks at.
+#[cfg(unix)]
 pub fn fd_of<T: AsRawFd>(socket: &T) -> RawFd {
     socket.as_raw_fd()
+}
+
+#[cfg(windows)]
+pub fn fd_of<T>(_socket: &T) -> RawFd {
+    unreachable!("the network comes to Windows in the 99th slice, and the checker refuses it before")
 }

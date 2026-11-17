@@ -1,0 +1,44 @@
+# The tests on Windows (design/04, "Windows, the direction"): every push to the branch of Windows
+# runs `cargo test` on x86-64 and on 64-bit Arm. Nobody waits for them: what they find is noted and
+# made right before a release, when Windows is tested whole. Linux and macOS are tested where the
+# code is written. The only action is GitHub's own checkout, pinned to its commit; the token only
+# reads.
+name: windows
+
+on:
+  push:
+    branches: [windows]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        machine: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.machine }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: interpreter
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Rust and LLVM come with GitHub's images of Windows; a machine without them fails here.
+      - name: Tools
+        run: |
+          cargo --version
+          $clang = (Get-Command clang -ErrorAction SilentlyContinue).Source
+          if (-not $clang) { $clang = 'C:\Program Files\LLVM\bin\clang.exe' }
+          & $clang --version
+      - name: Tests
+        run: cargo test --release

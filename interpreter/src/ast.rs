@@ -310,6 +310,8 @@ pub enum Callee {
     /// `Task.whenAny(ref tasks)`: gives what the first task of the list to end gave, and
     /// takes that task out of the list. Awaited or waited for where it is written.
     WhenAny,
+    /// `OperatingSystem.isWindows()` and its two siblings: known when the program is built.
+    Os(Os),
     /// `Task.delay(ms)`: a task that ends when that many milliseconds have gone by. With a
     /// token (`Task.delay(ms, read token)`, the `bool`), it ends early when the token is
     /// cancelled, and gives a `Result<void, Cancelled>`.
@@ -337,6 +339,26 @@ pub enum Callee {
 
 /// The functions of `Memory` that are called on raw memory; `Memory.allocate<T>(n)` is an
 /// `Allocate`, since it names a type.
+/// An operating system `OperatingSystem` asks about.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Os {
+    Windows,
+    Linux,
+    MacOS,
+}
+
+impl Os {
+    /// Whether the interpreter, and the program the back end builds, run on it: they run where
+    /// they are built, since nothing is built for another system yet.
+    pub fn here(self) -> bool {
+        match self {
+            Os::Windows => cfg!(windows),
+            Os::Linux => cfg!(target_os = "linux"),
+            Os::MacOS => cfg!(target_os = "macos"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum MemoryCall {
     /// `Memory.free(p)`: gives back what `Memory.allocate` gave; `null` is let be.
@@ -568,6 +590,8 @@ pub enum SystemCall {
     Current,
     /// `System.makeTemp(template)`: `mkdtemp`.
     MakeTemp,
+    /// `System.tempFolder()`: the folder for files that do not have to stay, as Windows gives it.
+    TempFolder,
     /// `System.variable(name, ref bytes)`: a variable of the environment, `false` when it is not set.
     Variable,
     /// `System.executable(path)`: 1 for a file this program may run, 2 for a file it may not, 0

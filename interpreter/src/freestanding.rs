@@ -118,14 +118,44 @@ struct Body {
     calls: Vec<(String, Span)>,
 }
 
-fn scan(func: &Func) -> Body {
+/// How one rule is told: what an expression and a type need, and how an error says it.
+pub(crate) struct Rule {
+    /// What an expression does by itself that the rule forbids, with where.
+    pub needs: fn(&Expr) -> Option<(Span, String)>,
+    /// What a type holds that the rule forbids.
+    pub type_needs: fn(&Ty) -> Option<String>,
+    /// What a `lock` block and an async function are, as the message says them.
+    pub lock: &'static str,
+    pub async_fn: &'static str,
+    /// The error of what the program writes itself.
+    pub direct: fn(&str) -> String,
+    /// The error of a call of a function of the language's own module: its name and what it does.
+    pub call: fn(&str, &str) -> String,
+    pub note: &'static str,
+    /// Whether the bodies of `test` blocks are held to it too.
+    pub tests: bool,
+}
+
+/// A program built without an operating system.
+const FREESTANDING: Rule = Rule {
+    needs,
+    type_needs: system_type,
+    lock: "a `lock` block takes a lock of the system",
+    async_fn: "an async function runs on the tasks of the system",
+    direct: |what| format!("{what}, and this program is built without an operating system"),
+    call: |callee, what| format!("`{callee}` needs an operating system: {what}, and this program is built without one"),
+    note: NOTE,
+    tests: false,
+};
+
+fn scan(body_of: &Block, is_async: bool, name_span: Span, rule: &Rule) -> Body {
     let mut body = Body::default();
     let mut lock = None;
     walk_block(
-        &func.body,
+        body_of,
         &mut |expr| {
             if body.itself.is_none() {
-                body.itself = needs(expr).or_else(|| system_type(&expr.ty).map(|what| (expr.span, what)));
+                body.itself = (rule.needs)(expr).or_else(|| (rule.type_needs)(&expr.ty).map(|what| (expr.span, what)));
             }
             if let Some(call) = calls(expr) {
                 body.calls.push(call);
@@ -137,11 +167,11 @@ fn scan(func: &Func) -> Body {
     );
     if let Some(span) = lock {
         if body.itself.as_ref().is_none_or(|(first, _)| span.start < first.start) {
-            body.itself = Some((span, "a `lock` block takes a lock of the system".to_string()));
+            body.itself = Some((span, rule.lock.to_string()));
         }
     }
-    if func.is_async {
-        body.itself = Some((func.name_span, "an async function runs on the tasks of the system".to_string()));
+    if is_async {
+        body.itself = Some((name_span, rule.async_fn.to_string()));
     }
     body
 }
@@ -150,9 +180,14 @@ fn scan(func: &Func) -> Body {
 /// need a system, which are left out of the C. `declared`: the types the program writes in the
 /// signatures of its functions and in its fields, with where.
 pub fn check(prog: &Program, declared: &[(Span, Ty)]) -> Res<BTreeSet<String>> {
+    hold(prog, declared, &FREESTANDING)
+}
+
+/// Holds the program to a rule (see `check`).
+pub(crate) fn hold(prog: &Program, declared: &[(Span, Ty)], rule: &Rule) -> Res<BTreeSet<String>> {
     for (span, ty) in declared {
-        if let Some(what) = system_type(ty) {
-            return Err(Diag::error(*span, format!("{what}, and this program is built without an operating system")).note(NOTE));
+        if let Some(what) = (rule.type_needs)(ty) {
+            return Err(Diag::error(*span, (rule.direct)(&what)).note(rule.note));
         }
     }
     // Every body, under the name a call reaches it by, in the order it is written.
@@ -160,7 +195,10 @@ pub fn check(prog: &Program, declared: &[(Span, Ty)]) -> Res<BTreeSet<String>> {
     for (owner, methods) in prog.structs.iter().map(|decl| (&decl.name, &decl.methods)).chain(prog.enums.iter().map(|decl| (&decl.name, &decl.methods))) {
         bodies.extend(methods.iter().map(|method| (format!("{owner}.{}", method.name), method)));
     }
-    let scans: Vec<(String, Body, bool)> = bodies.iter().map(|(name, func)| (name.clone(), scan(func), name.starts_with(STD_PREFIX))).collect();
+    let mut scans: Vec<(String, Body, bool)> = bodies.iter().map(|(name, func)| (name.clone(), scan(&func.body, func.is_async, func.name_span, rule), name.starts_with(STD_PREFIX))).collect();
+    if rule.tests {
+        scans.extend(prog.tests.iter().map(|test| (String::new(), scan(&test.body, false, test.name_span, rule), false)));
+    }
 
     // Which functions of the language's own module need a system: those that do it
     // themselves, then those that call them, until nothing more is found.
@@ -200,10 +238,10 @@ pub fn check(prog: &Program, declared: &[(Span, Ty)]) -> Res<BTreeSet<String>> {
             (None, None) => continue,
         };
         return Err(match first {
-            Err((span, what)) => Diag::error(span, format!("{what}, and this program is built without an operating system")).note(NOTE),
+            Err((span, what)) => Diag::error(span, (rule.direct)(&what)).note(rule.note),
             Ok((callee, at)) => {
                 let what = inner(callee, &need);
-                Diag::error(at, format!("`{}` needs an operating system: {what}, and this program is built without one", shown(callee))).note(NOTE)
+                Diag::error(at, (rule.call)(&shown(callee), &what)).note(rule.note)
             }
         });
     }

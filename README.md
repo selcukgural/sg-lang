@@ -203,7 +203,11 @@ two slices of what every system gains first (both are written: C's `long`, a nam
 codes of 32 bits a program of Windows ends with, the system's last error; then `-L folder`, a library named by
 each of its names on the systems, tests run without `fork`, and a debug build that counts the blocks of its
 values and reports a leak on every system), then six slices of Windows, and a preview of the language after
-them.
+them. The first slice of Windows is written: the interpreter runs there, and `sg build` builds with Clang a
+program that prints to the console in UTF-8 without touching its code page, reads and writes files, lists,
+moves and deletes them as on Linux, reads the clock, random bytes, its command line and the environment, and
+runs its tests; a program can ask which system it is built for (`OperatingSystem.isWindows()`), and what
+Windows does not run yet is a compile error that names the slice that brings it.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is

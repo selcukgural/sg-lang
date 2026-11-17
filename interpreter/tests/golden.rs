@@ -4,6 +4,9 @@
 
 use std::path::{Path, PathBuf};
 
+mod pending;
+use pending::waits_on_windows;
+
 /// What a program is given besides its source: the words of its command line, one on each
 /// line of the `.args` file next to it, and its input, the `.in` file. `{dir}` in a word is a
 /// folder of its own that the program can write into; the folder is written back as `{dir}`
@@ -25,6 +28,70 @@ fn given(path: &Path, work: &Path) -> Given {
     };
     let input = std::fs::read(path.with_extension("in")).unwrap_or_default();
     Given { args, input, dir }
+}
+
+/// The output a program is held to: `name.out`, or on Windows `name.windows.out` where the output
+/// is not the same there (a path written with `\`).
+fn golden_of(out: &Path) -> PathBuf {
+    if cfg!(windows) {
+        let stem = out.file_stem().unwrap().to_string_lossy();
+        let windows = out.with_file_name(format!("{stem}.windows.out"));
+        if windows.exists() {
+            return windows;
+        }
+    }
+    out.to_path_buf()
+}
+
+/// Where `UPDATE_GOLDEN=1` writes the output of a program: on Windows into `name.windows.out`
+/// when it is not what `name.out` holds (and that file goes when it is).
+fn write_golden(out: &Path, actual: &str) {
+    if cfg!(windows) {
+        let stem = out.file_stem().unwrap().to_string_lossy();
+        let windows = out.with_file_name(format!("{stem}.windows.out"));
+        match std::fs::read_to_string(out).is_ok_and(|common| common == actual) {
+            true => {
+                let _ = std::fs::remove_file(&windows);
+            }
+            false => std::fs::write(&windows, actual).unwrap(),
+        }
+        return;
+    }
+    std::fs::write(out, actual).unwrap();
+}
+
+/// On Windows, a program that waits for a later slice must be refused by the checker as such:
+/// `None` when its output says so, else what is wrong with the list.
+fn held_back(name: &str, actual: &str) -> Option<String> {
+    match actual.contains("is not on Windows yet") {
+        true => None,
+        false => Some(format!("--- {name}\nis listed in tests/windows-pending.txt, but was not refused as waiting for a later slice: take it off the list if it runs\nactual:\n{actual}")),
+    }
+}
+
+/// A program the tests start gets the default action of `Interrupt` and `Quit`, whatever this
+/// process was given: a shell that starts `cargo test` in the background (`&`, without job
+/// control) has both ignored, an ignored signal stays ignored in every program started after it,
+/// and a test that sends one (`ok_signals_process`) would then depend on how the tests were
+/// started.
+fn default_signals(command: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        extern "C" {
+            fn signal(number: i32, handler: usize) -> usize;
+        }
+        // SAFETY: between `fork` and `exec` the closure only calls `signal`, which may be called
+        // there, and allocates nothing. 0 is SIG_DFL.
+        unsafe {
+            command.pre_exec(|| {
+                signal(2, 0);
+                signal(3, 0);
+                Ok(())
+            });
+        }
+    }
+    command
 }
 
 /// The exit code is part of what a program did when it is neither 0 nor 1 (1 is also what a
@@ -70,9 +137,64 @@ const GCC_SEES_WHAT_IS_NOT_THERE: [(&str, &str); 4] = [
 fn c_compiler_is_gcc() -> bool {
     static IS_GCC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *IS_GCC.get_or_init(|| {
+        if cfg!(windows) {
+            return false;
+        }
         let version = std::process::Command::new("cc").arg("--version").output().map(|out| String::from_utf8_lossy(&out.stdout).into_owned()).unwrap_or_default();
         !version.contains("clang")
     })
+}
+
+/// The C compiler of the tests: the one `sg build` uses (`cc` on Linux and macOS, Clang on
+/// Windows), with what it is given on this system before the C file.
+fn c_command() -> std::process::Command {
+    static COMPILER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let compiler = COMPILER.get_or_init(|| sg::cc::compiler().unwrap_or_else(|error| panic!("{error}")));
+    let mut command = std::process::Command::new(compiler);
+    command.args(sg::cc::compile_flags(false));
+    command
+}
+
+/// What the C compiler is given after the C file to link a program on this system.
+fn system_libs(work: &Path) -> Vec<String> {
+    sg::cc::link_flags(work).unwrap()
+}
+
+/// A program built into `work`: on Windows with `.exe`.
+fn program_at(work: &Path, stem: &str) -> PathBuf {
+    PathBuf::from(sg::cc::program_file(&work.join(stem).to_string_lossy()))
+}
+
+/// The address and the undefined-behaviour sanitizers as this machine has them: both, with
+/// their runtime, on Linux and macOS. On Windows each is tried once on a program of a few lines;
+/// what it lacks is said in the output, not passed over: the undefined-behaviour check without
+/// its runtime stops the program at the fault (`-fsanitize-trap`).
+fn sanitizer_flags(work: &Path) -> Vec<String> {
+    static FLAGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    FLAGS
+        .get_or_init(|| {
+            let full = ["-fsanitize=address,undefined", "-fno-sanitize-recover=all"].map(String::from).to_vec();
+            if !cfg!(windows) {
+                return full;
+            }
+            let probe = work.join("sanitizer-probe.c");
+            std::fs::write(&probe, "#include <stdio.h>\nint main(void) { int x[2] = { 1, 2 }; printf(\"%d\\n\", x[1]); return 0; }\n").unwrap();
+            let address_trap = ["-fsanitize=address", "-fsanitize=undefined", "-fsanitize-trap=undefined"].map(String::from).to_vec();
+            let trap = ["-fsanitize=undefined", "-fsanitize-trap=undefined"].map(String::from).to_vec();
+            for (flags, said) in [(full, None), (address_trap, Some("undefined behaviour: checked without its runtime (a fault stops the program)")), (trap, Some("address sanitizer: not on this machine; undefined behaviour: checked without its runtime"))] {
+                let out = program_at(work, "sanitizer-probe");
+                let built = c_command().args(["-std=c11", "-O1", "-g"]).args(&flags).arg("-o").arg(&out).arg(&probe).output();
+                let ran = built.is_ok_and(|built| built.status.success()) && std::process::Command::new(&out).output().is_ok_and(|run| run.status.success());
+                if ran {
+                    if let Some(said) = said {
+                        eprintln!("{said}");
+                    }
+                    return flags;
+                }
+            }
+            panic!("the C compiler builds no program under the undefined-behaviour sanitizer on this machine");
+        })
+        .clone()
 }
 
 fn exit_line(code: Option<i32>) -> String {
@@ -89,7 +211,7 @@ fn run_file(path: &Path) -> String {
     // A signal reaches the whole process, and one no listener is left for ends it: a program
     // that sends signals runs in a process of its own, as compiled code does.
     if name.contains("signals") {
-        let run = std::process::Command::new(env!("CARGO_BIN_EXE_sg")).arg(&*name).current_dir(path.parent().unwrap()).stdin(std::process::Stdio::null()).output().unwrap();
+        let run = default_signals(&mut std::process::Command::new(env!("CARGO_BIN_EXE_sg"))).arg(&*name).current_dir(path.parent().unwrap()).stdin(std::process::Stdio::null()).output().unwrap();
         return format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -141,7 +263,21 @@ fn run_program(path: &Path, tests: bool, within: &Path) -> String {
         Err(sg::Stop::Exit(code)) => text.push_str(&exit_line(Some(code as i32))),
         Err(other) => text.push_str(&format!("{other:?}\n")),
     }
-    text.replace(&format!("{}/", within.display()), "")
+    let text = with_slashes(&text);
+    text.replace(&format!("{}/", within.display()), "").replace(&format!("{}/", within.display()).replace('\\', "/"), "")
+}
+
+/// On Windows the place of an error is written with `\` (`--> stock\items.sg:3:5`); the
+/// output of the program is compared with these written as on Linux and macOS.
+fn with_slashes(text: &str) -> String {
+    if !cfg!(windows) {
+        return text.to_string();
+    }
+    let lines = text.split_inclusive('\n').map(|line| match line.trim_start().starts_with("--> ") {
+        true => line.replace('\\', "/"),
+        false => line.to_string(),
+    });
+    lines.collect()
 }
 
 /// What a compiled program left behind when it ended: `None` if it freed everything it took,
@@ -252,16 +388,26 @@ fn modules() {
     assert!(runs.len() > 10);
 
     let mut failures = Vec::new();
+    let mut waiting = 0;
     for (path, tests, golden, within) in &runs {
         let actual = run_program(path, *tests, within);
-        if update {
-            std::fs::write(golden, &actual).unwrap();
+        let name = path.file_stem().unwrap().to_string_lossy();
+        if waits_on_windows(&name).is_some() {
+            waiting += 1;
+            failures.extend(held_back(&name, &actual));
             continue;
         }
-        let expected = std::fs::read_to_string(golden).unwrap_or_default();
+        if update {
+            write_golden(golden, &actual);
+            continue;
+        }
+        let expected = std::fs::read_to_string(golden_of(golden)).unwrap_or_default();
         if actual != expected {
             failures.push(format!("--- {}\nexpected:\n{expected}\nactual:\n{actual}", golden.strip_prefix(root).unwrap().display()));
         }
+    }
+    if waiting > 0 {
+        eprintln!("{waiting} program(s) with modules wait for later slices on Windows (tests/windows-pending.txt)");
     }
     assert!(failures.is_empty(), "{} program(s) differ:\n{}", failures.len(), failures.join("\n"));
 }
@@ -283,20 +429,30 @@ fn golden() {
     assert!(!files.is_empty());
 
     let mut failures = Vec::new();
+    let mut waiting = 0;
     for path in &files {
         let actual = run_file(path);
         let golden = path.with_extension("out");
-        if update {
-            std::fs::write(&golden, &actual).unwrap();
+        let stem = path.file_stem().unwrap().to_string_lossy();
+        if waits_on_windows(&stem).is_some() {
+            waiting += 1;
+            failures.extend(held_back(&stem, &actual));
             continue;
         }
-        let expected = std::fs::read_to_string(&golden).unwrap_or_default();
+        if update {
+            write_golden(&golden, &actual);
+            continue;
+        }
+        let expected = std::fs::read_to_string(golden_of(&golden)).unwrap_or_default();
         if actual != expected {
             failures.push(format!(
                 "--- {}\nexpected:\n{expected}\nactual:\n{actual}",
                 path.strip_prefix(root).unwrap().display()
             ));
         }
+    }
+    if waiting > 0 {
+        eprintln!("{waiting} program(s) wait for later slices on Windows (tests/windows-pending.txt)");
     }
     assert!(failures.is_empty(), "{} file(s) differ:\n{}", failures.len(), failures.join("\n"));
 }
@@ -313,9 +469,8 @@ fn golden() {
 #[test]
 fn compiled() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    if std::process::Command::new("cc").arg("--version").output().is_err() {
-        eprintln!("no C compiler (`cc`) found: the back end is not tested");
-        return;
+    if let Err(error) = sg::cc::compiler() {
+        panic!("{error}: the back end cannot be tested");
     }
     let work = root.join("target").join("compiled");
     std::fs::create_dir_all(&work).unwrap();
@@ -354,8 +509,8 @@ fn compiled() {
     let mut compiled = 0;
     let mut ended_in_panic = 0;
     let mut ended_by_signal = 0;
+    let mut leak_free_counted = 0;
     let mut failures = Vec::new();
-    // The programs to look at for leaks: the name, the program, the program under the sanitizers.
     // The programs to look at for leaks: the name, the program, the program under the
     // sanitizers, its command line and the file of its input.
     let mut built: Vec<(String, PathBuf, PathBuf, Vec<String>, PathBuf)> = Vec::new();
@@ -394,12 +549,12 @@ fn compiled() {
         let Ok(code) = code else { continue };
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         let stem = if with_modules { format!("modules-{stem}") } else { stem };
-        let (c_file, binary) = (work.join(format!("{stem}.c")), work.join(&stem));
+        let (c_file, binary) = (work.join(format!("{stem}.c")), program_at(&work, &stem));
         // A program with tasks or `locked` values runs on several threads, and so does one that
         // listens for signals (their relay is a thread).
         let threads = code.contains("#define SG_THREADS 1") || code.contains("#define SG_SIGNALS_ASYNC");
         std::fs::write(&c_file, &code).unwrap();
-        let cc = std::process::Command::new("cc").args(["-std=c11", "-O1", "-ffp-contract=off"]).args(warnings(&stem)).arg("-o").arg(&binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).arg("-lm").arg("-pthread").output().unwrap();
+        let cc = c_command().args(["-std=c11", "-O1", "-ffp-contract=off"]).args(warnings(&stem)).arg("-o").arg(&binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).args(system_libs(&work)).output().unwrap();
         if !cc.status.success() {
             failures.push(format!("--- {name}: the C compiler rejected it\n{}", String::from_utf8_lossy(&cc.stderr)));
             continue;
@@ -411,7 +566,7 @@ fn compiled() {
             std::fs::create_dir_all(&given.dir).unwrap();
             // Leaks are looked at on their own below (Linux's address sanitizer would look at
             // the end of every run and add its report to the output).
-            let mut child = std::process::Command::new(binary)
+            let mut child = default_signals(&mut std::process::Command::new(binary))
                 .args(&given.args)
                 .env("ASAN_OPTIONS", "detect_leaks=0")
                 .stdin(std::process::Stdio::piped())
@@ -433,13 +588,14 @@ fn compiled() {
         let shown = |run: &std::process::Output| {
             let text = format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
             let text = text.replace(&given.dir.display().to_string(), "{dir}");
-            if within.is_empty() { text } else { text.replace(&within, "") }
+            let text = with_slashes(&text);
+            if within.is_empty() { text } else { text.replace(&within, "").replace(&within.replace('\\', "/"), "") }
         };
         let actual = shown(&run);
         if release && std::env::var_os("UPDATE_GOLDEN").is_some() {
-            std::fs::write(&golden, &actual).unwrap();
+            write_golden(&golden, &actual);
         }
-        let expected = std::fs::read_to_string(&golden).unwrap_or_default();
+        let expected = std::fs::read_to_string(golden_of(&golden)).unwrap_or_default();
         // Tasks that print in compiled code do so in an order of their own: where the program
         // says so in its `.unordered` file, the lines are compared in any order.
         let unordered = path.with_extension("unordered").exists();
@@ -462,13 +618,15 @@ fn compiled() {
         // The same C again under the address and undefined-behaviour sanitizers: a use after
         // free, a double free or a read outside a buffer would stop the program here.
         if sanitizers {
-            let checked_binary = work.join(format!("{stem}-san"));
-            let cc = std::process::Command::new("cc")
-                .args(["-std=c11", "-O1", "-g", "-ffp-contract=off", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-o"])
+            let checked_binary = program_at(&work, &format!("{stem}-san"));
+            let cc = c_command()
+                .args(["-std=c11", "-O1", "-g", "-ffp-contract=off"])
+                .args(sanitizer_flags(&work))
+                .arg("-o")
                 .arg(&checked_binary)
                 .arg(&c_file)
                 .args(sg::emit_c::link_flags(&code))
-                .arg("-lm").arg("-pthread")
+                .args(system_libs(&work))
                 .output()
                 .unwrap();
             if cc.status.success() {
@@ -487,6 +645,10 @@ fn compiled() {
                     ended_in_panic += 1;
                 } else if run.status.code().is_none() {
                     ended_by_signal += 1;
+                } else if cfg!(windows) {
+                    // No LeakSanitizer on Windows: the count of blocks of the debug build looked
+                    // (`leak:` in the output, compared above).
+                    leak_free_counted += 1;
                 } else {
                     built.push((name.clone(), binary.clone(), checked_binary, given.args.clone(), path.with_extension("in")));
                 }
@@ -501,8 +663,8 @@ fn compiled() {
             if raced == 0 {
                 race_check_sees_a_race(&work);
             }
-            let raced_binary = work.join(format!("{stem}-tsan"));
-            let cc = std::process::Command::new("cc")
+            let raced_binary = program_at(&work, &format!("{stem}-tsan"));
+            let cc = c_command()
                 .args(["-std=c11", "-O1", "-g", "-ffp-contract=off", "-fsanitize=thread", "-o"])
                 .arg(&raced_binary)
                 .arg(&c_file)
@@ -525,8 +687,11 @@ fn compiled() {
     }
 
     // Leaks. First the check itself: it has to see a leak that is there.
-    let mut leak_free = 0;
-    if sanitizers {
+    let mut leak_free = leak_free_counted;
+    if sanitizers && cfg!(windows) {
+        eprintln!("leaks: looked at by the count of blocks of each debug build (LeakSanitizer is not on Windows); thread sanitizer: not on Windows");
+    }
+    if sanitizers && !cfg!(windows) {
         leak_check_sees_a_leak(&work);
 
         // Then every program, several at a time.
@@ -549,7 +714,7 @@ fn compiled() {
         found.sort();
         leak_free = built.len() - found.len();
         failures.extend(found);
-    } else {
+    } else if !sanitizers {
         eprintln!("SG_NO_SANITIZERS is set: the compiled programs were NOT run under the sanitizers and NOT looked at for leaks");
     }
     assert!(failures.is_empty(), "{} compiled program(s) differ:\n{}", failures.len(), failures.join("\n"));
@@ -558,7 +723,7 @@ fn compiled() {
         !sanitizers || leak_free + ended_in_panic + ended_by_signal == compiled,
         "only {leak_free} of {compiled} compiled programs were looked at for leaks ({ended_in_panic} ended in a panic, {ended_by_signal} by a signal)"
     );
-    assert!(!sanitizers || raced > 0, "no program on several threads ran under the thread sanitizer");
+    assert!(!sanitizers || raced > 0 || cfg!(windows), "no program on several threads ran under the thread sanitizer");
     eprintln!(
         "{compiled} of {total} programs compiled through C and gave the same output; {sanitized} also ran clean under the sanitizers, {raced} on several threads under the thread sanitizer; {leak_free} of those that did not end in a panic or by a signal left no memory behind ({ended_in_panic} ended in a panic, {ended_by_signal} by a signal)"
     );
@@ -571,6 +736,17 @@ fn compiled() {
 /// error is looked for before any input is given.
 #[test]
 fn compiled_input_waits_alone() {
+    match waits_on_windows("compiled_input_waits_alone") {
+        Some(why) => eprintln!("compiled_input_waits_alone waits on Windows: {why}"),
+        #[cfg(unix)]
+        None => compiled_input_waits_alone_here(),
+        #[cfg(not(unix))]
+        None => {}
+    }
+}
+
+#[cfg(unix)]
+fn compiled_input_waits_alone_here() {
     const PROGRAM: &str = r#"
 async Result<long, IoError> one() {
     var line = ""
@@ -641,6 +817,7 @@ async Result<void, IoError> main() {
 /// A token ends a wait for a line of the input at once, and the line that comes later is not
 /// lost: the next read gets it. The input is a pipe that is written only once the cancel has
 /// been seen on the standard error, in compiled code and in the interpreter alike.
+#[cfg(unix)]
 const INPUT_CANCEL: &str = r#"
 async Result<void, IoError> main() {
     var line = ""
@@ -656,6 +833,7 @@ async Result<void, IoError> main() {
 "#;
 
 /// Waits for the first line on `errors`, then writes `late\n` into `input` and lets it go.
+#[cfg(unix)]
 fn feed_after_cancel(errors: impl std::io::Read + Send + 'static, mut input: impl std::io::Write) -> Result<String, std::sync::mpsc::RecvTimeoutError> {
     use std::io::BufRead;
     let (send, lines) = std::sync::mpsc::channel();
@@ -672,6 +850,17 @@ fn feed_after_cancel(errors: impl std::io::Read + Send + 'static, mut input: imp
 
 #[test]
 fn compiled_input_cancel() {
+    match waits_on_windows("compiled_input_cancel") {
+        Some(why) => eprintln!("compiled_input_cancel waits on Windows: {why}"),
+        #[cfg(unix)]
+        None => compiled_input_cancel_here(),
+        #[cfg(not(unix))]
+        None => {}
+    }
+}
+
+#[cfg(unix)]
+fn compiled_input_cancel_here() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     if std::process::Command::new("cc").arg("--version").output().is_err() {
         eprintln!("no C compiler (`cc`) found: the back end is not tested");
@@ -700,6 +889,17 @@ fn compiled_input_cancel() {
 
 #[test]
 fn interpreted_input_cancel() {
+    match waits_on_windows("interpreted_input_cancel") {
+        Some(why) => eprintln!("interpreted_input_cancel waits on Windows: {why}"),
+        #[cfg(unix)]
+        None => interpreted_input_cancel_here(),
+        #[cfg(not(unix))]
+        None => {}
+    }
+}
+
+#[cfg(unix)]
+fn interpreted_input_cancel_here() {
     use std::os::unix::net::UnixStream;
     let (input, feeder) = UnixStream::pair().unwrap();
     let (mut err, errors) = UnixStream::pair().unwrap();
@@ -723,6 +923,17 @@ fn interpreted_input_cancel() {
 /// thread (`ok_pool_queues`). Under the thread sanitizer when it is there.
 #[test]
 fn compiled_small_pools() {
+    match waits_on_windows("compiled_small_pools") {
+        Some(why) => eprintln!("compiled_small_pools waits on Windows: {why}"),
+        #[cfg(unix)]
+        None => compiled_small_pools_here(),
+        #[cfg(not(unix))]
+        None => {}
+    }
+}
+
+#[cfg(unix)]
+fn compiled_small_pools_here() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     if std::process::Command::new("cc").arg("--version").output().is_err() {
         eprintln!("no C compiler (`cc`) found: the back end is not tested");
@@ -769,9 +980,8 @@ fn compiled_small_pools() {
 #[test]
 fn compiled_tests() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    if std::process::Command::new("cc").arg("--version").output().is_err() {
-        eprintln!("no C compiler (`cc`) found: the back end is not tested");
-        return;
+    if let Err(error) = sg::cc::compiler() {
+        panic!("{error}: the back end cannot be tested");
     }
     let work = root.join("target").join("compiled-tests");
     std::fs::create_dir_all(&work).unwrap();
@@ -805,8 +1015,10 @@ fn compiled_tests() {
     }
 
     let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
-    if sanitizers {
+    if sanitizers && !cfg!(windows) {
         leak_check_sees_a_leak(&work);
+    } else if sanitizers {
+        eprintln!("leaks of the compiled tests: looked at by the count of blocks of each debug build (LeakSanitizer is not on Windows)");
     } else {
         eprintln!("SG_NO_SANITIZERS is set: the compiled tests were NOT run under the sanitizers and NOT looked at for leaks");
     }
@@ -822,18 +1034,18 @@ fn compiled_tests() {
         // not compiled yet.
         let Ok(code) = sg::emit_c_tests(&sources, true) else { continue };
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
-        let (c_file, plain, checked) = (work.join(format!("{stem}.c")), work.join(&stem), work.join(format!("{stem}-san")));
+        let (c_file, plain, checked) = (work.join(format!("{stem}.c")), program_at(&work, &stem), program_at(&work, &format!("{stem}-san")));
         std::fs::write(&c_file, &code).unwrap();
         // The plain build is held to the warnings (see `warnings`); the one under the
         // sanitizers is the same C.
         let plain_flags: Vec<String> = ["-O1", "-g"].iter().map(|flag| flag.to_string()).chain(warnings(&stem)).collect();
         let mut builds = vec![(&plain, plain_flags)];
         if sanitizers {
-            builds.push((&checked, ["-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"].iter().map(|flag| flag.to_string()).collect()));
+            builds.push((&checked, ["-O1", "-g"].iter().map(|flag| flag.to_string()).chain(sanitizer_flags(&work)).collect()));
         }
         let mut rejected = false;
         for (binary, flags) in &builds {
-            let cc = std::process::Command::new("cc").args(["-std=c11", "-ffp-contract=off"]).args(flags).arg("-o").arg(binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).arg("-lm").arg("-pthread").output().unwrap();
+            let cc = c_command().args(["-std=c11", "-ffp-contract=off"]).args(flags).arg("-o").arg(binary).arg(&c_file).args(sg::emit_c::link_flags(&code)).args(system_libs(&work)).output().unwrap();
             if !cc.status.success() {
                 failures.push(format!("--- {name}: the C compiler rejected it ({})\n{}", flags.join(" "), String::from_utf8_lossy(&cc.stderr)));
                 rejected = true;
@@ -842,11 +1054,12 @@ fn compiled_tests() {
         if rejected {
             continue;
         }
-        let expected = std::fs::read_to_string(golden).unwrap_or_default();
+        let expected = std::fs::read_to_string(golden_of(golden)).unwrap_or_default();
         for (binary, _) in &builds {
             let run = std::process::Command::new(binary).output().unwrap();
             let actual = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
-            let actual = if within.is_empty() { actual } else { actual.replace(within.as_str(), "") };
+            let actual = with_slashes(&actual);
+            let actual = if within.is_empty() { actual } else { actual.replace(within.as_str(), "").replace(&within.replace('\\', "/"), "") };
             if actual != expected {
                 let which = if *binary == &checked { ", under the sanitizers" } else { "" };
                 failures.push(format!("--- {name}{which}\nexpected:\n{expected}\nactual:\n{actual}"));
@@ -866,6 +1079,9 @@ fn compiled_tests() {
                 match run.status.code() {
                     // There is no test of this number: all of them were looked at.
                     Some(3) => break,
+                    // On Windows the count of blocks of the debug build looked, and would have
+                    // said so and ended with 1.
+                    Some(0) if cfg!(windows) => alone += 1,
                     Some(0) => {
                         if let Some(report) = left_behind(&plain, &checked, &["--only", &only], Path::new("")) {
                             failures.push(format!("--- {name}, test {number}: memory was left behind\n{report}"));
@@ -892,6 +1108,17 @@ fn compiled_tests() {
 /// that is in a call of C; compiled code runs it on any thread.
 #[test]
 fn callbacks_end_the_process() {
+    match waits_on_windows("callbacks_end_the_process") {
+        Some(why) => eprintln!("callbacks_end_the_process waits on Windows: {why}"),
+        #[cfg(unix)]
+        None => callbacks_end_the_process_here(),
+        #[cfg(not(unix))]
+        None => {}
+    }
+}
+
+#[cfg(unix)]
+fn callbacks_end_the_process_here() {
     const PANICS: &str = r#"
 extern {
     void qsort(raw void base, nuint count, nuint size, CFunc<raw void, raw void, int> compare)
@@ -982,6 +1209,17 @@ static int32_t onThread(void) {
 
 #[test]
 fn process_path_lookup() {
+    match waits_on_windows("process_path_lookup") {
+        Some(why) => eprintln!("process_path_lookup waits on Windows: {why}"),
+        #[cfg(unix)]
+        None => process_path_lookup_here(),
+        #[cfg(not(unix))]
+        None => {}
+    }
+}
+
+#[cfg(unix)]
+fn process_path_lookup_here() {
     use std::os::unix::fs::PermissionsExt;
     const PROGRAM: &str = r#"
 void show(read string what, Result<string, ProcessError> done) {
@@ -1034,6 +1272,17 @@ void main() {
 /// shows the last one taken is seen, so none is folded into another.
 #[test]
 fn shutdown_on_signals() {
+    match waits_on_windows("shutdown_on_signals") {
+        Some(why) => eprintln!("shutdown_on_signals waits on Windows: {why}"),
+        #[cfg(unix)]
+        None => shutdown_on_signals_here(),
+        #[cfg(not(unix))]
+        None => {}
+    }
+}
+
+#[cfg(unix)]
+fn shutdown_on_signals_here() {
     use std::io::{BufRead, Read, Write};
     extern "C" {
         fn kill(pid: i32, signal: i32) -> i32;
@@ -1148,6 +1397,17 @@ fn shutdown_on_signals() {
 /// it; and the checker asks of a library what it gives C.
 #[test]
 fn libraries() {
+    match waits_on_windows("libraries") {
+        Some(why) => eprintln!("libraries waits on Windows: {why}"),
+        #[cfg(unix)]
+        None => libraries_here(),
+        #[cfg(not(unix))]
+        None => {}
+    }
+}
+
+#[cfg(unix)]
+fn libraries_here() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     if std::process::Command::new("cc").arg("--version").output().is_err() {
         eprintln!("no C compiler (`cc`) found: libraries are not tested");
@@ -1313,6 +1573,17 @@ fn libraries() {
 /// checks `null` only.
 #[test]
 fn handles_misused() {
+    match waits_on_windows("handles_misused") {
+        Some(why) => eprintln!("handles_misused waits on Windows: {why}"),
+        #[cfg(unix)]
+        None => handles_misused_here(),
+        #[cfg(not(unix))]
+        None => {}
+    }
+}
+
+#[cfg(unix)]
+fn handles_misused_here() {
     const PROGRAM: &str = r#"
 extern "./native.c" {
     void misuse(int how)
@@ -1428,9 +1699,19 @@ static void misuse(int32_t how) {
 /// the names a block gives, the first found is linked. A folder that is not there, or that
 /// others may write into, is an error. The program of tests starts itself again for each test
 /// from the path the system gives, also when it was started by a name found on `PATH`.
-#[cfg(unix)]
 #[test]
 fn library_folders() {
+    match waits_on_windows("library_folders") {
+        Some(why) => eprintln!("library_folders waits on Windows: {why}"),
+        #[cfg(unix)]
+        None => library_folders_here(),
+        #[cfg(not(unix))]
+        None => {}
+    }
+}
+
+#[cfg(unix)]
+fn library_folders_here() {
     use std::os::unix::fs::PermissionsExt;
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let sg_bin = env!("CARGO_BIN_EXE_sg");
@@ -1524,8 +1805,8 @@ fn block_count_sees_a_leak() {
         assert!(code.contains(find), "{name}: the place to leak at is not in the C");
         let c_file = work.join(format!("{name}.c"));
         std::fs::write(&c_file, code.replacen(find, &put, 1)).unwrap();
-        let binary = work.join(name);
-        let cc = std::process::Command::new("cc").args(["-std=c11", "-o"]).arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
+        let binary = program_at(&work, name);
+        let cc = c_command().args(["-std=c11", "-o"]).arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
         assert!(cc.status.success(), "{name}: {}", String::from_utf8_lossy(&cc.stderr));
         let run = std::process::Command::new(&binary).output().unwrap();
         let said = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));

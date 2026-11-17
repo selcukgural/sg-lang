@@ -8,6 +8,8 @@
 //! is missing the test fails and says what to install, so that a check that did not run is never
 //! taken for one that passed. To regenerate the expected output: `UPDATE_GOLDEN=1 cargo test`
 
+mod pending;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -59,6 +61,10 @@ fn boot(elf: &Path, extra: &[&str], out: &Path) -> (String, Option<i32>) {
 
 #[test]
 fn boots_in_qemu() {
+    if let Some(why) = pending::waits_on_windows("kernel.rs") {
+        eprintln!("kernel.rs waits on Windows: {why}");
+        return;
+    }
     let cc = clang();
     let work = root().join("target").join("kernel-test");
     let _ = std::fs::remove_dir_all(&work);

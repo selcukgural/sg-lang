@@ -1,0 +1,14 @@
+[C:\logs\report.txt] name [report.txt] parent [C:\logs] joined [C:\logs\report.txt\x]
+[C:report.txt] name [report.txt] parent [C:] joined [C:report.txt\x]
+[C:\] name [] parent [C:\] joined [C:\x]
+[C:] name [] parent [C:] joined [C:x]
+[\\server\share\report.txt] name [report.txt] parent [\\server\share\] joined [\\server\share\report.txt\x]
+[\\server\share] name [] parent [\\server\share] joined [\\server\share\x]
+[\\?\C:\report.txt] name [report.txt] parent [\\?\C:\] joined [\\?\C:\report.txt\x]
+[\\?\UNC\server\share\a.txt] name [a.txt] parent [\\?\UNC\server\share\] joined [\\?\UNC\server\share\a.txt\x]
+[\\.\COM1] name [] parent [\\.\COM1] joined [\\.\COM1\x]
+[/a/b] name [b] parent [/a] joined [/a/b\x]
+[a\b/c] name [c] parent [a\b] joined [a\b/c\x]
+logs\etc
+logs\etc
+true

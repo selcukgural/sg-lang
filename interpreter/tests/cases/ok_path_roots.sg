@@ -1,0 +1,12 @@
+// The roots of paths: `/` on every system; on Windows also a drive (`C:\`, `C:`), a share
+// (`\\server\share\`) and a path Windows takes as it is (`\\?\C:\`), whose parts are `\` or `/`.
+// On Linux and macOS a `\` is part of a name, so the same texts give other parts there.
+void main() {
+    var paths = List<string> { "C:\\logs\\report.txt", "C:report.txt", "C:\\", "C:", "\\\\server\\share\\report.txt", "\\\\server\\share", "\\\\?\\C:\\report.txt", "\\\\?\\UNC\\server\\share\\a.txt", "\\\\.\\COM1", "/a/b", "a\\b/c" }
+    for path in read paths {
+        print($"[{path}] name [{Path.fileName(path)}] parent [{Path.parent(path)}] joined [{Path.join(path, "x")}]")
+    }
+    print(Path.join("logs", "C:\\etc"))
+    print(Path.join("logs", "\\\\server\\share\\etc"))
+    print(OperatingSystem.isWindows() || OperatingSystem.isLinux() || OperatingSystem.isMacOS())
+}

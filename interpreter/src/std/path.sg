@@ -1,11 +1,15 @@
 // Paths as text: joining two, and the parts of one. A path is a `string`, as `File` takes it; these
-// functions only look at the `/` in it and never ask the system. A part they give is a view of the
-// path, not a copy. Written in SG and brought along by the language.
+// functions only look at the separators in it and never ask the system: `/` on Linux and macOS, `/`
+// and `\` on Windows, where a path may also start with a drive (`C:\`, `C:`) or a share
+// (`\\server\share\`, `\\?\C:\`). A part they give is a view of the path, not a copy. Written in SG
+// and brought along by the language.
 public struct Path {
-    // The two with one `/` between them: `Path.join("logs", "today.txt")` is `logs/today.txt`, and
-    // so is `Path.join("logs/", "today.txt")`. A second path that starts with `/` is still put after
-    // the first (`Path.join("logs", "/etc")` is `logs/etc`). An empty part gives the other one.
-    // The parts are joined as they are written, `..` with them: `Path.join("logs", "../etc")` is
+    // The two with one separator between them: `Path.join("logs", "today.txt")` is `logs/today.txt`
+    // on Linux and macOS and `logs\today.txt` on Windows; a separator at the end of the first is
+    // kept (`Path.join("logs/", "today.txt")` is `logs/today.txt` everywhere). A root at the start of the second path is left out (`Path.join("logs", "/etc")`
+    // is `logs/etc`, and on Windows `Path.join("logs", "C:\etc")` is `logs\etc`); a drive alone as
+    // the first is joined without one (`C:today.txt`). An empty part gives the other one. The parts
+    // are joined as they are written, `..` with them: `Path.join("logs", "../etc")` is
     // `logs/../etc`, outside `logs`. A name that comes from outside the program goes through
     // `joinInside`.
     public string join(read string first, read string second) {
@@ -15,15 +19,17 @@ public struct Path {
         if second.length() == 0 {
             return first.clone()
         }
-        var head = first
-        if head.endsWith('/') {
-            head = head[..head.length() - 1]
+        var tail = second[Path.rootLength(second)..]
+        if Path.isSeparator(first[first.length() - 1]) {
+            return $"{first}{tail}".toString()
         }
-        var tail = second
-        if tail.startsWith('/') {
-            tail = tail[1..]
+        if OperatingSystem.isWindows() {
+            if Path.rootLength(first) == 2 && first.length() == 2 {
+                return $"{first}{tail}".toString()
+            }
+            return $"{first}\\{tail}".toString()
         }
-        return $"{head}/{tail}".toString()
+        return $"{first}/{tail}".toString()
     }
 
     // `folder` and `name` joined as `join` joins them, for a name that comes from outside the
@@ -96,10 +102,87 @@ public struct Path {
         return tail == "¹" || tail == "²" || tail == "³"
     }
 
-    // What comes after the last `/`: `report.txt` in `logs/report.txt`, and the empty text in `logs/`.
+    // Whether the byte separates the parts of a path: `/`, and on Windows `\` too.
+    bool isSeparator(byte b) {
+        if OperatingSystem.isWindows() {
+            return b == '/' || b == '\\'
+        }
+        return b == '/'
+    }
+
+    // How many bytes the root at the start of the path takes, with the separator after it: 1 for
+    // `/`, 0 for a path without one. On Windows also `\`, a drive (`C:` 2, `C:\` 3), a share
+    // (`\\server\share\`), and a path Windows takes as it is (`\\?\C:\`, `\\?\UNC\server\share\`,
+    // `\\.\COM1\`).
+    nint rootLength(read string path) {
+        var n = path.length()
+        if n == 0 {
+            return 0
+        }
+        if !OperatingSystem.isWindows() {
+            if path[0] == '/' {
+                return 1
+            }
+            return 0
+        }
+        if n >= 2 && Path.isSeparator(path[0]) && Path.isSeparator(path[1]) {
+            if n >= 4 && (path[2] == '?' || path[2] == '.') && Path.isSeparator(path[3]) {
+                if n >= 8 && path[4..7].equalsIgnoreAsciiCase("UNC") && Path.isSeparator(path[7]) {
+                    return Path.pastSeparator(path, Path.pastPart(path, Path.pastSeparator(path, Path.pastPart(path, 8))))
+                }
+                return Path.pastSeparator(path, Path.pastPart(path, 4))
+            }
+            return Path.pastSeparator(path, Path.pastPart(path, Path.pastSeparator(path, Path.pastPart(path, 2))))
+        }
+        if Path.isSeparator(path[0]) {
+            return 1
+        }
+        var letter = path[0] | 0x20
+        if n >= 2 && path[1] == ':' && letter >= 'a' && letter <= 'z' {
+            if n >= 3 && Path.isSeparator(path[2]) {
+                return 3
+            }
+            return 2
+        }
+        return 0
+    }
+
+    // Where the part that starts at `at` ends: at the next separator, or at the end.
+    nint pastPart(read string path, nint at) {
+        var i = at
+        while i < path.length() && !Path.isSeparator(path[i]) {
+            i += 1
+        }
+        return i
+    }
+
+    // After the separator at `at`, if there is one there.
+    nint pastSeparator(read string path, nint at) {
+        if at < path.length() && Path.isSeparator(path[at]) {
+            return at + 1
+        }
+        return at
+    }
+
+    // Where the last separator is, after the root; -1 for none.
+    nint lastSeparator(read string path) {
+        var at = path.length() - 1
+        while at >= 0 && !Path.isSeparator(path[at]) {
+            at -= 1
+        }
+        return at
+    }
+
+    // What comes after the last separator: `report.txt` in `logs/report.txt`, and the empty text in
+    // `logs/` and in a root (`/`, and on Windows `C:\`). On Windows the drive is not part of the name:
+    // `report.txt` in `C:report.txt`.
     public read string fileName(read string path) from path {
-        var slash = path.lastIndexOf('/') ?? -1
-        return path[slash + 1..]
+        var start = Path.lastSeparator(path) + 1
+        var root = Path.rootLength(path)
+        if start < root {
+            start = root
+        }
+        return path[start..]
     }
 
     // The end of the name from its last `.` on, the `.` with it: `.txt` in `logs/report.txt`. A name
@@ -114,16 +197,15 @@ public struct Path {
         return name[dot..]
     }
 
-    // What comes before the last `/`: `logs` in `logs/report.txt`, `/` in `/report.txt`, and the
-    // empty text in `report.txt`, which names no folder.
+    // What comes before the last separator: `logs` in `logs/report.txt`, `/` in `/report.txt`, and the
+    // empty text in `report.txt`, which names no folder. A root stays whole: on Windows `C:\` in
+    // `C:\report.txt`, `C:` in `C:report.txt`, `\\server\share\` in `\\server\share\report.txt`.
     public read string parent(read string path) from path {
-        var slash = path.lastIndexOf('/') ?? -1
-        if slash < 0 {
-            return path[..0]
+        var at = Path.lastSeparator(path)
+        var root = Path.rootLength(path)
+        if at < root {
+            return path[..root]
         }
-        if slash == 0 {
-            return path[..1]
-        }
-        return path[..slash]
+        return path[..at]
     }
 }

@@ -20,6 +20,7 @@ use crate::ast::*;
 use crate::diag::{Diag, Span};
 use crate::check::float_fits;
 use crate::raw::{self, RawPtr};
+use crate::sys::{clock, command_of, copy_new, ended_as, entropy, executable, make_temp, remove_all, remove_file, rename_new, wait_unreaped};
 use crate::types::{FloatTy, IntTy, TextIter, Ty};
 
 /// Limit on nested calls. Past it the program gets a readable panic instead of a crash.
@@ -112,7 +113,7 @@ pub struct Cancel {
 /// write), or a piece of work on a thread of its own to end.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Outside {
-    Socket(std::os::unix::io::RawFd, bool),
+    Socket(crate::sys::RawFd, bool),
     Work(u64),
 }
 
@@ -123,62 +124,6 @@ enum Timer {
     Delay { task: std::rc::Weak<RefCell<Task>>, token: Option<std::rc::Weak<RefCell<Cancel>>> },
     /// `CancellationSource.after(ms)`: the source is cancelled, if it is still there.
     Cancel(std::rc::Weak<RefCell<Cancel>>),
-}
-
-/// `Entropy.fill(ref bytes)`: the random bytes of the system, as compiled code reads them
-/// (`arc4random_buf` on macOS and the BSDs, `getrandom` on Linux). `false` if the system gave none.
-fn entropy(bytes: &mut [u8]) -> bool {
-    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
-    {
-        extern "C" {
-            fn arc4random_buf(buf: *mut std::ffi::c_void, len: usize);
-        }
-        // SAFETY: the buffer holds `len` bytes.
-        unsafe { arc4random_buf(bytes.as_mut_ptr().cast(), bytes.len()) };
-        true
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd")))]
-    {
-        extern "C" {
-            fn getrandom(buf: *mut std::ffi::c_void, len: usize, flags: std::ffi::c_uint) -> isize;
-        }
-        let mut got = 0;
-        while got < bytes.len() {
-            // SAFETY: the rest of the buffer holds `len - got` bytes.
-            let n = unsafe { getrandom(bytes[got..].as_mut_ptr().cast(), bytes.len() - got, 0) };
-            if n > 0 {
-                got += n as usize;
-            } else if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            } else {
-                return false;
-            }
-        }
-        true
-    }
-}
-
-/// `Clock.monotonic()` and `Clock.wall()`: the real clocks, not the clock of the run, so that
-/// what a program measures is the time it took. Read with `clock_gettime`, as compiled code reads
-/// them, so that the monotonic clock is the same one (Rust's own stops while macOS sleeps).
-fn clock(wall: bool) -> i128 {
-    #[repr(C)]
-    struct Timespec {
-        seconds: i64,
-        nanoseconds: std::ffi::c_long,
-    }
-    extern "C" {
-        fn clock_gettime(clock: std::ffi::c_int, time: *mut Timespec) -> std::ffi::c_int;
-    }
-    const REALTIME: std::ffi::c_int = 0;
-    #[cfg(target_os = "macos")]
-    const MONOTONIC: std::ffi::c_int = 6;
-    #[cfg(not(target_os = "macos"))]
-    const MONOTONIC: std::ffi::c_int = 1;
-    let mut time = Timespec { seconds: 0, nanoseconds: 0 };
-    // SAFETY: `time` is a `struct timespec` that lives across the call.
-    unsafe { clock_gettime(if wall { REALTIME } else { MONOTONIC }, &mut time) };
-    i128::from(time.seconds) * 1_000_000_000 + i128::from(time.nanoseconds)
 }
 
 /// The `Cancelled { }` that a cancelled wait gives.
@@ -1254,42 +1199,14 @@ fn failed(cause: Value) -> Value {
     Value::Enum("Result".into(), 1, Rc::new(vec![cell(cause)]))
 }
 
-/// The `IoError` for what the system said. The codes are the same on Linux and macOS, except
-/// for a full quota.
-/// EMSGSIZE: a datagram the system cannot send as one message, or one longer than the buffer.
-const MESSAGE_TOO_LONG: i32 = if cfg!(target_os = "linux") { 90 } else { 40 };
-
+/// The `IoError` for what the system said, its variant told by the code (`sys::io_kind`).
 fn io_cause(error: Option<&std::io::Error>, code: Option<i32>) -> Value {
-    const QUOTA: i32 = if cfg!(target_os = "linux") { 122 } else { 69 };
-    // ECONNREFUSED; ECONNRESET, ECONNABORTED, EPIPE; EADDRINUSE: their numbers differ.
-    const REFUSED: i32 = if cfg!(target_os = "linux") { 111 } else { 61 };
-    const RESET: [i32; 2] = if cfg!(target_os = "linux") { [104, 103] } else { [54, 53] };
-    const IN_USE: i32 = if cfg!(target_os = "linux") { 98 } else { 48 };
-    const NOT_EMPTY: i32 = if cfg!(target_os = "linux") { 39 } else { 66 };
-    // ENOTCONN: the other side of a connection has broken it off.
-    const NOT_CONNECTED: i32 = if cfg!(target_os = "linux") { 107 } else { 57 };
     let variant = |at: usize, fields: Vec<Value>| Value::Enum("IoError".into(), at, Rc::new(fields.into_iter().map(cell).collect()));
     match code {
-        Some(code) if code == REFUSED => variant(7, Vec::new()),
-        Some(code) if RESET.contains(&code) || code == 32 || code == NOT_CONNECTED => variant(8, Vec::new()),
-        Some(MESSAGE_TOO_LONG) => variant(16, Vec::new()),
-        Some(code) if code == IN_USE => variant(9, Vec::new()),
-        // ENOTEMPTY
-        Some(code) if code == NOT_EMPTY => variant(14, Vec::new()),
-        // ENOENT
-        Some(2) => variant(0, Vec::new()),
-        // EEXIST
-        Some(17) => variant(12, Vec::new()),
-        // ENOTDIR
-        Some(20) => variant(13, Vec::new()),
-        // EPERM, EACCES, EROFS
-        Some(1 | 13 | 30) => variant(1, Vec::new()),
-        // EISDIR
-        Some(21) => variant(2, Vec::new()),
-        // ENOSPC, EDQUOT
-        Some(28) => variant(3, Vec::new()),
-        Some(code) if code == QUOTA => variant(3, Vec::new()),
-        Some(code) => variant(5, vec![Value::Int(IntTy::Int, code as i128)]),
+        Some(code) => match crate::sys::io_kind(code) {
+            5 => variant(5, vec![Value::Int(IntTy::Int, code as i128)]),
+            at => variant(at, Vec::new()),
+        },
         // An error that did not come from the system: EIO.
         None if error.is_some() => variant(5, vec![Value::Int(IntTy::Int, 5)]),
         None => Value::Void,
@@ -1307,155 +1224,8 @@ impl InvalidText for Value {
     }
 }
 
-/// Writes the bytes into the file, which is made if it is not there; `append` keeps what
-/// it holds and puts them after it.
 /// Bytes read as text: `Ok`, or `InvalidText` with the place of the first bad byte, counted
 /// from `at`.
-/// `System.executable(path)`: 1 for a file this program may run, 2 for a file that is there
-/// and may not be run, 0 for no file (a folder is none). A link is followed.
-fn executable(path: &str) -> i128 {
-    use std::os::unix::ffi::OsStrExt;
-    if path.contains('\0') {
-        return 0;
-    }
-    match std::fs::metadata(path) {
-        Ok(info) if info.is_file() => {
-            let Ok(name) = std::ffi::CString::new(std::ffi::OsStr::new(path).as_bytes()) else { return 0 };
-            // SAFETY: the name is a text ended by a zero byte; 1 is X_OK.
-            match unsafe { access(name.as_ptr(), 1) } {
-                0 => 1,
-                _ => 2,
-            }
-        }
-        _ => 0,
-    }
-}
-
-extern "C" {
-    fn access(path: *const std::ffi::c_char, mode: std::ffi::c_int) -> std::ffi::c_int;
-    fn kill(pid: std::ffi::c_int, signal: std::ffi::c_int) -> std::ffi::c_int;
-    fn waitid(idtype: std::ffi::c_int, id: std::ffi::c_uint, info: *mut u8, options: std::ffi::c_int) -> std::ffi::c_int;
-    fn fcntl(fd: std::ffi::c_int, cmd: std::ffi::c_int, ...) -> std::ffi::c_int;
-    fn sysconf(name: std::ffi::c_int) -> std::ffi::c_long;
-    #[cfg(target_os = "linux")]
-    fn syscall(number: std::ffi::c_long, ...) -> std::ffi::c_long;
-}
-
-/// The highest descriptor the process may have, plus one: `sysconf(_SC_OPEN_MAX)`, at most a
-/// million.
-fn open_max() -> std::ffi::c_int {
-    const SC_OPEN_MAX: std::ffi::c_int = if cfg!(target_os = "linux") { 4 } else { 5 };
-    // SAFETY: `sysconf` only reads a limit.
-    let max = unsafe { sysconf(SC_OPEN_MAX) };
-    std::ffi::c_int::try_from(max.clamp(256, 1 << 20)).unwrap_or(1 << 20)
-}
-
-/// Marks every descriptor from 3 up close-on-exec, in the child between `fork` and `exec`: one
-/// call of `close_range` on Linux 5.11 and later, otherwise one `fcntl` for each.
-fn cloexec_from_3(last: std::ffi::c_int) {
-    const F_SETFD: std::ffi::c_int = 2;
-    const FD_CLOEXEC: std::ffi::c_int = 1;
-    #[cfg(target_os = "linux")]
-    {
-        const CLOSE_RANGE: std::ffi::c_long = 436;
-        const CLOSE_RANGE_CLOEXEC: std::ffi::c_uint = 4;
-        // SAFETY: `close_range(3, ~0, CLOSE_RANGE_CLOEXEC)` only changes flags of descriptors.
-        if unsafe { syscall(CLOSE_RANGE, 3 as std::ffi::c_uint, std::ffi::c_uint::MAX, CLOSE_RANGE_CLOEXEC) } == 0 {
-            return;
-        }
-    }
-    for fd in 3..last {
-        // SAFETY: setting the flag of a descriptor that is not open fails and does nothing.
-        unsafe { fcntl(fd, F_SETFD, FD_CLOEXEC) };
-    }
-}
-
-/// The command of `System.run` and `System.start`: the program at the path, the words, the
-/// folder and the environment; and where its input comes from (the number the call was given).
-/// Only the input, the output and the standard error reach the program: a descriptor the process
-/// was handed open (a test runner's pipe) is marked close-on-exec in the child, before the
-/// program runs. Marked, not closed, so that Rust's own pipe, which tells the parent why the
-/// start failed, still works.
-fn command_of(values: &[Value]) -> (std::process::Command, i128) {
-    use std::os::unix::process::CommandExt;
-    let text = |at: usize| match &values[at] {
-        Value::Str(text) => text.to_string(),
-        _ => unreachable!("the checker makes it text"),
-    };
-    let items = |at: usize| match &values[at] {
-        Value::List(items) => items.borrow().iter().map(|item| item.borrow().clone()).collect::<Vec<Value>>(),
-        _ => unreachable!("the checker makes it a list"),
-    };
-    let texts = |at: usize| {
-        items(at)
-            .into_iter()
-            .map(|item| match item {
-                Value::Str(text) => text.to_string(),
-                _ => unreachable!("the checker makes it a list of texts"),
-            })
-            .collect::<Vec<String>>()
-    };
-    let words = texts(1);
-    let mut command = std::process::Command::new(text(0));
-    command.arg0(&words[0]).args(&words[1..]);
-    let folder = text(2);
-    if !folder.is_empty() {
-        command.current_dir(folder);
-    }
-    if matches!(values[3], Value::Bool(true)) {
-        command.env_clear();
-    }
-    let kept = items(6);
-    for ((name, value), kept) in texts(4).iter().zip(texts(5)).zip(kept) {
-        match kept {
-            Value::Bool(true) => command.env(name, value),
-            _ => command.env_remove(name),
-        };
-    }
-    let input = match &values[7] {
-        Value::Int(_, input) => *input,
-        _ => unreachable!("the checker makes it a number"),
-    };
-    let last = open_max();
-    // SAFETY: between `fork` and `exec` the closure only calls `fcntl` and the system call of
-    // `close_range`, which are safe there, and allocates nothing.
-    unsafe {
-        command.pre_exec(move || {
-            cloexec_from_3(last);
-            Ok(())
-        });
-    }
-    (command, input)
-}
-
-/// Waits until program `pid` has ended, without taking it away (`waitid` with `WNOWAIT`): its
-/// number names no other program until it is waited for.
-fn wait_unreaped(pid: i64) {
-    const P_PID: std::ffi::c_int = 1;
-    const WEXITED: std::ffi::c_int = 4;
-    const WNOWAIT: std::ffi::c_int = if cfg!(target_os = "linux") { 0x0100_0000 } else { 0x20 };
-    const EINTR: i32 = 4;
-    let mut info = [0u8; 256];
-    loop {
-        // SAFETY: `info` has room for a `siginfo_t` on both systems (128 and 104 bytes).
-        let done = unsafe { waitid(P_PID, pid as std::ffi::c_uint, info.as_mut_ptr(), WEXITED | WNOWAIT) };
-        if done == 0 || std::io::Error::last_os_error().raw_os_error() != Some(EINTR) {
-            return;
-        }
-    }
-}
-
-/// How a program ended, as `System.run` and `System.wait` give it: 0 and the code, or 1 and the
-/// signal that stopped it.
-fn ended_as(status: std::process::ExitStatus) -> (i64, i64) {
-    use std::os::unix::process::ExitStatusExt;
-    match (status.code(), status.signal()) {
-        (Some(code), _) => (0, i64::from(code)),
-        (None, Some(signal)) => (1, i64::from(signal)),
-        (None, None) => (0, 0),
-    }
-}
-
 fn text_read(bytes: Vec<u8>, at: u64) -> Value {
     match String::from_utf8(bytes) {
         Ok(text) => ok(Value::Str(Rc::new(text))),
@@ -1474,93 +1244,8 @@ fn kind_code(kind: &std::fs::FileType) -> u8 {
     }
 }
 
-/// The C string of a path that holds no zero byte.
-fn c_path(path: &str) -> std::ffi::CString {
-    std::ffi::CString::new(path).expect("a path without a zero byte")
-}
-
-/// `unlink`; a folder is `IsDirectory` on every system (macOS says `EPERM`).
-fn remove_file(path: &str) -> std::io::Result<()> {
-    std::fs::remove_file(path).map_err(|error| match std::fs::symlink_metadata(path) {
-        Ok(info) if info.is_dir() => std::io::Error::from_raw_os_error(21),
-        _ => error,
-    })
-}
-
-/// A rename that fails with `EEXIST` when the target is there, in one step of the system.
-/// A file onto itself (or onto another name of it) is no move, and some systems would say it was
-/// done: it is `EEXIST` too.
-fn rename_new(from: &str, to: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    if let (Ok(a), Ok(b)) = (std::fs::symlink_metadata(from), std::fs::symlink_metadata(to)) {
-        if a.dev() == b.dev() && a.ino() == b.ino() {
-            return Err(std::io::Error::from_raw_os_error(17));
-        }
-    }
-    let (from, to) = (c_path(from), c_path(to));
-    #[cfg(target_os = "macos")]
-    let failed = {
-        extern "C" {
-            fn renamex_np(from: *const std::ffi::c_char, to: *const std::ffi::c_char, flags: std::ffi::c_uint) -> std::ffi::c_int;
-        }
-        // RENAME_EXCL
-        unsafe { renamex_np(from.as_ptr(), to.as_ptr(), 4) != 0 }
-    };
-    #[cfg(not(target_os = "macos"))]
-    let failed = {
-        extern "C" {
-            fn renameat2(from_dir: std::ffi::c_int, from: *const std::ffi::c_char, to_dir: std::ffi::c_int, to: *const std::ffi::c_char, flags: std::ffi::c_uint) -> std::ffi::c_int;
-        }
-        // AT_FDCWD, RENAME_NOREPLACE
-        unsafe { renameat2(-100, from.as_ptr(), -100, to.as_ptr(), 1) != 0 }
-    };
-    match failed {
-        true => Err(std::io::Error::last_os_error()),
-        false => Ok(()),
-    }
-}
-
-/// What the file holds into a new file, which gets its permissions (without the bits of
-/// `setuid`, `setgid` and `sticky`). A target that is there is `EEXIST`; a target that could not
-/// be written whole is removed.
-fn copy_new(from: &str, to: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let mut source = std::fs::File::open(from)?;
-    let info = source.metadata()?;
-    if info.is_dir() {
-        return Err(std::io::Error::from_raw_os_error(21));
-    }
-    let mut target = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(to)?;
-    let written = std::io::copy(&mut source, &mut target)
-        .and_then(|_| target.set_permissions(std::fs::Permissions::from_mode(info.permissions().mode() & 0o777)));
-    if written.is_err() {
-        drop(target);
-        let _ = std::fs::remove_file(to);
-    }
-    written
-}
-
-/// A folder and all it holds, links not followed: a path that is a link, or a file, is `ENOTDIR`.
-fn remove_all(path: &str) -> std::io::Result<()> {
-    if !std::fs::symlink_metadata(path)?.is_dir() {
-        return Err(std::io::Error::from_raw_os_error(20));
-    }
-    std::fs::remove_dir_all(path)
-}
-
-/// `mkdtemp`: a new folder that only the user can go into, its name made from the template.
-fn make_temp(template: &str) -> std::io::Result<String> {
-    extern "C" {
-        fn mkdtemp(template: *mut std::ffi::c_char) -> *mut std::ffi::c_char;
-    }
-    let mut name = c_path(template).into_bytes_with_nul();
-    if unsafe { mkdtemp(name.as_mut_ptr().cast()) }.is_null() {
-        return Err(std::io::Error::last_os_error());
-    }
-    name.pop();
-    Ok(String::from_utf8(name).expect("the template is text and the system puts letters in it"))
-}
-
+/// Writes the bytes into the file, which is made if it is not there; `append` keeps what
+/// it holds and puts them after it.
 fn write_file(path: &str, bytes: &[u8], append: bool) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     match append {
@@ -4393,6 +4078,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 Callee::Io(call) => self.io(*call, args, frame),
                 Callee::Clock(wall) => Ok(Value::Int(IntTy::Long, clock(*wall))),
+                Callee::Os(os) => Ok(Value::Bool(os.here())),
                 Callee::Entropy => {
                     let cells = cells_of(&owned(self.expr(&args[0], frame)?));
                     let mut bytes = vec![0u8; cells.len()];
@@ -5478,11 +5164,15 @@ impl<'a, 'e> Interp<'a, 'e> {
         let path = path.to_string();
         // No file has a name with a zero byte in it; the system would see the name end there.
         if path.contains('\0') {
-            return Ok(failed(io_cause(None, Some(2))));
+            return Ok(failed(io_cause(None, Some(crate::sys::NOT_FOUND))));
         }
+        // What Windows says differently is said as Linux and macOS say it (`refine`).
         let done = |result: std::io::Result<Value>| match result {
             Ok(value) => ok(value),
-            Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+            Err(error) => {
+                let error = crate::sys::refine(&path, error);
+                failed(io_cause(Some(&error), error.raw_os_error()))
+            }
         };
         Ok(match call {
             IoCall::ReadText => match std::fs::read(&path) {
@@ -5505,7 +5195,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             // A folder opens, but cannot be read: it is told at once, as compiled code does.
             IoCall::OpenText => done(std::fs::File::open(&path).and_then(|file| match file.metadata()?.is_dir() {
-                true => Err(std::io::Error::from_raw_os_error(21)),
+                true => Err(std::io::Error::from_raw_os_error(crate::sys::IS_DIR)),
                 false => Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(std::io::BufReader::with_capacity(STREAM_BUFFER, file)), net: None, done: 0 })))),
             })),
             IoCall::CreateText | IoCall::OpenAppend => {
@@ -5557,14 +5247,21 @@ impl<'a, 'e> Interp<'a, 'e> {
             Value::Str(text) => text.to_string(),
             _ => unreachable!("the checker makes it text"),
         };
+        let first = match values.first() {
+            Some(Value::Str(text)) => text.to_string(),
+            _ => String::new(),
+        };
         let done = |result: std::io::Result<Value>| match result {
             Ok(value) => ok(value),
-            Err(error) => failed(io_cause(Some(&error), error.raw_os_error())),
+            Err(error) => {
+                let error = crate::sys::refine(&first, error);
+                failed(io_cause(Some(&error), error.raw_os_error()))
+            }
         };
-        let not_found = || failed(io_cause(None, Some(2)));
+        let not_found = || failed(io_cause(None, Some(crate::sys::NOT_FOUND)));
         // No file has a zero byte in its name: such a path is not found.
         let paths = match call {
-            SystemCall::Current => 0,
+            SystemCall::Current | SystemCall::TempFolder => 0,
             SystemCall::Move | SystemCall::Replace | SystemCall::Copy => 2,
             _ => 1,
         };
@@ -5588,19 +5285,19 @@ impl<'a, 'e> Interp<'a, 'e> {
                 return Ok(Value::Void);
             }
             SystemCall::Signal => {
-                // SAFETY: `kill` only sends a signal; the program is not taken away before it
-                // is waited for, so the number is still its own.
-                unsafe { kill(number(0) as std::ffi::c_int, number(1) as std::ffi::c_int) };
+                // The program is not taken away before it is waited for, so the number is still
+                // its own.
+                crate::sys::signal(number(0) as i64, number(1) as i64);
                 return Ok(Value::Void);
             }
             SystemCall::PipeReader => {
                 // SAFETY: the end of the pipe was made by `System.start` and is owned by nothing else.
-                let file = unsafe { <std::fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(number(0) as i32) };
+                let file = unsafe { crate::sys::file_of_fd(number(0) as crate::sys::RawFd) };
                 return Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(std::io::BufReader::with_capacity(STREAM_BUFFER, file)), net: None, done: 0 }))));
             }
             SystemCall::PipeWriter => {
                 // SAFETY: as above.
-                let file = unsafe { <std::fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(number(0) as i32) };
+                let file = unsafe { crate::sys::file_of_fd(number(0) as crate::sys::RawFd) };
                 return Ok(Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None }))));
             }
             _ => {}
@@ -5622,7 +5319,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     for entry in entries {
                         let entry = entry?;
                         let kind = entry.file_type().map(|kind| kind_code(&kind)).unwrap_or(3);
-                        found.push((std::os::unix::ffi::OsStrExt::as_bytes(entry.file_name().as_os_str()).to_vec(), kind));
+                        found.push((entry.file_name().as_encoded_bytes().to_vec(), kind));
                     }
                     Ok(())
                 });
@@ -5659,10 +5356,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Err(error) => done(Err(error)),
             },
             SystemCall::Current => match std::env::current_dir() {
-                Ok(folder) => text_read(std::os::unix::ffi::OsStrExt::as_bytes(folder.as_os_str()).to_vec(), 0),
+                Ok(folder) => text_read(folder.as_os_str().as_encoded_bytes().to_vec(), 0),
                 Err(error) => done(Err(error)),
             },
             SystemCall::MakeTemp => done(make_temp(&text(0)).map(|folder| Value::Str(Rc::new(folder)))),
+            SystemCall::TempFolder => ok(Value::Str(Rc::new(crate::sys::temp_folder()))),
             SystemCall::Executable
             | SystemCall::Run
             | SystemCall::Start
@@ -5698,7 +5396,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 match found {
                     Some(value) => {
                         let Value::List(into) = &values[1] else { unreachable!("the checker makes it a list") };
-                        let bytes = std::os::unix::ffi::OsStrExt::as_bytes(value.as_os_str());
+                        let bytes = value.as_encoded_bytes();
                         into.borrow_mut().extend(bytes.iter().map(|byte| cell(Value::Int(IntTy::Byte, i128::from(*byte)))));
                         Value::Bool(true)
                     }
@@ -5714,7 +5412,6 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// written out to the run's when it is waited for (see `Kid`).
     fn start_child(&mut self, values: Vec<Value>) -> Res<Value> {
         use std::io::Read;
-        use std::os::unix::io::IntoRawFd;
         use std::process::Stdio;
         let (mut command, input) = command_of(&values);
         let flag = |at: usize| matches!(values[at], Value::Bool(true));
@@ -5743,13 +5440,13 @@ impl<'a, 'e> Interp<'a, 'e> {
                         let _ = feed.write_all(text.as_bytes());
                     });
                 }
-                _ => made[1] = i128::from(feed.into_raw_fd()),
+                _ => made[1] = i128::from(crate::sys::fd_of(feed)),
             }
         }
         let mut copies = Vec::new();
         let output = child.stdout.take().expect("piped");
         match out {
-            true => made[2] = i128::from(output.into_raw_fd()),
+            true => made[2] = i128::from(crate::sys::fd_of(output)),
             false => {
                 let mut output = output;
                 copies.push((std::thread::spawn(move || {
@@ -5761,7 +5458,7 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
         let error = child.stderr.take().expect("piped");
         match err {
-            true => made[3] = i128::from(error.into_raw_fd()),
+            true => made[3] = i128::from(crate::sys::fd_of(error)),
             false => {
                 let mut error = error;
                 copies.push((std::thread::spawn(move || {
@@ -5899,7 +5596,6 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// longer than the buffer: one that fills it did not fit. An async call gives a task that has
     /// ended, which the module awaits where it is written.
     fn datagrams(&mut self, call: SystemCall, args: &'a [Expr], frame: &mut Frame) -> Res<Value> {
-        use std::os::unix::io::{FromRawFd, IntoRawFd};
         let at = args[0].span;
         let is_async = matches!(call, SystemCall::UdpSendAsync | SystemCall::UdpReceiveAsync | SystemCall::LookupAsync);
         let given = if is_async { &args[..args.len() - 1] } else { args };
@@ -5923,14 +5619,14 @@ impl<'a, 'e> Interp<'a, 'e> {
                 *slot.borrow_mut() = Value::Int(IntTy::Ulong, i128::from(*value));
             }
         };
-        let fd = || number(0) as std::os::unix::io::RawFd;
+        let fd = || number(0) as crate::sys::RawFd;
         // SAFETY: the number is that of a socket `System.udpBind` made, which the `UdpSocket` of the
         // program owns and closes once, with `System.closeSocket`; this one is never closed.
-        let socket = || std::mem::ManuallyDrop::new(unsafe { std::net::UdpSocket::from_raw_fd(fd()) });
+        let socket = || std::mem::ManuallyDrop::new(unsafe { crate::sys::udp_of_fd(fd()) });
         let cancelled = source.as_ref().is_some_and(|source| source.borrow().cancelled);
         let value = match call {
             SystemCall::UdpBind => match crate::net::udp_bind(address(0)) {
-                Ok(socket) => ok(Value::Int(IntTy::Long, i128::from(socket.into_raw_fd()))),
+                Ok(socket) => ok(Value::Int(IntTy::Long, i128::from(crate::sys::fd_of(socket)))),
                 Err(error) => io_failed(error),
             },
             SystemCall::UdpConnect => match socket().connect(address(1)) {
@@ -5969,7 +5665,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let socket = socket();
                 loop {
                     match socket.recv_from(&mut block) {
-                        Ok((got, _)) if got > cells.len() => break failed(io_cause(None, Some(MESSAGE_TOO_LONG))),
+                        Ok((got, _)) if got > cells.len() => break failed(io_cause(None, Some(crate::sys::MESSAGE_TOO_LONG))),
                         Ok((got, from)) => {
                             for (slot, byte) in cells.iter().zip(&block[..got]) {
                                 *slot.borrow_mut() = Value::Int(IntTy::Byte, i128::from(*byte));
@@ -6006,7 +5702,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             SystemCall::CloseSocket => {
                 // SAFETY: as above; the `UdpSocket` of the program is let go of here, once.
-                drop(unsafe { std::net::UdpSocket::from_raw_fd(fd()) });
+                drop(unsafe { crate::sys::udp_of_fd(fd()) });
                 Value::Void
             }
             SystemCall::Lookup | SystemCall::LookupAsync if cancelled => failed(io_cancelled()),

@@ -3,6 +3,7 @@
 //! Written as a library; the language server will later reuse the same parsing and checking code.
 
 pub mod ast;
+pub mod cc;
 pub mod check;
 pub mod diag;
 pub mod emit_c;
@@ -16,12 +17,18 @@ pub mod lexer;
 pub mod link;
 pub mod net;
 pub mod parser;
+pub mod pending;
 pub mod raw;
 pub mod shortest;
+#[cfg(unix)]
+pub mod signals;
+#[cfg(windows)]
+#[path = "sys/signals_windows.rs"]
 pub mod signals;
 pub mod source;
 pub mod opening;
 pub mod sums;
+pub(crate) mod sys;
 pub mod types;
 pub mod unicode;
 pub mod unicode_tables;

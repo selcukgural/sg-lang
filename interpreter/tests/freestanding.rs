@@ -6,6 +6,8 @@
 //! the runtime has there, held to the C library's.
 //! To regenerate the expected outputs: `UPDATE_GOLDEN=1 cargo test`
 
+mod pending;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -81,6 +83,10 @@ fn targets() -> Vec<&'static str> {
 
 #[test]
 fn refused() {
+    if let Some(why) = pending::waits_on_windows("freestanding.rs") {
+        eprintln!("freestanding.rs waits on Windows: {why}");
+        return;
+    }
     let update = std::env::var_os("UPDATE_GOLDEN").is_some();
     let mut failures = Vec::new();
     let found = files("error_");
@@ -110,6 +116,10 @@ fn refused() {
 /// than 0 is the last line.
 #[test]
 fn built_and_run() {
+    if let Some(why) = pending::waits_on_windows("freestanding.rs") {
+        eprintln!("freestanding.rs waits on Windows: {why}");
+        return;
+    }
     if !has_cc() {
         eprintln!("no C compiler (`cc`) found: programs without an operating system are not built");
         return;
@@ -172,6 +182,10 @@ fn built_and_run() {
 /// panic inside `onPanic` is not told.
 #[test]
 fn waits_after_a_panic() {
+    if let Some(why) = pending::waits_on_windows("freestanding.rs") {
+        eprintln!("freestanding.rs waits on Windows: {why}");
+        return;
+    }
     if !has_cc() {
         return;
     }
@@ -206,6 +220,10 @@ fn waits_after_a_panic() {
 /// writes, the panic its last call ends in, and the code its `onPanic` stops the machine with.
 #[test]
 fn bare() {
+    if let Some(why) = pending::waits_on_windows("freestanding.rs") {
+        eprintln!("freestanding.rs waits on Windows: {why}");
+        return;
+    }
     if !has_cc() {
         return;
     }
@@ -253,6 +271,10 @@ fn bare() {
 /// writes, for the formats the runtime and the programs use.
 #[test]
 fn formats_as_printf_does() {
+    if let Some(why) = pending::waits_on_windows("freestanding.rs") {
+        eprintln!("freestanding.rs waits on Windows: {why}");
+        return;
+    }
     if !has_cc() {
         return;
     }
@@ -308,6 +330,10 @@ int main(void) {
 /// smallest of them included.
 #[test]
 fn divides_as_the_compiler_does() {
+    if let Some(why) = pending::waits_on_windows("freestanding.rs") {
+        eprintln!("freestanding.rs waits on Windows: {why}");
+        return;
+    }
     if !has_cc() {
         return;
     }

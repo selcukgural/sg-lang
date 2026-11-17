@@ -1,2 +1,5 @@
+# Text is checked out with `\n` at the end of each line on every system, Windows too: the expected
+# outputs of the tests are compared byte for byte.
+* text=auto eol=lf
 # The input files of the tests are kept byte for byte: some lines end in \r\n on purpose.
 *.in -text

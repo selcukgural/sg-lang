@@ -104,10 +104,34 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     // names, as C's builds have it, or the first `clang` of the path.
     let compiler = match machine.target {
         Some(_) => std::env::var("CC").ok().filter(|cc| !cc.is_empty()).unwrap_or_else(|| "clang".to_string()),
-        None => "cc".to_string(),
+        None => match sg::cc::compiler() {
+            Ok(compiler) => compiler,
+            Err(error) => {
+                let _ = std::fs::remove_file(&c_file);
+                eprintln!("error: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
     };
     let mut cc = std::process::Command::new(&compiler);
     cc.args(["-std=c11", level, "-ffp-contract=off"]);
+    if made != Made::Freestanding {
+        cc.args(sg::cc::compile_flags(!release));
+    }
+    let system = match made {
+        Made::Program | Made::Tests | Made::Shared => match sg::cc::link_flags(&std::env::temp_dir()) {
+            Ok(flags) => flags,
+            Err(error) => {
+                eprintln!("error: cannot write the manifest of the program: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Made::Static | Made::Freestanding => Vec::new(),
+    };
+    let out = match made {
+        Made::Program | Made::Tests => sg::cc::program_file(&out),
+        _ => out,
+    };
     // A library is code that may be placed anywhere, so that the static one goes into a
     // program that is (PIE) and into a shared library too.
     let objects = std::env::temp_dir().join(format!("sg-{}", std::process::id()));
@@ -120,7 +144,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     }
     match made {
         Made::Program | Made::Tests => {
-            cc.arg("-o").arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).arg("-lm").arg("-pthread");
+            cc.arg("-o").arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
         }
         Made::Static => {
             cc.args(["-fPIC", "-c", "-o"]).arg(&object).arg(&c_file);
@@ -140,7 +164,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         // unloaded: the threads of its tasks would run on in code that is gone (Linux keeps it
         // with `nodelete`; macOS does not unload a library with variables of its threads).
         Made::Shared => {
-            cc.args(["-fPIC", "-shared", "-fvisibility=hidden", "-o"]).arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).arg("-lm").arg("-pthread");
+            cc.args(["-fPIC", "-shared", "-fvisibility=hidden", "-o"]).arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
             if cfg!(target_os = "macos") {
                 let file = std::path::Path::new(&out).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
                 cc.arg(format!("-Wl,-install_name,@rpath/{file}"));
@@ -233,13 +257,15 @@ fn library_name(path: &str) -> String {
 /// The test command on compiled code: the tests are built into a program next to the other
 /// temporary files, that program is run, and its exit code is given on.
 fn test_compiled(path: &str, dirs: &[PathBuf]) -> ExitCode {
-    let binary = std::env::temp_dir().join(format!("sg-test-{}", std::process::id()));
-    let built = build(path, Some(binary.to_string_lossy().into_owned()), false, Made::Tests, &Machine::default(), dirs);
+    let binary = sg::cc::program_file(&std::env::temp_dir().join(format!("sg-test-{}", std::process::id())).to_string_lossy());
+    let built = build(path, Some(binary.clone()), false, Made::Tests, &Machine::default(), dirs);
     if built != ExitCode::SUCCESS {
         return built;
     }
     let status = std::process::Command::new(&binary).status();
     let _ = std::fs::remove_file(&binary);
+    // What a debugger reads, which a debug build writes beside the program on Windows.
+    let _ = std::fs::remove_file(std::path::Path::new(&binary).with_extension("pdb"));
     match status {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
@@ -250,16 +276,72 @@ fn test_compiled(path: &str, dirs: &[PathBuf]) -> ExitCode {
     }
 }
 
-/// A word of the command line as the system gave it.
+/// The output or the standard error of the interpreter. On Windows a console is written in
+/// UTF-16, which Rust's own stream does, and it refuses bytes that are not UTF-8: here such a byte
+/// is shown as U+FFFD, as compiled code and a terminal of Linux or macOS show it, and a character
+/// cut between two writes is kept until it is whole. Elsewhere, and into a file or a pipe, the
+/// bytes go as they are.
+struct Shown<W: std::io::Write + std::io::IsTerminal> {
+    inner: W,
+    console: bool,
+    held: Vec<u8>,
+}
+
+impl<W: std::io::Write + std::io::IsTerminal> Shown<W> {
+    fn new(inner: W) -> Self {
+        let console = cfg!(windows) && inner.is_terminal();
+        Shown { inner, console, held: Vec::new() }
+    }
+}
+
+impl<W: std::io::Write + std::io::IsTerminal> std::io::Write for Shown<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if !self.console {
+            return self.inner.write(bytes);
+        }
+        self.held.extend_from_slice(bytes);
+        let mut text = String::new();
+        let mut rest: &[u8] = &self.held;
+        loop {
+            match std::str::from_utf8(rest) {
+                Ok(valid) => {
+                    text.push_str(valid);
+                    rest = &[];
+                    break;
+                }
+                Err(error) => {
+                    let (valid, after) = rest.split_at(error.valid_up_to());
+                    text.push_str(std::str::from_utf8(valid).expect("checked"));
+                    match error.error_len() {
+                        Some(bad) => {
+                            text.push('\u{FFFD}');
+                            rest = &after[bad..];
+                        }
+                        // A character cut at the end waits for the next write.
+                        None => {
+                            rest = after;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let kept = rest.to_vec();
+        self.inner.write_all(text.as_bytes())?;
+        self.held = kept;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// A word of the command line as the system gave it: its bytes on Linux and macOS; on Windows
+/// its UTF-16 turned into UTF-8, where a half of a pair that stands alone becomes bytes that are
+/// not UTF-8, so that it is the same error as elsewhere, at the same place.
 fn bytes(word: std::ffi::OsString) -> Vec<u8> {
-    #[cfg(unix)]
-    {
-        std::os::unix::ffi::OsStringExt::into_vec(word)
-    }
-    #[cfg(not(unix))]
-    {
-        word.to_string_lossy().into_owned().into_bytes()
-    }
+    word.into_encoded_bytes()
 }
 
 fn main() -> ExitCode {
@@ -369,12 +451,12 @@ fn main() -> ExitCode {
     };
     sources.lib_dirs = dirs;
 
-    let mut out = std::io::BufWriter::new(std::io::stdout());
+    let mut out = std::io::BufWriter::new(Shown::new(std::io::stdout()));
     // A failed test is reported like an error of the program: exit code 1.
     let result = match tests {
         false => {
             use std::io::IsTerminal;
-            let mut err = std::io::stderr();
+            let mut err = Shown::new(std::io::stderr());
             let input_is_terminal = std::io::stdin().is_terminal();
             let input_waits = input_waits();
             let program_args = words.into_iter().skip(skip + 1).map(bytes).collect();
@@ -426,7 +508,9 @@ fn main() -> ExitCode {
 /// Whether the input of this process can make it wait: anything but a file (a pipe, a
 /// terminal, a socket). A file is always ready.
 fn input_waits() -> bool {
-    use std::os::fd::AsFd;
-    let Ok(fd) = std::io::stdin().as_fd().try_clone_to_owned() else { return true };
-    !std::fs::File::from(fd).metadata().is_ok_and(|meta| meta.is_file())
+    #[cfg(unix)]
+    let Ok(own) = std::os::fd::AsFd::as_fd(&std::io::stdin()).try_clone_to_owned() else { return true };
+    #[cfg(windows)]
+    let Ok(own) = std::os::windows::io::AsHandle::as_handle(&std::io::stdin()).try_clone_to_owned() else { return true };
+    !std::fs::File::from(own).metadata().is_ok_and(|meta| meta.is_file())
 }

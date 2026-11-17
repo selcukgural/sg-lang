@@ -136,8 +136,12 @@ public struct Directory {
         return System.current()
     }
 
-    // The folder for files that do not have to stay: `TMPDIR` as it is written, or `/tmp`.
+    // The folder for files that do not have to stay: `TMPDIR` as it is written, or `/tmp`. On Windows
+    // the folder Windows gives (`TMP`, `TEMP`, or the user's own), without the `\` at its end.
     public string temp() {
+        if OperatingSystem.isWindows() {
+            return System.tempFolder() ?? "C:\\Windows\\Temp"
+        }
         if Environment.get("TMPDIR") is Ok(folder) && folder.length() > 0 {
             return folder.clone()
         }

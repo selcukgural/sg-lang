@@ -20,11 +20,7 @@ use crate::ast::{short_name, Callee, ExprKind, Program};
 use crate::diag::Diag;
 use crate::types::{FloatTy, IntTy, Ty};
 
-extern "C" {
-    fn dlopen(path: *const c_char, flags: c_int) -> *mut c_void;
-    fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
-    fn dlerror() -> *const c_char;
-}
+use crate::sys::{dlerror, dlopen, dlsym};
 
 /// `dlopen`: every symbol is found when the library is opened, so a missing one is an error
 /// there and not in the middle of the run. The same value on Linux and macOS.
@@ -611,21 +607,7 @@ fn scalar_type(ty: &Ty) -> &'static str {
     }
 }
 
-/// A new folder in the temporary folder that only this user can open.
-pub(crate) fn private_dir() -> std::io::Result<PathBuf> {
-    use std::os::unix::fs::DirBuilderExt;
-    let base = std::env::temp_dir();
-    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_nanos());
-    for attempt in 0..100u32 {
-        let dir = base.join(format!("sg-ffi-{}-{seed:x}-{attempt}", std::process::id()));
-        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
-            Ok(()) => return Ok(dir),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        }
-    }
-    Err(std::io::Error::other("every name tried was taken"))
-}
+pub(crate) use crate::sys::private_dir;
 
 /// Writes the wrappers into `dir` and builds them into a shared library there, in the C of
 /// compiled code (C11).

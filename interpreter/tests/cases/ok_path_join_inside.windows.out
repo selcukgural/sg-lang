@@ -1,0 +1,31 @@
+files\../etc
+ok  [report.txt] -> files\report.txt
+ok  [2026/report.txt] -> files\2026/report.txt
+ok  [.profile] -> files\.profile
+ok  [a..b] -> files\a..b
+bad [] InvalidInput
+bad [a//b] InvalidInput
+bad [a/] InvalidInput
+bad [/etc] InvalidInput
+bad [../x] InvalidInput
+bad [a/../b] InvalidInput
+bad [a/./b] InvalidInput
+bad [..] InvalidInput
+bad [.] InvalidInput
+bad [x.] InvalidInput
+bad [x ] InvalidInput
+bad [C:x] InvalidInput
+bad [a\b] InvalidInput
+bad [CON] InvalidInput
+bad [con.txt] InvalidInput
+bad [Nul] InvalidInput
+bad [nul .txt] InvalidInput
+bad [COM1] InvalidInput
+bad [lpt9.log] InvalidInput
+bad [COM0] InvalidInput
+ok  [COM10] -> files\COM10
+bad [COM¹] InvalidInput
+bad [CONOUT$] InvalidInput
+ok  [console] -> files\console
+bad [tab	here] InvalidInput
+ok  [ünlü.txt] -> files\ünlü.txt

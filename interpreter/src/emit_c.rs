@@ -560,6 +560,11 @@ const RUNTIME: &str = r#"#ifndef SG_FREESTANDING
 #define SG_FREESTANDING 0
 #endif
 #if !SG_FREESTANDING
+#if defined(_WIN32)
+/* The C library's warnings against `wcscpy` and its kin are for code that does not count its
+   lengths; the runtime does. Before the first header of C's library. */
+#define _CRT_SECURE_NO_WARNINGS
+#endif
 #include <math.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -568,9 +573,210 @@ const RUNTIME: &str = r#"#ifndef SG_FREESTANDING
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#if !(defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__))
+#if defined(_WIN32)
+/* Windows: only its functions of UTF-16 are called, the text turned at the edge (`sg_wide`). */
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <shellapi.h>
+#include <io.h>
+#include <fcntl.h>
+#elif !(defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__))
 #include <sys/random.h>
 #endif
+#endif
+
+#if defined(_WIN32) && !SG_FREESTANDING
+/* The output and the standard error on Windows. A stream that is a console is written with
+   `WriteConsoleW`, the UTF-8 turned into UTF-16 there: a character split between two writes is
+   kept until its last byte comes, and a byte that is not UTF-8 is shown as U+FFFD, as a terminal
+   of Linux or macOS shows it; the code page of the console is not changed. A stream that is a
+   file or a pipe gets the bytes as they are (in binary mode, set by `sg_start`). The functions of
+   C that write to `stdout` and `stderr` come here (the macros below), so that the program's C
+   writes the same as elsewhere. */
+static int sg_con_state[3];
+static uint8_t sg_con_held[3][4];
+static int sg_con_held_n[3];
+static int sg_con_index(FILE* f) { return f == stdout ? 1 : f == stderr ? 2 : 0; }
+/* Whether the stream `i` (1 the output, 2 the standard error) is a console; asked once. */
+static bool sg_con_is(int i) {
+    if (!i) return false;
+    int state = __atomic_load_n(&sg_con_state[i], __ATOMIC_RELAXED);
+    if (!state) {
+        DWORD mode;
+        HANDLE h = GetStdHandle(i == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
+        state = h && h != INVALID_HANDLE_VALUE && GetConsoleMode(h, &mode) ? 1 : 2;
+        __atomic_store_n(&sg_con_state[i], state, __ATOMIC_RELAXED);
+    }
+    return state == 1;
+}
+/* How long the UTF-8 character that starts with `b` is, 0 for a byte that cannot start one. */
+static int sg_con_width(uint8_t b) { return b < 0x80 ? 1 : b < 0xC2 ? 0 : b < 0xE0 ? 2 : b < 0xF0 ? 3 : b < 0xF5 ? 4 : 0; }
+/* Whether the bytes are one whole character of UTF-8: the shortest form, no surrogate. */
+static uint32_t sg_con_char(const uint8_t* p, int n, bool* ok) {
+    uint32_t c = n == 1 ? p[0] : n == 2 ? p[0] & 0x1F : n == 3 ? p[0] & 0x0F : p[0] & 0x07;
+    *ok = true;
+    for (int i = 1; i < n; i++) {
+        if ((p[i] & 0xC0) != 0x80) { *ok = false; return 0; }
+        c = (c << 6) | (p[i] & 0x3F);
+    }
+    if ((n == 3 && (c < 0x800 || (c >= 0xD800 && c < 0xE000))) || (n == 4 && (c < 0x10000 || c > 0x10FFFF))) *ok = false;
+    return c;
+}
+static void sg_con_put(HANDLE h, const wchar_t* w, size_t n) {
+    while (n > 0) {
+        DWORD put = 0;
+        DWORD part = n > 8192 ? 8192 : (DWORD)n;
+        if (!WriteConsoleW(h, w, part, &put, NULL) || put == 0) return;
+        w += put;
+        n -= put;
+    }
+}
+/* A character into `w` at `k`: one unit of UTF-16, or two. */
+static size_t sg_con_unit(wchar_t* w, size_t k, uint32_t c) {
+    if (c < 0x10000) { w[k] = (wchar_t)c; return k + 1; }
+    c -= 0x10000;
+    w[k] = (wchar_t)(0xD800 + (c >> 10));
+    w[k + 1] = (wchar_t)(0xDC00 + (c & 0x3FF));
+    return k + 2;
+}
+/* The bytes onto the console of stream `i`. A character that is cut, or wrong, after its first
+   byte is one U+FFFD, and what broke it is read again. */
+static void sg_con_write(int i, const uint8_t* p, size_t n) {
+    HANDLE h = GetStdHandle(i == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
+    wchar_t w[1024];
+    size_t k = 0, at = 0;
+    uint8_t* held = sg_con_held[i];
+    int* held_n = &sg_con_held_n[i];
+    bool ok;
+    if (*held_n > 0) {
+        int width = sg_con_width(held[0]);
+        while (*held_n < width && at < n && (p[at] & 0xC0) == 0x80) held[(*held_n)++] = p[at++];
+        if (*held_n < width && at == n) return;
+        uint32_t c = *held_n == width ? sg_con_char(held, width, &ok) : (ok = false, 0);
+        k = ok ? sg_con_unit(w, k, c) : sg_con_unit(w, k, 0xFFFD);
+        *held_n = 0;
+    }
+    while (at < n) {
+        if (k + 2 > sizeof w / sizeof w[0]) { sg_con_put(h, w, k); k = 0; }
+        int width = sg_con_width(p[at]);
+        if (width <= 1) { k = sg_con_unit(w, k, width ? p[at] : 0xFFFD); at++; continue; }
+        size_t have = 1;
+        while ((int)have < width && at + have < n && (p[at + have] & 0xC0) == 0x80) have++;
+        if ((int)have < width) {
+            if (at + have == n) { memcpy(held, p + at, have); *held_n = (int)have; break; }
+            k = sg_con_unit(w, k, 0xFFFD);
+            at += have;
+            continue;
+        }
+        uint32_t c = sg_con_char(p + at, width, &ok);
+        k = sg_con_unit(w, k, ok ? c : 0xFFFD);
+        at += (size_t)width;
+    }
+    if (k > 0) sg_con_put(h, w, k);
+}
+static size_t sg_win_fwrite(const void* p, size_t size, size_t count, FILE* f) {
+    int i = sg_con_index(f);
+    if (!sg_con_is(i)) return (fwrite)(p, size, count, f);
+    (fflush)(f);
+    sg_con_write(i, (const uint8_t*)p, size * count);
+    return count;
+}
+static int sg_win_vfprintf(FILE* f, const char* format, va_list args) {
+    int i = sg_con_index(f);
+    if (!sg_con_is(i)) return (vfprintf)(f, format, args);
+    char local[512];
+    va_list again;
+    va_copy(again, args);
+    int n = (vsnprintf)(local, sizeof local, format, args);
+    if (n < 0) { va_end(again); return n; }
+    char* text = local;
+    if ((size_t)n >= sizeof local) {
+        text = (malloc)((size_t)n + 1);
+        if (!text) abort();
+        (vsnprintf)(text, (size_t)n + 1, format, again);
+    }
+    va_end(again);
+    (fflush)(f);
+    sg_con_write(i, (const uint8_t*)text, (size_t)n);
+    if (text != local) (free)(text);
+    return n;
+}
+static int sg_win_fprintf(FILE* f, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    int n = sg_win_vfprintf(f, format, args);
+    va_end(args);
+    return n;
+}
+static int sg_win_printf(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    int n = sg_win_vfprintf(stdout, format, args);
+    va_end(args);
+    return n;
+}
+static int sg_win_fputs(const char* text, FILE* f) { sg_win_fwrite(text, 1, strlen(text), f); return 0; }
+static int sg_win_fputc(int c, FILE* f) { char b = (char)c; sg_win_fwrite(&b, 1, 1, f); return c; }
+static int sg_win_puts(const char* text) { sg_win_fputs(text, stdout); return sg_win_fputc('\n', stdout); }
+#define fwrite(p, size, count, f) sg_win_fwrite(p, size, count, f)
+#define vfprintf(f, format, args) sg_win_vfprintf(f, format, args)
+#define fprintf(f, ...) sg_win_fprintf(f, __VA_ARGS__)
+#define printf(...) sg_win_printf(__VA_ARGS__)
+#define fputs(text, f) sg_win_fputs(text, f)
+#define fputc(c, f) sg_win_fputc(c, f)
+#define puts(text) sg_win_puts(text)
+
+/* Text of UTF-16 from Windows as UTF-8, into a block C's `malloc` gives, which the count of
+   blocks does not see (`sg_owned_from_wide` gives one it does): a half of a pair of UTF-16 that
+   stands alone becomes the three bytes it would have (WTF-8), which are not UTF-8, so that it is
+   the error a name that is not UTF-8 is elsewhere, at the same place. */
+static char* sg_from_wide(const wchar_t* w, int64_t n, int64_t* len) {
+    char* out = (malloc)((size_t)n * 3 + 1);
+    if (!out) abort();
+    int64_t k = 0;
+    for (int64_t i = 0; i < n; i++) {
+        uint32_t c = (uint16_t)w[i];
+        if (c >= 0xD800 && c < 0xDC00 && i + 1 < n && (uint16_t)w[i + 1] >= 0xDC00 && (uint16_t)w[i + 1] < 0xE000) {
+            c = 0x10000 + ((c - 0xD800) << 10) + ((uint16_t)w[++i] - 0xDC00);
+        }
+        if (c < 0x80) out[k++] = (char)c;
+        else if (c < 0x800) { out[k++] = (char)(0xC0 | (c >> 6)); out[k++] = (char)(0x80 | (c & 0x3F)); }
+        else if (c < 0x10000) { out[k++] = (char)(0xE0 | (c >> 12)); out[k++] = (char)(0x80 | ((c >> 6) & 0x3F)); out[k++] = (char)(0x80 | (c & 0x3F)); }
+        else { out[k++] = (char)(0xF0 | (c >> 18)); out[k++] = (char)(0x80 | ((c >> 12) & 0x3F)); out[k++] = (char)(0x80 | ((c >> 6) & 0x3F)); out[k++] = (char)(0x80 | (c & 0x3F)); }
+    }
+    out[k] = 0;
+    *len = k;
+    return out;
+}
+
+/* What a program does first on Windows: its streams in binary mode, so that `\n` is written as
+   it is; no window and no report of Windows when it aborts; and the words of its command line
+   from Windows' own UTF-16, as UTF-8, whatever the code page. */
+#pragma comment(lib, "shell32")
+static void sg_start(int* argc, char*** argv) {
+    _setmode(0, _O_BINARY);
+    _setmode(1, _O_BINARY);
+    _setmode(2, _O_BINARY);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    if (!argc) return;
+    int n = 0;
+    wchar_t** words = CommandLineToArgvW(GetCommandLineW(), &n);
+    if (!words) return;
+    char** utf8 = (malloc)(sizeof(char*) * ((size_t)n + 1));
+    if (!utf8) abort();
+    for (int i = 0; i < n; i++) {
+        int64_t len;
+        utf8[i] = sg_from_wide(words[i], (int64_t)wcslen(words[i]), &len);
+    }
+    utf8[n] = NULL;
+    LocalFree(words);
+    /* The words live as long as the process, as C's own do. */
+    *argc = n;
+    *argv = utf8;
+}
+#else
+#define sg_start(argc, argv) ((void)0)
 #endif
 
 /* A debug build counts the blocks it takes for values and gives back, on every system, and a
@@ -588,6 +794,12 @@ const RUNTIME: &str = r#"#ifndef SG_FREESTANDING
 #define sg_c_calloc(count, size) calloc(count, size)
 #define sg_c_aligned_alloc(align, size) aligned_alloc(align, size)
 #define sg_c_free(p) free(p)
+#elif defined(_WIN32)
+/* Windows' C has no `aligned_alloc`: `_aligned_malloc`, whose block only `_aligned_free` gives
+   back. */
+#define sg_c_calloc(count, size) (calloc)(count, size)
+#define sg_c_aligned_alloc(align, size) _aligned_malloc(size, align)
+#define sg_c_free(p) (free)(p)
 #else
 #define sg_c_calloc(count, size) (calloc)(count, size)
 #define sg_c_aligned_alloc(align, size) (aligned_alloc)(align, size)
@@ -668,8 +880,26 @@ static inline int sg_os_error(void) { return errno ? errno : EIO; }
 #endif
 /* Room for a value of a type aligned beyond what `malloc` gives (16 bytes on the machines the
    language runs on): C11's `aligned_alloc`, whose size is a multiple of the alignment and whose
-   block `free` gives back. On Windows it will be `_aligned_malloc`, whose block only
-   `_aligned_free` gives back (`sg_aligned_free`). */
+   block `free` gives back. On Windows `_aligned_malloc`, whose block only `_aligned_free` gives
+   back (`sg_aligned_free`). */
+#if defined(_WIN32) && !SG_FREESTANDING
+static inline void* sg_alloc(size_t size, size_t align) {
+    if (align <= 16) return malloc(size);
+#if SG_COUNT
+    return sg_counted(_aligned_malloc(size, align));
+#else
+    return _aligned_malloc(size, align);
+#endif
+}
+static inline void sg_aligned_free(void* p) {
+#if SG_COUNT
+    if (p) __atomic_fetch_sub(&sg_blocks, 1, __ATOMIC_RELAXED);
+#endif
+    _aligned_free(p);
+}
+/* Raw memory aligned beyond 16 bytes, given back as `Memory.allocate` made it, not counted. */
+static inline void sg_raw_aligned_free(void* p) { _aligned_free(p); }
+#else
 static inline void* sg_alloc(size_t size, size_t align) {
     if (align <= 16) return malloc(size);
     return aligned_alloc(align, (size + align - 1) & ~(align - 1));
@@ -677,6 +907,11 @@ static inline void* sg_alloc(size_t size, size_t align) {
 static inline void sg_aligned_free(void* p) { free(p); }
 /* Raw memory aligned beyond 16 bytes, given back as `Memory.allocate` made it, not counted. */
 static inline void sg_raw_aligned_free(void* p) { sg_c_free(p); }
+#endif
+/* A block of `sg_alloc`, `sg_grow` or `sg_reserve` given back, by the alignment of what it holds:
+   on Windows a block aligned beyond 16 bytes goes back only through `_aligned_free`. The test is
+   one the C compiler makes. */
+#define sg_free_as(p, T) (_Alignof(T) > 16 ? sg_aligned_free(p) : free(p))
 
 /* The generated code puts every operation in parentheses. */
 #if defined(__clang__)
@@ -1318,6 +1553,20 @@ static void sg_entropy(uint8_t* p, int64_t n, const char* loc) {
 #elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
     (void)loc;
     arc4random_buf(p, (size_t)n);
+#elif defined(_WIN32)
+    /* `ProcessPrng`, as Rust reads it: its library has no import library in the SDK, so it is
+       loaded from the folder of the system, once. It never fails. */
+    typedef BOOL (WINAPI *sg_prng_fn)(PUCHAR, SIZE_T);
+    static sg_prng_fn prng = NULL;
+    sg_prng_fn found = __atomic_load_n(&prng, __ATOMIC_ACQUIRE);
+    if (!found) {
+        HMODULE lib = LoadLibraryExW(L"bcryptprimitives.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        found = lib ? (sg_prng_fn)(void (*)(void))GetProcAddress(lib, "ProcessPrng") : NULL;
+        if (!found) sg_no_entropy(loc);
+        __atomic_store_n(&prng, found, __ATOMIC_RELEASE);
+    }
+    (void)loc;
+    found(p, (SIZE_T)n);
 #else
     while (n > 0) {
         ssize_t got = getrandom(p, (size_t)n, 0);
@@ -1857,7 +2106,8 @@ static void sg_sort(void* items, int64_t count, size_t size, int (*compare)(cons
         uint8_t* swap = from; from = to; to = swap;
     }
     if (from != (uint8_t*)items) { memcpy(items, from, (size_t)count * size); to = from; }
-    free(to);
+    if ((align > 4096 ? 4096 : align) > 16) sg_aligned_free(to);
+    else free(to);
 }
 static void sg_quoted(sg_str s) {
     fputc('"', stderr);
@@ -1928,12 +2178,38 @@ static inline int64_t sg_raw_view(const void* at, int64_t n, size_t align, const
 /// The two clocks the language's own module reads (`Clock.monotonic()`, `Clock.wall()`): the
 /// nanoseconds of the monotonic clock, and of the clock of the system since 1970.
 const CLOCK_RUNTIME: &str = r#"
+#if defined(_WIN32)
+/* Windows: `QueryPerformanceCounter`, and `GetSystemTimePreciseAsFileTime` in units of 100 ns
+   since 1601. */
+#define CLOCK_MONOTONIC 1
+#define CLOCK_REALTIME 0
+static inline int64_t sg_clock(int id) {
+    if (id == CLOCK_REALTIME) {
+        FILETIME t;
+        GetSystemTimePreciseAsFileTime(&t);
+        int64_t units = (int64_t)(((uint64_t)t.dwHighDateTime << 32) | t.dwLowDateTime);
+        return (units - INT64_C(116444736000000000)) * 100;
+    }
+    static int64_t frequency = 0;
+    if (!frequency) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        __atomic_store_n(&frequency, f.QuadPart, __ATOMIC_RELAXED);
+    }
+    LARGE_INTEGER count;
+    QueryPerformanceCounter(&count);
+    int64_t hz = __atomic_load_n(&frequency, __ATOMIC_RELAXED);
+    int64_t whole = count.QuadPart / hz, part = count.QuadPart % hz;
+    return whole * 1000000000 + part * 1000000000 / hz;
+}
+#else
 #include <time.h>
 static inline int64_t sg_clock(clockid_t id) {
     struct timespec t;
     clock_gettime(id, &t);
     return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
 }
+#endif
 "#;
 
 /// What a program that calls C needs: the name a C function has for the linker, written as
@@ -2029,7 +2305,7 @@ SG_COLD static _Noreturn void sg_fail_@N(@P key, bool missing, const char* loc) 
 static inline bool sg_contains_@N(const sg_@N* m, @P key) { return sg_find_@N(m, key) >= 0; }
 static void sg_drop_from_@N(sg_@N* m, int64_t from) {
     for (int64_t i = from; i < m->len; i++) { @DROPE(m->entries[i]) }
-    free(m->entries);
+    sg_free_as(m->entries, sg_E_@N);
     free(m->slots);
 }
 static inline void sg_drop_@N(sg_@N* m) { sg_drop_from_@N(m, 0); }
@@ -4925,6 +5201,338 @@ static sg_writer sg_proc_writer(int64_t fd) {
 "#;
 
 const FILES_RUNTIME: &str = r#"
+#if defined(_WIN32)
+#include <sddl.h>
+#pragma comment(lib, "advapi32")
+#define SG_SHARE_ALL (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+/* A handle of the file or the folder itself, a link not followed. */
+static HANDLE sg_win_itself(const wchar_t* name, DWORD access, DWORD share) {
+    return CreateFileW(name, access, share, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+}
+/* Whether the two paths name one file: a rename onto it is no move. */
+static bool sg_win_same(const wchar_t* a, const wchar_t* b) {
+    HANDLE x = sg_win_itself(a, 0, SG_SHARE_ALL);
+    if (x == INVALID_HANDLE_VALUE) return false;
+    HANDLE y = sg_win_itself(b, 0, SG_SHARE_ALL);
+    BY_HANDLE_FILE_INFORMATION i, j;
+    bool same = y != INVALID_HANDLE_VALUE && GetFileInformationByHandle(x, &i) && GetFileInformationByHandle(y, &j) && i.dwVolumeSerialNumber == j.dwVolumeSerialNumber && i.nFileIndexHigh == j.nFileIndexHigh && i.nFileIndexLow == j.nFileIndexLow;
+    CloseHandle(x);
+    if (y != INVALID_HANDLE_VALUE) CloseHandle(y);
+    return same;
+}
+/* Deletes what the handle is of: the name goes at once, even while another program has the file
+   open (POSIX semantics, from Windows 10 1809), and a file that may only be read goes too, as on
+   Linux and macOS. A file system without POSIX semantics (FAT) deletes it the old way. */
+static int sg_win_delete_handle(HANDLE h) {
+    FILE_DISPOSITION_INFO_EX ex = { FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE };
+    if (SetFileInformationByHandle(h, FileDispositionInfoEx, &ex, sizeof ex)) return 0;
+    FILE_DISPOSITION_INFO plain = { TRUE };
+    return SetFileInformationByHandle(h, FileDispositionInfo, &plain, sizeof plain) ? 0 : sg_win_error();
+}
+/* Deletes the file, a link itself and not what it points to; a folder is `IsDirectory`. */
+static int sg_fs_delete(sg_str path) {
+    int code = 0;
+    wchar_t* name = sg_wide(path, &code);
+    if (!name) return code;
+    HANDLE h = sg_win_itself(name, DELETE, SG_SHARE_ALL);
+    if (h == INVALID_HANDLE_VALUE) code = sg_win_refine(name, sg_win_error());
+    else {
+        BY_HANDLE_FILE_INFORMATION info;
+        if (GetFileInformationByHandle(h, &info) && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) code = ERROR_DIRECTORY_NOT_SUPPORTED;
+        else code = sg_win_delete_handle(h);
+        CloseHandle(h);
+    }
+    free(name);
+    return code;
+}
+/* A rename. Without `replace` a target that is there is `AlreadyExists`, told in the same step of
+   the system as the rename. */
+static int sg_fs_move(sg_str from, sg_str to, bool replace) {
+    int code = 0;
+    wchar_t* a = sg_wide(from, &code);
+    if (!a) return code;
+    wchar_t* b = sg_wide(to, &code);
+    if (!b) { free(a); return code; }
+    if (!replace && sg_win_same(a, b)) code = ERROR_ALREADY_EXISTS;
+    else if (!MoveFileExW(a, b, replace ? MOVEFILE_REPLACE_EXISTING : 0)) code = sg_win_refine(a, sg_win_error());
+    free(a);
+    free(b);
+    return code;
+}
+/* What the file holds into a new file, with its attributes: `CopyFileExW`, which removes a target
+   it could not write whole. A target that is there is `AlreadyExists`, a folder `IsDirectory`. */
+static int sg_fs_copy(sg_str from, sg_str to) {
+    int code = 0;
+    wchar_t* a = sg_wide(from, &code);
+    if (!a) return code;
+    wchar_t* b = sg_wide(to, &code);
+    if (!b) { free(a); return code; }
+    DWORD attributes = GetFileAttributesW(a);
+    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) code = ERROR_DIRECTORY_NOT_SUPPORTED;
+    else if (!CopyFileExW(a, b, NULL, NULL, NULL, COPY_FILE_FAIL_IF_EXISTS)) code = sg_win_refine(a, sg_win_error());
+    free(a);
+    free(b);
+    return code;
+}
+static int sg_fs_mkdir(sg_str path) {
+    int code = 0;
+    wchar_t* name = sg_wide(path, &code);
+    if (!name) return code;
+    if (!CreateDirectoryW(name, NULL)) code = sg_win_refine(name, sg_win_error());
+    free(name);
+    return code;
+}
+static int sg_fs_rmdir(sg_str path) {
+    int code = 0;
+    wchar_t* name = sg_wide(path, &code);
+    if (!name) return code;
+    if (!RemoveDirectoryW(name)) code = sg_win_refine(name, sg_win_error());
+    free(name);
+    return code;
+}
+/* The path made whole, with `\\?\` in front: the paths inside it may grow long. */
+static wchar_t* sg_win_verbatim(const wchar_t* name) {
+    if (wcsncmp(name, L"\\\\?\\", 4) == 0) {
+        wchar_t* same = malloc((wcslen(name) + 1) * sizeof(wchar_t));
+        if (!same) abort();
+        wcscpy(same, name);
+        return same;
+    }
+    DWORD full = GetFullPathNameW(name, 0, NULL, NULL);
+    wchar_t* whole = malloc(((size_t)full + 8) * sizeof(wchar_t));
+    if (!whole) abort();
+    bool share = name[0] == L'\\' && name[1] == L'\\';
+    wcscpy(whole, share ? L"\\\\?\\UNC" : L"\\\\?\\");
+    size_t front = wcslen(whole);
+    DWORD got = full ? GetFullPathNameW(name, full, whole + front, NULL) : 0;
+    if (got == 0 || got >= full) { wcscpy(whole, name); return whole; }
+    if (share) memmove(whole + front, whole + front + 1, (wcslen(whole + front + 1) + 1) * sizeof(wchar_t));
+    size_t n = wcslen(whole);
+    while (n > front && (whole[n - 1] == L'\\' || whole[n - 1] == L'/')) whole[--n] = 0;
+    return whole;
+}
+/* Removes all that the folder `path` holds, whose handle the caller keeps open without letting
+   others delete or rename it: no folder on the way can be swapped for a link while this works.
+   Each name inside is opened itself, a link not followed: a link or a junction is removed, not
+   what it points to. What another program removed first is no error. */
+static int sg_win_clear(const wchar_t* path) {
+    size_t n = wcslen(path);
+    wchar_t* pattern = malloc((n + 3) * sizeof(wchar_t));
+    if (!pattern) abort();
+    wcscpy(pattern, path);
+    wcscpy(pattern + n, L"\\*");
+    WIN32_FIND_DATAW found;
+    HANDLE search = FindFirstFileExW(pattern, FindExInfoBasic, &found, FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH);
+    free(pattern);
+    if (search == INVALID_HANDLE_VALUE) return sg_win_error();
+    int code = 0;
+    do {
+        const wchar_t* name = found.cFileName;
+        if (name[0] == L'.' && (name[1] == 0 || (name[1] == L'.' && name[2] == 0))) continue;
+        size_t m = wcslen(name);
+        wchar_t* child = malloc((n + m + 2) * sizeof(wchar_t));
+        if (!child) abort();
+        wcscpy(child, path);
+        child[n] = L'\\';
+        wcscpy(child + n + 1, name);
+        HANDLE h = sg_win_itself(child, DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE);
+        if (h == INVALID_HANDLE_VALUE) {
+            DWORD error = GetLastError();
+            free(child);
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) continue;
+            code = (int)error;
+            break;
+        }
+        BY_HANDLE_FILE_INFORMATION info;
+        if (!GetFileInformationByHandle(h, &info)) code = sg_win_error();
+        else if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) code = sg_win_clear(child);
+        if (!code) code = sg_win_delete_handle(h);
+        CloseHandle(h);
+        free(child);
+        if (code) break;
+    } while (FindNextFileW(search, &found));
+    if (!code && GetLastError() != ERROR_NO_MORE_FILES) code = sg_win_error();
+    FindClose(search);
+    return code;
+}
+/* A folder and all it holds; a path that is a link, or a file, is `NotDirectory`. */
+static int sg_fs_remove_all(sg_str path) {
+    int code = 0;
+    wchar_t* written = sg_wide(path, &code);
+    if (!written) return code;
+    wchar_t* name = sg_win_verbatim(written);
+    HANDLE h = sg_win_itself(name, DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE);
+    BY_HANDLE_FILE_INFORMATION info;
+    if (h == INVALID_HANDLE_VALUE) code = sg_win_refine(written, sg_win_error());
+    else if (!GetFileInformationByHandle(h, &info)) code = sg_win_error();
+    else if (!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) code = ERROR_DIRECTORY;
+    else {
+        code = sg_win_clear(name);
+        if (!code) code = sg_win_delete_handle(h);
+    }
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    free(name);
+    free(written);
+    return code;
+}
+/* A name in a folder: its bytes, ended by a zero, and its kind (0 a file, 1 a folder, 2 a link,
+   3 anything else). */
+typedef struct { char* name; int64_t len; uint8_t kind; } sg_fs_entry;
+/* In the order of the bytes, a name before a longer one it starts. */
+static int sg_fs_order(const void* x, const void* y) {
+    const sg_fs_entry* a = x;
+    const sg_fs_entry* b = y;
+    int64_t n = a->len < b->len ? a->len : b->len;
+    int c = memcmp(a->name, b->name, (size_t)n);
+    return c ? c : (a->len > b->len) - (a->len < b->len);
+}
+/* The names in the folder, without `.` and `..`, in the order of their bytes of UTF-8. A
+   symbolic link and a junction are links. */
+static int sg_fs_list(sg_str path, sg_fs_entry** out, int64_t* count) {
+    int code = 0;
+    wchar_t* name = sg_wide(path, &code);
+    if (!name) return code;
+    size_t n = wcslen(name);
+    wchar_t* pattern = malloc((n + 3) * sizeof(wchar_t));
+    if (!pattern) abort();
+    wcscpy(pattern, name);
+    wcscpy(pattern + n, n > 0 && (name[n - 1] == L'\\' || name[n - 1] == L'/') ? L"*" : L"\\*");
+    WIN32_FIND_DATAW found;
+    HANDLE search = FindFirstFileExW(pattern, FindExInfoBasic, &found, FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH);
+    free(pattern);
+    if (search == INVALID_HANDLE_VALUE) {
+        code = sg_win_error();
+        DWORD attributes = GetFileAttributesW(name);
+        if (attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY)) code = ERROR_DIRECTORY;
+        else code = sg_win_refine(name, code);
+        free(name);
+        return code;
+    }
+    free(name);
+    sg_fs_entry* entries = NULL;
+    int64_t k = 0, cap = 0;
+    do {
+        const wchar_t* d = found.cFileName;
+        if (d[0] == L'.' && (d[1] == 0 || (d[1] == L'.' && d[2] == 0))) continue;
+        DWORD a = found.dwFileAttributes;
+        bool link = (a & FILE_ATTRIBUTE_REPARSE_POINT) && (found.dwReserved0 == IO_REPARSE_TAG_SYMLINK || found.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT);
+        int kind = link ? 2 : (a & FILE_ATTRIBUTE_DIRECTORY) ? 1 : (a & FILE_ATTRIBUTE_DEVICE) ? 3 : 0;
+        if (k == cap) entries = sg_grow(entries, &cap, sizeof *entries, _Alignof(__typeof__(*entries)));
+        int64_t len = 0;
+        char* copy = sg_owned_from_wide(d, (int64_t)wcslen(d), &len);
+        entries[k++] = (sg_fs_entry){ copy, len, (uint8_t)kind };
+    } while (FindNextFileW(search, &found));
+    if (GetLastError() != ERROR_NO_MORE_FILES) code = sg_win_error();
+    FindClose(search);
+    if (code) {
+        for (int64_t i = 0; i < k; i++) free(entries[i].name);
+        free(entries);
+        return code;
+    }
+    if (k > 1) qsort(entries, (size_t)k, sizeof *entries, sg_fs_order);
+    *out = entries;
+    *count = k;
+    return 0;
+}
+/* The kind, the size and the time of the last write in nanoseconds since 1970, a link followed. */
+static int sg_fs_status(sg_str path, int64_t* fields) {
+    int code = 0;
+    wchar_t* name = sg_wide(path, &code);
+    if (!name) return code;
+    HANDLE h = CreateFileW(name, FILE_READ_ATTRIBUTES, SG_SHARE_ALL, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        code = sg_win_refine(name, sg_win_error());
+        free(name);
+        return code;
+    }
+    free(name);
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(h, &info)) { code = sg_win_error(); CloseHandle(h); return code; }
+    bool folder = info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
+    fields[0] = folder ? 1 : GetFileType(h) == FILE_TYPE_DISK ? 0 : 3;
+    CloseHandle(h);
+    fields[1] = folder ? 0 : (int64_t)(((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow);
+    int64_t units = (int64_t)(((uint64_t)info.ftLastWriteTime.dwHighDateTime << 32) | info.ftLastWriteTime.dwLowDateTime);
+    fields[2] = (units - INT64_C(116444736000000000)) * 100;
+    return 0;
+}
+/* The folder the program works in, as bytes of its own. */
+static int sg_fs_current(uint8_t** bytes, int64_t* len) {
+    DWORD n = GetCurrentDirectoryW(0, NULL);
+    if (n == 0) return sg_win_error();
+    wchar_t* w = (malloc)((size_t)n * sizeof(wchar_t));
+    if (!w) abort();
+    DWORD got = GetCurrentDirectoryW(n, w);
+    if (got == 0 || got >= n) { (free)(w); return got == 0 ? sg_win_error() : ERROR_INSUFFICIENT_BUFFER; }
+    *bytes = (uint8_t*)sg_owned_from_wide(w, (int64_t)got, len);
+    (free)(w);
+    return 0;
+}
+/* A new folder named from the template, its `XXXXXX` made random, that only its owner may open:
+   its list of access has one entry, full access for the owner, and inherits none. */
+static int sg_fs_make_temp(sg_str template, uint8_t** bytes, int64_t* len) {
+    static const char letters[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    if (template.len < 6 || memcmp(template.ptr + template.len - 6, "XXXXXX", 6) != 0) return ERROR_INVALID_PARAMETER;
+    PSECURITY_DESCRIPTOR descriptor = NULL;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;OICI;FA;;;OW)", SDDL_REVISION_1, &descriptor, NULL)) return sg_win_error();
+    SECURITY_ATTRIBUTES security = { sizeof security, descriptor, FALSE };
+    char* name = malloc((size_t)template.len + 1);
+    if (!name) abort();
+    memcpy(name, template.ptr, (size_t)template.len);
+    name[template.len] = 0;
+    int code = ERROR_ALREADY_EXISTS;
+    for (int attempt = 0; attempt < 100 && code == ERROR_ALREADY_EXISTS; attempt++) {
+        uint8_t random[6];
+        sg_entropy(random, 6, "  when a folder of its own was made\n");
+        for (int i = 0; i < 6; i++) name[template.len - 6 + i] = letters[random[i] % (sizeof letters - 1)];
+        wchar_t* w = sg_wide((sg_str){ (const uint8_t*)name, template.len }, &code);
+        if (!w) break;
+        code = CreateDirectoryW(w, &security) ? 0 : sg_win_refine(w, sg_win_error());
+        free(w);
+    }
+    LocalFree(descriptor);
+    if (code) { free(name); return code; }
+    *bytes = (uint8_t*)name;
+    *len = template.len;
+    return 0;
+}
+/* The folder for files that do not have to stay, as `GetTempPath2W` gives it where Windows has
+   it (a folder of the system's own for a service), else `GetTempPathW`; without the `\` at its
+   end. */
+static int sg_fs_temp_folder(uint8_t** bytes, int64_t* len) {
+    typedef DWORD (WINAPI *sg_temp_fn)(DWORD, LPWSTR);
+    sg_temp_fn get = (sg_temp_fn)(void (*)(void))GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetTempPath2W");
+    if (!get) get = GetTempPathW;
+    wchar_t w[MAX_PATH + 2];
+    DWORD n = get(MAX_PATH + 1, w);
+    if (n == 0 || n > MAX_PATH + 1) return sg_win_error();
+    if (n > 3 && w[n - 1] == L'\\') n--;
+    *bytes = (uint8_t*)sg_owned_from_wide(w, (int64_t)n, len);
+    return 0;
+}
+/* The bytes of a variable of the environment, or NULL when it is not set; names are matched
+   without case, as Windows matches them. A name with `=` or a zero byte in it is no variable's
+   name. The bytes are kept for the thread until it asks again. */
+static const char* sg_env_variable(sg_str name, int64_t* len) {
+    if (name.len == 0 || memchr(name.ptr, 0, (size_t)name.len) || memchr(name.ptr, '=', (size_t)name.len)) return NULL;
+    int n = MultiByteToWideChar(CP_UTF8, 0, (const char*)name.ptr, (int)name.len, NULL, 0);
+    wchar_t* key = (malloc)(((size_t)n + 1) * sizeof(wchar_t));
+    if (!key) abort();
+    MultiByteToWideChar(CP_UTF8, 0, (const char*)name.ptr, (int)name.len, key, n);
+    key[n] = 0;
+    static _Thread_local char* held = NULL;
+    DWORD size = GetEnvironmentVariableW(key, NULL, 0);
+    if (size == 0) { (free)(key); return NULL; }
+    wchar_t* value = (malloc)((size_t)size * sizeof(wchar_t));
+    if (!value) abort();
+    DWORD got = GetEnvironmentVariableW(key, value, size);
+    (free)(key);
+    (free)(held);
+    held = sg_from_wide(value, (int64_t)(got < size ? got : 0), len);
+    (free)(value);
+    return held;
+}
+#else
 #include <dirent.h>
 #include <stdio.h>
 #if defined(__linux__) && !defined(RENAME_NOREPLACE)
@@ -5199,15 +5807,18 @@ static const char* sg_env_variable(sg_str name, int64_t* len) {
     if (value) *len = (int64_t)strlen(value);
     return value;
 }
+#endif
 "#;
 
 const IO_RUNTIME: &str = r#"
 #include <errno.h>
+#if !defined(_WIN32)
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 /* The variant of `IoError` for a code the system gave: 0 NotFound, 1 PermissionDenied,
    2 IsDirectory, 3 NoSpace, 7 ConnectionRefused, 8 ConnectionReset, 9 AddressInUse; 5 is Other,
@@ -5218,6 +5829,203 @@ const IO_RUNTIME: &str = r#"
    buffer it was received into. */
 #define SG_HOST_NOT_FOUND (-10)
 #define SG_LINE_TOO_LONG (-11)
+#if defined(_WIN32)
+/* The codes of Windows, as Rust tells them apart; a code the runtime gives itself is one of them
+   too: a folder where a file was is `ERROR_DIRECTORY_NOT_SUPPORTED`, a file where a folder was
+   `ERROR_DIRECTORY`. */
+#define SG_E_NOT_FOUND ERROR_FILE_NOT_FOUND
+#define SG_E_IS_DIR ERROR_DIRECTORY_NOT_SUPPORTED
+#define SG_E_NOT_DIR ERROR_DIRECTORY
+#define SG_E_EXISTS ERROR_ALREADY_EXISTS
+static int sg_io_kind(int code) {
+    switch (code) {
+    case SG_HOST_NOT_FOUND: return 10;
+    case SG_LINE_TOO_LONG: return 11;
+    case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_INVALID_DRIVE: case ERROR_BAD_NETPATH: case ERROR_BAD_NET_NAME: return 0;
+    case ERROR_ACCESS_DENIED: case ERROR_WRITE_PROTECT: case ERROR_PRIVILEGE_NOT_HELD: return 1;
+    case ERROR_DIRECTORY_NOT_SUPPORTED: return 2;
+    case ERROR_HANDLE_DISK_FULL: case ERROR_DISK_FULL: case ERROR_DISK_QUOTA_EXCEEDED: return 3;
+    case WSAECONNREFUSED: return 7;
+    case WSAECONNRESET: case WSAECONNABORTED: case WSAENOTCONN: case ERROR_BROKEN_PIPE: case ERROR_NO_DATA: return 8;
+    case WSAEADDRINUSE: return 9;
+    case ERROR_FILE_EXISTS: case ERROR_ALREADY_EXISTS: return 12;
+    case ERROR_DIRECTORY: return 13;
+    case ERROR_DIR_NOT_EMPTY: return 14;
+    case ERROR_INVALID_PARAMETER: case ERROR_INVALID_NAME: return 15;
+    case WSAEMSGSIZE: return 16;
+    default: return 5;
+    }
+}
+/* Text of UTF-16 from Windows as UTF-8 (`sg_from_wide`) into a block of the program's own, which
+   it gives back as it gives back a text, and which the count of blocks sees. */
+static char* sg_owned_from_wide(const wchar_t* w, int64_t n, int64_t* len) {
+    char* text = sg_from_wide(w, n, len);
+    char* out = malloc((size_t)*len + 1);
+    if (!out) abort();
+    memcpy(out, text, (size_t)*len + 1);
+    (free)(text);
+    return out;
+}
+
+/* The last error of Windows; a call that failed and left none is a failure of its own. */
+static inline int sg_win_error(void) { DWORD code = GetLastError(); return code ? (int)code : ERROR_GEN_FAILURE; }
+/* A handle is kept where a descriptor is on Linux and macOS: Windows gives handles of 32 bits
+   that may be cut to that size and widened back (so that 32- and 64-bit programs can share them).
+   The input is 0. */
+static inline HANDLE sg_handle(int fd) { return fd == 0 ? GetStdHandle(STD_INPUT_HANDLE) : (HANDLE)(intptr_t)fd; }
+/* A path as Windows takes it: UTF-16 ended by a zero, in a block of `malloc`. One of 248
+   characters or more is made whole and given with `\\?\` in front, as Rust gives it, so that
+   it opens whether long paths are turned on or not. A path with a zero byte in it is not found,
+   as elsewhere; one that is not UTF-8 cannot be a `string`. */
+static wchar_t* sg_wide(sg_str path, int* code) {
+    if (path.len > 0 && memchr(path.ptr, 0, (size_t)path.len)) { *code = ERROR_FILE_NOT_FOUND; return NULL; }
+    int n = path.len > 0 ? MultiByteToWideChar(CP_UTF8, 0, (const char*)path.ptr, (int)path.len, NULL, 0) : 0;
+    wchar_t* w = malloc(((size_t)n + 1) * sizeof(wchar_t));
+    if (!w) abort();
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, (const char*)path.ptr, (int)path.len, w, n);
+    w[n] = 0;
+    if (n < 248 || wcsncmp(w, L"\\\\?\\", 4) == 0) return w;
+    DWORD full = GetFullPathNameW(w, 0, NULL, NULL);
+    if (full == 0) return w;
+    wchar_t* whole = malloc(((size_t)full + 8) * sizeof(wchar_t));
+    if (!whole) abort();
+    bool share = w[0] == L'\\' && w[1] == L'\\';
+    wcscpy(whole, share ? L"\\\\?\\UNC" : L"\\\\?\\");
+    size_t front = wcslen(whole);
+    DWORD got = GetFullPathNameW(w, full, whole + front, NULL);
+    if (got == 0 || got >= full) { free(whole); return w; }
+    /* `\\server\share` becomes `\\?\UNC\server\share`: one of the two `\` goes. */
+    if (share) memmove(whole + front, whole + front + 1, (wcslen(whole + front + 1) + 1) * sizeof(wchar_t));
+    free(w);
+    return whole;
+}
+/* Whether the nearest folder on the way to the path that is there is a file. */
+static bool sg_win_file_on_the_way(const wchar_t* path) {
+    size_t n = wcslen(path);
+    wchar_t* up = malloc((n + 1) * sizeof(wchar_t));
+    if (!up) abort();
+    wcscpy(up, path);
+    bool found = false;
+    while (n > 0) {
+        while (n > 0 && up[n - 1] != L'\\' && up[n - 1] != L'/') n--;
+        while (n > 0 && (up[n - 1] == L'\\' || up[n - 1] == L'/')) n--;
+        if (n == 0 || (n == 2 && up[1] == L':')) break;
+        up[n] = 0;
+        DWORD attributes = GetFileAttributesW(up);
+        if (attributes != INVALID_FILE_ATTRIBUTES) { found = !(attributes & FILE_ATTRIBUTE_DIRECTORY); break; }
+    }
+    free(up);
+    return found;
+}
+/* The code of a call on the path, as Linux and macOS give it: a folder opened as a file, which
+   Windows refuses as `ERROR_ACCESS_DENIED`, is `IsDirectory`; a path with a file on the way,
+   which Windows does not find, is `NotDirectory`. */
+static int sg_win_refine(const wchar_t* path, int code) {
+    if (code == ERROR_ACCESS_DENIED) {
+        DWORD attributes = GetFileAttributesW(path);
+        if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) return ERROR_DIRECTORY_NOT_SUPPORTED;
+    }
+    if (code == ERROR_PATH_NOT_FOUND && sg_win_file_on_the_way(path)) return ERROR_DIRECTORY;
+    return code;
+}
+/* Opens the file for `how`: 0 to read, 1 to write it new (made or emptied), 2 to write after
+   what it holds (made if missing). Others may read, write, rename and delete it meanwhile, as on
+   Linux and macOS. A folder is `IsDirectory`. Gives 0 and the handle in `*fd`, or the code. */
+static int sg_sys_open(sg_str path, int how, int* fd) {
+    int code = 0;
+    wchar_t* name = sg_wide(path, &code);
+    if (!name) return code;
+    DWORD access = how == 0 ? GENERIC_READ : how == 1 ? GENERIC_WRITE : FILE_APPEND_DATA | SYNCHRONIZE;
+    DWORD disposition = how == 0 ? OPEN_EXISTING : how == 1 ? CREATE_ALWAYS : OPEN_ALWAYS;
+    HANDLE h = CreateFileW(name, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, disposition, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        code = sg_win_refine(name, sg_win_error());
+        free(name);
+        return code;
+    }
+    free(name);
+    *fd = (int)(intptr_t)h;
+    return 0;
+}
+/* Whether what the handle reads is a folder. */
+static bool sg_sys_is_folder(int fd) {
+    BY_HANDLE_FILE_INFORMATION info;
+    return GetFileInformationByHandle(sg_handle(fd), &info) && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+/* The size of a file, or -1 for what is not one. */
+static int64_t sg_sys_size(int fd) {
+    LARGE_INTEGER size;
+    if (GetFileType(sg_handle(fd)) != FILE_TYPE_DISK || !GetFileSizeEx(sg_handle(fd), &size)) return -1;
+    return size.QuadPart;
+}
+/* The input when it is a console: read as UTF-16 with `ReadConsoleW` and given as UTF-8, a pair
+   of UTF-16 cut between two reads kept until it is whole. A Ctrl-Z at the start of a line ends
+   the input, as it does for the programs of Windows. */
+static int sg_con_in = -1;
+static wchar_t sg_con_in_high = 0;
+static bool sg_con_in_line_start = true;
+static int sg_con_read(uint8_t* to, int64_t n, int64_t* got) {
+    *got = 0;
+    if (n < 8) return ERROR_INSUFFICIENT_BUFFER;
+    wchar_t w[4096];
+    DWORD want = (DWORD)((n - 4) / 3);
+    if (want > 4096) want = 4096;
+    if (want < 1) want = 1;
+    int64_t k = 0;
+    while (k == 0) {
+        DWORD read = 0;
+        size_t start = 0;
+        if (sg_con_in_high) { w[0] = sg_con_in_high; sg_con_in_high = 0; start = 1; }
+        if (!ReadConsoleW(sg_handle(0), w + start, want - (DWORD)start > 0 ? want - (DWORD)start : 1, &read, NULL)) return sg_win_error();
+        if (read == 0) return 0;
+        size_t count = start + read;
+        /* A high half at the end waits for its low half. */
+        if (count > 0 && w[count - 1] >= 0xD800 && w[count - 1] < 0xDC00) sg_con_in_high = w[--count];
+        if (count > 0 && w[0] == 0x1A && sg_con_in_line_start) return 0;
+        int64_t len = 0;
+        char* text = sg_from_wide(w, (int64_t)count, &len);
+        memcpy(to, text, (size_t)len);
+        (free)(text);
+        k = len;
+        if (len > 0) sg_con_in_line_start = to[len - 1] == '\n';
+    }
+    *got = k;
+    return 0;
+}
+/* Up to `n` bytes into `to`; `*got` 0 at the end. A pipe whose writer has gone is the end. */
+static int sg_sys_read(int fd, uint8_t* to, int64_t n, int64_t* got) {
+    if (fd == 0) {
+        if (sg_con_in < 0) { DWORD mode; sg_con_in = GetConsoleMode(sg_handle(0), &mode) ? 1 : 0; }
+        if (sg_con_in) return sg_con_read(to, n, got);
+    }
+    DWORD read = 0;
+    *got = 0;
+    if (!ReadFile(sg_handle(fd), to, n > 0x40000000 ? 0x40000000 : (DWORD)n, &read, NULL)) {
+        DWORD code = GetLastError();
+        if (code == ERROR_BROKEN_PIPE || code == ERROR_HANDLE_EOF) return 0;
+        return code ? (int)code : ERROR_GEN_FAILURE;
+    }
+    *got = read;
+    return 0;
+}
+static int sg_sys_close(int fd) { return CloseHandle(sg_handle(fd)) ? 0 : sg_win_error(); }
+/* Whether the input is a console, where what was printed goes out before the program waits. */
+static bool sg_sys_terminal(int fd) { DWORD mode; return GetConsoleMode(sg_handle(fd), &mode) != 0; }
+#else
+#define SG_E_NOT_FOUND ENOENT
+#define SG_E_IS_DIR EISDIR
+#define SG_E_NOT_DIR ENOTDIR
+#define SG_E_EXISTS EEXIST
+static int sg_sys_read(int fd, uint8_t* to, int64_t n, int64_t* got) {
+    for (;;) {
+        ssize_t read_n = read(fd, to, (size_t)n);
+        if (read_n < 0) { if (errno == EINTR) continue; *got = 0; return sg_os_error(); }
+        *got = read_n;
+        return 0;
+    }
+}
+static inline int sg_sys_close(int fd) { return close(fd) == 0 ? 0 : sg_os_error(); }
+static inline bool sg_sys_terminal(int fd) { return isatty(fd); }
 static int sg_io_kind(int code) {
     switch (code) {
     case SG_HOST_NOT_FOUND: return 10;
@@ -5240,6 +6048,7 @@ static int sg_io_kind(int code) {
     default: return 5;
     }
 }
+#endif
 /* A path as the system takes it, ended by a zero byte. No file has a zero byte in its name
    (the system would see the name end there), so such a path is not found. */
 static char* sg_path(sg_str path, int* code) {
@@ -5250,6 +6059,50 @@ static char* sg_path(sg_str path, int* code) {
     name[path.len] = 0;
     return name;
 }
+#if defined(_WIN32)
+/* The whole file into a block of its own: 0, or the code the system gave. */
+static int sg_read_file(sg_str path, uint8_t** bytes, int64_t* len) {
+    int fd = 0;
+    int code = sg_sys_open(path, 0, &fd);
+    if (code) return code;
+    if (sg_sys_is_folder(fd)) { sg_sys_close(fd); return ERROR_DIRECTORY_NOT_SUPPORTED; }
+    int64_t size = sg_sys_size(fd);
+    size_t cap = size > 0 ? (size_t)size + 1 : 4096;
+    uint8_t* block = malloc(cap);
+    if (!block) abort();
+    size_t n = 0;
+    for (;;) {
+        if (n == cap) { cap *= 2; block = realloc(block, cap); if (!block) abort(); }
+        int64_t got = 0;
+        code = sg_sys_read(fd, block + n, (int64_t)(cap - n), &got);
+        if (code || got == 0) break;
+        n += (size_t)got;
+    }
+    sg_sys_close(fd);
+    if (code) { free(block); return code; }
+    *bytes = block;
+    *len = (int64_t)n;
+    return 0;
+}
+static int sg_write_all(int fd, const uint8_t* bytes, int64_t len) {
+    while (len > 0) {
+        DWORD put = 0;
+        if (!WriteFile(sg_handle(fd), bytes, len > 0x40000000 ? 0x40000000 : (DWORD)len, &put, NULL)) return sg_win_error();
+        bytes += put;
+        len -= put;
+    }
+    return 0;
+}
+/* The bytes into the file, which is made if it is not there; `append` keeps what it holds. */
+static int sg_write_file(sg_str path, const uint8_t* bytes, int64_t len, bool append) {
+    int fd = 0;
+    int code = sg_sys_open(path, append ? 2 : 1, &fd);
+    if (code) return code;
+    code = sg_write_all(fd, bytes, len);
+    int closed = sg_sys_close(fd);
+    return code ? code : closed;
+}
+#else
 /* The whole file into a block of its own: 0, or the code the system gave. */
 static int sg_read_file(sg_str path, uint8_t** bytes, int64_t* len) {
     int code = 0;
@@ -5293,6 +6146,7 @@ static int sg_write_file(sg_str path, const uint8_t* bytes, int64_t len, bool ap
     if (close(fd) != 0 && !code) code = sg_os_error();
     return code;
 }
+#endif
 /* A file or the input, read in blocks of 64 KB that the reader keeps. `done` counts the bytes
    given out: where an `InvalidText` lies. A reader that was moved has no block. On a terminal,
    what was printed goes out before the program waits for the input.
@@ -5443,17 +6297,16 @@ static int sg_sock_line(sg_reader* r, sg_string* line, bool* more, int64_t* bad,
 static int sg_reader_fill(sg_reader* r) {
     if (sg_in_after_fill(r)) return 0;
     if (r == &sg_stdin) {
-        if (sg_in_terminal < 0) sg_in_terminal = isatty(0);
+        if (sg_in_terminal < 0) sg_in_terminal = sg_sys_terminal(0);
         if (sg_in_terminal) fflush(stdout);
     }
-    for (;;) {
-        ssize_t got = read(r->fd, r->block, 65536);
-        if (got < 0) { if (errno == EINTR) continue; return sg_os_error(); }
-        r->at = 0;
-        r->len = got;
-        if (got == 0) r->ended = true;
-        return 0;
-    }
+    int64_t got = 0;
+    int code = sg_sys_read(r->fd, r->block, 65536, &got);
+    if (code) return code;
+    r->at = 0;
+    r->len = got;
+    if (got == 0) r->ended = true;
+    return 0;
 }
 /* The next line into `line`, without its `\n` or `\r\n`: 0 with `*more` false at the end,
    the code the system gave, or -1 with `*bad` where the line is not UTF-8. With `now`, the line
@@ -5562,11 +6415,11 @@ static int sg_read_bytes(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
             continue;
         }
         if (r == &sg_stdin) {
-            if (sg_in_terminal < 0) sg_in_terminal = isatty(0);
+            if (sg_in_terminal < 0) sg_in_terminal = sg_sys_terminal(0);
             if (sg_in_terminal) fflush(stdout);
         }
-        ssize_t put = read(r->fd, to + n, (size_t)(len - n));
-        if (put < 0) { if (errno == EINTR) continue; code = sg_os_error(); break; }
+        int64_t put = 0;
+        if ((code = sg_sys_read(r->fd, to + n, len - n, &put))) break;
         if (put == 0) { r->ended = true; break; }
         n += put;
     }
@@ -5603,6 +6456,18 @@ static int sg_read_some(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
     return 0;
 }
 /* A folder opens, but cannot be read: it is told at once. */
+#if defined(_WIN32)
+static int sg_open_reader(sg_str path, sg_reader* out) {
+    int fd = 0;
+    int code = sg_sys_open(path, 0, &fd);
+    if (code) return code;
+    if (sg_sys_is_folder(fd)) { sg_sys_close(fd); return ERROR_DIRECTORY_NOT_SUPPORTED; }
+    uint8_t* block = malloc(65536);
+    if (!block) abort();
+    *out = (sg_reader){ fd, block, 0, 0, 0, false, NULL, 65536, 0, false, 0, false };
+    return 0;
+}
+#else
 static int sg_open_reader(sg_str path, sg_reader* out) {
     int code = 0;
     char* name = sg_path(path, &code);
@@ -5617,6 +6482,7 @@ static int sg_open_reader(sg_str path, sg_reader* out) {
     *out = (sg_reader){ fd, block, 0, 0, 0, false, NULL, 65536, 0, false, 0, false };
     return 0;
 }
+#endif
 /* The reader of a pipe closes it and frees the socket it reads it through. */
 #if SG_NET
 static inline void sg_net_close(int fd);
@@ -5625,14 +6491,14 @@ static inline void sg_drop_owned_sock(sg_reader* r) {
 #if SG_NET
     sg_net_close(r->fd);
 #else
-    close(r->fd);
+    sg_sys_close(r->fd);
 #endif
     free(r->sock);
 }
 static inline void sg_drop_reader(sg_reader* r) {
     if (!r->block) return;
     if (r->own) sg_drop_owned_sock(r);
-    else if (!r->sock) close(r->fd);
+    else if (!r->sock) sg_sys_close(r->fd);
     free(r->block);
     r->block = NULL;
 }
@@ -5648,6 +6514,7 @@ typedef struct { sg_reader* r; bool done; } sg_read_lines;
 typedef struct { int fd; int std; int failed; sg_string buf; int pipe; } sg_writer;
 static sg_writer sg_stdout __attribute__((unused)) = { 1, 1, 0, { (uint8_t*)"", 0, 0 }, 0 };
 static sg_writer sg_stderr __attribute__((unused)) = { 2, 2, 0, { (uint8_t*)"", 0, 0 }, 0 };
+#if !defined(_WIN32)
 static int sg_write_all(int fd, const uint8_t* bytes, int64_t len) {
     while (len > 0) {
         ssize_t put = write(fd, bytes, (size_t)len);
@@ -5657,11 +6524,13 @@ static int sg_write_all(int fd, const uint8_t* bytes, int64_t len) {
     }
     return 0;
 }
+#endif
 /* Writing into a pipe that nobody reads any more gives EPIPE, not the signal that would end the
    program: macOS leaves the signal out for the pipe (`F_SETNOSIGPIPE`, set where the writer is
-   made); Linux has the thread hold it back while it writes, and takes away the one it raised. */
+   made); Linux has the thread hold it back while it writes, and takes away the one it raised.
+   Windows has no such signal. */
 static int sg_write_pipe(int fd, const uint8_t* bytes, int64_t len) {
-#ifdef F_SETNOSIGPIPE
+#if defined(F_SETNOSIGPIPE) || defined(_WIN32)
     return sg_write_all(fd, bytes, len);
 #else
     sigset_t pipe_signal, before, pending;
@@ -5734,7 +6603,8 @@ static int sg_writer_flush(sg_writer* w) {
 /* The block goes out and the file is closed; the first error is given. */
 static int sg_writer_close(sg_writer* w) {
     int code = w->failed ? w->failed : sg_writer_out(w);
-    if (close(w->fd) != 0 && !code) code = sg_os_error();
+    int closed = sg_sys_close(w->fd);
+    if (!code) code = closed;
     w->fd = -1;
     sg_drop_string(&w->buf);
     w->buf = (sg_string){ (uint8_t*)"", 0, 0 };
@@ -5743,7 +6613,7 @@ static int sg_writer_close(sg_writer* w) {
 /* A writer that ends without `close` writes its block and closes, and the error is lost. */
 static void sg_drop_writer_now(sg_writer* w) {
     if (!w->failed) (void)sg_writer_put(w, w->buf.ptr, w->buf.len);
-    close(w->fd);
+    sg_sys_close(w->fd);
     w->fd = -1;
     sg_drop_string(&w->buf);
     w->buf = (sg_string){ (uint8_t*)"", 0, 0 };
@@ -5814,12 +6684,18 @@ static int sg_writer_bytes(sg_writer* w, const uint8_t* bytes, int64_t len) {
 /* `File.createText` makes or empties the file; `File.openAppend` (`append`) makes a missing one
    and writes after what it holds. */
 static int sg_open_writer(sg_str path, bool append, sg_writer* out) {
+#if defined(_WIN32)
+    int fd = 0;
+    int code = sg_sys_open(path, append ? 2 : 1, &fd);
+    if (code) return code;
+#else
     int code = 0;
     char* name = sg_path(path, &code);
     if (!name) return code;
     int fd = open(name, O_WRONLY | O_CREAT | O_CLOEXEC | (append ? O_APPEND : O_TRUNC), 0666);
     free(name);
     if (fd < 0) return sg_os_error();
+#endif
     *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 }, 0 };
     return 0;
 }
@@ -6188,6 +7064,7 @@ static inline bool sg_reader_try(sg_reader* r) { return r != &sg_stdin || pthrea
 /// the error a `try` met) is caught and written under its `FAIL` line; its output and its input
 /// are the program's.
 const TEST_RUNNER: &str = r#"
+#if !defined(_WIN32)
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -6196,6 +7073,7 @@ const TEST_RUNNER: &str = r#"
 #include <mach-o/dyld.h>
 #endif
 extern char** environ;
+#endif
 
 typedef struct { const char* name; void (*run)(void); } sg_test;
 static int sg_run_test(const sg_test* test) {
@@ -6213,6 +7091,111 @@ static int sg_run_test(const sg_test* test) {
 #endif
     return sg_test_error;
 }
+#if defined(_WIN32)
+/* A copy of a handle of this process that a child may get, or NULL for none. */
+static HANDLE sg_inheritable(HANDLE h) {
+    HANDLE copy = NULL;
+    if (!h || h == INVALID_HANDLE_VALUE) return NULL;
+    if (!DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &copy, 0, TRUE, DUPLICATE_SAME_ACCESS)) return NULL;
+    return copy;
+}
+/* Test `number` in a process of its own: this program again, with `--only number`, from the path
+   Windows gives. It gets this program's input and output and, for its standard error, a pipe
+   whose bytes come back in `*reason`; no other handle reaches it. Gives the exit code of the
+   child, or -1 when it could not start (said on the standard error). */
+static int64_t sg_spawn_test(int number, char** reason, size_t* len) {
+    wchar_t self[32768];
+    DWORD n = GetModuleFileNameW(NULL, self, 32768);
+    if (n == 0 || n >= 32768) { fputs("the path of the program of tests could not be found\n", stderr); return -1; }
+    wchar_t line[32800];
+    swprintf(line, sizeof line / sizeof line[0], L"\"%ls\" --only %d", self, number);
+    SECURITY_ATTRIBUTES inherit = { sizeof inherit, NULL, TRUE };
+    HANDLE read_end, write_end;
+    if (!CreatePipe(&read_end, &write_end, &inherit, 0)) { fputs("pipe\n", stderr); return -1; }
+    SetHandleInformation(read_end, HANDLE_FLAG_INHERIT, 0);
+    HANDLE in = sg_inheritable(GetStdHandle(STD_INPUT_HANDLE));
+    HANDLE out = sg_inheritable(GetStdHandle(STD_OUTPUT_HANDLE));
+    HANDLE handles[3];
+    DWORD count = 0;
+    handles[count++] = write_end;
+    if (in) handles[count++] = in;
+    if (out) handles[count++] = out;
+    SIZE_T size = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &size);
+    LPPROC_THREAD_ATTRIBUTE_LIST attributes = (malloc)(size);
+    if (!attributes) abort();
+    InitializeProcThreadAttributeList(attributes, 1, 0, &size);
+    UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles, count * sizeof(HANDLE), NULL, NULL);
+    STARTUPINFOEXW start;
+    memset(&start, 0, sizeof start);
+    start.StartupInfo.cb = sizeof start;
+    start.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    start.StartupInfo.hStdInput = in;
+    start.StartupInfo.hStdOutput = out;
+    start.StartupInfo.hStdError = write_end;
+    start.lpAttributeList = attributes;
+    PROCESS_INFORMATION child;
+    BOOL started = CreateProcessW(self, line, NULL, NULL, TRUE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, &start.StartupInfo, &child);
+    DWORD error = GetLastError();
+    DeleteProcThreadAttributeList(attributes);
+    (free)(attributes);
+    CloseHandle(write_end);
+    if (in) CloseHandle(in);
+    if (out) CloseHandle(out);
+    if (!started) {
+        CloseHandle(read_end);
+        fprintf(stderr, "the program of tests could not start itself (Windows' error %lu)\n", (unsigned long)error);
+        return -1;
+    }
+    CloseHandle(child.hThread);
+    size_t cap = 256;
+    *len = 0;
+    *reason = malloc(cap);
+    if (!*reason) abort();
+    for (;;) {
+        if (*len == cap) { cap *= 2; *reason = realloc(*reason, cap); if (!*reason) abort(); }
+        DWORD got = 0;
+        if (!ReadFile(read_end, *reason + *len, (DWORD)(cap - *len), &got, NULL) || got == 0) break;
+        *len += got;
+    }
+    CloseHandle(read_end);
+    WaitForSingleObject(child.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(child.hProcess, &code);
+    CloseHandle(child.hProcess);
+    return (int64_t)code;
+}
+static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) {
+    sg_in_tests = true;
+    if (argc == 3 && strcmp(argv[1], "--only") == 0) {
+        long only = strtol(argv[2], NULL, 10);
+        if (only < 0 || only >= count) return 3;
+        return sg_run_test(&tests[only]);
+    }
+    int failed = 0;
+    for (int i = 0; i < count; i++) {
+        fflush(stdout);
+        fflush(stderr);
+        char* reason = NULL;
+        size_t len = 0;
+        int64_t code = sg_spawn_test(i, &reason, &len);
+        if (code < 0) return 2;
+        while (len > 0 && (reason[len - 1] == '\n' || reason[len - 1] == '\r' || reason[len - 1] == ' ')) len--;
+        if (code == 0) {
+            printf("ok    %s\n", tests[i].name);
+        } else {
+            failed++;
+            printf("FAIL  %s\n", tests[i].name);
+            if (len > 0) printf("%.*s\n", (int)len, reason);
+            else printf("the test ended with code 0x%08lX\n", (unsigned long)code);
+        }
+        free(reason);
+    }
+    if (failed == 0) printf("%d test(s) passed\n", count);
+    else printf("%d of %d test(s) failed\n", failed, count);
+    return failed == 0 ? 0 : 1;
+}
+#else
 /* The path of this program as the system knows it: `argv[0]` is only what started it, which
    may be a name found on `PATH`. */
 static char* sg_self_path(void) {
@@ -6290,6 +7273,7 @@ static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) 
     else printf("%d of %d test(s) failed\n", failed, count);
     return failed == 0 ? 0 : 1;
 }
+#endif
 "#;
 
 /// Writes the program as C. A panic message names the file its line is in. `checked`: a
@@ -6300,6 +7284,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
     let mut emitter = Emitter {
         sources,
+        left_out: &prog.left_out,
         files: &prog.files,
         structs,
         enums,
@@ -6380,6 +7365,8 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
                     emitter.variadic.insert(key, (func.name.clone(), number, params));
                 }
             }
+        } else if func.is_async && prog.left_out.contains(&func.name) {
+            // Left out of the C: no tasks for it.
         } else if func.is_async {
             let _ = writeln!(emitter.types, "typedef struct F_{name} F_{name};");
             emitter.made.insert("tasks".to_string());
@@ -6400,6 +7387,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         for method in methods {
             let params = method.params.iter().map(|param| emitter.written(&param.ty)).collect::<Res<Vec<Ty>>>()?;
             // An async method is called as an async function is, with `this` in front.
+            if method.is_async && prog.left_out.contains(&format!("{owner}.{}", method.name)) {
+                continue;
+            }
             if method.is_async {
                 let name = cname(&format!("{owner}.{}", method.name));
                 let _ = writeln!(emitter.types, "typedef struct F_{name} F_{name};");
@@ -6480,7 +7470,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     let main = prog.funcs.iter().find(|func| func.name == "main");
     let start = match main {
         _ if tests => format!(
-            "static const sg_test sg_tests[] = {{\n{listed}    {{ NULL, NULL }}\n}};\nint main(int argc, char** argv) {{\n    return sg_run_tests(sg_tests, {}, argc, argv);\n}}\n",
+            "static const sg_test sg_tests[] = {{\n{listed}    {{ NULL, NULL }}\n}};\nint main(int argc, char** argv) {{\n    sg_start(&argc, &argv);\n    return sg_run_tests(sg_tests, {}, argc, argv);\n}}\n",
             prog.tests.len()
         ),
         // A library starts when it is loaded: C's constructor, which every compiler the
@@ -7479,8 +8469,11 @@ struct Local {
     drop: Option<String>,
 }
 
+
 struct Emitter<'a> {
     sources: &'a Sources,
+    /// The functions of the language's own module left out of the C (`Program::left_out`).
+    left_out: &'a std::collections::BTreeSet<String>,
     /// The files of the program: a type name is looked up from the file it is written in.
     files: &'a [FileScope],
     structs: HashMap<&'a str, &'a StructDecl>,
@@ -7602,6 +8595,12 @@ struct Emitter<'a> {
 }
 
 impl<'a> Emitter<'a> {
+    /// Whether the program is built for this operating system: a program without one (whose
+    /// statements are kept, `written_stmts`) runs on none.
+    fn runs_on(&self, os: Os) -> bool {
+        os.here() && self.written_stmts.is_none()
+    }
+
     /// The name of the C constant that holds where `span` is in the source.
     fn loc(&mut self, span: Span) -> String {
         // In a function of the language's own module, the place is where the program called it.
@@ -7985,7 +8984,7 @@ impl<'a> Emitter<'a> {
         );
         let _ = writeln!(
             self.glue,
-            "static void sg_drop_from_{name}({list}* v, int64_t from) {{ if (v->group) sg_group_park_all(v->group, v->len); for (int64_t i = from; i < v->len; i++) sg_drop_{task}(&v->ptr[i]); free(v->ptr); sg_group_free(v->group); v->group = NULL; }}"
+            "static void sg_drop_from_{name}({list}* v, int64_t from) {{ if (v->group) sg_group_park_all(v->group, v->len); for (int64_t i = from; i < v->len; i++) sg_drop_{task}(&v->ptr[i]); sg_free_as(v->ptr, __typeof__(*v->ptr)); sg_group_free(v->group); v->group = NULL; }}"
         );
         let _ = writeln!(self.glue, "static inline void sg_drop_{name}({list}* v) {{ sg_drop_from_{name}(v, 0); }}");
         let _ = writeln!(self.glue, "static inline {list} sg_move_{name}({list}* v) {{ {list} out = *v; *v = ({list}){{ 0 }}; return out; }}");
@@ -8011,7 +9010,7 @@ impl<'a> Emitter<'a> {
         let end = if gives == "void" { "" } else { " return out;" };
         let _ = writeln!(
             self.glue,
-            "static {gives} sg_all_{name}({list}* v) {{ {back}for (int64_t i = 0; i < v->len; i++) {keep} free(v->ptr); sg_group_free(v->group); *v = ({list}){{ 0 }};{end} }}"
+            "static {gives} sg_all_{name}({list}* v) {{ {back}for (int64_t i = 0; i < v->len; i++) {keep} sg_free_as(v->ptr, __typeof__(*v->ptr)); sg_group_free(v->group); *v = ({list}){{ 0 }};{end} }}"
         );
         let gives_one = if **result == Ty::Void { "void".to_string() } else { self.ctype(result, span)? };
         let ret = if **result == Ty::Void { "" } else { "return " };
@@ -8101,9 +9100,9 @@ impl<'a> Emitter<'a> {
                 let _ = match chain {
                     Some((link, rest)) => writeln!(
                         self.glue,
-                        "static inline void sg_drop_{name}({target}** v) {{\n    {target}* p = *v;\n    while (p) {{ {target}* next = p->m_{link}; {rest}free(p); p = next; }}\n}}"
+                        "static inline void sg_drop_{name}({target}** v) {{\n    {target}* p = *v;\n    while (p) {{ {target}* next = p->m_{link}; {rest}sg_free_as(p, {target}); p = next; }}\n}}"
                     ),
-                    None => writeln!(self.glue, "static inline void sg_drop_{name}({target}** v) {{ {target}* p = *v; if (p) {{ {drop_inner}free(p); }} }}"),
+                    None => writeln!(self.glue, "static inline void sg_drop_{name}({target}** v) {{ {target}* p = *v; if (p) {{ {drop_inner}sg_free_as(p, {target}); }} }}"),
                 };
             }
             // A `shared T`: made with its counts in front (`sg_rc_new`), dropped by the last owner.
@@ -8313,7 +9312,7 @@ impl<'a> Emitter<'a> {
                     "static void sg_drop_from_{name}({list}* v, int64_t from);\nstatic inline void sg_drop_{name}({list}* v);\nstatic inline {list} sg_move_{name}({list}* v);"
                 );
                 // What a `for` that was handed the list leaves behind: the items from `from` on.
-                let _ = writeln!(self.glue, "static void sg_drop_from_{name}({list}* v, int64_t from) {{ {}free(v->ptr); }}", match drop_item.is_empty() {
+                let _ = writeln!(self.glue, "static void sg_drop_from_{name}({list}* v, int64_t from) {{ {}sg_free_as(v->ptr, __typeof__(*v->ptr)); }}", match drop_item.is_empty() {
                     // Items that own nothing: there is nothing to drop from `from` on.
                     true => "(void)from; ".to_string(),
                     false => drop_items("from"),
@@ -9527,7 +10526,13 @@ impl<'a> Emitter<'a> {
         // gives a live value.
         if decl.disposable() {
             let _ = writeln!(fields, "    uint8_t sg_gone;");
-            drops.insert_str(0, &format!("    if (v->sg_gone) return;\n    v->sg_gone = 1;\n    f_{name}_dispose(v);\n"));
+            // A `dispose` left out of the C (one that needs what this system does not run yet)
+            // has no value to run on: nothing makes one there.
+            let call = match self.left_out.contains(&format!("{}.dispose", decl.name)) {
+                true => String::new(),
+                false => format!("    f_{name}_dispose(v);\n"),
+            };
+            drops.insert_str(0, &format!("    if (v->sg_gone) return;\n    v->sg_gone = 1;\n{call}"));
             let _ = writeln!(forgets, "    v->sg_gone = 1;");
         }
         fields.push_str(&gaps_before(decl.fields.len()));
@@ -9613,12 +10618,12 @@ impl<'a> Emitter<'a> {
         // `main(List<string> args)`: the words after the program's name, looked at where the
         // system keeps them (a text of capacity 0 owns nothing), each checked to be UTF-8.
         let (head, call) = match main.params.is_empty() {
-            true => ("int main(void) {\n".to_string(), "f_main()".to_string()),
+            true => ("int main(void) {\n    sg_start(NULL, NULL);\n".to_string(), "f_main()".to_string()),
             false => {
                 let list = self.ctype(&Ty::List(Box::new(Ty::Str)), main.name_span)?;
                 (
                     format!(
-                        "int main(int argc, char** argv) {{\n    {list} args = {{ malloc(sizeof(sg_string) * (size_t)(argc > 1 ? argc - 1 : 1)), argc > 1 ? argc - 1 : 0, argc > 1 ? argc - 1 : 0 }};\n    \
+                        "int main(int argc, char** argv) {{\n    sg_start(&argc, &argv);\n    {list} args = {{ malloc(sizeof(sg_string) * (size_t)(argc > 1 ? argc - 1 : 1)), argc > 1 ? argc - 1 : 0, argc > 1 ? argc - 1 : 0 }};\n    \
                          if (!args.ptr) abort();\n    \
                          for (int i = 1; i < argc; i++) {{\n        int64_t n = (int64_t)strlen(argv[i]);\n        \
                          if (sg_utf8_bad((const uint8_t*)argv[i], n) >= 0) {{ fprintf(stderr, \"error: args[%d] is not valid UTF-8\\n\", i - 1); free(args.ptr); return 1; }}\n        \
@@ -10387,6 +11392,19 @@ impl<'a> Emitter<'a> {
                 }
                 self.flush_post(&pad, out);
             }
+            // An `if` on the operating system writes only the branch of this one: the other may
+            // call what this system does not have.
+            StmtKind::If { cond: Expr { kind: ExprKind::Call { callee: Callee::Os(os), .. } | ExprKind::Method { callee: Callee::Os(os), .. }, .. }, then, els, .. } => {
+                let taken = match self.runs_on(*os) {
+                    true => Some(then),
+                    false => els.as_ref(),
+                };
+                if let Some(taken) = taken {
+                    let _ = writeln!(out, "{pad}{{");
+                    self.block(taken, depth + 1, out)?;
+                    let _ = writeln!(out, "{pad}}}");
+                }
+            }
             StmtKind::If { cond, then, els, after } => {
                 let (mut cond, names, chained, decls) = self.condition(cond, !after.is_empty())?;
                 for line in decls {
@@ -11102,7 +12120,7 @@ impl<'a> Emitter<'a> {
                 // An owned box that was looked into is given back, after what it held.
                 if inner_mode.is_none() {
                     for held in boxes.iter().rev() {
-                        chosen.push(format!("free({held});"));
+                        chosen.push(format!("sg_free_as({held}, __typeof__(*{held}));"));
                     }
                 }
             }
@@ -11552,7 +12570,7 @@ impl<'a> Emitter<'a> {
                 // `this` by value: the value leaves the heap and the box is freed.
                 (This::Value, Ty::Ptr(inner)) if !recv.ty.is_borrow() && !matches!(**inner, Ty::Ptr(_)) => {
                     let (value, ctype, temp) = (self.value(recv)?, self.ctype(inner, recv.span)?, self.temp());
-                    format!("({{ {ctype}* {temp} = {value}; {ctype} {temp}v = *{temp}; free({temp}); {temp}v; }})")
+                    format!("({{ {ctype}* {temp} = {value}; {ctype} {temp}v = *{temp}; sg_free_as({temp}, {ctype}); {temp}v; }})")
                 }
                 (This::Value, Ty::Ptr(_)) => return Err(not_yet(recv.span, "a method that takes `this` called on a pointer that has no name").hint("give it a name first")),
                 // The box is kept until the statement ends; the method goes along the pointer.
@@ -11572,7 +12590,7 @@ impl<'a> Emitter<'a> {
             // `this` by value on a `T*`: the value leaves the heap and the box is freed.
             (This::Value, Ty::Ptr(inner)) if recv.moved => {
                 let (place, ctype, temp) = (self.lvalue(recv)?, self.ctype(inner, recv.span)?, self.temp());
-                format!("({{ {ctype}* {temp} = {}; {ctype} {temp}v = *{temp}; free({temp}); {temp}v; }})", self.move_of(&held, &place))
+                format!("({{ {ctype}* {temp} = {}; {ctype} {temp}v = *{temp}; sg_free_as({temp}, {ctype}); {temp}v; }})", self.move_of(&held, &place))
             }
             (This::Value, Ty::Ptr(_)) => format!("(*{})", self.lvalue(recv)?),
             (This::Value, _) if recv.moved && self.droppable(&held) => {
@@ -12214,6 +13232,7 @@ impl<'a> Emitter<'a> {
             ),
             SystemCall::Current => ("sg_system_current", Vec::new(), owned_text("sg_fs_current(&bytes, &n)")),
             SystemCall::MakeTemp => ("sg_system_make_temp", vec![text()], owned_text("sg_fs_make_temp(a0, &bytes, &n)")),
+            SystemCall::TempFolder => ("sg_system_temp_folder", Vec::new(), owned_text("sg_fs_temp_folder(&bytes, &n)")),
             SystemCall::Executable => ("sg_system_executable", vec![text()], "return sg_proc_executable(a0);".to_string()),
             SystemCall::Run => {
                 self.made.insert("process".to_string());
@@ -14935,6 +15954,8 @@ impl<'a> Emitter<'a> {
                     }
                     Ok(format!("sg_io_from_code({})", self.first(&args[0], head)?))
                 }
+                // Known when the program is built; without an operating system, none of them.
+                Callee::Os(os) => Ok(self.runs_on(*os).to_string()),
                 Callee::Clock(wall) => {
                     self.made.insert("clock".to_string());
                     Ok(format!("sg_clock({})", if *wall { "CLOCK_REALTIME" } else { "CLOCK_MONOTONIC" }))

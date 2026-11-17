@@ -1679,8 +1679,10 @@ var home = Environment.get("HOME") ?? "/"      // a Result<string, VariableError
 ```
 
 `File.move` never takes the place of a file: the system tells in the same step as the rename that the target
-is there. `Path.join` puts a second path that starts with `/` after the first, and joins a `..` as it is: it is
-for the paths a program makes itself. A name from outside the program (a request, an archive) goes through
+is there. `Path.join` puts a second path that starts with a root after the first (the root left out), and
+joins a `..` as it is: it is for the paths a program makes itself. On Windows `/` and `\` both separate the
+parts of a path, `Path.join` writes `\` (`logs\today.txt`), and a path may start with a drive or a share
+(`C:\`, `C:`, `\\server\share\`), which `Path.parent` keeps whole. A name from outside the program (a request, an archive) goes through
 `Path.joinInside`, which gives an `InvalidInput`, the same on every system, for a name that could lead out of
 the folder on any of them: an empty part, a root, a `\` or a `:`, a part that ends with `.` or a space (`..`
 among them), a control character, the name of a device of Windows (`CON`, `nul.txt`). A link inside the
@@ -1693,6 +1695,22 @@ var saved = try Path.joinInside(read uploads, read request.name)   // "../etc/pa
 program works in is not changed: both would be state that every thread sees change. `File.exists` and
 `Directory.exists` are there, but what they say can be different the next moment; to use a file, open it and
 look at the error.
+
+### Which system
+
+`OperatingSystem.isWindows()`, `OperatingSystem.isLinux()` and `OperatingSystem.isMacOS()` say which system the
+program is built for (C#'s `OperatingSystem.IsWindows()`, Rust's `cfg!(windows)`). The answer is known when the
+program is built: both branches of an `if` on it are checked on every system, so a mistake in the branch of
+Windows is seen on macOS too, and only the branch of the system the program is built for is compiled.
+
+```
+var shell = "sh"
+if OperatingSystem.isWindows() {
+    shell = "cmd.exe"
+}
+```
+
+A program built without an operating system (`--freestanding`) is on none of them.
 
 ### Other programs
 

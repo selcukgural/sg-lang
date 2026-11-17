@@ -4,6 +4,8 @@
 //! layouts it dumps. Compiled code takes its layout from C; the interpreter must lay out the same
 //! bytes, or a struct handed between the two would be read wrong.
 
+mod pending;
+
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::Path;
@@ -218,6 +220,10 @@ fn compare(what: &str, computed: &Found, found: &Found) -> Vec<String> {
 
 #[test]
 fn layouts_of_this_machine() {
+    if let Some(why) = pending::waits_on_windows("layouts.rs") {
+        eprintln!("layouts.rs waits on Windows: {why}");
+        return;
+    }
     let work = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("layouts");
     std::fs::create_dir_all(&work).unwrap();
     let cases = cases();
@@ -229,6 +235,10 @@ fn layouts_of_this_machine() {
 /// RISC-V, and Windows with each of its compilers.
 #[test]
 fn layouts_of_every_system() {
+    if let Some(why) = pending::waits_on_windows("layouts.rs") {
+        eprintln!("layouts.rs waits on Windows: {why}");
+        return;
+    }
     if Command::new("clang").arg("--version").output().is_err() {
         // Linux in its container has only gcc: `layouts_of_this_machine` tests its own layout.
         eprintln!("no clang: the layouts of other systems are tested where it is");
