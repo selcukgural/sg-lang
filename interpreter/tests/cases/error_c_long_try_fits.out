@@ -1,0 +1,5 @@
+error: every `int` fits in `CLong`: there is nothing to convert
+  --> error_c_long_try_fits.sg:4:13
+ 4 |     print(n.tryToCLong() ?? 0)
+   |             ^^^^^^^^^^
+  hint: it becomes one on its own: `CLong x = value`

@@ -274,13 +274,13 @@ fn conversion(from: &Ty, name: &str, span: Span) -> Res<IntTy> {
     };
     let lower = rest.to_lowercase();
     let no_method = || Diag::error(span, format!("`{from}` has no method `{name}`"));
-    let Some(to) = IntTy::from_name(&lower) else {
+    let Some(to) = IntTy::ALL.into_iter().find(|ty| ty.name().to_lowercase() == lower) else {
         if let Some(float) = FloatTy::from_name(&lower) {
             return Err(no_method().hint(format!("`({})x` never fails; it rounds", float.name())));
         }
         return Err(no_method().note("the conversions are named after the type: `tryToInt`, `tryToUlong`, `wrappingToByte`"));
     };
-    let spelled = format!("{}{}", lower[..1].to_uppercase(), &lower[1..]);
+    let spelled = to.title();
     if rest != spelled {
         let right = if wrapping { "wrappingTo" } else { "tryTo" };
         return Err(no_method().hint(format!("`{right}{spelled}`")));
@@ -1824,6 +1824,8 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
 /// a `float`, a `double` or a raw pointer.
 fn atomic_of(inner: Ty, span: Span) -> Res<Ty> {
     match inner {
+        Ty::Int(int) if int.is_c() => Err(Diag::error(span, format!("an atomic value is changed with arithmetic, and C's `{}` has none", c_spelling(int)))
+            .hint(format!("`atomic {}`", c_partner(int).name()))),
         Ty::Int(_) | Ty::Bool | Ty::Float(_) | Ty::Raw(_) => Ok(Ty::Atomic(Box::new(inner))),
         Ty::Atomic(_) => Err(Diag::error(span, "`atomic` is written once")),
         other => Err(Diag::error(span, format!("an atomic value is an integer, a `bool`, a `float`, a `double` or a raw pointer, and this is `{other}`"))
@@ -2201,6 +2203,56 @@ fn signed_holding(ty: IntTy) -> &'static str {
         IntTy::Byte | IntTy::Ushort => "int",
         _ => "long",
     }
+}
+
+/// The integer type of a side, `int` for one that is not an integer.
+fn int_of(ty: &Ty) -> IntTy {
+    match ty.strip_borrow() {
+        Ty::Int(int) => *int,
+        _ => IntTy::Int,
+    }
+}
+
+/// The note and hint for a number written in the program that is too large for C's `long`
+/// on Windows, though not on Linux or macOS.
+fn c_too_large(diag: Diag, ty: IntTy, written: &str) -> Diag {
+    let partner = c_partner(ty).name();
+    diag.note(format!("C's `{}` is 32 bits on Windows, so a number written for it fits in 32 bits on every system", c_spelling(ty)))
+        .hint(format!("a larger value is converted where the program runs, and panics where it does not fit: `{partner} n = {written}` and then `({})n`", ty.name()))
+}
+
+/// How C writes `CLong` and `CULong`.
+fn c_spelling(ty: IntTy) -> &'static str {
+    if ty.signed() { "long" } else { "unsigned long" }
+}
+
+/// The type of SG that holds every value of C's `long` on every system: where its arithmetic
+/// is done.
+fn c_partner(ty: IntTy) -> IntTy {
+    if ty.signed() { IntTy::Long } else { IntTy::Ulong }
+}
+
+/// The error for arithmetic on C's `long`: a sum that overflows on Windows and not on Linux
+/// is not written. The hint does it in `long` or `ulong`.
+fn c_arithmetic(src: &str, symbol: &str, ty: IntTy, sides: &[(&Expr, IntTy)], span: Span) -> Diag {
+    let partner = c_partner(ty).name();
+    let texts: Vec<String> = sides
+        .iter()
+        .map(|(side, found)| {
+            let text = &src[side.span.start..side.span.end];
+            match found.is_c() && !matches!(side.kind, ExprKind::Int(..)) {
+                true => format!("({partner}){text}"),
+                false => text.to_string(),
+            }
+        })
+        .collect();
+    let written = match texts.as_slice() {
+        [one] => format!("{symbol}{one}"),
+        [a, b] => format!("{a} {symbol} {b}"),
+        _ => unreachable!("one or two sides"),
+    };
+    Diag::error(span, format!("operator `{symbol}` is not defined for `{}`: C's `{}` is 32 bits on Windows and 64 elsewhere, so the same sum would overflow on one system only", ty.name(), c_spelling(ty)))
+        .hint(format!("compute in `{partner}`: `{written}`"))
 }
 
 /// A shift count that is known before the program runs and can never be right is not left
@@ -4072,6 +4124,14 @@ impl<'a> Checker<'a> {
                     let text = &self.src[target.span.start..target.span.end];
                     return Err(Diag::error(stmt_span, "`+=` needs a number on the left, found `string`")
                         .hint(format!("a text grows with `write`: `{text}.write(...)`")));
+                } else if let (Some(op), Ty::Int(ty)) = (*op, &target_ty) {
+                    if ty.is_c() {
+                        let text = &self.src[target.span.start..target.span.end];
+                        let value_text = &self.src[value.span.start..value.span.end];
+                        let partner = c_partner(*ty).name();
+                        return Err(Diag::error(stmt_span, format!("`{}=` is not defined for `{}`: C's `{}` is 32 bits on Windows and 64 elsewhere, so the same sum would overflow on one system only", op.symbol(), ty.name(), c_spelling(*ty)))
+                            .hint(format!("compute in `{partner}`: `{text} = ({})(({partner}){text} {} {value_text})`", ty.name(), op.symbol())));
+                    }
                 } else if op.is_some() && !matches!(target_ty, Ty::Int(_)) {
                     return Err(Diag::error(
                         stmt_span,
@@ -4265,7 +4325,16 @@ impl<'a> Checker<'a> {
                 self.forget_narrowing_of_assigned(body, None);
                 let from_ty = self.int_operand(from, None, "the start of the range")?;
                 let to_ty = self.int_operand(to, Some(from_ty), "the end of the range")?;
-                let ty = Ty::Int(self.common_int(from, Ty::Int(from_ty), to, Ty::Int(to_ty))?);
+                let common = self.common_int(from, Ty::Int(from_ty), to, Ty::Int(to_ty))?;
+                // The counter of a range is added to, which C's `long` is not.
+                if common.is_c() {
+                    let partner = c_partner(common).name();
+                    let (a, b) = (&self.src[from.span.start..from.span.end], &self.src[to.span.start..to.span.end]);
+                    let wrap = |text: &str| if text.trim_start_matches('-').starts_with(|c: char| c.is_ascii_digit()) { text.to_string() } else { format!("({partner}){text}") };
+                    return Err(Diag::error(from.span.to(to.span), format!("a range of `{}` is not counted: C's `{}` has no arithmetic", common.name(), c_spelling(common)))
+                        .hint(format!("count in `{partner}`: `{}..{}`", wrap(a), wrap(b))));
+                }
+                let ty = Ty::Int(common);
                 let node = self.node();
                 self.borrows.loops.push(node);
                 self.scopes.push(Scope::default());
@@ -5632,7 +5701,7 @@ impl<'a> Checker<'a> {
             ExprKind::Method { recv, name, name_span, args, .. } => {
                 // `Shape.unit()`: a function of the enum, not a variant.
                 // `IoError.fromCode(n)` is a function of the built-in enum, checked with the calls.
-                let built_in = name == "fromCode" && matches!(&recv.kind, ExprKind::Var(owner) if owner == IO_ERROR);
+                let built_in = matches!(name.as_str(), "fromCode" | "fromErrno") && matches!(&recv.kind, ExprKind::Var(owner) if owner == IO_ERROR);
                 if let Some(owner) = self.enum_named(recv).filter(|owner| !built_in && !self.methods_of(owner).contains_key(name.as_str())) {
                     // `await Shape.Circle(f())` awaits no call in it.
                     self.awaiting = false;
@@ -5787,7 +5856,7 @@ impl<'a> Checker<'a> {
                     _ => None,
                 });
                 *ty = match wanted {
-                    Some(wanted) if wanted.fits(*value) => wanted,
+                    Some(wanted) if wanted.fits_everywhere(*value) => wanted,
                     Some(wanted) => {
                         // A number written in hex or in binary is shown as written, with its value.
                         let written = &self.src[span.start..span.end];
@@ -5795,6 +5864,7 @@ impl<'a> Checker<'a> {
                         let diag = Diag::error(span, format!("{shown} does not fit in {}", wanted.name()));
                         return Err(match *value < 0 && !wanted.signed() {
                             true => diag.note(format!("a `{}` is never negative", wanted.name())),
+                            false if wanted.is_c() => c_too_large(diag, wanted, written),
                             false => diag,
                         });
                     }
@@ -5925,6 +5995,7 @@ impl<'a> Checker<'a> {
                         self.coerce(operand, found, &ty)?;
                         Ok(ty)
                     }
+                    Ty::Int(ty) if ty.is_c() => Err(c_arithmetic(self.src, "-", *ty, &[(&**operand, *ty)], span)),
                     Ty::Int(ty) if !ty.signed() => {
                         let text = &self.src[operand.span.start..operand.span.end];
                         let (name, to) = (ty.name(), signed_holding(*ty));
@@ -5950,6 +6021,7 @@ impl<'a> Checker<'a> {
                 });
                 let found = self.operand(operand, like.map(Ty::Int).as_ref())?;
                 match found.strip_borrow() {
+                    Ty::Int(ty) if ty.is_c() => Err(c_arithmetic(self.src, "~", *ty, &[(&**operand, *ty)], span)),
                     Ty::Int(ty) => {
                         let ty = Ty::Int(*ty);
                         self.coerce(operand, found, &ty)?;
@@ -6009,10 +6081,11 @@ impl<'a> Checker<'a> {
                 // A value that is known here and does not fit is not left to run time.
                 if let (ExprKind::Int(value, _), Ty::Int(to)) = (&operand.kind, &*ty) {
                     let (value, to) = (*value, *to);
-                    if !to.fits(value) {
+                    if !to.fits_everywhere(value) {
                         let diag = Diag::error(span, format!("{value} does not fit in {}", to.name()));
                         return Err(match value < 0 && !to.signed() {
                             true => diag.note(format!("a `{}` is never negative", to.name())),
+                            false if to.is_c() => c_too_large(diag, to, &self.src[operand.span.start..operand.span.end]),
                             false => diag,
                         });
                     }
@@ -6872,7 +6945,11 @@ impl<'a> Checker<'a> {
         }
         let number = |low: i128, high: i128| {
             let of = match peel(core) {
-                Ty::Int(int) => exhaust::Domain { name: int.name().to_string(), ranges: vec![(int.min(), int.max())], chars: false },
+                // C's `long` as wide as it is anywhere, so that a `match` covers it on every system.
+                Ty::Int(int) => {
+                    let widest = if int.is_c() { c_partner(*int) } else { *int };
+                    exhaust::Domain { name: int.name().to_string(), ranges: vec![(widest.min(), widest.max())], chars: false }
+                }
                 _ => exhaust::Domain { name: "char".to_string(), ranges: vec![(0, 0xd7ff), (0xe000, 0x10ffff)], chars: true },
             };
             Pat::Num { low, high, of: Rc::new(of) }
@@ -6946,8 +7023,12 @@ impl<'a> Checker<'a> {
                 });
             }
         };
-        if !ty.fits(value) {
-            return Err(Diag::error(span, format!("{value} does not fit in {}, so this arm can never run", ty.name())));
+        if !ty.fits_everywhere(value) {
+            return Err(match ty.is_c() {
+                true => Diag::error(span, format!("{value} does not fit in {} on every system", ty.name()))
+                    .note(format!("C's `{}` is 32 bits on Windows, so a number written for it fits in 32 bits on every system", c_spelling(ty))),
+                false => Diag::error(span, format!("{value} does not fit in {}, so this arm can never run", ty.name())),
+            });
         }
         pattern.kind = PatternKind::Int(value);
         Ok(Vec::new())
@@ -7327,8 +7408,12 @@ impl<'a> Checker<'a> {
         }
         match (left_ty.strip_borrow(), right_ty.strip_borrow()) {
             (Ty::Int(_), Ty::Int(_)) => {
-                let common = Ty::Int(self.common_int(left, left_ty.clone(), right, right_ty.clone())?);
-                Ok(if op.is_comparison() { Ty::Bool } else { common })
+                let common = self.common_int(left, left_ty.clone(), right, right_ty.clone())?;
+                if common.is_c() && !op.is_comparison() {
+                    let sides = [(&*left, int_of(&left_ty)), (&*right, int_of(&right_ty))];
+                    return Err(c_arithmetic(self.src, op.symbol(), common, &sides, span));
+                }
+                Ok(if op.is_comparison() { Ty::Bool } else { Ty::Int(common) })
             }
             (Ty::Int(_) | Ty::Float(_), Ty::Int(_) | Ty::Float(_)) => {
                 if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
@@ -7476,6 +7561,9 @@ impl<'a> Checker<'a> {
                 .note("it shifts the bits of an integer by a count that is an integer"));
         };
         let (ty, count) = (*ty, *count);
+        if ty.is_c() {
+            return Err(c_arithmetic(self.src, op.symbol(), ty, &[(&*left, ty), (&*right, count)], span));
+        }
         self.coerce(left, left_ty, &Ty::Int(ty))?;
         self.coerce(right, right_ty, &Ty::Int(count))?;
         shift_count(ty, right)?;
@@ -8011,7 +8099,8 @@ impl<'a> Checker<'a> {
             }
             Ty::Int(int) => {
                 let fixed = if int.signed() { "long" } else { "ulong" };
-                return Err(Diag::error(name_span, format!("`{ty}` has the size of an address, which depends on the machine; a number kept in bytes has a size of its own"))
+                let size = if int.is_c() { "the size of C's `long`, which depends on the system" } else { "the size of an address, which depends on the machine" };
+                return Err(Diag::error(name_span, format!("`{ty}` has {size}; a number kept in bytes has a size of its own"))
                     .hint(format!("`{fixed}.{name}(...)` reads 8 bytes; a cast makes it `{ty}`")));
             }
             _ => {
@@ -8521,7 +8610,9 @@ impl<'a> Checker<'a> {
     /// `Allocate`.
     ///
     /// `C.errno()` and `C.setErrno(n)`: the `errno` of the last call of C, and of the next.
-    /// Neither touches memory, so neither is written inside `unsafe`.
+    /// `C.lastError()` and `C.setLastError(n)`: the system's last error, `errno` on Linux and
+    /// macOS and `GetLastError()` on Windows. None touches memory, so none is written inside
+    /// `unsafe`.
     fn c_call(&mut self, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span) -> Res<Ty> {
         match name {
             "errno" => {
@@ -8534,11 +8625,21 @@ impl<'a> Checker<'a> {
                 *callee = Callee::Memory(MemoryCall::SetErrno);
                 Ok(Ty::Void)
             }
+            "lastError" => {
+                self.args(name, args, &[], span)?;
+                *callee = Callee::Memory(MemoryCall::LastError);
+                Ok(Ty::Int(IntTy::Int))
+            }
+            "setLastError" => {
+                self.args(name, args, &[Ty::Int(IntTy::Int)], span)?;
+                *callee = Callee::Memory(MemoryCall::SetLastError);
+                Ok(Ty::Void)
+            }
             _ => {
                 let diag = Diag::error(name_span, format!("`C` has no function `{name}`"));
-                Err(match nearest(name, ["errno", "setErrno"].into_iter()) {
+                Err(match nearest(name, ["errno", "setErrno", "lastError", "setLastError"].into_iter()) {
                     Some(close) => diag.hint(format!("`{close}`")),
-                    None => diag.note("functions for now: errno, setErrno; the functions of C are declared in an `extern` block"),
+                    None => diag.note("functions for now: errno, setErrno, lastError, setLastError; the functions of C are declared in an `extern` block"),
                 })
             }
         }
@@ -9220,10 +9321,22 @@ impl<'a> Checker<'a> {
         // A type name in front of the dot: `Stack.create()`.
         if let ExprKind::Var(owner) = &recv.kind {
             if self.find(owner).is_none() && owner != "this" {
-                // `IoError.fromCode(n)`: the error for a number C left in `errno`.
-                if owner == IO_ERROR && name == "fromCode" {
+                // `IoError.fromCode(n)`: the error for a code of the system (`C.lastError()`);
+                // `IoError.fromErrno(n)`: for a number of C's library (`C.errno()`). The two
+                // differ on Windows, so the wrong one around the other's call is an error.
+                if owner == IO_ERROR && matches!(name, "fromCode" | "fromErrno") {
                     self.args(name, args, &[Ty::Int(IntTy::Int)], span)?;
-                    *callee = Callee::Memory(MemoryCall::IoErrorOf);
+                    let (wrong, right, what) = match name {
+                        "fromCode" => (MemoryCall::Errno, "fromErrno", "`C.errno()` is a number of C's library, and `fromCode` takes a code of the system"),
+                        _ => (MemoryCall::LastError, "fromCode", "`C.lastError()` is a code of the system, and `fromErrno` takes a number of C's library"),
+                    };
+                    if matches!(&args[0].kind, ExprKind::Method { callee, .. } if *callee == Callee::Memory(wrong)) {
+                        let text = &self.src[args[0].span.start..args[0].span.end];
+                        return Err(Diag::error(args[0].span, what)
+                            .note("the two are the same on Linux and macOS and differ on Windows")
+                            .hint(format!("`IoError.{right}({text})`")));
+                    }
+                    *callee = Callee::Memory(if name == "fromCode" { MemoryCall::IoErrorOf } else { MemoryCall::IoErrorOfErrno });
                     return Ok(Ty::Enum(IO_ERROR.to_string()));
                 }
                 if self.structs.contains_key(owner.as_str()) || self.enums.contains_key(owner.as_str()) {
@@ -9684,6 +9797,12 @@ impl<'a> Checker<'a> {
         }
         let target = &target;
         match (target, name) {
+            // C's `long` is compared, printed and converted, and nothing more.
+            (Ty::Int(ty), _) if ty.is_c() && !(matches!(name, "toString" | "compare" | "equals") || name.starts_with("tryTo") || name.starts_with("wrappingTo")) => {
+                let text = &self.src[recv.span.start..recv.span.end];
+                Err(Diag::error(name_span, format!("`{}` has no method `{name}`: C's `{}` has a size of its own on each system, so it is only compared, printed and converted", ty.name(), c_spelling(*ty)))
+                    .hint(format!("work on a `{0}`: `(({0}){text}).{name}({1})`", c_partner(*ty).name(), if args.is_empty() { "" } else { "..." })))
+            }
             (Ty::Int(ty), "wrappingAdd" | "wrappingSubtract" | "wrappingMultiply") => {
                 arity(1)?;
                 let other = self.int_operand(&mut args[0], Some(*ty), "the argument")?;
@@ -11107,6 +11226,11 @@ fn layout_rules(prog: &Program, structs: &HashMap<String, StructInfo>) -> Res<()
         let gaps = decl.layout.gaps.iter().zip(&info.shape.gaps).map(|(gap, (_, ty, _))| (false, ty.clone(), gap.bits, gap.span));
         for (named, ty, width, span) in fields.chain(gaps) {
             let most = match &ty {
+                // Its unit is 32 bits on Windows and 64 elsewhere, so the bits would lie apart.
+                Ty::Int(int) if int.is_c() => {
+                    return Err(Diag::error(span, format!("a bit field of `{}` is laid out by units of 32 bits on Windows and of 64 elsewhere", int.name()))
+                        .hint(format!("a bit field of `{}` or `{}`", if int.signed() { "int" } else { "uint" }, c_partner(*int).name())));
+                }
                 Ty::Int(int) => int.bits() as u64,
                 Ty::Bool => 1,
                 other => return Err(Diag::error(span, format!("a bit field is an integer or a `bool`, and this is `{other}`"))),

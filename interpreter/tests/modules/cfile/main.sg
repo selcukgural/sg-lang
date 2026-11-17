@@ -7,6 +7,8 @@ extern "./native.c" {
     int count_bits(ulong n)
     long hits
     Point origin
+    CLong tagged_value(read Tagged t)
+    CULong long_bits()
 }
 
 // A variable of the C library.
@@ -17,6 +19,13 @@ extern {
 struct Point {
     int x
     int y
+}
+
+// C's `long` is `CLong`, its `unsigned long` `CULong`.
+struct Tagged {
+    byte tag
+    CLong value
+    CULong mask
 }
 
 void main() {
@@ -46,6 +55,9 @@ void main() {
         opterr = 0
     }
     print(unsafe opterr)
+    var tagged = Tagged { tag = 7, value = -5, mask = 0xffff }
+    print(unsafe tagged_value(read tagged))
+    print((ulong)unsafe long_bits() == (ulong)Memory.sizeOf<CLong>() * 8)
     print(bits.countBits(0xf0f0))
     print(bits.checksum("hello"))
 }

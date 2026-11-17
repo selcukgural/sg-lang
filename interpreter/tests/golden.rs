@@ -1230,20 +1230,22 @@ fn libraries() {
     std::fs::create_dir_all(&other).unwrap();
     std::fs::write(
         other.join("words.sg"),
-        "// Counts the words of a text with a map and a task, as the calculator uses both.\nint countIn(string text) {\n    var seen = HashSet<string>()\n    for word in text.split(\" \") {\n        if word.length() > 0 {\n            _ = seen.add(word.clone())\n        }\n    }\n    return (int)seen.length()\n}\n\nexport int words_distinct(read CString text) {\n    var copy = string.fromCString(text) ?? \"\"\n    var task = Task.run(countIn, copy)\n    return task.wait()\n}\n",
+        "// Counts the words of a text with a map and a task, as the calculator uses both.\nint countIn(string text) {\n    var seen = HashSet<string>()\n    for word in text.split(\" \") {\n        if word.length() > 0 {\n            _ = seen.add(word.clone())\n        }\n    }\n    return (int)seen.length()\n}\n\nexport int words_distinct(read CString text) {\n    var copy = string.fromCString(text) ?? \"\"\n    var task = Task.run(countIn, copy)\n    return task.wait()\n}\n\n// C's `long` crosses as it is.\nexport CLong words_next(CLong at) {\n    return (CLong)((long)at + 1)\n}\n",
     )
     .unwrap();
     std::fs::write(
         other.join("both.c"),
-        "#include <stdio.h>\n#include \"calclib.h\"\n#include \"words.h\"\nint main(void) {\n    Calculator *calc = calc_new();\n    double value = 0;\n    calc_eval(calc, \"6 * 7\", &value);\n    printf(\"%g %d\\n\", value, (int)words_distinct(\"to be or not to be\"));\n    calc_free(calc);\n    return 0;\n}\n",
+        "#include <stdio.h>\n#include \"calclib.h\"\n#include \"words.h\"\nint main(void) {\n    Calculator *calc = calc_new();\n    double value = 0;\n    calc_eval(calc, \"6 * 7\", &value);\n    printf(\"%g %d %ld\\n\", value, (int)words_distinct(\"to be or not to be\"), words_next(41L));\n    calc_free(calc);\n    return 0;\n}\n",
     )
     .unwrap();
     sg(&[example.to_str().unwrap(), "--library"], &other);
     sg(&["words.sg", "--library", "-o", "libother.a"], &other);
+    let header = std::fs::read_to_string(other.join("words.h")).unwrap();
+    assert!(header.contains("long words_next(long at);"), "{header}");
     let both = other.join("both");
     cc(&["-Wall".as_ref(), "-Werror".as_ref(), "-I".as_ref(), other.as_os_str(), "-o".as_ref(), both.as_os_str(), other.join("both.c").as_os_str(), other.join("libcalclib.a").as_os_str(), other.join("libother.a").as_os_str(), "-lm".as_ref(), "-pthread".as_ref()]);
     let ran = std::process::Command::new(&both).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "42 4\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "42 4 42\n", "{}", String::from_utf8_lossy(&ran.stderr));
 
     // C calls the library from threads of its own, each with a calculator, under the thread
     // sanitizer: the runtime starts what it needs on first use, from any thread.

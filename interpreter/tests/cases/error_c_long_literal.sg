@@ -1,0 +1,5 @@
+// A number written for C's `long` fits in 32 bits, as on Windows.
+void main() {
+    CLong r = 3000000000
+    print(r)
+}

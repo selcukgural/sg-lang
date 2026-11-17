@@ -1,0 +1,7 @@
+// A range counts, which C's `long` does not.
+void main() {
+    CLong end = 3
+    for i in 0..end {
+        print(i)
+    }
+}

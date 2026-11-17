@@ -1,0 +1,5 @@
+// C's `long` has no methods but comparing, printing and converting.
+void main() {
+    CLong r = -7
+    print(r.abs())
+}

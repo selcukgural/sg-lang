@@ -1,0 +1,5 @@
+error: 5000000000 does not fit in CLong on every system
+  C's `long` is 32 bits on Windows, so a number written for it fits in 32 bits on every system
+  --> error_c_long_match.sg:5:9
+ 5 |         5000000000 => print("large")
+   |         ^^^^^^^^^^

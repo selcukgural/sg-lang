@@ -194,5 +194,7 @@ fn int_type(ty: IntTy) -> &'static str {
         IntTy::Uint => "uint32_t",
         IntTy::Long | IntTy::Nint => "int64_t",
         IntTy::Ulong | IntTy::Nuint => "uint64_t",
+        IntTy::CLong => "long",
+        IntTy::CULong => "unsigned long",
     }
 }

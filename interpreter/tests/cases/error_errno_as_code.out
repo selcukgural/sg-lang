@@ -1,0 +1,6 @@
+error: `C.errno()` is a number of C's library, and `fromCode` takes a code of the system
+  the two are the same on Linux and macOS and differ on Windows
+  --> error_errno_as_code.sg:3:28
+ 3 |     print(IoError.fromCode(C.errno()))
+   |                            ^^^^^^^^^
+  hint: `IoError.fromErrno(C.errno())`

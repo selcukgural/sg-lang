@@ -15,11 +15,15 @@ pub enum IntTy {
     Ulong,
     Nint,
     Nuint,
+    /// C's `long` and `unsigned long`: 64 bits on Linux and macOS, 32 on Windows. Types of
+    /// their own, with no arithmetic, so that a sum never overflows on one system only.
+    CLong,
+    CULong,
 }
 
 impl IntTy {
     /// Every integer type, narrowest first: where a common type is looked for.
-    pub const ALL: [IntTy; 10] = [
+    pub const ALL: [IntTy; 12] = [
         IntTy::Sbyte,
         IntTy::Byte,
         IntTy::Short,
@@ -30,6 +34,8 @@ impl IntTy {
         IntTy::Ulong,
         IntTy::Nint,
         IntTy::Nuint,
+        IntTy::CLong,
+        IntTy::CULong,
     ];
 
     pub fn from_name(name: &str) -> Option<IntTy> {
@@ -48,35 +54,60 @@ impl IntTy {
             IntTy::Ulong => "ulong",
             IntTy::Nint => "nint",
             IntTy::Nuint => "nuint",
+            IntTy::CLong => "CLong",
+            IntTy::CULong => "CULong",
         }
     }
 
-    /// The name as it is written inside a method name: `Int` in `tryToInt`.
+    /// The name as it is written inside a method name: `Int` in `tryToInt`, `CLong` in
+    /// `tryToCLong`.
     pub fn title(self) -> String {
         let name = self.name();
         format!("{}{}", name[..1].to_uppercase(), &name[1..])
     }
 
-    pub fn signed(self) -> bool {
-        matches!(self, IntTy::Sbyte | IntTy::Short | IntTy::Int | IntTy::Long | IntTy::Nint)
+    /// The type a method name is written with: `Ulong` in `tryToUlong`.
+    pub fn from_title(title: &str) -> Option<IntTy> {
+        IntTy::ALL.into_iter().find(|ty| ty.title() == title)
     }
 
-    /// How many bits a value takes: what a shift count has to stay under. `nint` and `nuint`
-    /// take 64 bits on every machine the language runs on so far.
+    /// C's `long` and `unsigned long`: no arithmetic, only comparing, printing and crossing
+    /// to another type.
+    pub fn is_c(self) -> bool {
+        matches!(self, IntTy::CLong | IntTy::CULong)
+    }
+
+    pub fn signed(self) -> bool {
+        matches!(self, IntTy::Sbyte | IntTy::Short | IntTy::Int | IntTy::Long | IntTy::Nint | IntTy::CLong)
+    }
+
+    /// How many bits a value takes on this machine: what a shift count has to stay under.
+    /// `nint` and `nuint` take 64 bits on every machine the language runs on so far; `CLong`
+    /// and `CULong` take 32 on Windows and 64 elsewhere.
     pub fn bits(self) -> u32 {
         match self {
             IntTy::Sbyte | IntTy::Byte => 8,
             IntTy::Short | IntTy::Ushort => 16,
             IntTy::Int | IntTy::Uint => 32,
             IntTy::Long | IntTy::Ulong | IntTy::Nint | IntTy::Nuint => 64,
+            IntTy::CLong | IntTy::CULong => C_LONG_BITS,
         }
     }
 
     /// The fewest bits the type can have on any machine: a pointer is at least 32 bits, so
-    /// `nint` is promised no more than `int` is.
-    fn least_bits(self) -> u32 {
+    /// `nint` is promised no more than `int` is, and C's `long` no more either.
+    pub fn least_bits(self) -> u32 {
         match self {
-            IntTy::Nint | IntTy::Nuint => 32,
+            IntTy::Nint | IntTy::Nuint | IntTy::CLong | IntTy::CULong => 32,
+            other => other.bits(),
+        }
+    }
+
+    /// The most bits the type can have on any machine: what decides whether it becomes another
+    /// type on its own everywhere.
+    pub fn most_bits(self) -> u32 {
+        match self {
+            IntTy::CLong | IntTy::CULong => 64,
             other => other.bits(),
         }
     }
@@ -101,6 +132,16 @@ impl IntTy {
         (self.min()..=self.max()).contains(&value)
     }
 
+    /// Whether the value fits on every system: for C's `long`, in 32 bits. What a number
+    /// written in the program has to do.
+    pub fn fits_everywhere(self, value: i128) -> bool {
+        match self {
+            IntTy::CLong => IntTy::Int.fits(value),
+            IntTy::CULong => IntTy::Uint.fits(value),
+            _ => self.fits(value),
+        }
+    }
+
     /// The value the bits that stay give, read in this type: what wrapping arithmetic and a
     /// release build leave.
     pub fn wrap(self, value: i128) -> i128 {
@@ -113,6 +154,8 @@ impl IntTy {
             IntTy::Uint => value as u32 as i128,
             IntTy::Long | IntTy::Nint => value as i64 as i128,
             IntTy::Ulong | IntTy::Nuint => value as u64 as i128,
+            IntTy::CLong => value as std::ffi::c_long as i128,
+            IntTy::CULong => value as std::ffi::c_ulong as i128,
         }
     }
 
@@ -125,8 +168,8 @@ impl IntTy {
         }
         match (self.signed(), to.signed()) {
             (true, false) => false,
-            (false, true) => self.bits() < to.least_bits(),
-            _ => self.bits() <= to.least_bits(),
+            (false, true) => self.most_bits() < to.least_bits(),
+            _ => self.most_bits() <= to.least_bits(),
         }
     }
 
@@ -147,6 +190,9 @@ impl IntTy {
         IntTy::ALL[..8].iter().copied().find(|to| (self == *to || self.widens_to(*to)) && (other == *to || other.widens_to(*to)))
     }
 }
+
+/// The bits of C's `long` where the program runs: 32 on Windows, 64 on Linux and macOS.
+pub const C_LONG_BITS: u32 = if cfg!(windows) { 32 } else { 64 };
 
 /// The two fractional types: IEEE 754 binary32 and binary64.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -183,7 +229,7 @@ impl FloatTy {
     /// Whether every value of the integer type is held exactly, on every machine: `int`
     /// becomes a `double` on its own, `long` and `nint` do not.
     pub fn holds(self, int: IntTy) -> bool {
-        int.bits() - u32::from(int.signed()) <= self.digits()
+        int.most_bits() - u32::from(int.signed()) <= self.digits()
     }
 
     /// Whether the integer is held exactly: what a number written in the program needs to

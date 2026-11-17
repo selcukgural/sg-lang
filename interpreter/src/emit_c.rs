@@ -1017,6 +1017,8 @@ SG_INT(int64_t, long, "long")
 SG_INT(uint64_t, ulong, "ulong")
 SG_INT(int64_t, nint, "nint")
 SG_INT(uint64_t, nuint, "nuint")
+SG_INT(long, CLong, "CLong")
+SG_INT(unsigned long, CULong, "CULong")
 
 /* Text. A `read string` is a window: where the bytes are and how many. A `string` owns its
    bytes; capacity 0 means they are a constant inside the program, or were moved away, and
@@ -6831,6 +6833,8 @@ fn int_ctype(ty: IntTy) -> &'static str {
         IntTy::Uint => "uint32_t",
         IntTy::Long | IntTy::Nint => "int64_t",
         IntTy::Ulong | IntTy::Nuint => "uint64_t",
+        IntTy::CLong => "long",
+        IntTy::CULong => "unsigned long",
     }
 }
 
@@ -14779,11 +14783,13 @@ impl<'a> Emitter<'a> {
                 }
                 // `errno` as C has it: nothing of the runtime runs between a call of C and the
                 // statements after it that changes it.
-                Callee::Memory(MemoryCall::Errno) => Ok("((int32_t)errno)".to_string()),
+                // On Linux and macOS the system's last error is `errno` too.
+                Callee::Memory(MemoryCall::Errno | MemoryCall::LastError) => Ok("((int32_t)errno)".to_string()),
                 // The address of the value where it lies.
                 Callee::Memory(MemoryCall::AddressOf) => Ok(format!("((void*)({}))", self.value(&args[0])?)),
-                Callee::Memory(MemoryCall::SetErrno) => Ok(format!("(void)(errno = (int)({}))", self.first(&args[0], head)?)),
-                Callee::Memory(MemoryCall::IoErrorOf) => {
+                Callee::Memory(MemoryCall::SetErrno | MemoryCall::SetLastError) => Ok(format!("(void)(errno = (int)({}))", self.first(&args[0], head)?)),
+                // A number of `errno` is the system's code on Linux and macOS.
+                Callee::Memory(MemoryCall::IoErrorOf | MemoryCall::IoErrorOfErrno) => {
                     self.io_error(expr.span)?;
                     if self.made.insert("sg_io_from_code".to_string()) {
                         let error_c = self.ctype(&Ty::Enum("IoError".to_string()), expr.span)?;

@@ -54,6 +54,8 @@ fn cases() -> Vec<(&'static str, Plain)> {
         ("Holder", plain(&[f(int(Byte)), f(named("Slot"))], &[])),
         ("Nested", plain(&[f(int(Byte)), f(named("Bits")), f(named("Header")), b(Uint, 3)], &[])),
         ("Wider", Plain { align: 32, union: true, ..plain(&[f(int(Short)), f(named("Signed"))], &[]) }),
+        // C's `long`: 4 bytes on Windows, 8 elsewhere.
+        ("Longs", plain(&[f(int(Byte)), f(int(CLong)), f(int(Ushort)), f(int(CULong)), f(int(Byte))], &[])),
     ]
 }
 
@@ -70,6 +72,8 @@ fn c_type(ty: &Ty) -> String {
                 IntTy::Uint => "__UINT32_TYPE__",
                 IntTy::Long | IntTy::Nint => "__INT64_TYPE__",
                 IntTy::Ulong | IntTy::Nuint => "__UINT64_TYPE__",
+                IntTy::CLong => "long",
+                IntTy::CULong => "unsigned long",
             };
             name.to_string()
         }

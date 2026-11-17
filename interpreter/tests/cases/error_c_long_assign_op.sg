@@ -1,0 +1,6 @@
+// `+=` on C's `long` is arithmetic too.
+void main() {
+    CLong r = 7
+    r += 1
+    print(r)
+}

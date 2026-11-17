@@ -2,7 +2,7 @@
 extern {
     nuint strlen(read CString text)
     int abs(int value)
-    long labs(long value)
+    CLong labs(CLong value)
     int toupper(int c)
     raw byte strdup(read CString text)
     raw byte getenv(read CString name)
@@ -27,7 +27,7 @@ void main() {
     var text = CString.from("hello") ?? panic("zero byte")
     print(unsafe strlen(read text))
     print(unsafe abs(-7))
-    print(unsafe labs(-9000000000))
+    print(unsafe labs(-2000000000))
     print((char)unsafe toupper((int)'q'))
 
     // What C gives with `malloc` goes back with `Memory.free`.

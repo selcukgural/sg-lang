@@ -4973,8 +4973,9 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// `Memory.free(p)` and `Memory.copy(source, target, count)`.
     fn memory(&mut self, call: MemoryCall, args: &'a [Expr], span: Span, frame: &mut Frame) -> Res<Value> {
         match call {
-            MemoryCall::Errno => Ok(Value::Int(IntTy::Int, self.errno as i128)),
-            MemoryCall::SetErrno => {
+            // On Linux and macOS the system's last error is `errno` too.
+            MemoryCall::Errno | MemoryCall::LastError => Ok(Value::Int(IntTy::Int, self.errno as i128)),
+            MemoryCall::SetErrno | MemoryCall::SetLastError => {
                 self.errno = self.int(&args[0], frame)? as i32;
                 Ok(Value::Void)
             }
@@ -5066,7 +5067,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Ok(Value::Void)
             }
             // A number that is no code of the system's, below 0, is kept as it is.
-            MemoryCall::IoErrorOf => Ok(io_cause(None, Some(self.int(&args[0], frame)? as i32))),
+            MemoryCall::IoErrorOf | MemoryCall::IoErrorOfErrno => Ok(io_cause(None, Some(self.int(&args[0], frame)? as i32))),
             MemoryCall::Free => {
                 let pointer = raw_of(&strip(self.expr(&args[0], frame)?));
                 let Ty::Raw(item) = args[0].ty.strip_borrow() else { unreachable!("the checker gives `Memory.free` a raw pointer") };
@@ -6728,7 +6729,7 @@ fn collection_method(recv: Value, name: &str, mut args: Vec<Value>) -> Value {
 /// The integer type of `tryToInt`, `wrappingToUlong`.
 fn converted_to(name: &str) -> IntTy {
     let rest = name.strip_prefix("tryTo").or_else(|| name.strip_prefix("wrappingTo")).expect("a conversion");
-    IntTy::from_name(&rest.to_lowercase()).expect("the checker knows the type")
+    IntTy::from_title(rest).expect("the checker knows the type")
 }
 
 /// `int.MaxValue`, `double.NaN`, `float.Pi`: a `float` as the `double` that holds it.

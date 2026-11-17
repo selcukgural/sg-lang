@@ -342,8 +342,16 @@ pub enum MemoryCall {
     Errno,
     /// `C.setErrno(n)`: what the next call of C finds in `errno`.
     SetErrno,
-    /// `IoError.fromCode(n)`: the `IoError` for a number of `errno`.
+    /// `C.lastError()`: the system's last error on this thread: `errno` on Linux and macOS,
+    /// `GetLastError()` on Windows.
+    LastError,
+    /// `C.setLastError(n)`: what the next call finds as the system's last error.
+    SetLastError,
+    /// `IoError.fromCode(n)`: the `IoError` for a code of the system, as `C.lastError()` gives.
     IoErrorOf,
+    /// `IoError.fromErrno(n)`: the `IoError` for a number of C's library, as `C.errno()` gives.
+    /// The same as `fromCode` on Linux and macOS; on Windows the two numbers differ.
+    IoErrorOfErrno,
     /// `Memory.addressOf(ref x)`: the address of a value, for C to give back to a callback.
     AddressOf,
     /// `Memory.view(p, count)`: a `read T[]` that looks at `count` items from `p`.

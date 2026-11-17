@@ -1,0 +1,6 @@
+error: `C.lastError()` is a code of the system, and `fromErrno` takes a number of C's library
+  the two are the same on Linux and macOS and differ on Windows
+  --> error_last_error_as_errno.sg:3:29
+ 3 |     print(IoError.fromErrno(C.lastError()))
+   |                             ^^^^^^^^^^^^^
+  hint: `IoError.fromCode(C.lastError())`

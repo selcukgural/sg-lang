@@ -1,0 +1,6 @@
+// A `long` does not fit in C's `long` on Windows: it is converted with a cast.
+void main() {
+    long n = 5
+    CLong r = n
+    print(r)
+}

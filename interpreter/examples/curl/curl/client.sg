@@ -9,7 +9,7 @@
 extern "curl" {
     struct CURL
     struct curl_slist
-    int curl_global_init(long flags)
+    int curl_global_init(CLong flags)
     void curl_global_cleanup()
     raw CURL curl_easy_init()
     void curl_easy_cleanup(raw CURL handle)
@@ -180,7 +180,7 @@ public struct Client : Disposable {
 
     public Result<Client, CurlError> open() {
         // 3: CURL_GLOBAL_DEFAULT. libcurl counts the calls, and does the work on the first.
-        try succeeded(unsafe curl_global_init((long)3))
+        try succeeded(unsafe curl_global_init(3))
         raw CURL handle = unsafe curl_easy_init()
         if handle == null {
             unsafe curl_global_cleanup()
@@ -220,16 +220,17 @@ public struct Client : Disposable {
         var protocols = try cText("http,https")
         try succeeded(unsafe curl_easy_setopt(this.handle, 10318, read protocols))
         try succeeded(unsafe curl_easy_setopt(this.handle, 10319, read protocols))
-        // 52: CURLOPT_FOLLOWLOCATION, 68: CURLOPT_MAXREDIRS; `long`, as every number option.
-        try succeeded(unsafe curl_easy_setopt(this.handle, 52, (long)1))
-        try succeeded(unsafe curl_easy_setopt(this.handle, 68, (long)this.maxRedirects))
+        // 52: CURLOPT_FOLLOWLOCATION, 68: CURLOPT_MAXREDIRS; C's `long`, as every number option
+        // below 30000, so `CLong`: 32 bits on Windows.
+        try succeeded(unsafe curl_easy_setopt(this.handle, 52, (CLong)1))
+        try succeeded(unsafe curl_easy_setopt(this.handle, 68, (CLong)this.maxRedirects))
         // 155: CURLOPT_TIMEOUT_MS, 156: CURLOPT_CONNECTTIMEOUT_MS, 99: CURLOPT_NOSIGNAL (a
         // timeout without a signal, as threads want).
-        try succeeded(unsafe curl_easy_setopt(this.handle, 155, (long)this.timeoutMs))
-        try succeeded(unsafe curl_easy_setopt(this.handle, 156, (long)this.connectTimeoutMs))
-        try succeeded(unsafe curl_easy_setopt(this.handle, 99, (long)1))
-        // 30117: CURLOPT_MAXFILESIZE_LARGE, a `curl_off_t`: a body whose length the server
-        // says is too large is refused before it comes.
+        try succeeded(unsafe curl_easy_setopt(this.handle, 155, (CLong)this.timeoutMs))
+        try succeeded(unsafe curl_easy_setopt(this.handle, 156, (CLong)this.connectTimeoutMs))
+        try succeeded(unsafe curl_easy_setopt(this.handle, 99, (CLong)1))
+        // 30117: CURLOPT_MAXFILESIZE_LARGE, a `curl_off_t`, 64 bits on every system, so `long`:
+        // a body whose length the server says is too large is refused before it comes.
         try succeeded(unsafe curl_easy_setopt(this.handle, 30117, (long)this.maxBytes))
         match read this.caFile {
             null => {}
@@ -274,9 +275,9 @@ public struct Client : Disposable {
         if code != 0 {
             return Error(this.failed(code))
         }
-        // 2097154: CURLINFO_RESPONSE_CODE, a `long`; 1048594: CURLINFO_CONTENT_TYPE, a text
+        // 2097154: CURLINFO_RESPONSE_CODE, C's `long`; 1048594: CURLINFO_CONTENT_TYPE, a text
         // libcurl keeps, or `null`.
-        long status = 0
+        CLong status = 0
         try succeeded(unsafe curl_easy_getinfo(this.handle, 2097154, ref status))
         raw byte kind = null
         try succeeded(unsafe curl_easy_getinfo(this.handle, 1048594, ref kind))

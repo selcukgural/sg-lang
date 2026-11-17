@@ -358,6 +358,11 @@ pub fn layout(ty: &Ty, plain: &PlainTypes) -> (usize, usize) {
 /// The size and the alignment of a value of plain data under the rules of `abi`.
 pub fn layout_for(ty: &Ty, plain: &PlainTypes, abi: Abi) -> (usize, usize) {
     match ty {
+        // C's `long` is 32 bits on Windows (LLP64) and 64 elsewhere (LP64).
+        Ty::Int(int) if int.is_c() => match abi {
+            Abi::Microsoft => (4, 4),
+            Abi::Unix | Abi::Arm => (8, 8),
+        },
         Ty::Int(int) => {
             let bytes = (int.bits() / 8) as usize;
             (bytes, bytes)
@@ -529,6 +534,8 @@ pub unsafe fn read_int(addr: usize, ty: IntTy) -> i128 {
         IntTy::Uint => at.cast::<u32>().read_unaligned() as i128,
         IntTy::Long | IntTy::Nint => at.cast::<i64>().read_unaligned() as i128,
         IntTy::Ulong | IntTy::Nuint => at.cast::<u64>().read_unaligned() as i128,
+        IntTy::CLong => at.cast::<std::ffi::c_long>().read_unaligned() as i128,
+        IntTy::CULong => at.cast::<std::ffi::c_ulong>().read_unaligned() as i128,
     }
 }
 
@@ -547,6 +554,8 @@ pub unsafe fn write_int(addr: usize, ty: IntTy, value: i128) {
         IntTy::Uint => at.cast::<u32>().write_unaligned(value as u32),
         IntTy::Long | IntTy::Nint => at.cast::<i64>().write_unaligned(value as i64),
         IntTy::Ulong | IntTy::Nuint => at.cast::<u64>().write_unaligned(value as u64),
+        IntTy::CLong => at.cast::<std::ffi::c_long>().write_unaligned(value as std::ffi::c_long),
+        IntTy::CULong => at.cast::<std::ffi::c_ulong>().write_unaligned(value as std::ffi::c_ulong),
     }
 }
 

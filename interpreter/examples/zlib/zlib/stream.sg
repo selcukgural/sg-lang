@@ -2,23 +2,23 @@
 // that uses a `Deflater` writes no `unsafe`, and what zlib holds is given back when the
 // deflater ends, closed or not.
 
-// zlib's stream, as zlib lays it out on a 64-bit system (`z_stream` in zlib.h). zlib keeps
+// zlib's stream, as zlib lays it out (`z_stream` in zlib.h; its `uLong` is `CULong`). zlib keeps
 // its address, so it lies in raw memory, where it stays; a value of SG moves.
 struct ZStream {
     raw byte nextIn
     uint availIn
-    nuint totalIn
+    CULong totalIn
     raw byte nextOut
     uint availOut
-    nuint totalOut
+    CULong totalOut
     raw byte msg
     raw void state
     raw void zalloc
     raw void zfree
     raw void opaque
     int dataType
-    nuint adler
-    nuint reserved
+    CULong adler
+    CULong reserved
 }
 
 extern "z" {
@@ -46,8 +46,8 @@ public struct Deflater : Disposable, Closable {
             return Error(ZlibError.BadLevel)
         }
         var stream = Memory.allocate<ZStream>(1)
-        // 112: the size of `z_stream` on a 64-bit system, which zlib checks.
-        var code = unsafe deflateInit_(stream, level, zlibVersion(), 112)
+        // The size of `z_stream`, which zlib checks: 112 bytes on Linux and macOS, 88 on Windows.
+        var code = unsafe deflateInit_(stream, level, zlibVersion(), (int)Memory.sizeOf<ZStream>())
         if code != 0 {
             unsafe Memory.free(stream)
             return Error(errorOf(code))

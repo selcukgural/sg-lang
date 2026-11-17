@@ -1,0 +1,5 @@
+// C's `long` has no arithmetic: the same sum would overflow on Windows only.
+void main() {
+    CLong r = 7
+    print(r + 1)
+}

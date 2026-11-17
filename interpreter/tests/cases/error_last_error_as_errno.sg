@@ -1,0 +1,4 @@
+// `C.lastError()` is a code of the system; `IoError.fromErrno` takes a number of C's library.
+void main() {
+    print(IoError.fromErrno(C.lastError()))
+}

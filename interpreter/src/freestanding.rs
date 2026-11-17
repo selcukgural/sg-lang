@@ -77,7 +77,8 @@ fn needs(expr: &Expr) -> Option<(Span, String)> {
                 Callee::Clock(_) => "it reads the clock of the system".to_string(),
                 Callee::Entropy => "it asks the system for random bytes".to_string(),
                 Callee::System(_) => "it calls the system".to_string(),
-                Callee::Memory(MemoryCall::Errno | MemoryCall::SetErrno | MemoryCall::IoErrorOf) => "`errno` belongs to C's library".to_string(),
+                Callee::Memory(MemoryCall::Errno | MemoryCall::SetErrno | MemoryCall::IoErrorOf | MemoryCall::IoErrorOfErrno) => "`errno` belongs to C's library".to_string(),
+                Callee::Memory(MemoryCall::LastError | MemoryCall::SetLastError) => "the last error is the operating system's".to_string(),
                 Callee::Parse(_) if matches!(&expr.ty, Ty::Result(ok, _) if matches!(**ok, Ty::Float(_))) => {
                     "a fractional number is read with C's library (`strtod`)".to_string()
                 }

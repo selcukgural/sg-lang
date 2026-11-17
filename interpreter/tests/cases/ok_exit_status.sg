@@ -1,0 +1,14 @@
+// How another program ended: a code, written in hex when its highest bit is set, as Windows
+// writes its own codes, or a signal.
+void main() {
+    print(ExitStatus.Code(0))
+    print(ExitStatus.Code(3))
+    print(ExitStatus.Code(-1073741819))
+    print(ExitStatus.Code(-1073741510).success())
+    print(ExitStatus.Code(0).success())
+    print(ExitStatus.Signal(9))
+    match ExitStatus.Code(-1073741819) {
+        Code(code) => print(code)
+        Signal(number) => print(number)
+    }
+}

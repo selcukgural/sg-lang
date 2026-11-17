@@ -1,0 +1,5 @@
+// Every `int` fits in C's `long`: there is nothing to try.
+void main() {
+    int n = 5
+    print(n.tryToCLong() ?? 0)
+}

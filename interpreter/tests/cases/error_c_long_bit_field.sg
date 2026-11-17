@@ -1,0 +1,10 @@
+// C's `long` is laid out by units of its own size, which differs between systems.
+struct Flags {
+    CULong low : 3
+    CULong high : 5
+}
+
+void main() {
+    var flags = Flags { low = 1, high = 2 }
+    print(flags.low)
+}

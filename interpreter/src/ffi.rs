@@ -596,6 +596,8 @@ fn scalar_type(ty: &Ty) -> &'static str {
             // As compiled code has them, so that a C file of the program sees the same types.
             IntTy::Nint => "int64_t",
             IntTy::Nuint => "uint64_t",
+            IntTy::CLong => "long",
+            IntTy::CULong => "unsigned long",
         },
         Ty::Float(FloatTy::Float) => "float",
         Ty::Float(FloatTy::Double) => "double",

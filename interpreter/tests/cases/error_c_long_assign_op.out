@@ -1,0 +1,5 @@
+error: `+=` is not defined for `CLong`: C's `long` is 32 bits on Windows and 64 elsewhere, so the same sum would overflow on one system only
+  --> error_c_long_assign_op.sg:4:5
+ 4 |     r += 1
+   |     ^^^^^^
+  hint: compute in `long`: `r = (CLong)((long)r + 1)`

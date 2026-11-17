@@ -1,11 +1,12 @@
 // zlib behind a safe interface: the functions of C stay inside this module, and the code that
 // uses it writes no `unsafe`. Each call compresses or decompresses a whole buffer at once.
 
+// zlib's `uLong` is C's `unsigned long`: `CULong`, 64 bits on Linux and macOS, 32 on Windows.
 extern "z" {
-    nuint compressBound(nuint sourceLen)
-    int compress2(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen, int level)
-    int uncompress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen)
-    ulong crc32(ulong crc, raw byte buf, uint len)
+    CULong compressBound(CULong sourceLen)
+    int compress2(raw byte dest, ref CULong destLen, raw byte source, CULong sourceLen, int level)
+    int uncompress(raw byte dest, ref CULong destLen, raw byte source, CULong sourceLen)
+    CULong crc32(CULong crc, raw byte buf, uint len)
 }
 
 // What zlib says went wrong.
@@ -38,9 +39,9 @@ public Result<List<byte>, ZlibError> compress(read byte[] data) {
     if data.length() > (nint)uint.MaxValue {
         return Error(ZlibError.TooLarge)
     }
-    nuint room = unsafe compressBound((nuint)data.length())
+    CULong room = unsafe compressBound((CULong)data.length())
     var packed = zeros((nint)room)
-    var code = unsafe compress2(packed.pointer(), ref room, data.pointer(), (nuint)data.length(), 6)
+    var code = unsafe compress2(packed.pointer(), ref room, data.pointer(), (CULong)data.length(), 6)
     if code != 0 {
         return Error(errorOf(code))
     }
@@ -55,8 +56,8 @@ public Result<List<byte>, ZlibError> decompress(read byte[] packed, nint size) {
         return Error(ZlibError.TooLarge)
     }
     var data = zeros(size)
-    nuint length = (nuint)size
-    var code = unsafe uncompress(data.pointer(), ref length, packed.pointer(), (nuint)packed.length())
+    CULong length = (CULong)size
+    var code = unsafe uncompress(data.pointer(), ref length, packed.pointer(), (CULong)packed.length())
     if code != 0 {
         return Error(errorOf(code))
     }
@@ -67,7 +68,7 @@ public Result<List<byte>, ZlibError> decompress(read byte[] packed, nint size) {
 
 // The CRC-32 of the bytes, as zlib, gzip and PNG compute it.
 public uint checksum(read byte[] data) {
-    ulong crc = 0
+    CULong crc = 0
     nint at = 0
     while at < data.length() {
         var piece = data[at..(at + 1 << 30).min(data.length())]

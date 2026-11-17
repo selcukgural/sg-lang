@@ -1,0 +1,8 @@
+// A `match` arm on C's `long` is a number that fits on every system.
+void main() {
+    CLong r = 7
+    match r {
+        5000000000 => print("large")
+        _ => print("other")
+    }
+}

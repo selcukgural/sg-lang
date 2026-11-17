@@ -1371,17 +1371,17 @@ arrays and structs of them), laid out as C lays it.
 
 ```
 extern "z" {                                     // linked as -lz; extern { } is the C library itself
-    nuint compressBound(nuint sourceLen)         // C names as C writes them
-    int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen)
+    CULong compressBound(CULong sourceLen)       // C names as C writes them; uLong is unsigned long
+    int compress(raw byte dest, ref CULong destLen, raw byte source, CULong sourceLen)
 }
 extern {
-    nuint strlen(read CString text)              // const char*
+    nuint strlen(read CString text)              // const char*, size_t
 }
 
-var room = unsafe compressBound((nuint)data.length())
+var room = unsafe compressBound((CULong)data.length())
 var packed = Memory.allocate<byte>((nint)room)   // zeroed, C's calloc; needs no unsafe
-nuint size = room
-var code = unsafe compress(packed, ref size, data.pointer(), (nuint)data.length())
+CULong size = room
+var code = unsafe compress(packed, ref size, data.pointer(), (CULong)data.length())
                                                  // pointer() only as an argument of a C function
 var name = try CString.from("tea")               // a zero byte inside is a TextError
 var length = unsafe strlen(read name)
@@ -1390,6 +1390,22 @@ unsafe {
     packed[0] = 1                                // an item of raw memory
     Memory.free(packed)                          // also memory C gave with malloc
 }
+```
+
+C's `long` and `unsigned long` are `CLong` and `CULong`: 64 bits on Linux and macOS, 32 on Windows. `long` in
+an `extern` block is `int64_t` on every system. The two are types of their own: an `int` becomes a `CLong` and
+a `CLong` a `long` without a word, since that holds on every system, and the other way is a cast that panics
+where the value does not fit (`(CLong)n`, `n.tryToCLong()`). They are compared and printed and have no
+arithmetic, so a sum never overflows on one system only; a number written for one fits in 32 bits.
+
+```
+extern {
+    CLong labs(CLong value)
+}
+CLong r = unsafe labs(-7)                        // an int becomes a CLong
+long next = (long)r + 1                          // r + 1 is an error: compute in long
+CLong back = (CLong)next                         // panics where it does not fit
+CLong big = 3000000000                           // error: a number for C's long fits in 32 bits
 ```
 
 A struct of plain data is laid out as C lays it out, and goes to C and comes back by value. A type of C whose
@@ -1432,9 +1448,11 @@ var bits = unsafe count_bits(0xff)
 var value = try unsafe string.fromCString(optarg)   // read inside unsafe
 int fd = unsafe open(read path, 0)
 if fd < 0 {
-    return Error(IoError.fromCode(C.errno()))    // NotFound, PermissionDenied, ... or Other(code)
+    return Error(IoError.fromErrno(C.errno()))   // NotFound, PermissionDenied, ... or Other(code)
 }
 C.setErrno(0)                                    // what the next call of C finds
+var failed = IoError.fromCode(C.lastError())    // the system's last error: GetLastError on Windows
+var wrong = IoError.fromCode(C.errno())          // error: errno is C's number; IoError.fromErrno
 
 nuint at = (nuint)p                              // an address as a number
 var back = unsafe (raw int)at                    // and a number as an address
@@ -1645,8 +1663,17 @@ var home = Environment.get("HOME") ?? "/"      // a Result<string, VariableError
 ```
 
 `File.move` never takes the place of a file: the system tells in the same step as the rename that the target
-is there. `Path.join` puts a second path that starts with `/` after the first, so a name from outside cannot
-lead out of the folder it is joined to. The variables of the environment are only read, and the folder the
+is there. `Path.join` puts a second path that starts with `/` after the first, and joins a `..` as it is: it is
+for the paths a program makes itself. A name from outside the program (a request, an archive) goes through
+`Path.joinInside`, which gives an `InvalidInput`, the same on every system, for a name that could lead out of
+the folder on any of them: an empty part, a root, a `\` or a `:`, a part that ends with `.` or a space (`..`
+among them), a control character, the name of a device of Windows (`CON`, `nul.txt`). A link inside the
+folder is still followed.
+
+```
+var saved = try Path.joinInside(read uploads, read request.name)   // "../etc/passwd" is an InvalidInput
+```
+ The variables of the environment are only read, and the folder the
 program works in is not changed: both would be state that every thread sees change. `File.exists` and
 `Directory.exists` are there, but what they say can be different the next moment; to use a file, open it and
 look at the error.
@@ -1679,7 +1706,8 @@ var sorted = try sort.output()
 `run` and `output` give a `ProcessError`: `Io(IoError cause)` when the program could not be started (`NotFound`,
 `PermissionDenied`, `InvalidInput` for a zero byte in a word) or wrote something that is not text, and
 `Failed(ExitStatus status)` when it ended with anything but 0. `status` takes no end for an error and gives the
-`ExitStatus`: `Code(byte code)` or `Signal(int number)`. A program started while files are open gets none of them.
+`ExitStatus`: `Code(int code)` or `Signal(int number)`; a code with its highest bit set, as Windows gives
+(`0xC0000005`), is printed in hex. A program started while files are open gets none of them.
 
 `start` starts the program and goes on. The streams asked for with `pipeInput`, `pipeOutput` and `pipeError` are
 taken out of the `Process` it gives, once each, and `wait` gives how the program ended:

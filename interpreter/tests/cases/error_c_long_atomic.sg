@@ -1,0 +1,5 @@
+// An atomic value is changed with arithmetic.
+void main() {
+    atomic CULong count = atomic(0)
+    print(count.load())
+}

@@ -1,0 +1,4 @@
+// `C.errno()` is a number of C's library; `IoError.fromCode` takes a code of the system.
+void main() {
+    print(IoError.fromCode(C.errno()))
+}

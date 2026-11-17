@@ -1,0 +1,12 @@
+// `Path.joinInside`: a name from outside the program joined to a folder only when the path
+// stays inside it, the same on every system; `Path.join` joins whatever it is given.
+void main() {
+    print(Path.join("files", "../etc"))
+    var names = List<string> {"report.txt", "2026/report.txt", ".profile", "a..b", "", "a//b", "a/", "/etc", "../x", "a/../b", "a/./b", "..", ".", "x.", "x ", "C:x", "a\\b", "CON", "con.txt", "Nul", "nul .txt", "COM1", "lpt9.log", "COM0", "COM10", "COM¹", "CONOUT$", "console", "tab\there", "ünlü.txt" }
+    for name in read names {
+        match Path.joinInside("files", name) {
+            Ok(path) => print($"ok  [{name}] -> {path}")
+            Error(cause) => print($"bad [{name}] {cause}")
+        }
+    }
+}

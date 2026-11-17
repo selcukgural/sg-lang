@@ -1,0 +1,5 @@
+error: a bit field of `CULong` is laid out by units of 32 bits on Windows and of 64 elsewhere
+  --> error_c_long_bit_field.sg:3:16
+ 3 |     CULong low : 3
+   |                ^^^
+  hint: a bit field of `uint` or `ulong`

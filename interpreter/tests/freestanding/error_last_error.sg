@@ -1,0 +1,7 @@
+// The system's last error belongs to an operating system: the error is at the call.
+export int code() {
+    return C.lastError()
+}
+
+void onPanic(read string message) {
+}

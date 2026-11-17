@@ -1,0 +1,5 @@
+error: a range of `CLong` is not counted: C's `long` has no arithmetic
+  --> error_c_long_range.sg:4:14
+ 4 |     for i in 0..end {
+   |              ^^^^^^
+  hint: count in `long`: `0..(long)end`

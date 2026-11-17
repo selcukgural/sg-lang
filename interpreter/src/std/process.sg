@@ -8,8 +8,10 @@
 
 // How a program ended.
 public enum ExitStatus : Copyable, Equatable, Hashable, Formattable {
-    // It ended by itself, with this code: 0 says it did its work.
-    Code(byte code)
+    // It ended by itself, with this code: 0 says it did its work. From 0 to 255 on Linux and
+    // macOS; on Windows a code of 32 bits, where one with its highest bit set (negative here)
+    // is the system's (`0xC0000005` for memory read where there is none).
+    Code(int code)
     // A signal of the system stopped it: 9 is `kill -9`, 15 the polite stop.
     Signal(int number)
 
@@ -18,9 +20,11 @@ public enum ExitStatus : Copyable, Equatable, Hashable, Formattable {
         return this == ExitStatus.Code(0)
     }
 
-    // `exited with code 3`, `was stopped by signal 9`.
+    // `exited with code 3`, `was stopped by signal 9`; a code with its highest bit set in
+    // hex, as Windows writes it: `exited with code 0xC0000005`.
     public void format(read this, ref Formatter f) {
         match this {
+            Code(code) when code < 0 => f.write($"exited with code 0x{code:X8}")
             Code(code) => f.write($"exited with code {code}")
             Signal(number) => f.write($"was stopped by signal {number}")
         }
@@ -297,7 +301,7 @@ public struct Command {
         )
         var status = ExitStatus.Signal((int)ended[1])
         if ended[0] == 0 {
-            status = ExitStatus.Code((byte)ended[1])
+            status = ExitStatus.Code(ended[1].wrappingToInt())
         }
         if ended[2] >= 0 && status.success() {
             return Error(IoError.InvalidText(ended[2]))
@@ -451,7 +455,7 @@ public struct Process : Disposable {
     // How it ended, from what the system said: 0 and the code, or 1 and the signal.
     ExitStatus status(read long[] ended) {
         if ended[0] == 0 {
-            return ExitStatus.Code((byte)ended[1])
+            return ExitStatus.Code(ended[1].wrappingToInt())
         }
         return ExitStatus.Signal((int)ended[1])
     }

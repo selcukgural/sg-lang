@@ -1,0 +1,5 @@
+error: `CLong` has no method `abs`: C's `long` has a size of its own on each system, so it is only compared, printed and converted
+  --> error_c_long_method.sg:4:13
+ 4 |     print(r.abs())
+   |             ^^^
+  hint: work on a `long`: `((long)r).abs()`

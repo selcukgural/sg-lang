@@ -1,0 +1,54 @@
+// C's `long` and `unsigned long`: `CLong` and `CULong`, 64 bits on Linux and macOS and 32 on
+// Windows. They cross to and from the other integers, are compared, printed and hashed, and
+// have no arithmetic.
+extern {
+    CLong labs(CLong value)
+    CLong strtol(read CString text, raw raw byte end, int base)
+}
+
+struct Holder : Copyable, Equatable, Hashable {
+    CLong value
+}
+
+void main() {
+    // An `int` fits on every system, so it becomes a `CLong` on its own, and a `CLong` a `long`.
+    int small = -7
+    CLong r = unsafe labs(small)
+    print(r)
+    long wide = r
+    print(wide + 1)
+    print((long)r + 1)
+    // A `long` is converted where the program runs, and panics where it does not fit.
+    long large = 2000000000
+    CLong big = (CLong)large
+    print(big)
+    print(r == 7)
+    print(r < big)
+    print($"{r,5}|{r:X}|{big}")
+    print(Memory.sizeOf<CLong>() == Memory.sizeOf<CULong>())
+    var xs = List<CLong>()
+    xs.add(r)
+    xs.add(3)
+    print(xs)
+    var h = Holder { value = 5 }
+    print(h == Holder { value = 5 })
+    var seen = HashSet<Holder>()
+    _ = seen.add(h)
+    print(seen.contains(Holder { value = 5 }))
+    print(CLong.MaxValue > 0)
+    print(CULong.MinValue)
+    print((int)r)
+    print(big.tryToShort() ?? -1)
+    print(big.wrappingToShort())
+    long n = 5
+    print(n.tryToCLong() ?? 0)
+    CULong u = 4000000000
+    print(u)
+    match r {
+        0..=6 => print("small")
+        _ => print("seven or more")
+    }
+    var text = CString.from("123") ?? panic("zero")
+    print(unsafe strtol(read text, null, 10))
+    print(r.toString())
+}

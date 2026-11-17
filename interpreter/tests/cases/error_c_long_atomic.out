@@ -1,0 +1,5 @@
+error: an atomic value is changed with arithmetic, and C's `unsigned long` has none
+  --> error_c_long_atomic.sg:3:5
+ 3 |     atomic CULong count = atomic(0)
+   |     ^^^^^^^^^^^^^
+  hint: `atomic ulong`

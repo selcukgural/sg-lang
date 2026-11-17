@@ -4,8 +4,10 @@
 public struct Path {
     // The two with one `/` between them: `Path.join("logs", "today.txt")` is `logs/today.txt`, and
     // so is `Path.join("logs/", "today.txt")`. A second path that starts with `/` is still put after
-    // the first (`Path.join("logs", "/etc")` is `logs/etc`), so a name from outside cannot lead out
-    // of the folder it is joined to. An empty part gives the other one.
+    // the first (`Path.join("logs", "/etc")` is `logs/etc`). An empty part gives the other one.
+    // The parts are joined as they are written, `..` with them: `Path.join("logs", "../etc")` is
+    // `logs/../etc`, outside `logs`. A name that comes from outside the program goes through
+    // `joinInside`.
     public string join(read string first, read string second) {
         if first.length() == 0 {
             return second.clone()
@@ -22,6 +24,76 @@ public struct Path {
             tail = tail[1..]
         }
         return $"{head}/{tail}".toString()
+    }
+
+    // `folder` and `name` joined as `join` joins them, for a name that comes from outside the
+    // program (a request, a file, an archive): the path stays inside `folder` on every system.
+    // `name` may name a folder inside it too (`2026/report.txt`). It is an `InvalidInput`, the
+    // same on Linux, macOS and Windows, when it is empty or has an empty part (`a//b`), starts at
+    // a root (`/etc`), holds a `\` or a `:` (`C:`, `\\server`), has a part that ends with `.` or a
+    // space (`..` among them, which Windows would take away), holds a control character, or has
+    // a part that is the name of a device on Windows (`CON`, `PRN`, `AUX`, `NUL`, `COM0` to
+    // `COM9`, `LPT0` to `LPT9`, also with an extension: `nul.txt`). A link inside `folder` that
+    // points out of it is still followed when the path is opened.
+    public Result<string, IoError> joinInside(read string folder, read string name) {
+        if name.length() == 0 || name.contains('\\') || name.contains(':') {
+            return Error(IoError.InvalidInput)
+        }
+        for part in name.split('/') {
+            if !Path.staysInside(part) {
+                return Error(IoError.InvalidInput)
+            }
+        }
+        return Ok(Path.join(folder, name))
+    }
+
+    // Whether one part of a name taken by `joinInside` names a file or a folder inside the one
+    // it is joined to, on every system.
+    bool staysInside(read string part) {
+        if part.length() == 0 || part.endsWith('.') || part.endsWith(' ') {
+            return false
+        }
+        for c in part.chars() {
+            if (int)c < 32 || (int)c == 127 {
+                return false
+            }
+        }
+        return !Path.isDevice(part)
+    }
+
+    // Whether Windows takes the part for a device: the name before the first `.`, without the
+    // spaces after it and in any case, is one of the devices' names.
+    bool isDevice(read string part) {
+        var dot = part.indexOf('.') ?? part.length()
+        var base = part[..dot].trimEnd()
+        if base.equalsIgnoreAsciiCase("CON") || base.equalsIgnoreAsciiCase("PRN") || base.equalsIgnoreAsciiCase("AUX") || base.equalsIgnoreAsciiCase("NUL") {
+            return true
+        }
+        if base.equalsIgnoreAsciiCase("CONIN$") || base.equalsIgnoreAsciiCase("CONOUT$") {
+            return true
+        }
+        if base.length() != 4 {
+            return Path.isNumberedDevice(base)
+        }
+        var head = base[..3]
+        var last = base[3]
+        if !(head.equalsIgnoreAsciiCase("COM") || head.equalsIgnoreAsciiCase("LPT")) {
+            return false
+        }
+        return last >= '0' && last <= '9'
+    }
+
+    // `COM¹`, `LPT³`: Windows takes the small raised digits for devices too.
+    bool isNumberedDevice(read string base) {
+        if base.length() != 5 {
+            return false
+        }
+        var head = base[..3]
+        if !(head.equalsIgnoreAsciiCase("COM") || head.equalsIgnoreAsciiCase("LPT")) {
+            return false
+        }
+        var tail = base[3..]
+        return tail == "¹" || tail == "²" || tail == "³"
     }
 
     // What comes after the last `/`: `report.txt` in `logs/report.txt`, and the empty text in `logs/`.

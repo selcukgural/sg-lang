@@ -1,7 +1,8 @@
-// `errno` after a call of C, `IoError.fromCode`, and `C.setErrno` before one.
+// `errno` after a call of C, `IoError.fromErrno`, and `C.setErrno` before one; the system's
+// last error, `C.lastError()` and `IoError.fromCode`, which on Linux and macOS is `errno` too.
 extern {
     int open(read CString path, int flags)
-    long strtol(read CString text, raw raw byte end, int base)
+    CLong strtol(read CString text, raw raw byte end, int base)
 }
 
 // The texts of the function end after the call, before the caller reads `errno`.
@@ -16,17 +17,17 @@ void main() {
     if CString.from("/no/such/folder/file") is Ok(path) {
         int fd = unsafe open(read path, 0)
         print(fd)
-        print(IoError.fromCode(C.errno()))
+        print(IoError.fromErrno(C.errno()))
     }
     // What ends between the call and the read of `errno` changes nothing.
     print(openMissing())
     int code = C.errno()
-    print(IoError.fromCode(code) == IoError.NotFound)
+    print(IoError.fromErrno(code) == IoError.NotFound)
     // `strtol` says that a number does not fit only through `errno`.
     var big = CString.from("99999999999999999999999") ?? return
     C.setErrno(0)
-    long n = unsafe strtol(read big, null, 10)
-    print(n == long.MaxValue)
+    CLong n = unsafe strtol(read big, null, 10)
+    print(n == CLong.MaxValue)
     print(C.errno() != 0)
     var small = CString.from("42") ?? return
     C.setErrno(0)
@@ -34,6 +35,14 @@ void main() {
     print(C.errno())
     // A number that is no code of the system's.
     print(IoError.fromCode(-10))
+    print(IoError.fromErrno(-10))
     C.setErrno(7)
     print(C.errno())
+    // The system's last error after a call that failed, and before one.
+    if CString.from("/no/such/folder/other") is Ok(path) {
+        _ = unsafe open(read path, 0)
+        print(IoError.fromCode(C.lastError()))
+    }
+    C.setLastError(0)
+    print(C.lastError())
 }

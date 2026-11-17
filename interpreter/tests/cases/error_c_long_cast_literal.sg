@@ -1,0 +1,4 @@
+// A cast of a number written in the program fits on every system too.
+void main() {
+    print((CULong)5000000000)
+}
