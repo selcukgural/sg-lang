@@ -1,0 +1,9 @@
+const int Max = 3
+
+int twice(int Max) {
+    return Max * 2
+}
+
+void main() {
+    print(twice(2))
+}

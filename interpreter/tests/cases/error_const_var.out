@@ -1,0 +1,5 @@
+error: a const has its type written: what it holds is part of what it says
+  --> error_const_var.sg:1:7
+ 1 | const var Size = 1
+   |       ^^^
+  hint: `const int Size = 64`

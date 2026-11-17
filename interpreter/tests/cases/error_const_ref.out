@@ -1,0 +1,5 @@
+error: `Masks` is a const: what it holds is fixed when the program is compiled
+  --> error_const_ref.sg:8:14
+ 8 |     grow(ref Masks)
+   |              ^^^^^
+  hint: change a copy of it: `var copy = Masks`

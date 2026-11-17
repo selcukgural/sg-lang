@@ -1,0 +1,4 @@
+const string[] Words = { "a", "b" }
+
+void main() {
+}

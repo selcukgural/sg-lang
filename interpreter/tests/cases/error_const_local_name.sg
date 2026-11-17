@@ -1,0 +1,6 @@
+const int Max = 3
+
+void main() {
+    var Max = 4
+    print(Max)
+}

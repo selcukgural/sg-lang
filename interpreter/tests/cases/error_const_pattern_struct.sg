@@ -1,0 +1,13 @@
+struct Point : Copyable {
+    int x
+}
+
+const Point Origin = Point { x = 1 }
+
+void main() {
+    var n = 1
+    match n {
+        Origin => print("origin")
+        _ => print("other")
+    }
+}

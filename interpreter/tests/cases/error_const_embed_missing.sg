@@ -1,0 +1,4 @@
+const byte[] Logo = embed("no_such_file.bin")
+
+void main() {
+}

@@ -1363,6 +1363,40 @@ toHex(read id, ref text)                         // lent where a slice is expect
 
 The full example is in the [example programs](05-examples.md) file.
 
+### Consts
+
+A value known when the program is compiled, with its type written. At the top of a file (`public const` for
+other modules) or in a block, where it is seen to the end of the block:
+
+```
+const int BlockSize = 4096
+const int BufferSize = BlockSize * 4                     // the compiler computes it
+public const double Tau = double.Pi * 2
+const uint[] Masks = { 0x1, 0x3, 0x7, 0xF }              // the items counted: uint[4]
+const byte[] Logo = embed("logo.gif")                    // the bytes of the file beside this one
+const string Greeting = "hello"
+const Point Origin = Point { x = 0, y = 0 }              // a Copyable struct of numbers
+
+var buffer = byte[BlockSize]                             // an integer const gives the count of an array
+struct Ring { int[BlockSize] items }
+
+match tag {
+    Trailer => ...                                       // a const of a number, a char, a text or a bool
+    _ => ...
+}
+
+Masks[2]                                                 // read where it lies, for the whole run
+read uint[] masks() { return Masks }                     // so a borrow of it can be returned
+var copy = Masks                                         // a copy, which can be changed
+Masks[0] = 1                                             // error: `Masks` is a const
+```
+
+A const holds numbers, `bool`, `char`, a text, and arrays, structs and enums of numbers, `bool` and `char`;
+not a `List`, an owned text or a pointer. Its value is made of numbers, texts, other consts, operators,
+casts, arrays, structs and variants; an overflow there is a compile error. A local never takes the name of a
+const it sees. In compiled code a number is written where it is used, and a table is one `static const`,
+which nothing copies. The rules are in the decisions file ("Consts", "Consts, as built").
+
 ### Raw memory and calling C
 
 What the checker cannot follow is written inside `unsafe`: an item of raw memory, moving or casting a raw pointer,

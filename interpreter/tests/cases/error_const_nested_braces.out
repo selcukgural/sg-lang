@@ -1,0 +1,5 @@
+error: an item of the array is one value, written without braces
+  an array of arrays is not in the language yet
+  --> error_const_nested_braces.sg:1:23
+ 1 | const int[] Masks = { { 1 }, 2 }
+   |                       ^^^^^

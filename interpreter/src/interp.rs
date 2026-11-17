@@ -1900,8 +1900,9 @@ pub fn run_program<'a>(prog: &'a Program, sources: &'a crate::source::Sources, o
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
     let ffi = crate::ffi::Library::open(prog, false).map_err(Stop::Diag)?;
     let io = shared(out, world, ffi, sources);
+    let consts = Consts::given(prog);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0 };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
         let result = run_main(&mut interp);
         interp.end_fibers();
         result
@@ -1961,8 +1962,9 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
     let ffi = crate::ffi::Library::open(prog, true).map_err(Stop::Diag)?;
     let io = shared(out, world, ffi, sources);
+    let consts = Consts::given(prog);
     std::thread::scope(|scope| {
-        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0 };
+        let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
         run_each_test(&mut interp, prog, sources)
     })
 }
@@ -2098,6 +2100,106 @@ struct Interp<'a, 'e> {
     /// How many atomic operations this fiber has done: the turn goes to another every
     /// `ATOMICS_PER_TURN` of them.
     atomics: u64,
+    /// The values of the consts.
+    consts: &'a Consts<'a>,
+}
+
+/// The values of the consts, each in a cell of its own, made the first time it is read. When
+/// the program runs they come from what the checker found; when the checker finds them, from
+/// running each initializer, the consts it names first.
+pub struct Consts<'a> {
+    inits: HashMap<&'a str, &'a Expr>,
+    given: &'a BTreeMap<String, (Ty, ConstVal)>,
+    embeds: &'a [Embed],
+    cells: RefCell<HashMap<String, Cell>>,
+    /// The consts being found, the outer first: one that needs itself is found here.
+    finding: RefCell<Vec<String>>,
+}
+
+impl<'a> Consts<'a> {
+    fn given(prog: &'a Program) -> Consts<'a> {
+        Consts { inits: HashMap::new(), given: &prog.const_values, embeds: &prog.embeds, cells: RefCell::new(HashMap::new()), finding: RefCell::new(Vec::new()) }
+    }
+}
+
+/// A value of a const as the interpreter holds it.
+fn value_of(found: &ConstVal) -> Value {
+    match found {
+        ConstVal::Int(ty, value) => Value::Int(*ty, *value),
+        ConstVal::Float(ty, value) => Value::Float(*ty, *value),
+        ConstVal::Bool(value) => Value::Bool(*value),
+        ConstVal::Char(value) => Value::Char(*value),
+        ConstVal::Str(text) => Value::Str(text.as_str().to_string().into()),
+        ConstVal::Array(items) => Value::Array(Rc::new(items.iter().map(|item| cell(value_of(item))).collect())),
+        ConstVal::Bytes(bytes) => Value::Array(Rc::new(bytes.iter().map(|byte| cell(Value::Int(IntTy::Byte, *byte as i128))).collect())),
+        ConstVal::Struct(name, fields) => Value::Struct(name.as_str().into(), Fields::plain(fields.iter().map(|field| cell(value_of(field))).collect())),
+        ConstVal::Enum(name, index, fields) => Value::Enum(name.as_str().into(), *index, Rc::new(fields.iter().map(|field| cell(value_of(field))).collect())),
+    }
+}
+
+/// What a const holds, out of the value the interpreter found for it.
+fn const_of(found: &Value) -> ConstVal {
+    match found {
+        Value::Int(ty, value) => ConstVal::Int(*ty, *value),
+        Value::Float(ty, value) => ConstVal::Float(*ty, *value),
+        Value::Bool(value) => ConstVal::Bool(*value),
+        Value::Char(value) => ConstVal::Char(*value),
+        Value::Str(text) => ConstVal::Str(text.to_string()),
+        Value::Borrow(target) => const_of(&target.borrow()),
+        Value::Array(items) => {
+            let items: Vec<ConstVal> = items.iter().map(|item| const_of(&item.borrow())).collect();
+            match items.iter().all(|item| matches!(item, ConstVal::Int(IntTy::Byte, _))) {
+                true => ConstVal::Bytes(items.iter().map(|item| match item {
+                    ConstVal::Int(_, byte) => *byte as u8,
+                    _ => unreachable!("tested above"),
+                }).collect()),
+                false => ConstVal::Array(items),
+            }
+        }
+        Value::Struct(name, fields) => ConstVal::Struct(name.to_string(), fields.iter().map(|field| const_of(&field.borrow())).collect()),
+        Value::Enum(name, index, fields) => ConstVal::Enum(name.to_string(), *index, fields.iter().map(|field| const_of(&field.borrow())).collect()),
+        _ => unreachable!("the checker gives a const only plain values"),
+    }
+}
+
+/// Finds the value of every const of the program, as the checker has checked its initializer:
+/// the interpreter runs it, and a const it names is found first. A panic on the way (an
+/// overflow, an index out of range) is a compile error, which tells the const it was found for.
+pub fn find_consts(prog: &Program, src: &str) -> Result<BTreeMap<String, ConstVal>, Diag> {
+    let sources = crate::source::Sources::single(src, "");
+    let mut sink = std::io::sink();
+    let mut err = std::io::sink();
+    let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err: &mut err };
+    let io = shared(&mut sink, world, crate::ffi::Library::default(), &sources);
+    let none = BTreeMap::new();
+    let mut consts = Consts { inits: HashMap::new(), given: &none, embeds: &prog.embeds, cells: RefCell::new(HashMap::new()), finding: RefCell::new(Vec::new()) };
+    consts.inits = prog.consts.iter().map(|decl| (decl.name.as_str(), &decl.init)).collect();
+    let funcs = prog.funcs.iter().map(|func| (func.name.as_str(), func)).collect();
+    let structs = prog.structs.iter().map(|decl| (decl.name.as_str(), decl)).collect();
+    let enums = prog.enums.iter().map(|decl| (decl.name.as_str(), decl)).collect();
+    let aliases = prog.aliases.iter().map(|alias| (alias.name.as_str(), &alias.ty)).collect();
+    std::thread::scope(|scope| {
+        let mut interp = Interp { funcs, methods: HashMap::new(), structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
+        let mut found = BTreeMap::new();
+        for decl in &prog.consts {
+            match interp.const_cell(&decl.name, decl.name_span) {
+                Ok(slot) => {
+                    found.insert(decl.name.clone(), const_of(&slot.borrow()));
+                }
+                Err(Unwind::Stop(Stop::Diag(mut diag))) => {
+                    ENDING.with(|ending| ending.set(false));
+                    if diag.kind == crate::diag::Kind::Panic {
+                        let name = decl.local.clone().unwrap_or_else(|| short_name(&decl.name).to_string());
+                        diag.kind = crate::diag::Kind::Error;
+                        diag.msg = format!("the value of `{name}` is found when the program is compiled, and this stops it: {}", diag.msg);
+                    }
+                    return Err(diag);
+                }
+                Err(_) => unreachable!("a const is a value: nothing in it returns, breaks or waits"),
+            }
+        }
+        Ok(found)
+    })
 }
 
 /// How many atomic operations a fiber does before the turn goes to the next one that is ready;
@@ -2110,6 +2212,33 @@ fn std_from(prog: &Program) -> usize {
 }
 
 impl<'a, 'e> Interp<'a, 'e> {
+    /// The cell of a const, made the first time it is read.
+    fn const_cell(&mut self, name: &str, span: Span) -> Res<Cell> {
+        if let Some(found) = self.consts.cells.borrow().get(name) {
+            return Ok(found.clone());
+        }
+        let value = match self.consts.given.get(name) {
+            Some((_, found)) => value_of(found),
+            None => {
+                let init: &'a Expr = self.consts.inits[name];
+                if self.consts.finding.borrow().iter().any(|each| each == name) {
+                    let shown = |full: &str| full.split('#').next().map(|written| short_name(written).to_string()).unwrap_or_default();
+                    let path: Vec<String> = self.consts.finding.borrow().iter().skip_while(|each| *each != name).map(|each| format!("`{}`", shown(each))).collect();
+                    return Err(Diag::error(span, format!("the value of `{}` needs itself: {} -> `{}`", shown(name), path.join(" -> "), shown(name)))
+                        .hint("a const is given a value that does not lead back to it")
+                        .into());
+                }
+                self.consts.finding.borrow_mut().push(name.to_string());
+                let found = self.expr(init, &mut Frame { scopes: vec![Scope::default()] });
+                self.consts.finding.borrow_mut().pop();
+                owned(found?)
+            }
+        };
+        let slot = cell(value);
+        self.consts.cells.borrow_mut().insert(name.to_string(), slot.clone());
+        Ok(slot)
+    }
+
     /// Runs the `export` function numbered `number` for C, with the arguments whose addresses
     /// C gave, and writes what it gives where C has room for it.
     fn entered(&mut self, number: usize, args: *mut *mut std::ffi::c_void, ret: *mut std::ffi::c_void) {
@@ -2947,6 +3076,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             errno: [0; 2],
             locking: 0,
             atomics: 0,
+            consts: self.consts,
         };
         let weak = Rc::downgrade(task);
         let name: Rc<str> = func.name.as_str().into();
@@ -3299,6 +3429,8 @@ impl<'a, 'e> Interp<'a, 'e> {
             // change for the block. Tasks change hands only where one waits, and nothing in
             // the block waits, so no other task holds the lock here.
             StmtKind::Unsafe(body) => return self.block(body, frame),
+            // A const of a block: its value was found when the program was compiled.
+            StmtKind::Const { .. } => {}
             StmtKind::Lock { items, body } => {
                 let mut taken: Vec<Rc<Held>> = Vec::new();
                 frame.scopes.push(Scope::default());
@@ -3350,6 +3482,8 @@ impl<'a, 'e> Interp<'a, 'e> {
         }
         match &expr.kind {
             ExprKind::Var(name) => Ok(frame.slot(name)),
+            // Read where it lies: no one changes it.
+            ExprKind::Const(name) => self.const_cell(name, expr.span),
             ExprKind::Open { inner, how } => {
                 let slot = self.place(inner, frame)?;
                 let value = slot.borrow().clone();
@@ -3470,6 +3604,11 @@ impl<'a, 'e> Interp<'a, 'e> {
             // C owns the memory of its variable, so it is not checked as a block.
             ExprKind::CVar(name) => Ok(Value::Raw(RawPtr { addr: self.io.ffi.variable(name), block: None })),
             ExprKind::Constant { ty, name } => Ok(constant(ty, name)),
+            ExprKind::Const(name) => Ok(fresh(&self.const_cell(name, expr.span)?.borrow())),
+            ExprKind::Embed(index) => {
+                let bytes = self.consts.embeds[*index].bytes.as_ref().expect("read before the checker runs");
+                Ok(Value::Array(Rc::new(bytes.iter().map(|byte| cell(Value::Int(IntTy::Byte, *byte as i128))).collect())))
+            }
             ExprKind::Collection { ty, items, .. } => {
                 let given = items.iter().flatten();
                 if ty.name == "List" {

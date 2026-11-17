@@ -1,0 +1,4 @@
+error: the value of `Half` is found when the program is compiled, and this stops it: division by zero: 1 / 0
+  --> error_const_divide.sg:1:18
+ 1 | const int Half = 1 / 0
+   |                  ^^^^^

@@ -1,0 +1,9 @@
+const int[] Masks = { 1, 2 }
+
+void grow(ref int[] items) {
+    items[0] += 1
+}
+
+void main() {
+    grow(ref Masks)
+}

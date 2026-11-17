@@ -1,0 +1,9 @@
+// The limits of the shop, seen from other modules.
+
+public const int MaxItems = 8
+public const int[] Steps = { 1, 2, 4 }
+const int Spare = 3
+
+public int capacity() {
+    return MaxItems * 2 + Spare
+}

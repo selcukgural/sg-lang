@@ -1,0 +1,5 @@
+error: the value of `Width` is found when the program is compiled, and this stops it: overflow: 200 + 100 does not fit in byte
+  --> error_const_overflow.sg:1:20
+ 1 | const byte Width = 200 + 100
+   |                    ^^^^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around

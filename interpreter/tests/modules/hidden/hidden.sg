@@ -1,0 +1,7 @@
+// A public const of a type the module keeps to itself.
+
+struct Secret : Copyable {
+    int code
+}
+
+public const Secret Key = Secret { code = 7 }

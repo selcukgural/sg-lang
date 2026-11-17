@@ -1,0 +1,8 @@
+const double Width = 2.0
+
+struct Row {
+    byte[Width] cells
+}
+
+void main() {
+}

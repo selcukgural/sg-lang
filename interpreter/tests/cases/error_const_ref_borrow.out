@@ -1,0 +1,5 @@
+error: `Size` is a const: what it holds is fixed when the program is compiled
+  --> error_const_ref_borrow.sg:8:14
+ 8 |     grow(ref Size)
+   |              ^^^^
+  hint: change a copy of it: `var copy = Size`

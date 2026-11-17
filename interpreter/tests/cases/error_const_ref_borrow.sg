@@ -1,0 +1,9 @@
+const int Size = 1
+
+void grow(ref int x) {
+    x += 1
+}
+
+void main() {
+    grow(ref Size)
+}

@@ -1,0 +1,6 @@
+const int[] Masks = { 1, 2 }
+const int Third = Masks[2]
+
+void main() {
+    print(Third)
+}

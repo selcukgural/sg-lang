@@ -1,0 +1,4 @@
+const int[] Masks = { { 1 }, 2 }
+
+void main() {
+}

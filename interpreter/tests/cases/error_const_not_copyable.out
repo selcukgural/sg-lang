@@ -1,0 +1,5 @@
+error: a const cannot hold a `Point`: `Point` is not `Copyable`
+  a const holds numbers, `bool`, `char`, a text, and arrays, structs and enums of them
+  --> error_const_not_copyable.sg:5:7
+ 5 | const Point Origin = Point { x = 1 }
+   |       ^^^^^

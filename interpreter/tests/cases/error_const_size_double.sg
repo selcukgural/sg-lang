@@ -1,0 +1,6 @@
+const double Width = 2.0
+
+void main() {
+    var buffer = byte[Width]
+    print(buffer.length())
+}

@@ -1,0 +1,10 @@
+struct Point : Copyable {
+    int x
+}
+
+const int Size = 1
+
+void main() {
+    var size = read Size
+    print(size)
+}

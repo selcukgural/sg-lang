@@ -1,0 +1,6 @@
+struct Row {
+    byte[Width] cells
+}
+
+void main() {
+}

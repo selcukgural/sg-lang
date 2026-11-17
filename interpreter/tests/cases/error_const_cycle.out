@@ -1,0 +1,5 @@
+error: the value of `First` needs itself: `First` -> `Second` -> `First`
+  --> error_const_cycle.sg:2:20
+ 2 | const int Second = First
+   |                    ^^^^^
+  hint: a const is given a value that does not lead back to it

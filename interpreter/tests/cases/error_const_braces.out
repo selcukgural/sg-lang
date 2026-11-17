@@ -1,0 +1,5 @@
+error: `{ ... }` gives the items of an array, and this const is not one
+  --> error_const_braces.sg:1:18
+ 1 | const int Size = { 1, 2 }
+   |                  ^^^^^^^^
+  hint: `const int[] Size = { ... }`

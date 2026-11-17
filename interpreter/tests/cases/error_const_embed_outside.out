@@ -1,0 +1,5 @@
+error: `embed` is written where a const is given its value
+  --> error_const_embed_outside.sg:2:17
+ 2 |     var bytes = embed("logo.gif")
+   |                 ^^^^^^^^^^^^^^^^^
+  hint: `const byte[] Logo = embed("logo.gif")`, then `Logo` where the bytes are needed

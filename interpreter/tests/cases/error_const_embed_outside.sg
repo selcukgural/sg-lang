@@ -1,0 +1,4 @@
+void main() {
+    var bytes = embed("logo.gif")
+    print(bytes.length())
+}

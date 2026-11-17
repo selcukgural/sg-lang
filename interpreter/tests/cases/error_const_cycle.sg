@@ -1,0 +1,6 @@
+const int First = Second + 1
+const int Second = First
+
+void main() {
+    print(First)
+}

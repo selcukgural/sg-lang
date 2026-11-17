@@ -1,0 +1,5 @@
+const byte Width = 200 + 100
+
+void main() {
+    print(Width)
+}

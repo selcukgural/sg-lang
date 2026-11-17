@@ -1,0 +1,5 @@
+const int[] Masks = { 1, 2 }
+
+void main() {
+    Masks[0] = 5
+}

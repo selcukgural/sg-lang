@@ -8955,6 +8955,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         written_stmts: prog.freestanding.then(Vec::new),
         in_func: String::new(),
         func_bodies: Vec::new(),
+        consts: &prog.const_values,
+        consts_used: std::collections::BTreeSet::new(),
+        sizes: &prog.sizes,
     };
     // Every struct and enum is named first, so that a type can point at itself or at a later
     // one. Then the types themselves, each after the types it holds by value.
@@ -9086,6 +9089,15 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
             };
             let _ = writeln!(listed, "    {{ {}, t_{number} }},", c_string(&name));
         }
+    }
+
+    // The consts the code reads, each defined once, in the data the program only reads.
+    let mut const_defs = String::new();
+    for name in std::mem::take(&mut emitter.consts_used) {
+        let (ty, value) = &prog.const_values[&name];
+        let ctype = emitter.ctype(ty, Span::new(0, 0))?;
+        let init = emitter.const_init(ty, value)?;
+        let _ = writeln!(const_defs, "static const {ctype} {} = {init};", const_cname(&name));
     }
 
     // Where the program starts. An error that `main` ends with is written out, and the
@@ -9246,6 +9258,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     out.push_str(&emitter.late_types);
     out.push_str(&emitter.frame_types());
     out.push('\n');
+    out.push_str(&const_defs);
     out.push_str(&emitter.glue_protos);
     out.push('\n');
     // The helpers call the methods a type wrote itself (`format`, `equals`, `compare`).
@@ -9625,6 +9638,31 @@ fn float_literal(text: &str, ty: FloatTy) -> String {
     format!("({text}{point}{suffix})")
 }
 
+/// The C name of a const: `sg_k_` and its full name, one of a block with where it is written.
+fn const_cname(full: &str) -> String {
+    format!("sg_k_{}", cname(full).replace('#', "_at"))
+}
+
+/// A const of a number, a `bool` or a `char` in C, as a constant expression. A fractional
+/// number is written with the fewest digits that give it back.
+fn const_scalar(value: &ConstVal) -> String {
+    match value {
+        ConstVal::Int(ty, value) => int_literal(*value, *ty),
+        ConstVal::Bool(value) => value.to_string(),
+        ConstVal::Char(value) => format!("((uint32_t){}u)", *value as u32),
+        ConstVal::Float(ty, value) => {
+            let ctype = float_ctype(*ty);
+            match ty {
+                _ if value.is_nan() => format!("(({ctype})NAN)"),
+                _ if value.is_infinite() => format!("(({ctype}){}INFINITY)", if *value < 0.0 { "-" } else { "" }),
+                FloatTy::Float => format!("({:e}f)", *value as f32),
+                FloatTy::Double => format!("({value:e})"),
+            }
+        }
+        _ => unreachable!("an array, a struct or an enum is defined outside the functions"),
+    }
+}
+
 /// `int.MaxValue`, `double.NaN`, `float.Pi` in C. A fractional constant is written with the
 /// fewest digits that give it back.
 fn constant(ty: &Ty, name: &str) -> String {
@@ -9889,7 +9927,7 @@ fn may_leave(expr: &Expr) -> bool {
         ExprKind::Try { .. } | ExprKind::Return(_) | ExprKind::Match { .. } => true,
         ExprKind::Await(inner) | ExprKind::Unsafe(inner) | ExprKind::RawCast { expr: inner, .. } => may_leave(inner),
         ExprKind::Allocate { args, .. } => any(&mut args.iter()),
-        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::SizeOf { .. } => false,
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Embed(_) | ExprKind::SizeOf { .. } => false,
         ExprKind::Array { args, items, .. } => any(&mut args.iter().chain(items.iter().flatten())),
         ExprKind::AsSlice(inner) => may_leave(inner),
         ExprKind::Field { recv: inner, .. }
@@ -10106,6 +10144,13 @@ struct Local {
 
 struct Emitter<'a> {
     sources: &'a Sources,
+    /// What each const holds (`Program::const_values`).
+    consts: &'a std::collections::BTreeMap<String, (Ty, ConstVal)>,
+    /// The consts of arrays, structs and enums the code reads: each is defined once, outside
+    /// the functions.
+    consts_used: std::collections::BTreeSet<String>,
+    /// The count each `[Name]` in a type stands for (`Program::sizes`).
+    sizes: &'a std::collections::BTreeMap<usize, usize>,
     /// The functions of the language's own module left out of the C (`Program::left_out`).
     left_out: &'a std::collections::BTreeSet<String>,
     /// The files of the program: a type name is looked up from the file it is written in.
@@ -11278,6 +11323,7 @@ impl<'a> Emitter<'a> {
                 Suffix::Pointer => Ty::Ptr(Box::new(found)),
                 Suffix::Nullable => Ty::Nullable(Box::new(found)),
                 Suffix::Array(length) => Ty::Array(Box::new(found), *length),
+                Suffix::Named(_, at) => Ty::Array(Box::new(found), self.sizes[&at.start]),
                 Suffix::Slice => Ty::Slice(Box::new(found)),
             };
             if mangle(&found).is_none() {
@@ -11420,6 +11466,41 @@ impl<'a> Emitter<'a> {
     /// What `match` and `is` see of an enum or a `Result`: for each variant, the name and the
     /// type of every value it carries. `None` for any other type. `span`: where to point for
     /// a `Result`, whose variants are written nowhere.
+    /// What a const of an array, a struct or an enum holds, as the braces of C give it.
+    fn const_init(&mut self, ty: &Ty, value: &ConstVal) -> Res<String> {
+        Ok(match (ty, value) {
+            (Ty::Array(..), ConstVal::Bytes(bytes)) => {
+                let items: Vec<String> = bytes.iter().map(u8::to_string).collect();
+                format!("{{ {{ {} }} }}", items.join(","))
+            }
+            (Ty::Array(item, _), ConstVal::Array(items)) => {
+                let items = items.iter().map(|each| self.const_init(item, each)).collect::<Res<Vec<String>>>()?;
+                format!("{{ {{ {} }} }}", items.join(", "))
+            }
+            (Ty::Struct(name), ConstVal::Struct(_, fields)) => {
+                let decl: &'a StructDecl = self.structs[name.as_str()];
+                let mut inits = Vec::new();
+                for (field, value) in decl.fields.iter().zip(fields) {
+                    let field_ty = self.written(&field.ty)?;
+                    inits.push(format!(".m_{} = {}", field.name, self.const_init(&field_ty, value)?));
+                }
+                format!("{{ {} }}", inits.join(", "))
+            }
+            (Ty::Enum(_), ConstVal::Enum(_, index, fields)) => {
+                let variants = self.variants(ty, Span::new(0, 0))?.expect("an enum of the program");
+                let mut values = Vec::new();
+                for ((_, field_ty, _), value) in variants[*index].iter().zip(fields) {
+                    values.push(self.const_init(field_ty, value)?);
+                }
+                match values.is_empty() {
+                    true => format!("{{ .tag = {index} }}"),
+                    false => format!("{{ .tag = {index}, .u.v{index} = {{ {} }} }}", values.join(", ")),
+                }
+            }
+            (_, scalar) => const_scalar(scalar),
+        })
+    }
+
     fn variants(&self, ty: &Ty, span: Span) -> Res<Option<Vec<Carried>>> {
         match ty {
             Ty::Enum(name) => {
@@ -12912,6 +12993,8 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(out, "{pad}}}");
             }
             // A block of its own: what is declared in it ends with it.
+            // A const of a block lies with the others, outside the functions.
+            StmtKind::Const { .. } => {}
             StmtKind::Unsafe(body) => {
                 let _ = writeln!(out, "{pad}{{");
                 self.block(body, depth + 1, out)?;
@@ -14352,7 +14435,7 @@ impl<'a> Emitter<'a> {
         let of = |inner: &Expr| self.effect(inner);
         let all = |list: &mut dyn Iterator<Item = &Expr>| list.map(|inner| self.effect(inner)).max().unwrap_or(Effect::Reads);
         match &expr.kind {
-            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::SizeOf { .. } => Effect::Reads,
+            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Embed(_) | ExprKind::SizeOf { .. } => Effect::Reads,
             ExprKind::Field { recv: inner, .. }
             | ExprKind::New(inner)
             | ExprKind::Atomic(inner)
@@ -16424,6 +16507,17 @@ impl<'a> Emitter<'a> {
             ExprKind::FuncRef(name) => Ok(format!("f_{}", cname(name))),
             ExprKind::CVar(name) => Ok(format!("sg_cv_{}()", cname(name))),
             ExprKind::Constant { ty, name } => Ok(constant(ty, name)),
+            // A const of a number, a `bool` or a `char` is its value; one of an array, a struct or
+            // an enum is lent where it lies, outside the functions, and only read.
+            ExprKind::Const(name) => match &expr.ty {
+                Ty::Read(held) => {
+                    self.consts_used.insert(name.clone());
+                    let ctype = self.ctype(held, expr.span)?;
+                    Ok(format!("(({ctype}*)&{})", const_cname(name)))
+                }
+                _ => Ok(const_scalar(&self.consts[name].1)),
+            },
+            ExprKind::Embed(_) => unreachable!("`embed` is written only where a const is given its value"),
             // A number read out of a pointer that has no name: the pointer is freed after the statement.
             ExprKind::Load(inner) if matches!(inner.ty, Ty::Ptr(_) | Ty::Shared(..)) => Ok(format!("(*{})", self.look(inner)?)),
             // A `T?` copied out of a `read T?`.
@@ -17419,8 +17513,12 @@ impl<'a> Emitter<'a> {
                     let slice = Ty::Slice(item.clone());
                     self.ctype(&slice, expr.span)?;
                     let helper = match (name.as_str(), &items) {
-                        // The length of an array is part of its type.
-                        ("length", Ty::Array(_, length)) if self.effect(recv) == Effect::Reads => return Ok(format!("((int64_t){length})")),
+                        // The length of an array is part of its type. The array is named all the
+                        // same, so that a variable read only for its length is not unused in C.
+                        ("length", Ty::Array(_, length)) if self.effect(recv) == Effect::Reads => {
+                            let seen = self.value(recv)?;
+                            return Ok(format!("((void)({seen}), (int64_t){length})"));
+                        }
                         ("length", _) => return Ok(format!("{}.len", self.window(recv)?)),
                         ("get", _) => self.window_helper(&slice, "get", expr.span)?,
                         ("indexOf" | "contains", _) => self.window_helper(&slice, "index", expr.span)?,

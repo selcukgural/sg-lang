@@ -1,0 +1,9 @@
+int size() {
+    return 1
+}
+
+const int Size = size()
+
+void main() {
+    print(Size)
+}

@@ -1,0 +1,9 @@
+error: `Key` is public, but it shows `Secret`, which is not
+  --> hidden/hidden.sg:7:21
+ 7 | public const Secret Key = Secret { code = 7 }
+   |                     ^^^
+  `Secret` is defined here, without `public`:
+  --> hidden/hidden.sg:3:8
+ 3 | struct Secret : Copyable {
+   |        ^^^^^^
+  hint: write `public` in front of `Secret`, or take it off `Key`

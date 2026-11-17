@@ -1,0 +1,5 @@
+error: `Width` cannot give the count of an array: it is a `double`
+  the count of an array is a number or an integer `const`
+  --> error_const_size_double.sg:4:23
+ 4 |     var buffer = byte[Width]
+   |                       ^^^^^

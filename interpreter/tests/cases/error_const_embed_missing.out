@@ -1,0 +1,5 @@
+error: there is no file `no_such_file.bin` beside this file
+  it is looked for at no_such_file.bin
+  --> error_const_embed_missing.sg:1:21
+ 1 | const byte[] Logo = embed("no_such_file.bin")
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^

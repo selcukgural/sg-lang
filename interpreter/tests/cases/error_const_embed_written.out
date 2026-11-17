@@ -1,0 +1,6 @@
+error: `embed` takes the path of a file, written out as a text
+  the file is read when the program is compiled, so its path is known then
+  --> error_const_embed_written.sg:2:21
+ 2 | const byte[] Logo = embed(Name)
+   |                     ^^^^^^^^^^^
+  hint: `const byte[] Logo = embed("logo.gif")`

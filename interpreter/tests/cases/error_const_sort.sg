@@ -1,0 +1,5 @@
+const int[] Masks = { 2, 1 }
+
+void main() {
+    Masks.sort()
+}

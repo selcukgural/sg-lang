@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 17 November 2026, the ninety-first slice.
+Last brought up to date: 17 November 2026, the hundred-and-third slice.
 
 ## Functions and variables
 
@@ -34,6 +34,12 @@ Last brought up to date: 17 November 2026, the ninety-first slice.
 | `for _ in 0..n`, `Some(_)` | `for _ in 0..n`, `Ok(_)` | built | |
 | the `unused_assignments` lint (`x = 2` never read after) | nothing | not in SG | Not looked at yet: a value given after the last read, or written over before it is read, passes; noted for later |
 | `type Id = u64;` | `using Id = ulong` | built | `public using` from a module |
+| `const BLOCK: usize = 4096;` | `const nint BlockSize = 4096` | built | At the top of a file (`public const` from a module) or in a block. Numbers, `bool`, `char`, a text, and arrays, structs and enums of numbers; the value is found when the program is compiled, an overflow there is a compile error. A name in PascalCase, as C#'s |
+| `const MASKS: [u32; 4] = [1, 3, 7, 15];` | `const uint[] Masks = { 1, 3, 7, 15 }` | built | The items are counted. Used where it lies, as a `read` borrow that lasts for the run; `var copy = Masks` copies it |
+| `const fn` called in a `const` | none yet | designed | A const given the value of a call comes in the next slice (1100 to 1108), with no mark on the function |
+| `include_bytes!("logo.gif")` | `embed("logo.gif")`, in a const: `const byte[] Logo = embed("logo.gif")` | built | C23's `#embed`; the path from the folder of the source file, a file of at most 64 MB |
+| `match x { MAX => ... }` (a const in a pattern) | `match x { Max => ... }` | built | A const of a number, a `char`, a text or a `bool`; a local never takes the name of a const it sees, so the name means the const |
+| `static X: T`, `static mut`, `thread_local!` | none yet | designed | Statics come after the calls in a const (1088 to 1097): a value computed once, `atomic` and `locked` ones; no `static mut` and no thread-local |
 | `std::process::exit(2)` | `exit(2)` | built | Takes a `byte`, so `exit(256)` is a compile error |
 | `panic!("...")` | `panic("...")` | built | |
 | `#[track_caller]` on the standard library | nothing to write | built | A panic inside the language's own module (`r.nextInt(5, 5)`, `Duration.fromSeconds` of a count too large) is shown at the call of the program, without the hint about the module's code; a function of your own cannot ask for it |

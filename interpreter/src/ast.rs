@@ -48,6 +48,62 @@ pub struct Program {
     /// The folder of the program's first file, absolute: on Windows the interpreter looks for
     /// the DLLs of its libraries there, as a program built from it looks in its own folder.
     pub home: Option<std::path::PathBuf>,
+    /// Every `const`, of a module and of a block, in the order of the text. One written in a
+    /// block is kept here too, under a name of its own (see `ConstDecl::local`).
+    pub consts: Vec<ConstDecl>,
+    /// What each `const` is, under its full name, with its type: found by the checker when the
+    /// program is compiled, and read by the interpreter and the back end.
+    pub const_values: std::collections::BTreeMap<String, (Ty, ConstVal)>,
+    /// The files `embed("...")` names, in the order they are written, and their bytes once they
+    /// are read (before the checker runs).
+    pub embeds: Vec<Embed>,
+    /// The count each `[Name]` written in a type stands for, by where the name is written.
+    /// Filled in by the checker.
+    pub sizes: std::collections::BTreeMap<usize, usize>,
+}
+
+/// `const int BlockSize = 4096`: a value known when the program is compiled.
+pub struct ConstDecl {
+    pub public: bool,
+    /// The full name of a const of a module (`shop.MaxItems`); for one written in a block, the
+    /// name followed by `#` and where it is written (`Masks#812`), which no other name has.
+    pub name: String,
+    pub name_span: Span,
+    /// As written; `int[]` is given the count of the items by the parser for `{ ... }`, and by
+    /// the checker for `embed`.
+    pub ty: TypeExpr,
+    pub init: Expr,
+    /// Written in a block: the name as written there.
+    pub local: Option<String>,
+    /// The consts of the blocks around it that it sees, as written and by their full names,
+    /// the nearest last.
+    pub visible: Vec<(String, String)>,
+}
+
+/// A value a `const` holds: numbers, `bool`, `char`, a text, and arrays, structs and enums of
+/// them. Plain data that every thread may read.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConstVal {
+    Int(IntTy, i128),
+    /// A `float` as the `double` that holds it.
+    Float(FloatTy, f64),
+    Bool(bool),
+    Char(char),
+    Str(String),
+    Array(Vec<ConstVal>),
+    /// A `byte[N]`: the bytes as they are, so that a file of `embed` stays small.
+    Bytes(std::sync::Arc<[u8]>),
+    /// A struct and its fields, in the order they are declared.
+    Struct(String, Vec<ConstVal>),
+    /// An enum, the position of the variant and what it carries.
+    Enum(String, usize, Vec<ConstVal>),
+}
+
+/// `embed("logo.gif")`: a file beside the source file that names it, as written, and its bytes.
+pub struct Embed {
+    pub written: String,
+    pub span: Span,
+    pub bytes: Option<std::sync::Arc<[u8]>>,
 }
 
 /// One file: where its text lies, the module it belongs to (empty for the root, otherwise the
@@ -757,7 +813,7 @@ pub enum Holder {
     Weak,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Suffix {
     /// `*`
     Pointer,
@@ -765,6 +821,9 @@ pub enum Suffix {
     Nullable,
     /// `[8]`: a fixed number of items.
     Array(usize),
+    /// `[BlockSize]`: as many items as an integer `const` says, by the name written there and
+    /// where it is written.
+    Named(String, Span),
     /// `[]`: a slice, behind `read` or `ref`.
     Slice,
 }
@@ -812,6 +871,9 @@ pub enum StmtKind {
     /// `unsafe { ... }`: statements that may do what the checker cannot see is safe, such as
     /// reading and writing raw memory.
     Unsafe(Block),
+    /// `const int Size = 64` in a block: the name as written and the full name of the const,
+    /// which `Program::consts` holds. Seen from here to the end of the block.
+    Const { name: String, name_span: Span, full: String },
 }
 
 /// One value of a `lock` block and the name of what it holds.
@@ -926,6 +988,13 @@ pub enum ExprKind {
 
     /// Built by the checker from the name of a function used as a value: `isPaid`.
     FuncRef(String),
+
+    /// Built by the checker from the name of a `const` (not one of text, which becomes the text
+    /// itself): its full name. A value of its type, which no one changes, there for the whole run.
+    Const(String),
+    /// `embed("logo.gif")`, by its place in `Program::embeds`: the bytes of the file, as a
+    /// `byte[N]`. Written only where a `const` is given its value.
+    Embed(usize),
 
     /// Inserted by the checker: a borrow of a list or an array used as a slice.
     AsSlice(Box<Expr>),

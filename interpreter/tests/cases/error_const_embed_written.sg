@@ -1,0 +1,5 @@
+const string Name = "logo.bin"
+const byte[] Logo = embed(Name)
+
+void main() {
+}

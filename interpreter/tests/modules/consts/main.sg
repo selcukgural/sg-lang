@@ -1,0 +1,27 @@
+// Consts of another module, the count of an array from one, and the bytes of a file.
+
+use limits
+
+const byte[] Logo = embed("logo.gif")
+
+int first(read int[MaxItems] items) {
+    return items[0]
+}
+
+void main() {
+    print(MaxItems)
+    print(limits.MaxItems)
+    print(capacity())
+    print(Steps[2])
+    var items = int[MaxItems](9)
+    print(first(read items))
+    print(Logo.length())
+    print(Logo[0])
+    print(Logo[7])
+}
+
+test "the limits" {
+    assert(MaxItems == 8)
+    assert(Steps.length() == 3)
+    assert(Logo[1] == 'I')
+}

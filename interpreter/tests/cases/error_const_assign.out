@@ -1,0 +1,5 @@
+error: `Size` is a const: what it holds is fixed when the program is compiled
+  --> error_const_assign.sg:4:5
+ 4 |     Size = 2
+   |     ^^^^
+  hint: change a copy of it: `var copy = Size`

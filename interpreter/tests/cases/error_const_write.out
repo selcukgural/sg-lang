@@ -1,0 +1,5 @@
+error: `Masks` is a const: what it holds is fixed when the program is compiled
+  --> error_const_write.sg:4:5
+ 4 |     Masks[0] = 5
+   |     ^^^^^^^^
+  hint: change a copy of it: `var copy = Masks`

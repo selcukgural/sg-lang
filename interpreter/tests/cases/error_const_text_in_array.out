@@ -1,0 +1,5 @@
+error: a const cannot hold a `string[2]`: a text inside an array, a struct or an enum is not in a const yet
+  a const holds numbers, `bool`, `char`, a text, and arrays, structs and enums of them
+  --> error_const_text_in_array.sg:1:7
+ 1 | const string[] Words = { "a", "b" }
+   |       ^^^^^^^^

@@ -1,0 +1,4 @@
+const int Size = { 1, 2 }
+
+void main() {
+}

@@ -1,0 +1,4 @@
+error: `Width` cannot give the count of an array: it is not an integer
+  --> error_const_size_field.sg:4:10
+ 4 |     byte[Width] cells
+   |          ^^^^^

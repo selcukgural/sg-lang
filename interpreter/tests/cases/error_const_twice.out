@@ -1,0 +1,8 @@
+error: `Size` is declared twice in this module
+  --> error_const_twice.sg:2:11
+ 2 | const int Size = 2
+   |           ^^^^
+  the other declaration:
+  --> error_const_twice.sg:1:11
+ 1 | const int Size = 1
+   |           ^^^^

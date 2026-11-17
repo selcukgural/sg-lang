@@ -1,0 +1,8 @@
+struct Point {
+    int x
+}
+
+const Point Origin = Point { x = 1 }
+
+void main() {
+}

@@ -27,7 +27,7 @@ const INTERFACES_NOT_YET: &[&str] = &["Clonable", "Iterator"];
 
 const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable", "Comparable", "Disposable", "Closable"];
 
-const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error"];
+const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error", "embed"];
 
 /// Types the language brings along; a program cannot define another one under these names.
 const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "Path", "Environment", "VariableError", "OperatingSystem"];
@@ -96,6 +96,11 @@ struct Names {
     /// Types written with `: unsafe Sendable`: what their raw pointers reach, their writer
     /// promises, may be reached from several tasks, so they go to another task.
     sendable: HashSet<String>,
+    /// The consts of the modules, by full name.
+    consts: HashSet<String>,
+    /// What each integer const holds, by full name (one of a block too), found before the types
+    /// are, for the count of an array (`byte[BlockSize]`); or why it cannot be found then.
+    sizes: HashMap<String, Result<i128, String>>,
 }
 
 thread_local! {
@@ -114,7 +119,7 @@ impl Names {
     }
 
     fn known(&self, full: &str) -> bool {
-        self.kinds.contains_key(full) || self.funcs.contains(full) || self.cvars.contains(full)
+        self.kinds.contains_key(full) || self.funcs.contains(full) || self.cvars.contains(full) || self.consts.contains(full)
     }
 
     /// The full name of the type or function that `written` means in the file at `at`: a name
@@ -647,6 +652,7 @@ fn func_sig(func: &Func, names: &Names, owner: Option<&str>) -> Res<FuncSig> {
 /// With `tests` the `test` blocks are checked too and `main` may be missing: that is what the
 /// test command compiles. A normal run leaves the tests out.
 pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
+    SIZES.with(|found| found.borrow_mut().clear());
     LOCKED.with(|found| found.borrow_mut().clear());
     RAW.with(|found| found.borrow_mut().clear());
     CFUNCS.with(|found| found.borrow_mut().clear());
@@ -688,6 +694,19 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             names.public.insert(var.name.clone());
         }
     }
+    for decl in prog.consts.iter().filter(|decl| decl.local.is_none()) {
+        if names.funcs.contains(&decl.name) || names.cvars.contains(&decl.name) || !names.consts.insert(decl.name.clone()) {
+            let diag = Diag::error(decl.name_span, format!("`{}` is declared twice in this module", short_name(&decl.name)));
+            return Err(match names.spans.get(&decl.name) {
+                Some(other) => diag.related(*other, "the other declaration"),
+                None => diag,
+            });
+        }
+        names.spans.insert(decl.name.clone(), decl.name_span);
+        if decl.public {
+            names.public.insert(decl.name.clone());
+        }
+    }
     let types = prog
         .structs
         .iter()
@@ -713,6 +732,21 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         if Ty::from_name(short_name(name)).is_some() || names.kinds.insert(name.clone(), kind).is_some() {
             return Err(Diag::error(span, format!("type `{name}` is defined twice")));
         }
+        if names.consts.contains(name) {
+            return Err(Diag::error(span, format!("`{}` is already the name of a const", short_name(name))).related(names.spans[name], "the const"));
+        }
+    }
+    for decl in &prog.consts {
+        let short = decl.local.as_deref().unwrap_or_else(|| short_name(&decl.name));
+        if BUILTINS.contains(&short) || BUILTIN_TYPES.contains(&short) || Ty::from_name(short).is_some() {
+            return Err(Diag::error(decl.name_span, format!("`{short}` is a name of the language, so a const cannot have it")));
+        }
+    }
+    // The count of an array may be an integer const: what it holds is found before the types.
+    let by_name: HashMap<&str, &ConstDecl> = prog.consts.iter().map(|decl| (decl.name.as_str(), decl)).collect();
+    for decl in &prog.consts {
+        let found = early_size(decl, &by_name, &names, &mut Vec::new());
+        names.sizes.insert(decl.name.clone(), found);
     }
     names.opaque = prog.structs.iter().filter(|decl| decl.opaque).map(|decl| decl.name.clone()).collect();
     for alias in &prog.aliases {
@@ -1181,9 +1215,69 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
     }
 
+    // The consts: the type of each, then its initializer, checked, then what each holds, found by
+    // running the initializers when the program is compiled.
+    prog.plain = plain_types(&structs);
+    let mut const_table = ConstTable { embeds: prog.embeds.iter().map(|embed| embed.bytes.as_ref().map_or(0, |bytes| bytes.len())).collect(), ..ConstTable::default() };
+    for decl in &prog.consts {
+        let ty = const_type(decl, &names, &structs, &enums, &copyable, &const_table.embeds)?;
+        // What a module shows the others is made of what they can see.
+        if decl.public && !module_of(&decl.name).is_empty() {
+            exposes(short_name(&decl.name), decl.name_span, &ty, &names)?;
+        }
+        const_table.types.insert(decl.name.clone(), ty);
+    }
+    for decl in &mut prog.consts {
+        let ty = const_table.types[&decl.name].clone();
+        let mut checker = Checker {
+            names: &names,
+            consts: &const_table,
+            in_const: true,
+            copyable: &copyable,
+            formattable: &formattable,
+            equatable: &equatable,
+            comparable: &comparable,
+            structs: &structs,
+            enums: &enums,
+            sigs: &sigs,
+            scopes: vec![Scope { consts: decl.visible.clone(), ..Scope::default() }],
+            locks: Vec::new(),
+            borrows: Borrows::default(),
+            loops: 0,
+            loop_depths: Vec::new(),
+            ret: Ty::Void,
+            sources: Vec::new(),
+            func_name: decl.name.clone(),
+            in_test: false,
+            is_names: Vec::new(),
+            owner: None,
+            module: names.module(decl.name_span),
+            src,
+            is_async: false,
+            awaiting: false,
+            unsafe_at: None,
+            writing: false,
+            written: Vec::new(),
+            extern_arg: false,
+            seen: crate::unread::Seen::default(),
+        };
+        checker.typed(&mut decl.init, &ty).map_err(|diag| match diag.msg.starts_with("there is no variable named") {
+            true => diag.note("a const sees other consts, not variables: its value is found when the program is compiled"),
+            false => diag,
+        })?;
+        constant_only(&decl.init)?;
+    }
+    for (name, value) in crate::interp::find_consts(prog, src)? {
+        let ty = const_table.types[&name].clone();
+        const_table.values.insert(name, (ty, value));
+    }
+    prog.const_values = const_table.values.clone();
+
     let body = |func: &mut Func, sig: &FuncSig, owner: Option<&str>| -> Res<crate::unread::Seen> {
         let mut checker = Checker {
             names: &names,
+            consts: &const_table,
+            in_const: false,
             copyable: &copyable,
             formattable: &formattable,
             equatable: &equatable,
@@ -1231,6 +1325,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             if let Some(what) = std_stream(&param.name) {
                 return Err(Diag::error(param.span, format!("`{}` is {what} of the program, so a parameter cannot have its name", param.name)));
             }
+            checker.not_a_const(&param.name, param.span)?;
             checker.declare(&param.name, ty.clone(), param.span)?;
             checker.find(&param.name).expect("just declared").param = true;
         }
@@ -1276,7 +1371,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
     }
     if tests {
-        seen.extend(check_tests(prog, &names, &sets, &structs, &enums, &sigs, src)?);
+        seen.extend(check_tests(prog, &names, &const_table, &sets, &structs, &enums, &sigs, src)?);
     }
     thread_rule_of_locked(&structs, &enums, &names)?;
     raw_rule(&structs)?;
@@ -1318,6 +1413,14 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     let tested = prog.tests.iter().map(|test| &test.body).take(if tests { usize::MAX } else { 0 });
     for (body, seen) in bodies.chain(methods).chain(tested).zip(&seen) {
         crate::unread::check(body, seen, &|ty: &Ty| disposes(ty, &structs), src)?;
+    }
+    // A count of an array found from the text of a const agrees with what the const holds.
+    for (at, (count, full)) in SIZES.with(|sizes| sizes.borrow().clone()) {
+        if !matches!(prog.const_values.get(&full), Some((_, ConstVal::Int(_, held))) if *held == count as i128) {
+            return Err(Diag::error(Span::new(at, at + 1), format!("the count of this array was found as {count} before the types, and the const holds another value"))
+                .note("the count of an array is found from integer consts and operators, before the types are known"));
+        }
+        prog.sizes.insert(at, count);
     }
     Ok(())
 }
@@ -1507,9 +1610,11 @@ fn disposes(ty: &Ty, structs: &HashMap<String, StructInfo>) -> bool {
     looks(ty, structs, &mut Vec::new())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_tests(
     prog: &mut Program,
     names: &Names,
+    consts: &ConstTable,
     sets: &Promised,
     structs: &HashMap<String, StructInfo>,
     enums: &HashMap<String, EnumInfo>,
@@ -1527,6 +1632,8 @@ fn check_tests(
         }
         let mut checker = Checker {
             names,
+            consts,
+            in_const: false,
             copyable,
             formattable,
             equatable,
@@ -1772,6 +1879,10 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
                 return Err(Diag::error(ty.span, "an array of arrays is not in the interpreter yet"));
             }
             Suffix::Array(length) => Ty::Array(Box::new(resolved), *length),
+            Suffix::Named(..) if matches!(resolved, Ty::Array(..)) => {
+                return Err(Diag::error(ty.span, "an array of arrays is not in the interpreter yet"));
+            }
+            Suffix::Named(written, at) => Ty::Array(Box::new(resolved), named_size(written, *at, names)?),
             Suffix::Slice => Ty::Slice(Box::new(resolved)),
             Suffix::Pointer => Ty::Ptr(Box::new(resolved)),
             Suffix::Nullable if matches!(resolved, Ty::CFunc(..)) => {
@@ -1823,6 +1934,202 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
 
 /// `atomic T` around a type that an atomic operation takes as one step: an integer, a `bool`,
 /// a `float`, a `double` or a raw pointer.
+/// The count of `byte[BlockSize]`: what the integer const holds. One of a block is written by
+/// its full name, which the parser found.
+fn named_size(written: &str, at: Span, names: &Names) -> Res<usize> {
+    let full = match written.contains('#') {
+        true => Some(written.to_string()),
+        false => names.full(written, at)?.filter(|full| names.consts.contains(full)),
+    };
+    let shown = written.split('#').next().unwrap_or(written);
+    let Some(full) = full else {
+        let diag = Diag::error(at, format!("there is no const named `{shown}`"));
+        return Err(match names.full(written, at)? {
+            Some(_) => diag.note("the count of an array is a number or an integer `const`"),
+            None => diag,
+        });
+    };
+    let count = match names.sizes.get(&full) {
+        Some(Ok(count)) => *count,
+        Some(Err(why)) => return Err(Diag::error(at, format!("`{shown}` cannot give the count of an array: {why}"))),
+        None => return Err(Diag::error(at, format!("`{shown}` cannot give the count of an array: it is not an integer")).note("the count of an array is a number or an integer `const`")),
+    };
+    if count <= 0 {
+        return Err(Diag::error(at, format!("an array has at least one item, and `{shown}` is {count}")));
+    }
+    let Ok(count) = usize::try_from(count) else { return Err(Diag::error(at, "an array cannot have that many items")) };
+    SIZES.with(|sizes| sizes.borrow_mut().insert(at.start, (count, full)));
+    Ok(count)
+}
+
+/// What an integer const holds, found from its text before the types are known, for the count
+/// of an array: numbers, other such consts, operators and casts to an integer type. The checker
+/// finds every const again later, and the two must agree.
+fn early_size(decl: &ConstDecl, consts: &HashMap<&str, &ConstDecl>, names: &Names, finding: &mut Vec<String>) -> Result<i128, String> {
+    let Some(own) = IntTy::from_name(&decl.ty.name).filter(|_| decl.ty.suffixes.is_empty() && decl.ty.mode.is_none() && decl.ty.holder.is_none() && decl.ty.raw == 0 && decl.ty.atomic.is_none()) else {
+        return Err("it is not an integer".to_string());
+    };
+    if finding.contains(&decl.name) {
+        return Err("its value needs itself".to_string());
+    }
+    finding.push(decl.name.clone());
+    let found = early_value(&decl.init, decl, consts, names, finding).and_then(|value| match own.fits(value) {
+        true => Ok(value),
+        false => Err(format!("{value} does not fit in {}", own.name())),
+    });
+    finding.pop();
+    found
+}
+
+fn early_value(expr: &Expr, decl: &ConstDecl, consts: &HashMap<&str, &ConstDecl>, names: &Names, finding: &mut Vec<String>) -> Result<i128, String> {
+    let made_of = "its value is made of more than numbers, integer consts and operators";
+    let value = |expr: &Expr, finding: &mut Vec<String>| early_value(expr, decl, consts, names, finding);
+    match &expr.kind {
+        ExprKind::Int(value, _) => Ok(*value),
+        ExprKind::Char(c) => Ok(*c as i128),
+        ExprKind::Var(_) | ExprKind::Field { .. } => {
+            if let ExprKind::Field { recv, name, .. } = &expr.kind {
+                if let ExprKind::Var(owner) = &recv.kind {
+                    if let Some(ty) = IntTy::from_name(owner) {
+                        return match name.as_str() {
+                            "MaxValue" => Ok(ty.max()),
+                            "MinValue" => Ok(ty.min()),
+                            _ => Err(made_of.to_string()),
+                        };
+                    }
+                }
+            }
+            let written = crate::parser::dotted(expr).ok_or_else(|| made_of.to_string())?;
+            let local = decl.visible.iter().rev().find(|(name, _)| *name == written).map(|(_, full)| full.clone());
+            let full = match local {
+                Some(full) => full,
+                None => names.full(&written, expr.span).ok().flatten().filter(|full| names.consts.contains(full)).ok_or_else(|| made_of.to_string())?,
+            };
+            let other = consts.get(full.as_str()).ok_or_else(|| made_of.to_string())?;
+            early_size(other, consts, names, finding)
+        }
+        ExprKind::Unary(UnOp::Neg, inner) => Ok(-value(inner, finding)?),
+        ExprKind::Unary(UnOp::BitNot, inner) => {
+            let own = IntTy::from_name(&decl.ty.name).expect("an integer const");
+            Ok(own.wrap(!value(inner, finding)?))
+        }
+        ExprKind::Binary(op, left, right) => {
+            let (a, b) = (value(left, finding)?, value(right, finding)?);
+            let found = match op {
+                BinOp::Add => a.checked_add(b),
+                BinOp::Sub => a.checked_sub(b),
+                BinOp::Mul => a.checked_mul(b),
+                BinOp::Div | BinOp::Rem if b == 0 => return Err("it divides by zero".to_string()),
+                BinOp::Div => a.checked_div(b),
+                BinOp::Rem => a.checked_rem(b),
+                BinOp::BitAnd => Some(a & b),
+                BinOp::BitOr => Some(a | b),
+                BinOp::BitXor => Some(a ^ b),
+                BinOp::Shl if (0..64).contains(&b) => a.checked_shl(b as u32),
+                BinOp::Shr if (0..64).contains(&b) => Some(a >> b),
+                _ => None,
+            };
+            found.ok_or_else(|| made_of.to_string())
+        }
+        ExprKind::Cast { ty: Ty::Int(to), expr: inner } => {
+            let found = value(inner, finding)?;
+            match to.fits(found) {
+                true => Ok(found),
+                false => Err(format!("{found} does not fit in {}", to.name())),
+            }
+        }
+        _ => Err(made_of.to_string()),
+    }
+}
+
+/// The type of a const, with the count of `T[]` taken from `embed` (`{ ... }` was counted by the
+/// parser). What it holds is plain data the program can read from every thread.
+fn const_type(decl: &ConstDecl, names: &Names, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, copyable: &HashSet<String>, embeds: &[usize]) -> Res<Ty> {
+    let written = &decl.ty;
+    if written.mode.is_some() {
+        return Err(Diag::error(written.span, "a const is not declared with `read` or `ref`: it is lent where it is used")
+            .hint(format!("`const {} ...`", written.name)));
+    }
+    let mut whole = written.clone();
+    let counted = matches!(whole.suffixes.last(), Some(Suffix::Slice));
+    if counted {
+        whole.suffixes.pop();
+    }
+    let mut ty = resolve_type(&whole, names, false)?;
+    if counted {
+        let count = match &decl.init.kind {
+            ExprKind::Embed(index) => embeds[*index],
+            _ => {
+                return Err(Diag::error(written.span, "the count of the items of `T[]` is taken from `{ ... }` or from `embed`")
+                    .hint("write the count: `T[N]`"));
+            }
+        };
+        if count == 0 {
+            return Err(Diag::error(decl.init.span, "the file is empty, and an array has at least one item"));
+        }
+        if matches!(ty, Ty::Array(..)) {
+            return Err(Diag::error(written.span, "an array of arrays is not in the interpreter yet"));
+        }
+        ty = Ty::Array(Box::new(ty), count);
+    }
+    if let Some(why) = not_const_type(&ty, true, structs, enums, copyable) {
+        return Err(Diag::error(written.span, format!("a const cannot hold a `{ty}`: {why}"))
+            .note("a const holds numbers, `bool`, `char`, a text, and arrays, structs and enums of them"));
+    }
+    Ok(ty)
+}
+
+/// Why a const cannot hold a value of this type, if it cannot. `top`: the const itself, where a
+/// text may be.
+fn not_const_type(ty: &Ty, top: bool, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, copyable: &HashSet<String>) -> Option<String> {
+    match ty {
+        Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char => None,
+        Ty::Str if top => None,
+        Ty::Str => Some("a text inside an array, a struct or an enum is not in a const yet".to_string()),
+        Ty::Array(item, _) => not_const_type(item, false, structs, enums, copyable),
+        Ty::Struct(name) => {
+            let info = &structs[name];
+            if info.shape.union {
+                return Some(format!("`{}` is a union, which is read inside `unsafe`", short_name(name)));
+            }
+            if !copyable.contains(name) {
+                return Some(format!("`{}` is not `Copyable`", short_name(name)));
+            }
+            info.fields.iter().find_map(|(_, field)| not_const_type(field, false, structs, enums, copyable))
+        }
+        Ty::Enum(name) => {
+            if !copyable.contains(name) {
+                return Some(format!("`{}` is not `Copyable`", short_name(name)));
+            }
+            enums[name].variants.iter().flat_map(|(_, fields)| fields).find_map(|(_, field)| not_const_type(field, false, structs, enums, copyable))
+        }
+        other => Some(format!("a `{other}` is not known when the program is compiled")),
+    }
+}
+
+/// What a const is given is known when the program is compiled: numbers, texts, other consts,
+/// operators, casts, and arrays, structs and enums built of them.
+fn constant_only(expr: &Expr) -> Res<()> {
+    match &expr.kind {
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Const(_) | ExprKind::Embed(_) | ExprKind::Constant { .. } => Ok(()),
+        ExprKind::Unary(_, inner) | ExprKind::Cast { expr: inner, .. } | ExprKind::Widen(_, inner) | ExprKind::Load(inner) | ExprKind::Field { recv: inner, .. } => constant_only(inner),
+        ExprKind::Binary(_, left, right) | ExprKind::Index { recv: left, index: right, .. } => {
+            constant_only(left)?;
+            constant_only(right)
+        }
+        ExprKind::Array { args, items, .. } => args.iter().chain(items.iter().flatten()).try_for_each(constant_only),
+        ExprKind::StructLit { fields, .. } => fields.iter().try_for_each(|field| constant_only(&field.value)),
+        ExprKind::Variant { args, .. } => args.iter().try_for_each(constant_only),
+        // The count of the items of a const array, or the bytes of a text.
+        ExprKind::Method { recv, name, args, .. } if name == "length" && args.is_empty() => constant_only(recv),
+        ExprKind::Var(name) => Err(Diag::error(expr.span, format!("`{name}` is a variable, and the value of a const is found when the program is compiled"))),
+        ExprKind::Call { .. } | ExprKind::Method { .. } => Err(Diag::error(expr.span, "a const is not given the value of a call yet")
+            .note("the value of a const is found when the program is compiled")),
+        _ => Err(Diag::error(expr.span, "this is not known when the program is compiled, and a const is given its value then")
+            .note("a const is made of numbers, texts, other consts, operators, casts, and arrays, structs and enums of them")),
+    }
+}
+
 fn atomic_of(inner: Ty, span: Span) -> Res<Ty> {
     match inner {
         Ty::Int(int) if int.is_c() => Err(Diag::error(span, format!("an atomic value is changed with arithmetic, and C's `{}` has none", c_spelling(int)))
@@ -1948,6 +2255,9 @@ thread_local! {
     /// Each `CFunc<...>` written in the program, and where: checked to take and give types of
     /// C once the fields of every type are known.
     static CFUNCS: std::cell::RefCell<Vec<(Ty, Span)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The count each `[Name]` in a type stood for, by where the name is written, and the full
+    /// name of the const.
+    static SIZES: std::cell::RefCell<std::collections::BTreeMap<usize, (usize, String)>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
 }
 
 /// Why a value may not go to another task, for the messages of the thread rule.
@@ -2570,7 +2880,7 @@ const UNNAMED: usize = usize::MAX;
 /// is judged by what it borrowed.
 fn unnamed_owner(expr: &Expr) -> bool {
     match &expr.kind {
-        ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::FuncRef(_) | ExprKind::CVar(_) => false,
+        ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Const(_) => false,
         ExprKind::Borrow { .. } | ExprKind::Slice { .. } | ExprKind::Unbox(_) | ExprKind::AsSlice(_) => false,
         _ => !expr.ty.is_borrow() && !matches!(expr.ty, Ty::Void | Ty::Never | Ty::Null),
     }
@@ -2693,14 +3003,41 @@ struct Moved {
 #[derive(Default)]
 struct Scope {
     vars: Vec<Var>,
+    /// The consts written in this block so far, as written and by their full names.
+    consts: Vec<(String, String)>,
     /// Narrowings that end with this scope: variable, type before, assignment count at the time.
     narrowed: Vec<(String, Ty, u32)>,
 }
 
 type Moves = Vec<Vec<Moved>>;
 
+/// What the checker knows of the consts: the type of each, and once they are found, what each
+/// holds.
+#[derive(Default)]
+struct ConstTable {
+    types: HashMap<String, Ty>,
+    values: std::collections::BTreeMap<String, (Ty, ConstVal)>,
+    /// How many bytes each file of `embed` holds.
+    embeds: Vec<usize>,
+}
+
+impl ConstTable {
+    /// The type a use of the const has: a number, a `bool`, a `char` or a text is a value; an
+    /// array, a struct or an enum is a `read` borrow of the one value, which lasts for the run.
+    fn use_type(&self, full: &str) -> Ty {
+        match &self.types[full] {
+            ty @ (Ty::Array(..) | Ty::Struct(_) | Ty::Enum(_)) => Ty::Read(Box::new(ty.clone())),
+            ty => ty.clone(),
+        }
+    }
+}
+
 struct Checker<'a> {
     names: &'a Names,
+    consts: &'a ConstTable,
+    /// The initializer of a const is being checked: what it is made of is known when the
+    /// program is compiled.
+    in_const: bool,
     /// Structs and enums written with `: Copyable`.
     copyable: &'a HashSet<String>,
     /// Structs and enums written with `: Formattable`.
@@ -2944,8 +3281,53 @@ impl<'a> Checker<'a> {
             return Err(Diag::error(span, format!("`{name}` is {what} of the program, so a variable cannot have its name")));
         }
         self.not_hiding(name, span)?;
+        self.not_a_const(name, span)?;
         self.seen.locals.insert(span.start, (name.to_string(), ty.clone(), span));
         self.declare(name, ty, span)
+    }
+
+    /// The full name of the const a name written here means: one of a block around here, then
+    /// one of a module. A local variable of the name comes first, and none can have it.
+    fn const_named(&self, written: &str, span: Span) -> Res<Option<String>> {
+        let local = self.scopes.iter().rev().flat_map(|scope| scope.consts.iter().rev()).find(|(name, _)| name == written);
+        if let Some((_, full)) = local {
+            return Ok(Some(full.clone()));
+        }
+        Ok(self.names.full(written, span)?.filter(|full| self.names.consts.contains(full)))
+    }
+
+    /// A local never takes the name of a const it sees: in a pattern the name is the const.
+    fn not_a_const(&self, name: &str, span: Span) -> Res<()> {
+        if name == "_" || name == "this" {
+            return Ok(());
+        }
+        let Some(full) = self.const_named(name, span).ok().flatten() else { return Ok(()) };
+        let diag = Diag::error(span, format!("`{name}` is the name of a const, and a local cannot take it"))
+            .note("in a pattern the name stands for the const, so it means one thing in a function")
+            .hint("give the local another name");
+        Err(match self.names.spans.get(&full) {
+            Some(at) => diag.related(*at, "the const"),
+            None => diag,
+        })
+    }
+
+    /// The const a place is reached from, as it is written (`Masks` in `Masks[0]`), if it is one.
+    fn const_root(&self, place: &Expr) -> Option<String> {
+        let mut base = place;
+        while let ExprKind::Field { recv, .. } | ExprKind::Index { recv, .. } = &base.kind {
+            base = recv;
+        }
+        match &base.kind {
+            ExprKind::Var(name) if name != "this" && self.var_named(name).is_none() => self.const_named(name, base.span).ok().flatten().map(|_| name.clone()),
+            ExprKind::Const(full) => Some(full.split('#').next().map(|name| short_name(name).to_string()).unwrap_or_default()),
+            _ => None,
+        }
+    }
+
+    /// The error for a const written or lent to change.
+    fn const_changed(name: &str, span: Span) -> Diag {
+        Diag::error(span, format!("`{name}` is a const: what it holds is fixed when the program is compiled"))
+            .hint(format!("change a copy of it: `var copy = {name}`"))
     }
 
     /// A name never hides another: a new local may not take the name of a local or a parameter
@@ -3199,6 +3581,16 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
         let is_var = matches!(expr.kind, ExprKind::Var(_));
+        // A const: a text is the text itself, as if it were written here; anything else names it.
+        if is_var {
+            if let Some(full) = self.const_named(&written.clone(), span)? {
+                expr.kind = match (&self.consts.types.get(&full), self.consts.values.get(&full)) {
+                    (_, Some((_, ConstVal::Str(text)))) => ExprKind::Str(text.clone()),
+                    _ => ExprKind::Const(full),
+                };
+                return Ok(());
+            }
+        }
         let (ExprKind::Var(name) | ExprKind::Call { name, .. } | ExprKind::StructLit { name, .. }) = &mut expr.kind else {
             unreachable!("matched above")
         };
@@ -3964,7 +4356,7 @@ impl<'a> Checker<'a> {
                     }
                     None => match self.expr(init, None)? {
                         // A borrowed variable used as a value is the value behind it.
-                        Ty::Read(inner) | Ty::Ref(inner) if matches!(init.kind, ExprKind::Var(_)) && inner.is_copyable(self.copyable) => {
+                        Ty::Read(inner) | Ty::Ref(inner) if matches!(init.kind, ExprKind::Var(_) | ExprKind::Const(_)) && inner.is_copyable(self.copyable) => {
                             wrap(init, ExprKind::Load);
                             init.ty = (*inner).clone();
                             *inner
@@ -4013,6 +4405,9 @@ impl<'a> Checker<'a> {
                 // so a borrow that the right side reads last ends before the write (`b = Box { n
                 // = r.n + 1 }`), and a borrow the place goes through must outlive the right side.
                 let (first_use, first_clash) = (self.borrows.uses.len(), self.borrows.clashes.len());
+                if let Some(name) = self.const_root(target) {
+                    return Err(Checker::const_changed(&name, target.span));
+                }
                 // `opterr = 0`: a variable of C is an item of raw memory.
                 let cvar = match &target.kind {
                     ExprKind::Var(name) if name != "this" && self.find(name).is_none() => self.names.full(name, target.span)?.is_some_and(|full| self.names.cvars.contains(&full)),
@@ -4572,6 +4967,16 @@ impl<'a> Checker<'a> {
                 self.leave_unsafe(result)?;
             }
             StmtKind::Return(value) => self.returned(value.as_mut(), stmt_span)?,
+            // A const of the block: seen from here to the end of the block. Its value was found
+            // with the others.
+            StmtKind::Const { name, name_span, full } => {
+                if let Some(var) = self.var_named(name) {
+                    return Err(Diag::error(*name_span, format!("`{name}` is already a local variable here, and a const cannot take its name"))
+                        .related(var.at, "it is declared here"));
+                }
+                self.not_a_const(name, *name_span)?;
+                self.scopes.last_mut().expect("an open scope").consts.push((name.clone(), full.clone()));
+            }
             StmtKind::Break | StmtKind::Continue => {
                 let word = if matches!(stmt.kind, StmtKind::Break) { "break" } else { "continue" };
                 if self.loops == 0 {
@@ -5171,7 +5576,24 @@ impl<'a> Checker<'a> {
     fn place_untyped(&mut self, expr: &mut Expr) -> Res<Option<(Ty, bool)>> {
         let span = expr.span;
         self.settle(expr)?;
-        // `byte[16]`: a type name and a number in brackets build an array of zeros.
+        // `byte[16]`: a type name and a number in brackets build an array of zeros. An integer
+        // const may give the number: `byte[BlockSize]`.
+        if let ExprKind::Index { recv, index, .. } = &mut expr.kind {
+            if let (ExprKind::Var(name), ExprKind::Var(count)) = (&recv.kind, &index.kind) {
+                let is_type = Ty::from_name(name).is_some() || self.names.full(name, recv.span)?.is_some_and(|full| self.names.kinds.contains_key(&full));
+                if is_type && self.var_named(name).is_none() && self.var_named(count).is_none() {
+                    if let Some(full) = self.const_named(count, index.span)? {
+                        match self.consts.values.get(&full) {
+                            Some((_, ConstVal::Int(_, value))) => index.kind = ExprKind::Int(*value, IntTy::Nint),
+                            _ => {
+                                return Err(Diag::error(index.span, format!("`{count}` cannot give the count of an array: it is a `{}`", self.consts.types[&full]))
+                                    .note("the count of an array is a number or an integer `const`"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let ExprKind::Index { recv, index, .. } = &expr.kind {
             if let (ExprKind::Var(name), ExprKind::Int(length, _)) = (&recv.kind, &index.kind) {
                 let is_type = Ty::from_name(name).is_some() || self.names.full(name, recv.span)?.is_some_and(|full| self.names.kinds.contains_key(&full));
@@ -5612,6 +6034,28 @@ impl<'a> Checker<'a> {
 
     fn expr_untyped(&mut self, expr: &mut Expr, expected: Option<&Ty>) -> Res<Ty> {
         let span = expr.span;
+        // `read Masks`: a const array, struct or enum is lent already, for the whole run.
+        // `ref Masks` would change it.
+        if let ExprKind::Borrow { mutable, expr: inner } = &mut expr.kind {
+            if let Some(name) = self.const_root(inner) {
+                if *mutable {
+                    return Err(Checker::const_changed(&name, inner.span));
+                }
+                if matches!(inner.kind, ExprKind::Var(_)) {
+                    let inner = std::mem::replace(&mut **inner, Expr { kind: ExprKind::Null, span, ty: Ty::Void, moved: false });
+                    *expr = Expr { span, ..inner };
+                    let ty = self.expr_untyped(expr, expected)?;
+                    return match ty {
+                        Ty::Read(_) => Ok(ty),
+                        _ => {
+                            let text = &self.src[span.start..span.end];
+                            Err(Diag::error(span, format!("`{}` is a const of `{ty}`, which is copied where it is used, not lent", text.trim_start_matches("read").trim()))
+                                .hint(format!("`{}`", text.trim_start_matches("read").trim())))
+                        }
+                    };
+                }
+            }
+        }
         if let Some((ty, _)) = self.place(expr)? {
             // What lies in raw memory is plain data: reading it copies the bytes.
             if Expr::in_raw_memory(expr) {
@@ -6413,6 +6857,12 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Match { subject, arms, borrowed } => self.match_expr(subject, arms, borrowed, expected, false),
             ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => unreachable!("places are handled above"),
+            ExprKind::Const(full) => Ok(self.consts.use_type(full)),
+            ExprKind::Embed(index) => match self.in_const {
+                true => Ok(Ty::Array(Box::new(Ty::Int(IntTy::Byte)), self.consts.embeds[*index])),
+                false => Err(Diag::error(span, "`embed` is written where a const is given its value")
+                    .hint("`const byte[] Logo = embed(\"logo.gif\")`, then `Logo` where the bytes are needed")),
+            },
             // The address of a variable of C: making it touches nothing.
             ExprKind::CVar(name) => Ok(Ty::Raw(Box::new(self.names.cvar_types[name.as_str()].clone()))),
             ExprKind::Widen(..) | ExprKind::Load(_) | ExprKind::Unbox(_) | ExprKind::AsSlice(_) | ExprKind::Variant { .. } | ExprKind::FuncRef(_) | ExprKind::Constant { .. } => {
@@ -7035,6 +7485,39 @@ impl<'a> Checker<'a> {
         Ok(Vec::new())
     }
 
+    /// A name in a pattern that names a const stands for what the const holds: `Trailer` in
+    /// `match tag { Trailer => ... }`. A variant of the enum looked at, of that name, comes first.
+    fn const_patterns(&self, pattern: &mut Pattern, subject: &Ty, top: bool) -> Res<()> {
+        let span = pattern.span;
+        match &mut pattern.kind {
+            PatternKind::Variant { name, args: None, .. } | PatternKind::Bind(name) => {
+                let variant = top && matches!(peel(subject), Ty::Enum(owner) if self.enums.get(owner).is_some_and(|info| info.variants.iter().any(|(variant, _)| variant == name)));
+                if variant {
+                    return Ok(());
+                }
+                let Some(full) = self.const_named(name, span)? else { return Ok(()) };
+                pattern.kind = match &self.consts.values[&full].1 {
+                    ConstVal::Int(_, value) => PatternKind::Int(*value),
+                    ConstVal::Char(value) => PatternKind::Char(*value),
+                    ConstVal::Str(text) => PatternKind::Str(text.clone()),
+                    ConstVal::Bool(value) => PatternKind::Bool(*value),
+                    _ => {
+                        return Err(Diag::error(span, format!("`{name}` is a const of `{}`, and a pattern of a const is a number, a character, a text or a `bool`", self.consts.types[&full]))
+                            .hint(format!("compare it after `when`: `var value when value == {name}`")));
+                    }
+                };
+                Ok(())
+            }
+            PatternKind::Variant { args: Some(args), .. } => args.iter_mut().try_for_each(|arg| self.const_patterns(arg, subject, false)),
+            PatternKind::Or(alternatives) => alternatives.iter_mut().try_for_each(|alternative| self.const_patterns(alternative, subject, top)),
+            PatternKind::Range(low, high) => {
+                self.const_patterns(low, subject, false)?;
+                self.const_patterns(high, subject, false)
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// `x is Circle(r)`: looks at the value without taking it, so the names are borrows.
     /// They are seen by the code that runs only where the test holds (for `is not`, or under
     /// `!` when `flip`, where it fails), as `seen` says.
@@ -7045,6 +7528,7 @@ impl<'a> Checker<'a> {
         let ty = self.operand(subject, None)?;
         let (variants, mode) = self.enum_behind(&ty, subject.span, "`is`")?;
         *by_ref = mode == Some(Mode::Ref);
+        self.const_patterns(pattern, &ty, true)?;
         let binds = self.pattern_binds(pattern, &variants, mode.or(Some(Mode::Read)), &ty)?;
         if binds.is_empty() {
             return Ok(binds);
@@ -7143,6 +7627,7 @@ impl<'a> Checker<'a> {
             self.set_moves(&before);
             self.scopes.push(Scope::default());
             self.borrows.branches.push((node, arm_index));
+            self.const_patterns(&mut arm.pattern, &subject_ty, true)?;
             let binds = match number {
                 Some(Literal::Int(ty)) => self.int_pattern(&mut arm.pattern, ty, &subject_ty)?,
                 Some(Literal::Char) => char_pattern(&mut arm.pattern, &subject_ty)?,
@@ -10672,7 +11157,7 @@ fn changed_in<'b>(block: &'b Block, names: &mut Vec<&'b str>) {
             }
             StmtKind::Unsafe(body) => changed_in(body, names),
             StmtKind::Return(Some(expr)) | StmtKind::Expr(expr) | StmtKind::Discard(expr) => taken_in(expr, names),
-            StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
+            StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::Const { .. } => {}
         }
     }
 }
@@ -10769,6 +11254,8 @@ fn parts(expr: &Expr) -> Vec<Part<'_>> {
         | ExprKind::FuncRef(_)
         | ExprKind::CVar(_)
         | ExprKind::Constant { .. }
+        | ExprKind::Const(_)
+        | ExprKind::Embed(_)
         | ExprKind::Return(None) => {}
     }
     list
@@ -11530,7 +12017,7 @@ fn first_break(block: &Block) -> Option<Span> {
         StmtKind::Unsafe(body) => first_break(body),
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Discard(expr) | StmtKind::Let { init: expr, .. } => breaks_in(expr),
         StmtKind::Assign { target, value, .. } => breaks_in(target).or_else(|| breaks_in(value)),
-        StmtKind::Return(None) | StmtKind::Continue => None,
+        StmtKind::Return(None) | StmtKind::Continue | StmtKind::Const { .. } => None,
     })
 }
 

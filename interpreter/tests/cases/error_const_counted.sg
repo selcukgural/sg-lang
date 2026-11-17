@@ -1,0 +1,5 @@
+const int[] Masks = { 1, 2 }
+const int[] Copy = Masks
+
+void main() {
+}

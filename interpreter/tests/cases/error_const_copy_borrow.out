@@ -1,0 +1,5 @@
+error: `Size` is a const of `int`, which is copied where it is used, not lent
+  --> error_const_copy_borrow.sg:8:16
+ 8 |     var size = read Size
+   |                ^^^^^^^^^
+  hint: `Size`

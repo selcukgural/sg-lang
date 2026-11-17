@@ -1,0 +1,5 @@
+error: `Origin` is a const of `Point`, and a pattern of a const is a number, a character, a text or a `bool`
+  --> error_const_pattern_struct.sg:10:9
+ 10 |         Origin => print("origin")
+    |         ^^^^^^
+  hint: compare it after `when`: `var value when value == Origin`

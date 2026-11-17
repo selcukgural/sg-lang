@@ -1,0 +1,5 @@
+error: there is no variable named `count`
+  a const sees other consts, not variables: its value is found when the program is compiled
+  --> error_const_variable.sg:3:22
+ 3 |     const int Size = count
+   |                      ^^^^^

@@ -1,0 +1,5 @@
+const int Half = 1 / 0
+
+void main() {
+    print(Half)
+}

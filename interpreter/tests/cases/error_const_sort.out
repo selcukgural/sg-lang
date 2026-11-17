@@ -1,0 +1,5 @@
+error: `sort` changes the array, but it is reached through a `read` borrow
+  --> error_const_sort.sg:4:5
+ 4 |     Masks.sort()
+   |     ^^^^^
+  hint: take the value as `ref` instead of `read`

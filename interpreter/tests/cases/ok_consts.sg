@@ -1,0 +1,115 @@
+// Consts: numbers, texts, characters, arrays, structs and enums, known when the program is
+// compiled; a const of a block; an array whose count is a const; patterns that name consts.
+
+const int BlockSize = 64
+const int Twice = BlockSize * 2
+const long Big = (long)int.MaxValue + 1
+public const double Tau = double.Pi * 2
+const float Tenth = 0.1
+const uint[] Masks = { 0x1, 0x3, 0x7, 0xF }
+const string Greeting = "hello"
+const char Comma = ','
+const byte Tab = 9
+const bool Loud = !false
+
+struct Point : Copyable {
+    int x
+    int y
+}
+
+enum Shape : Copyable {
+    Circle(int radius)
+    Square(int side)
+    Empty
+}
+
+const Point Origin = Point { x = 1, y = 2 }
+const Shape Unit = Shape.Circle((int)Masks[1] - 2)
+const Point[] Corners = { Point { x = 0, y = 0 }, Origin, Point { x = 3, y = 4 } }
+const int Corner = Corners[2].y + Origin.x
+
+struct Ring {
+    int[BlockSize] items
+}
+
+uint sum(read uint[] items) {
+    uint total = 0
+    for item in items {
+        total += item
+    }
+    return total
+}
+
+// A const lasts for the whole run, so a borrow of it can be returned.
+read uint[] masks() {
+    return Masks
+}
+
+read Point origin() {
+    return Origin
+}
+
+string name(int n) {
+    return match n {
+        Twice => "twice"
+        BlockSize => "block"
+        _ => "other"
+    }
+}
+
+void main() {
+    var buffer = byte[BlockSize]
+    print(buffer.length())
+    var ring = Ring { items = int[BlockSize](7) }
+    print(ring.items[BlockSize - 1])
+    print(Twice)
+    print(Big)
+    print(Tau)
+    print(Tenth * 3)
+    print(Masks[2])
+    print(sum(Masks))
+    print(masks().length())
+    print(Masks)
+    print(Greeting)
+    print(Comma)
+    print(Loud)
+    print(Origin.x + Origin.y)
+    print(origin().y)
+    print(Corners[1].y)
+    print(Corner)
+    // A copy can be changed; the const stays as it is.
+    var copy = Masks
+    copy[0] = 100
+    print(copy[0])
+    print(Masks[0])
+    const int Local = Twice + 1
+    print(Local)
+    if Local > 0 {
+        const int[] Inner = { Local, Local * 2 }
+        print(Inner.length())
+        print(Inner[1])
+    }
+    match Unit {
+        Circle(r) => print(r)
+        _ => print(0)
+    }
+    print(name(128))
+    print(name(64))
+    print(name(3))
+    match "hello" {
+        Greeting => print("greeted")
+        _ => print("not greeted")
+    }
+    byte b = 9
+    match b {
+        Tab => print("tab")
+        _ => print("other")
+    }
+    match ',' {
+        Comma => print("comma")
+        _ => print("other")
+    }
+    for i in 0..Masks.length() {
+        print(Masks[i])
+    }
+}

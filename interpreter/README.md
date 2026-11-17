@@ -50,6 +50,7 @@ of `tests/Containerfile` has them.
 | Text of a collection | `print(xs)`, `$"{xs}"`: `[1, 2, 3]`, `{"ada": 36}`, `{1, 2, 3}`, when the items can be written as text |
 | `HashSet<T>` | Built in; an item is what a key of a `HashMap` can be. `HashSet<int>()`, `HashSet<int> { 1, 2 }`; `set.add(v)` gives `true` if the item was not there, `set.contains(v)`, `set.remove(v)` gives `true` if it was there, `set.length()`, `set.clear()` |
 | Arrays | `int[8] values`: a fixed number of items, kept where the value is (in the variable, inside the struct), with the length in the type. Built as `int[3] { 1, 2, 3 }` (the items), `byte[16](255)` (one value in every item) or `byte[16]` (zeros: 0, `false`, `null`). `xs[i]` to read and to write, `xs.length()`, `xs.get(i)`, `xs.indexOf(v)`, `xs.contains(v)`, `xs.sort()`, `xs.reverse()`, `==`, `print`. An array of items that can be copied is copied like a number; any other is moved |
+| Consts | `const int BlockSize = 4096`, at the top of a file (`public const` for other modules) or in a block, where it is seen to the end of the block. A number, `bool`, `char`, a text, or an array, a struct or an enum of numbers, `bool` and `char` (`: Copyable`). `const int[] Primes = { 2, 3, 5, 7 }` counts the items, `const byte[] Logo = embed("logo.gif")` holds the bytes of a file beside the source. The value is found when the program is compiled: numbers, texts, other consts, operators, casts, `MinValue` and the others, arrays, structs and variants built of them, `.length()` and an item or a field of a const; an overflow there is a compile error. An integer const gives the count of an array (`byte[BlockSize]`, `int[N](0)`), and a const of a number, a `char`, a text or a `bool` is a pattern (`match tag { Trailer => ... }`). An array, a struct or an enum is lent where it is used, for the whole run, and never changed (`var copy = Masks` copies it); in compiled code it is one `static const`, which nothing copies |
 | Slices | `read T[]` looks at items that something else owns, `ref T[]` can also write them. `read xs` and `ref xs` give one where a slice is expected, for a `List<T>` and a `T[N]`; a range gives one too: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` for a range that is written through. `s[i]`, `s.length()`, `s.get(i)`, `s.indexOf(v)`, `s.contains(v)`, `==`, `print`, `for`; `s.sort()` and `s.reverse()` through a `ref T[]`, and on a range in front of them: `xs[2..5].sort()` puts those items of `xs` in order where they are. `text.asBytes()` looks at a text as a `read byte[]`; `string.fromUtf8(bytes)` looks at bytes as text and gives a `Result<read string, TextError>` |
 | `for` over a collection | `for x in xs` hands the collection over and `x` owns each item; `for x in read xs` and `for x in ref xs` lend, and so does a collection that is already borrowed. Over a `HashMap` the variable has a `key` and a `value`; a `HashSet` is gone over by hand-over or `read`. An array is gone over like a list; a slice lends its items |
 | `is` | `if s is Circle(r) { ... }`, `if e is Add(Number(0), right) { ... }`, `if e is Add(l, _) or Mul(l, _) { ... }`, `while next() is not End { ... }`. The names reach along `&&`: `if int.parse(read text) is Ok(n) && n > 0 { ... }`, `return s is Circle(r) && r > 10`. The names of `is not` are seen where it fails: `if int.parse(read text) is not Ok(n) { return }` and `n` after it, `if r is not Ok(n) \|\| n < 0 { return }`, `else`, and after `while r is not Ok(n) { ... }` |
@@ -7127,6 +7128,51 @@ address sanitizer sees it every time. 1120 to 1123 were put to the author and ap
      delay, freed by the one that awaits it). Without the fix of 1121 the address sanitizer sees a use of
      freed memory and the thread sanitizer a race; without that of 1122 the thread sanitizer a race.
 
+Choices made in the hundred-and-third slice (consts). 1080 to 1087, 1098 and 1099 were put to the author
+before the slice and approved on 17 November 2026; they are in the decisions file ("Consts"). What building
+them asked for besides, from 1109 (1088 to 1097 are the statics of the hundred-and-fifth slice, 1100 to 1108
+the calls in a const of the hundred-and-fourth). They wait for approval:
+
+1109. **A const array, struct or enum is a `read` borrow** where it is used, of the one value, which lasts
+     for the run: `Masks[i]` reads it where it lies, `sum(Masks)` lends it as a slice, a function with no
+     borrowed parameter may return it (`read uint[] masks() { return Masks }`), and `var copy = Masks` copies
+     it as a `read` variable is copied. So writing into it, `ref Masks` and a method that changes it are
+     refused by the rules of a `read` borrow; writing and `ref` say that it is a const. A const of a number,
+     a `bool`, a `char` or a text is a value, as a number written out is; `read Size` on one is an error
+     whose hint is `Size`. A text is the text itself where it is used, as if it were written there.
+1110. **No text inside an array, a struct or an enum** yet, which 1082 had let in: an item of `string[N]` is
+     a `string`, which owns its bytes and is not `Copyable`, and the language has no type of an array of
+     `read string`. A const of one text is in; a table of texts waits for a program that needs it.
+1111. **The value of a const is found by the interpreter**, in the checker, once every initializer is checked
+     (the calls of 1100 to 1108 will take the same way). A panic on the way is a compile error that names the
+     const (`the value of \`Width\` is found when the program is compiled, and this stops it: overflow: ...`),
+     and so is a const that needs itself (`` `First` -> `Second` -> `First` ``). An overflow there is an
+     error in a release build too.
+1112. **The count of an array is found before the types**, since a field of a struct can be `byte[Size]`:
+     from the text of an integer const, made of numbers, other such consts, operators, casts to an integer
+     type, `MinValue` and `MaxValue`. A const of another kind there is an error that says why
+     (`` `Width` cannot give the count of an array: it is a `double` ``). The checker finds every const again
+     later, and the two must agree.
+1113. **A name in a pattern that names a const stands for its value**, in a `match` and after `is`, inside
+     the parentheses of a variant too; a variant of the enum looked at, of that name, comes first. Only a
+     const of a number, a `char`, a text or a `bool` is a pattern; another is an error whose hint is `when`.
+1114. **A local or a parameter does not take the name of a const it sees**, of its module or of a block
+     around it, since a pattern would read the name as the const: the rule of 92 for consts.
+1115. **`embed`** reads the file when the program is compiled, from the folder of the source file that names
+     it; a missing file, an empty one (an array has an item) and one of more than 64 MB are errors. It is
+     written only where a const is given its value (an error of the parser elsewhere), with its path written
+     out.
+1116. **In compiled code** a const of a number, a `bool` or a `char` is written where it is used; one of an
+     array, a struct or an enum is one `static const` outside the functions, defined only if the code reads
+     it, and read where it lies (`((sg_A4_uint*)&sg_k_Masks)->items[i]`). A `byte` array is kept as its bytes.
+1117. **A const nothing reads** is not an error, as a function nothing calls is not.
+1118. **A `public const`** of a module shows its type: a type the module keeps to itself is an error there, as
+     for a `public` function.
+1119. **Documents and tests**: this list, the table above, "Not here yet", "Next"; 02 ("Consts"), 04 ("Consts"
+     and "Consts, as built"), 06. Tests: `ok_consts`, 30 `error_const_*`, the program `tests/modules/consts`
+     (a const of another module, the count of an array from one, `embed`, a test) and
+     `error_const_exposes` with the module `hidden`. `cargo test` passes on macOS and on Linux in a container (359 of 1476 programs compile through C, 81 of them under the thread sanitizer, 28 of 34 programs of tests). Found by them: an array read only for its length (`buffer.length()`) left its variable unused in C, which GCC refuses; the array is now named all the same, with no cost.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -7247,6 +7293,9 @@ check off.
 
 ## Not here yet
 
+- **Of consts**: a const given the value of a call comes in the next slice (1100 to 1108); a text inside an
+  array, a struct or an enum (1110); an array of arrays, as anywhere. Statics come after the calls (1088 to
+  1097).
 - **Of Windows**, after its six slices: no thread sanitizer there (1011), and a library built from SG is not run
   under the sanitizers there (1062). Job objects, so that a program started ends with the one that started
   it (934), and services of Windows (933). A DLL a DLL of `-L` needs and that lies elsewhere is not copied
@@ -7603,4 +7652,10 @@ beside a program, and the libraries of the examples taken from vcpkg on the CI (
 and last is written: everything is tested on Windows, the program without an operating system and the
 kernel in QEMU included, a debug build no longer needs the C compiler's library for a division of 128
 bits, and the benchmarks are measured against C there too, most in its time and those that lean on
-Windows' C library several times faster (1068-1079). Next is a preview of the language (942).
+Windows' C library several times faster (1068-1079). Before a preview of the language (942), what the
+language and its library still lack beside C. Consts first, decided with the statics before them (1080-1099):
+the hundred-and-third slice is written: `const` at the top of a file and in a block, arrays whose items are
+counted, the bytes of a file with `embed`, the count of an array from a const and a const in a pattern, its
+value found when the program is compiled and kept in compiled code as one `static const` (1109-1119). Next a
+const given the value of a call, found the same way (1100-1108), then statics (1088-1097), then the lacks of
+the language and of its library measured against C23.

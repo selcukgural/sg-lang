@@ -1,0 +1,10 @@
+error: `Max` is the name of a const, and a local cannot take it
+  in a pattern the name stands for the const, so it means one thing in a function
+  --> error_const_local_name.sg:4:9
+ 4 |     var Max = 4
+   |         ^^^
+  the const:
+  --> error_const_local_name.sg:1:11
+ 1 | const int Max = 3
+   |           ^^^
+  hint: give the local another name

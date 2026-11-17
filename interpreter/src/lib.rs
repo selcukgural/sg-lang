@@ -51,6 +51,7 @@ fn parse(sources: &Sources, tests: bool) -> Result<ast::Program, Diag> {
     let mut prog = parser::parse_files(&sources.text, &files)?;
     prog.tests.retain(|test| !tests || sources.file_at(test.name_span.start).tested);
     c_files(&mut prog, sources)?;
+    embeds(&mut prog, sources)?;
     prog.lib_dirs = sources.lib_dirs.clone();
     prog.home = sources.files.first().and_then(|file| std::path::Path::new(&file.path).parent()).and_then(|folder| std::path::absolute(if folder.as_os_str().is_empty() { std::path::Path::new(".") } else { folder }).ok());
     Ok(prog)
@@ -96,6 +97,30 @@ fn c_files(prog: &mut ast::Program, sources: &Sources) -> Result<(), Diag> {
     }
     for var in &mut prog.cvars {
         find(&mut var.foreign)?;
+    }
+    Ok(())
+}
+
+/// The most bytes a file of `embed` may have: a program carries them, and its C writes each.
+pub const EMBED_LIMIT: u64 = 64 << 20;
+
+/// Reads each file `embed("...")` names, beside the file of SG it is written in.
+fn embeds(prog: &mut ast::Program, sources: &Sources) -> Result<(), Diag> {
+    for embed in &mut prog.embeds {
+        let source = &sources.file_at(embed.span.start).path;
+        let folder = std::path::Path::new(source).parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        // The path is written from the folder of the file it is in.
+        let place = folder.join(&embed.written);
+        let size = match std::fs::metadata(&place) {
+            Ok(found) if found.is_file() => found.len(),
+            _ => return Err(Diag::error(embed.span, format!("there is no file `{}` beside this file", embed.written)).note(format!("it is looked for at {}", place.display()))),
+        };
+        if size > EMBED_LIMIT {
+            return Err(Diag::error(embed.span, format!("`{}` has {size} bytes, and `embed` takes a file of at most 64 MB", embed.written))
+                .note("the program carries the bytes, and so does the C it is compiled from"));
+        }
+        let bytes = std::fs::read(&place).map_err(|error| Diag::error(embed.span, format!("`{}` cannot be read: {error}", embed.written)))?;
+        embed.bytes = Some(bytes.into());
     }
     Ok(())
 }

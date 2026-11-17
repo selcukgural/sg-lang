@@ -554,7 +554,7 @@ pub(crate) fn walk_stmt<'a>(stmt: &'a Stmt, each: &mut dyn FnMut(&'a Expr), lock
                 walk_expr(value, each, lock);
             }
         }
-        StmtKind::Break | StmtKind::Continue => {}
+        StmtKind::Break | StmtKind::Continue | StmtKind::Const { .. } => {}
         StmtKind::Expr(value) | StmtKind::Discard(value) => walk_expr(value, each, lock),
     }
 }

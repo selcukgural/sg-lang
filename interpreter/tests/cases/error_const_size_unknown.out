@@ -1,0 +1,4 @@
+error: there is no const named `Width`
+  --> error_const_size_unknown.sg:2:10
+ 2 |     byte[Width] cells
+   |          ^^^^^
