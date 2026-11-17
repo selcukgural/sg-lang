@@ -2,9 +2,10 @@
 // connection: the server is a task of this program, as in `curl.c` a thread. Each piece of the
 // body is added to a list by the callback, through `Memory.view`, as `curl.c` copies it with
 // `memcpy`.
-extern "curl" {
+// libcurl is `curl` on Linux and macOS and `libcurl` of vcpkg on Windows; its `long` is `CLong`.
+extern "curl", "libcurl" {
     struct CURL
-    int curl_global_init(long flags)
+    int curl_global_init(CLong flags)
     void curl_global_cleanup()
     raw CURL curl_easy_init()
     void curl_easy_cleanup(raw CURL handle)
@@ -50,7 +51,7 @@ Result<void, IoError> main() {
     var address = $"http://127.0.0.1:{listener.port()}/".toString()
     var url = CString.from(read address) ?? panic("no zero byte")
     var server = Task.run(serve, listener, count)
-    _ = unsafe curl_global_init((long)3)
+    _ = unsafe curl_global_init(3)
     raw CURL handle = unsafe curl_easy_init()
     var got = Got { body = List<byte>() }
     unsafe {

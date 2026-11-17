@@ -8,8 +8,6 @@
 //! is missing the test fails and says what to install, so that a check that did not run is never
 //! taken for one that passed. To regenerate the expected output: `UPDATE_GOLDEN=1 cargo test`
 
-mod pending;
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -24,17 +22,34 @@ const MACHINE: [&str; 3] = ["-mcmodel=medany", "-march=rv64gc", "-mabi=lp64d"];
 
 const HOW: &str = "the kernel's test needs a Clang that knows RISC-V (`CC`, or `clang` on the path; Apple's knows only its own), LLD and QEMU: \
 on macOS `brew install llvm lld qemu`, then `CC=$(brew --prefix llvm)/bin/clang PATH=$(brew --prefix lld)/bin:$PATH cargo test`; \
-on Debian or Ubuntu `apt install clang lld qemu-system-misc` (the image of `tests/Containerfile` has them)";
+on Debian or Ubuntu `apt install clang lld qemu-system-misc` (the image of `tests/Containerfile` has them); \
+on Windows LLVM's Clang has them all, and QEMU comes with `winget install SoftwareFreedomConservancy.QEMU`";
 
+/// The Clang of `CC`, or `clang`; on Windows the one `sg build` finds.
 fn clang() -> String {
+    if cfg!(windows) {
+        return sg::cc::compiler().unwrap_or_else(|_| "clang".to_string());
+    }
     std::env::var("CC").ok().filter(|cc| !cc.is_empty()).unwrap_or_else(|| "clang".to_string())
+}
+
+/// QEMU's machine of RISC-V: the one of the path, or on Windows the one its installer puts in its
+/// folder, which it does not add to the path.
+fn qemu() -> std::ffi::OsString {
+    const NAME: &str = "qemu-system-riscv64";
+    let installed = Path::new(r"C:\Program Files\qemu").join(format!("{NAME}.exe"));
+    let on_path = Command::new(NAME).arg("--version").output().is_ok_and(|ran| ran.status.success());
+    match cfg!(windows) && !on_path && installed.exists() {
+        true => installed.into_os_string(),
+        false => NAME.into(),
+    }
 }
 
 /// Runs QEMU on `elf`, with `extra` arguments, for at most 60 seconds: what the serial port
 /// showed and the code QEMU ended with.
 fn boot(elf: &Path, extra: &[&str], out: &Path) -> (String, Option<i32>) {
     let file = std::fs::File::create(out).unwrap();
-    let mut qemu = Command::new("qemu-system-riscv64")
+    let mut qemu = Command::new(qemu())
         .args(["-machine", "virt", "-bios", "none", "-m", "128M", "-nographic", "-kernel"])
         .arg(elf)
         .args(extra)
@@ -61,10 +76,6 @@ fn boot(elf: &Path, extra: &[&str], out: &Path) -> (String, Option<i32>) {
 
 #[test]
 fn boots_in_qemu() {
-    if let Some(why) = pending::waits_on_windows("kernel.rs") {
-        eprintln!("kernel.rs waits on Windows: {why}");
-        return;
-    }
     let cc = clang();
     let work = root().join("target").join("kernel-test");
     let _ = std::fs::remove_dir_all(&work);
@@ -76,7 +87,7 @@ fn boots_in_qemu() {
     assert!(knows.is_ok_and(|made| made.status.success()), "`{cc}` does not compile for RISC-V\n{HOW}");
     let linked = Command::new(&cc).args(["--target=riscv64-unknown-elf", "-nostdlib", "-fuse-ld=lld", "-Wl,-e,f", "-o"]).arg(work.join("probe.elf")).arg(work.join("probe.o")).output().unwrap();
     assert!(linked.status.success(), "`{cc}` cannot link with LLD: {}\n{HOW}", String::from_utf8_lossy(&linked.stderr));
-    assert!(Command::new("qemu-system-riscv64").arg("--version").output().is_ok_and(|ran| ran.status.success()), "no `qemu-system-riscv64`\n{HOW}");
+    assert!(Command::new(qemu()).arg("--version").output().is_ok_and(|ran| ran.status.success()), "no `qemu-system-riscv64`\n{HOW}");
 
     let sg_bin = env!("CARGO_BIN_EXE_sg");
     let example = root().join("examples/kernel");
@@ -127,6 +138,7 @@ fn boots_in_qemu() {
         assert!(lines.len() >= 5, "release: {release}: {said}");
         assert_eq!(lines[2], "reading where nothing is", "release: {release}: {said}");
         assert!(lines[3].starts_with("panic: unexpected trap: a fault of a load at 0x8000"), "release: {release}: {said}");
-        assert!(lines[4].trim_start().starts_with("--> examples/kernel/main.sg:"), "release: {release}: {said}");
+        // On Windows the file is joined to the folder `sg build` was given with `\`.
+        assert!(lines[4].trim_start().replace('\\', "/").starts_with("--> examples/kernel/main.sg:"), "release: {release}: {said}");
     }
 }

@@ -103,9 +103,10 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     // for the math functions (`sqrt`, `fmod`), `-pthread` for the threads of tasks.
     // A machine named by its target is compiled for by Clang, which knows them all: the one `CC`
     // names, as C's builds have it, or the first `clang` of the path.
+    // On Windows the compiler is Clang anyway.
     let compiler = match machine.target {
-        Some(_) => std::env::var("CC").ok().filter(|cc| !cc.is_empty()).unwrap_or_else(|| "clang".to_string()),
-        None => match sg::cc::compiler() {
+        Some(_) if !cfg!(windows) => std::env::var("CC").ok().filter(|cc| !cc.is_empty()).unwrap_or_else(|| "clang".to_string()),
+        _ => match sg::cc::compiler() {
             Ok(compiler) => compiler,
             Err(error) => {
                 let _ = std::fs::remove_file(&c_file);
@@ -386,7 +387,7 @@ fn main() -> ExitCode {
     // A word that is not UTF-8 is left as it is for the program, which checks it.
     let words: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let args: Vec<String> = words.iter().map(|word| word.to_string_lossy().into_owned()).collect();
-    const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a, .lib) or shared (.so, .dylib, .dll), and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding]\n                                                                  prints the C";
+    const USAGE: &str = "usage: sg [-L folder]... <file.sg | folder> [args...]              runs the program; the words after it are its command line\n       sg test <file.sg | folder> [--compiled] [-L folder]...     runs its tests; with a folder, those of every module in it\n       sg build <file.sg | folder> [--release] [--test] [-o out]  compiles it through C; with --test, the program that runs its tests\n       sg build ... -L folder                                     looks for the libraries of `extern` blocks there too\n       sg build <file.sg | folder> --library|--shared [--release] [-o out]\n                                                                  a library C calls, static (.a, .lib) or shared (.so, .dylib, .dll), and its header\n       sg build <file.sg | folder> --freestanding [--target triple] [--release] [-o out.o] [-- C flags...]\n                                                                  an object for a machine without an operating system\n       sg emit-c <file.sg | folder> [--release] [--test | --library | --freestanding] [-L folder]...\n                                                                  prints the C";
     let usage = || {
         eprintln!("{USAGE}");
         ExitCode::from(2)
@@ -416,10 +417,9 @@ fn main() -> ExitCode {
             // What follows `--` is C's, `-L` too.
             let split = rest.iter().position(|word| word == "--").unwrap_or(rest.len());
             let mut ours = rest[..split].to_vec();
+            // `emit-c` takes the folders too: which name of an `extern` block's library is found
+            // there decides what the first line of the C says to link.
             let Some(dirs) = take_folders(&mut ours) else { return ExitCode::from(2) };
-            if command == "emit-c" && !dirs.is_empty() {
-                return usage();
-            }
             ours.extend(rest[split..].iter().cloned());
             // A debug build checks integer overflow; `--release` wraps and optimises.
             let (mut path, mut out, mut release, mut made, mut twice) = (None, None, false, Made::Program, false);

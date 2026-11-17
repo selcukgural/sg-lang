@@ -1,6 +1,10 @@
 /* The same counters written by hand in C: four threads with a stack of 8 MB each, and the
    `__atomic` builtins with the same orders. */
+#if defined(_WIN32)
+#include "windows/posix.h"
+#else
 #include <pthread.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 

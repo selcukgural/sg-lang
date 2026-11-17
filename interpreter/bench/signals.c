@@ -1,8 +1,37 @@
 /* The C of `signals`: a handler that writes the signal into a pipe, and the program reading the
-   pipe after each `raise`, a hundred thousand times. */
+   pipe after each `raise`, a hundred thousand times. Windows has no `SIGUSR1` and no `sigaction`:
+   there C's own `signal` and `raise` with `SIGTERM`, the handler set again each time, as Windows
+   takes it away before it calls it, and a pipe of C's library. */
 #if defined(__linux__)
 #define _GNU_SOURCE
 #endif
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#include <signal.h>
+#include <stdio.h>
+
+static int ends[2];
+
+static void handler(int number) {
+    unsigned char byte = (unsigned char)number;
+    _write(ends[1], &byte, 1);
+    signal(SIGTERM, handler);
+}
+
+int main(void) {
+    if (_pipe(ends, 256, _O_BINARY) != 0) return 1;
+    signal(SIGTERM, handler);
+    long taken = 0;
+    for (int i = 0; i < 100000; i++) {
+        raise(SIGTERM);
+        unsigned char byte = 0;
+        if (_read(ends[0], &byte, 1) == 1 && byte == SIGTERM) taken++;
+    }
+    printf("%ld\n", taken);
+    return 0;
+}
+#else
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -39,3 +68,4 @@ int main(void) {
     printf("%ld\n", taken);
     return 0;
 }
+#endif

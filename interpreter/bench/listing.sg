@@ -1,5 +1,5 @@
 // A folder of ten thousand files listed a hundred times with `Directory.list`: the names in the
-// order of their bytes, each with its kind. The folder is made by `run.sh`.
+// order of their bytes, each with its kind. The folder is made by `run.py`.
 Result<void, IoError> main() {
     long bytes = 0
     long files = 0

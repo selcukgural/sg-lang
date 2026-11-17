@@ -2,7 +2,7 @@
 // the database` (some with a `café`, some ended by `\r\n`), 125 MB, read with
 // `Stdin.readLine` into one text that is used again for every line. Each line is checked
 // to be UTF-8 as it is read. The lines, their bytes, the longest one and the lines that start
-// with `ERROR` are counted. `run.sh` gives the input (`lines.in`).
+// with `ERROR` are counted. `run.py` gives the input (`lines.in`).
 Result<void, IoError> main() {
     string line = ""
     long lines = 0

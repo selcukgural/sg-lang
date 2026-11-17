@@ -1,7 +1,11 @@
 /* The same queue written by hand in C: Vyukov's bounded queue for many producers and many
    consumers, with the `__atomic` builtins and the same orders, four threads that push and four
    that take, each with a stack of 8 MB. */
+#if defined(_WIN32)
+#include "windows/posix.h"
+#else
 #include <pthread.h>
+#endif
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

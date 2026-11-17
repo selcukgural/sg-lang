@@ -3,21 +3,25 @@
 #if defined(__linux__)
 #define _GNU_SOURCE
 #endif
+#if defined(_WIN32)
+#include "windows/posix.h"
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
-enum { CLIENTS = 8, ROUNDS = 20000, SIZE = 64 };
+enum { CLIENTS = 8, ROUNDS = 20000, MESSAGE = 64 };
 static int port;
 
 static void* echo(void* p) {
     int fd = (int)(long)p;
-    char buffer[SIZE];
+    char buffer[MESSAGE];
     for (;;) {
         ssize_t n = recv(fd, buffer, sizeof buffer, 0);
         if (n <= 0) break;
@@ -49,17 +53,17 @@ static void* client(void* p) {
     struct sockaddr_in at = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port) };
     at.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (connect(fd, (struct sockaddr*)&at, sizeof at) != 0) { perror("connect"); exit(1); }
-    unsigned char message[SIZE], buffer[SIZE];
+    unsigned char message[MESSAGE], buffer[MESSAGE];
     memset(message, 7, sizeof message);
     for (int r = 0; r < ROUNDS; r++) {
-        if (send(fd, message, sizeof message, 0) != SIZE) { perror("send"); exit(1); }
+        if (send(fd, message, sizeof message, 0) != MESSAGE) { perror("send"); exit(1); }
         size_t got = 0;
-        while (got < SIZE) {
-            ssize_t n = recv(fd, buffer + got, SIZE - got, 0);
+        while (got < MESSAGE) {
+            ssize_t n = recv(fd, buffer + got, MESSAGE - got, 0);
             if (n <= 0) { perror("recv"); exit(1); }
             got += (size_t)n;
         }
-        *sum += buffer[SIZE - 1];
+        *sum += buffer[MESSAGE - 1];
     }
     close(fd);
     return NULL;
@@ -67,8 +71,10 @@ static void* client(void* p) {
 
 int main(void) {
     int listener = socket(AF_INET, SOCK_STREAM, 0);
+#if !defined(_WIN32)
     int one = 1;
     setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+#endif
     struct sockaddr_in at = { .sin_family = AF_INET, .sin_port = 0 };
     at.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     socklen_t len = sizeof at;

@@ -4,14 +4,18 @@
 #if defined(__linux__)
 #define _GNU_SOURCE
 #endif
+#if defined(_WIN32)
+#include "windows/posix.h"
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #define CLIENTS 8
 #define ROUNDS 20000

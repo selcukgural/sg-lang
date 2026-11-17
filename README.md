@@ -127,8 +127,10 @@ time of C; 1.00 is the same speed):
 | Printing two million structs | 0.57 |
 
 The hash table is slower because it uses a keyed hash by default, which protects against
-crafted keys; with a plain hash it is 0.99. These are small programs on one machine, not
-proof. All the numbers, and how they were taken, are in the
+crafted keys; with a plain hash it is 0.99. The same programs were measured on Windows 11 too
+(64-bit Arm, in a virtual machine): most take the time of C there as well, and those that lean on
+Windows' C library (`printf`, `fgets`) are several times faster in SG. These are small programs on
+two machines, not proof. All the numbers, and how they were taken, are in the
 [interpreter README](interpreter/README.md#the-c-back-end).
 
 ## Try it
@@ -216,7 +218,10 @@ as it reads them back and a batch file only by its extension, its arguments esca
 and the console closed come as `Interrupt` and `Terminate`. The fifth is written: C runs there, a DLL is
 looked for only beside the program, in the folders it is given and in the system's, a folder of SG is built
 into a `.lib` or a `.dll` that a program of C links, and the examples of zlib, SQLite and curl take their
-libraries from vcpkg.
+libraries from vcpkg. The sixth and last is written: everything is tested there, the program without an
+operating system and the kernel in QEMU included, and the benchmarks are measured against C on Windows too:
+most take the time of C, and those that lean on Windows' C library (`printf`, `fgets`, its wide
+characters) are several times faster in SG. A preview of the language comes next.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is

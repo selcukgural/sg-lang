@@ -17,8 +17,13 @@ cargo test
 cargo run -- build examples/primes.sg --release # the same as a release build: optimised, overflow wraps
 cargo run -- build examples/bare --freestanding # an object for a machine without an operating system
 examples/kernel/run.sh                          # a RISC-V kernel booted in QEMU (Clang, LLD and QEMU)
-sh bench/run.sh                                 # compiled SG against C written by hand
+python3 bench/run.py                            # compiled SG against C written by hand
 ```
+
+On Windows the same (but `examples/kernel/run.sh`, a script of `sh`), with LLVM's Clang (`winget install LLVM.LLVM`) and the Build Tools of Visual Studio;
+the examples of zlib, SQLite and curl and their benchmarks take their libraries from vcpkg (`-L` for its
+`lib` and `bin`, `CPATH` for its `include`), and the kernel's test QEMU
+(`winget install SoftwareFreedomConservancy.QEMU`, which goes to `C:\Program Files\qemu`).
 
 `cargo test` boots that kernel in QEMU too (`tests/kernel.rs`), so it needs a Clang that knows RISC-V
 (`CC`, or `clang`), LLD and `qemu-system-riscv64`, and fails, saying what to install, without them. On
@@ -59,7 +64,7 @@ of `tests/Containerfile` has them.
 | The layout of C | `union Bits { uint word` / `float number }` holds one field at a time in the same bytes: built with one (`Bits { number = 1.5 }`), written whole (`bits.word = 3`), read inside `unsafe` (`unsafe bits.word`), never lent. `uint version : 4` is a bit field of a struct, signed or not, `bool` too, and `uint _ : 4` leaves bits empty; a value that does not fit is a panic, as overflow is (the lowest bits in a release build). `packed struct Header { ... }` has no padding, and its fields are copied out, not lent. `align(64) struct Slot { ... }` lies at a multiple of 64 bytes wherever it is kept, on the heap too. Each is laid out as C lays it out on the machine, Windows' rules for bit fields included. `Header.fromBytes(bytes)` reads a struct of integers, fractions, bit fields and unions out of exactly as many bytes as it takes, with no `unsafe` (`examples/headers`: a BMP header and an IPv4 header) |
 | C calling SG | `export int compareInts(raw void a, raw void b) { ... }` is a function C calls by the name written, without its module: it takes and gives only the types C has (integers, `float`, `double`, `bool`, `raw T`, `CFunc`, structs of plain data by value), and SG calls it by its name too. `CFunc<raw void, raw void, int>` is a pointer to a function as C calls it, plain data that may be `null`: the name of an `export` function or of a function of C is one (`unsafe qsort((raw void)items, n, 4, compareInts)`, `CFunc<int, int> f = abs`), `unsafe (CFunc<int, int>)p` takes one from a `raw void` (`dlsym`), `(raw void)f` gives it back, and every call through one is inside `unsafe`; calling a `null` one is a panic. The state a callback reaches goes through C's `void*`: `unsafe Memory.addressOf(ref state)` gives the address of a variable or a field, and `unsafe (ref State)data` (or `read`) lends it again inside the callback; the interpreter keeps the addresses it gave and panics on a wrong type, a value that ended or moved, or an address it did not give. A C file of the program calls an `export` function by its name. A panic inside one ends the process with its message, since nothing unwinds through C; the interpreter runs one only on a thread that is in a call of C, and compiled code on any thread. A `lock` block does not call C when an `export` function waits. A struct or an enum of SG that is not plain data goes to C by its address: an `export` function gives it as `T*` (C keeps it), takes it back as `T*` or `T*?` (it ends there; `T*?` takes `NULL`), and is lent it as `read T` or `ref T` for the call; `read CString` is C's `const char*`, which `string.fromCString(text)` copies with no `unsafe`. `NULL` where none is taken is a panic; the interpreter also keeps every address it gave and panics on one it did not give, of another type, given back already, or lent against the rules of borrowing |
 | A library of SG for C | `sg build folder --library` gives `libfolder.a`, `--shared` gives `libfolder.so` (`.dylib` on macOS), each with `folder.h`; on Windows `folder.lib`, and `folder.dll` with its import library `folder.dll.lib`, the header of its `export` functions: the types C holds by their address declared without fields (`typedef struct Calculator Calculator;`), plain structs laid out as SG lays them out, pointers to functions written out, `extern "C"` for C++ and a macro for Windows' DLLs. A library has no `main` and at least one `export` function; only those are seen from outside, so two libraries of SG live in one program, each with its runtime, which starts what it needs on first use from any thread. A panic aborts. A shared library is not unloaded. `examples/calclib` is a calculator called from `main.c` |
-| Without an operating system | `sg build folder --freestanding` gives `folder.o` for a kernel, a boot loader or a device: no `main`, the code that starts the machine calls the `export` functions; `--target riscv64-unknown-elf` compiles it with Clang for that machine, and what follows `--` goes to the C compiler. A panic gives its message to the program's `void onPanic(read string message)`, after which the processor waits; memory comes from its `raw byte allocate(nuint size, nuint align)` and goes back through `void release(raw byte block, nuint size, nuint align)`, and a program without them allocates nothing, which the build checks statement by statement. What needs a system (`print`, files, the clock, tasks, `HashMap`, `<math.h>`) is a compile error where it is written, also through a function of the language's own module. The object takes nothing of C's library: what the runtime used of it is written in, and `memcpy` and its kin are weak functions of its own. `examples/bare` runs with a machine of this computer |
+| Without an operating system | `sg build folder --freestanding` gives `folder.o` for a kernel, a boot loader or a device: no `main`, the code that starts the machine calls the `export` functions; `--target riscv64-unknown-elf` compiles it with Clang for that machine, and what follows `--` goes to the C compiler. A panic gives its message to the program's `void onPanic(read string message)`, after which the processor waits; memory comes from its `raw byte allocate(nuint size, nuint align)` and goes back through `void release(raw byte block, nuint size, nuint align)`, and a program without them allocates nothing, which the build checks statement by statement. What needs a system (`print`, files, the clock, tasks, `HashMap`, `<math.h>`) is a compile error where it is written, also through a function of the language's own module. The object takes nothing of C's library: what the runtime used of it is written in, and `memcpy` and its kin are weak functions of its own. `examples/bare` runs with a machine of this computer, on Linux, macOS and Windows; on Windows the object asks for no library of C either |
 | A kernel | `examples/kernel` is a kernel for RISC-V that QEMU's `virt` machine boots in machine mode, with no firmware: it writes to the serial port, takes five interrupts of the timer and powers the machine off. The serial port, the timer and the device that powers off are driven in SG with `Memory.readVolatile` and `writeVolatile`; what SG has no words for (the start of the core, the vector of its traps, its own registers and `wfi`) is the C file beside it, compiled into the same object. The vector hands `onTrap` the kernel's state through `mscratch`, and the interrupt counts in an `atomic ulong`. An unexpected trap is a panic told on the serial port. `sg build` takes the Clang `CC` names; the object links alone, with nothing of the C compiler's library, and `--gc-sections` leaves out what nothing calls |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads, each with a queue of its own that the others steal from. A method is async too (`public async int total(read this)`): one that lends `this` is awaited where it is written, one that takes it by value may start as a task; `create`, `format`, `equals`, `hash` and `compare` are not async |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
@@ -443,7 +448,7 @@ A debug build (`sg build file.sg`) checks integer overflow and is not optimised;
 debug build; a cast that does not fit follows the same rule. An index or a range outside a text, division by
 zero, `assert` and `panic` stop the program in every build.
 
-Measured (`sh bench/run.sh`, Apple clang 21 on arm64, best of five, `-O2` for all three; the C is written by
+Measured (`python3 bench/run.py`, Apple clang 21 on arm64, best of five, `-O2` for all three; the C is written by
 hand with no checks):
 
 | Program | SG, release | SG, overflow checked | C | release / C |
@@ -502,6 +507,103 @@ hand with no checks):
 | `atomics`: four tasks add to two counters five million times each, one sequentially consistent and one `Relaxed` (the C is pthreads and the `__atomic` builtins) | 0.274 s | 0.256 s | 0.268 s | 1.02 |
 | `queue`: four tasks push 500,000 numbers each through a queue without locks of 1024 places while four take them out (the C is the same queue with pthreads and `__atomic`) | 0.475 s | 0.456 s | 0.341 s | 1.39 |
 | `library`: a program of C calls a static library built from SG fifty million times through a handle (`ref Stats`), then hashes 256 MB of its own bytes with it through `Memory.view` (the C is the same program linked against the same library written in C) | 0.506 s | 0.507 s | 0.503 s | 1.01 |
+
+Measured on Windows (`python3 bench/run.py`, the hundred-and-second slice): Windows 11 on 64-bit Arm in a
+virtual machine on the Mac of the table above, Clang 23 with C's library in the program (`/MT`, as `sg build`
+links), best of five after a run that is not timed, which also leaves out the first start of a new program
+(which on Windows took seconds now and then; why was not looked into); `spawn`, `spawnasync`, `capture`,
+`pipelines` and `pipesasync` are one timed run each (`--runs 1`), since five thousand starts take over twenty
+seconds there. The last column is the same ratio on macOS, from the table above or from the program's
+choice. Windows on x86-64 is not measured: there is no such machine here, and the machines of the CI are
+shared and give no steady numbers.
+
+| Program | SG, release | SG, overflow checked | C | release / C | on macOS |
+|---|---|---|---|---|---|
+| `fib` | 0.276 s | 0.393 s | 0.273 s | 1.01 | 0.98 |
+| `primes` | 0.488 s | 0.475 s | 0.471 s | 1.04 | 0.99 |
+| `collatz` | 0.339 s | 0.540 s | 0.340 s | 1.00 | 1.00 |
+| `words` | 1.155 s | 1.094 s | 1.100 s | 1.05 | 1.02 |
+| `list` | 0.433 s | 0.444 s | 0.431 s | 1.00 | 1.01 |
+| `expr` | 0.342 s | 0.346 s | 0.338 s | 1.01 | 1.02 |
+| `parse` | 0.286 s | 0.315 s | 0.284 s | 1.01 | 0.99 |
+| `vector` | 2.117 s | 2.371 s | 2.114 s | 1.00 | 1.02 |
+| `counts` | 0.408 s | 0.404 s | 0.343 s | 1.19 | 1.20 |
+| `show` | 3.013 s | 2.975 s | 8.063 s | 0.37 | 0.57 |
+| `lookup` | 0.501 s | 0.488 s | 0.483 s | 1.04 | 1.01 |
+| `buffer` | 0.287 s | 0.300 s | 0.287 s | 1.00 | 0.99 |
+| `bits` | 0.339 s | 0.303 s | 0.369 s | 0.92 | 0.79 |
+| `hash` | 0.132 s | 0.134 s | 0.131 s | 1.01 | 1.00 |
+| `nbody` | 0.669 s | 0.669 s | 0.673 s | 0.99 | 0.97 |
+| `numbers` | 0.222 s | 0.225 s | 0.498 s | 0.45 | 0.95 |
+| `floats` | 0.257 s | 0.263 s | 0.733 s | 0.35 | 0.33 |
+| `fields` | 1.349 s | 1.358 s | 1.487 s | 0.91 | 1.02 |
+| `lines` | 0.072 s | 0.098 s | 0.454 s | 0.16 | 0.82 |
+| `copy` | 0.261 s | 0.304 s | 0.936 s | 0.28 | 0.83 |
+| `bytes` | 0.061 s | 0.059 s | 0.064 s | 0.95 | 0.94 |
+| `table` | 3.130 s | 3.098 s | 3.327 s | 0.94 | 0.89 |
+| `blocks` | 0.107 s | 0.120 s | 0.117 s | 0.91 | 1.00 |
+| `keywords` | 0.233 s | 0.234 s | 0.216 s | 1.08 | 1.03 |
+| `classes` | 0.209 s | 0.269 s | 0.234 s | 0.89 | 0.87 |
+| `rewrite` | 0.575 s | 0.625 s | 0.720 s | 0.80 | 0.94 |
+| `tree` | 0.194 s | 0.244 s | 0.114 s | 1.71 | 1.53 |
+| `tasks` | 0.121 s | 0.189 s | 0.123 s | 0.99 | 1.00 |
+| `async` | 0.236 s | 0.354 s | 0.208 s | 1.14 | 1.08 |
+| `asynclines` | 0.153 s | 0.171 s | 0.458 s | 0.33 | 1.28 |
+| `tasklist` | 0.534 s | 0.746 s | 0.445 s | 1.20 | 1.24 |
+| `asynccopy` | 0.384 s | 0.434 s | 0.920 s | 0.42 | 1.04 |
+| `echo` | 0.861 s | 0.850 s | 0.769 s | 1.12 | 0.89 |
+| `echosync` | 0.873 s | 0.778 s | 0.769 s | 1.13 | 0.99 |
+| `echowork` | 0.456 s | 0.457 s | 0.551 s | 0.83 | 1.02 |
+| `netlines` | 0.096 s | 0.132 s | 0.111 s | 0.86 | 1.14 |
+| `ring` | 0.343 s | 0.342 s | 0.343 s | 1.00 | 1.00 |
+| `crc` | 2.800 s | 2.798 s | 2.798 s | 1.00 | 0.99 |
+| `deflate` | 1.312 s | 1.311 s | 1.279 s | 1.03 | 1.04 |
+| `clock` | 0.237 s | 0.228 s | 0.236 s | 1.01 | 1.01 |
+| `dates` | 0.123 s | 0.303 s | 0.106 s | 1.16 | 0.29 |
+| `rng` | 0.115 s | 0.115 s | 0.115 s | 1.00 | 1.00 |
+| `secure` | 0.137 s | 0.137 s | 0.139 s | 0.98 | 1.00 |
+| `listing` | 0.316 s | 0.316 s | 0.276 s | 1.14 | 0.99 |
+| `status` | 11.688 s | 11.795 s | 15.677 s | 0.75 | 1.00 |
+| `spawn` | 22.829 s | 22.798 s | 22.761 s | 1.00 | 0.70 |
+| `capture` | 1.096 s | 1.279 s | 1.337 s | 0.82 | 1.49 |
+| `pipelines` | 0.091 s | 0.113 s | 0.502 s | 0.18 | 0.85 |
+| `pipesasync` | 0.153 s | 0.166 s | 0.507 s | 0.30 | 1.03 |
+| `spawnasync` | 22.644 s | 23.007 s | 22.968 s | 0.99 | 0.71 |
+| `case` | 0.176 s | 0.179 s | 5.273 s | 0.03 | 0.23 |
+| `letters` | 0.295 s | 0.376 s | 4.692 s | 0.06 | 0.10 |
+| `udpecho` | 1.089 s | 1.080 s | 1.365 s | 0.80 | 1.19 |
+| `udpechosync` | 1.299 s | 1.306 s | 1.284 s | 1.01 | 1.00 |
+| `inline` | 1.015 s | 1.012 s | 1.012 s | 1.00 | 1.03 |
+| `callback` | 0.914 s | 0.925 s | 0.913 s | 1.00 | 1.00 |
+| `sqlite` | 0.300 s | 0.301 s | 0.301 s | 1.00 | 1.00 |
+| `curl` | 0.366 s | 0.367 s | 0.365 s | 1.00 | 1.02 |
+| `signals` | 0.008 s | 0.007 s | 0.246 s | 0.03 | 1.27 |
+| `bitfields` | 0.371 s | 0.335 s | 0.352 s | 1.05 | 0.91 |
+| `atomics` | 0.226 s | 0.212 s | 0.260 s | 0.87 | 1.02 |
+| `queue` | 0.247 s | 0.250 s | 0.255 s | 0.97 | 1.39 |
+| `library` | 0.582 s | 0.576 s | 0.568 s | 1.02 | 1.01 |
+| `kernel` (size) | 5168 B | | 2236 B | 2.31 | 2.31 |
+
+The C is the same program wherever it can be. Where POSIX has a function Windows has not, the C takes
+Windows' own (`bench/windows/posix.h`): threads of `_beginthreadex` and locks of `SRWLOCK`, as SG's runtime
+has them there; Winsock; `getline` written over `fgets`, and the input read as bytes; `popen` through
+`cmd.exe`. `clock` reads `QueryPerformanceCounter`, `secure` calls `BCryptGenRandom`, `listing` lists with
+`FindFirstFileExW`, `spawn` and `capture` start `CreateProcessW`, `netlines` cuts its lines out of what
+`recv` gives (Windows' C library cannot open a `FILE` over a socket), and `signals` is C's `signal` and
+`raise` with `SIGTERM` and a pipe of C's library, since Windows has no `SIGUSR1`. `dates` takes the moments
+apart by hand (Howard Hinnant's `civil_from_days`), since `gmtime_s` refuses a moment before 1970: so on
+Windows it is the same algorithm in both, where on macOS it is the C library's `gmtime_r`. Windows has no
+`cat` and no `true`, so `run.py` builds both from `bench/windows` and puts them first on `PATH`, for SG and
+C alike. `case` is compared by the size of its text only: its C maps a character to one by the tables of
+the C library, and Windows' writes three bytes more each line.
+
+Most of the rest is the time of C, as on macOS. Where SG is much faster, the difference is Windows' C
+library: `printf` (`show`, `numbers`, `floats`), `fgets` (`lines`, `copy`, `asynccopy`, `pipelines`,
+`pipesasync`) and the functions of wide characters (`case`, `letters`) are several times slower there than
+on macOS, and SG uses none of them. `signals` is 0.03 because `Signals.raise` on Windows hands the signal on
+inside the program, where C's `raise` calls the handler, which writes into a pipe. Where SG is slower:
+`tree`, `counts`, `async` and `tasklist` as on macOS; `dates`, `listing`, `echo` and `echosync` on Windows
+only, in "Slower than C" below.
 
 A release build runs the three integer programs in the time of C. The "overflow checked" column is what that
 check alone costs, and why the rule became Rust's on 12 November 2026. `words` is the first program with
@@ -6936,6 +7038,71 @@ on the branch `windows`. 1050 to 1067 were put to the author before the slice an
      SQLite and curl left to the CI, which has their libraries; the whole of `cargo test` on Windows is the
      CI's. New: `tests/modules/cvariables`, five `.windows.out`.
 
+Choices made in the hundred-and-second slice (everything tested on Windows, measured against C), the last of
+the slices of Windows (942), on the branch `windows`. 1068 to 1079 were put to the author before the slice
+and approved on 17 November 2026; what the slice found besides is said with the choice it belongs to:
+
+1068. **Without an operating system on Windows**: `sg build --freestanding` without `--target` gives an object
+     of this machine (COFF), as elsewhere, for a machine of the tests (`board.c`). Clang writes no library of
+     C into such an object unless it is told which C library a program has, which `sg build` does not tell
+     it there, so no flag is needed (`-fms-omit-default-lib` was tried and is unused by Clang's own driver);
+     the test holds every object of Windows to having no `/DEFAULTLIB`. The runtime's own
+     `#pragma comment(lib)` lines and `__declspec(dllexport)` are for programs and libraries with a system
+     and are left out of such an object. Clang 23's `<float.h>` defines `NAN` and `INFINITY`: the runtime
+     without a system defines its own after taking those away. With `--target` on Windows, the Clang is the
+     one `sg build` finds (`CC`, `clang`, LLVM's folder).
+1069. **What Clang asks for on its own** on Windows: `__chkstk` (a frame of more than a page) and `_fltused`
+     (a program with fractional numbers) are names of the C compiler, not of C's library; the test of what
+     an object takes from outside allows them, as it allows every name that starts with `__`.
+1070. **Division of 128 bits**: the test of the runtime's own `__divti3` and its kin compares them on
+     Windows with Clang's library of its own (`clang_rt.builtins`), which Windows does not link by itself.
+     Found by it: a **debug** build on Windows did not link when a loop added up a sum (`sg_steps`) or a
+     number was written with digits after the point (`{x:F2}`, `sg_fixed`), since without optimisation the
+     C compiler calls its library for a division of 128 bits, and on Windows that library is not linked; the
+     tests compile with `-O1`, where the division by a constant is gone. Both now divide in 64 bits (the
+     numbers fit there; `sg_tenth` takes a tenth of 128 bits in steps of 32). A new test,
+     `needs_nothing_of_128_bits`, compiles every program of one file without optimisation into an object and
+     fails on any name of that library (`__udivti3`, `__multi3`, `__muloti4` and their kin), on every system,
+     so that what would break Windows is seen where the code is written; it found ten programs before the
+     change.
+1071. **The tests' tools on Windows**: the C compiler `sg build` finds (`sg::cc::compiler`) instead of `cc`,
+     LLVM's `llvm-nm` and `llvm-readobj` beside Clang instead of `nm`, a file instead of `/dev/null`, and the
+     line ends and the `\` of a path made the same before an output is compared. Three tests of
+     `golden.rs` were written for Linux and macOS only and did nothing on Windows, silently
+     (`compiled_input_waits_alone`, `compiled_input_cancel`, `interpreted_input_cancel`): they run on every
+     system now, the last over pipes of Rust's library (`std::io::pipe`) instead of sockets of Unix.
+1072. **The kernel on Windows** is built, linked with LLD and booted in QEMU as on Linux and macOS
+     (`tests/kernel.rs`). QEMU is looked for on `PATH`, then where its installer puts it
+     (`C:\Program Files\qemu`), and a missing one fails the test with what to install. The CI installs the
+     build qemu.org points to (qemu.weilnetz.de), the one of each machine, at a fixed version (11.1.0 of
+     11 August 2026), its installer checked against its SHA-256 and kept by GitHub's cache.
+1073. **`tests/windows-pending.txt` is gone**, and with it `tests/pending`: nothing waits.
+1074. **One runner of the benchmarks**: `bench/run.py`, on the three systems, in place of `bench/run.sh`.
+     The C goes through the compiler and the flags `sg build` uses there (`/MT` and LLD on Windows); a
+     library of C is named on the first line of the C (`/* link: -lz */`) and, where its name differs on
+     Windows, on the second (`/* link on windows: -llibcurl */`); `-L` gives folders of libraries to SG
+     and C alike. Before it is timed, each build runs once and its output is compared with the others',
+     the checked build's included (it was not before); `--runs N` takes the best of `N` instead of five.
+     Found by it: `sg emit-c` refused `-L`, though which name of an `extern "z", "zlib"` it writes on its
+     first line depends on where the library is; it takes `-L` now. The benchmarks `crc`, `deflate` and
+     `curl` still wrote C's `long` as `long` and named one library each, which 101 had changed in the
+     examples they come from: they take `CULong`, `CLong`, `Memory.sizeOf<ZStream>()` and both names now.
+1075. **The C of the benchmarks on Windows**: what POSIX has and Windows has not is taken from Windows
+     (`bench/windows/posix.h`, the branches of each program), every program measured; `cat` and `true` for
+     the programs that start them are built from `bench/windows`. Said with the measurement above.
+1076. **Where Windows is measured**: Windows 11 on 64-bit Arm in a virtual machine, in pieces of less than
+     ten minutes; x86-64 is not measured.
+1077. **What was found slow** goes into "Slower than C": `dates`, `listing`, `echo` and `echosync`, on
+     Windows only. Nothing was changed for them in this slice.
+1078. **The CI** runs on every push to `main`; the branch `windows` is merged and deleted.
+1079. **Documents**: the measurement on Windows and "Slower than C" above, "Not here yet", this list; 04
+     ("Testing on Windows", "The machines and the compiler", "Without an operating system, as built", "The
+     order"), the README of the repository. 06 has nothing new: nothing of the language changed. `cargo
+     test` passes on macOS and on Linux in a container (356 of 1442 programs compile through C, 80 of them
+     under the thread sanitizer, 27 of 33 programs of tests). On Windows 11 on 64-bit Arm `freestanding`,
+     `layouts`, `kernel` and the four new and opened tests of `golden` pass; the whole of `cargo test` on
+     Windows is the CI's. New: `needs_nothing_of_128_bits`, `bench/run.py`, `bench/windows`.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -7038,16 +7205,34 @@ check off.
   without the line) for a build that asks for it, as Rust's `panic_immediate_abort` and
   `-Zlocation-detail=none` do.
 
+- **The calendar against the same algorithm in C** (`dates`, 1.16 times on Windows, choice 1077): on Windows
+  the C takes a moment apart by hand with Howard Hinnant's `civil_from_days` (Windows' `gmtime_s` refuses a
+  moment before 1970), and SG's calendar, written in SG in the language's own module, takes 0.123 s against
+  0.106 s; the checked build takes 0.303 s. On macOS the C calls `gmtime_r`, which SG passes (0.29). Not
+  looked into yet. Candidate: compare the C the back end writes for the calendar with the C by hand, and
+  what the checked build tests in it.
+- **Listing a folder on Windows** (`listing`, 1.14 times `FindFirstFileExW` in C, choice 1077; 0.99 on
+  macOS): SG takes 0.316 s against 0.276 s, both with the same call and the names turned into UTF-8. Not
+  looked into yet. Candidate: what SG does for each name besides (the kind of the entry, the check of the
+  name) and the size of what it asks of each call.
+- **The echo on Windows** (`echo` and `echosync`, 1.12 and 1.13 times C's threads with blocking sockets,
+  choice 1077; 0.89 and 0.99 on macOS): eight clients sending 64 bytes and waiting for them, 20,000 times,
+  through the loop of `\Device\Afd` and a completion port, against a thread for each connection that blocks
+  in `recv`. Not looked into yet. Candidate: the round trips of a read that finds nothing and waits, against
+  Tokio's numbers on Windows.
+
 ## Not here yet
 
-- **Of Windows**, after its first five slices: `--freestanding` and the kernel, and the tests of C's layouts
-  (`tests/layouts.rs`), which are run on Linux and macOS for Windows' rules already (102,
-  `tests/windows-pending.txt`). No thread sanitizer there (1011), and a library built from SG is not run
+- **Of Windows**, after its six slices: no thread sanitizer there (1011), and a library built from SG is not run
   under the sanitizers there (1062). Job objects, so that a program started ends with the one that started
   it (934), and services of Windows (933). A DLL a DLL of `-L` needs and that lies elsewhere is not copied
   beside the program (1054). On GitHub's machine of x86-64 the interpreter has not ended when its console
-  was closed (`shutdown_on_signals`), where compiled code and both on 64-bit Arm do: why is not known yet,
-  and the test now says what the interpreter had loaded.
+  was closed (`shutdown_on_signals`), where compiled code and both on 64-bit Arm do, and the interpreter
+  built for x86-64 does on 64-bit Arm: why is not known yet, and the test now says what the interpreter had
+  loaded, what the console's window is and which programs the console has. On the same machine the test
+  of `examples/curl` that a server which does not answer is a timeout got the connection reset once, in
+  its first run there; whether it comes again is watched. Windows on x86-64 is not measured against C
+  (1076).
 - **Of datagrams**: multicast, sending to every host of a network (broadcast), the options of a socket (the
   time to live, the size of its buffers), a look at a datagram that leaves it in the socket (`peek`), and the
   zone of a v6 address (`fe80::1%en0`), so a link-local address cannot be answered (648).
@@ -7390,5 +7575,8 @@ by its extension and escaped, named pipes overlapped on our end, Ctrl-C, Ctrl-Br
 closed as `Interrupt` and `Terminate`, and a command line read without `shell32` (1032-1049). The fifth
 is written: C runs on Windows, the interpreter's wrappers a DLL looked for only in the program's folder,
 the folders of `-L` and `System32`, a library of SG built as `x.lib` or `x.dll`, the DLLs of `-L` copied
-beside a program, and the libraries of the examples taken from vcpkg on the CI (1050-1067). Next is
-everything tested and measured on both machines.
+beside a program, and the libraries of the examples taken from vcpkg on the CI (1050-1067). The sixth
+and last is written: everything is tested on Windows, the program without an operating system and the
+kernel in QEMU included, a debug build no longer needs the C compiler's library for a division of 128
+bits, and the benchmarks are measured against C there too, most in its time and those that lean on
+Windows' C library several times faster (1068-1079). Next is a preview of the language (942).

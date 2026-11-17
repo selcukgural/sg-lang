@@ -1,13 +1,12 @@
-# The tests on Windows (design/04, "Windows, the direction"): every push to the branch of Windows
-# runs `cargo test` on x86-64 and on 64-bit Arm. Nobody waits for them: what they find is noted and
-# made right before a release, when Windows is tested whole. Linux and macOS are tested where the
-# code is written. The only actions are GitHub's own checkout and cache, pinned to their commits;
-# the token only reads.
+# The tests on Windows (design/04, "Windows, the direction"): every push to `main` runs
+# `cargo test` on x86-64 and on 64-bit Arm. Nobody waits for them: what they find is noted and
+# made right. Linux and macOS are tested where the code is written. The only actions are GitHub's
+# own checkout and cache, pinned to their commits; the token only reads.
 name: windows
 
 on:
   push:
-    branches: [windows]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -75,5 +74,36 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $installed = "$env:VCPKG_ROOT\installed\$triplet"
           "SG_TEST_LIB_DIRS=$installed\lib;$installed\bin" >> $env:GITHUB_ENV
+          # The headers, for a C file beside a program that includes one (`tests/modules/cfile`):
+          # Clang reads `CPATH` as more folders of `#include <...>`.
+          "CPATH=$installed\include" >> $env:GITHUB_ENV
+      # QEMU, for the kernel of `examples/kernel` (`tests/kernel.rs`): the build of each machine
+      # that qemu.org points to, at a fixed version, its installer checked against its SHA-256
+      # and kept by GitHub's cache; it goes where its installer puts it, `C:\Program Files\qemu`.
+      - name: QEMU version
+        id: qemu
+        run: |
+          if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
+            "url=https://qemu.weilnetz.de/aarch64/2026/qemu-arm-setup-20260811.exe" >> $env:GITHUB_OUTPUT
+            "sha256=58bf65887e4d3af1eef705bdecdcb1fa25dead950fc970c20e6094662afc957f" >> $env:GITHUB_OUTPUT
+          } else {
+            "url=https://qemu.weilnetz.de/w64/2026/qemu-w64-setup-20260811.exe" >> $env:GITHUB_OUTPUT
+            "sha256=f98a8aeb5f7faea9765b6dee28316c266cd179d80354a2fed8e50176f9a2e59f" >> $env:GITHUB_OUTPUT
+          }
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}\qemu-setup.exe
+          key: qemu-${{ steps.qemu.outputs.sha256 }}
+      - name: QEMU
+        env:
+          URL: ${{ steps.qemu.outputs.url }}
+          SHA256: ${{ steps.qemu.outputs.sha256 }}
+          SETUP: ${{ runner.temp }}\qemu-setup.exe
+        run: |
+          if (-not (Test-Path $env:SETUP)) { Invoke-WebRequest -Uri $env:URL -OutFile $env:SETUP }
+          $got = (Get-FileHash -Algorithm SHA256 $env:SETUP).Hash.ToLower()
+          if ($got -ne $env:SHA256) { Remove-Item $env:SETUP; throw "QEMU's installer has the SHA-256 $got, not $env:SHA256" }
+          Start-Process -Wait -FilePath $env:SETUP -ArgumentList '/S'
+          & 'C:\Program Files\qemu\qemu-system-riscv64.exe' --version
       - name: Tests
         run: cargo test --release

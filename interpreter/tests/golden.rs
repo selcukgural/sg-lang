@@ -4,8 +4,6 @@
 
 use std::path::{Path, PathBuf};
 
-mod pending;
-use pending::waits_on_windows;
 
 /// `PATH` as the tests of other programs see it: the folder of `sg-test-tool` (`tests/tool`) first,
 /// the program they start in place of `sh`, `cat` and their kin, which Windows does not have. It
@@ -82,15 +80,6 @@ fn write_golden(out: &Path, actual: &str) {
         return;
     }
     std::fs::write(out, actual).unwrap();
-}
-
-/// On Windows, a program that waits for a later slice must be refused by the checker as such:
-/// `None` when its output says so, else what is wrong with the list.
-fn held_back(name: &str, actual: &str) -> Option<String> {
-    match actual.contains("is not on Windows yet") {
-        true => None,
-        false => Some(format!("--- {name}\nis listed in tests/windows-pending.txt, but was not refused as waiting for a later slice: take it off the list if it runs\nactual:\n{actual}")),
-    }
 }
 
 /// A program the tests start gets the default action of `Interrupt` and `Quit`, whatever this
@@ -291,7 +280,11 @@ fn run_file(path: &Path) -> String {
             let args = given.args.iter().map(|arg| arg.clone().into_bytes()).collect();
             let world = sg::World { args, input: Box::new(std::io::Cursor::new(given.input)), input_is_terminal: false, input_waits: false, err: &mut err };
             let mut sources = sg::Sources::single(&src, "");
-            sources.lib_dirs = test_lib_dirs();
+            // A program that tells which folders were looked in is not given those of this
+            // machine.
+            if !name.starts_with("error_") {
+                sources.lib_dirs = test_lib_dirs();
+            }
             sg::run_sources_in(&sources, &mut out, world)
         }
     };
@@ -457,15 +450,8 @@ fn modules() {
     assert!(runs.len() > 10);
 
     let mut failures = Vec::new();
-    let mut waiting = 0;
     for (path, tests, golden, within) in &runs {
         let actual = run_program(path, *tests, within);
-        let name = path.file_stem().unwrap().to_string_lossy();
-        if waits_on_windows(&name).is_some() {
-            waiting += 1;
-            failures.extend(held_back(&name, &actual));
-            continue;
-        }
         if update {
             write_golden(golden, &actual);
             continue;
@@ -475,10 +461,68 @@ fn modules() {
             failures.push(format!("--- {}\nexpected:\n{expected}\nactual:\n{actual}", golden.strip_prefix(root).unwrap().display()));
         }
     }
-    if waiting > 0 {
-        eprintln!("{waiting} program(s) with modules wait for later slices on Windows (tests/windows-pending.txt)");
-    }
     assert!(failures.is_empty(), "{} program(s) differ:\n{}", failures.len(), failures.join("\n"));
+}
+
+/// What a program asks of the C compiler's own library when it is not optimised, as `sg build`
+/// compiles a debug build: nothing of 128 bits (`__udivti3` and its kin), which Windows does not
+/// link (the C compiler's library is not given to the linker there). Each program of one file is
+/// compiled into an object, its undefined names read; on every system, so that what would break
+/// Windows is seen where the code is written.
+#[test]
+fn needs_nothing_of_128_bits() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("unoptimised");
+    std::fs::create_dir_all(&work).unwrap();
+    let mut files: Vec<PathBuf> = Vec::new();
+    for dir in ["examples", "tests/cases", "tests/release", "bench"] {
+        for entry in std::fs::read_dir(root.join(dir)).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|ext| ext == "sg") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    let nm = match cfg!(windows) {
+        true => sg::cc::compiler().ok().and_then(|cc| Path::new(&cc).parent().map(|dir| dir.join("llvm-nm.exe"))).filter(|path| path.exists()).map_or_else(|| "llvm-nm".into(), PathBuf::into_os_string),
+        false => std::ffi::OsString::from("nm"),
+    };
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let failures = std::sync::Mutex::new(Vec::new());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut built = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| loop {
+                let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(path) = files.get(at) else { break };
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                let release = path.parent().is_some_and(|dir| dir.ends_with("release"));
+                let Ok(code) = sg::emit_c(&std::fs::read_to_string(path).unwrap(), &name, !release) else { continue };
+                let stem = format!("{}-{}", path.parent().unwrap().file_name().unwrap().to_string_lossy(), path.file_stem().unwrap().to_string_lossy());
+                let (c_file, object) = (work.join(format!("{stem}.c")), work.join(format!("{stem}.o")));
+                std::fs::write(&c_file, code).unwrap();
+                let made = c_command().args(["-std=c11", "-O0", "-w", "-c", "-o"]).arg(&object).arg(&c_file).output().unwrap();
+                if !made.status.success() {
+                    failures.lock().unwrap().push(format!("{name}: {}", String::from_utf8_lossy(&made.stderr)));
+                    continue;
+                }
+                built.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let listed = std::process::Command::new(&nm).arg("-u").arg(&object).output().unwrap();
+                assert!(listed.status.success(), "nm: {}", String::from_utf8_lossy(&listed.stderr));
+                for line in String::from_utf8_lossy(&listed.stdout).lines() {
+                    let wanted = line.split_whitespace().last().unwrap_or_default();
+                    if ["ti3", "ti4", "mulodi4"].iter().any(|end| wanted.ends_with(end)) {
+                        failures.lock().unwrap().push(format!("{name} asks the C compiler's library for `{wanted}`"));
+                    }
+                }
+            });
+        }
+    });
+    assert!(*built.get_mut() > 250, "only {} programs were compiled", built.get_mut());
+    let failures = failures.into_inner().unwrap();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -498,16 +542,9 @@ fn golden() {
     assert!(!files.is_empty());
 
     let mut failures = Vec::new();
-    let mut waiting = 0;
     for path in &files {
         let actual = run_file(path);
         let golden = path.with_extension("out");
-        let stem = path.file_stem().unwrap().to_string_lossy();
-        if waits_on_windows(&stem).is_some() {
-            waiting += 1;
-            failures.extend(held_back(&stem, &actual));
-            continue;
-        }
         if update {
             write_golden(&golden, &actual);
             continue;
@@ -519,9 +556,6 @@ fn golden() {
                 path.strip_prefix(root).unwrap().display()
             ));
         }
-    }
-    if waiting > 0 {
-        eprintln!("{waiting} program(s) wait for later slices on Windows (tests/windows-pending.txt)");
     }
     assert!(failures.is_empty(), "{} file(s) differ:\n{}", failures.len(), failures.join("\n"));
 }
@@ -812,17 +846,6 @@ fn compiled() {
 /// error is looked for before any input is given.
 #[test]
 fn compiled_input_waits_alone() {
-    match waits_on_windows("compiled_input_waits_alone") {
-        Some(why) => eprintln!("compiled_input_waits_alone waits on Windows: {why}"),
-        #[cfg(unix)]
-        None => compiled_input_waits_alone_here(),
-        #[cfg(not(unix))]
-        None => {}
-    }
-}
-
-#[cfg(unix)]
-fn compiled_input_waits_alone_here() {
     const PROGRAM: &str = r#"
 async Result<long, IoError> one() {
     var line = ""
@@ -855,17 +878,7 @@ async Result<void, IoError> main() {
 }
 "#;
     use std::io::{BufRead, Write};
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    if std::process::Command::new("cc").arg("--version").output().is_err() {
-        eprintln!("no C compiler (`cc`) found: the back end is not tested");
-        return;
-    }
-    let work = root.join("target").join("compiled");
-    std::fs::create_dir_all(&work).unwrap();
-    let (c_file, binary) = (work.join("input-waits-alone.c"), work.join("input-waits-alone"));
-    std::fs::write(&c_file, sg::emit_c(PROGRAM, "input_waits_alone.sg", true).unwrap()).unwrap();
-    let cc = std::process::Command::new("cc").args(["-std=c11", "-O1"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
-    assert!(cc.status.success(), "the C compiler rejected it:\n{}", String::from_utf8_lossy(&cc.stderr));
+    let binary = build_compiled(PROGRAM, "input-waits-alone");
     let mut child = std::process::Command::new(&binary)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -893,7 +906,6 @@ async Result<void, IoError> main() {
 /// A token ends a wait for a line of the input at once, and the line that comes later is not
 /// lost: the next read gets it. The input is a pipe that is written only once the cancel has
 /// been seen on the standard error, in compiled code and in the interpreter alike.
-#[cfg(unix)]
 const INPUT_CANCEL: &str = r#"
 async Result<void, IoError> main() {
     var line = ""
@@ -909,7 +921,6 @@ async Result<void, IoError> main() {
 "#;
 
 /// Waits for the first line on `errors`, then writes `late\n` into `input` and lets it go.
-#[cfg(unix)]
 fn feed_after_cancel(errors: impl std::io::Read + Send + 'static, mut input: impl std::io::Write) -> Result<String, std::sync::mpsc::RecvTimeoutError> {
     use std::io::BufRead;
     let (send, lines) = std::sync::mpsc::channel();
@@ -924,30 +935,21 @@ fn feed_after_cancel(errors: impl std::io::Read + Send + 'static, mut input: imp
     first
 }
 
-#[test]
-fn compiled_input_cancel() {
-    match waits_on_windows("compiled_input_cancel") {
-        Some(why) => eprintln!("compiled_input_cancel waits on Windows: {why}"),
-        #[cfg(unix)]
-        None => compiled_input_cancel_here(),
-        #[cfg(not(unix))]
-        None => {}
-    }
-}
-
-#[cfg(unix)]
-fn compiled_input_cancel_here() {
+/// A program of one file compiled into `target/compiled` as `stem`, held to the warnings.
+fn build_compiled(source: &str, stem: &str) -> PathBuf {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    if std::process::Command::new("cc").arg("--version").output().is_err() {
-        eprintln!("no C compiler (`cc`) found: the back end is not tested");
-        return;
-    }
     let work = root.join("target").join("compiled");
     std::fs::create_dir_all(&work).unwrap();
-    let (c_file, binary) = (work.join("input-cancel.c"), work.join("input-cancel"));
-    std::fs::write(&c_file, sg::emit_c(INPUT_CANCEL, "input_cancel.sg", true).unwrap()).unwrap();
-    let cc = std::process::Command::new("cc").args(["-std=c11", "-O1"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).arg("-lm").arg("-pthread").output().unwrap();
-    assert!(cc.status.success(), "the C compiler rejected it:\n{}", String::from_utf8_lossy(&cc.stderr));
+    let (c_file, binary) = (work.join(format!("{stem}.c")), program_at(&work, stem));
+    std::fs::write(&c_file, sg::emit_c(source, &format!("{stem}.sg"), true).unwrap()).unwrap();
+    let cc = c_command().args(["-std=c11", "-O1"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
+    assert!(cc.status.success(), "the C compiler rejected {stem}:\n{}", String::from_utf8_lossy(&cc.stderr));
+    binary
+}
+
+#[test]
+fn compiled_input_cancel() {
+    let binary = build_compiled(INPUT_CANCEL, "input-cancel");
     let mut child = std::process::Command::new(&binary)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -965,27 +967,16 @@ fn compiled_input_cancel_here() {
 
 #[test]
 fn interpreted_input_cancel() {
-    match waits_on_windows("interpreted_input_cancel") {
-        Some(why) => eprintln!("interpreted_input_cancel waits on Windows: {why}"),
-        #[cfg(unix)]
-        None => interpreted_input_cancel_here(),
-        #[cfg(not(unix))]
-        None => {}
-    }
-}
-
-#[cfg(unix)]
-fn interpreted_input_cancel_here() {
-    use std::os::unix::net::UnixStream;
-    let (input, feeder) = UnixStream::pair().unwrap();
-    let (mut err, errors) = UnixStream::pair().unwrap();
+    let (input, mut feeder) = std::io::pipe().unwrap();
+    let (errors, mut err) = std::io::pipe().unwrap();
     let running = std::thread::spawn(move || {
         let mut out = Vec::new();
         let world = sg::World { args: Vec::new(), input: Box::new(input), input_is_terminal: false, input_waits: true, err: &mut err };
         let result = sg::run_sources_in(&sg::Sources::single(INPUT_CANCEL, ""), &mut out, world);
         (result.is_ok(), String::from_utf8(out).unwrap())
     });
-    let first = feed_after_cancel(errors, &feeder);
+    let first = feed_after_cancel(errors, &mut feeder);
+    drop(feeder);
     let (ok, out) = running.join().unwrap();
     assert_eq!(first.as_deref(), Ok("first: Cancelled(Cancelled)"));
     assert_eq!(out, "then: true late\n");
@@ -1007,12 +998,7 @@ fn compiled_small_pools() {
     std::fs::create_dir_all(&work).unwrap();
     let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
     let mut failures = Vec::new();
-    let mut waiting = 0;
     for stem in ["ok_net_wakes_from_thread", "ok_pool_queues", "ok_net_echo", "ok_net_cancel", "ok_net_slots", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel"] {
-        if waits_on_windows(stem).is_some() {
-            waiting += 1;
-            continue;
-        }
         let source = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.sg"))).unwrap();
         let expected = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.out"))).unwrap();
         let c_file = work.join(format!("{stem}.c"));
@@ -1039,9 +1025,6 @@ fn compiled_small_pools() {
                 failures.push(format!("--- {stem} with a pool of {most}\nexpected:\n{expected}\nactual:\n{actual}"));
             }
         }
-    }
-    if waiting > 0 {
-        eprintln!("{waiting} program(s) of small pools wait for later slices on Windows (tests/windows-pending.txt)");
     }
     if sanitizers && cfg!(windows) {
         eprintln!("thread sanitizer: not on Windows; the programs of small pools ran under the others");
@@ -1290,13 +1273,10 @@ static int32_t onThread(void) {
 
 #[test]
 fn process_path_lookup() {
-    match waits_on_windows("process_path_lookup") {
-        Some(why) => eprintln!("process_path_lookup waits on Windows: {why}"),
-        #[cfg(unix)]
-        None => process_path_lookup_here(),
-        #[cfg(windows)]
-        None => process_path_lookup_windows(),
-    }
+    #[cfg(unix)]
+    process_path_lookup_here();
+    #[cfg(windows)]
+    process_path_lookup_windows();
 }
 
 /// The same on Windows, with what Windows adds (choices 1032 to 1034): a name without an extension
@@ -1425,13 +1405,10 @@ void main() {
 /// shows the last one taken is seen, so none is folded into another.
 #[test]
 fn shutdown_on_signals() {
-    match waits_on_windows("shutdown_on_signals") {
-        Some(why) => eprintln!("shutdown_on_signals waits on Windows: {why}"),
-        #[cfg(unix)]
-        None => shutdown_on_signals_here(),
-        #[cfg(windows)]
-        None => shutdown_on_signals_windows(),
-    }
+    #[cfg(unix)]
+    shutdown_on_signals_here();
+    #[cfg(windows)]
+    shutdown_on_signals_windows();
 }
 
 /// `examples/shutdown` on Windows, interpreted and compiled, sent Ctrl-C and Ctrl-Break as a
@@ -1447,7 +1424,9 @@ fn shutdown_on_signals_windows() {
     const CTRL_C: &str = "0";
     const CTRL_BREAK: &str = "1";
     const CLOSE: &str = "close";
-    const SENDER: &str = "#include <windows.h>\n#include <stdlib.h>\n#include <string.h>\n\
+    // Asked to close a console, it also says which programs the console has and what its window
+    // is, for the message of a server that did not end.
+    const SENDER: &str = "#include <windows.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\
         static BOOL WINAPI kept(DWORD event) { (void)event; return TRUE; }\n\
         int main(int argc, char** argv) {\n\
             if (argc != 3) return 2;\n\
@@ -1456,6 +1435,16 @@ fn shutdown_on_signals_windows() {
             SetConsoleCtrlHandler(kept, TRUE);\n\
             if (strcmp(argv[2], \"close\") == 0) {\n\
                 HWND window = GetConsoleWindow();\n\
+                DWORD ids[64];\n\
+                DWORD count = GetConsoleProcessList(ids, 64);\n\
+                char kind[128] = \"\";\n\
+                if (window) GetClassNameA(window, kind, sizeof kind);\n\
+                DWORD owner = 0;\n\
+                if (window) GetWindowThreadProcessId(window, &owner);\n\
+                printf(\"window %p of class '%s', of process %lu, visible %d, hung %d; programs of the console:\", (void*)window, kind, (unsigned long)owner, window ? IsWindowVisible(window) : -1, window ? IsHungAppWindow(window) : -1);\n\
+                for (DWORD i = 0; i < count && i < 64; i++) printf(\" %lu\", (unsigned long)ids[i]);\n\
+                printf(\"\\n\");\n\
+                fflush(stdout);\n\
                 FreeConsole();\n\
                 return window && PostMessageA(window, WM_CLOSE, 0, 0) ? 0 : 5;\n\
             }\n\
@@ -1487,9 +1476,11 @@ fn shutdown_on_signals_windows() {
                 .spawn()
                 .unwrap();
             let pid = child.id().to_string();
+            let told = std::cell::RefCell::new(String::new());
             let send = |event: &str| {
-                let sent = std::process::Command::new(&sender).args([&pid[..], event]).creation_flags(CREATE_NO_WINDOW).status().unwrap();
-                assert!(sent.success(), "{way}, {scenario}: the event could not be raised ({sent})");
+                let sent = std::process::Command::new(&sender).args([&pid[..], event]).creation_flags(CREATE_NO_WINDOW).output().unwrap();
+                told.borrow_mut().push_str(&String::from_utf8_lossy(&sent.stdout));
+                assert!(sent.status.success(), "{way}, {scenario}: the event could not be raised ({})", sent.status);
             };
             let (lines, heard) = std::sync::mpsc::channel();
             let stdout = child.stdout.take().unwrap();
@@ -1543,7 +1534,7 @@ fn shutdown_on_signals_windows() {
                 if waited == 300 {
                     let loaded = std::process::Command::new("tasklist").args(["/m", "/fi", &format!("PID eq {pid}")]).output().map(|out| String::from_utf8_lossy(&out.stdout).into_owned()).unwrap_or_default();
                     let _ = child.kill();
-                    panic!("{way}, {scenario}: the server did not end; it said {said:?}; it had loaded:\n{loaded}");
+                    panic!("{way}, {scenario}: the server did not end; it said {said:?}; the sender said: {}; it had loaded:\n{loaded}", told.borrow());
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 waited += 1;
@@ -2098,9 +2089,12 @@ fn library_folders() {
         let run = sg(&["build", "p.sg", "-L", "open", "-o", "bin/q"]);
         assert!(run.status.code() == Some(2) && said(&run).contains("-L open: others may write into this folder"), "{}", said(&run));
     }
-    // `emit-c` links nothing.
+    // `emit-c` links nothing, but says on its first line which of the names it found there.
     let run = sg(&["emit-c", "p.sg", "-L", "lib"]);
-    assert_eq!(run.status.code(), Some(2));
+    let first = String::from_utf8_lossy(&run.stdout).lines().next().unwrap_or_default().to_string();
+    assert!(run.status.success() && first.contains("-lsgfolder") && !first.contains("sgfolder_none"), "{first}{}", said(&run));
+    let run = sg(&["emit-c", "p.sg"]);
+    assert!(!run.status.success() && said(&run).contains("none of the libraries"), "{}", said(&run));
 }
 
 /// The count of blocks a debug build keeps, tried on programs made to leak: a block taken and

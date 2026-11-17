@@ -2,7 +2,7 @@
 // sent over the loopback by one task and read line by line by another with the reader of the
 // connection (`conn.reader()`, `await reader.readLineAsync(ref line)`). A line the block of the
 // reader holds is read in place; the task waits on the loop of the network only when the block has
-// no whole line. The sender reads the input in pieces of 64 KB and sends each. `run.sh` gives the
+// no whole line. The sender reads the input in pieces of 64 KB and sends each. `run.py` gives the
 // input (`netlines.in`, the input of `lines`). The C is the classic way: blocking sockets, a thread
 // that sends and one that reads with `getline` from a `FILE` over the socket.
 async Result<void, IoError> send(string address) {

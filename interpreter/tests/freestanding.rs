@@ -6,8 +6,6 @@
 //! the runtime has there, held to the C library's.
 //! To regenerate the expected outputs: `UPDATE_GOLDEN=1 cargo test`
 
-mod pending;
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -26,13 +24,42 @@ fn files(prefix: &str) -> Vec<PathBuf> {
 }
 
 /// The Clang that compiles for a machine named by its target: the one `CC` names, as `sg build`
-/// takes it, or the first `clang` of the path.
+/// takes it, or the first `clang` of the path; on Windows the one `sg build` finds.
 fn cross_clang() -> String {
+    if cfg!(windows) {
+        return host_cc();
+    }
     std::env::var("CC").ok().filter(|cc| !cc.is_empty()).unwrap_or_else(|| "clang".to_string())
 }
 
+/// The C compiler of this machine, as `sg build` finds it: `cc` on Linux and macOS, Clang on
+/// Windows.
+fn host_cc() -> String {
+    sg::cc::compiler().unwrap_or_else(|_| "cc".to_string())
+}
+
 fn has_cc() -> bool {
-    Command::new("cc").arg("--version").output().is_ok()
+    Command::new(host_cc()).arg("--version").output().is_ok()
+}
+
+/// A program of this machine that a test builds: what the C compiler is given to link it (on
+/// Windows LLVM's linker and C's library in the program, as `sg build` gives them), and its file.
+fn host_link(program: &Path) -> (Command, PathBuf) {
+    let program = PathBuf::from(sg::cc::program_file(&program.to_string_lossy()));
+    let mut cc = Command::new(host_cc());
+    cc.args(sg::cc::compile_flags(false)).arg("-o").arg(&program);
+    (cc, program)
+}
+
+/// A tool of LLVM: on Windows the one beside Clang, where its installer puts them all, else the
+/// one of the path; `nm` stands for `llvm-nm` there.
+fn llvm_tool(name: &str) -> std::ffi::OsString {
+    if !cfg!(windows) {
+        return name.into();
+    }
+    let name = if name == "nm" { "llvm-nm" } else { name };
+    let beside = sg::cc::compiler().ok().and_then(|cc| Path::new(&cc).parent().map(|dir| dir.join(format!("{name}.exe")))).filter(|path| path.exists());
+    beside.map_or_else(|| name.into(), PathBuf::into_os_string)
 }
 
 /// The warnings every build here is held to, as in `golden.rs`.
@@ -41,7 +68,7 @@ const WARNINGS: [&str; 4] = ["-Wall", "-Wextra", "-Werror", "-Wno-unused-functio
 /// Compiles C of a program without an operating system into an object, for this machine or for
 /// `target`.
 fn compile(c_file: &Path, object: &Path, target: Option<&str>, release: bool) {
-    let mut cc = Command::new(if target.is_some() { cross_clang() } else { "cc".to_string() });
+    let mut cc = Command::new(if target.is_some() { cross_clang() } else { host_cc() });
     cc.args(["-std=c11", "-ffreestanding", "-fno-stack-protector", "-ffp-contract=off", "-c", if release { "-O2" } else { "-O0" }]).args(WARNINGS);
     if let Some(target) = target {
         cc.arg(format!("--target={target}"));
@@ -51,10 +78,11 @@ fn compile(c_file: &Path, object: &Path, target: Option<&str>, release: bool) {
 }
 
 /// The names an object takes from outside: what the program declares in `extern` blocks, and
-/// the functions of the C compiler's own library (`__udivti3`), which start with `__`. Nothing
-/// of the C library.
+/// the functions of the C compiler's own library (`__udivti3`, Windows' `__chkstk`), which start
+/// with `__`, and `_fltused`, which Clang asks for on Windows where fractional numbers are used.
+/// Nothing of the C library.
 fn undefined_names_are_allowed(object: &Path, allowed: &[&str]) {
-    let listed = Command::new("nm").arg("-u").arg(object).output().unwrap();
+    let listed = Command::new(llvm_tool("nm")).arg("-u").arg(object).output().unwrap();
     assert!(listed.status.success(), "nm: {}", String::from_utf8_lossy(&listed.stderr));
     for line in String::from_utf8_lossy(&listed.stdout).lines() {
         let name = line.split_whitespace().last().unwrap_or_default();
@@ -62,7 +90,14 @@ fn undefined_names_are_allowed(object: &Path, allowed: &[&str]) {
         // names there; for an ELF object it writes `U` in front of each.
         let mach_o = cfg!(target_os = "macos") && !line.trim_start().starts_with("U ");
         let name = if mach_o { name.strip_prefix('_').unwrap_or(name) } else { name };
-        assert!(name.starts_with("__") || allowed.contains(&name), "{} takes `{name}` from outside", object.display());
+        assert!(name.starts_with("__") || name == "_fltused" || allowed.contains(&name), "{} takes `{name}` from outside", object.display());
+    }
+    // Nor does an object of Windows ask the linker for C's library (`/DEFAULTLIB`), as Clang has
+    // it ask when it is told which C library a program has.
+    if cfg!(windows) {
+        let read = Command::new(llvm_tool("llvm-readobj")).arg("--coff-directives").arg(object).output().unwrap();
+        let said = String::from_utf8_lossy(&read.stdout);
+        assert!(!said.contains("DEFAULTLIB"), "{} asks for a library of C: {said}", object.display());
     }
 }
 
@@ -70,23 +105,21 @@ fn undefined_names_are_allowed(object: &Path, allowed: &[&str]) {
 /// those tried.
 fn targets() -> Vec<&'static str> {
     let probe = std::env::temp_dir().join(format!("sg-probe-{}.c", std::process::id()));
+    let object = probe.with_extension("o");
     std::fs::write(&probe, "int f(void) { return 1; }\n").unwrap();
     let found = ["aarch64-none-elf", "x86_64-none-elf", "riscv64-unknown-elf"]
         .into_iter()
         .filter(|target| {
-            Command::new(cross_clang()).args(["-ffreestanding", "-c", "-o", "/dev/null"]).arg(format!("--target={target}")).arg(&probe).output().is_ok_and(|made| made.status.success())
+            Command::new(cross_clang()).args(["-ffreestanding", "-c", "-o"]).arg(&object).arg(format!("--target={target}")).arg(&probe).output().is_ok_and(|made| made.status.success())
         })
         .collect();
     let _ = std::fs::remove_file(&probe);
+    let _ = std::fs::remove_file(&object);
     found
 }
 
 #[test]
 fn refused() {
-    if let Some(why) = pending::waits_on_windows("freestanding.rs") {
-        eprintln!("freestanding.rs waits on Windows: {why}");
-        return;
-    }
     let update = std::env::var_os("UPDATE_GOLDEN").is_some();
     let mut failures = Vec::new();
     let found = files("error_");
@@ -116,10 +149,6 @@ fn refused() {
 /// than 0 is the last line.
 #[test]
 fn built_and_run() {
-    if let Some(why) = pending::waits_on_windows("freestanding.rs") {
-        eprintln!("freestanding.rs waits on Windows: {why}");
-        return;
-    }
     if !has_cc() {
         eprintln!("no C compiler (`cc`) found: programs without an operating system are not built");
         return;
@@ -148,11 +177,11 @@ fn built_and_run() {
             let object = work.join(format!("{stem}-{release}.o"));
             compile(&c_file, &object, None, release);
             undefined_names_are_allowed(&object, &["board_write", "board_stop", "board_memory", "board_memory_size"]);
-            let program = work.join(format!("{stem}-{release}"));
-            let linked = Command::new("cc").arg("-o").arg(&program).arg(&board).arg(&object).output().unwrap();
+            let (mut cc, program) = host_link(&work.join(format!("{stem}-{release}")));
+            let linked = cc.arg(&board).arg(&object).output().unwrap();
             assert!(linked.status.success(), "{stem}: {}", String::from_utf8_lossy(&linked.stderr));
             let ran = Command::new(&program).output().unwrap();
-            let mut text = String::from_utf8_lossy(&ran.stdout).into_owned();
+            let mut text = String::from_utf8_lossy(&ran.stdout).replace("\r\n", "\n");
             match ran.status.code() {
                 Some(0) => {}
                 Some(code) => text.push_str(&format!("exit code {code}\n")),
@@ -182,10 +211,6 @@ fn built_and_run() {
 /// panic inside `onPanic` is not told.
 #[test]
 fn waits_after_a_panic() {
-    if let Some(why) = pending::waits_on_windows("freestanding.rs") {
-        eprintln!("freestanding.rs waits on Windows: {why}");
-        return;
-    }
     if !has_cc() {
         return;
     }
@@ -199,8 +224,8 @@ fn waits_after_a_panic() {
     std::fs::write(&c_file, code).unwrap();
     let object = work.join("waits.o");
     compile(&c_file, &object, None, false);
-    let program = work.join("waits");
-    let linked = Command::new("cc").arg("-o").arg(&program).arg(root().join("tests/freestanding/board.c")).arg(&object).output().unwrap();
+    let (mut cc, program) = host_link(&work.join("waits"));
+    let linked = cc.arg(root().join("tests/freestanding/board.c")).arg(&object).output().unwrap();
     assert!(linked.status.success(), "{}", String::from_utf8_lossy(&linked.stderr));
     let out = work.join("waits.out");
     let mut child = Command::new(&program).stdout(std::fs::File::create(&out).unwrap()).spawn().unwrap();
@@ -209,7 +234,7 @@ fn waits_after_a_panic() {
     let _ = child.kill();
     let _ = child.wait();
     assert!(still, "the program ended after its `onPanic` returned");
-    let written = std::fs::read_to_string(&out).unwrap();
+    let written = std::fs::read_to_string(&out).unwrap().replace("\r\n", "\n");
     assert_eq!(
         written,
         "before\nafter panic: index 3 is out of range: the length is 3\n  --> waits_after_panic.sg:13:12\n 13 |     return items[3]\n    |            ^^^^^^^^\nonPanic ends\n"
@@ -220,10 +245,6 @@ fn waits_after_a_panic() {
 /// writes, the panic its last call ends in, and the code its `onPanic` stops the machine with.
 #[test]
 fn bare() {
-    if let Some(why) = pending::waits_on_windows("freestanding.rs") {
-        eprintln!("freestanding.rs waits on Windows: {why}");
-        return;
-    }
     if !has_cc() {
         return;
     }
@@ -244,13 +265,15 @@ fn bare() {
         let said = String::from_utf8_lossy(&made.stdout);
         assert!(made.status.success() && said.starts_with("built ") && said.contains("without an operating system"), "{said}{}", String::from_utf8_lossy(&made.stderr));
         undefined_names_are_allowed(&object, &["board_write", "board_stop", "board_memory", "board_memory_size"]);
-        let program = work.join(format!("machine-{release}"));
-        let mut cc = Command::new("cc");
-        cc.args(["-std=c11", "-o"]).arg(&program).args(["-Wall", "-Wextra", "-Werror", "-pedantic"]).arg(example.join("machine.c")).arg(&object);
+        let (mut cc, program) = host_link(&work.join(format!("machine-{release}")));
+        cc.arg("-std=c11").args(["-Wall", "-Wextra", "-Werror", "-pedantic"]).arg(example.join("machine.c")).arg(&object);
         let linked = cc.output().unwrap();
         assert!(linked.status.success(), "{}", String::from_utf8_lossy(&linked.stderr));
         let ran = Command::new(&program).output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&ran.stdout), expected, "release: {release}");
+        // On Windows the machine's `printf` ends a line with `\r\n`, and the place of the panic
+        // is the path as `sg build` was given it, with `\`.
+        let said = String::from_utf8_lossy(&ran.stdout).replace("\r\n", "\n").replace("bare\\main.sg", "bare/main.sg");
+        assert_eq!(said, expected, "release: {release}");
         assert_eq!(ran.status.code(), Some(101), "release: {release}");
     }
     for target in targets() {
@@ -271,10 +294,6 @@ fn bare() {
 /// writes, for the formats the runtime and the programs use.
 #[test]
 fn formats_as_printf_does() {
-    if let Some(why) = pending::waits_on_windows("freestanding.rs") {
-        eprintln!("freestanding.rs waits on Windows: {why}");
-        return;
-    }
     if !has_cc() {
         return;
     }
@@ -318,11 +337,11 @@ int main(void) {
 }
 "#;
     std::fs::write(work.join("cases.c"), cases).unwrap();
-    let program = work.join("formats");
-    let made = Command::new("cc").args(["-std=c11", "-Wno-format-truncation", "-o"]).arg(&program).arg(work.join("cases.c")).arg(work.join("ours.c")).output().unwrap();
+    let (mut cc, program) = host_link(&work.join("formats"));
+    let made = cc.args(["-std=c11", "-Wno-format-truncation"]).arg(work.join("cases.c")).arg(work.join("ours.c")).output().unwrap();
     assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
     let ran = Command::new(&program).output().unwrap();
-    assert!(ran.status.success() && String::from_utf8_lossy(&ran.stdout) == "same\n", "{}", String::from_utf8_lossy(&ran.stdout));
+    assert!(ran.status.success() && String::from_utf8_lossy(&ran.stdout).trim_end() == "same", "{}", String::from_utf8_lossy(&ran.stdout));
 }
 
 /// The division of 128 bits a program without an operating system has, in case the C compiler's
@@ -330,10 +349,6 @@ int main(void) {
 /// smallest of them included.
 #[test]
 fn divides_as_the_compiler_does() {
-    if let Some(why) = pending::waits_on_windows("freestanding.rs") {
-        eprintln!("freestanding.rs waits on Windows: {why}");
-        return;
-    }
     if !has_cc() {
         return;
     }
@@ -386,9 +401,17 @@ int main(void) {
 }
 "#;
     std::fs::write(work.join("cases.c"), cases).unwrap();
-    let program = work.join("division");
-    let made = Command::new("cc").args(["-std=c11", "-O2", "-o"]).arg(&program).args(WARNINGS).arg(work.join("cases.c")).arg(work.join("ours.c")).output().unwrap();
+    let (mut cc, program) = host_link(&work.join("division"));
+    cc.args(["-std=c11", "-O2"]).args(WARNINGS).arg(work.join("cases.c")).arg(work.join("ours.c"));
+    // Windows does not link the C compiler's library on its own: it is named, as Clang has it.
+    if cfg!(windows) {
+        let asked = Command::new(host_cc()).args(["--rtlib=compiler-rt", "-print-libgcc-file-name"]).output().unwrap();
+        let library = String::from_utf8_lossy(&asked.stdout).trim().to_string();
+        assert!(Path::new(&library).exists(), "Clang's library of its own (`{library}`) is not there: install LLVM whole");
+        cc.arg(library);
+    }
+    let made = cc.output().unwrap();
     assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
     let ran = Command::new(&program).output().unwrap();
-    assert!(ran.status.success() && String::from_utf8_lossy(&ran.stdout) == "same\n", "{}", String::from_utf8_lossy(&ran.stdout));
+    assert!(ran.status.success() && String::from_utf8_lossy(&ran.stdout).trim_end() == "same", "{}", String::from_utf8_lossy(&ran.stdout));
 }

@@ -1,17 +1,22 @@
 /* link: -lcurl */
+/* link on windows: -llibcurl */
 /* The same program written by hand in C: the server on a thread, the body copied by the
    callback into a buffer that grows. */
 #define _GNU_SOURCE
+#if defined(_WIN32)
+#include "windows/posix.h"
+#else
 #include <arpa/inet.h>
-#include <curl/curl.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+#include <curl/curl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #define COUNT 1000
 #define SIZE 1048576

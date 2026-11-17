@@ -1,6 +1,10 @@
 /* The same program written by hand in C, with no checks: a thread with a stack of 8 MB for
    each task, and a mutex around the total. */
+#if defined(_WIN32)
+#include "windows/posix.h"
+#else
 #include <pthread.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

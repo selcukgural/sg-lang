@@ -390,6 +390,9 @@ static void* sg_fs_memchr(const void* p, int c, size_t n) {
 #define isfinite(x) __builtin_isfinite(x)
 #define signbit(x) __builtin_signbit(x)
 #define fabs(x) __builtin_fabs(x)
+/* Clang's `<float.h>` defines the last two from its twenty-third version on, as `float`s. */
+#undef NAN
+#undef INFINITY
 #define NAN __builtin_nan("")
 #define INFINITY __builtin_inf()
 static double sg_fs_frexp(double v, int* e);
@@ -951,8 +954,9 @@ static bool sg_blocks_left(const char* ended, int64_t before) {
 #else
 #define SG_PANIC_END() exit(1)
 #endif
-/* An `export` function: seen from outside a shared library, whose other names are hidden. */
-#if defined(_WIN32)
+/* An `export` function: seen from outside a shared library, whose other names are hidden. Without
+   an operating system there is no DLL to export from. */
+#if defined(_WIN32) && !SG_FREESTANDING
 #define SG_EXPORT __declspec(dllexport)
 #else
 #define SG_EXPORT __attribute__((visibility("default")))
@@ -962,8 +966,8 @@ static bool sg_blocks_left(const char* ended, int64_t before) {
    library built from SG brings them to the program that links it. A library nothing is taken
    from is not loaded. C's `printf`, `snprintf`, `sscanf` and their kin are functions in a header
    of Microsoft's C library, not in the library itself: `legacy_stdio_definitions` has them for
-   an `extern` block that declares one. */
-#if defined(_WIN32)
+   an `extern` block that declares one. Without an operating system, none of them. */
+#if defined(_WIN32) && !SG_FREESTANDING
 #pragma comment(lib, "legacy_stdio_definitions")
 #pragma comment(lib, "kernel32")
 #pragma comment(lib, "advapi32")
@@ -1546,10 +1550,12 @@ static inline T sg_shl_##N(T a, __int128 n, const char* loc) { if (__builtin_exp
 static inline T sg_shr_##N(T a, __int128 n, const char* loc) { if (__builtin_expect(n < 0 || n >= (__int128)sizeof(T) * 8, 0)) sg_shift_fail(n, NAME, (int)sizeof(T) * 8, loc); return (T)(a >> n); } \
 static inline T sg_wshl_##N(T a, uint64_t n) { return (T)((uint64_t)a << (n & (sizeof(T) * 8 - 1))); } \
 static inline T sg_wshr_##N(T a, uint64_t n) { return (T)(a >> (n & (sizeof(T) * 8 - 1))); } \
+/* The rounds a sum may go without its test. Divided in 64 bits without a sign, where both \
+   numbers fit: a division of 128 bits calls the C compiler's library, which Windows does not link. */ \
 static inline __int128 sg_steps_##N(T sum, int64_t lo, int64_t hi) { \
     __int128 room = (__int128)1 << 100; \
-    if (hi > 0) room = ((__int128)SG_MAX(T) - sum) / hi; \
-    if (lo < 0) { __int128 down = ((__int128)sum - ((T)-1 < 0 ? -(__int128)SG_MAX(T) - 1 : 0)) / -lo; if (down < room) room = down; } \
+    if (hi > 0) room = (__int128)((uint64_t)((__int128)SG_MAX(T) - sum) / (uint64_t)hi); \
+    if (lo < 0) { __int128 down = (__int128)((uint64_t)((__int128)sum - ((T)-1 < 0 ? -(__int128)SG_MAX(T) - 1 : 0)) / (0 - (uint64_t)lo)); if (down < room) room = down; } \
     return room; } \
 static inline T sg_upto_##N(T at, __int128 rounds) { return (__int128)at + rounds > (__int128)SG_MAX(T) ? SG_MAX(T) : (T)(at + rounds); }
 
@@ -1992,6 +1998,19 @@ static int sg_binary(char* out, unsigned long long v, int least) {
     for (int i = 0; i < n; i++) out[n - 1 - i] = i < 64 && (v >> i & 1) ? '1' : '0';
     return n;
 }
+/* A tenth of `q`, its last digit in `*digit`, divided in steps of 32 bits: a division of 128 bits
+   calls the C compiler's library, which Windows does not link. */
+static unsigned __int128 sg_tenth(unsigned __int128 q, int* digit) {
+    unsigned __int128 out = 0;
+    uint64_t rest = 0;
+    for (int i = 3; i >= 0; i--) {
+        uint64_t part = rest << 32 | ((uint64_t)(q >> (32 * i)) & 0xffffffffu);
+        out |= (unsigned __int128)(part / 10) << (32 * i);
+        rest = part % 10;
+    }
+    *digit = (int)rest;
+    return out;
+}
 /* `{x:F2}`: a fractional number with `digits` digits after the point, rounded on its exact
    value to the nearest (a tie to the even digit), as Rust and `printf` round it; `NaN` and
    the infinities as `print` writes them. The value is `m` times 2 to the power `-k`
@@ -2016,7 +2035,7 @@ static int sg_fixed(char* out, size_t room, double v, int digits, bool single) {
             char text[48];
             char* at = text + sizeof text;
             int count = 0;
-            while (q > UINT64_MAX) { *--at = (char)('0' + (int)(q % 10)); q /= 10; count++; }
+            while (q > UINT64_MAX) { int digit; q = sg_tenth(q, &digit); *--at = (char)('0' + digit); count++; }
             uint64_t low = (uint64_t)q;
             do { *--at = (char)('0' + low % 10); low /= 10; count++; } while (low);
             while (count <= digits) { *--at = '0'; count++; }

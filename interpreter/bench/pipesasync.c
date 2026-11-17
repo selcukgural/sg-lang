@@ -4,10 +4,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#include "windows/posix.h"
+#define READ "rb"
+#else
 #include <sys/wait.h>
+#define READ "r"
+#endif
 
 int main(void) {
-    FILE* in = popen("cat target/bench/lines.in", "r");
+    FILE* in = popen("cat target/bench/lines.in", READ);
     if (!in) return 1;
     char* line = NULL;
     size_t cap = 0;

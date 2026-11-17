@@ -1,7 +1,7 @@
 // `lines` the async way: the same two million lines of a log, 125 MB, read with
 // `await Stdin.readLineAsync` in an async `main`. A line that the block of the input already
 // holds is read in place; only when the block is used up does a thread of input and output
-// fill it while the task waits. `run.sh` gives the input (`asynclines.in`, the input of
+// fill it while the task waits. `run.py` gives the input (`asynclines.in`, the input of
 // `lines`); the C is that of `lines`, which reads without waiting for anything.
 async Result<void, IoError> main() {
     string line = ""

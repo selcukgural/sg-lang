@@ -4,11 +4,9 @@
 //! layouts it dumps. Compiled code takes its layout from C; the interpreter must lay out the same
 //! bytes, or a struct handed between the two would be read wrong.
 
-mod pending;
-
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use sg::raw::{self, Abi, Place, Plain, PlainTypes};
@@ -147,9 +145,10 @@ fn of_this_machine(cases: &[(&str, Plain)], work: &Path) -> Found {
     program.push_str("    return 0;\n}\n");
     let source = work.join("layouts.c");
     std::fs::write(&source, program).unwrap();
-    let binary = work.join("layouts");
-    let built = Command::new("cc").arg("-w").arg("-o").arg(&binary).arg(&source).output().expect("a C compiler (`cc`) is needed to test the layout of C");
-    assert!(built.status.success(), "cc did not build the layouts:\n{}", String::from_utf8_lossy(&built.stderr));
+    let binary = PathBuf::from(sg::cc::program_file(&work.join("layouts").to_string_lossy()));
+    let compiler = sg::cc::compiler().unwrap_or_else(|error| panic!("{error}"));
+    let built = Command::new(&compiler).args(sg::cc::compile_flags(false)).arg("-w").arg("-o").arg(&binary).arg(&source).output().expect("a C compiler is needed to test the layout of C");
+    assert!(built.status.success(), "{compiler} did not build the layouts:\n{}", String::from_utf8_lossy(&built.stderr));
     let out = Command::new(&binary).output().unwrap();
     let mut found: Found = HashMap::new();
     for line in String::from_utf8(out.stdout).unwrap().lines() {
@@ -168,7 +167,7 @@ fn of_this_machine(cases: &[(&str, Plain)], work: &Path) -> Found {
 fn of_target(cases: &[(&str, Plain)], target: &str, work: &Path) -> Found {
     let source = work.join(format!("dump-{target}.c"));
     std::fs::write(&source, format!("{}int sg_sizes = 0{};\n", definitions(cases), cases.iter().map(|(name, _)| format!(" + sizeof({name})")).collect::<String>())).unwrap();
-    let out = Command::new("clang").args(["-target", target, "-fsyntax-only", "-Xclang", "-fdump-record-layouts-simple"]).arg(&source).output().unwrap();
+    let out = Command::new(clang()).args(["-target", target, "-fsyntax-only", "-Xclang", "-fdump-record-layouts-simple"]).arg(&source).output().unwrap();
     assert!(out.status.success(), "clang did not read the layouts for {target}:\n{}", String::from_utf8_lossy(&out.stderr));
     let text = String::from_utf8(out.stdout).unwrap();
     let mut found: Found = HashMap::new();
@@ -198,6 +197,14 @@ fn of_target(cases: &[(&str, Plain)], target: &str, work: &Path) -> Found {
     found
 }
 
+/// Clang: the one of the path, or on Windows the one `sg build` finds.
+fn clang() -> String {
+    match cfg!(windows) {
+        true => sg::cc::compiler().unwrap_or_else(|_| "clang".to_string()),
+        false => "clang".to_string(),
+    }
+}
+
 fn compare(what: &str, computed: &Found, found: &Found) -> Vec<String> {
     let mut wrong = Vec::new();
     for (name, (size, align, places)) in computed {
@@ -220,10 +227,6 @@ fn compare(what: &str, computed: &Found, found: &Found) -> Vec<String> {
 
 #[test]
 fn layouts_of_this_machine() {
-    if let Some(why) = pending::waits_on_windows("layouts.rs") {
-        eprintln!("layouts.rs waits on Windows: {why}");
-        return;
-    }
     let work = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("layouts");
     std::fs::create_dir_all(&work).unwrap();
     let cases = cases();
@@ -235,11 +238,7 @@ fn layouts_of_this_machine() {
 /// RISC-V, and Windows with each of its compilers.
 #[test]
 fn layouts_of_every_system() {
-    if let Some(why) = pending::waits_on_windows("layouts.rs") {
-        eprintln!("layouts.rs waits on Windows: {why}");
-        return;
-    }
-    if Command::new("clang").arg("--version").output().is_err() {
+    if Command::new(clang()).arg("--version").output().is_err() {
         // Linux in its container has only gcc: `layouts_of_this_machine` tests its own layout.
         eprintln!("no clang: the layouts of other systems are tested where it is");
         return;
