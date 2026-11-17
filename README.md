@@ -196,8 +196,10 @@ no package manager and no editor support.
 No preview was to come out while there was work that C can do and SG cannot. With the kernel, each of the
 seven programs set as that threshold runs and is tested (design/04, "Reaching what C reaches, the direction"):
 SQLite, libcurl, a server that ends on Ctrl-C, a library of SG for C, the kernel, a queue without locks and
-a binary header read with a union and bit fields. Windows is talked through next. SG is to run on Linux, macOS and Windows: Linux and
-macOS come first, and nothing is built in a way Windows cannot take later.
+a binary header read with a union and bit fields. SG is to run on Linux, macOS and Windows: Linux and macOS came first,
+and nothing was built in a way Windows cannot take. How Windows is reached has been talked through (design/04,
+"Windows, the direction"): Windows 10 and 11 on x86-64 and 64-bit Arm, tested on GitHub's machines with Windows,
+two slices of what every system gains first, then six slices of Windows, and a preview of the language after them.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is

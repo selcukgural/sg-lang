@@ -6717,3 +6717,12 @@ serial port and takes interrupts of the timer, its devices driven in SG and only
 core in C, and links with nothing but its own object (914-927). With it, every program of the threshold
 runs and is tested, so the threshold of 04 is reached. Next is Windows, talked through (718), and then a
 preview of the language.
+
+Windows has been talked through (04, "Windows, the direction", choices 928-942): Windows 10 and 11 on
+x86-64 and 64-bit Arm, built by Clang with C's library inside the program, tested by GitHub's machines with
+Windows on every push to its branch. What does not need Windows comes first, on Linux and macOS: the
+ninety-fifth slice brings `CLong` and `CULong` (C's `long`, 32 bits on Windows), `Path.joinInside`,
+`ExitStatus.Code(int)`, `C.lastError()` and `IoError.fromErrno`; the ninety-sixth `-L`, an `extern` block
+named by several names of its library, `sg test --compiled` without `fork`, and a count of the runtime's
+blocks that reports a leak on every system. Then six slices of Windows: the base, threads and tasks, the
+network, other programs and signals, C, and everything tested and measured on both machines.
