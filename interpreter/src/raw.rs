@@ -476,6 +476,9 @@ pub fn shape_for(name: &str, plain: &PlainTypes, abi: Abi) -> Shape {
         }
     }
     let align = align.max(decl.align);
+    // A struct with no fields holds one byte (`c_definition`), as in C++, so that C's compiler
+    // and C++'s lay it out alike and no value has the size 0 (choice 1335).
+    let end = end.max(8);
     Shape { size: end.div_ceil(8).next_multiple_of(align), align, places }
 }
 
@@ -507,6 +510,10 @@ pub fn c_definition(name: &str, decl: &Plain, c_type: &dyn Fn(&Ty) -> String, me
         });
     }
     members.extend(decl.gaps.iter().filter(|found| found.0 == decl.fields.len()).map(gap));
+    // A struct with no fields, which C does not have and C++ gives one byte, holds one byte.
+    if members.is_empty() {
+        members.push_str(" char sg_empty;");
+    }
     let kind = if decl.union { "union" } else { "struct" };
     let aligned = if decl.align > 0 { format!(" SG_ALIGNED({})", decl.align) } else { String::new() };
     let text = format!("typedef {kind}{aligned} {name} {{{members} }} {name};\n");

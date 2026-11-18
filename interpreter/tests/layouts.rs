@@ -56,6 +56,9 @@ fn cases() -> Vec<(&'static str, Plain)> {
         ("Wider", Plain { align: 32, union: true, ..plain(&[f(int(Short)), f(named("Signed"))], &[]) }),
         // C's `long`: 4 bytes on Windows, 8 elsewhere.
         ("Longs", plain(&[f(int(Byte)), f(int(CLong)), f(int(Ushort)), f(int(CULong)), f(int(Byte))], &[])),
+        // No fields: one byte, as C++ has it (choice 1335), and a struct that holds it.
+        ("Empty", plain(&[], &[])),
+        ("Marked", plain(&[f(named("Empty")), f(int(Int)), f(Ty::Array(Box::new(named("Empty")), 3)), f(int(Long))], &[])),
     ]
 }
 

@@ -1,0 +1,32 @@
+// A struct with no fields takes one byte, as in C++: C's compiler and C++'s then lay out a struct
+// that holds it alike, and a list of them grows as any other.
+struct Marker : Copyable {
+}
+
+struct Message : Copyable {
+    Marker kind
+    int code
+    Marker[3] marks
+    long value
+}
+
+void main() {
+    var markers = List<Marker>()
+    for _ in 0..5 {
+        markers.add(Marker {})
+    }
+    print(markers.length())
+    var more = Marker[3] { Marker {}, Marker {}, Marker {} }
+    markers.addAll(read more)
+    print(markers.length())
+    markers.reverse()
+    _ = markers.removeLast()
+    print(markers.length())
+    var fresh = List<Marker>()
+    fresh.addAll(read more)
+    print(fresh.length())
+    print(Memory.sizeOf<Marker>())
+    print(Memory.sizeOf<Message>())
+    var message = Message { kind = Marker {}, code = 7, marks = more, value = 1234567890123 }
+    print($"{message.code} {message.value}")
+}

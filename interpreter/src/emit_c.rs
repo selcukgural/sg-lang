@@ -13529,6 +13529,13 @@ impl<'a> Emitter<'a> {
             let _ = writeln!(forgets, "    v->sg_gone = 1;");
         }
         fields.push_str(&gaps_before(decl.fields.len()));
+        // A struct with no fields holds one byte, as in C++ (C has no such struct; GCC and Clang
+        // give it the size 0, which a list of them divided by): `Memory.sizeOf` is 1, in the
+        // interpreter too (`raw::shape_for`), and C and C++ lay out a struct that holds it alike
+        // (choice 1335).
+        if fields.is_empty() {
+            fields.push_str("    char sg_empty;\n");
+        }
         // A union, `align(N)` and `packed`, as every compiler of C reads them.
         let kind = if decl.layout.union { "union" } else { "struct" };
         let aligned = decl.layout.align.map(|(align, _)| format!(" SG_ALIGNED({align})")).unwrap_or_default();

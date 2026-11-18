@@ -7918,6 +7918,19 @@ Each is written here with its fix, and each fix came after a test that showed th
      threads). `cargo test` passes on macOS and on Linux in a container (395 of 1642 programs compile through C,
      96 of them under the thread sanitizer: the 6 with an `export` function are new there); on Windows on Arm
      `libraries` passes.
+1335. **A struct with no fields holds one byte**, as in C++, in compiled code, in the header of a library
+     and in the interpreter: `Memory.sizeOf<Marker>()` is 1. C has no struct without fields: GCC and Clang
+     gave it the size 0, so a list of them that grew from an array (`addAll`) divided by 0, which C leaves
+     undefined (on macOS on Arm the program ended with no message), and a block grown to 0 bytes may be `NULL`
+     (glibc), which the runtime takes for memory that ran out; Microsoft's compiler gives it 4, so a struct
+     that held one was laid out otherwise there than in the interpreter; and a program of C++ that read the
+     header laid out a struct holding one otherwise than the library. Now C gets `char sg_empty;` in it.
+     Rust gives it the size 0, and handles a list of such values apart; one byte keeps every list and
+     every layout of SG as they are. Tested by `ok_empty_struct` (a list of them grown, reversed and
+     emptied, and a struct that holds them, with their sizes) and in `tests/layouts.rs` (the layout of a
+     struct with no fields and of one that holds it, against the C compilers of every system; without the fix
+     it fails). `cargo test` passes on macOS and on Linux in a container (396 of 1643 programs compile through
+     C); on Windows on Arm `ok_empty_struct` gives the same output interpreted and compiled, and `layouts` passes.
 
 ## Slower than C, and could be better
 
@@ -8469,5 +8482,6 @@ were not usages refused; an output closed early ends a program the same way inte
 (1318-1330); a review of the soundness of the checker, the boundary of `unsafe` and C, the C runtime and the
 tool runs beside it. The hundred-and-sixteenth fixes what that review found, first the small faults, each in
 one place: the files a build makes on the way are in a folder only its user opens (1332, 1333); an `export`
-function is called from any thread, and C's names are not taken by one (1334). The next two
+function is called from any thread, and C's names are not taken by one (1334); a struct with no fields
+holds one byte (1335). The next two
 fix the rules of borrowing; then fuzzing and mutants of the rules of safety (1323-1325).
