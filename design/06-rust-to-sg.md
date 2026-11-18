@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 18 November 2026, the hundred-and-eighth slice.
+Last brought up to date: 18 November 2026, the hundred-and-ninth slice.
 
 ## Functions and variables
 
@@ -348,6 +348,11 @@ Last brought up to date: 18 November 2026, the hundred-and-eighth slice.
 | `BufReader::new(File::open(p)?)` | `File.openText(p)` | built | A `StreamReader` |
 | `reader.read_line(&mut s)`, `reader.lines()` | `reader.readLine(ref line)`, `reader.lines()` | built | |
 | `BufWriter::new(File::create(p)?)` | `File.createText(p)` | built | A `StreamWriter` |
+| `OpenOptions::new().write(true).create(true).open(p)?` | `File.openWrite(p)` | built | A `StreamWriter` from the start, over what the file holds |
+| `file.seek(SeekFrom::Start(n))?` | `try reader.seek(SeekFrom.Start(n))`, `try writer.seek(...)` | built | `End(n)` and `Current(n)` too; gives the new place as a `long`. `Start` holds a `long`, and a place before the start is `InvalidInput`. A reader moves inside its block without the system for `Start` too, where `BufReader` does only for `seek_relative`; a writer writes what it holds first, as `BufWriter` does |
+| `file.stream_position()?` | `try reader.seek(SeekFrom.Current(0))` | built | |
+| `ErrorKind::NotSeekable` | `IoError.NotSeekable` | built | Also a writer of `openAppend`; `Stdin.seek` and `seek` on the reader of a connection are compile errors, where `Stdin` has no `Seek` in Rust |
+| `tokio::io::AsyncSeekExt::seek` on a `BufWriter` | `try await writer.seekAsync(from)` | built | A reader seeks as it is in an async function, since it neither reads nor writes |
 | `writeln!(w, "{}", x)?` | `try w.writeLine(x)` | built | |
 | a `BufWriter` dropped (its error lost) | `try w.close()` | built | A writer not closed on every path is a compile error |
 | `io::stdin()`, `io::stdout()` | `Stdin`, `Stdout`, `Stderr` | built | |
@@ -362,6 +367,7 @@ Last brought up to date: 18 November 2026, the hundred-and-eighth slice.
 | `fs::read_dir(p)`, `entry.file_name()`, `entry.file_type()` | `try Directory.list(read p)`, `entry.name`, `entry.kind` | built | A `List<DirectoryEntry>` in the order of the bytes of the names, where Rust gives the order of the system; a name that is not UTF-8 is an `InvalidText`, where Rust gives an `OsString` |
 | `env::current_dir()`, `env::temp_dir()` | `Directory.current()`, `Directory.temp()` | built | There is no `set_current_dir`: every thread would see it change |
 | `tempfile::tempdir()` | `Directory.createTemp()` | built | In the language, not a crate: `mkdtemp`, a folder only the user can go into; removing it is the program's work |
+| `tempfile::NamedTempFile::new()` | `File.createTemp()` | built | `mkstemp`, a file only the user can open; it gives the path, and removing the file is the program's work: nothing deletes it when it ends |
 | `path.join(name)`, `path.file_name()`, `path.extension()`, `path.parent()` | `Path.join(read path, name)`, `Path.fileName(read path)`, `Path.extension(read path)`, `Path.parent(read path)` | built | A path is a `string`. A second path that starts with a root is put after the first, the root left out, where Rust's `join` puts it in its place; the extension keeps its `.`, as in C#. On Windows `/` and `\` both separate, `join` writes `\`, and `C:\`, `C:` and `\\server\share\` are roots, as Rust reads them |
 | `cfg!(windows)`, `cfg!(target_os = "linux")`, `cfg!(target_os = "macos")` | `OperatingSystem.isWindows()`, `isLinux()`, `isMacOS()` | built | Known when the program is built, as `cfg!` is: both branches are checked on every system and only one is compiled. There is no `#[cfg]` that leaves code unchecked |
 | a check of each component of a name from outside before `path.join(name)` (Go's `filepath.IsLocal`) | `try Path.joinInside(read folder, name)` | built | An `InvalidInput`, the same on every system, for `..`, a root, a `\`, a `:`, a part that ends with `.` or a space, a control character and the devices of Windows; a link inside the folder is still followed |

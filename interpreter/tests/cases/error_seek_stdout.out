@@ -1,0 +1,5 @@
+error: `Stdout` is the output of the program, which goes only forward
+  a file opened with `File.createText(path)` or `File.openWrite(path)` can seek
+  --> error_seek_stdout.sg:3:13
+ 3 |     _ = try Stdout.seek(SeekFrom.End(0))
+   |             ^^^^^^

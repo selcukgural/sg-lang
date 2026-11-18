@@ -1,5 +1,6 @@
 // Folders, and what the system knows of a file: `Directory`, `DirectoryEntry`, `FileInfo` and
-// `FileKind`; `File.info(path)` and `File.exists(path)` are done here too. Written in SG and brought
+// `FileKind`; `File.info(path)`, `File.exists(path)` and `File.createTemp()` are done here too, and
+// `SeekFrom`, which `seek` takes, is here. Written in SG and brought
 // along by the language; only the calls of the system (`System.list`, `System.status` and the
 // others) are the compiler's own, and only this module can call them.
 
@@ -10,6 +11,15 @@ public enum FileKind : Copyable, Equatable, Hashable, Formattable {
     Directory
     Link
     Other
+}
+
+// Where `seek` puts a reader or a writer of a file: so many bytes from the start of the file, from its
+// end, or from where the stream stands. A place before the start is `InvalidInput`; one after the end
+// is no error: a read there finds the end, and a write there leaves zero bytes before what it writes.
+public enum SeekFrom : Copyable, Equatable, Formattable {
+    Start(long offset)
+    End(long offset)
+    Current(long offset)
 }
 
 // The kind as the system call gives it.
@@ -35,6 +45,15 @@ public struct FileInfo : Copyable, Equatable, Formattable {
         var fields = long[3]
         try System.status(path, ref fields)
         return Ok(FileInfo { kind = kindOf(fields[0]), size = fields[1], modified = DateTime { ns = fields[2] } })
+    }
+
+    // `File.createTemp()`: a new empty file with a name nobody else has, inside `Directory.temp()`, that
+    // only the user of the program can read and write, and gives its path. Removing it is the
+    // program's work (`File.delete`).
+    Result<string, IoError> makeTemp() {
+        var folder = Directory.temp()
+        var template = Path.join(read folder, "sg-XXXXXX")
+        return System.makeTempFile(read template)
     }
 
     // `File.exists(path)`: whether the path names a file, a link followed. A folder is not a file, and

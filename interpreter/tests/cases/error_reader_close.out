@@ -1,5 +1,5 @@
 error: `StreamReader` has no method `close`
-  methods: readLine, readText, lines, readBytes, readSome
+  methods: readLine, readText, lines, readBytes, readSome, seek
   a reader has nothing to lose: its file is closed when it ends
   --> error_reader_close.sg:4:7
  4 |     r.close()

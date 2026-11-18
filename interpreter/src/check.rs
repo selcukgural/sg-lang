@@ -30,7 +30,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error", "embed"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "Path", "Environment", "VariableError", "OperatingSystem"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "SeekFrom", "Path", "Environment", "VariableError", "OperatingSystem"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -451,7 +451,7 @@ const IO_ERROR: &str = "IoError";
 /// The built-in `enum IoError : Copyable, Formattable, Equatable { NotFound, PermissionDenied,
 /// IsDirectory, NoSpace, InvalidText(long position), Other(int code), Cancelled(Cancelled
 /// cancelled), ConnectionRefused, ConnectionReset, AddressInUse, HostNotFound, LineTooLong,
-/// AlreadyExists, NotDirectory, DirectoryNotEmpty, InvalidInput, MessageTooLong }`. The first four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
+/// AlreadyExists, NotDirectory, DirectoryNotEmpty, InvalidInput, MessageTooLong, NotSeekable }`. The first four are what a program most often tells apart; `InvalidText` is a byte that is not UTF-8
 /// where text was read, counted from the start of the file or of the input; `Other` keeps the
 /// code the system gave; `Cancelled` is async input or output whose token was cancelled, and
 /// lets `try` turn the error of `token.check()` into an `IoError`. The last four are the
@@ -463,7 +463,9 @@ const IO_ERROR: &str = "IoError";
 /// (or a link where a folder was to be removed); `DirectoryNotEmpty`: a folder to be removed
 /// holds something. `InvalidInput`: what was given cannot be handed to the system, as an
 /// argument of a program with a zero byte in it. `MessageTooLong`: a datagram the system cannot
-/// send as one message, or one longer than the buffer it was received into.
+/// send as one message, or one longer than the buffer it was received into. `NotSeekable`: `seek`
+/// on a stream that is not a file opened by `File` (a pipe, the input of the program), or on a
+/// writer that writes at the end (`File.openAppend`).
 fn io_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
@@ -490,6 +492,7 @@ fn io_error() -> EnumDecl {
         variant("DirectoryNotEmpty", Vec::new()),
         variant("InvalidInput", Vec::new()),
         variant("MessageTooLong", Vec::new()),
+        variant("NotSeekable", Vec::new()),
     ];
     EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, numbers: None, variants, methods: Vec::new() }
 }
@@ -10270,10 +10273,18 @@ impl<'a> Checker<'a> {
                 }
                 0
             }
+            // A writer writes what it holds before it moves, so it seeks as a task; a reader only
+            // asks the system where the file stands, quick as `File.delete`, and has no async seek.
+            (Ty::Writer, "seek") => 1,
+            (_, "seek") => {
+                let stream = &self.src[recv.span.start..recv.span.end];
+                return Err(Diag::error(name_span, "`StreamReader` has no async `seek`")
+                    .note(format!("moving a reader is quick and is made as it is, also in an async function: `{stream}.seek(...)`")));
+            }
             _ => {
                 let known: &[&str] = match target {
                     Ty::Reader(_) => &["readLineAsync", "readTextAsync", "readBytesAsync", "readSomeAsync"],
-                    _ => &["writeAsync", "writeLineAsync", "writeBytesAsync", "flushAsync", "closeAsync"],
+                    _ => &["writeAsync", "writeLineAsync", "writeBytesAsync", "flushAsync", "closeAsync", "seekAsync"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 return Err(match nearest(name, known.iter().copied()) {
@@ -10568,6 +10579,7 @@ impl<'a> Checker<'a> {
             ("File", "openText") => (IoCall::OpenText, vec![text()], Ty::Reader(false)),
             ("File", "createText") => (IoCall::CreateText, vec![text()], Ty::Writer),
             ("File", "openAppend") => (IoCall::OpenAppend, vec![text()], Ty::Writer),
+            ("File", "openWrite") => (IoCall::OpenWrite, vec![text()], Ty::Writer),
             ("File", "delete" | "move" | "replace" | "copy") if !is_async => {
                 let (call, params) = match base {
                     "delete" => (SystemCall::Delete, vec![text()]),
@@ -10579,23 +10591,28 @@ impl<'a> Checker<'a> {
                 *callee = Callee::System(call);
                 return Ok(Ty::Result(Box::new(Ty::Void), Box::new(Ty::Enum(IO_ERROR.to_string()))));
             }
-            // Done in the language's own module: `File.info(path)` is `FileInfo.of(path)`.
-            ("File", "info" | "exists") if !is_async => {
+            // Done in the language's own module: `File.info(path)` is `FileInfo.of(path)`, and
+            // `File.createTemp()` is `FileInfo.makeTemp()`.
+            ("File", "info" | "exists" | "createTemp") if !is_async => {
                 let owner = format!("{STD_MODULE}.FileInfo");
-                let inner = if base == "info" { "of" } else { "isFile" };
+                let inner = match base {
+                    "info" => "of",
+                    "exists" => "isFile",
+                    _ => "makeTemp",
+                };
                 let Some(sig) = self.methods_of(&owner).get(inner) else { unreachable!("a program that names `File.{base}` gets the file of `FileInfo`") };
                 self.args(name, args, &sig.params, span)?;
                 *callee = Callee::Static { owner, name: inner.to_string() };
                 return Ok(sig.ret.clone());
             }
-            ("File", "delete" | "move" | "replace" | "copy" | "info" | "exists") => {
+            ("File", "delete" | "move" | "replace" | "copy" | "info" | "exists" | "createTemp") => {
                 return Err(Diag::error(name_span, format!("`File.{base}` has no async version"))
                     .note(format!("the calls of the file system are quick and are made as they are, also in an async function: `File.{base}(...)`")));
             }
             _ => {
                 let known: &[&str] = match is_async {
-                    true => &["readTextAsync", "readBytesAsync", "writeTextAsync", "writeBytesAsync", "appendTextAsync", "openTextAsync", "createTextAsync", "openAppendAsync"],
-                    false => &["readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "createText", "openAppend", "delete", "move", "replace", "copy", "info", "exists"],
+                    true => &["readTextAsync", "readBytesAsync", "writeTextAsync", "writeBytesAsync", "appendTextAsync", "openTextAsync", "createTextAsync", "openAppendAsync", "openWriteAsync"],
+                    false => &["readText", "readBytes", "writeText", "writeBytes", "appendText", "openText", "createText", "openAppend", "openWrite", "delete", "move", "replace", "copy", "info", "exists", "createTemp"],
                 };
                 let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
                 return Err(match nearest(name, known.iter().copied()) {
@@ -10633,6 +10650,7 @@ impl<'a> Checker<'a> {
             "status" => (SystemCall::Status, vec![text(), Ty::Ref(Box::new(Ty::Slice(Box::new(Ty::Int(IntTy::Long)))))], io(Ty::Void)),
             "current" => (SystemCall::Current, Vec::new(), io(Ty::Str)),
             "makeTemp" => (SystemCall::MakeTemp, vec![text()], io(Ty::Str)),
+            "makeTempFile" => (SystemCall::MakeTempFile, vec![text()], io(Ty::Str)),
             "tempFolder" => (SystemCall::TempFolder, Vec::new(), io(Ty::Str)),
             "variable" => (SystemCall::Variable, vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))], Ty::Bool),
             "executable" => (SystemCall::Executable, vec![text()], Ty::Int(IntTy::Long)),
@@ -12198,10 +12216,11 @@ impl<'a> Checker<'a> {
             (Ty::Writer, "writeBytes") => StreamCall::WriteBytes,
             (Ty::Writer, "flush") => StreamCall::Flush,
             (Ty::Writer, "close") => StreamCall::Close,
+            (_, "seek") => StreamCall::Seek,
             _ => {
                 let known: &[&str] = match target {
-                    Ty::Reader(_) => &["readLine", "readText", "lines", "readBytes", "readSome"],
-                    _ => &["write", "writeLine", "writeBytes", "flush", "close"],
+                    Ty::Reader(_) => &["readLine", "readText", "lines", "readBytes", "readSome", "seek"],
+                    _ => &["write", "writeLine", "writeBytes", "flush", "close", "seek"],
                 };
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 let diag = match nearest(name, known.iter().copied()) {
@@ -12210,7 +12229,7 @@ impl<'a> Checker<'a> {
                 };
                 return Err(match (target, name) {
                     (Ty::Reader(_), "close") => diag.note("a reader has nothing to lose: its file is closed when it ends"),
-                    (Ty::Reader(_), "write" | "writeLine" | "writeBytes" | "flush") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)` and `File.openAppend(path)` give a `StreamWriter`"),
+                    (Ty::Reader(_), "write" | "writeLine" | "writeBytes" | "flush") => diag.note("a `StreamReader` reads; `Stdout`, `Stderr`, `File.createText(path)`, `File.openWrite(path)` and `File.openAppend(path)` give a `StreamWriter`"),
                     (Ty::Writer, "readLine" | "readText" | "lines" | "readBytes" | "readSome") => diag.note("a `StreamWriter` writes; `Stdin` and `File.openText(path)` give a `StreamReader`"),
                     _ => diag,
                 });
@@ -12234,11 +12253,28 @@ impl<'a> Checker<'a> {
             recv.moved = true;
             return Ok(result(Ty::Void));
         }
-        if !writable {
-            if let Some(diag) = self.readonly(recv) {
-                return Err(diag.note(format!("`{shown}` goes on from where the stream is")));
+        if call == StreamCall::Seek {
+            if let ExprKind::Var(var) = &recv.kind {
+                if let Some(what) = std_stream(var) {
+                    let opened = if var == "Stdin" { "`File.openText(path)`" } else { "`File.createText(path)` or `File.openWrite(path)`" };
+                    return Err(Diag::error(recv.span, format!("`{var}` is {what} of the program, which goes only forward"))
+                        .note(format!("a file opened with {opened} can seek")));
+                }
             }
-            return Err(self.read_only(recv, Diag::error(recv.span, format!("`{shown}` goes on from where the stream is, but it is reached through a `read` borrow"))
+            if *target == Ty::Reader(true) {
+                return Err(Diag::error(recv.span, "the reader of a connection cannot seek: what has come over the network goes only forward")
+                    .note("a file opened with `File.openText(path)` can seek"));
+            }
+        }
+        if !writable {
+            let what = match call {
+                StreamCall::Seek => "moves the stream",
+                _ => "goes on from where the stream is",
+            };
+            if let Some(diag) = self.readonly(recv) {
+                return Err(diag.note(format!("`{shown}` {what}")));
+            }
+            return Err(self.read_only(recv, Diag::error(recv.span, format!("`{shown}` {what}, but it is reached through a `read` borrow"))
                 .hint(format!("take it as `ref {target}` instead of `read {target}`"))));
         }
         let ty = match call {
@@ -12275,6 +12311,21 @@ impl<'a> Checker<'a> {
             StreamCall::Flush | StreamCall::Close => {
                 arity(0)?;
                 result(Ty::Void)
+            }
+            StreamCall::Seek => {
+                arity(1)?;
+                let from = Ty::Enum(format!("{STD_MODULE}.SeekFrom"));
+                let known = self.enums.contains_key(&format!("{STD_MODULE}.SeekFrom"));
+                let ty = match known {
+                    true => self.operand(&mut args[0], Some(&from))?,
+                    false => self.operand(&mut args[0], None)?,
+                };
+                if ty != from {
+                    let given = &self.src[args[0].span.start..args[0].span.end];
+                    return Err(Diag::error(args[0].span, format!("`seek` takes a `SeekFrom`, and this is `{ty}`"))
+                        .hint(format!("`SeekFrom.Start({given})` counts from the start of the file; `End` from its end, `Current` from where it stands")));
+                }
+                result(Ty::Int(IntTy::Long))
             }
         };
         self.not_locked(recv, Access::Write)?;

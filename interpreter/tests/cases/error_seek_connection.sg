@@ -1,0 +1,9 @@
+// What has come over the network is not kept: the reader of a connection cannot seek.
+Result<void, IoError> first(ref TcpStream conn) {
+    var reader = conn.reader()
+    _ = try reader.seek(SeekFrom.Start(0))
+    return Ok()
+}
+
+void main() {
+}

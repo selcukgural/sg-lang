@@ -1,0 +1,10 @@
+// A writer writes what it holds before it moves, which would hold the thread of an async function.
+async Result<void, IoError> run(string path) {
+    var writer = try await File.openWriteAsync(read path)
+    _ = try writer.seek(SeekFrom.Start(0))
+    try await writer.closeAsync()
+    return Ok()
+}
+
+void main() {
+}

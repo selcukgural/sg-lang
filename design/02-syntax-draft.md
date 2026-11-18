@@ -1288,6 +1288,7 @@ public enum IoError : Copyable, Formattable, Equatable {   // built in
     AddressInUse                                 // the address is taken
     HostNotFound                                 // the host could not be found, or it is not `host:port`
     LineTooLong                                  // the reader of a connection met a line longer than its limit
+    NotSeekable                                  // seek on a pipe, the program's input, a writer at the end
 }
 
 Result<void, IoError> main(List<string> args) {  // the words after the program's name
@@ -1329,6 +1330,34 @@ Result<void, IoError> main(List<string> args) {  // the words after the program'
     return Ok()
 }
 ```
+
+A reader and a writer of a file move with `seek`, which takes a `SeekFrom` and gives the new place, counted from the
+start of the file (Rust's `Seek`). `File.openWrite` writes from the start over what a file holds, so a part of it can
+be written again; `File.createText` empties it, and a writer of `File.openAppend` writes only at the end and cannot
+seek:
+
+```
+var writer = try File.createText("table.bin")
+try writer.write("size=????\n")                  // the size is known only at the end
+try writer.write(read body)
+var size = try writer.seek(SeekFrom.End(0))      // what the buffer held is written first
+_ = try writer.seek(SeekFrom.Start(5))           // the place is a value: dropped on purpose
+try writer.write($"{size:D4}")
+try writer.close()
+
+var reader = try File.openText("table.bin")
+_ = try reader.seek(SeekFrom.End(-16))           // the last 16 bytes; inside the block, the system is not asked
+var here = try reader.seek(SeekFrom.Current(0))  // where it stands
+var before = reader.seek(SeekFrom.Start(-1))     // Error(InvalidInput); a place past the end is no error
+_ = Stdin.seek(SeekFrom.Start(0))                // error: the input of the program goes only forward
+
+var patch = try File.openWrite("table.bin")      // keeps what the file holds; made if missing
+try patch.write("SIZE")
+try patch.close()
+```
+
+In an async function a reader seeks as it is, since it only asks the system where the file stands; a writer writes
+what it holds first, so there it is `await writer.seekAsync(from)`, with a token that may come last.
 
 `Stdin` is a `StreamReader`, and `Stdout` and `Stderr` are `StreamWriter`s. Every function has them, as if the program
 had lent them as `ref` parameters, so one function serves a file and the program's own streams:
@@ -1937,6 +1966,7 @@ var info = try File.info(read final)           // info.kind, info.size, info.mod
 try Directory.deleteAll(read scratch)          // a link inside is removed, not followed
 
 var work = try Directory.createTemp()          // a new folder only this user can go into
+var scratch = try File.createTemp()            // a new empty file only this user can open; deleting it is ours
 var home = Environment.get("HOME") ?? "/"      // a Result<string, VariableError>
 ```
 

@@ -20,7 +20,7 @@ pub const STD_MODULE: &str = "std";
 const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("time.sg", include_str!("std/time.sg"), &["Duration", "Instant", "DateTime", "DayOfWeek", "DateError"]),
     ("random.sg", include_str!("std/random.sg"), &["Random", "SecureRandom"]),
-    ("files.sg", include_str!("std/files.sg"), &["Directory", "DirectoryEntry", "FileInfo", "FileKind"]),
+    ("files.sg", include_str!("std/files.sg"), &["Directory", "DirectoryEntry", "FileInfo", "FileKind", "SeekFrom"]),
     ("path.sg", include_str!("std/path.sg"), &["Path"]),
     ("environment.sg", include_str!("std/environment.sg"), &["Environment", "VariableError"]),
     ("process.sg", include_str!("std/process.sg"), &["Command", "Process", "ExitStatus", "ProcessError"]),
@@ -30,9 +30,9 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
 ];
 
 /// The functions of the built-in `File` that the language's own module does the work of
-/// (`File.info(path)` is `FileInfo`'s): a program that names `File` and one of them gets the file
-/// of `FileInfo`.
-pub const STD_FILE_CALLS: &[&str] = &["info", "exists"];
+/// (`File.info(path)` and `File.createTemp()` are `FileInfo`'s): a program that names `File` and
+/// one of them gets the file of `FileInfo`.
+pub const STD_FILE_CALLS: &[&str] = &["info", "exists", "createTemp"];
 
 /// The methods of the built-in `TcpStream` that the language's own module does the work of
 /// (`stream.remoteAddress()` gives a `SocketAddress`): a program that names one gets the file of

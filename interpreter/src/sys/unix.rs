@@ -285,13 +285,24 @@ pub(crate) fn remove_all(path: &str) -> std::io::Result<()> {
     std::fs::remove_dir_all(path)
 }
 
-/// `mkdtemp`: a new folder that only the user can go into, its name made from the template.
-pub(crate) fn make_temp(template: &str) -> std::io::Result<String> {
+/// `mkdtemp`: a new folder that only the user can go into, its name made from the template; with
+/// `file`, `mkstemp`: a new empty file only the user may read and write, closed again.
+pub(crate) fn make_temp(template: &str, file: bool) -> std::io::Result<String> {
     extern "C" {
         fn mkdtemp(template: *mut std::ffi::c_char) -> *mut std::ffi::c_char;
+        fn mkstemp(template: *mut std::ffi::c_char) -> std::ffi::c_int;
+        fn close(fd: std::ffi::c_int) -> std::ffi::c_int;
     }
     let mut name = c_path(template).into_bytes_with_nul();
-    if unsafe { mkdtemp(name.as_mut_ptr().cast()) }.is_null() {
+    if file {
+        // SAFETY: the name ends with a zero, and the system writes only over its `XXXXXX`.
+        let fd = unsafe { mkstemp(name.as_mut_ptr().cast()) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: the descriptor was just opened and is closed once.
+        unsafe { close(fd) };
+    } else if unsafe { mkdtemp(name.as_mut_ptr().cast()) }.is_null() {
         return Err(std::io::Error::last_os_error());
     }
     name.pop();
@@ -322,6 +333,8 @@ pub(crate) fn io_kind(code: i32) -> usize {
         _ if code == REFUSED => 7,
         _ if RESET.contains(&code) || code == 32 || code == NOT_CONNECTED => 8,
         MESSAGE_TOO_LONG => 16,
+        // ESPIPE: a pipe cannot seek.
+        29 => 17,
         _ if code == IN_USE => 9,
         _ if code == NOT_EMPTY => 14,
         // ENOENT

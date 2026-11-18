@@ -6456,7 +6456,7 @@ static int sg_proc_start(sg_str path, const sg_string* words, int64_t count, sg_
 }
 /* The writer of the input of a program that `start` started. */
 static sg_writer sg_proc_writer(int64_t fd) {
-    return (sg_writer){ (int)fd, 0, 0, { (uint8_t*)"", 0, 0 }, 1 };
+    return (sg_writer){ (int)fd, 0, 0, { (uint8_t*)"", 0, 0 }, 1, 0 };
 }
 #else
 #include <poll.h>
@@ -6759,7 +6759,7 @@ static sg_writer sg_proc_writer(int64_t fd) {
 #ifdef F_SETNOSIGPIPE
     fcntl((int)fd, F_SETNOSIGPIPE, 1);
 #endif
-    return (sg_writer){ (int)fd, 0, 0, { (uint8_t*)"", 0, 0 }, 1 };
+    return (sg_writer){ (int)fd, 0, 0, { (uint8_t*)"", 0, 0 }, 1, 0 };
 }
 #endif
 "#;
@@ -7032,13 +7032,14 @@ static int sg_fs_current(uint8_t** bytes, int64_t* len) {
     (free)(w);
     return 0;
 }
-/* A new folder named from the template, its `XXXXXX` made random, that only its owner may open:
-   its list of access has one entry, full access for the owner, and inherits none. */
-static int sg_fs_make_temp(sg_str template, uint8_t** bytes, int64_t* len) {
+/* A new folder, or with `file` a new empty file, named from the template, its `XXXXXX` made
+   random, that only its owner may open: its list of access has one entry, full access for the
+   owner, and inherits none. */
+static int sg_fs_make_temp(sg_str template, bool file, uint8_t** bytes, int64_t* len) {
     static const char letters[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     if (template.len < 6 || memcmp(template.ptr + template.len - 6, "XXXXXX", 6) != 0) return ERROR_INVALID_PARAMETER;
     PSECURITY_DESCRIPTOR descriptor = NULL;
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;OICI;FA;;;OW)", SDDL_REVISION_1, &descriptor, NULL)) return sg_win_error();
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(file ? L"D:P(A;;FA;;;OW)" : L"D:P(A;OICI;FA;;;OW)", SDDL_REVISION_1, &descriptor, NULL)) return sg_win_error();
     SECURITY_ATTRIBUTES security = { sizeof security, descriptor, FALSE };
     char* name = malloc((size_t)template.len + 1);
     if (!name) abort();
@@ -7051,7 +7052,14 @@ static int sg_fs_make_temp(sg_str template, uint8_t** bytes, int64_t* len) {
         for (int i = 0; i < 6; i++) name[template.len - 6 + i] = letters[random[i] % (sizeof letters - 1)];
         wchar_t* w = sg_wide((sg_str){ (const uint8_t*)name, template.len }, &code);
         if (!w) break;
-        code = CreateDirectoryW(w, &security) ? 0 : sg_win_refine(w, sg_win_error());
+        if (file) {
+            HANDLE h = CreateFileW(w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &security, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+            code = h != INVALID_HANDLE_VALUE ? 0 : sg_win_refine(w, sg_win_error());
+            if (!code) CloseHandle(h);
+            if (code == ERROR_FILE_EXISTS) code = ERROR_ALREADY_EXISTS;
+        } else {
+            code = CreateDirectoryW(w, &security) ? 0 : sg_win_refine(w, sg_win_error());
+        }
         free(w);
     }
     LocalFree(descriptor);
@@ -7347,12 +7355,17 @@ static int sg_fs_current(uint8_t** bytes, int64_t* len) {
         cap *= 2;
     }
 }
-/* `mkdtemp`: a new folder that only the user can go into, named from the template. */
-static int sg_fs_make_temp(sg_str template, uint8_t** bytes, int64_t* len) {
+/* `mkdtemp`: a new folder that only the user can go into, named from the template; with `file`,
+   `mkstemp`: a new empty file only the user may read and write, closed again. */
+static int sg_fs_make_temp(sg_str template, bool file, uint8_t** bytes, int64_t* len) {
     int code = 0;
     char* name = sg_path(template, &code);
     if (!name) return code;
-    if (!mkdtemp(name)) { code = sg_os_error(); free(name); return code; }
+    if (file) {
+        int fd = mkstemp(name);
+        if (fd < 0) { code = sg_os_error(); free(name); return code; }
+        close(fd);
+    } else if (!mkdtemp(name)) { code = sg_os_error(); free(name); return code; }
     *bytes = (uint8_t*)name;
     *len = (int64_t)strlen(name);
     return 0;
@@ -7390,9 +7403,13 @@ const IO_RUNTIME: &str = r#"
    has a code of its own (10 HostNotFound), and so has a line longer than the limit of the reader
    of a connection (11 LineTooLong). 12 AlreadyExists, 13 NotDirectory, 14 DirectoryNotEmpty; 15 InvalidInput, which only
    the language's own module gives; 16 MessageTooLong, a datagram too long to send whole or for the
-   buffer it was received into. */
+   buffer it was received into; 17 NotSeekable, `seek` on a stream that is not a file opened to
+   seek. The runtime gives these two itself as codes of its own, as it gives a place before the
+   start of a file to `seek` as `InvalidInput`. */
 #define SG_HOST_NOT_FOUND (-10)
 #define SG_LINE_TOO_LONG (-11)
+#define SG_INVALID_INPUT (-15)
+#define SG_NOT_SEEKABLE (-17)
 #if defined(_WIN32)
 /* The codes of Windows, as Rust tells them apart; a code the runtime gives itself is one of them
    too: a folder where a file was is `ERROR_DIRECTORY_NOT_SUPPORTED`, a file where a folder was
@@ -7405,6 +7422,8 @@ static int sg_io_kind(int code) {
     switch (code) {
     case SG_HOST_NOT_FOUND: return 10;
     case SG_LINE_TOO_LONG: return 11;
+    case SG_INVALID_INPUT: return 15;
+    case SG_NOT_SEEKABLE: return 17;
     case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_INVALID_DRIVE: case ERROR_BAD_NETPATH: case ERROR_BAD_NET_NAME: return 0;
     case ERROR_ACCESS_DENIED: case ERROR_WRITE_PROTECT: case ERROR_PRIVILEGE_NOT_HELD: return 1;
     case ERROR_DIRECTORY_NOT_SUPPORTED: return 2;
@@ -7508,13 +7527,14 @@ static int sg_win_refine(const wchar_t* path, int code) {
     return code;
 }
 /* Opens the file for `how`: 0 to read, 1 to write it new (made or emptied), 2 to write after
-   what it holds (made if missing). Others may read, write, rename and delete it meanwhile, as on
+   what it holds (made if missing), 3 to write from its start, keeping what it holds (made if
+   missing). Others may read, write, rename and delete it meanwhile, as on
    Linux and macOS. A folder is `IsDirectory`. Gives 0 and the handle in `*fd`, or the code. */
 static int sg_sys_open(sg_str path, int how, int* fd) {
     int code = 0;
     wchar_t* name = sg_wide(path, &code);
     if (!name) return code;
-    DWORD access = how == 0 ? GENERIC_READ : how == 1 ? GENERIC_WRITE : FILE_APPEND_DATA | SYNCHRONIZE;
+    DWORD access = how == 0 ? GENERIC_READ : how == 2 ? FILE_APPEND_DATA | SYNCHRONIZE : GENERIC_WRITE;
     DWORD disposition = how == 0 ? OPEN_EXISTING : how == 1 ? CREATE_ALWAYS : OPEN_ALWAYS;
     HANDLE h = CreateFileW(name, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, disposition, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
@@ -7536,6 +7556,32 @@ static int64_t sg_sys_size(int fd) {
     LARGE_INTEGER size;
     if (GetFileType(sg_handle(fd)) != FILE_TYPE_DISK || !GetFileSizeEx(sg_handle(fd), &size)) return -1;
     return size.QuadPart;
+}
+/* `seek`: the file goes on from `to`, and `sg_sys_end` gives its size, `sg_sys_where` where it
+   stands. What is not a file on a disk (a pipe, a console) is `NotSeekable`. */
+static int sg_sys_seek(int fd, int64_t to) {
+    HANDLE h = sg_handle(fd);
+    if (GetFileType(h) != FILE_TYPE_DISK) return SG_NOT_SEEKABLE;
+    LARGE_INTEGER d;
+    d.QuadPart = to;
+    return SetFilePointerEx(h, d, NULL, FILE_BEGIN) ? 0 : sg_win_error();
+}
+static int sg_sys_end(int fd, int64_t* size) {
+    HANDLE h = sg_handle(fd);
+    if (GetFileType(h) != FILE_TYPE_DISK) return SG_NOT_SEEKABLE;
+    LARGE_INTEGER n;
+    if (!GetFileSizeEx(h, &n)) return sg_win_error();
+    *size = n.QuadPart;
+    return 0;
+}
+static int sg_sys_where(int fd, int64_t* at) {
+    HANDLE h = sg_handle(fd);
+    if (GetFileType(h) != FILE_TYPE_DISK) return SG_NOT_SEEKABLE;
+    LARGE_INTEGER zero, p;
+    zero.QuadPart = 0;
+    if (!SetFilePointerEx(h, zero, &p, FILE_CURRENT)) return sg_win_error();
+    *at = p.QuadPart;
+    return 0;
 }
 /* The input when it is a console: read as UTF-16 with `ReadConsoleW` and given as UTF-8, a pair
    of UTF-16 cut between two reads kept until it is whole. A Ctrl-Z at the start of a line ends
@@ -7612,13 +7658,32 @@ static int sg_sys_read(int fd, uint8_t* to, int64_t n, int64_t* got) {
 }
 static inline int sg_sys_close(int fd) { return close(fd) == 0 ? 0 : sg_os_error(); }
 static inline bool sg_sys_terminal(int fd) { return isatty(fd); }
+/* `seek`: the file goes on from `to`, and `sg_sys_end` gives its size, `sg_sys_where` where it
+   stands. A pipe or a socket is `NotSeekable` (`ESPIPE`). */
+static int sg_sys_seek(int fd, int64_t to) { return lseek(fd, (off_t)to, SEEK_SET) < 0 ? sg_os_error() : 0; }
+static int sg_sys_end(int fd, int64_t* size) {
+    struct stat info;
+    if (fstat(fd, &info) != 0) return sg_os_error();
+    if (S_ISFIFO(info.st_mode) || S_ISSOCK(info.st_mode)) return SG_NOT_SEEKABLE;
+    *size = (int64_t)info.st_size;
+    return 0;
+}
+static int sg_sys_where(int fd, int64_t* at) {
+    off_t p = lseek(fd, 0, SEEK_CUR);
+    if (p < 0) return sg_os_error();
+    *at = (int64_t)p;
+    return 0;
+}
 static int sg_io_kind(int code) {
     switch (code) {
     case SG_HOST_NOT_FOUND: return 10;
     case SG_LINE_TOO_LONG: return 11;
+    case SG_INVALID_INPUT: return 15;
+    case SG_NOT_SEEKABLE: return 17;
     case ECONNREFUSED: return 7;
     case ECONNRESET: case ECONNABORTED: case EPIPE: case ENOTCONN: return 8;
     case EMSGSIZE: return 16;
+    case ESPIPE: return 17;
     case EADDRINUSE: return 9;
     case ENOENT: return 0;
     case EEXIST: return 12;
@@ -8049,7 +8114,9 @@ static int sg_read_bytes(sg_reader* r, uint8_t* to, int64_t len, int64_t* got) {
             continue;
         }
         if (r->ended) break;
-        if (len - n < 65536 || sg_in_after_fill(r) || SG_FILL_OUT(r)) {
+        /* `n < 0` never holds; it tells GCC so, which otherwise takes the read straight into `to`
+           below to overflow a small buffer (`-Wstringop-overflow`). */
+        if (n < 0 || len - n < 65536 || sg_in_after_fill(r) || SG_FILL_OUT(r)) {
             code = sg_reader_fill(r);
             if (code) break;
             continue;
@@ -8153,10 +8220,11 @@ typedef struct { sg_reader* r; bool done; } sg_read_lines;
    2), written through C's `stdout` and `stderr` so that they keep their order with `print`.
    `failed`: the first error, which every later call gives again. A writer that was moved or
    closed has `fd` -1. `pipe`: the input of another program, written without the signal of a
-   pipe nobody reads (see `sg_write_pipe`). */
-typedef struct { int fd; int std; int failed; sg_string buf; int pipe; } sg_writer;
-static sg_writer sg_stdout __attribute__((unused)) = { 1, 1, 0, { (uint8_t*)"", 0, 0 }, 0 };
-static sg_writer sg_stderr __attribute__((unused)) = { 2, 2, 0, { (uint8_t*)"", 0, 0 }, 0 };
+   pipe nobody reads (see `sg_write_pipe`). `append`: `File.openAppend` opened it, so every write
+   goes to the end, and it cannot seek. */
+typedef struct { int fd; int std; int failed; sg_string buf; int pipe; int append; } sg_writer;
+static sg_writer sg_stdout __attribute__((unused)) = { 1, 1, 0, { (uint8_t*)"", 0, 0 }, 0, 0 };
+static sg_writer sg_stderr __attribute__((unused)) = { 2, 2, 0, { (uint8_t*)"", 0, 0 }, 0, 0 };
 #if !defined(_WIN32)
 static int sg_write_all(int fd, const uint8_t* bytes, int64_t len) {
     while (len > 0) {
@@ -8324,22 +8392,76 @@ static int sg_writer_bytes(sg_writer* w, const uint8_t* bytes, int64_t len) {
     if (code) w->failed = code;
     return code;
 }
-/* `File.createText` makes or empties the file; `File.openAppend` (`append`) makes a missing one
-   and writes after what it holds. */
-static int sg_open_writer(sg_str path, bool append, sg_writer* out) {
+/* `File.createText` (`how` 1) makes or empties the file; `File.openAppend` (2) makes a missing one
+   and writes after what it holds; `File.openWrite` (3) makes a missing one and writes from its
+   start over what it holds. */
+static int sg_open_writer(sg_str path, int how, sg_writer* out) {
 #if defined(_WIN32)
     int fd = 0;
-    int code = sg_sys_open(path, append ? 2 : 1, &fd);
+    int code = sg_sys_open(path, how, &fd);
     if (code) return code;
 #else
     int code = 0;
     char* name = sg_path(path, &code);
     if (!name) return code;
-    int fd = open(name, O_WRONLY | O_CREAT | O_CLOEXEC | (append ? O_APPEND : O_TRUNC), 0666);
+    int fd = open(name, O_WRONLY | O_CREAT | O_CLOEXEC | (how == 1 ? O_TRUNC : how == 2 ? O_APPEND : 0), 0666);
     free(name);
     if (fd < 0) return sg_os_error();
 #endif
-    *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 }, 0 };
+    *out = (sg_writer){ fd, 0, 0, { (uint8_t*)"", 0, 0 }, 0, how == 2 };
+    return 0;
+}
+/* Where `seek` goes: `kind` is the variant of `SeekFrom` (0 `Start`, 1 `End`, 2 `Current`), and
+   `base` where it counts from. A place before the start, or past what a `long` holds, is
+   `InvalidInput`. */
+static int sg_seek_place(int64_t base, int64_t offset, int64_t* to) {
+    if (__builtin_add_overflow(base, offset, to) || *to < 0) return SG_INVALID_INPUT;
+    return 0;
+}
+/* `reader.seek(from)`. Only a file `File.openText` opened seeks: not the input of the program,
+   nor the reader of a connection or of a pipe (`sock`). The block holds the bytes of the file
+   from `done - at` on, so a place inside it is reached without the system; elsewhere the block
+   is let go. What is known to be UTF-8 starts again from the place. */
+static int sg_reader_seek(sg_reader* r, int kind, int64_t offset, int64_t* at) {
+    if (r == &sg_stdin || r->sock) return SG_NOT_SEEKABLE;
+    int64_t base = kind == 2 ? r->done : 0;
+    if (kind == 1) {
+        int code = sg_sys_end(r->fd, &base);
+        if (code) return code;
+    }
+    int64_t to = 0;
+    int code = sg_seek_place(base, offset, &to);
+    if (code) return code;
+    int64_t first = r->done - r->at;
+    if (to >= first && to - first <= r->len) {
+        r->at = to - first;
+    } else {
+        code = sg_sys_seek(r->fd, to);
+        if (code) return code;
+        r->at = r->len = 0;
+    }
+    r->ended = false;
+    r->done = r->checked = to;
+    *at = to;
+    return 0;
+}
+/* `writer.seek(from)`: what the block holds is written first. `Stdout`, `Stderr`, the input of
+   another program and a writer that writes at the end are `NotSeekable`. */
+static int sg_writer_seek(sg_writer* w, int kind, int64_t offset, int64_t* at) {
+    if (w->std || w->pipe || w->append) return SG_NOT_SEEKABLE;
+    if (w->failed) return w->failed;
+    int code = w->buf.len > 0 ? sg_writer_out(w) : 0;
+    if (code) return code;
+    int64_t base = 0;
+    if (kind == 1) code = sg_sys_end(w->fd, &base);
+    else if (kind == 2) code = sg_sys_where(w->fd, &base);
+    if (code) return code;
+    int64_t to = 0;
+    code = sg_seek_place(base, offset, &to);
+    if (code) return code;
+    code = sg_sys_seek(w->fd, to);
+    if (code) return code;
+    *at = to;
     return 0;
 }
 "#;
@@ -15415,7 +15537,8 @@ impl<'a> Emitter<'a> {
                 ),
             ),
             SystemCall::Current => ("sg_system_current", Vec::new(), owned_text("sg_fs_current(&bytes, &n)")),
-            SystemCall::MakeTemp => ("sg_system_make_temp", vec![text()], owned_text("sg_fs_make_temp(a0, &bytes, &n)")),
+            SystemCall::MakeTemp => ("sg_system_make_temp", vec![text()], owned_text("sg_fs_make_temp(a0, false, &bytes, &n)")),
+            SystemCall::MakeTempFile => ("sg_system_make_temp_file", vec![text()], owned_text("sg_fs_make_temp(a0, true, &bytes, &n)")),
             SystemCall::TempFolder => ("sg_system_temp_folder", Vec::new(), owned_text("sg_fs_temp_folder(&bytes, &n)")),
             SystemCall::Executable => ("sg_system_executable", vec![text()], "return sg_proc_executable(a0);".to_string()),
             SystemCall::Run => {
@@ -15646,11 +15769,12 @@ impl<'a> Emitter<'a> {
                     ),
                 )
             }
-            IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend => {
+            IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => {
                 let (fname, open, ctype) = match call {
                     IoCall::OpenText => ("sg_file_open_text", "sg_open_reader(a0, ", "sg_reader"),
-                    IoCall::CreateText => ("sg_file_create_text", "sg_open_writer(a0, false, ", "sg_writer"),
-                    _ => ("sg_file_open_append", "sg_open_writer(a0, true, ", "sg_writer"),
+                    IoCall::CreateText => ("sg_file_create_text", "sg_open_writer(a0, 1, ", "sg_writer"),
+                    IoCall::OpenAppend => ("sg_file_open_append", "sg_open_writer(a0, 2, ", "sg_writer"),
+                    _ => ("sg_file_open_write", "sg_open_writer(a0, 3, ", "sg_writer"),
                 };
                 (fname, vec![text], format!("{ctype} s; int code = {open}&s); if (code) {} return ({gives}){{ .tag = 0, .u.v0 = {{ s }} }};", failed("sg_io_error(code)")))
             }
@@ -15685,6 +15809,19 @@ impl<'a> Emitter<'a> {
             }
             StreamCall::Lines => Ok(format!("((sg_read_lines){{ {}, false }})", self.list_address(recv)?)),
             StreamCall::Flush => Ok(done(&format!("sg_writer_flush({})", self.list_address(recv)?))),
+            // `SeekFrom` holds a `long` in each of its variants (0 `Start`, 1 `End`, 2 `Current`).
+            StreamCall::Seek => {
+                let temp = self.temp();
+                let stream = self.list_address(recv)?;
+                let seek = if recv.ty.strip_borrow() == &Ty::Writer { "sg_writer_seek" } else { "sg_reader_seek" };
+                let from_ty = self.ctype(&args[0].ty, span)?;
+                let from = self.value(&args[0])?;
+                Ok(format!(
+                    "({{ {from_ty} {temp}f = {from}; int64_t {temp}o = {temp}f.tag == 0 ? {temp}f.u.v0.m_offset : {temp}f.tag == 1 ? {temp}f.u.v1.m_offset : {temp}f.u.v2.m_offset; \
+                     int64_t {temp}a = 0; int c_ = {seek}({stream}, (int){temp}f.tag, {temp}o, &{temp}a); \
+                     c_ ? ({gives}){{ .tag = 1, .u.v1 = {{ sg_io_error(c_) }} }} : ({gives}){{ .tag = 0, .u.v0 = {{ {temp}a }} }}; }})"
+                ))
+            }
             // Where several tasks run, a standard stream is written through a block of the call's
             // own (`sg_std_put`); `SG_THREADS` is a constant, so elsewhere the test is gone.
             StreamCall::Write | StreamCall::WriteLine => {
@@ -16227,6 +16364,19 @@ impl<'a> Emitter<'a> {
                 "NULL, 0".to_string()
             }
             StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome | StreamCall::Lines => unreachable!("a reader is read by `await_io`"),
+            // What the writer holds goes out as `flushAsync` writes it; the seek itself is quick.
+            StreamCall::Seek => {
+                let out = self.list_address(recv)?;
+                self.pre.push(format!("sg_writer* {w} = {out};"));
+                let from_ty = self.ctype(&args[0].ty, args[0].span)?;
+                let from = self.value(&args[0])?;
+                self.pre.push(format!("{from_ty} {w}f = {from};"));
+                match token(self, 1)? {
+                    Some(cancelled) => self.pre.push(format!("int {c} = {cancelled} ? -2 : sg_writer_flush_n({w});")),
+                    None => self.pre.push(format!("int {c} = sg_writer_flush_n({w});")),
+                }
+                "NULL, 0".to_string()
+            }
         };
         let awaits = self.awaits.as_mut().expect("`await` is only in async functions");
         awaits.push(span);
@@ -16235,6 +16385,14 @@ impl<'a> Emitter<'a> {
             "if ({c} == -1) {{ sg_io_writer {w}i = sg_io_writer_out({w}, {big}); sg_io_start(&{w}i.io, sg_io_run_writer, {loc}); \
              SG_RESUME({mark}); if (!sg_io_done(&{w}i.io)) {{ return false; }} {c} = {w}i.r; }}"
         ));
+        if call == StreamCall::Seek {
+            self.pre.push(format!(
+                "int64_t {w}a = 0; if ({c} == 0) {c} = sg_writer_seek({w}, (int){w}f.tag, {w}f.tag == 0 ? {w}f.u.v0.m_offset : {w}f.tag == 1 ? {w}f.u.v1.m_offset : {w}f.u.v2.m_offset, &{w}a);"
+            ));
+            return Ok(format!(
+                "({c} == 0 ? ({gives}){{ .tag = 0, .u.v0 = {{ {w}a }} }} : ({gives}){{ .tag = 1, .u.v1 = {{ {c} == -2 ? sg_io_cancelled() : sg_io_error({c}) }} }})"
+            ));
+        }
         Ok(self.writer_result(&c, &gives))
     }
 

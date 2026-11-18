@@ -1,0 +1,5 @@
+error: the reader of a connection cannot seek: what has come over the network goes only forward
+  a file opened with `File.openText(path)` can seek
+  --> error_seek_connection.sg:4:13
+ 4 |     _ = try reader.seek(SeekFrom.Start(0))
+   |             ^^^^^^

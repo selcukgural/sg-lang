@@ -1,0 +1,5 @@
+error: `seek` moves the stream, but it is reached through a `read` borrow
+  --> error_seek_read_borrow.sg:3:12
+ 3 |     return reader.seek(SeekFrom.Start(0))
+   |            ^^^^^^
+  hint: take it as `ref StreamReader` instead of `read StreamReader`

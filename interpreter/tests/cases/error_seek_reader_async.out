@@ -1,0 +1,5 @@
+error: `StreamReader` has no async `seek`
+  moving a reader is quick and is made as it is, also in an async function: `reader.seek(...)`
+  --> error_seek_reader_async.sg:4:26
+ 4 |     _ = try await reader.seekAsync(SeekFrom.Start(0))
+   |                          ^^^^^^^^^

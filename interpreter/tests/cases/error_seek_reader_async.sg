@@ -1,0 +1,9 @@
+// Seeking does not wait: it has no async version.
+async Result<void, IoError> run() {
+    var reader = try await File.openTextAsync("data.txt")
+    _ = try await reader.seekAsync(SeekFrom.Start(0))
+    return Ok()
+}
+
+void main() {
+}

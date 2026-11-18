@@ -1,0 +1,6 @@
+error: `seek` on a file holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_seek_writer_in_async.sg:4:20
+ 4 |     _ = try writer.seek(SeekFrom.Start(0))
+   |                    ^^^^
+  hint: `await writer.seekAsync(...)` does the same work without holding the thread

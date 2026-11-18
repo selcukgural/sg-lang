@@ -689,6 +689,9 @@ pub enum IoCall {
     /// `File.openAppend(path)`: a `StreamWriter` that writes after what the file holds; a
     /// missing file is made.
     OpenAppend,
+    /// `File.openWrite(path)`: a `StreamWriter` from the start of the file, which keeps what it
+    /// holds; a missing file is made.
+    OpenWrite,
 }
 
 /// The calls of the file system and of the environment beyond reading and writing a file. Those
@@ -719,6 +722,9 @@ pub enum SystemCall {
     Current,
     /// `System.makeTemp(template)`: `mkdtemp`.
     MakeTemp,
+    /// `System.makeTempFile(template)`: `mkstemp`, a new empty file only the user may read and
+    /// write, closed again.
+    MakeTempFile,
     /// `System.tempFolder()`: the folder for files that do not have to stay, as Windows gives it.
     TempFolder,
     /// `System.variable(name, ref bytes)`: a variable of the environment, `false` when it is not set.
@@ -811,6 +817,7 @@ impl IoCall {
             IoCall::OpenText => "openText",
             IoCall::CreateText => "createText",
             IoCall::OpenAppend => "openAppend",
+            IoCall::OpenWrite => "openWrite",
         }
     }
 }
@@ -841,6 +848,9 @@ pub enum StreamCall {
     Flush,
     /// `writer.close()`: the buffer goes out and the file is closed; takes the writer.
     Close,
+    /// `reader.seek(from)`, `writer.seek(from)`: where the next read or write starts, given by a
+    /// `SeekFrom`; gives the new place, counted from the start of the file.
+    Seek,
 }
 
 /// A type as written: `read Node*?`

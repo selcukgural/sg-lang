@@ -1,0 +1,7 @@
+// Seeking moves the stream, so it needs it as `ref`.
+Result<long, IoError> start(read StreamReader reader) {
+    return reader.seek(SeekFrom.Start(0))
+}
+
+void main() {
+}

@@ -1,0 +1,6 @@
+// `seek` takes a `SeekFrom`, which says where the number counts from.
+Result<void, IoError> main() {
+    var reader = try File.openText("data.txt")
+    _ = try reader.seek(10)
+    return Ok()
+}

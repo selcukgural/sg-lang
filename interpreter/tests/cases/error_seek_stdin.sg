@@ -1,0 +1,5 @@
+// The input of the program goes only forward.
+Result<void, IoError> main() {
+    _ = try Stdin.seek(SeekFrom.Start(0))
+    return Ok()
+}

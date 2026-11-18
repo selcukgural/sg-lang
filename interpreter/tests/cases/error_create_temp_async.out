@@ -1,0 +1,5 @@
+error: `File.createTemp` has no async version
+  the calls of the file system are quick and are made as they are, also in an async function: `File.createTemp(...)`
+  --> error_create_temp_async.sg:3:31
+ 3 |     var path = try await File.createTempAsync()
+   |                               ^^^^^^^^^^^^^^^

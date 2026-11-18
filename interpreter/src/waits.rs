@@ -311,6 +311,8 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         ExprKind::Call { callee: Callee::Io(call), name_span, .. } | ExprKind::Method { callee: Callee::Io(call), name_span, .. } => {
             Some((*name_span, format!("`File.{}`", call.name())))
         }
+        // A reader seeks without writing or reading: it only asks the system where the file stands.
+        ExprKind::Method { recv, callee: Callee::Stream(StreamCall::Seek), .. } if matches!(recv.ty.strip_borrow(), crate::types::Ty::Reader(_)) => None,
         ExprKind::Method { recv, name, name_span, callee: Callee::Stream(_), .. } => match stream_name(recv) {
             Some("Stdout" | "Stderr") => None,
             Some("Stdin") => Some((*name_span, format!("`Stdin.{name}`"))),

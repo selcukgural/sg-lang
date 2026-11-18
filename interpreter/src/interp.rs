@@ -595,8 +595,8 @@ pub(crate) unsafe extern "C" fn enter(number: std::ffi::c_int, name: *const std:
 
 /// Makes `Stdin`, `Stdout` and `Stderr` for a program that starts.
 fn open_streams() {
-    let writer = |sink| cell(Value::Writer(Rc::new(RefCell::new(Writer { sink, buffer: Vec::new(), failed: None }))));
-    let stdin = cell(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: None, done: 0 }))));
+    let writer = |sink| cell(Value::Writer(Rc::new(RefCell::new(Writer { sink, buffer: Vec::new(), failed: None, seekable: false }))));
+    let stdin = cell(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: None, done: 0, seekable: false }))));
     STREAMS.with(|streams| *streams.borrow_mut() = Some([stdin, writer(Sink::Stdout), writer(Sink::Stderr)]));
     ENDING.with(|ending| ending.set(false));
     PENDING.with(|pending| pending.borrow_mut().clear());
@@ -796,8 +796,11 @@ fn behind(value: &Value) -> Option<Cell> {
 pub struct Reader {
     file: Option<std::io::BufReader<std::fs::File>>,
     net: Option<NetReader>,
-    /// The bytes given out so far: where an `InvalidText` lies.
+    /// The bytes given out so far: where an `InvalidText` lies. For a file it is where the
+    /// reader stands, also after a `seek`.
     done: u64,
+    /// A file `File.openText` opened: `seek` moves it.
+    seekable: bool,
 }
 
 impl Reader {
@@ -867,6 +870,8 @@ pub struct Writer {
     buffer: Vec<u8>,
     /// The first error writing met: every later call gives it again.
     failed: Option<Value>,
+    /// A file `File.createText` or `File.openWrite` opened: `seek` moves it.
+    seekable: bool,
 }
 
 /// A writer that ends without `close` (in a field, a list, after an exit through `try`)
@@ -3127,7 +3132,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     None => READER_LIMIT,
                 };
                 let net = NetReader { stream, block: Vec::new(), at: 0, ended: false, limit, too_long: false };
-                Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: Some(net), done: 0 }))))
+                Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: None, net: Some(net), done: 0, seekable: false }))))
             }
             NetCall::Port => {
                 let Value::Listener(listener) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls `port` on a listener") };
@@ -4554,7 +4559,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Callee::IoAsync(call) => {
                     let mut values = self.values(args, frame)?;
                     let params = match call {
-                        IoCall::ReadText | IoCall::ReadBytes | IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend => 1,
+                        IoCall::ReadText | IoCall::ReadBytes | IoCall::OpenText | IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => 1,
                         IoCall::WriteText | IoCall::WriteBytes | IoCall::AppendText => 2,
                     };
                     let source = match values.len() > params {
@@ -5610,14 +5615,16 @@ impl<'a, 'e> Interp<'a, 'e> {
             // A folder opens, but cannot be read: it is told at once, as compiled code does.
             IoCall::OpenText => done(std::fs::File::open(&path).and_then(|file| match file.metadata()?.is_dir() {
                 true => Err(std::io::Error::from_raw_os_error(crate::sys::IS_DIR)),
-                false => Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(std::io::BufReader::with_capacity(STREAM_BUFFER, file)), net: None, done: 0 })))),
+                false => Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(std::io::BufReader::with_capacity(STREAM_BUFFER, file)), net: None, done: 0, seekable: true })))),
             })),
-            IoCall::CreateText | IoCall::OpenAppend => {
+            IoCall::CreateText | IoCall::OpenAppend | IoCall::OpenWrite => {
                 let opened = match call {
                     IoCall::CreateText => std::fs::File::create(&path),
+                    IoCall::OpenWrite => std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(&path),
                     _ => std::fs::OpenOptions::new().append(true).create(true).open(&path),
                 };
-                done(opened.map(|file| Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None })))))
+                let seekable = call != IoCall::OpenAppend;
+                done(opened.map(|file| Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None, seekable })))))
             }
         })
     }
@@ -5707,12 +5714,12 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::PipeReader => {
                 // SAFETY: the end of the pipe was made by `System.start` and is owned by nothing else.
                 let file = unsafe { crate::sys::file_of_fd(number(0) as crate::sys::RawFd) };
-                return Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(std::io::BufReader::with_capacity(STREAM_BUFFER, file)), net: None, done: 0 }))));
+                return Ok(Value::Reader(Rc::new(RefCell::new(Reader { file: Some(std::io::BufReader::with_capacity(STREAM_BUFFER, file)), net: None, done: 0, seekable: false }))));
             }
             SystemCall::PipeWriter => {
                 // SAFETY: as above.
                 let file = unsafe { crate::sys::file_of_fd(number(0) as crate::sys::RawFd) };
-                return Ok(Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None }))));
+                return Ok(Value::Writer(Rc::new(RefCell::new(Writer { sink: Sink::File(Some(file)), buffer: Vec::new(), failed: None, seekable: false }))));
             }
             _ => {}
         }
@@ -5773,7 +5780,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Ok(folder) => text_read(folder.as_os_str().as_encoded_bytes().to_vec(), 0),
                 Err(error) => done(Err(error)),
             },
-            SystemCall::MakeTemp => done(make_temp(&text(0)).map(|folder| Value::Str(Rc::new(folder)))),
+            SystemCall::MakeTemp => done(make_temp(&text(0), false).map(|folder| Value::Str(Rc::new(folder)))),
+            SystemCall::MakeTempFile => done(make_temp(&text(0), true).map(|file| Value::Str(Rc::new(file)))),
             SystemCall::TempFolder => ok(Value::Str(Rc::new(crate::sys::temp_folder()))),
             SystemCall::Executable
             | SystemCall::Run
@@ -6417,6 +6425,14 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 self.write_stream(&writer, &[], true)
             }
+            (StreamCall::Seek, stream) => {
+                let Value::Enum(_, kind, fields) = owned(self.expr(&args[0], frame)?) else { unreachable!("the checker makes it a `SeekFrom`") };
+                if self.cancelled(token, frame)? {
+                    return Ok(failed(io_cancelled()));
+                }
+                let Value::Int(_, offset) = *fields[0].borrow() else { unreachable!("a `SeekFrom` holds a `long`") };
+                self.seek(stream, kind, offset as i64)
+            }
             (StreamCall::Close, Value::Writer(writer)) => {
                 let result = self.write_stream(&writer, &[], true)?;
                 let mut writer = writer.borrow_mut();
@@ -6428,6 +6444,78 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Ok(result)
             }
             _ => unreachable!("the checker gives each method its stream"),
+        }
+    }
+
+    /// `stream.seek(from)`: `kind` is the variant of `SeekFrom` (0 `Start`, 1 `End`, 2 `Current`).
+    /// A writer writes what it holds first. A place before the start, or one past what a `long`
+    /// holds, is `InvalidInput`; a stream that is not a file opened to seek is `NotSeekable`.
+    fn seek(&mut self, stream: Value, kind: usize, offset: i64) -> Res<Value> {
+        use std::io::Seek;
+        let io_variant = |at: usize| failed(Value::Enum("IoError".into(), at, Rc::new(Vec::new())));
+        let io_failed = |error: std::io::Error| failed(io_cause(Some(&error), error.raw_os_error()));
+        let place = |base: Option<i64>| match base.and_then(|base| base.checked_add(offset)) {
+            Some(at) if at >= 0 => Ok(at as u64),
+            _ => Err(io_variant(15)),
+        };
+        match stream {
+            Value::Reader(reader) => {
+                let mut reader = reader.borrow_mut();
+                if !reader.seekable {
+                    return Ok(io_variant(17));
+                }
+                let reader = &mut *reader;
+                let file = reader.file.as_mut().expect("a reader of a file");
+                let base = match kind {
+                    0 => Some(0),
+                    1 => match file.get_ref().metadata() {
+                        Ok(info) => i64::try_from(info.len()).ok(),
+                        Err(error) => return Ok(io_failed(error)),
+                    },
+                    _ => i64::try_from(reader.done).ok(),
+                };
+                let at = match place(base) {
+                    Ok(at) => at,
+                    Err(value) => return Ok(value),
+                };
+                // Within the block, nothing is asked of the system, as compiled code does.
+                let ahead = file.buffer().len() as u64;
+                if at >= reader.done && at - reader.done <= ahead {
+                    file.consume((at - reader.done) as usize);
+                } else if let Err(error) = file.seek(std::io::SeekFrom::Start(at)) {
+                    return Ok(io_failed(error));
+                }
+                reader.done = at;
+                Ok(ok(Value::Int(IntTy::Long, i128::from(at))))
+            }
+            Value::Writer(writer) => {
+                if !writer.borrow().seekable {
+                    return Ok(io_variant(17));
+                }
+                let flushed = self.write_stream(&writer, &[], true)?;
+                if matches!(&flushed, Value::Enum(_, 1, _)) {
+                    return Ok(flushed);
+                }
+                let mut writer = writer.borrow_mut();
+                let Sink::File(Some(file)) = &mut writer.sink else { unreachable!("a writer of a file") };
+                let base = match kind {
+                    0 => Ok(0),
+                    1 => file.metadata().map(|info| i64::try_from(info.len()).unwrap_or(i64::MAX)),
+                    _ => file.stream_position().map(|at| i64::try_from(at).unwrap_or(i64::MAX)),
+                };
+                let at = match base {
+                    Ok(base) => match place(Some(base)) {
+                        Ok(at) => at,
+                        Err(value) => return Ok(value),
+                    },
+                    Err(error) => return Ok(io_failed(error)),
+                };
+                Ok(match file.seek(std::io::SeekFrom::Start(at)) {
+                    Ok(at) => ok(Value::Int(IntTy::Long, i128::from(at))),
+                    Err(error) => io_failed(error),
+                })
+            }
+            _ => unreachable!("the checker lets only a stream seek"),
         }
     }
 

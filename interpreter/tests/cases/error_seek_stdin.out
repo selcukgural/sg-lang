@@ -1,0 +1,5 @@
+error: `Stdin` is the input of the program, which goes only forward
+  a file opened with `File.openText(path)` can seek
+  --> error_seek_stdin.sg:3:13
+ 3 |     _ = try Stdin.seek(SeekFrom.Start(0))
+   |             ^^^^^

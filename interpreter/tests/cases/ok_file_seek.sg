@@ -1,0 +1,111 @@
+// Seeking in a file: a reader and a writer move with `SeekFrom`, `File.openWrite` writes over what a
+// file holds, and `File.createTemp` makes a file of its own. The folder is the first word of the
+// command line.
+void show(read string what, Result<long, IoError> at) {
+    match at {
+        Ok(place) => print($"{what}: {place}")
+        Error(cause) => print($"{what}: {cause}")
+    }
+}
+
+Result<long, IoError> where(ref StreamReader reader) {
+    return reader.seek(SeekFrom.Current(0))
+}
+
+Result<long, IoError> whereOut(ref StreamWriter writer) {
+    return writer.seek(SeekFrom.Current(0))
+}
+
+Result<void, IoError> main(List<string> args) {
+    var path = Path.join(read args[0], "data.txt")
+
+    // A header written last: the writer goes back over what it wrote.
+    var writer = try File.createText(read path)
+    try writer.write("size=????\n")
+    try writer.write("first line\nsecond line\nthird\n")
+    show("end of what was written", writer.seek(SeekFrom.End(0)))
+    var size = try writer.seek(SeekFrom.Current(0))
+    show("back to the size", writer.seek(SeekFrom.Start(5)))
+    try writer.write($"{size:D4}")
+    show("before the start", writer.seek(SeekFrom.Current(-100)))
+    show("past a long", writer.seek(SeekFrom.End(long.MaxValue)))
+    try writer.close()
+    print(try File.readText(read path))
+
+    // A reader: from the start, from where it stands, from the end; inside its block and outside.
+    var reader = try File.openText(read path)
+    string line = ""
+    show("second line", reader.seek(SeekFrom.Start(21)))
+    _ = try reader.readLine(ref line)
+    print($"[{line}]")
+    show("back by twelve", reader.seek(SeekFrom.Current(-12)))
+    _ = try reader.readLine(ref line)
+    print($"[{line}]")
+    show("the last six", reader.seek(SeekFrom.End(-6)))
+    var rest = try reader.readText()
+    print($"[{rest}]")
+    show("where", where(ref reader))
+    show("the start", reader.seek(SeekFrom.Start(0)))
+    _ = try reader.readLine(ref line)
+    print($"[{line}]")
+    byte[4] four = byte[4]
+    show("in the middle of a word", reader.seek(SeekFrom.Start(12)))
+    var got = try reader.readBytes(ref four)
+    print($"{got} bytes: {four[0]} {four[1]} {four[2]} {four[3]}")
+    show("past the end", reader.seek(SeekFrom.End(10)))
+    rest = try reader.readText()
+    print($"[{rest}]")
+    show("before the start", reader.seek(SeekFrom.Start(-1)))
+    show("after an error", where(ref reader))
+
+    // `InvalidText` is counted from the start of the file, also after a seek.
+    var bad = Path.join(read args[0], "bad.txt")
+    var bytes = List<byte> { 104, 105, 10, 111, 107, 255, 10 }
+    try File.writeBytes(read bad, read bytes)
+    var text = try File.openText(read bad)
+    _ = try text.seek(SeekFrom.Start(3))
+    match text.readLine(ref line) {
+        Ok(more) => print($"line: {more}")
+        Error(cause) => print($"bad text: {cause}")
+    }
+
+    // `openWrite` keeps what the file holds; a missing file is made.
+    var over = try File.openWrite(read path)
+    try over.write("SIZE")
+    show("after the word", whereOut(ref over))
+    try over.close()
+    print(try File.readText(read path))
+    var fresh = Path.join(read args[0], "fresh.txt")
+    var made = try File.openWrite(read fresh)
+    try made.write("new")
+    _ = try made.seek(SeekFrom.Start(5))
+    try made.write("!")
+    try made.close()
+    var all = try File.readBytes(read fresh)
+    print($"{all.length()} bytes: {all[3]} {all[4]} {all[5]}")
+
+    // A writer at the end, and the program's own streams, do not seek.
+    var log = try File.openAppend(read path)
+    show("append", log.seek(SeekFrom.Start(0)))
+    try log.write("end\n")
+    try log.close()
+    show("Stdin", where(ref Stdin))
+    show("Stdout", whereOut(ref Stdout))
+    print(try File.readText(read path))
+
+    // A temporary file: new, empty, in the folder for such files; removing it is the program's work.
+    var temp = try File.createTemp()
+    var folder = Directory.temp()
+    var inside = temp.startsWith(read folder)
+    print($"in the folder: {inside}")
+    var named = Path.fileName(read temp).startsWith("sg-")
+    print($"named: {named}")
+    var info = try File.info(read temp)
+    print($"size: {info.size}")
+    var other = try File.createTemp()
+    print($"another: {other != temp}")
+    try File.delete(read temp)
+    try File.delete(read other)
+    print($"gone: {!File.exists(read temp)}")
+    return Ok()
+}

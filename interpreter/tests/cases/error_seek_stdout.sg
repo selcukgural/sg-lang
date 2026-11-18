@@ -1,0 +1,5 @@
+// The output of the program goes only forward.
+Result<void, IoError> main() {
+    _ = try Stdout.seek(SeekFrom.End(0))
+    return Ok()
+}

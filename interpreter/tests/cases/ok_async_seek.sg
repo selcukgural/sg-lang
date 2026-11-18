@@ -1,0 +1,25 @@
+// In an async function a writer seeks as a task, since it writes what it holds first; a reader
+// seeks as it is, without waiting. The folder is the first word of the command line.
+async Result<void, IoError> run(string path) {
+    try await File.writeTextAsync(read path, "abcdef")
+    var w = try await File.openWriteAsync(read path)
+    try await w.writeAsync("XY")
+    var at = try await w.seekAsync(SeekFrom.End(-1))
+    print(at)
+    try await w.writeAsync("Z")
+    var source = CancellationSource()
+    source.cancel()
+    match await w.seekAsync(SeekFrom.Start(0), read source.token()) {
+        Ok(place) => print(place)
+        Error(cause) => print(cause)
+    }
+    try await w.closeAsync()
+    var r = try await File.openTextAsync(read path)
+    _ = try r.seek(SeekFrom.Start(1))
+    print(try await r.readTextAsync())
+    return Ok()
+}
+Result<void, IoError> main(List<string> args) {
+    var path = Path.join(read args[0], "a.txt")
+    return run(path).wait()
+}

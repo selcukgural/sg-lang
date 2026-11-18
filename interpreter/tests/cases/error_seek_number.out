@@ -1,0 +1,5 @@
+error: `seek` takes a `SeekFrom`, and this is `int`
+  --> error_seek_number.sg:4:25
+ 4 |     _ = try reader.seek(10)
+   |                         ^^
+  hint: `SeekFrom.Start(10)` counts from the start of the file; `End` from its end, `Current` from where it stands

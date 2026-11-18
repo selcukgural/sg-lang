@@ -469,14 +469,15 @@ pub(crate) fn remove_all(path: &str) -> std::io::Result<()> {
     std::fs::remove_dir_all(path)
 }
 
-/// A new folder, named from the template with its `XXXXXX` made random, that only its owner may
-/// open: its list of access has one entry, full access for the owner, and inherits none.
-pub(crate) fn make_temp(template: &str) -> std::io::Result<String> {
+/// A new folder, or with `file` a new empty file, named from the template with its `XXXXXX` made
+/// random, that only its owner may open: its list of access has one entry, full access for the
+/// owner, and inherits none.
+pub(crate) fn make_temp(template: &str, file: bool) -> std::io::Result<String> {
     const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let Some(stem) = template.strip_suffix("XXXXXX") else {
         return Err(std::io::Error::from_raw_os_error(87));
     };
-    let sddl = wide("D:P(A;OICI;FA;;;OW)");
+    let sddl = wide(if file { "D:P(A;;FA;;;OW)" } else { "D:P(A;OICI;FA;;;OW)" });
     let mut descriptor = std::ptr::null_mut();
     // SAFETY: the text ends with a zero; the descriptor is freed below.
     if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), 1, &mut descriptor, std::ptr::null_mut()) } == 0 {
@@ -492,12 +493,25 @@ pub(crate) fn make_temp(template: &str) -> std::io::Result<String> {
             let name: String = random.iter().map(|byte| LETTERS[*byte as usize % LETTERS.len()] as char).collect();
             let path = format!("{stem}{name}");
             let wide_name = wide_path(&path);
+            if file {
+                const GENERIC_WRITE: u32 = 0x4000_0000;
+                const CREATE_NEW: u32 = 1;
+                const NORMAL: u32 = 0x80;
+                const SHARE_ALL: u32 = 0x7;
+                // SAFETY: the name ends with a zero; `security` lives across the call.
+                let handle = unsafe { CreateFileW(wide_name.as_ptr(), GENERIC_WRITE, SHARE_ALL, (&security as *const SecurityAttributes).cast(), CREATE_NEW, NORMAL, std::ptr::null_mut()) };
+                if handle != INVALID_HANDLE {
+                    // SAFETY: the handle was just opened and is closed once.
+                    unsafe { CloseHandle(handle) };
+                    return Ok(path);
+                }
             // SAFETY: the name ends with a zero; `security` lives across the call.
-            if unsafe { CreateDirectoryW(wide_name.as_ptr(), &security) } != 0 {
+            } else if unsafe { CreateDirectoryW(wide_name.as_ptr(), &security) } != 0 {
                 return Ok(path);
             }
             let error = last_error();
-            if error.raw_os_error() != Some(EXISTS) {
+            // A file is ERROR_FILE_EXISTS where it was to be made new.
+            if error.raw_os_error() != Some(EXISTS) && error.raw_os_error() != Some(80) {
                 return Err(error);
             }
         }
@@ -577,7 +591,7 @@ pub(crate) fn remove_old_libraries() {
 /// so that `remove_old_libraries` tells whose it is.
 pub(crate) fn private_dir() -> std::io::Result<std::path::PathBuf> {
     let template = std::env::temp_dir().join(format!("sg-ffi-{}-XXXXXX", std::process::id()));
-    make_temp(&template.to_string_lossy()).map(std::path::PathBuf::from)
+    make_temp(&template.to_string_lossy(), false).map(std::path::PathBuf::from)
 }
 
 /// The error of a call on the path, as Linux and macOS give it: a folder opened as a file, which

@@ -1,0 +1,47 @@
+end of what was written: 39
+back to the size: 5
+before the start: InvalidInput
+past a long: InvalidInput
+size=0039
+first line
+second line
+third
+
+second line: 21
+[second line]
+back by twelve: 21
+[second line]
+the last six: 33
+[third
+]
+where: 39
+the start: 0
+[size=0039]
+in the middle of a word: 12
+4 bytes: 114 115 116 32
+past the end: 49
+[]
+before the start: InvalidInput
+after an error: 49
+bad text: InvalidText(5)
+after the word: 4
+SIZE=0039
+first line
+second line
+third
+
+6 bytes: 0 0 33
+append: NotSeekable
+Stdin: NotSeekable
+Stdout: NotSeekable
+SIZE=0039
+first line
+second line
+third
+end
+
+in the folder: true
+named: true
+size: 0
+another: true
+gone: true
