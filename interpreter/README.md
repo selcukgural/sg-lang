@@ -465,19 +465,19 @@ hand with no checks):
 | `parse`: numbers read out of text, an error found three calls deep and passed up with `try` | 0.290 s | 0.320 s | 0.293 s | 0.99 |
 | `vector`: a list of a million numbers filled with `add`, changed through `xs[i]`, added up with `for`, turned around and freed, six hundred times | 0.331 s | 0.529 s | 0.324 s | 1.02 |
 | `counts`: a million numbers counted in a `HashMap` of fifty thousand keys, read back and a third removed, twenty times | 0.382 s | 0.376 s | 0.319 s | 1.20 |
-| `show`: two million structs and half a million lists of numbers printed, one on each line | 0.214 s | 0.191 s | 0.374 s | 0.57 |
+| `show`: two million structs and half a million lists of numbers printed, one on each line | 0.176 s | 0.183 s | 0.377 s | 0.47 |
 | `lookup`: three hundred million lookups in a list of records of 128 bytes, through a function that gives back a `read Record?` | 0.498 s | 0.488 s | 0.491 s | 1.01 |
 | `buffer`: 32 bytes on the stack written as hex into a buffer of 64 through a `ref byte[]`, added up through a `read byte[]` and a range of it, fifteen million times | 0.280 s | 0.290 s | 0.283 s | 0.99 |
 | `bits`: a sieve below sixty-four million with one bit for each number, then thirty million numbers written seven bits at a time into a buffer on the stack and read back | 0.322 s | 0.321 s | 0.407 s | 0.79 |
 | `hash`: XXH64, the 64-bit xxHash, written with `ulong`, over one megabyte, two thousand times, the bytes read eight at a time with `ulong.fromLittleEndian` | 0.128 s | 0.129 s | 0.128 s | 1.00 |
 | `nbody`: the sun and the four giant planets moved twenty million steps in `double`, a square root for each pair at each step | 0.661 s | 0.662 s | 0.679 s | 0.97 |
 | `numbers`: a million lines of whole and fractional numbers read ten times with `long.parse` and `double.parse` and added up | 0.186 s | 0.191 s | 0.196 s | 0.95 |
-| `floats`: a million fractional numbers, every other one of seventeen digits, written into a text with `$"{x}\n"` three times over and read back once (the C writes each with `%.17g`, always seventeen digits) | 0.251 s | 0.251 s | 0.762 s | 0.33 |
+| `floats`: a million fractional numbers, every other one of seventeen digits, written into a text with `$"{x}\n"` three times over and read back once (the C writes each with `%.17g`, always seventeen digits) | 0.176 s | 0.179 s | 0.777 s | 0.23 |
 | `fields`: a million lines like ` Ada17 , 120, -45 ,6789` gone over twenty times with `lines`, `split`, `trim`, `long.parse` and `chars` | 1.228 s | 1.259 s | 1.202 s | 1.02 |
 | `lines`: two million lines of a log (125 MB) read from the input with `Stdin.readLine`, each checked to be UTF-8, and counted | 0.075 s | 0.077 s | 0.091 s | 0.82 |
-| `copy`: the same log read from a file with `File.openText` and written to another, each line with its number in front, through `File.createText` | 0.226 s | 0.223 s | 0.272 s | 0.83 |
+| `copy`: the same log read from a file with `File.openText` and written to another, each line with its number in front, through `File.createText` | 0.155 s | 0.160 s | 0.285 s | 0.54 |
 | `bytes`: the same log read in pieces of 4 KB with `readBytes` and written with `writeBytes` through a writer from `File.openAppend` | 0.030 s | 0.030 s | 0.032 s | 0.94 |
-| `table`: two million lines printed with widths, hex, binary and two digits after the point (`{i:x8} {a,10}  {name,-8}\|{x,10:F3}  {mask:b16} {code:X6}`) | 0.471 s | 0.471 s | 0.533 s | 0.89 |
+| `table`: two million lines printed with widths, hex, binary and two digits after the point (`{i:x8} {a,10}  {name,-8}\|{x,10:F3}  {mask:b16} {code:X6}`) | 0.287 s | 0.296 s | 0.547 s | 0.52 |
 | `blocks`: eight million pieces of 1 to 255 bytes (about a gigabyte) gathered with `addAll` into a `List<byte>` that is emptied at 64 MB | 0.035 s | 0.035 s | 0.035 s | 1.00 |
 | `keywords`: a million words sorted forty times into twelve keywords and the rest by a `match` on text | 0.199 s | 0.200 s | 0.194 s | 1.03 |
 | `classes`: ten million bytes sorted twenty times into the classes of a lexer by a `match` of ranges and `or` (`'a'..='z' or 'A'..='Z' or '_'`) | 0.239 s | 0.299 s | 0.274 s | 0.87 |
@@ -532,19 +532,19 @@ shared and give no steady numbers.
 | `parse` | 0.286 s | 0.315 s | 0.284 s | 1.01 | 0.99 |
 | `vector` | 2.117 s | 2.371 s | 2.114 s | 1.00 | 1.02 |
 | `counts` | 0.408 s | 0.404 s | 0.343 s | 1.19 | 1.20 |
-| `show` | 3.013 s | 2.975 s | 8.063 s | 0.37 | 0.57 |
+| `show` | 2.876 s | 3.025 s | 8.363 s | 0.34 | 0.47 |
 | `lookup` | 0.501 s | 0.488 s | 0.483 s | 1.04 | 1.01 |
 | `buffer` | 0.287 s | 0.300 s | 0.287 s | 1.00 | 0.99 |
 | `bits` | 0.339 s | 0.303 s | 0.369 s | 0.92 | 0.79 |
 | `hash` | 0.132 s | 0.134 s | 0.131 s | 1.01 | 1.00 |
 | `nbody` | 0.669 s | 0.669 s | 0.673 s | 0.99 | 0.97 |
 | `numbers` | 0.222 s | 0.225 s | 0.498 s | 0.45 | 0.95 |
-| `floats` | 0.257 s | 0.263 s | 0.733 s | 0.35 | 0.33 |
+| `floats` | 0.182 s | 0.195 s | 0.735 s | 0.25 | 0.23 |
 | `fields` | 1.349 s | 1.358 s | 1.487 s | 0.91 | 1.02 |
 | `lines` | 0.072 s | 0.098 s | 0.454 s | 0.16 | 0.82 |
-| `copy` | 0.261 s | 0.304 s | 0.936 s | 0.28 | 0.83 |
+| `copy` | 0.160 s | 0.187 s | 0.910 s | 0.18 | 0.54 |
 | `bytes` | 0.061 s | 0.059 s | 0.064 s | 0.95 | 0.94 |
-| `table` | 3.130 s | 3.098 s | 3.327 s | 0.94 | 0.89 |
+| `table` | 2.524 s | 2.476 s | 3.325 s | 0.76 | 0.52 |
 | `blocks` | 0.107 s | 0.120 s | 0.117 s | 0.91 | 1.00 |
 | `keywords` | 0.233 s | 0.234 s | 0.216 s | 1.08 | 1.03 |
 | `classes` | 0.209 s | 0.269 s | 0.234 s | 0.89 | 0.87 |
@@ -746,9 +746,10 @@ at a time while they are ASCII brought it to 1.08 (choice 202), and checking a b
 `copy` reads the same log from a file, opened with `File.openText` and read with `readLine` into one
 text, and writes each line with its number in front (`17: INFO 350 ...`) with `writeLine` through a
 writer from `File.createText`, 140 MB in all. The C program reads with `getline` and writes with
-`fprintf` into a `FILE*` with a buffer of 64 KB. SG takes 0.83 times its time (0.23 s against 0.27 s;
-0.93 before the check of a block at a time): it checks every line and still reads faster, as `lines` showed, and the
-writing is a `vsnprintf` into the writer's block where C's is an `fprintf`.
+`fprintf` into a `FILE*` with a buffer of 64 KB. SG takes 0.54 times its time (0.155 s against 0.285 s;
+0.93 before the check of a block at a time, 0.83 before the runtime wrote its lines itself, choice 1336): it
+checks every line and still reads faster, as `lines` showed, and the writing is the runtime's own few
+conversions into the writer's block, where C's `fprintf` reads its format on every line.
 
 `bytes` copies the same log as bytes: `readBytes` into a buffer of 4 KB on the stack, and `writeBytes` of
 each piece into a writer from `File.openAppend`, after the file is emptied. The C program does the same
@@ -759,7 +760,7 @@ Both are copies between blocks; neither looks at the bytes.
 name, hex with eight and with six digits, sixteen binary digits and a fractional number with three digits
 after the point. The C program is one `printf` a line (`%08llx %10lld  %-8s|%10.3f  %s %06X`), with the
 binary digits put together by a small function first, since `printf` has no conversion for them. SG takes
-0.89 times its time. Its first version took 1.30 times: the fractional number was written by `snprintf`
+0.52 times its time (0.89 before the runtime wrote its lines itself, choice 1336). Its first version took 1.30 times: the fractional number was written by `snprintf`
 and then copied by `printf` (the format read twice), and the spaces of a width were a conversion of their
 own beside the value. Now the digits after the point are worked out by a function of the program, exactly
 (choice 232), and a width is one conversion; `printf`'s own `%10.3f` is the slower part of the C program.
@@ -7931,6 +7932,31 @@ Each is written here with its fix, and each fix came after a test that showed th
      struct with no fields and of one that holds it, against the C compilers of every system; without the fix
      it fails). `cargo test` passes on macOS and on Linux in a container (396 of 1643 programs compile through
      C); on Windows on Arm `ok_empty_struct` gives the same output interpreted and compiled, and `layouts` passes.
+1336. **A line is written with the lengths of its texts**: `print`, `printError`, `panic`, `$"...".toString()`
+     and `f.write($"...")` gave their formats to C's `printf` and `vsnprintf`, a text as `%.*s` with its
+     length cast to `int`. A text with the byte 0 in it was cut there in compiled code (the interpreter
+     writes all of it, and a text from a file or a socket may hold one), a text of 2 GB or more had a
+     negative length, which C reads as "up to the byte 0", and a line of 2 GB or more gave `vsnprintf` -1,
+     which `f.write` took for a length and wrote in front of its block. Now the runtime writes those lines
+     itself (`sg_vlines`): only the conversions the code SG writes uses (`%lld`, `%llu`, `%llx`, `%llX`
+     with the digits they have at least, `%s`, `%.*s` with an `int64_t` length, a width counted in
+     characters, `%%`), each piece given with its length to where the line goes; a `print` gathers its line
+     on the stack and writes it with one `fwrite`, holding the stream where several threads run, so a line
+     is never cut by another. The texts the runtime writes into a panic of `assert`, a key of a map and the
+     error of a test go the same way. On Windows a text of more than a gigabyte becomes UTF-16 in pieces
+     (`MultiByteToWideChar` counts in `int`), and a name of a variable longer than any Windows keeps is no
+     variable. It is faster too, since a format is no longer read by `printf` for every line: on macOS `show`
+     takes 0.47 times C (0.57 before), `floats` 0.23 (0.33), `copy` 0.54 (0.83), `table` 0.52 (0.89); on
+     Windows on Arm 0.34, 0.25, 0.18 and 0.76 (0.37, 0.35, 0.28, 0.94); the others do not change. Rust's
+     `format!` and Go's `fmt` write a text with its length too; a text of C# holds at most about a billion
+     characters.
+     Tested by `ok_text_with_zero` (a text with the byte 0 printed, with widths, written into a text, made
+     with `toString`, written by a `format`, used as a key, and sent to the standard error, with hex and
+     digits beside it). The texts of 2 GB and more were checked by hand (`"a".repeat(2147483648)` made into a
+     text with `$"{s}"`, and three texts of a gigabyte written into one with `f.write`): each gives its
+     length; they need more than 4 GB of memory, too much for `cargo test`. `cargo test` passes on macOS and on
+     Linux in a container (397 of 1644 programs compile through C); on Windows on Arm fourteen programs that
+     print, format, and name files, folders, variables and programs give the same output interpreted and compiled.
 
 ## Slower than C, and could be better
 
@@ -8483,5 +8509,6 @@ were not usages refused; an output closed early ends a program the same way inte
 tool runs beside it. The hundred-and-sixteenth fixes what that review found, first the small faults, each in
 one place: the files a build makes on the way are in a folder only its user opens (1332, 1333); an `export`
 function is called from any thread, and C's names are not taken by one (1334); a struct with no fields
-holds one byte (1335). The next two
+holds one byte (1335); a line is written with the lengths of its texts, the byte 0 and more than 2 GB
+included, and faster (1336). The next two
 fix the rules of borrowing; then fuzzing and mutants of the rules of safety (1323-1325).

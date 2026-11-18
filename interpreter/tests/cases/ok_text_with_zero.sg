@@ -1,0 +1,30 @@
+// A text may hold the byte 0: every way of writing it writes all of its bytes, as the
+// interpreter does, where C's `printf` would stop at the 0.
+struct Named : Formattable {
+    string name
+    void format(read this, ref Formatter f) {
+        f.write($"Named({this.name})")
+    }
+}
+
+void main() {
+    var s = "ab\0cd"
+    print(s)
+    print($"1[{s}]")
+    print($"2[{s,8}]")
+    print($"3[{s,-8}]")
+    var t = "".clone()
+    t.write(s)
+    t.write($"|{s}|")
+    print(t.length())
+    var u = $"{s}.txt".toString()
+    print(u.length())
+    print(Named { name = s.clone() })
+    print($"{Named { name = s.clone() }} and {s} and {'\0'} and {1.5} and {-42,5}|{7,-3}|")
+    print($"{255:x4} {255:X} {-42:D5} {-42,8:D5}|{7,-4:D2}|{0:x}")
+    var m = HashMap<string, int>()
+    m.add($"{s}1".toString(), 1)
+    m.add($"{s}2".toString(), 2)
+    print(m.length())
+    printError($"to the error: {s}")
+}

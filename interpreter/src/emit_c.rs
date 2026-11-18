@@ -1033,6 +1033,31 @@ static bool sg_blocks_left(const char* ended, int64_t before) {
 #else
 #define SG_KEPT(n) ((void)0)
 #endif
+#if defined(_WIN32) && !SG_FREESTANDING
+/* Text of UTF-8 as UTF-16 ended by a zero, in a block of `malloc`, and the units it has.
+   `MultiByteToWideChar` counts in `int`: a text longer than a gigabyte goes in pieces, each
+   cut where a character starts (choice 1336). */
+static wchar_t* sg_wide_of(const uint8_t* ptr, int64_t len, int64_t* count) {
+    const int64_t piece = (int64_t)1 << 30;
+    int64_t n = 0;
+    for (int64_t at = 0, k; at < len; at += k) {
+        k = len - at > piece ? piece : len - at;
+        while (at + k < len && (ptr[at + k] & 0xC0) == 0x80) k--;
+        n += MultiByteToWideChar(CP_UTF8, 0, (const char*)ptr + at, (int)k, NULL, 0);
+    }
+    wchar_t* w = malloc(((size_t)n + 1) * sizeof(wchar_t));
+    if (!w) abort();
+    int64_t made = 0;
+    for (int64_t at = 0, k; at < len; at += k) {
+        k = len - at > piece ? piece : len - at;
+        while (at + k < len && (ptr[at + k] & 0xC0) == 0x80) k--;
+        made += MultiByteToWideChar(CP_UTF8, 0, (const char*)ptr + at, (int)k, w + made, (int)(n - made > 0x7FFFFFFF ? 0x7FFFFFFF : n - made));
+    }
+    w[made] = 0;
+    *count = made;
+    return w;
+}
+#endif
 
 /* A panic ends the process. A library (`sg build --library` or `--shared`) aborts: other
    threads of the program that loaded it may be running, and C's `exit` would run that
@@ -2000,23 +2025,6 @@ static inline int64_t sg_utf8_bad(const uint8_t* bytes, int64_t len) {
     int64_t valid = sg_utf8_valid(bytes, len);
     return valid == len ? -1 : valid;
 }
-/* A short text is written once, into a buffer on the stack, and copied; only a longer one
-   is written a second time, into the room it was found to need. */
-static sg_string sg_format(const char* format, ...) {
-    char small[128];
-    va_list count, write;
-    va_start(count, format);
-    va_copy(write, count);
-    int n = vsnprintf(small, sizeof small, format, count);
-    va_end(count);
-    if (n <= 0) { va_end(write); return SG_LIT("", 0); }
-    uint8_t* bytes = malloc((size_t)n + 1);
-    if (!bytes) abort();
-    if (n < (int)sizeof small) memcpy(bytes, small, (size_t)n);
-    else vsnprintf((char*)bytes, (size_t)n + 1, format, write);
-    va_end(write);
-    return (sg_string){ bytes, n, n };
-}
 SG_COLD static _Noreturn void sg_panicf(const char* loc, const char* format, ...);
 /* Set by the program of tests: there `exit` fails the test, as in the interpreter. */
 static bool sg_in_tests = false;
@@ -2206,25 +2214,158 @@ static sg_string sg_with_capacity(int64_t n, const char* loc) {
     return (sg_string){ bytes, 0, n };
 }
 static void sg_puts(sg_string* out, const char* text) { sg_put(out, text, (int64_t)strlen(text)); }
+/* The lines the code SG writes: `print`, `printError`, `panic`, `$"..."`, `f.write(...)`. Their
+   formats hold only what that code puts in them: `%lld`, `%llu`, `%llx` and `%llX`, with the
+   digits they have at least (`%.4llx`), `%s` (`true`, `false`), `%.*s` (a text: its length as an
+   `int64_t`, then its bytes, the byte 0 among them), each with a width (`%8lld`, `%-10.*s`)
+   counted in characters, and `%%`. Each piece goes to `put` as bytes
+   with their length, where C's `printf` would stop a text at its byte 0 and count in `int`
+   (choice 1336). */
+typedef void (*sg_sink)(void* to, const char* bytes, int64_t n);
+static void sg_repeat_put(sg_sink put, void* to, char c, int64_t n) {
+    char run[16];
+    memset(run, c, sizeof run);
+    for (; n > 0; n -= 16) put(to, run, n < 16 ? n : 16);
+}
+static void sg_vlines(sg_sink put, void* to, const char* format, va_list args) {
+    const char* f = format;
+    while (*f) {
+        const char* plain = f;
+        while (*f && *f != '%') f++;
+        if (f > plain) put(to, plain, f - plain);
+        if (!*f) break;
+        f++;
+        if (*f == '%') { put(to, "%", 1); f++; continue; }
+        bool left = *f == '-';
+        if (left) f++;
+        int64_t width = 0, shown = 0, len = 0, least = 0;
+        while (*f >= '0' && *f <= '9') width = width * 10 + (*f++ - '0');
+        if (f[0] == '.' && f[1] >= '0' && f[1] <= '9') {
+            f++;
+            while (*f >= '0' && *f <= '9') least = least * 10 + (*f++ - '0');
+        }
+        char digits[24];
+        bool negative = false;
+        const char* text = digits;
+        if (f[0] == '.' && f[1] == '*' && f[2] == 's') {
+            len = va_arg(args, int64_t);
+            text = va_arg(args, const char*);
+            f += 3;
+            if (width) for (int64_t i = 0; i < len; i++) shown += ((unsigned char)text[i] & 0xC0) != 0x80;
+        } else if (f[0] == 's') {
+            text = va_arg(args, const char*);
+            len = shown = (int64_t)strlen(text);
+            f++;
+        } else if (f[0] == 'l' && f[1] == 'l' && (f[2] == 'd' || f[2] == 'u' || f[2] == 'x' || f[2] == 'X')) {
+            unsigned long long u;
+            if (f[2] == 'd') {
+                long long v = va_arg(args, long long);
+                negative = v < 0;
+                u = negative ? 0ULL - (unsigned long long)v : (unsigned long long)v;
+            } else {
+                u = va_arg(args, unsigned long long);
+            }
+            unsigned base = f[2] == 'x' || f[2] == 'X' ? 16 : 10;
+            const char* figures = f[2] == 'X' ? "0123456789ABCDEF" : "0123456789abcdef";
+            char* at = digits + sizeof digits;
+            do { *--at = figures[u % base]; u /= base; } while (u);
+            text = at;
+            len = digits + sizeof digits - at;
+            least = least > len ? least - len : 0;
+            shown = negative + least + len;
+            f += 3;
+        } else {
+            /* Never: the code SG writes puts nothing else in a format. */
+            abort();
+        }
+        if (!left && width > shown) sg_repeat_put(put, to, ' ', width - shown);
+        if (negative) put(to, "-", 1);
+        sg_repeat_put(put, to, '0', least);
+        put(to, text, len);
+        if (left && width > shown) sg_repeat_put(put, to, ' ', width - shown);
+    }
+}
+static void sg_sink_count(void* to, const char* bytes, int64_t n) { (void)bytes; *(int64_t*)to += n; }
+static void sg_sink_text(void* to, const char* bytes, int64_t n) { sg_put((sg_string*)to, bytes, n); }
+/* `f.write($"...")`: the line at the end of the text. */
 static void sg_putf(sg_string* out, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    sg_vlines(sg_sink_text, out, format, args);
+    va_end(args);
+}
+/* `$"...".toString()`: a new text of the bytes it needs, measured first. */
+static sg_string sg_format(const char* format, ...) {
     va_list count, write;
     va_start(count, format);
     va_copy(write, count);
-    /* Straight into the block, where it fits (the usual case once a text has grown). */
-    int64_t room = out->cap - out->len;
-    char small[128];
-    int n = out->cap ? vsnprintf((char*)out->ptr + out->len, (size_t)room, format, count) : vsnprintf(small, sizeof small, format, count);
+    int64_t n = 0;
+    sg_vlines(sg_sink_count, &n, format, count);
     va_end(count);
-    if (out->cap && n < room) {
-        out->len += n;
-    } else if (!out->cap && n < (int)sizeof small) {
-        sg_put(out, small, n);
-    } else {
-        sg_room(out, (int64_t)n + 1);
-        vsnprintf((char*)out->ptr + out->len, (size_t)n + 1, format, write);
-        out->len += n;
-    }
+    if (n == 0) { va_end(write); return SG_LIT("", 0); }
+    sg_string text = { malloc((size_t)n), 0, n };
+    if (!text.ptr) abort();
+    sg_vlines(sg_sink_text, &text, format, write);
     va_end(write);
+    return text;
+}
+/* A line into a stream, gathered in a buffer on the stack, so that most lines are one write;
+   where several threads run, the stream is held for the whole line. */
+typedef struct { FILE* f; int64_t n; char b[512]; } sg_file_sink;
+static void sg_sink_file(void* to, const char* bytes, int64_t n) {
+    sg_file_sink* s = (sg_file_sink*)to;
+    if (s->n + n > (int64_t)sizeof s->b) {
+        if (s->n) fwrite(s->b, 1, (size_t)s->n, s->f);
+        s->n = 0;
+        if (n > (int64_t)sizeof s->b) { fwrite(bytes, 1, (size_t)n, s->f); return; }
+    }
+    memcpy(s->b + s->n, bytes, (size_t)n);
+    s->n += n;
+}
+static void sg_vprint(FILE* f, const char* format, va_list args) {
+    sg_file_sink s;
+    s.f = f;
+    s.n = 0;
+#if SG_THREADS && defined(_WIN32)
+    _lock_file(f);
+#elif SG_THREADS
+    flockfile(f);
+#endif
+    sg_vlines(sg_sink_file, &s, format, args);
+    if (s.n) fwrite(s.b, 1, (size_t)s.n, f);
+#if SG_THREADS && defined(_WIN32)
+    _unlock_file(f);
+#elif SG_THREADS
+    funlockfile(f);
+#endif
+}
+/* `print(...)` and `printError(...)`. */
+static void sg_print(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    sg_vprint(stdout, format, args);
+    va_end(args);
+}
+static void sg_eprint(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    sg_vprint(stderr, format, args);
+    va_end(args);
+}
+/* `panic(...)`. */
+SG_COLD static _Noreturn void sg_panic_line(const char* loc, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    SG_PANIC_START();
+    fputs("panic: ", stderr);
+    sg_file_sink s;
+    s.f = stderr;
+    s.n = 0;
+    sg_vlines(sg_sink_file, &s, format, args);
+    if (s.n) fwrite(s.b, 1, (size_t)s.n, stderr);
+    va_end(args);
+    fputc('\n', stderr);
+    sg_die(loc);
 }
 /* How many spaces a value of `n` bytes needs in front of it or after it to take `width`
    characters: `{name,10}`. A character is counted once, however many bytes it has. */
@@ -2373,7 +2514,7 @@ static void sg_put_quoted(sg_string* out, sg_str s) {
         else if (c == '\t') sg_puts(out, "\\t");
         else if (c == '\r') sg_puts(out, "\\r");
         else if (c == 0) sg_puts(out, "\\0");
-        else if (c < 32 || c == 127) sg_putf(out, "\\u{%x}", (unsigned)c);
+        else if (c < 32 || c == 127) { char hex[16]; int k = snprintf(hex, sizeof hex, "\\u{%x}", (unsigned)c); sg_put(out, hex, k); }
         else sg_put(out, &c, 1);
     }
     sg_put(out, "\"", 1);
@@ -2605,7 +2746,7 @@ static inline uint32_t sg_ascii_upper(uint32_t c) { return c >= 'a' && c <= 'z' 
 static inline uint32_t sg_ascii_lower(uint32_t c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 SG_COLD static _Noreturn void sg_assert_fail_t(const char* text, sg_str l, sg_str r, const char* loc) {
     SG_PANIC_START();
-    fprintf(stderr, "panic: assert failed: %s\n  left: %.*s\n  right: %.*s\n", text, (int)l.len, (const char*)l.ptr, (int)r.len, (const char*)r.ptr);
+    sg_eprint("panic: assert failed: %s\n  left: %.*s\n  right: %.*s\n", text, l.len, (const char*)l.ptr, r.len, (const char*)r.ptr);
     sg_die(loc);
 }
 /* Puts the items in order and keeps equal items in the order they had (a merge sort). */
@@ -2852,8 +2993,8 @@ static void sg_take_@N(sg_@N* m, int64_t entry) {
 SG_COLD static _Noreturn void sg_fail_@N(@P key, bool missing, const char* loc) {
     sg_string text = SG_LIT("", 0);
     sg_kshow_@N(&text, key);
-    if (missing) sg_panicf(loc, "key %.*s is not in the map\n  `map.get(key)` gives `null` for a missing key; `map.add(key, value)` puts one in", (int)text.len, (const char*)text.ptr);
-    sg_panicf(loc, "key %.*s is already in the map\n  to change what is kept under a key, write `map[key] = value`", (int)text.len, (const char*)text.ptr);
+    if (missing) sg_panic_line(loc, "key %.*s is not in the map\n  `map.get(key)` gives `null` for a missing key; `map.add(key, value)` puts one in", text.len, (const char*)text.ptr);
+    sg_panic_line(loc, "key %.*s is already in the map\n  to change what is kept under a key, write `map[key] = value`", text.len, (const char*)text.ptr);
 }
 static inline bool sg_contains_@N(const sg_@N* m, @P key) { return sg_find_@N(m, key) >= 0; }
 static void sg_drop_from_@N(sg_@N* m, int64_t from) {
@@ -2966,7 +3107,7 @@ static int sg_test_error = 0;
 /* A `try` in a test met an error: it is written, and the test has failed. */
 static void sg_test_failed(sg_str text) {
     fflush(stdout);
-    fprintf(stderr, "error: %.*s\n", (int)text.len, (const char*)text.ptr);
+    sg_eprint("error: %.*s\n", text.len, (const char*)text.ptr);
     sg_test_error = 1;
 }
 "#;
@@ -6674,12 +6815,8 @@ static int64_t sg_proc_executable(sg_str path) {
 }
 /* Text of UTF-8 as UTF-16 ended by a zero, in a block of `malloc`. */
 static wchar_t* sg_proc_wide(const uint8_t* ptr, int64_t len) {
-    int n = len > 0 ? MultiByteToWideChar(CP_UTF8, 0, (const char*)ptr, (int)len, NULL, 0) : 0;
-    wchar_t* w = malloc(((size_t)n + 1) * sizeof(wchar_t));
-    if (!w) abort();
-    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, (const char*)ptr, (int)len, w, n);
-    w[n] = 0;
-    return w;
+    int64_t n;
+    return sg_wide_of(ptr, len, &n);
 }
 /* An argument as C's library reads it back, as Rust writes it: quoted when it is empty or holds a
    space or a tab; a quote in it after `n` backslashes is written after `2n+1`, and the
@@ -7778,7 +7915,8 @@ static int sg_fs_temp_folder(uint8_t** bytes, int64_t* len) {
    without case, as Windows matches them. A name with `=` or a zero byte in it is no variable's
    name. The bytes are kept for the thread until it asks again. */
 static const char* sg_env_variable(sg_str name, int64_t* len) {
-    if (name.len == 0 || memchr(name.ptr, 0, (size_t)name.len) || memchr(name.ptr, '=', (size_t)name.len)) return NULL;
+    /* Windows keeps names of at most 32767 characters; `MultiByteToWideChar` counts in `int`. */
+    if (name.len == 0 || name.len > 0x7FFFFFFF || memchr(name.ptr, 0, (size_t)name.len) || memchr(name.ptr, '=', (size_t)name.len)) return NULL;
     int n = MultiByteToWideChar(CP_UTF8, 0, (const char*)name.ptr, (int)name.len, NULL, 0);
     wchar_t* key = (malloc)(((size_t)n + 1) * sizeof(wchar_t));
     if (!key) abort();
@@ -8169,11 +8307,8 @@ static int sg_lapped_call(int fd, void* bytes, DWORD n, DWORD* done, bool write)
    as elsewhere; one that is not UTF-8 cannot be a `string`. */
 static wchar_t* sg_wide(sg_str path, int* code) {
     if (path.len > 0 && memchr(path.ptr, 0, (size_t)path.len)) { *code = ERROR_FILE_NOT_FOUND; return NULL; }
-    int n = path.len > 0 ? MultiByteToWideChar(CP_UTF8, 0, (const char*)path.ptr, (int)path.len, NULL, 0) : 0;
-    wchar_t* w = malloc(((size_t)n + 1) * sizeof(wchar_t));
-    if (!w) abort();
-    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, (const char*)path.ptr, (int)path.len, w, n);
-    w[n] = 0;
+    int64_t n;
+    wchar_t* w = sg_wide_of(path.ptr, path.len, &n);
     if (n < 248 || wcsncmp(w, L"\\\\?\\", 4) == 0) return w;
     DWORD full = GetFullPathNameW(w, 0, NULL, NULL);
     if (full == 0) return w;
@@ -9742,7 +9877,7 @@ static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) 
         } else {
             failed++;
             printf("FAIL  %s\n", tests[i].name);
-            if (len > 0) printf("%.*s\n", (int)len, reason);
+            if (len > 0) sg_print("%.*s\n", (int64_t)len, reason);
             else printf("the test ended with code 0x%08lX\n", (unsigned long)code);
         }
         free(reason);
@@ -9819,7 +9954,7 @@ static int sg_run_tests(const sg_test* tests, int count, int argc, char** argv) 
         } else {
             failed++;
             printf("FAIL  %s\n", tests[i].name);
-            if (len > 0) printf("%.*s\n", (int)len, reason);
+            if (len > 0) sg_print("%.*s\n", (int64_t)len, reason);
             else if (WIFSIGNALED(status)) printf("the test was stopped by signal %d\n", WTERMSIG(status));
         }
         free(reason);
@@ -10722,23 +10857,14 @@ fn int_shown(ty: IntTy) -> (&'static str, &'static str, &'static str) {
     }
 }
 
-/// The width after `,` (`{n,8}`, `{name,-10}`) put on the value just added to a `printf`
-/// format. `printf` counts bytes: a number (`ascii`, also one written as text first) takes
-/// the width in its conversion (`%8lld`, `%10.*s`); a text, a character or what a helper
-/// wrote is counted in characters by `sg_width`, which gives the width in bytes.
-fn widen(format: &mut String, values: &mut Vec<String>, width: i32, ascii: bool) {
+/// The width after `,` (`{n,8}`, `{name,-10}`) put on the value just added to a format of
+/// `sg_vlines`, which counts it in characters: `%8lld`, `%-10.*s`.
+fn widen(format: &mut String, width: i32) {
     if width == 0 {
         return;
     }
-    if !ascii && format.ends_with("%.*s") {
-        let (ptr, len) = (values.pop().expect("a text has its bytes"), values.pop().expect("a text has its length"));
-        format.truncate(format.len() - 4);
-        format.push_str(if width > 0 { "%*.*s" } else { "%-*.*s" });
-        values.extend([format!("sg_width({}, {ptr}, {len})", width.abs()), len, ptr]);
-    } else {
-        let at = format.rfind('%').expect("a value was just added") + 1;
-        format.insert_str(at, &width.to_string());
-    }
+    let at = format.rfind('%').expect("a value was just added") + 1;
+    format.insert_str(at, &width.to_string());
 }
 
 /// A borrow of a borrow is the inner borrow: looking at a field that itself borrows gives
@@ -13656,23 +13782,23 @@ impl<'a> Emitter<'a> {
                 let mut drop = if self.droppable(error) { self.drop_of(error, cause) } else { String::new() };
                 let mut shown = String::new();
                 let (format, values) = match &**error {
-                    Ty::Str => ("%.*s", format!("(int){cause}.len, (const char*){cause}.ptr")),
+                    Ty::Str => ("%.*s", format!("{cause}.len, (const char*){cause}.ptr")),
                     Ty::Int(ty) => (int_shown(*ty).0, format!("({}){cause}", int_shown(*ty).1)),
                     Ty::Bool => ("%s", format!("{cause} ? \"true\" : \"false\"")),
                     Ty::Char => {
-                        shown = format!("char text[4]; int text_n = sg_utf8(text, {cause});\n        ");
+                        shown = format!("char text[4]; int64_t text_n = sg_utf8(text, {cause});\n        ");
                         ("%.*s", "text_n, text".to_string())
                     }
                     // A struct or an enum is written by the helper of its type.
                     other => {
                         shown = format!("sg_string text = SG_LIT(\"\", 0); {}(&text, &{cause});\n        ", self.shower(other, main.ret.span)?);
                         drop = format!("sg_drop_string(&text); {drop}");
-                        ("%.*s", "(int)text.len, (const char*)text.ptr".to_string())
+                        ("%.*s", "text.len, (const char*)text.ptr".to_string())
                     }
                 };
                 format!(
                     "{head}    {ctype} result = {call};\n    if (result.tag != 0) {{\n        fflush(stdout);\n        {shown}\
-                     fprintf(stderr, \"error: {format}\\n\", {values});\n        {drop}\n        return 1;\n    }}\n{LEAKS}    return 0;\n}}\n"
+                     sg_eprint(\"error: {format}\\n\", {values});\n        {drop}\n        return 1;\n    }}\n{LEAKS}    return 0;\n}}\n"
                 )
             }
             _ => format!("{head}    {call};\n{LEAKS}    return 0;\n}}\n"),
@@ -15044,7 +15170,7 @@ impl<'a> Emitter<'a> {
                 let (format, values) = self.format(&args[0])?;
                 let loc = self.loc(expr.span);
                 self.flush_pre(&pad, out);
-                let _ = writeln!(out, "{pad}sg_panicf({loc}, {}{values});", c_string(&format));
+                let _ = writeln!(out, "{pad}sg_panic_line({loc}, {}{values});", c_string(&format));
                 self.post.clear();
             }
             ExprKind::Match { .. } => self.match_stmt(expr, &Dest::Unused, depth, out)?,
@@ -16207,7 +16333,7 @@ impl<'a> Emitter<'a> {
                                 done.push(Piece::Show(shower, at, width));
                             } else {
                                 late.push(self.shown(&shower, &at, &mut format, &mut values));
-                                widen(&mut format, &mut values, width, false);
+                                widen(&mut format, width);
                             }
                         }
                         InterpPart::Expr(expr, spec) => {
@@ -16250,7 +16376,7 @@ impl<'a> Emitter<'a> {
         let temp = self.temp();
         format.push_str("%.*s");
         self.post.push(format!("sg_scratch_back({temp});"));
-        values.extend([format!("(int){temp}n"), format!("(const char*)sg_scratch.ptr + {temp}")]);
+        values.extend([format!("{temp}n"), format!("(const char*)sg_scratch.ptr + {temp}")]);
         format!("int64_t {temp} = sg_scratch.len; {shower}(&sg_scratch, {at}); int64_t {temp}n = sg_scratch.len - {temp};")
     }
 
@@ -16258,7 +16384,7 @@ impl<'a> Emitter<'a> {
     /// so it is computed in its turn, and given to `printf` as that text.
     fn float_text(&mut self, ty: FloatTy, value: &str, format: &mut String, values: &mut Vec<String>) {
         let temp = self.temp();
-        self.pre.push(format!("char {temp}[40]; int {temp}n = sg_shortest({temp}, {value}, {});", ty == FloatTy::Float));
+        self.pre.push(format!("char {temp}[40]; int64_t {temp}n = sg_shortest({temp}, {value}, {});", ty == FloatTy::Float));
         format.push_str("%.*s");
         values.push(format!("{temp}n"));
         values.push(temp);
@@ -16287,7 +16413,7 @@ impl<'a> Emitter<'a> {
     /// A character inside a formatted line: its UTF-8 bytes, on a line of their own.
     fn char_text(&mut self, value: &str, format: &mut String, values: &mut Vec<String>) {
         let temp = self.temp();
-        self.pre.push(format!("char {temp}[4]; int {temp}n = sg_utf8({temp}, {value});"));
+        self.pre.push(format!("char {temp}[4]; int64_t {temp}n = sg_utf8({temp}, {value});"));
         format.push_str("%.*s");
         values.push(format!("{temp}n"));
         values.push(temp);
@@ -16306,12 +16432,7 @@ impl<'a> Emitter<'a> {
             Some((letter, digits)) => self.lettered(expr, letter, digits.unwrap_or(0), format, values)?,
             None => self.formatted_as_printed(expr, format, values)?,
         }
-        let mut ty = expr.ty.strip_borrow();
-        while let Some(inner) = pointee(ty) {
-            ty = inner.strip_borrow();
-        }
-        let ascii = matches!(ty, Ty::Int(_) | Ty::Float(_) | Ty::Bool);
-        widen(format, values, width, ascii);
+        widen(format, width);
         Ok(())
     }
 
@@ -16349,13 +16470,13 @@ impl<'a> Emitter<'a> {
             }
             (Letter::Binary, Ty::Int(ty)) => {
                 let temp = self.temp();
-                self.pre.push(format!("char {temp}[{}]; int {temp}n = sg_binary({temp}, (unsigned long long)(uint{}_t)({value}), {digits});", digits.max(64), ty.bits()));
+                self.pre.push(format!("char {temp}[{}]; int64_t {temp}n = sg_binary({temp}, (unsigned long long)(uint{}_t)({value}), {digits});", digits.max(64), ty.bits()));
                 format.push_str("%.*s");
                 values.extend([format!("{temp}n"), temp]);
             }
             (Letter::Fixed, Ty::Float(ty)) => {
                 let temp = self.temp();
-                self.pre.push(format!("char {temp}[{}]; int {temp}n = sg_fixed({temp}, sizeof {temp}, {value}, {digits}, {});", 330 + digits, *ty == FloatTy::Float));
+                self.pre.push(format!("char {temp}[{}]; int64_t {temp}n = sg_fixed({temp}, sizeof {temp}, {value}, {digits}, {});", 330 + digits, *ty == FloatTy::Float));
                 format.push_str("%.*s");
                 values.extend([format!("{temp}n"), temp]);
             }
@@ -16401,7 +16522,7 @@ impl<'a> Emitter<'a> {
                 Ty::Char => self.char_text(&place, format, values),
                 Ty::Str => {
                     format.push_str("%.*s");
-                    values.extend([format!("(int){place}.len"), format!("(const char*){place}.ptr")]);
+                    values.extend([format!("(int64_t){place}.len"), format!("(const char*){place}.ptr")]);
                 }
                 other => return Err(not_yet(expr.span, &format!("writing a `{other}*` as text"))),
             }
@@ -16412,7 +16533,7 @@ impl<'a> Emitter<'a> {
             let (view, temp) = (self.view(expr)?, self.temp());
             self.pre.push(format!("sg_str {temp} = {view};"));
             format.push_str("%.*s");
-            values.extend([format!("(int){temp}.len"), format!("(const char*){temp}.ptr")]);
+            values.extend([format!("(int64_t){temp}.len"), format!("(const char*){temp}.ptr")]);
             return Ok(());
         }
         let value = self.value(expr)?;
@@ -17542,7 +17663,7 @@ impl<'a> Emitter<'a> {
         let (mut format, values) = formatted?;
         format.push('\n');
         self.flush_pre(pad, out);
-        let _ = writeln!(out, "{pad}fflush(stdout); fprintf(stderr, {}{values});", c_string(&format));
+        let _ = writeln!(out, "{pad}fflush(stdout); sg_eprint({}{values});", c_string(&format));
         self.flush_post(pad, out);
         Ok(())
     }
@@ -17555,7 +17676,7 @@ impl<'a> Emitter<'a> {
         let (mut format, values) = formatted?;
         format.push('\n');
         self.flush_pre(pad, out);
-        let _ = writeln!(out, "{pad}printf({}{values});", c_string(&format));
+        let _ = writeln!(out, "{pad}sg_print({}{values});", c_string(&format));
         self.flush_post(pad, out);
         Ok(())
     }
@@ -18901,7 +19022,7 @@ impl<'a> Emitter<'a> {
                     // not before the statement; nothing is left to free.
                     let made: String = self.pre.drain(before.0..).map(|line| format!("{line} ")).collect();
                     self.post.truncate(before.1);
-                    let stop = format!("sg_panicf({loc}, {}{values})", c_string(&format));
+                    let stop = format!("sg_panic_line({loc}, {}{values})", c_string(&format));
                     Ok(if made.is_empty() { stop } else { format!("({{ {made}{stop}; }})") })
                 }
                 // `x ?? exit(2)`: as `panic` above.

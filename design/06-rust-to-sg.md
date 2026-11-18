@@ -105,7 +105,7 @@ Last brought up to date: 18 November 2026, the hundred-and-sixteenth slice.
 |---|---|---|---|
 | `String` | `string` | built | Owns its bytes, always UTF-8 |
 | `&str` | `read string` | built | |
-| `format!("{a}: {b}")` | `$"{a}: {b}"` | built | A formatted text; `.toString()` makes it a `string` |
+| `format!("{a}: {b}")` | `$"{a}: {b}"` | built | A formatted text; `.toString()` makes it a `string`. A text in it is written with its length, the byte 0 included, as in Rust |
 | `r#"a "quoted" word"#`, `r"C:\dir"` | `"""a "quoted" word"""`, `"""C:\dir"""` | built | C#'s raw text; on lines, the indentation of the closing `"""` is taken off every line (Rust keeps it; `indoc!` takes it off). `$"""...{x}..."""` puts values in |
 | `{:>5}`, `{:<10}`, `{:02X}`, `{:08b}`, `{:.2}` | `{n,5}`, `{name,-10}`, `{b:X2}`, `{mask:b8}`, `{x:F2}` | built | C#'s widths and letters |
 | `impl Display for T` | `T : Formattable` with `void format(read this, ref Formatter f)` | built | Without the method the text is made from the fields |
