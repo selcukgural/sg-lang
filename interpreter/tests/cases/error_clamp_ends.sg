@@ -1,0 +1,4 @@
+void main() {
+    int level = 7
+    print(level.clamp(10, -5))
+}

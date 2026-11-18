@@ -1,0 +1,5 @@
+error: the low end of `clamp` is above its high end, so no number lies between them
+  `x.clamp(low, high)` takes the low end first
+  --> error_clamp_ends.sg:3:23
+ 3 |     print(level.clamp(10, -5))
+   |                       ^^^^^^

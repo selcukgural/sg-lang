@@ -1,0 +1,8 @@
+double fit(double value, double low, double high) {
+    return value.clamp(low, high)
+}
+
+void main() {
+    print(fit(5, 0, 2.5))
+    print(fit(1.5, 2.5, 0.5))
+}

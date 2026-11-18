@@ -1,0 +1,8 @@
+// `gamma` is rounded by the C library of each system; `nextUp` and `exponent` are exact.
+const double Next = (1.0).nextUp().scaleByPowerOfTwo(3)
+const double Factorial = (5.0).gamma()
+
+void main() {
+    print(Next)
+    print(Factorial)
+}

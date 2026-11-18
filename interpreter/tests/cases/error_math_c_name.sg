@@ -1,0 +1,4 @@
+void main() {
+    double x = 7.5
+    print(x.fmod(2))
+}

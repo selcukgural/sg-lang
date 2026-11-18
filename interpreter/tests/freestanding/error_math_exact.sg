@@ -1,0 +1,7 @@
+// `roundToEven` is exact everywhere, and still a function of C's library.
+export double start(double x) {
+    return x.roundToEven()
+}
+
+void onPanic(read string message) {
+}

@@ -1,0 +1,7 @@
+-5
+0
+panic: overflow: -(-2147483648) does not fit in int
+  --> panic_negate_overflow.sg:2:12
+ 2 |     return -value
+   |            ^^^^^^
+  hint: `tryNegate` gives `null` instead, and `wrappingNegate` wraps around

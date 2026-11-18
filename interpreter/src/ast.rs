@@ -524,6 +524,9 @@ pub enum MemoryCall {
     /// `Memory.writeVolatile(p[i].status, value)`: the place in raw memory, written once, as
     /// written.
     WriteVolatile,
+    /// `Memory.zeroSecurely(ref key)`: zeros over the items, which the C compiler keeps even
+    /// when nothing reads them afterwards.
+    ZeroSecurely,
 }
 
 /// The order an atomic operation keeps with the reads and writes around it, as C11 names them:

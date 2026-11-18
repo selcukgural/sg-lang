@@ -34,8 +34,14 @@ enum Why {
 }
 
 /// The functions of `<math.h>` that are methods of `float` and `double`. `abs`, `min`, `max`,
-/// `isNaN` and `isInfinite` are written without it.
-const MATH: [&str; 18] = ["sqrt", "floor", "ceil", "round", "truncate", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "pow", "fusedMultiplyAdd"];
+/// `clamp`, `isNaN`, `isInfinite`, `isFinite`, `isSignNegative`, `copySign`, `nextUp`,
+/// `nextDown` and `exponent` are written without it.
+const MATH: [&str; 34] = [
+    "sqrt", "floor", "ceil", "round", "truncate", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "pow", "fusedMultiplyAdd",
+    "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "cbrt", "exp2", "expMinusOne", "logOnePlus", "erf", "erfc", "gamma", "logGamma", "hypot", "ieeeRemainder",
+];
+/// Of `<math.h>` too, exact everywhere but not written without it.
+const MATH_EXACT: [&str; 3] = ["fraction", "roundToEven", "scaleByPowerOfTwo"];
 
 /// What a type holds that needs a system, as the message says it.
 pub fn system_type(ty: &Ty) -> Option<String> {
@@ -83,7 +89,7 @@ fn needs(expr: &Expr) -> Option<(Span, String)> {
                     "a fractional number is read with C's library (`strtod`)".to_string()
                 }
                 _ => match &expr.kind {
-                    ExprKind::Method { recv, name, callee: Callee::Plain, .. } if matches!(recv.ty, Ty::Float(_)) && MATH.contains(&name.as_str()) => {
+                    ExprKind::Method { recv, name, callee: Callee::Plain, .. } if matches!(recv.ty, Ty::Float(_)) && (MATH.contains(&name.as_str()) || MATH_EXACT.contains(&name.as_str())) => {
                         format!("`{name}` is a function of C's library (`<math.h>`)")
                     }
                     _ => return None,

@@ -1,0 +1,5 @@
+error: `Memory.zeroSecurely` writes the items of a `ref T[]`, and this is `byte[4]`
+  --> error_zero_securely_read.sg:3:25
+ 3 |     Memory.zeroSecurely(key)
+   |                         ^^^
+  hint: lend it with `ref`: `ref key`

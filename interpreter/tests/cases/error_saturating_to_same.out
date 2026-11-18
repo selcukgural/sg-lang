@@ -1,0 +1,5 @@
+error: every `int` fits in `long`: there is nothing to convert
+  --> error_saturating_to_same.sg:3:13
+ 3 |     print(x.saturatingToLong())
+   |             ^^^^^^^^^^^^^^^^
+  hint: it becomes one on its own: `long x = value`

@@ -1,0 +1,5 @@
+2.5
+panic: `clamp`: the low end 2.5 is above the high end 0.5
+  --> panic_clamp_float_ends.sg:2:12
+ 2 |     return value.clamp(low, high)
+   |            ^^^^^^^^^^^^^^^^^^^^^^

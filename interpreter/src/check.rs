@@ -281,35 +281,69 @@ fn constant(ty: &Ty, name: &str, span: Span) -> Res<()> {
     })
 }
 
-/// The integer type a `tryTo...` or `wrappingTo...` method converts to: `tryToInt` gives an
-/// `int?`. A conversion that cannot fail is an error, as is cutting a fractional number.
+/// The integer type a `tryTo...`, `wrappingTo...` or `saturatingTo...` method converts to:
+/// `tryToInt` gives an `int?`. A conversion that cannot fail is an error, as is cutting a
+/// fractional number.
 fn conversion(from: &Ty, name: &str, span: Span) -> Res<IntTy> {
-    let (wrapping, rest) = match name.strip_prefix("tryTo") {
-        Some(rest) => (false, rest),
-        None => (true, name.strip_prefix("wrappingTo").expect("tested by the caller")),
-    };
+    let (kind, rest) = ["tryTo", "wrappingTo", "saturatingTo"]
+        .into_iter()
+        .find_map(|kind| name.strip_prefix(kind).map(|rest| (kind, rest)))
+        .expect("tested by the caller");
+    let wrapping = kind == "wrappingTo";
     let lower = rest.to_lowercase();
     let no_method = || Diag::error(span, format!("`{from}` has no method `{name}`"));
     let Some(to) = IntTy::ALL.into_iter().find(|ty| ty.name().to_lowercase() == lower) else {
         if let Some(float) = FloatTy::from_name(&lower) {
             return Err(no_method().hint(format!("`({})x` never fails; it rounds", float.name())));
         }
-        return Err(no_method().note("the conversions are named after the type: `tryToInt`, `tryToUlong`, `wrappingToByte`"));
+        return Err(no_method().note("the conversions are named after the type: `tryToInt`, `tryToUlong`, `wrappingToByte`, `saturatingToShort`"));
     };
     let spelled = to.title();
     if rest != spelled {
-        let right = if wrapping { "wrappingTo" } else { "tryTo" };
-        return Err(no_method().hint(format!("`{right}{spelled}`")));
+        return Err(no_method().hint(format!("`{kind}{spelled}`")));
     }
     match from {
         Ty::Float(_) if wrapping => Err(no_method().note(format!(
-            "a fractional number has no bits to cut to size; `tryTo{spelled}()` gives `null` when it does not fit"
+            "a fractional number has no bits to cut to size; `tryTo{spelled}()` gives `null` when it does not fit, and `saturatingTo{spelled}()` the nearest end"
         ))),
         Ty::Int(from) if *from == to => Err(Diag::error(span, format!("this is an `{}` already: there is nothing to convert", to.name()))),
         Ty::Int(from) if from.widens_to(to) => Err(Diag::error(span, format!("every `{}` fits in `{}`: there is nothing to convert", from.name(), to.name()))
             .hint(format!("it becomes one on its own: `{} x = value`", to.name()))),
         _ => Ok(to),
     }
+}
+
+/// The methods of `float` and `double` that take nothing and give the same type: the rest of
+/// `<math.h>` after the ones of 162.
+pub const FLOAT_ONE: &[&str] = &[
+    "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "cbrt", "exp2", "expMinusOne", "logOnePlus", "erf", "erfc", "gamma", "logGamma", "fraction",
+    "nextUp", "nextDown", "roundToEven",
+];
+
+/// The ends of `clamp`, when both are numbers written in the program: the low one must not be
+/// above the high one.
+fn clamp_ends(args: &[Expr]) -> Res<()> {
+    fn known(expr: &Expr) -> Option<f64> {
+        match &expr.kind {
+            ExprKind::Int(value, _) => Some(*value as f64),
+            ExprKind::Float(text, _) => text.parse().ok(),
+            ExprKind::Unary(UnOp::Neg, inner) => known(inner).map(|value| -value),
+            ExprKind::Widen(_, inner) => known(inner),
+            _ => None,
+        }
+    }
+    if let (Some(low), Some(high)) = (known(&args[0]), known(&args[1])) {
+        if low > high {
+            return Err(Diag::error(args[0].span.to(args[1].span), "the low end of `clamp` is above its high end, so no number lies between them")
+                .note("`x.clamp(low, high)` takes the low end first"));
+        }
+    }
+    Ok(())
+}
+
+/// `tryToInt`, `wrappingToByte`, `saturatingToShort` and the others: a conversion to an integer type.
+pub fn is_conversion(name: &str) -> bool {
+    name.starts_with("tryTo") || name.starts_with("wrappingTo") || name.starts_with("saturatingTo")
 }
 
 /// Whether a method on a value of this type is a method of `string`: the text itself, a borrow
@@ -10526,6 +10560,40 @@ impl<'a> Checker<'a> {
                 *callee = Callee::Memory(if writes { MemoryCall::WriteVolatile } else { MemoryCall::ReadVolatile });
                 Ok(if writes { Ty::Void } else { found })
             }
+            // `Memory.zeroSecurely(ref key)`: zeros that the C compiler does not leave out
+            // because nothing reads them afterwards. A window is checked, so no `unsafe`.
+            "zeroSecurely" => {
+                if args.len() != 1 {
+                    return Err(Diag::error(span, format!("`zeroSecurely` takes 1 argument(s), {} given", args.len()))
+                        .note("`Memory.zeroSecurely(ref buffer)` writes zeros over the items"));
+                }
+                let found = self.expr(&mut args[0], None)?;
+                let item = match &found {
+                    Ty::Ref(inner) => match &**inner {
+                        Ty::Slice(item) | Ty::Array(item, _) | Ty::List(item) => Some((**item).clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let Some(item) = item else {
+                    let text = &self.src[args[0].span.start..args[0].span.end];
+                    let diag = Diag::error(args[0].span, format!("`Memory.zeroSecurely` writes the items of a `ref T[]`, and this is `{found}`"));
+                    return Err(match found.strip_borrow() {
+                        Ty::Array(..) | Ty::List(_) | Ty::Slice(_) if !matches!(found, Ty::Ref(_)) => {
+                            diag.hint(format!("lend it with `ref`: `ref {}`", text.strip_prefix("read ").unwrap_or(text)))
+                        }
+                        _ => diag,
+                    });
+                };
+                if let Some(part) = not_plain(&item, self.structs) {
+                    let diag = Diag::error(args[0].span, format!("`Memory.zeroSecurely` writes zeros over plain data, and `{item}` is not"));
+                    let diag = if part == item { diag } else { diag.note(format!("it holds a `{part}`")) };
+                    return Err(diag.note("a zero is a value of plain data only: what owns memory or counts its owners would lose it"));
+                }
+                self.coerce(&mut args[0], found, &Ty::Ref(Box::new(Ty::Slice(Box::new(item)))))?;
+                *callee = Callee::Memory(MemoryCall::ZeroSecurely);
+                Ok(Ty::Void)
+            }
             "readUnaligned" | "writeUnaligned" => {
                 let writes = name == "writeUnaligned";
                 let wanted = if writes { 2 } else { 1 };
@@ -10549,7 +10617,7 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let diag = Diag::error(name_span, format!("`Memory` has no function `{name}`"));
-                let all = ["allocate", "free", "copy", "addressOf", "view", "viewRef", "readUnaligned", "writeUnaligned", "readVolatile", "writeVolatile", "sizeOf", "alignOf"];
+                let all = ["allocate", "free", "copy", "addressOf", "view", "viewRef", "readUnaligned", "writeUnaligned", "readVolatile", "writeVolatile", "sizeOf", "alignOf", "zeroSecurely"];
                 Err(match nearest(name, all.into_iter()) {
                     Some(close @ ("sizeOf" | "alignOf")) => diag.hint(format!("`Memory.{close}<int>()`")),
                     Some(close) => diag.hint(format!("`{close}`")),
@@ -11542,12 +11610,12 @@ impl<'a> Checker<'a> {
         let target = &target;
         match (target, name) {
             // C's `long` is compared, printed and converted, and nothing more.
-            (Ty::Int(ty), _) if ty.is_c() && !(matches!(name, "toString" | "compare" | "equals") || name.starts_with("tryTo") || name.starts_with("wrappingTo")) => {
+            (Ty::Int(ty), _) if ty.is_c() && !(matches!(name, "toString" | "compare" | "equals") || is_conversion(name)) => {
                 let text = &self.src[recv.span.start..recv.span.end];
                 Err(Diag::error(name_span, format!("`{}` has no method `{name}`: C's `{}` has a size of its own on each system, so it is only compared, printed and converted", ty.name(), c_spelling(*ty)))
                     .hint(format!("work on a `{0}`: `(({0}){text}).{name}({1})`", c_partner(*ty).name(), if args.is_empty() { "" } else { "..." })))
             }
-            (Ty::Int(ty), "wrappingAdd" | "wrappingSubtract" | "wrappingMultiply") => {
+            (Ty::Int(ty), "wrappingAdd" | "wrappingSubtract" | "wrappingMultiply" | "saturatingAdd" | "saturatingSubtract" | "saturatingMultiply") => {
                 arity(1)?;
                 let other = self.int_operand(&mut args[0], Some(*ty), "the argument")?;
                 let common = Ty::Int(self.common_int(recv, recv_ty.clone(), &mut args[0], Ty::Int(other))?);
@@ -11727,8 +11795,98 @@ impl<'a> Checker<'a> {
                 self.coerce(recv, recv_ty.clone(), target)?;
                 Ok(target.clone())
             }
+            // The rest of `<math.h>`: `x.sinh()`, `x.gamma()`, `x.roundToEven()`, `x.nextUp()`.
+            (Ty::Float(_), _) if FLOAT_ONE.contains(&name) => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(target.clone())
+            }
+            (Ty::Float(_), "isFinite" | "isSignNegative") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Bool)
+            }
+            // `x.exponent()`: the power of two of `x`, as C's `ilogb` has it; `null` for 0, `NaN`
+            // and the infinities, for which C gives a number of its own on each system.
+            (Ty::Float(_), "exponent") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Nullable(Box::new(Ty::Int(IntTy::Int))))
+            }
+            // `x.scaleByPowerOfTwo(n)`: `x` times 2 to the `n`, C's `ldexp`.
+            (Ty::Float(_), "scaleByPowerOfTwo") => {
+                arity(1)?;
+                self.int_operand(&mut args[0], Some(IntTy::Int), "the power of two")?;
+                if let Ty::Int(found) = args[0].ty {
+                    if found != IntTy::Int {
+                        self.coerce(&mut args[0], Ty::Int(found), &Ty::Int(IntTy::Int))?;
+                    }
+                }
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(target.clone())
+            }
+            // `x.clamp(low, high)`: the three meet in one type, as with `+`.
+            (Ty::Float(ty), "clamp") => {
+                arity(2)?;
+                let mut common = *ty;
+                let mut recv_found = recv_ty.clone();
+                for at in 0..2 {
+                    let found = self.operand(&mut args[at], Some(&Ty::Float(common)))?;
+                    if !found.strip_borrow().is_number() {
+                        return Err(Diag::error(args[at].span, format!("expected `{}`, found `{found}`", common.name())));
+                    }
+                    common = self.common_float(recv, recv_found, &mut args[at], found)?;
+                    recv_found = Ty::Float(common);
+                }
+                if let Ty::Float(first) = args[0].ty.clone() {
+                    if first != common {
+                        self.coerce(&mut args[0], Ty::Float(first), &Ty::Float(common))?;
+                    }
+                }
+                clamp_ends(args)?;
+                Ok(Ty::Float(common))
+            }
+            (Ty::Int(ty), "clamp") => {
+                arity(2)?;
+                let mut common = *ty;
+                let mut recv_found = recv_ty.clone();
+                for end in args.iter_mut() {
+                    let other = self.int_operand(end, Some(common), "an end of `clamp`")?;
+                    common = self.common_int(recv, recv_found, end, Ty::Int(other))?;
+                    recv_found = Ty::Int(common);
+                }
+                if let Ty::Int(first) = args[0].ty.clone() {
+                    if first != common {
+                        self.coerce(&mut args[0], Ty::Int(first), &Ty::Int(common))?;
+                    }
+                }
+                clamp_ends(args)?;
+                Ok(Ty::Int(common))
+            }
+            // `x.abs()` on the signed types: `int.MinValue.abs()` overflows as `-x` does;
+            // `tryAbs` gives `null` there, `wrappingAbs` wraps, and `unsignedAbs` gives the
+            // unsigned type of the same size, which holds every answer.
+            (Ty::Int(ty), "abs" | "tryAbs" | "wrappingAbs" | "unsignedAbs") => {
+                arity(0)?;
+                if !ty.signed() {
+                    return Err(Diag::error(name_span, format!("a `{}` is never negative: `{name}` would give it back as it is", ty.name())));
+                }
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(match name {
+                    "tryAbs" => Ty::Nullable(Box::new(Ty::Int(*ty))),
+                    "unsignedAbs" => Ty::Int(ty.unsigned()),
+                    _ => Ty::Int(*ty),
+                })
+            }
+            // `x.tryNegate()` and `x.wrappingNegate()`: `-x` that gives `null` or wraps, on every
+            // integer type (`0 - x` on the unsigned ones).
+            (Ty::Int(ty), "tryNegate" | "wrappingNegate") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(if name == "tryNegate" { Ty::Nullable(Box::new(Ty::Int(*ty))) } else { Ty::Int(*ty) })
+            }
             // `x.pow(y)`, `y.atan2(x)`, `a.min(b)`: the two meet in one type, as with `+`.
-            (Ty::Float(ty), "pow" | "atan2" | "min" | "max") => {
+            (Ty::Float(ty), "pow" | "atan2" | "min" | "max" | "hypot" | "copySign" | "ieeeRemainder") => {
                 arity(1)?;
                 let found = self.operand(&mut args[0], Some(&Ty::Float(*ty)))?;
                 if !found.strip_borrow().is_number() {
@@ -11763,8 +11921,9 @@ impl<'a> Checker<'a> {
                 let other = self.int_operand(&mut args[0], None, "the argument")?;
                 Ok(Ty::Int(self.common_int(recv, recv_ty.clone(), &mut args[0], Ty::Int(other))?))
             }
-            // `big.tryToInt()`: `null` if it does not fit; `big.wrappingToInt()`: cut to size.
-            (Ty::Int(_) | Ty::Float(_), _) if name.starts_with("tryTo") || name.starts_with("wrappingTo") => {
+            // `big.tryToInt()`: `null` if it does not fit; `big.wrappingToInt()`: cut to size;
+            // `big.saturatingToInt()`: the nearest end of the type.
+            (Ty::Int(_) | Ty::Float(_), _) if is_conversion(name) => {
                 arity(0)?;
                 let to = conversion(target, name, name_span)?;
                 self.coerce(recv, recv_ty.clone(), target)?;
@@ -11895,12 +12054,42 @@ impl<'a> Checker<'a> {
                 let diag = Diag::error(name_span, format!("type `{target}` has no method `{name}`"));
                 const FRACTIONAL: &[&str] = &[
                     "sqrt", "floor", "ceil", "round", "truncate", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan",
-                    "atan2", "pow", "fusedMultiplyAdd",
+                    "atan2", "pow", "fusedMultiplyAdd", "hypot", "copySign", "ieeeRemainder", "scaleByPowerOfTwo", "exponent", "isFinite",
+                    "isSignNegative", "isNaN", "isInfinite",
                 ];
-                if matches!(target, Ty::Int(_)) && FRACTIONAL.contains(&name) {
+                if matches!(target, Ty::Int(_)) && (FRACTIONAL.contains(&name) || FLOAT_ONE.contains(&name)) {
                     let text = &self.src[recv.span.start..recv.span.end];
-                    let given = if matches!(name, "atan2" | "pow" | "fusedMultiplyAdd") { "..." } else { "" };
+                    let given = if matches!(name, "atan2" | "pow" | "fusedMultiplyAdd" | "hypot" | "copySign" | "ieeeRemainder" | "scaleByPowerOfTwo") { "..." } else { "" };
                     return Err(diag.hint(format!("it is a method of `double`: `((double){text}).{name}({given})`")));
+                }
+                // The names of C's `<math.h>`, and of the methods of an integer, that are written
+                // another way here.
+                if matches!(target, Ty::Int(_) | Ty::Float(_)) {
+                    let float = matches!(target, Ty::Float(_));
+                    let instead = match name {
+                        "fmod" => Some("`a % b` is C's `fmod`"),
+                        "remainder" if float => Some("`a.ieeeRemainder(b)`; `a % b` is C's `fmod`"),
+                        "rint" | "nearbyint" | "roundeven" | "roundTiesEven" => Some("`x.roundToEven()`"),
+                        "tgamma" => Some("`x.gamma()`"),
+                        "lgamma" => Some("`x.logGamma()`"),
+                        "copysign" => Some("`x.copySign(y)`"),
+                        "nextafter" | "nexttoward" => Some("`x.nextUp()` or `x.nextDown()`"),
+                        "modf" | "fract" => Some("`x.fraction()`, and `x.truncate()` for the whole part"),
+                        "frexp" => Some("`x.exponent()`, and `x.scaleByPowerOfTwo(-e)` for the rest"),
+                        "ldexp" | "scalbn" | "scaleB" => Some("`x.scaleByPowerOfTwo(n)`"),
+                        "ilogb" | "logb" => Some("`x.exponent()`"),
+                        "expm1" | "expM1" => Some("`x.expMinusOne()`"),
+                        "log1p" | "logP1" | "ln1p" => Some("`x.logOnePlus()`"),
+                        "fabs" => Some("`x.abs()`"),
+                        "fmin" | "fmax" => Some("`a.min(b)` and `a.max(b)`"),
+                        "trunc" => Some("`x.truncate()`"),
+                        "isfinite" => Some("`x.isFinite()`"),
+                        "signbit" | "isNegative" => Some("`x.isSignNegative()`"),
+                        _ => None,
+                    };
+                    if let Some(instead) = instead {
+                        return Err(diag.hint(instead));
+                    }
                 }
                 if matches!(target, Ty::Int(_)) && (ASCII_TESTS.contains(&name) || matches!(name, "toAsciiUpper" | "toAsciiLower")) {
                     return Err(diag.note("the ASCII methods are on `byte` and `char`"));

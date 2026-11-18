@@ -1,0 +1,10 @@
+// In a release build the absolute value that does not fit wraps, as `-x` does; `clamp` still
+// checks its ends, which depend on the data.
+void main() {
+    int least = int.MinValue
+    print(least.abs())
+    sbyte small = -128
+    print(small.abs())
+    print((-5).abs())
+    print(least.unsignedAbs())
+}

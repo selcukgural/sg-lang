@@ -1,0 +1,9 @@
+int opposite(int value) {
+    return -value
+}
+
+void main() {
+    print(opposite(5))
+    print(int.MinValue.tryNegate() ?? 0)
+    print(opposite(int.MinValue))
+}

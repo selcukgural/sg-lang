@@ -1,0 +1,5 @@
+error: type `double` has no method `frexp`
+  --> error_math_c_name_frexp.sg:3:13
+ 3 |     print(x.frexp())
+   |             ^^^^^
+  hint: `x.exponent()`, and `x.scaleByPowerOfTwo(-e)` for the rest

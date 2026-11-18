@@ -1,0 +1,76 @@
+// The rest of C's <math.h> as methods of `float` and `double`, and the integer methods of the
+// same slice: `abs`, `clamp`, the saturating operations and conversions, `tryNegate`.
+
+// What C's library rounds in its own way may differ in the last digit from one system to another
+// (choice 164), so those numbers are printed with 12 digits after the point.
+void main() {
+    // The hyperbolic functions and their inverses.
+    double x = 0.5
+    print($"{x.sinh():F12} {x.cosh():F12} {x.tanh():F12}")
+    print($"{x.asinh():F12} {(2.0).acosh():F12} {x.atanh():F12}")
+    print($"{(27.0).cbrt():F12} {(-8.0).cbrt():F12} {(3.0).hypot(4):F12} {(10.0).exp2():F12}")
+    // Near zero, where `exp(x) - 1` and `log(1 + x)` lose the digits.
+    double tiny = 1e-10
+    print($"{tiny.expMinusOne() / tiny:F12} {(tiny.exp() - 1) / tiny:F12}")
+    print($"{tiny.logOnePlus() / tiny:F12} {(1 + tiny).log() / tiny:F12}")
+    print($"{(1.0).erf():F12} {(1.0).erfc():F12} {(5.0).gamma():F12} {(0.5).gamma():F12} {(100.0).logGamma():F12}")
+    float f = 0.5
+    print($"{f.sinh():F5} {f.cbrt():F5} {f.erf():F5} {f.gamma():F5} {f.hypot(1.2):F5} {f.exp2():F5}")
+    float least = 1e-45
+    float one = 1
+    float above = 2.6
+
+    // The remainder that rounds the quotient to the nearest, beside `%`, which is C's `fmod`.
+    print($"{(5.0).ieeeRemainder(3)} {5.0 % 3} {(-5.0).ieeeRemainder(3)} {(7.5).ieeeRemainder(2)}")
+    print($"{(3.0).copySign(-1)} {(-3.0).copySign(0.0)} {(2.0).copySign(-0.0)}")
+
+    // The power of two, and the number made from one.
+    double big = 1000.0
+    int? power = big.exponent()
+    if power is not null {
+        print($"{big} is {big.scaleByPowerOfTwo(-power)} times 2^{power}")
+    }
+    print($"{(1.0).exponent() ?? 0} {(0.75).exponent() ?? 0} {double.MaxValue.exponent() ?? 0} {(5e-324).exponent() ?? 0}")
+    print($"{(0.0).exponent() is null} {double.NaN.exponent() is null} {double.Infinity.exponent() is null} {least.exponent() ?? 0} {one.exponent() ?? 99}")
+    print($"{(1.5).scaleByPowerOfTwo(4)} {(1.0).scaleByPowerOfTwo(1024)} {(1.0).scaleByPowerOfTwo(-1075)}")
+
+    // What is left after the whole part, with the sign.
+    print($"{(3.75).fraction()} {(-3.75).fraction()} {(-3.0).fraction()} {double.Infinity.fraction()} {(-double.Infinity).fraction()}")
+    // The next number above and below.
+    print($"{(1.0).nextUp()} {(1.0).nextDown()} {(0.0).nextUp()} {(-0.0).nextDown()} {double.MaxValue.nextUp()} {(-double.Infinity).nextUp()}")
+    print($"{one.nextUp()} {double.NaN.nextUp()} {double.Infinity.nextUp()}")
+    // A half goes to the even neighbour; `round` goes away from zero.
+    print($"{(0.5).roundToEven()} {(1.5).roundToEven()} {(2.5).roundToEven()} {(-2.5).roundToEven()} {(2.5).round()} {above.roundToEven()}")
+    print($"{(1.0).isFinite()} {double.Infinity.isFinite()} {double.NaN.isFinite()} {(-0.0).isSignNegative()} {(0.0).isSignNegative()} {(-1.0).isSignNegative()}")
+
+    // `clamp` on fractional numbers: a `NaN` stays one, `-0` is below `0`.
+    print($"{(1.5).clamp(0, 1)} {(-2.0).clamp(-1.5, 1)} {(0.25).clamp(0, 1)} {double.NaN.clamp(0, 1)} {(-0.0).clamp(0.0, 1)}")
+    float level = 3.5
+    print(level.clamp(0, 1))
+
+    // On integers.
+    int n = -7
+    print($"{n.abs()} {(7).abs()} {int.MinValue.tryAbs() is null} {n.tryAbs() ?? 0} {int.MinValue.wrappingAbs()} {int.MinValue.unsignedAbs()} {n.unsignedAbs()}")
+    sbyte s = -128
+    print($"{s.unsignedAbs()} {s.tryNegate() is null} {s.wrappingNegate()} {(5).tryNegate() ?? 0}")
+    uint u = 5
+    uint zero = 0
+    print($"{u.wrappingNegate()} {u.tryNegate() is null} {zero.tryNegate() ?? 9}")
+    print($"{(300).clamp(0, 255)} {(-5).clamp(0, 255)} {(42).clamp(0, 255)}")
+    byte b = 200
+    print(b.clamp(10, 100))
+
+    // Saturating: the nearest end of the type.
+    print($"{int.MaxValue.saturatingAdd(1)} {int.MinValue.saturatingSubtract(1)} {int.MinValue.saturatingAdd(-5)} {(10).saturatingAdd(5)}")
+    print($"{int.MaxValue.saturatingMultiply(2)} {int.MinValue.saturatingMultiply(2)} {(-3).saturatingMultiply(int.MaxValue)} {(6).saturatingMultiply(7)}")
+    byte small = 10
+    print($"{small.saturatingSubtract(20)} {small.saturatingAdd(250)} {small.saturatingMultiply(30)}")
+    ulong huge = ulong.MaxValue
+    ulong none = 0
+    print($"{huge.saturatingAdd(1)} {huge.saturatingMultiply(2)} {none.saturatingSubtract(1)}")
+
+    // Saturating conversions.
+    long wide = 5_000_000_000
+    print($"{wide.saturatingToInt()} {(-wide).saturatingToInt()} {(300).saturatingToByte()} {(-1).saturatingToUint()} {wide.saturatingToShort()}")
+    print($"{(1e20).saturatingToLong()} {(-1e20).saturatingToInt()} {double.NaN.saturatingToInt()} {(3.9).saturatingToByte()} {(-3.9).saturatingToByte()} {double.Infinity.saturatingToUlong()}")
+}

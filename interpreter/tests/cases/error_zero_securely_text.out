@@ -1,0 +1,5 @@
+error: `Memory.zeroSecurely` writes zeros over plain data, and `string` is not
+  a zero is a value of plain data only: what owns memory or counts its owners would lose it
+  --> error_zero_securely_text.sg:4:25
+ 4 |     Memory.zeroSecurely(ref names)
+   |                         ^^^^^^^^^

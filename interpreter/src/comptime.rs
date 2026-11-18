@@ -21,7 +21,10 @@ const UNWRITTEN: &[&str] = &["format", "equals", "hash", "compare", "dispose"];
 
 /// The functions of a fraction whose last bit the C library of each system finds in its own
 /// way: what the program computes when it runs could differ from what the compiler found.
-pub const ROUNDED_ELSEWHERE: &[&str] = &["sin", "cos", "tan", "asin", "acos", "atan", "atan2", "exp", "log", "log2", "log10", "pow"];
+pub const ROUNDED_ELSEWHERE: &[&str] = &[
+    "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "exp", "log", "log2", "log10", "pow", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "cbrt",
+    "exp2", "expMinusOne", "logOnePlus", "erf", "erfc", "gamma", "logGamma", "hypot",
+];
 
 /// What a const's initializer reaches: the functions, each by the name a call reaches it by
 /// (`name`, `Owner.name`), in the order they were reached, and the other consts it reads.

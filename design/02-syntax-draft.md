@@ -838,7 +838,13 @@ form can be written out and then mean the same in every build:
 var a = x + y                                    // debug and tests: panics on overflow; release: wraps
 var b = x.tryAdd(y) ?? return Error(TooLarge)    // int?, checked in every build, for external input
 var c = x.wrappingAdd(y)                         // wraps in every build, where wrapping is what is meant
+var s = x.saturatingAdd(y)                       // the nearest end of the type, in every build
 var d = x / y                                    // division by zero panics in every build
+var e = -x                                       // int.MinValue: panics; tryNegate() and wrappingNegate()
+var f = x.abs()                                  // int.MinValue: panics as -x does; tryAbs(), wrappingAbs(),
+                                                 //   and unsignedAbs() gives a uint that holds every answer
+var g = size.abs()                               // error on a uint: it is never negative
+var h = level.clamp(0, 255)                      // a low end above the high end panics; written so, an error
 ```
 
 Conversion to a smaller type follows the same rule:
@@ -848,6 +854,7 @@ long big = ...
 var a = (int)big                                 // debug and tests: panics if it does not fit; release: cut to size
 var b = big.tryToInt() ?? return Error(TooLarge) // int?, checked in every build
 var c = big.wrappingToInt()                      // cut to size in every build
+var s = big.saturatingToInt()                    // int.MaxValue or int.MinValue if it does not fit
 var d = (byte)300                                // error: 300 does not fit in byte
 long e = a                                       // widening conversion is implicit
 var f = (int)3.7                                 // 3; NaN or out of range panics
@@ -1044,6 +1051,25 @@ x.sin(), x.cos(), x.tan(), x.asin(), x.acos(), x.atan(), y.atan2(x)
 a.fusedMultiplyAdd(b, c)                         // a * b + c, rounded once
 a.min(b), a.max(b)                               // on integers too
 count.sqrt()                                     // error on an int. Hint: ((double)count).sqrt()
+x.sinh(), x.cosh(), x.tanh(), x.asinh(), x.acosh(), x.atanh()
+x.cbrt(), x.exp2(), x.hypot(y), x.erf(), x.erfc(), x.gamma(), x.logGamma()
+tiny.expMinusOne(), tiny.logOnePlus()            // e^x - 1 and log(1 + x), exact near zero
+a % b, a.ieeeRemainder(b)                        // C's fmod and remainder: the quotient cut, or rounded
+x.copySign(y), x.isSignNegative(), x.isFinite()
+x.roundToEven()                                  // a half to the even neighbour; round() goes away from 0
+x.fraction()                                     // what truncate() leaves, with the sign of x: C's modf
+x.exponent()                                     // int?: 1000.0 is between 2^9 and 2^10, so 9; null for 0
+x.scaleByPowerOfTwo(n)                           // x * 2^n: C's ldexp
+x.nextUp(), x.nextDown()                         // the neighbours of x
+x.clamp(0, 1)                                    // NaN stays NaN; an end that is NaN panics
+x.fmod(y)                                        // error. Hint: `a % b` is C's `fmod`
+```
+
+A secret is wiped with zeros the C compiler keeps although nothing reads them again (C23's `memset_explicit`):
+
+```
+byte[32] key = ...
+Memory.zeroSecurely(ref key)                     // a list, an array or a window of plain data; no unsafe
 ```
 
 ### Text formatting

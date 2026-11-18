@@ -1,0 +1,4 @@
+panic: `clamp`: the low end is NaN
+  --> panic_clamp_nan_end.sg:4:11
+ 4 |     print(x.clamp(low, 1))
+   |           ^^^^^^^^^^^^^^^

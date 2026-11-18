@@ -3862,7 +3862,9 @@ impl<'a, 'e> Interp<'a, 'e> {
             ExprKind::Unary(UnOp::Neg, operand) => match strip(self.expr(operand, frame)?) {
                 Value::Int(ty, value) => {
                     if !ty.fits(-value) {
-                        return Err(Diag::panic(expr.span, format!("overflow: -({value}) does not fit in {}", ty.name())).into());
+                        return Err(Diag::panic(expr.span, format!("overflow: -({value}) does not fit in {}", ty.name()))
+                            .hint("`tryNegate` gives `null` instead, and `wrappingNegate` wraps around")
+                            .into());
                     }
                     Ok(Value::Int(ty, -value))
                 }
@@ -4718,6 +4720,35 @@ impl<'a, 'e> Interp<'a, 'e> {
                         }
                         // `(byte)block`: the number of the variant.
                         (Value::Enum(owner, index, _), crate::check::NUMBER_OF, []) => return self.variant_number(owner, *index, expr.span),
+                        // `int.MinValue.abs()` overflows, as `-x` does.
+                        (Value::Int(ty, value), "abs", []) => {
+                            if !ty.fits(value.abs()) {
+                                let unsigned = ty.unsigned().name();
+                                return Err(Diag::panic(expr.span, format!("overflow: the absolute value of {value} does not fit in {}", ty.name()))
+                                    .hint(format!("`tryAbs` gives `null` instead, `wrappingAbs` wraps around, and `unsignedAbs` gives a `{unsigned}`"))
+                                    .into());
+                            }
+                            return Ok(Value::Int(*ty, value.abs()));
+                        }
+                        // The ends of `clamp` in the wrong order, or one that is `NaN`.
+                        (Value::Int(ty, value), "clamp", [Value::Int(_, low), Value::Int(_, high)]) => {
+                            if low > high {
+                                return Err(Diag::panic(expr.span, format!("`clamp`: the low end {low} is above the high end {high}")).into());
+                            }
+                            return Ok(Value::Int(*ty, *value.max(low).min(high)));
+                        }
+                        (Value::Float(ty, value), "clamp", [Value::Float(_, low), Value::Float(_, high)]) => {
+                            if low.is_nan() || high.is_nan() {
+                                let which = if low.is_nan() { "low" } else { "high" };
+                                return Err(Diag::panic(expr.span, format!("`clamp`: the {which} end is NaN")).into());
+                            }
+                            if low > high {
+                                let (low, high) = (show_float(*low, *ty), show_float(*high, *ty));
+                                return Err(Diag::panic(expr.span, format!("`clamp`: the low end {low} is above the high end {high}")).into());
+                            }
+                            let Value::Float(_, above) = float_method2(*ty, *value, "max", *low) else { unreachable!("a number") };
+                            return Ok(float_method2(*ty, above, "min", *high));
+                        }
                         // The bits of an integer; a power of two that does not fit, and the log2 of 0, panic.
                         (Value::Int(ty, value), _, _) if crate::check::BIT_METHODS.contains(&name.as_str()) => {
                             let count = match values.as_slice() {
@@ -5075,6 +5106,19 @@ impl<'a, 'e> Interp<'a, 'e> {
             // On Linux and macOS the system's last error is `errno` too; on Windows it is
             // `GetLastError`, kept beside it.
             MemoryCall::Errno => Ok(Value::Int(IntTy::Int, self.errno[0] as i128)),
+            // Each item becomes the value that zero bytes are for its type.
+            MemoryCall::ZeroSecurely => {
+                let Ty::Ref(slice) = &args[0].ty else { unreachable!("the checker gives `zeroSecurely` a `ref T[]`") };
+                let Ty::Slice(item) = &**slice else { unreachable!("the checker gives `zeroSecurely` a `ref T[]`") };
+                let cells = cells_of(&owned(self.expr(&args[0], frame)?));
+                let (size, _) = raw::layout(item, self.plain);
+                let zeros = vec![0u64; size.div_ceil(8).max(1)];
+                let zero = load(zeros.as_ptr() as usize, item, self.plain, span)?;
+                for slot in cells.iter() {
+                    *slot.borrow_mut() = zero.clone();
+                }
+                Ok(Value::Void)
+            }
             MemoryCall::LastError => Ok(Value::Int(IntTy::Int, self.errno[LAST_ERROR] as i128)),
             MemoryCall::SetErrno => {
                 self.errno[0] = self.int(&args[0], frame)? as i32;
@@ -6940,7 +6984,7 @@ fn collection_method(recv: Value, name: &str, mut args: Vec<Value>) -> Value {
 
 /// The integer type of `tryToInt`, `wrappingToUlong`.
 fn converted_to(name: &str) -> IntTy {
-    let rest = name.strip_prefix("tryTo").or_else(|| name.strip_prefix("wrappingTo")).expect("a conversion");
+    let rest = ["tryTo", "wrappingTo", "saturatingTo"].into_iter().find_map(|kind| name.strip_prefix(kind)).expect("a conversion");
     IntTy::from_title(rest).expect("the checker knows the type")
 }
 
@@ -7088,14 +7132,202 @@ fn float_method2(ty: FloatTy, a: f64, name: &str, b: f64) -> Value {
         };
         if a_first { a } else { b }
     };
-    let result = match (ty, name) {
-        (_, "min" | "max") => pick(a, b),
-        (FloatTy::Float, "pow") => f64::from((a as f32).powf(b as f32)),
-        (FloatTy::Float, _) => f64::from((a as f32).atan2(b as f32)),
-        (FloatTy::Double, "pow") => a.powf(b),
-        (FloatTy::Double, _) => a.atan2(b),
+    let (single, other) = (a as f32, b as f32);
+    // SAFETY: functions of C's math library, which take and give numbers.
+    let result = unsafe {
+        match (ty, name) {
+            (_, "min" | "max") => pick(a, b),
+            (FloatTy::Float, "pow") => f64::from(single.powf(other)),
+            (FloatTy::Float, "hypot") => f64::from(libm::hypotf(single, other)),
+            (FloatTy::Float, "copySign") => f64::from(single.copysign(other)),
+            (FloatTy::Float, "ieeeRemainder") => f64::from(libm::remainderf(single, other)),
+            (FloatTy::Float, _) => f64::from(single.atan2(other)),
+            (FloatTy::Double, "pow") => a.powf(b),
+            (FloatTy::Double, "hypot") => libm::hypot(a, b),
+            (FloatTy::Double, "copySign") => a.copysign(b),
+            (FloatTy::Double, "ieeeRemainder") => libm::remainder(a, b),
+            (FloatTy::Double, _) => a.atan2(b),
+        }
     };
     Value::Float(ty, result)
+}
+
+/// The power of two of a fractional number, as C's `ilogb` finds it (the number is between 2^e
+/// and 2^(e+1)), read from its bits; `None` for 0, `NaN` and the infinities.
+fn exponent(ty: FloatTy, value: f64) -> Option<i32> {
+    if value == 0.0 || !value.is_finite() {
+        return None;
+    }
+    Some(match ty {
+        FloatTy::Float => {
+            let bits = (value as f32).to_bits();
+            match ((bits >> 23) & 0xff) as i32 {
+                0 => -127 - ((bits & 0x7f_ffff).leading_zeros() as i32 - 9),
+                stored => stored - 127,
+            }
+        }
+        FloatTy::Double => {
+            let bits = value.to_bits();
+            match ((bits >> 52) & 0x7ff) as i32 {
+                0 => -1023 - ((bits & 0xf_ffff_ffff_ffff).leading_zeros() as i32 - 12),
+                stored => stored - 1023,
+            }
+        }
+    })
+}
+
+/// The next number of the type above (`up`) or below, as IEEE 754's `nextUp` and `nextDown`:
+/// `NaN` stays, and an infinity in the direction stays.
+fn next_f64(value: f64, up: bool) -> f64 {
+    if !up {
+        return -next_f64(-value, true);
+    }
+    if value.is_nan() || value == f64::INFINITY {
+        return value;
+    }
+    if value == 0.0 {
+        return f64::from_bits(1);
+    }
+    let bits = value.to_bits();
+    f64::from_bits(if value > 0.0 { bits + 1 } else { bits - 1 })
+}
+
+fn next_f32(value: f32, up: bool) -> f32 {
+    if !up {
+        return -next_f32(-value, true);
+    }
+    if value.is_nan() || value == f32::INFINITY {
+        return value;
+    }
+    if value == 0.0 {
+        return f32::from_bits(1);
+    }
+    let bits = value.to_bits();
+    f32::from_bits(if value > 0.0 { bits + 1 } else { bits - 1 })
+}
+
+/// The functions of C's math library that are not correctly rounded everywhere, called as
+/// compiled code calls them, so that both give the same digits on one machine. Rust's own
+/// `asinh` and the others are written in Rust and may differ in the last digit.
+mod libm {
+    use crate::types::FloatTy;
+
+    extern "C" {
+        pub fn sinh(x: f64) -> f64;
+        pub fn cosh(x: f64) -> f64;
+        pub fn tanh(x: f64) -> f64;
+        pub fn asinh(x: f64) -> f64;
+        pub fn acosh(x: f64) -> f64;
+        pub fn atanh(x: f64) -> f64;
+        pub fn cbrt(x: f64) -> f64;
+        pub fn exp2(x: f64) -> f64;
+        pub fn expm1(x: f64) -> f64;
+        pub fn log1p(x: f64) -> f64;
+        pub fn erf(x: f64) -> f64;
+        pub fn erfc(x: f64) -> f64;
+        pub fn tgamma(x: f64) -> f64;
+        pub fn remainder(x: f64, y: f64) -> f64;
+        pub fn scalbn(x: f64, n: i32) -> f64;
+        pub fn sinhf(x: f32) -> f32;
+        pub fn coshf(x: f32) -> f32;
+        pub fn tanhf(x: f32) -> f32;
+        pub fn asinhf(x: f32) -> f32;
+        pub fn acoshf(x: f32) -> f32;
+        pub fn atanhf(x: f32) -> f32;
+        pub fn cbrtf(x: f32) -> f32;
+        pub fn exp2f(x: f32) -> f32;
+        pub fn expm1f(x: f32) -> f32;
+        pub fn log1pf(x: f32) -> f32;
+        pub fn erff(x: f32) -> f32;
+        pub fn erfcf(x: f32) -> f32;
+        pub fn tgammaf(x: f32) -> f32;
+        pub fn remainderf(x: f32, y: f32) -> f32;
+        pub fn scalbnf(x: f32, n: i32) -> f32;
+        #[cfg_attr(windows, link_name = "_hypot")]
+        pub fn hypot(x: f64, y: f64) -> f64;
+        #[cfg_attr(windows, link_name = "_hypotf")]
+        pub fn hypotf(x: f32, y: f32) -> f32;
+        // `lgamma` writes the sign into a variable that all threads share; `lgamma_r` gives it
+        // back instead. Windows has no `lgamma_r`, and its `lgamma` writes no such variable.
+        #[cfg(not(windows))]
+        fn lgamma_r(x: f64, sign: *mut i32) -> f64;
+        #[cfg(not(windows))]
+        fn lgammaf_r(x: f32, sign: *mut i32) -> f32;
+        #[cfg(windows)]
+        fn lgamma(x: f64) -> f64;
+        #[cfg(windows)]
+        fn lgammaf(x: f32) -> f32;
+    }
+
+    #[cfg(not(windows))]
+    fn log_gamma(x: f64) -> f64 {
+        let mut sign = 0;
+        // SAFETY: `sign` is a place the function writes.
+        unsafe { lgamma_r(x, &mut sign) }
+    }
+
+    #[cfg(not(windows))]
+    fn log_gamma_f(x: f32) -> f32 {
+        let mut sign = 0;
+        // SAFETY: `sign` is a place the function writes.
+        unsafe { lgammaf_r(x, &mut sign) }
+    }
+
+    #[cfg(windows)]
+    fn log_gamma(x: f64) -> f64 {
+        // SAFETY: a function of C's math library.
+        unsafe { lgamma(x) }
+    }
+
+    #[cfg(windows)]
+    fn log_gamma_f(x: f32) -> f32 {
+        // SAFETY: a function of C's math library.
+        unsafe { lgammaf(x) }
+    }
+
+    /// `x.sinh()` and the others of `FLOAT_ONE` that C's library finds.
+    pub fn one(ty: FloatTy, name: &str, x: f64) -> f64 {
+        // SAFETY: functions of C's math library, which take and give numbers.
+        unsafe {
+            match ty {
+                FloatTy::Float => {
+                    let x = x as f32;
+                    f64::from(match name {
+                        "sinh" => sinhf(x),
+                        "cosh" => coshf(x),
+                        "tanh" => tanhf(x),
+                        "asinh" => asinhf(x),
+                        "acosh" => acoshf(x),
+                        "atanh" => atanhf(x),
+                        "cbrt" => cbrtf(x),
+                        "exp2" => exp2f(x),
+                        "expMinusOne" => expm1f(x),
+                        "logOnePlus" => log1pf(x),
+                        "erf" => erff(x),
+                        "erfc" => erfcf(x),
+                        "gamma" => tgammaf(x),
+                        _ => log_gamma_f(x),
+                    })
+                }
+                FloatTy::Double => match name {
+                    "sinh" => sinh(x),
+                    "cosh" => cosh(x),
+                    "tanh" => tanh(x),
+                    "asinh" => asinh(x),
+                    "acosh" => acosh(x),
+                    "atanh" => atanh(x),
+                    "cbrt" => cbrt(x),
+                    "exp2" => exp2(x),
+                    "expMinusOne" => expm1(x),
+                    "logOnePlus" => log1p(x),
+                    "erf" => erf(x),
+                    "erfc" => erfc(x),
+                    "gamma" => tgamma(x),
+                    _ => log_gamma(x),
+                },
+            }
+        }
+    }
 }
 
 /// `abs`, `sqrt`, `floor`, `ceil`, `round` (half away from zero), `truncate`, `isNaN`,
@@ -7105,6 +7337,24 @@ fn float_method(ty: FloatTy, value: f64, name: &str) -> Value {
     match name {
         "isNaN" => return Value::Bool(value.is_nan()),
         "isInfinite" => return Value::Bool(value.is_infinite()),
+        "isFinite" => return Value::Bool(value.is_finite()),
+        "isSignNegative" => return Value::Bool(value.is_sign_negative()),
+        "exponent" => return exponent(ty, value).map_or(Value::Null, |power| Value::Int(IntTy::Int, i128::from(power))),
+        "nextUp" | "nextDown" => {
+            let up = name == "nextUp";
+            return Value::Float(
+                ty,
+                match ty {
+                    FloatTy::Float => f64::from(next_f32(value as f32, up)),
+                    FloatTy::Double => next_f64(value, up),
+                },
+            );
+        }
+        // What is left after `truncate`, with the sign of `x`, as C's `modf` gives it.
+        "fraction" if value.is_infinite() => return Value::Float(ty, 0.0f64.copysign(value)),
+        "fraction" => return Value::Float(ty, (value - value.trunc()).copysign(value)),
+        "roundToEven" => return Value::Float(ty, value.round_ties_even()),
+        _ if crate::check::FLOAT_ONE.contains(&name) => return Value::Float(ty, libm::one(ty, name, value)),
         _ => {}
     }
     let result = match ty {
@@ -7245,24 +7495,55 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
             Value::Array(Rc::new(bytes))
         }
         (Value::Int(_, value), "tryToChar", []) => crate::check::char_of(*value).map_or(Value::Null, Value::Char),
-        (Value::Int(_, value), _, []) if name.starts_with("tryTo") || name.starts_with("wrappingTo") => {
+        (Value::Int(_, value), _, []) if crate::check::is_conversion(name) => {
             let to = converted_to(name);
-            match name.starts_with("tryTo") {
-                true if to.fits(*value) => Value::Int(to, *value),
-                true => Value::Null,
-                false => Value::Int(to, to.wrap(*value)),
+            match name {
+                _ if name.starts_with("saturatingTo") => Value::Int(to, (*value).clamp(to.min(), to.max())),
+                _ if name.starts_with("wrappingTo") => Value::Int(to, to.wrap(*value)),
+                _ if to.fits(*value) => Value::Int(to, *value),
+                _ => Value::Null,
             }
         }
-        // Toward zero, as a cast; `NaN` and what lies past the type give `null`.
-        (Value::Float(_, value), _, []) if name.starts_with("tryTo") => {
+        // Toward zero, as a cast; `NaN` and what lies past the type give `null`, or the
+        // nearest end of it (0 for `NaN`).
+        (Value::Float(_, value), _, []) if crate::check::is_conversion(name) => {
             let to = converted_to(name);
             match float_fits(*value, to) {
                 true => Value::Int(to, value.trunc() as i128),
-                false => Value::Null,
+                false if name.starts_with("tryTo") => Value::Null,
+                false if value.is_nan() => Value::Int(to, 0),
+                false => Value::Int(to, if *value < 0.0 { to.min() } else { to.max() }),
             }
         }
+        // `-x` and the absolute value, that give `null` or wrap where `-x` would overflow.
+        (Value::Int(ty, value), "tryAbs" | "tryNegate", []) => {
+            let result = if name == "tryAbs" { value.abs() } else { -value };
+            if ty.fits(result) { Value::Int(*ty, result) } else { Value::Null }
+        }
+        (Value::Int(ty, value), "wrappingAbs", []) => Value::Int(*ty, ty.wrap(value.abs())),
+        (Value::Int(ty, value), "wrappingNegate", []) => Value::Int(*ty, ty.wrap(-value)),
+        (Value::Int(ty, value), "unsignedAbs", []) => Value::Int(ty.unsigned(), value.abs()),
+        // The nearest end of the type where the plain operator would overflow.
+        (Value::Int(ty, a), "saturatingAdd" | "saturatingSubtract" | "saturatingMultiply", [Value::Int(_, b)]) => {
+            let result = match name {
+                "saturatingAdd" => a.saturating_add(*b),
+                "saturatingSubtract" => a.saturating_sub(*b),
+                _ => a.saturating_mul(*b),
+            };
+            Value::Int(*ty, result.clamp(ty.min(), ty.max()))
+        }
+        (Value::Float(ty, value), "scaleByPowerOfTwo", [Value::Int(_, power)]) => {
+            let power = (*power).clamp(i32::MIN as i128, i32::MAX as i128) as i32;
+            // SAFETY: functions of C's math library, which take and give numbers.
+            Value::Float(*ty, unsafe {
+                match ty {
+                    FloatTy::Float => f64::from(libm::scalbnf(*value as f32, power)),
+                    FloatTy::Double => libm::scalbn(*value, power),
+                }
+            })
+        }
         (Value::Int(ty, a), "min" | "max", [Value::Int(_, b)]) => Value::Int(*ty, if name == "min" { *a.min(b) } else { *a.max(b) }),
-        (Value::Float(ty, a), "pow" | "atan2" | "min" | "max", [Value::Float(_, b)]) => float_method2(*ty, *a, name, *b),
+        (Value::Float(ty, a), "pow" | "atan2" | "min" | "max" | "hypot" | "copySign" | "ieeeRemainder", [Value::Float(_, b)]) => float_method2(*ty, *a, name, *b),
         (Value::Float(ty, a), "fusedMultiplyAdd", [Value::Float(_, b), Value::Float(_, c)]) => Value::Float(
             *ty,
             match ty {

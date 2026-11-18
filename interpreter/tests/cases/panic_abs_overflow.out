@@ -1,0 +1,6 @@
+7
+panic: overflow: the absolute value of -9223372036854775808 does not fit in long
+  --> panic_abs_overflow.sg:2:12
+ 2 |     return (a - b).abs()
+   |            ^^^^^^^^^^^^^
+  hint: `tryAbs` gives `null` instead, `wrappingAbs` wraps around, and `unsignedAbs` gives a `ulong`

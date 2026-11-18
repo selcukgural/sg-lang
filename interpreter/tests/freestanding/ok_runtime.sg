@@ -69,6 +69,12 @@ export void start() {
     say(string.fromCString(read c) ?? "")
     var span = Duration.fromMilliseconds(90061001)
     say($"{span}".toString())
+    // The number methods written without `<math.h>`, a fractional number cut to an integer
+    // without its `trunc`, and zeros the C compiler keeps.
+    byte[4] key = byte[4] { 1, 2, 3, 4 }
+    Memory.zeroSecurely(ref key)
+    double half = 0.75
+    say($"{key[0] + key[3]} {(1.0).nextUp()} {half.exponent() ?? 0} {half.clamp(0, 0.5)} {(-7).abs()} {(300).clamp(0, 255)} {int.MaxValue.saturatingAdd(1)} {(5e9).saturatingToInt()} {half.copySign(-1).isSignNegative()} {(int)(half * 10)} {(half * 10).tryToInt() ?? 0}".toString())
 }
 
 raw Heap heap() {

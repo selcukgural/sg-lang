@@ -1,0 +1,5 @@
+error: type `double` has no method `fmod`
+  --> error_math_c_name.sg:3:13
+ 3 |     print(x.fmod(2))
+   |             ^^^^
+  hint: `a % b` is C's `fmod`

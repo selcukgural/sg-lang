@@ -1,0 +1,4 @@
+error: a `uint` is never negative: `abs` would give it back as it is
+  --> error_abs_unsigned.sg:3:16
+ 3 |     print(size.abs())
+   |                ^^^

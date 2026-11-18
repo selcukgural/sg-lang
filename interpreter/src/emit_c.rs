@@ -1279,6 +1279,25 @@ SG_COLD static _Noreturn void sg_neg_overflow(__int128 a, const char* ty, const 
     fputs("panic: overflow: -(", stderr);
     sg_err_int(a);
     fprintf(stderr, ") does not fit in %s\n", ty);
+    sg_die_hint(loc, "`tryNegate` gives `null` instead, and `wrappingNegate` wraps around");
+}
+SG_COLD static _Noreturn void sg_abs_overflow(__int128 a, const char* ty, const char* unsigned_ty, const char* loc) {
+    SG_PANIC_START();
+    fputs("panic: overflow: the absolute value of ", stderr);
+    sg_err_int(a);
+    fprintf(stderr, " does not fit in %s\n", ty);
+    fputs(loc, stderr);
+    sg_task_note();
+    if (!sg_called(loc)) fprintf(stderr, "  hint: `tryAbs` gives `null` instead, `wrappingAbs` wraps around, and `unsignedAbs` gives a `%s`\n", unsigned_ty);
+    SG_PANIC_END();
+}
+SG_COLD static _Noreturn void sg_clamp_fail(__int128 low, __int128 high, const char* loc) {
+    SG_PANIC_START();
+    fputs("panic: `clamp`: the low end ", stderr);
+    sg_err_int(low);
+    fputs(" is above the high end ", stderr);
+    sg_err_int(high);
+    fputs("\n", stderr);
     sg_die(loc);
 }
 SG_COLD static _Noreturn void sg_npow_overflow(__int128 a, const char* ty, const char* loc) {
@@ -1444,6 +1463,85 @@ static inline double sg_fmax(double a, double b) {
     if (a == b) return signbit(a) ? b : a;
     return a > b ? a : b;
 }
+/* `clamp` on fractional numbers: `max` and then `min` as above; an end that is `NaN`, or a low
+   end above the high one, is a panic. */
+SG_COLD static _Noreturn void sg_fclamp_fail(double low, double high, bool single, const char* loc) {
+    SG_PANIC_START();
+    if (low != low || high != high) {
+        fprintf(stderr, "panic: `clamp`: the %s end is NaN\n", low != low ? "low" : "high");
+    } else {
+        fputs("panic: `clamp`: the low end ", stderr);
+        sg_err_float(low, single);
+        fputs(" is above the high end ", stderr);
+        sg_err_float(high, single);
+        fputs("\n", stderr);
+    }
+    sg_die(loc);
+}
+static inline double sg_fclamp(double v, double low, double high, bool single, const char* loc) {
+    if (__builtin_expect(!(low <= high), 0)) sg_fclamp_fail(low, high, single, loc);
+    return sg_fmin(sg_fmax(v, low), high);
+}
+/* The next number above, as IEEE 754's `nextUp`, from the bits; `nextDown` is its mirror. */
+static inline double sg_next_up(double v) {
+    if (v != v || v == INFINITY) return v;
+    uint64_t b = 1;
+    if (v != 0) { memcpy(&b, &v, 8); b = v > 0 ? b + 1 : b - 1; }
+    memcpy(&v, &b, 8);
+    return v;
+}
+static inline float sg_next_upf(float v) {
+    if (v != v || v == INFINITY) return v;
+    uint32_t b = 1;
+    if (v != 0) { memcpy(&b, &v, 4); b = v > 0 ? b + 1 : b - 1; }
+    memcpy(&v, &b, 4);
+    return v;
+}
+static inline double sg_next_down(double v) { return -sg_next_up(-v); }
+static inline float sg_next_downf(float v) { return -sg_next_upf(-v); }
+/* The power of two of a number, as `ilogb` finds it, from the bits; false for 0, `NaN` and the
+   infinities, for which `ilogb` gives a number of its own on each system. */
+static inline bool sg_exponent(double v, int32_t* e) {
+    *e = 0;
+    if (v == 0 || !isfinite(v)) return false;
+    uint64_t b;
+    memcpy(&b, &v, 8);
+    int stored = (int)((b >> 52) & 0x7ff);
+    *e = stored ? stored - 1023 : -1023 - (__builtin_clzll(b & 0xfffffffffffffull) - 12);
+    return true;
+}
+static inline bool sg_exponentf(float v, int32_t* e) {
+    *e = 0;
+    if (v == 0 || !isfinite(v)) return false;
+    uint32_t b;
+    memcpy(&b, &v, 4);
+    int stored = (int)((b >> 23) & 0xff);
+    *e = stored ? stored - 127 : -127 - (__builtin_clz(b & 0x7fffffu) - 9);
+    return true;
+}
+/* `Memory.zeroSecurely`: the zeros are written, and the empty `asm` that takes the address and
+   may read all memory keeps the C compiler from leaving them out as never read again (what
+   glibc's `explicit_bzero` does; C23's `memset_explicit` is not on every system yet). */
+static void sg_zero_secure(void* p, size_t n) {
+    if (n) memset(p, 0, n);
+    __asm__ __volatile__("" : : "r"(p) : "memory");
+}
+#if !SG_FREESTANDING
+/* `logGamma`: `lgamma` writes the sign into a variable all threads share, and `lgamma_r` gives
+   it back instead. Windows has no `lgamma_r`, and its `lgamma` writes no such variable. */
+#ifndef _WIN32
+extern double lgamma_r(double, int*);
+extern float lgammaf_r(float, int*);
+static inline double sg_lgamma(double v) { int sign; return lgamma_r(v, &sign); }
+static inline float sg_lgammaf(float v) { int sign; return lgammaf_r(v, &sign); }
+#else
+static inline double sg_lgamma(double v) { return lgamma(v); }
+static inline float sg_lgammaf(float v) { return lgammaf(v); }
+#endif
+/* `fraction`: what `modf` leaves after the whole part. */
+static inline double sg_fraction(double v) { double whole; return modf(v, &whole); }
+static inline float sg_fractionf(float v) { float whole; return modff(v, &whole); }
+#endif
 /* `int.parse` and the other integer types (`parseHex` with `base` 16): -1 when the text is a number between `lo` and
    `hi`, -2 when it is a number past them, otherwise where it stops being a number (its length
    when it ends too early). The same rules as `parse_number` in the interpreter. */
@@ -1528,9 +1626,20 @@ static int64_t sg_read_fraction(const uint8_t* p, int64_t n, bool single, double
     *out = v;
     return -1;
 }
-/* The whole numbers a type holds, as the powers of two at its ends: `lo <= t < hi`. */
-#define SG_LO(T) ((T)-1 < 0 ? -__builtin_ldexp(1.0, (int)sizeof(T) * 8 - 1) : 0.0)
-#define SG_HI(T) ((T)-1 < 0 ? __builtin_ldexp(1.0, (int)sizeof(T) * 8 - 1) : __builtin_ldexp(1.0, (int)sizeof(T) * 8))
+/* The whole numbers a type holds, as the powers of two at its ends: `lo <= t < hi`. 2^n is
+   made by a shift and a doubling, which needs no `ldexp` of the library in a debug build either
+   (a program without an operating system has none). */
+#define SG_POW2(n) ((double)(1ull << ((n) - 1)) * 2.0)
+#define SG_LO(T) ((T)-1 < 0 ? -SG_POW2(sizeof(T) * 8 - 1) : 0.0)
+#define SG_HI(T) ((T)-1 < 0 ? SG_POW2(sizeof(T) * 8 - 1) : SG_POW2(sizeof(T) * 8))
+/* Whether the whole part of `v` fits in `T`, tested on `v` itself: `trunc` is a call of the
+   library on x86-64, and the conversion to `T` cuts toward zero on its own. A whole part at
+   least `lo` is a number above `lo - 1`; at 64 bits `lo - 1` rounds to `lo`, and no number lies
+   between the two. `NaN` fails both. */
+/* Whether a value of `T` is below zero, read from the top bit: a comparison that is always false
+   for an unsigned type is a warning of GCC. */
+#define SG_NEGATIVE(T, a) ((T)-1 < 0 && ((uint64_t)(a) >> 63))
+#define SG_FITS(T, v) (((v) >= SG_LO(T) || (v) > SG_LO(T) - 1.0) && (v) < SG_HI(T))
 #define SG_MAX(T) ((T)-1 < 0 ? (T)((((uint64_t)1) << (sizeof(T) * 8 - 1)) - 1) : (T)-1)
 
 /* A rotation as C compilers turn into one instruction, and the bits of a number turned around:
@@ -1570,8 +1679,16 @@ static inline T sg_rem_##N(T a, T b, const char* loc) { \
     return a % b; } \
 static inline T sg_neg_##N(T a, const char* loc) { T r; if (__builtin_expect(__builtin_sub_overflow((T)0, a, &r), 0)) sg_neg_overflow(a, NAME, loc); return r; } \
 static inline T sg_cast_##N(__int128 v, const char* loc) { T r = (T)v; if (__builtin_expect((__int128)r != v, 0)) sg_cast_fail(v, NAME, loc); return r; } \
-static inline T sg_fcast_##N(double v, bool single, const char* loc) { double t = __builtin_trunc(v); if (__builtin_expect(!(t >= SG_LO(T) && t < SG_HI(T)), 0)) sg_fcast_fail(v, single, NAME, loc); return (T)t; } \
-static inline T sg_sat_##N(double v) { double t = __builtin_trunc(v); if (t >= SG_LO(T) && t < SG_HI(T)) return (T)t; if (v != v) return 0; return v < 0 ? (T)SG_LO(T) : SG_MAX(T); } \
+static inline T sg_fcast_##N(double v, bool single, const char* loc) { if (__builtin_expect(!SG_FITS(T, v), 0)) sg_fcast_fail(v, single, NAME, loc); return (T)v; } \
+static inline T sg_sat_##N(double v) { if (SG_FITS(T, v)) return (T)v; if (v != v) return 0; return v < 0 ? (T)SG_LO(T) : SG_MAX(T); } \
+static inline T sg_abs_##N(T a, const char* unsigned_ty, const char* loc) { \
+    if (SG_NEGATIVE(T, a)) { T r; if (__builtin_expect(__builtin_sub_overflow((T)0, a, &r), 0)) sg_abs_overflow(a, NAME, unsigned_ty, loc); return r; } \
+    return a; } \
+static inline T sg_wabs_##N(T a) { return SG_NEGATIVE(T, a) ? (T)(0 - (uint64_t)a) : a; } \
+/* The nearest end of the type where the operator would overflow. */ \
+static inline T sg_sadd_##N(T a, T b) { T r; if (!__builtin_add_overflow(a, b, &r)) return r; return SG_NEGATIVE(T, b) ? (T)SG_LO(T) : SG_MAX(T); } \
+static inline T sg_ssub_##N(T a, T b) { T r; if (!__builtin_sub_overflow(a, b, &r)) return r; return SG_NEGATIVE(T, b) ? SG_MAX(T) : (T)SG_LO(T); } \
+static inline T sg_smul_##N(T a, T b) { T r; if (!__builtin_mul_overflow(a, b, &r)) return r; return (SG_NEGATIVE(T, a) != SG_NEGATIVE(T, b)) ? (T)SG_LO(T) : SG_MAX(T); } \
 static inline T sg_wadd_##N(T a, T b) { return (T)((uint64_t)a + (uint64_t)b); } \
 static inline T sg_wsub_##N(T a, T b) { return (T)((uint64_t)a - (uint64_t)b); } \
 static inline T sg_wmul_##N(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
@@ -9996,6 +10113,18 @@ fn float_fn(name: &str, ty: FloatTy) -> String {
         "abs" => "fabs",
         "truncate" => "trunc",
         "fusedMultiplyAdd" => "fma",
+        "expMinusOne" => "expm1",
+        "logOnePlus" => "log1p",
+        "gamma" => "tgamma",
+        "logGamma" => "sg_lgamma",
+        "fraction" => "sg_fraction",
+        "nextUp" => "sg_next_up",
+        "nextDown" => "sg_next_down",
+        "roundToEven" => "rint",
+        "ieeeRemainder" => "remainder",
+        // The bits of the sign moved over, which the C compiler does without the library.
+        "copySign" => "__builtin_copysign",
+        "scaleByPowerOfTwo" => "scalbn",
         other => other,
     };
     if ty == FloatTy::Float { format!("{base}f") } else { base.to_string() }
@@ -18396,6 +18525,19 @@ impl<'a> Emitter<'a> {
                     let temp = self.temp();
                     Ok(sequence(&names, format!("({{ __auto_type {temp} = {}; sg_entropy({temp}.ptr, {temp}.len, {loc}); }})", values[0])))
                 }
+                // `Memory.zeroSecurely(ref key)`: zeros over the window, kept by the C compiler.
+                Callee::Memory(MemoryCall::ZeroSecurely) => {
+                    let Ty::Ref(slice) = &args[0].ty else { unreachable!("the checker gives `zeroSecurely` a `ref T[]`") };
+                    let Ty::Slice(item) = &**slice else { unreachable!("the checker gives `zeroSecurely` a `ref T[]`") };
+                    let ctype = self.ctype(item, expr.span)?;
+                    let want = args[0].ty.clone();
+                    let before = self.mark();
+                    let value = self.first_as(&args[0], &want, head)?;
+                    let part = self.part(&args[0], &want, value, before);
+                    let (values, names) = self.in_order(vec![part])?;
+                    let temp = self.temp();
+                    Ok(sequence(&names, format!("({{ __auto_type {temp} = {}; sg_zero_secure({temp}.ptr, (size_t){temp}.len * sizeof({ctype})); }})", values[0])))
+                }
                 Callee::Memory(MemoryCall::Copy) => {
                     let Ty::Raw(item) = args[0].ty.strip_borrow() else { unreachable!("the checker gives `Memory.copy` raw pointers") };
                     let ctype = self.ctype(item, expr.span)?;
@@ -18699,12 +18841,86 @@ impl<'a> Emitter<'a> {
                         _ => format!("{}({value})", float_fn(name, ty)),
                     })
                 }
-                Callee::Plain if matches!(recv.ty, Ty::Float(_)) && matches!(name.as_str(), "exp" | "log" | "log2" | "log10" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan") => {
+                Callee::Plain
+                    if matches!(recv.ty, Ty::Float(_))
+                        && (matches!(name.as_str(), "exp" | "log" | "log2" | "log10" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan")
+                            || crate::check::FLOAT_ONE.contains(&name.as_str())) =>
+                {
                     let Ty::Float(ty) = recv.ty else { unreachable!("tested above") };
                     let value = self.first(recv, head)?;
                     Ok(format!("{}({value})", float_fn(name, ty)))
                 }
-                Callee::Plain if matches!(recv.ty, Ty::Float(_)) && matches!(name.as_str(), "pow" | "atan2" | "min" | "max") => {
+                Callee::Plain if matches!(recv.ty, Ty::Float(_)) && matches!(name.as_str(), "isFinite" | "isSignNegative") => {
+                    let value = self.first(recv, head)?;
+                    let test = if name == "isFinite" { "isfinite" } else { "signbit" };
+                    Ok(format!("({test}({value}) != 0)"))
+                }
+                // `x.exponent()`: an `int?`, empty for 0, `NaN` and the infinities.
+                Callee::Plain if matches!(recv.ty, Ty::Float(_)) && name == "exponent" => {
+                    let Ty::Float(ty) = recv.ty else { unreachable!("tested above") };
+                    let (option, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+                    let value = self.first(recv, head)?;
+                    let helper = if ty == FloatTy::Float { "sg_exponentf" } else { "sg_exponent" };
+                    Ok(format!("({{ {option} {temp}; {temp}.has = {helper}({value}, &{temp}.value); {temp}; }})"))
+                }
+                Callee::Plain if matches!(recv.ty, Ty::Float(_)) && name == "scaleByPowerOfTwo" => {
+                    let Ty::Float(ty) = recv.ty else { unreachable!("tested above") };
+                    let (values, names) = self.two(recv, &args[0], head)?;
+                    Ok(sequence(&names, format!("{}({}, (int)({}))", float_fn(name, ty), values[0], values[1])))
+                }
+                // `x.clamp(low, high)`: the three in the order written, the ends checked.
+                Callee::Plain if matches!(recv.ty, Ty::Float(_) | Ty::Int(_)) && name == "clamp" => {
+                    let mut parts = Vec::new();
+                    for side in [&**recv, &args[0], &args[1]] {
+                        let before = self.mark();
+                        let value = self.first(side, head)?;
+                        parts.push(self.part(side, &side.ty, value, before));
+                    }
+                    let (values, names) = self.in_order(parts)?;
+                    let loc = self.loc(expr.span);
+                    Ok(sequence(&names, match recv.ty {
+                        Ty::Float(ty) => {
+                            let single = ty == FloatTy::Float;
+                            format!("(({})sg_fclamp({}, {}, {}, {single}, {loc}))", float_ctype(ty), values[0], values[1], values[2])
+                        }
+                        Ty::Int(ty) => {
+                            let (int, temp) = (int_ctype(ty), self.temp());
+                            format!(
+                                "({{ {int} {temp}v = {}, {temp}lo = {}, {temp}hi = {}; if (__builtin_expect({temp}lo > {temp}hi, 0)) sg_clamp_fail({temp}lo, {temp}hi, {loc}); \
+                                 {temp}v < {temp}lo ? {temp}lo : {temp}v > {temp}hi ? {temp}hi : {temp}v; }})",
+                                values[0], values[1], values[2]
+                            )
+                        }
+                        _ => unreachable!("tested above"),
+                    }))
+                }
+                // The absolute value, and `-x` that gives `null` or wraps.
+                Callee::Plain if matches!(recv.ty, Ty::Int(_)) && matches!(name.as_str(), "abs" | "tryAbs" | "wrappingAbs" | "unsignedAbs" | "tryNegate" | "wrappingNegate") => {
+                    let Ty::Int(ty) = recv.ty else { unreachable!("tested above") };
+                    let (int, n, temp) = (int_ctype(ty), int_name(ty), self.temp());
+                    let value = self.first(recv, head)?;
+                    Ok(match name.as_str() {
+                        "abs" if self.checked => format!("sg_abs_{n}({value}, \"{}\", {})", ty.unsigned().name(), self.loc(expr.span)),
+                        "abs" | "wrappingAbs" => format!("sg_wabs_{n}({value})"),
+                        "unsignedAbs" => {
+                            let unsigned = int_ctype(ty.unsigned());
+                            format!("({{ {int} {temp} = {value}; ({unsigned})((int64_t){temp} < 0 ? 0 - (uint64_t){temp} : (uint64_t){temp}); }})")
+                        }
+                        "wrappingNegate" => format!("(({int})(0 - (uint64_t)({value})))"),
+                        "tryNegate" => {
+                            let option = self.ctype(&expr.ty, expr.span)?;
+                            format!("({{ {option} {temp}; {temp}.has = !__builtin_sub_overflow(({int})0, ({int})({value}), &{temp}.value); {temp}; }})")
+                        }
+                        _ => {
+                            let option = self.ctype(&expr.ty, expr.span)?;
+                            format!(
+                                "({{ {int} {temp}a = {value}; {option} {temp}; {temp}.value = {temp}a; \
+                                 {temp}.has = !((int64_t){temp}a < 0 && __builtin_sub_overflow(({int})0, {temp}a, &{temp}.value)); {temp}; }})"
+                            )
+                        }
+                    })
+                }
+                Callee::Plain if matches!(recv.ty, Ty::Float(_)) && matches!(name.as_str(), "pow" | "atan2" | "min" | "max" | "hypot" | "copySign" | "ieeeRemainder") => {
                     let Ty::Float(ty) = recv.ty else { unreachable!("tested above") };
                     let (values, names) = self.two(recv, &args[0], head)?;
                     let made = match name.as_str() {
@@ -18818,7 +19034,7 @@ impl<'a> Emitter<'a> {
                 }
                 // `big.tryToInt()`: the value if it fits, `null` if not; `wrappingToInt()` keeps
                 // the bits that fit. A fractional number goes toward zero first, as in a cast.
-                Callee::Plain if name.starts_with("tryTo") || name.starts_with("wrappingTo") => {
+                Callee::Plain if crate::check::is_conversion(name) => {
                     let to = match &expr.ty {
                         Ty::Int(to) => *to,
                         Ty::Nullable(inner) => match **inner {
@@ -18832,11 +19048,22 @@ impl<'a> Emitter<'a> {
                     if name.starts_with("wrappingTo") {
                         return Ok(format!("(({int})({value}))"));
                     }
+                    // The nearest end of the type; a fractional number goes toward zero first,
+                    // and `NaN` gives 0.
+                    if name.starts_with("saturatingTo") {
+                        return Ok(match recv.ty {
+                            Ty::Float(_) => format!("sg_sat_{}({value})", int_name(to)),
+                            _ => format!(
+                                "({{ __int128 {temp} = (__int128)({value}); __int128 {temp}lo = ({int})-1 < 0 ? -(__int128)SG_MAX({int}) - 1 : 0, {temp}hi = (__int128)SG_MAX({int}); \
+                                 ({int})({temp} < {temp}lo ? {temp}lo : {temp} > {temp}hi ? {temp}hi : {temp}); }})"
+                            ),
+                        });
+                    }
                     let option = self.ctype(&expr.ty, expr.span)?;
                     Ok(match recv.ty {
                         Ty::Float(_) => format!(
-                            "({{ double {temp}t = __builtin_trunc({value}); {option} {temp} = {{ false, 0 }}; \
-                             if ({temp}t >= SG_LO({int}) && {temp}t < SG_HI({int})) {{ {temp}.has = true; {temp}.value = ({int}){temp}t; }} {temp}; }})"
+                            "({{ double {temp}t = {value}; {option} {temp} = {{ false, 0 }}; \
+                             if (SG_FITS({int}, {temp}t)) {{ {temp}.has = true; {temp}.value = ({int}){temp}t; }} {temp}; }})"
                         ),
                         _ => format!(
                             "({{ __int128 {temp}v = (__int128)({value}); {option} {temp}; {temp}.value = ({int}){temp}v; \
@@ -18884,6 +19111,9 @@ impl<'a> Emitter<'a> {
                         "wrappingAdd" => "wadd",
                         "wrappingSubtract" => "wsub",
                         "wrappingMultiply" => "wmul",
+                        "saturatingAdd" => "sadd",
+                        "saturatingSubtract" => "ssub",
+                        "saturatingMultiply" => "smul",
                         _ => return Err(not_yet(expr.span, &format!("the method `{name}`"))),
                     };
                     let Ty::Int(ty) = &expr.ty else { return Err(not_yet(expr.span, &format!("the method `{name}`"))) };

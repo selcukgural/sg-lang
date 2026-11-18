@@ -1,0 +1,8 @@
+int fit(int value, int low, int high) {
+    return value.clamp(low, high)
+}
+
+void main() {
+    print(fit(5, 0, 3))
+    print(fit(5, 4, 2))
+}

@@ -1,0 +1,8 @@
+long distance(long a, long b) {
+    return (a - b).abs()
+}
+
+void main() {
+    print(distance(3, 10))
+    print(distance(long.MinValue, 0))
+}

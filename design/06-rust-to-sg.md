@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 18 November 2026, the hundred-and-ninth slice.
+Last brought up to date: 18 November 2026, the hundred-and-tenth slice.
 
 ## Functions and variables
 
@@ -71,6 +71,12 @@ Last brought up to date: 18 November 2026, the hundred-and-ninth slice.
 | `i32::try_from(x).ok()` | `x.tryToInt()` | built | `int?` |
 | `a.wrapping_add(b)` | `a.wrappingAdd(b)` | built | |
 | `a.checked_add(b)` | `a.tryAdd(b)` | built | `int?` |
+| `a.saturating_add(b)`, `saturating_sub`, `saturating_mul` | `a.saturatingAdd(b)`, `saturatingSubtract`, `saturatingMultiply` | built | On every integer type. `saturating_div` and `saturating_pow` are not in SG |
+| `x.abs()` | `x.abs()` | built | On the signed types; `int.MinValue.abs()` follows the rule of overflow, as in Rust. On an unsigned type an error, where Rust has no `abs` there |
+| `x.checked_abs()`, `x.wrapping_abs()`, `x.unsigned_abs()` | `x.tryAbs()`, `x.wrappingAbs()`, `x.unsignedAbs()` | built | |
+| `x.checked_neg()`, `x.wrapping_neg()` | `x.tryNegate()`, `x.wrappingNegate()` | built | On every integer type, as in Rust; the panic of `-x` names them |
+| `x.clamp(lo, hi)` | `x.clamp(low, high)` | built | Integers and fractional numbers; a low end above the high end panics, as in Rust, and is a compile error when both are written as numbers. On a fractional number `-0` is below `0`, as `min` and `max` have it |
+| `i32::try_from(x).unwrap_or(if x < 0 { i32::MIN } else { i32::MAX })`; `x as i32` on an `f64` | `x.saturatingToInt()` | built | From every integer type and from `float` and `double`; `NaN` gives 0, as Rust's `as` |
 | `i32::MAX`, `f64::NAN`, `std::f64::consts::PI` | `int.MaxValue`, `double.NaN`, `double.Pi` | built | |
 | `"42".parse::<i32>()` | `int.parse(text)` | built | `Result<int, NumberError>`; the error says where the text stops being a number |
 | `i32::from_str_radix(s, 16)` | `int.parseHex(s)` | built | |
@@ -81,6 +87,15 @@ Last brought up to date: 18 November 2026, the hundred-and-ninth slice.
 | `n.swap_bytes()`, `n.reverse_bits()` | `n.reverseBytes()`, `n.reverseBits()` | built | |
 | `n.is_power_of_two()`, `n.next_power_of_two()`, `n.ilog2()` | `n.isPowerOfTwo()`, `n.nextPowerOfTwo()`, `n.log2()` | built | On the unsigned types, as in Rust. `nextPowerOfTwo` follows the rule of overflow (0 in a release build, as Rust); `log2` of 0 panics in every build. `checked_next_power_of_two` is not in SG yet |
 | `x.sqrt()`, `x.powf(y)`, `a.min(b)` | `x.sqrt()`, `x.pow(y)`, `a.min(b)` | built | |
+| `x.sinh()`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `cbrt`, `exp2`, `x.hypot(y)` | the same names | built | From C's library in the interpreter too, where Rust writes `asinh` and its kin itself, so that both give the same digits on one machine |
+| `x.exp_m1()`, `x.ln_1p()` | `x.expMinusOne()`, `x.logOnePlus()` | built | |
+| `x.gamma()`, `x.ln_gamma()` (unstable) | `x.gamma()`, `x.logGamma()` | built | `logGamma` gives no sign; it calls `lgamma_r`, since `lgamma` writes one variable for every thread. `erf` and `erfc` too, which Rust has only in the `libm` crate |
+| `a % b` on `f64` | `a % b` | built | C's `fmod` in both; `a.ieeeRemainder(b)` rounds the quotient to the nearest (C's `remainder`, which Rust has only in `libm`) |
+| `x.copysign(y)`, `x.is_sign_negative()`, `x.is_finite()` | `x.copySign(y)`, `x.isSignNegative()`, `x.isFinite()` | built | |
+| `x.round_ties_even()` | `x.roundToEven()` | built | C's `rint`; the rounding mode is never changed |
+| `x.fract()` | `x.fraction()` | built | C's `modf`: `Infinity` gives 0, where Rust's `fract` gives `NaN` |
+| `x.next_up()`, `x.next_down()` | `x.nextUp()`, `x.nextDown()` | built | |
+| `libm::ilogb(x)`, `libm::ldexp(x, n)` | `x.exponent()`, `x.scaleByPowerOfTwo(n)` | built | `exponent` is an `int?`: `null` for 0, `NaN` and the infinities, where C gives a number of its own on each system |
 | `0xff`, `0b1010`, `1_000_000` | the same | built | |
 | `i32 + i64` (an error) | `int + long` is a `long` | built | An integer widens on its own only to a type that holds every value of it; `int + uint` is an error |
 
@@ -226,6 +241,7 @@ Last brought up to date: 18 November 2026, the hundred-and-ninth slice.
 | `p as usize`, `n as *mut T`, `p.offset_from(q)`, `p < q` | `(nuint)p`, `unsafe (raw T)n`, `p - q`, `p < q` | built | Only `(raw T)n` inside `unsafe`; `p - q` counts items of one type and is defined for any two pointers in compiled code, while the interpreter panics for two blocks |
 | `alloc_zeroed(Layout::array::<T>(n))`, `dealloc` | `Memory.allocate<T>(n)`, `Memory.free(p)` | built | Zeroed memory; `free` inside `unsafe`. The interpreter catches an item outside its block, after `free`, and a block freed twice, as Miri does |
 | `ptr::copy(src, dst, n)` | `Memory.copy(source, target, count)` | built | Inside `unsafe`; the two may overlap |
+| `zeroize::Zeroize::zeroize(&mut key)` (a crate) | `Memory.zeroSecurely(ref key)` | built | Takes a list, an array or a window of plain data, without `unsafe`; copies made before (a list that grew) are not wiped, as with the crate |
 | `slice::from_raw_parts(p, n)` | `Memory.view(p, n)` | built | Inside `unsafe`; a `read T[]` that borrows the variable holding `p`, so it does not outlive it (Rust's lifetime there is unbounded). A count below 0 and `null` with items are panics |
 | `slice::from_raw_parts_mut(p, n)` | `Memory.viewRef(p, n)` | built | Inside `unsafe`; a `ref T[]` that borrows the variable holding `p` as `ref`, so the pointer is not read and no second window is made from it while it is used |
 | `p.read_unaligned()`, `p.write_unaligned(v)` | `Memory.readUnaligned(p)`, `Memory.writeUnaligned(p, v)` | built | Inside `unsafe`. Reaching a misaligned item with `p[i]` is a panic in the interpreter and a debug build, as Rust's debug checks of `*p` are, and costs nothing in a release build |

@@ -1,5 +1,5 @@
 error: `long` has no method `tryToString`
-  the conversions are named after the type: `tryToInt`, `tryToUlong`, `wrappingToByte`
+  the conversions are named after the type: `tryToInt`, `tryToUlong`, `wrappingToByte`, `saturatingToShort`
   --> error_try_to_unknown.sg:3:15
  3 |     var m = n.tryToString()
    |               ^^^^^^^^^^^

@@ -1,0 +1,5 @@
+void main() {
+    var names = List<string>()
+    names.add("key")
+    Memory.zeroSecurely(ref names)
+}
