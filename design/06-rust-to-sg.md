@@ -138,7 +138,7 @@ Last brought up to date: 18 November 2026, the hundred-and-sixteenth slice.
 | `v.push(x)`, `v.pop()`, `v.len()` | `xs.add(x)`, `xs.removeLast()`, `xs.length()` | built | `removeLast` gives a `T?` |
 | `v[i]`, `v.get(i)` | `xs[i]`, `xs.get(i)` | built | `get` gives a `T?` |
 | `v.extend_from_slice(&s)` | `xs.addAll(s)` | built | For `Copyable` items |
-| `v.sort()`, `v.reverse()`, `v.contains(&x)`, `v.iter().position(...)` | `xs.sort()`, `xs.reverse()`, `xs.contains(x)`, `xs.indexOf(x)` | built | `sort` is stable |
+| `v.sort()`, `v.reverse()`, `v.contains(&x)`, `v.iter().position(...)` | `xs.sort()`, `xs.reverse()`, `xs.contains(x)`, `xs.indexOf(x)` | built | `sort` is stable; a `compare` that gives no single order leaves the items in some order and does not panic, where Rust's `sort_by` may |
 | `v.binary_search(&x).ok()` | `xs.binarySearch(x)` | built | `nint?`, the first of equal items, where Rust gives any one of them; the place to insert is `lowerBound` |
 | `v.partition_point(\|y\| *y < x)`, `v.partition_point(\|y\| *y <= x)` | `xs.lowerBound(x)`, `xs.upperBound(x)` | built | By the order of the items; with a function of its own (`binary_search_by`, `partition_point` on any test) not yet |
 | `[i32; 3]`, `[0u8; 16]`, `[255u8; 16]` | `int[3]`, `byte[16]`, `byte[16](255)` | built | |

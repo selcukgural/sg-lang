@@ -1,0 +1,8 @@
+// A line that starts with a character of more than one byte is marked on that character.
+void main() {
+    var text = """
+        first
+é
+        """
+    print(text)
+}

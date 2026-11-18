@@ -7957,6 +7957,40 @@ Each is written here with its fix, and each fix came after a test that showed th
      length; they need more than 4 GB of memory, too much for `cargo test`. `cargo test` passes on macOS and on
      Linux in a container (397 of 1644 programs compile through C); on Windows on Arm fourteen programs that
      print, format, and name files, folders, variables and programs give the same output interpreted and compiled.
+1337. **The tool does not stop on its own faults**: eight places where a program made `sg` itself panic,
+     overflow its stack or wait for ever, each now an error, a panic of the program, or what was meant.
+     (1) A mark under a character of more than one byte: an unknown escape (`"a\éb"`) and a line of a raw
+     text that starts with one marked a single byte, and writing the message cut the character, so `sg`
+     panicked instead of saying what was wrong; the lexer now marks the whole character, and the message
+     rounds any mark to whole characters. (2) A struct that holds itself directly (`struct Point { Point x
+     }`), or two that hold each other, overflowed the stack of the checker, whose rules of layout walked
+     the fields before the check that finds a type of no finite size; that check now comes first, and the
+     error is the one an enum already had. (3) `p + int.MaxValue` and `p + (nint)Level.High` on a raw pointer
+     checked the count twice, the second time after the checker had rewritten it, and `sg` panicked; it is
+     checked once, as an `nint`. (4) The header of a library whose plain struct points at itself (`raw Node
+     next`) overflowed the stack of `sg build --library`; the header now names first, with a `typedef`, a
+     plain struct that one written before it points at, and writes each after those it holds by value. (5)
+     A `compare` that does not put its values in one order made the interpreter panic in Rust's sort
+     (compiled code sorted them); the interpreter now sorts as compiled code does, the same merge sort step
+     for step, so both leave the same items in the same places and neither panics. (6) A thread the system
+     refused for reading the input, connecting, looking up a host, waiting for a program or copying its
+     output made the interpreter panic in Rust and left the run waiting for the thread; it is now a panic of
+     the program at the call (`the system refused a thread for connecting`), as for a task, and a program
+     started is stopped first. (7) `Path.joinInside` cut a name of four or five bytes whose first
+     characters take more than one (`ğğ`, `😀`) to look for `COM1` and `LPT1`, and panicked; the first three
+     bytes are looked at one by one first. (8) The hint of a conversion to `CLong` or `CULong` that does not
+     fit named `tryTo#ULong()` in compiled code; it names `tryToCULong()`, as the interpreter did. Rust's
+     `sort_by` may panic on such a `compare` since Rust 1.81; C's `qsort` leaves it undefined; Go's
+     `sort.Slice` gives some order and does not panic. Tested by `error_escape_wide_char`, `error_raw_text_indent_wide`,
+     `error_struct_contains_itself_directly`, `_in_array` and `_packed`, `ok_raw_move_by_named`,
+     `ok_sort_no_order` (the same order interpreted and compiled), `panic_cast_c_ulong`, names of several
+     bytes in `ok_path_join_inside`, and in `libraries` in `tests/golden.rs` (plain structs that point at
+     themselves and at each other, and a union, in a header C compiles with `-pedantic`); each of them fails
+     without its fix. The refused thread was checked by hand, since the number of threads a system gives
+     depends on the machine: on macOS 12 286 tasks that wait leave no thread for a connect, which is now
+     that panic, and the run ends. `cargo test` passes on macOS and on Linux in a container (400 of 1652
+     programs compile through C, 96 of them under the thread sanitizer); on Windows on Arm the new programs give
+     the same output (interpreted and compiled where they run), and `libraries` passes.
 
 ## Slower than C, and could be better
 
@@ -8510,5 +8544,6 @@ tool runs beside it. The hundred-and-sixteenth fixes what that review found, fir
 one place: the files a build makes on the way are in a folder only its user opens (1332, 1333); an `export`
 function is called from any thread, and C's names are not taken by one (1334); a struct with no fields
 holds one byte (1335); a line is written with the lengths of its texts, the byte 0 and more than 2 GB
-included, and faster (1336). The next two
+included, and faster (1336); eight faults of the tool itself, where a program made `sg` panic, overflow its
+stack or wait, are errors or panics of the program (1337). The next two
 fix the rules of borrowing; then fuzzing and mutants of the rules of safety (1323-1325).

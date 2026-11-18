@@ -1,0 +1,5 @@
+error: struct `Point` contains itself, so it has no finite size
+  --> error_struct_contains_itself_directly.sg:4:5
+ 4 |     Point x
+   |     ^^^^^
+  hint: put it behind a pointer: `Point* x`

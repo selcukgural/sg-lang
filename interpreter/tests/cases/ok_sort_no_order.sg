@@ -1,0 +1,49 @@
+// A `compare` that does not put its values in one order: the sort ends, keeps every item, and
+// leaves them in the same places in the interpreter and in compiled code.
+struct Odd : Comparable {
+    long value
+
+    int compare(read this, read Odd other) {
+        var mixed = (this.value * 2654435761 + other.value * 40503 + this.value * other.value) % 7
+        if mixed < 3 {
+            return -1
+        }
+        if mixed < 6 {
+            return 1
+        }
+        return 0
+    }
+}
+
+// One that always says "greater".
+struct Greater : Comparable {
+    int value
+
+    int compare(read this, read Greater other) {
+        return 1
+    }
+}
+
+void main() {
+    var items = List<Odd>()
+    for i in 0..30 {
+        items.add(Odd { value = (i + 17) % 100003 })
+    }
+    items.sort()
+    var line = ""
+    for item in items {
+        line.write($"{item.value} ")
+    }
+    print(line)
+
+    var greater = List<Greater>()
+    for i in 0..9 {
+        greater.add(Greater { value = i })
+    }
+    greater.sort()
+    var second = ""
+    for item in greater {
+        second.write($"{item.value} ")
+    }
+    print(second)
+}

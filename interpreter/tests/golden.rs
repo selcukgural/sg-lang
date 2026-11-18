@@ -1761,8 +1761,9 @@ fn shutdown_on_signals_here() {
 /// calculator of `examples/calclib`, with its program of C, prints `main.out` as a static
 /// library, a shared one and a release build, under the sanitizers too, and leaves nothing
 /// behind. Two libraries of SG live in one program, each with its runtime; C calls a library
-/// from threads of its own, under the thread sanitizer; a panic aborts the program that loaded
-/// it; and the checker asks of a library what it gives C.
+/// from threads of its own, under the thread sanitizer; plain structs that point at each other
+/// are declared in a header C compiles; a panic aborts the program that loaded it; and the
+/// checker asks of a library what it gives C.
 #[test]
 fn libraries() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1936,6 +1937,28 @@ fn libraries() {
         let ran = std::process::Command::new(&racy).output().unwrap();
         assert!(ran.status.success() && !String::from_utf8_lossy(&ran.stderr).contains("ThreadSanitizer"), "{}", String::from_utf8_lossy(&ran.stderr));
     }
+
+    // Plain structs that point at themselves and at each other, one held by value in the
+    // other: the header names first those a struct before them points at, and C compiles it.
+    let linked = work.join("linked");
+    std::fs::create_dir_all(&linked).unwrap();
+    std::fs::write(
+        linked.join("nodes.sg"),
+        "struct Node {\n    raw Node next\n    raw Owner owner\n    int value\n}\n\nstruct Owner {\n    raw Node first\n    Node spare\n}\n\nunion Cell {\n    raw Cell next\n    int value\n}\n\n// Adds up the values of a list.\nexport int nodes_sum(raw Node list, Cell cell) {\n    var sum = 0\n    var at = list\n    while at != null {\n        sum += unsafe at[0].value\n        at = unsafe at[0].next\n    }\n    return sum\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        linked.join("nodes.c"),
+        "#include <stdio.h>\n#include \"nodes.h\"\nint main(void) {\n    Owner owner = {0};\n    Node last = { NULL, &owner, 2 };\n    Node first = { &last, &owner, 40 };\n    Cell cell = { NULL };\n    printf(\"%d\\n\", (int)nodes_sum(&first, cell));\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let nodes_lib = if cfg!(windows) { "nodes.lib" } else { "libnodes.a" };
+    sg(&["nodes.sg", "--library", "-o", nodes_lib], &linked);
+    let nodes = program_at(&linked, "nodes");
+    let nodes_define: &std::ffi::OsStr = if cfg!(windows) { "-DNODES_STATIC".as_ref() } else { "-DNODES_NOTHING".as_ref() };
+    cc(&["-Wall".as_ref(), "-Wextra".as_ref(), "-Werror".as_ref(), "-pedantic".as_ref(), nodes_define, "-I".as_ref(), linked.as_os_str(), "-o".as_ref(), nodes.as_os_str(), linked.join("nodes.c").as_os_str(), linked.join(nodes_lib).as_os_str()]);
+    let ran = std::process::Command::new(&nodes).output().unwrap();
+    assert_eq!(printed(&ran.stdout), "42\n", "{}", String::from_utf8_lossy(&ran.stderr));
 
     // A panic writes its message and aborts: other threads of the program may be running, so
     // C's `exit` and the program's `atexit` functions do not run.

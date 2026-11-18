@@ -29,3 +29,8 @@ bad [CONOUT$] InvalidInput
 ok  [console] -> files/console
 bad [tab	here] InvalidInput
 ok  [ünlü.txt] -> files/ünlü.txt
+ok  [ğğ] -> files/ğğ
+ok  [😀] -> files/😀
+ok  [çom1] -> files/çom1
+ok  [COMé] -> files/COMé
+bad [LPT³.txt] InvalidInput

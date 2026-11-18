@@ -1,0 +1,24 @@
+// A raw pointer moves by a count the checker rewrites as it checks it: a named constant of a
+// number type, a cast of an enum with numbers, and a number that widens to an `nint`.
+enum Level : int {
+    Low = 1
+    High = 2
+}
+
+void main() {
+    var p = Memory.allocate<long>(4)
+    unsafe {
+        p[0] = 10
+        p[1] = 11
+        p[2] = 12
+        p[3] = 13
+        print((p + (nint)Level.High)[0])
+        print((p + int.MaxValue / 1073741823)[0])
+        int one = 1
+        print((p + one)[0])
+        byte three = 3
+        var q = p + three
+        print((q - (nint)Level.Low)[0])
+        Memory.free(p)
+    }
+}

@@ -1842,6 +1842,13 @@ impl From<Stop> for Unwind {
 
 type Res<T> = Result<T, Unwind>;
 
+/// A thread for a piece of work beside the fibers of the run. A system that gives no more
+/// threads makes it a panic of the program, at `at`, as a task the system refuses a thread
+/// for is.
+fn beside<T: Send + 'static>(at: Span, what: &str, work: impl FnOnce() -> T + Send + 'static) -> Res<std::thread::JoinHandle<T>> {
+    std::thread::Builder::new().spawn(work).map_err(|error| Diag::panic(at, format!("the system refused a thread for {what}: {error}")).into())
+}
+
 enum Flow {
     Next,
     /// `break` and `continue`, with the loop they name, if they name one.
@@ -3293,10 +3300,10 @@ impl<'a, 'e> Interp<'a, 'e> {
             let (id, done) = self.work(at)?;
             let Some((id, work)) = self.io.input.borrow_mut().fill(id) else { continue };
             if let Some(work) = work {
-                std::thread::spawn(move || {
+                beside(at, "reading the input", move || {
                     work();
                     done.tell(id);
-                });
+                })?;
             }
             if self.wait_for(Outside::Work(id), source.as_ref(), at)? {
                 return Ok(Some(failed(io_cancelled())));
@@ -3346,11 +3353,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let (id, done) = self.work(at)?;
                 let slot = std::sync::Arc::new(Mutex::new(None));
                 let kept = slot.clone();
-                std::thread::spawn(move || {
+                beside(at, "connecting", move || {
                     let connected = crate::net::connect(&address);
                     *kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(connected);
                     done.tell(id);
-                });
+                })?;
                 if self.wait_for(Outside::Work(id), source.as_ref(), at)? {
                     return Ok(failed(io_cancelled()));
                 }
@@ -5829,23 +5836,39 @@ impl<'a, 'e> Interp<'a, 'e> {
 
     /// The cells of the items in order; equal items keep the order they had. The items are
     /// taken out while they are compared, so that a `compare` that fails leaves through here.
-    fn sorted(&mut self, mut cells: Vec<Cell>, span: Span) -> Res<Vec<Cell>> {
-        let mut failed = None;
-        cells.sort_by(|a, b| {
-            let (a, b) = (a.borrow().clone(), b.borrow().clone());
-            match self.compare(&a, &b, span) {
-                Ok(ordering) if failed.is_none() => ordering,
-                Ok(_) => std::cmp::Ordering::Equal,
-                Err(stop) => {
-                    failed.get_or_insert(stop);
-                    std::cmp::Ordering::Equal
+    ///
+    /// The merge sort of compiled code (`sg_sort`), step for step: a `compare` that does not
+    /// put the items in one order gives the same items in the same places in both, and
+    /// nothing panics.
+    fn sorted(&mut self, cells: Vec<Cell>, span: Span) -> Res<Vec<Cell>> {
+        let count = cells.len();
+        let mut from = cells;
+        let mut width = 1;
+        while width < count {
+            let mut to = Vec::with_capacity(count);
+            let mut low = 0;
+            while low < count {
+                let middle = (low + width).min(count);
+                let high = (low + 2 * width).min(count);
+                let (mut i, mut j) = (low, middle);
+                while i < middle && j < high {
+                    let (a, b) = (from[j].borrow().clone(), from[i].borrow().clone());
+                    if self.compare(&a, &b, span)? == std::cmp::Ordering::Less {
+                        to.push(from[j].clone());
+                        j += 1;
+                    } else {
+                        to.push(from[i].clone());
+                        i += 1;
+                    }
                 }
+                to.extend_from_slice(&from[i..middle]);
+                to.extend_from_slice(&from[j..high]);
+                low += 2 * width;
             }
-        });
-        match failed {
-            Some(stop) => Err(stop),
-            None => Ok(cells),
+            from = to;
+            width *= 2;
         }
+        Ok(from)
     }
 
     /// The methods of `List<T>`, `HashMap<K, V>` and `HashSet<T>`.
@@ -6052,7 +6075,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             _ => unreachable!("the checker makes it a number"),
         };
         match call {
-            SystemCall::Start => return self.start_child(values),
+            SystemCall::Start => return self.start_child(values, args[0].span),
             SystemCall::Wait => {
                 let ended = self.reap(number(0) as i64);
                 for (slot, value) in cells_of(&values[1]).iter().zip([ended.0, ended.1]) {
@@ -6187,7 +6210,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// (written by a thread of its own) or a pipe whose end the program keeps; its output and its
     /// standard error are pipes it keeps when asked for, and otherwise pipes read by threads and
     /// written out to the run's when it is waited for (see `Kid`).
-    fn start_child(&mut self, values: Vec<Value>) -> Res<Value> {
+    fn start_child(&mut self, values: Vec<Value>, at: Span) -> Res<Value> {
         use std::io::Read;
         use std::process::Stdio;
         let (mut command, input) = command_of(&values);
@@ -6211,6 +6234,16 @@ impl<'a, 'e> Interp<'a, 'e> {
         // The number, the three ends kept here, and what names the program to the calls of the
         // system: the number again, which the interpreter keeps its children by on every system.
         let mut made = [i128::from(child.id()), -1, -1, -1, i128::from(child.id())];
+        // A thread the system refuses ends the run with a panic, and the program started is
+        // stopped first.
+        let copy = |child: &mut std::process::Child, what: &str, work: Box<dyn FnOnce() -> Vec<u8> + Send>| match beside(at, what, work) {
+            Ok(thread) => Ok(thread),
+            Err(stop) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(stop)
+            }
+        };
         if let Some(feed) = child.stdin.take() {
             match input {
                 2 => {
@@ -6218,9 +6251,10 @@ impl<'a, 'e> Interp<'a, 'e> {
                     let text = text.to_string();
                     let mut feed = feed;
                     // A program that ends before it reads all of it is no error.
-                    std::thread::spawn(move || {
+                    copy(&mut child, "the input of a program", Box::new(move || {
                         let _ = feed.write_all(text.as_bytes());
-                    });
+                        Vec::new()
+                    }))?;
                 }
                 _ => made[1] = i128::from(crate::sys::fd_of(feed)),
             }
@@ -6231,11 +6265,11 @@ impl<'a, 'e> Interp<'a, 'e> {
             true => made[2] = i128::from(crate::sys::fd_of(output)),
             false => {
                 let mut output = output;
-                copies.push((std::thread::spawn(move || {
+                copies.push((copy(&mut child, "the output of a program", Box::new(move || {
                     let mut kept = Vec::new();
                     let _ = output.read_to_end(&mut kept);
                     kept
-                }), false));
+                }))?, false));
             }
         }
         let error = child.stderr.take().expect("piped");
@@ -6243,11 +6277,11 @@ impl<'a, 'e> Interp<'a, 'e> {
             true => made[3] = i128::from(crate::sys::fd_of(error)),
             false => {
                 let mut error = error;
-                copies.push((std::thread::spawn(move || {
+                copies.push((copy(&mut child, "the output of a program", Box::new(move || {
                     let mut kept = Vec::new();
                     let _ = error.read_to_end(&mut kept);
                     kept
-                }), true));
+                }))?, true));
             }
         }
         self.io.children.borrow_mut().insert(made[0] as i64, Kid { child, copies });
@@ -6295,10 +6329,10 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
             let (id, done) = self.work(at)?;
             let pid = pid as i64;
-            std::thread::spawn(move || {
+            beside(at, "waiting for a program", move || {
                 wait_unreaped(pid);
                 done.tell(id);
-            });
+            })?;
             if self.wait_for(Outside::Work(id), source.as_ref(), at)? {
                 break 'waited failed(io_cancelled());
             }
@@ -6503,11 +6537,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                         let (id, done) = self.work(at)?;
                         let slot = std::sync::Arc::new(Mutex::new(None));
                         let kept = slot.clone();
-                        std::thread::spawn(move || {
+                        beside(at, "looking up a host", move || {
                             let found = crate::net::lookup(&host);
                             *kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(found);
                             done.tell(id);
-                        });
+                        })?;
                         match self.wait_for(Outside::Work(id), source.as_ref(), at)? {
                             true => None,
                             false => slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take(),

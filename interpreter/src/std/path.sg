@@ -78,24 +78,36 @@ public struct Path {
         if base.equalsIgnoreAsciiCase("CONIN$") || base.equalsIgnoreAsciiCase("CONOUT$") {
             return true
         }
+        if !Path.isDeviceHead(base) {
+            return false
+        }
         if base.length() != 4 {
             return Path.isNumberedDevice(base)
         }
-        var head = base[..3]
         var last = base[3]
-        if !(head.equalsIgnoreAsciiCase("COM") || head.equalsIgnoreAsciiCase("LPT")) {
-            return false
-        }
         return last >= '0' && last <= '9'
     }
 
-    // `COM¹`, `LPT³`: Windows takes the small raised digits for devices too.
-    bool isNumberedDevice(read string base) {
-        if base.length() != 5 {
+    // Whether the name starts with `COM` or `LPT`, in any case. Its first three bytes are looked
+    // at one by one first: a name from outside may have a character of several bytes there,
+    // which a window of three bytes would cut.
+    bool isDeviceHead(read string base) {
+        if base.length() < 3 {
             return false
         }
+        for at in 0..3 {
+            if base[at] >= 128 {
+                return false
+            }
+        }
         var head = base[..3]
-        if !(head.equalsIgnoreAsciiCase("COM") || head.equalsIgnoreAsciiCase("LPT")) {
+        return head.equalsIgnoreAsciiCase("COM") || head.equalsIgnoreAsciiCase("LPT")
+    }
+
+    // `COM¹`, `LPT³`: Windows takes the small raised digits for devices too. The name starts with
+    // `COM` or `LPT` (`isDeviceHead`).
+    bool isNumberedDevice(read string base) {
+        if base.length() != 5 {
             return false
         }
         var tail = base[3..]

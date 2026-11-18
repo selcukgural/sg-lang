@@ -1,0 +1,8 @@
+// A struct that holds itself directly, not through an optional, is found before its layout
+// is looked at.
+struct Point : Equatable {
+    Point x
+}
+
+void main() {
+}

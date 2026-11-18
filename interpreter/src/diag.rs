@@ -116,13 +116,14 @@ fn unprefixed(text: &str) -> std::borrow::Cow<'_, str> {
 
 /// Location, source line and a marker under the span.
 pub fn snippet(span: Span, src: &str, path: &str) -> String {
-    let start = span.start.min(src.len());
+    // A span from a byte count may end inside a character: the marker takes the whole character.
+    let start = src.floor_char_boundary(span.start.min(src.len()));
     let line_start = src[..start].rfind('\n').map_or(0, |i| i + 1);
     let line_end = src[start..].find('\n').map_or(src.len(), |i| start + i);
     let line_no = src[..start].matches('\n').count() + 1;
     let line = &src[line_start..line_end];
     let col = src[line_start..start].chars().count();
-    let span_end = span.end.clamp(start, line_end);
+    let span_end = src.ceil_char_boundary(span.end).clamp(start, line_end);
     let width = src[start..span_end].chars().count().max(1);
     let num = line_no.to_string();
     let pad = " ".repeat(num.len());

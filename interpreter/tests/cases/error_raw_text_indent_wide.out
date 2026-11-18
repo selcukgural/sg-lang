@@ -1,0 +1,5 @@
+error: this line is indented less than the closing quotes of its raw text
+  --> error_raw_text_indent_wide.sg:5:1
+ 5 | é
+   | ^
+  hint: indent every line at least as far as the closing quotes, with the same spaces or tabs

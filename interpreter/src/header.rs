@@ -17,14 +17,15 @@ pub fn header(prog: &Program, name: &str, links: &[String]) -> String {
 
     // What the functions name: the types C holds by their address, and the plain structs,
     // each after those it holds.
-    let mut handles: Vec<String> = Vec::new();
-    let mut plain: Vec<String> = Vec::new();
+    let mut found = Named::default();
     for func in &funcs {
         let (params, ret) = &prog.exported[&func.name];
         for ty in params.iter().chain([ret]) {
-            named(ty, prog, &mut handles, &mut plain);
+            named(ty, prog, &mut found);
         }
     }
+    let Named { handles, plain, .. } = found;
+    let (plain, ahead) = in_order(&plain, prog);
     // A pointer to a function as a field of a plain struct is named by its struct and field.
     let mut callbacks: Callbacks = Vec::new();
     let mut callback_text = String::new();
@@ -71,6 +72,12 @@ pub fn header(prog: &Program, name: &str, links: &[String]) -> String {
     text.push_str(&callback_text);
     if !plain.is_empty() {
         text.push_str("/* Plain data, laid out as SG lays it out. */\n");
+        // A struct that a struct before it points at is named before the first of them.
+        for full in &ahead {
+            let kind = if prog.plain[full].union { "union" } else { "struct" };
+            let short = short_name(full);
+            let _ = writeln!(text, "typedef {kind} {short} {short};");
+        }
         for full in &plain {
             let decl = prog.structs.iter().find(|decl| decl.name == *full).expect("a plain struct is declared");
             let names: Vec<&str> = decl.fields.iter().map(|field| field.name.as_str()).collect();
@@ -120,39 +127,106 @@ fn param_name(name: &str) -> String {
     }
 }
 
-/// Finds the types C holds by their address (`handles`) and the plain structs (`plain`, each
-/// after those it holds) that `ty` names.
-fn named(ty: &Ty, prog: &Program, handles: &mut Vec<String>, plain: &mut Vec<String>) {
+/// What the exported functions name.
+#[derive(Default)]
+struct Named {
+    /// The types C holds by their address.
+    handles: Vec<String>,
+    /// The plain structs, each after those it holds.
+    plain: Vec<String>,
+    /// The plain structs whose fields are being looked at.
+    visiting: Vec<String>,
+}
+
+/// Finds the types C holds by their address and the plain structs that `ty` names.
+fn named(ty: &Ty, prog: &Program, found: &mut Named) {
     match ty {
         Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::Read(inner) | Ty::Ref(inner) => match &**inner {
             Ty::Struct(name) | Ty::Enum(name) if !prog.plain.contains_key(name) => {
-                if !handles.contains(name) {
-                    handles.push(name.clone());
+                if !found.handles.contains(name) {
+                    found.handles.push(name.clone());
                 }
             }
-            other => named(other, prog, handles, plain),
+            other => named(other, prog, found),
         },
-        Ty::Raw(inner) | Ty::Array(inner, _) | Ty::Atomic(inner) => named(inner, prog, handles, plain),
+        Ty::Raw(inner) | Ty::Array(inner, _) | Ty::Atomic(inner) => named(inner, prog, found),
         Ty::CFunc(params, ret) => {
             for inner in params.iter().chain([&**ret]) {
-                named(inner, prog, handles, plain);
+                named(inner, prog, found);
             }
         }
+        // A struct reached again through a pointer in the fields it is made of is looked at
+        // once; `in_order` puts it after the structs it holds by value.
         Ty::Struct(name) if prog.plain.contains_key(name) => {
-            if plain.contains(name) {
+            if found.plain.contains(name) || found.visiting.contains(name) {
                 return;
             }
+            found.visiting.push(name.clone());
             for field in &prog.plain[name].fields {
-                named(field, prog, handles, plain);
+                named(field, prog, found);
             }
-            if !plain.contains(name) {
-                plain.push(name.clone());
-            }
+            found.visiting.pop();
+            found.plain.push(name.clone());
         }
         // An opaque type of C, behind a `raw T`.
-        Ty::Struct(name) if !handles.contains(name) => handles.push(name.clone()),
+        Ty::Struct(name) if !found.handles.contains(name) => found.handles.push(name.clone()),
         _ => {}
     }
+}
+
+/// The plain structs that `ty` names, each with whether it is held by value (in place or in
+/// an array) or pointed at.
+fn plain_in<'t>(ty: &'t Ty, prog: &Program, by_value: bool, out: &mut Vec<(&'t str, bool)>) {
+    match ty {
+        Ty::Struct(name) if prog.plain.contains_key(name) => out.push((name, by_value)),
+        Ty::Array(inner, _) | Ty::Atomic(inner) => plain_in(inner, prog, by_value, out),
+        Ty::Raw(inner) => plain_in(inner, prog, false, out),
+        Ty::CFunc(params, ret) => {
+            for inner in params.iter().chain([&**ret]) {
+                plain_in(inner, prog, false, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The plain structs in the order C needs them: each after the structs it holds by value
+/// (which never hold it back), and otherwise as they were found. Gives too the structs that
+/// one written before them points at, which are named with a `typedef` first.
+fn in_order(found: &[String], prog: &Program) -> (Vec<String>, Vec<String>) {
+    fn visit(name: &str, prog: &Program, order: &mut Vec<String>) {
+        if order.iter().any(|done| done == name) {
+            return;
+        }
+        let mut inside = Vec::new();
+        for field in &prog.plain[name].fields {
+            plain_in(field, prog, true, &mut inside);
+        }
+        for (held, by_value) in inside {
+            if by_value {
+                visit(held, prog, order);
+            }
+        }
+        order.push(name.to_string());
+    }
+    let mut order = Vec::new();
+    for name in found {
+        visit(name, prog, &mut order);
+    }
+    let mut ahead: Vec<String> = Vec::new();
+    for (at, name) in order.iter().enumerate() {
+        let mut inside = Vec::new();
+        for field in &prog.plain[name].fields {
+            plain_in(field, prog, true, &mut inside);
+        }
+        for (pointed, _) in inside.into_iter().filter(|(_, by_value)| !by_value) {
+            let later = order.iter().position(|other| other == pointed).is_some_and(|other| other >= at);
+            if later && !ahead.iter().any(|known| known == pointed) {
+                ahead.push(pointed.to_string());
+            }
+        }
+    }
+    (order, ahead)
 }
 
 /// How C declares `inner` of type `ty`: `int32_t n`, `Calculator *c`, `void (*visit)(void *)`.

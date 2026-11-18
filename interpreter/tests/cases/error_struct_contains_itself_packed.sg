@@ -1,0 +1,13 @@
+// A struct that holds itself, inside a `packed` struct whose layout rules walk its fields.
+struct Pair {
+    int low
+    Pair pair
+}
+
+packed struct Header {
+    byte kind
+    Pair pair
+}
+
+void main() {
+}

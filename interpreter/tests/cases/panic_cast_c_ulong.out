@@ -1,0 +1,5 @@
+panic: value -1099511627776 does not fit in CULong
+  --> panic_cast_c_ulong.sg:7:11
+ 7 |     print((CULong)(-big))
+   |           ^^^^^^^^^^^^^^
+  hint: `tryToCULong()` gives `null` when the value does not fit, and `wrappingToCULong()` cuts it to size

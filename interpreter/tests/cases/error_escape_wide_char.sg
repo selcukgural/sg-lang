@@ -1,0 +1,4 @@
+// An unknown escape on a character of more than one byte is marked whole.
+void main() {
+    print($"a\😀b")
+}

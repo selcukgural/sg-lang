@@ -1,0 +1,11 @@
+// Two structs that hold each other, one of them in an array, are found too.
+struct A : Hashable {
+    B[2] b
+}
+
+struct B : Hashable {
+    A a
+}
+
+void main() {
+}

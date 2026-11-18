@@ -1,0 +1,5 @@
+error: unknown escape sequence
+  --> error_escape_wide_char.sg:3:14
+ 3 |     print($"a\😀b")
+   |              ^^
+  hint: valid ones: \n \t \r \0 \\ \" \' \u{...}

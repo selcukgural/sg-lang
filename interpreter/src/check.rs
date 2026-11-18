@@ -980,7 +980,6 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         };
         structs.insert(decl.name.clone(), StructInfo { fields, open, readonly, defaults, methods, disposable, closable, opaque, shape });
     }
-    layout_rules(prog, &structs)?;
 
     // An enum with numbers that is `Comparable` and writes no `compare` is put in the order of
     // its numbers.
@@ -1043,6 +1042,9 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         let types = enums[&decl.name].variants.iter().flat_map(|(_, fields)| fields);
         contains_itself("enum", &decl.name, fields.zip(types), &members)?;
     }
+    // After that check: the layout rules walk the fields a struct holds by value, and would not
+    // end on a struct that holds itself.
+    layout_rules(prog, &structs)?;
 
     // A type that holds a borrow, or a value that carries one, names its source; and a type
     // that names a source holds something that borrows.
@@ -9194,7 +9196,10 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let left_ty = self.operand(left, wanted)?;
-                let right_ty = self.operand(right, like(&left_ty).as_ref().or(wanted))?;
+                // `p + n` moves a raw pointer by a count of items, an `nint`.
+                let moved = matches!(left_ty.strip_borrow(), Ty::Raw(_)) && matches!(op, BinOp::Add | BinOp::Sub);
+                let side = if moved { Some(Ty::Int(IntTy::Nint)) } else { like(&left_ty) };
+                let right_ty = self.operand(right, side.as_ref().or(wanted))?;
                 (left_ty, right_ty)
             }
         };
@@ -9366,7 +9371,11 @@ impl<'a> Checker<'a> {
                 let raw = left_ty.strip_borrow().clone();
                 self.needs_unsafe(span, "this moves a raw pointer, which may then point outside its memory")?;
                 self.coerce(left, left_ty.clone(), &raw)?;
-                self.index(right, "a count of items")?;
+                // The right side was checked once already: it is brought to an `nint` here,
+                // not checked again.
+                let Ty::Int(found) = *right_ty.strip_borrow() else { unreachable!("matched as an integer") };
+                self.coerce(right, right_ty.clone(), &Ty::Int(found))?;
+                self.coerce(right, Ty::Int(found), &Ty::Int(IntTy::Nint))?;
                 Ok(raw)
             }
             (Ty::Raw(_), Ty::Int(_)) if matches!(op, BinOp::Add | BinOp::Sub) => {

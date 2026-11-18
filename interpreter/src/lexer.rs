@@ -274,6 +274,11 @@ struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
+    /// Bytes of the character at the current position (1 at the end of the source).
+    fn char_len(&self) -> usize {
+        self.at(0).map_or(1, utf8_len)
+    }
+
     fn at(&self, offset: usize) -> Option<u8> {
         let i = self.pos + offset;
         if i < self.end {
@@ -587,7 +592,7 @@ impl<'a> Lexer<'a> {
                 }
                 if !self.bytes[begin..end].starts_with(prefix) {
                     let written = self.bytes[begin..end].iter().take_while(|&&byte| byte == b' ' || byte == b'\t').count();
-                    return Err(Diag::error(Span::new(begin, begin + written.max(1)), "this line is indented less than the closing quotes of its raw text")
+                    return Err(Diag::error(Span::new(begin, begin + written.max(utf8_len(self.bytes[begin]))), "this line is indented less than the closing quotes of its raw text")
                         .hint("indent every line at least as far as the closing quotes, with the same spaces or tabs"));
                 }
                 self.pos = begin + indent;
@@ -697,7 +702,7 @@ impl<'a> Lexer<'a> {
                 value
             }
             _ => {
-                return Err(Diag::error(Span::new(start, self.pos + 1), "unknown escape sequence")
+                return Err(Diag::error(Span::new(start, self.pos + self.char_len()), "unknown escape sequence")
                     .hint("valid ones: \\n \\t \\r \\0 \\\\ \\\" \\' \\u{...}"))
             }
         };
@@ -982,5 +987,15 @@ impl<'a> Lexer<'a> {
         }
         self.push(tok, start);
         Ok(())
+    }
+}
+
+/// Bytes of the UTF-8 character that starts with `lead`.
+fn utf8_len(lead: u8) -> usize {
+    match lead {
+        0xF0.. => 4,
+        0xE0.. => 3,
+        0xC0.. => 2,
+        _ => 1,
     }
 }

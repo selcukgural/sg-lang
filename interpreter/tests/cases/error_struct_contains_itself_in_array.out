@@ -1,0 +1,5 @@
+error: struct `A` contains itself, so it has no finite size
+  --> error_struct_contains_itself_in_array.sg:3:5
+ 3 |     B[2] b
+   |     ^^^^
+  hint: put it behind a pointer: `B*[2] b`

@@ -1,0 +1,5 @@
+error: struct `Pair` contains itself, so it has no finite size
+  --> error_struct_contains_itself_packed.sg:4:5
+ 4 |     Pair pair
+   |     ^^^^
+  hint: put it behind a pointer: `Pair* pair`

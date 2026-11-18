@@ -1444,6 +1444,8 @@ SG_COLD static _Noreturn void sg_div_zero(__int128 a, const char* op, const char
     fprintf(stderr, " %s 0\n", op);
     sg_die(loc);
 }
+/* The first letter of a type's name in the name of a method: `Int` in `tryToInt`; `CLong` stays. */
+static char sg_title(char c) { return c >= 'a' && c <= 'z' ? (char)(c - 'a' + 'A') : c; }
 SG_COLD static _Noreturn void sg_cast_fail(__int128 v, const char* ty, const char* loc) {
     SG_PANIC_START();
     fputs("panic: value ", stderr);
@@ -1453,7 +1455,7 @@ SG_COLD static _Noreturn void sg_cast_fail(__int128 v, const char* ty, const cha
     sg_task_note();
     if (!sg_called(loc))
         fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit, and `wrappingTo%c%s()` cuts it to size\n",
-                ty[0] - 'a' + 'A', ty + 1, ty[0] - 'a' + 'A', ty + 1);
+                sg_title(ty[0]), ty + 1, sg_title(ty[0]), ty + 1);
     SG_PANIC_END();
 }
 SG_COLD static _Noreturn void sg_panic(const char* text, const char* loc) {
@@ -1547,7 +1549,7 @@ SG_COLD static _Noreturn void sg_fcast_fail(double v, bool single, const char* t
     fprintf(stderr, " does not fit in %s\n", ty);
     fputs(loc, stderr);
     sg_task_note();
-    if (!sg_called(loc)) fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit\n", ty[0] - 'a' + 'A', ty + 1);
+    if (!sg_called(loc)) fprintf(stderr, "  hint: `tryTo%c%s()` gives `null` when the value does not fit\n", sg_title(ty[0]), ty + 1);
     SG_PANIC_END();
 }
 SG_COLD static _Noreturn void sg_assert_fail_fd(const char* text, double l, double r, bool single, const char* loc) {

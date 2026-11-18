@@ -1,0 +1,8 @@
+// The hint names the methods of C's types as they are written: `tryToCULong`.
+void main() {
+    long big = 1
+    for _ in 0..40 {
+        big = big * 2
+    }
+    print((CULong)(-big))
+}
