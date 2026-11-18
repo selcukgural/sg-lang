@@ -1,0 +1,15 @@
+// The item a method is called on, and an argument that empties the list it lies in.
+struct Name {
+    string text
+    void show(read this, int n) {
+        print(this.text)
+    }
+}
+int g(ref List<Name> xs) {
+    xs.clear()
+    return 1
+}
+void main() {
+    var xs = List<Name> { Name { text = "a long text that lives on the heap, number one".clone() } }
+    xs[0].show(g(ref xs))
+}

@@ -1,0 +1,13 @@
+// A value lent to a call and given away in the same call: the callee drops it while it still reads it.
+struct Pair {
+    string a
+}
+void consume(read Pair r, Pair owned) {
+    var gone = owned
+    _ = gone
+    print(r.a)
+}
+void main() {
+    var p = Pair { a = "a long text that lives on the heap one".clone() }
+    consume(read p, p)
+}

@@ -1,0 +1,13 @@
+// A variable that borrows an item is given to a call, and a later argument empties the list.
+int g(ref List<string> xs) {
+    xs.clear()
+    return 1
+}
+void show(read string s, int n) {
+    print(s)
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap, number one".clone() }
+    var r = read xs[0]
+    show(r, g(ref xs))
+}

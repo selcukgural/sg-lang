@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 19 November 2026, the hundred-and-sixteenth slice.
+Last brought up to date: 19 November 2026, the hundred-and-seventeenth slice.
 
 ## Functions and variables
 
@@ -228,6 +228,7 @@ Last brought up to date: 19 November 2026, the hundred-and-sixteenth slice.
 | `'a`, `fn f<'a>(a: &'a str) -> &'a str` | `read string f(read string a) from a` | built | Only a returned borrow names where it comes from |
 | `struct Token<'a> { text: &'a str }` | `struct Token<from source> { read string text }` | built | |
 | non-lexical lifetimes | a borrow lasts until its last use | built | |
+| two-phase borrows: `v.push(v.len())` is fine, `f(&v[0], g(&mut v))` is not | the same | built | What a part of a call lends lasts until the call runs; a later part may read it, not change or move it |
 | `Box<T>`, `Box::new(x)` | `T*`, `new x` | built | |
 | `Option<Box<T>>` | `T*?` | built | |
 | `Rc<T>`, `Arc<T>` | `shared T` | built | One type; the count is always atomic. What it holds is only read |

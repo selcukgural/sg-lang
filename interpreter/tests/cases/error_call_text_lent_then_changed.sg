@@ -1,0 +1,15 @@
+// A `read string` is given as where its bytes are: a later argument that gives the variable a
+// new text frees those bytes before the call reads them.
+nint change(ref string s) {
+    s = "a new long text that lives on the heap two".clone()
+    return 1
+}
+
+void show(read string s, nint n) {
+    print(s)
+}
+
+void main() {
+    var s = "a long text that lives on the heap one".clone()
+    show(read s, change(ref s))
+}

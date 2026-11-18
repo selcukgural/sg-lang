@@ -1,0 +1,10 @@
+error: `p` cannot be moved here: `read p` is given to this call before it, and the call still uses it
+  the parts of a call are computed from left to right, and it runs after the last one
+  --> error_call_lent_then_moved.sg:12:21
+ 12 |     consume(read p, p)
+    |                     ^
+  lent to the call here:
+  --> error_call_lent_then_moved.sg:12:13
+ 12 |     consume(read p, p)
+    |             ^^^^^^
+  hint: the call cannot both look at `read p` and take `p`: give it a copy of one of them

@@ -3918,6 +3918,10 @@ struct Borrows {
     binds: Vec<Loan>,
     /// How far the function has been read.
     pos: usize,
+    /// Every change and move of a place, in the order the checker came to them: the variable,
+    /// the fields, how, and where. A call looks here for what its later parts did to what
+    /// its earlier parts lent.
+    touched: Vec<(usize, String, Access, Span)>,
 }
 
 struct Var {
@@ -5280,6 +5284,9 @@ impl<'a> Checker<'a> {
         let root = var.id;
         let behind = var.declared.strip_borrow().clone();
         let copy_as = (var.declared.is_borrow() && behind.is_copyable(self.copyable)).then(|| behind.to_string());
+        if access != Access::Read {
+            self.borrows.touched.push((root, path.clone(), access, expr.span));
+        }
         let at = self.point(expr.span.start);
         let mut found = Vec::new();
         for var in self.scopes.iter().flat_map(|scope| &scope.vars) {
@@ -7480,9 +7487,90 @@ impl<'a> Checker<'a> {
 
     /// Checks an expression whose value is used. A variable of a non-copyable type is moved.
     fn expr(&mut self, expr: &mut Expr, expected: Option<&Ty>) -> Res<Ty> {
+        let mark = self.borrows.touched.len();
         let ty = self.expr_untyped(expr, expected)?;
         expr.ty = ty.clone();
+        if self.borrows.touched.len() > mark {
+            self.lent_to_the_end(expr, mark)?;
+        }
         Ok(ty)
+    }
+
+    /// What a part of a call lends it: the receiver a method looks at, a borrow given as an
+    /// argument, or a value that carries one. The call runs after its last part, so this
+    /// stays lent until then.
+    fn part_loans(&self, part: &Expr, receiver: bool) -> Vec<Loan> {
+        let loans = match &part.kind {
+            ExprKind::Borrow { .. } => self.loans_of(part, false),
+            ExprKind::Method { recv, callee: Callee::Pointer, .. } => self.place_loans(recv, true, part.span),
+            ExprKind::RawCast { expr, .. } => match &expr.kind {
+                ExprKind::Method { recv, callee: Callee::Pointer, .. } => self.place_loans(recv, true, part.span),
+                _ => Vec::new(),
+            },
+            // A receiver is lent where it is, unless it is a number, which is copied.
+            _ if part.is_place() && !part.moved && receiver => match part.ty.strip_borrow() {
+                Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char => Vec::new(),
+                _ => self.place_loans(part, false, part.span),
+            },
+            _ if part.is_place() && !part.moved && !part.ty.is_copyable(self.copyable) => self.place_loans(part, false, part.span),
+            _ if part.ty.is_borrow() || self.holds(&part.ty) => self.loans_of(part, false),
+            _ => Vec::new(),
+        };
+        loans.into_iter().filter(|loan| loan.root != UNNAMED && !loan.held).collect()
+    }
+
+    /// The parts of a call, an index or a range are computed from left to right, and the call
+    /// runs after the last one: what an earlier part lent must not be changed or moved by a
+    /// later one (`f(read xs[0], g(ref xs))`, `consume(read p, p)`, `s[change(ref s)..]`).
+    /// A later part may read it.
+    fn lent_to_the_end(&self, expr: &Expr, mark: usize) -> Res<()> {
+        let (parts, what): (Vec<(&Expr, bool)>, &str) = match &expr.kind {
+            ExprKind::Method { recv, args, .. } => (std::iter::once((&**recv, true)).chain(args.iter().map(|arg| (arg, false))).collect(), "call"),
+            ExprKind::Call { args, .. } => (args.iter().map(|arg| (arg, false)).collect(), "call"),
+            ExprKind::Index { recv, index, .. } => (vec![(&**recv, true), (&**index, false)], "index"),
+            ExprKind::Slice { recv, from, to } => {
+                (std::iter::once((&**recv, true)).chain(from.iter().chain(to.iter()).map(|bound| (&**bound, false))).collect(), "range")
+            }
+            _ => return Ok(()),
+        };
+        let touched = &self.borrows.touched[mark..];
+        for (part, receiver) in &parts {
+            let loans = self.part_loans(part, *receiver);
+            if loans.is_empty() {
+                continue;
+            }
+            for (root, path, access, span) in touched {
+                if span.start < part.span.end || span.start >= expr.span.end {
+                    continue;
+                }
+                let overlaps = |loan: &Loan| path.is_empty() || loan.path.is_empty() || within(path, &loan.path) || within(&loan.path, path);
+                let Some(loan) = loans.iter().find(|loan| loan.root == *root && overlaps(loan)) else { continue };
+                let text = self.src[span.start..span.end].trim();
+                let earlier = self.src[part.span.start..part.span.end].trim();
+                let given = match (*receiver, what) {
+                    (true, "call") => format!("`{earlier}` is what this method is called on"),
+                    (true, _) => format!("`{earlier}` is what this {what} looks into"),
+                    (false, _) => format!("`{earlier}` is given to this {what} before it"),
+                };
+                let done = if *access == Access::Move { "moved" } else { "changed" };
+                let diag = Diag::error(*span, format!("`{text}` cannot be {done} here: {given}, and the {what} still uses it"))
+                    .note(format!("the parts of a {what} are computed from left to right, and it runs after the last one"));
+                let diag = match (part.span.start..part.span.end).contains(&loan.span.start) && loan.span != part.span {
+                    true => diag.related(loan.span, format!("lent to the {what} here")),
+                    false => diag.related(part.span, format!("lent to the {what} here")),
+                };
+                let whole = parts.iter().map(|(later, _)| *later).find(|later| later.span.start <= span.start && span.start < later.span.end);
+                return Err(match (access, whole) {
+                    (Access::Move, _) | (_, None) => diag.hint(format!("the {what} cannot both look at `{earlier}` and take `{text}`: give it a copy of one of them")),
+                    (_, Some(Expr { kind: ExprKind::Borrow { mutable: true, .. }, .. })) => diag.hint("a `ref` borrow must be the only one of its place: lend it once"),
+                    (_, Some(whole)) => {
+                        let whole = self.src[whole.span.start..whole.span.end].trim();
+                        diag.hint(format!("compute it before the {what}: `var value = {whole}`, then give it `value`"))
+                    }
+                });
+            }
+        }
+        Ok(())
     }
 
     fn expr_untyped(&mut self, expr: &mut Expr, expected: Option<&Ty>) -> Res<Ty> {

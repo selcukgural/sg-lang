@@ -1,0 +1,12 @@
+// `r` is a `ref` borrow of `xs`: giving both as `ref` lends the same list twice.
+void both(ref List<string> a, ref List<string> b) {
+    for x in read a {
+        b.clear()
+        print(x)
+    }
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap one".clone() }
+    var r = ref xs
+    both(ref r, ref xs)
+}

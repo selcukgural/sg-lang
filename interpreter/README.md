@@ -246,7 +246,8 @@ Design rules that are already enforced:
 - While a variable holds a borrow and is still used later, what it borrowed from cannot be changed, moved or
   lent as `ref`; with a `ref` borrow it cannot be touched at all. The error shows where the borrow was taken.
   After the last use of the variable the place is free again. The same place cannot be lent twice in one call
-  when one of the two is `ref`.
+  when one of the two is `ref`, and what a part of a call lends (the value a method is called on, an argument,
+  the value an index or a range looks into) cannot be changed or moved by a later part of it.
 - A function that returns a borrow returns one that comes from a borrowed parameter. With one borrowed
   parameter nothing is written; with more, `from a, b` after the parameters says which, and leaving it out is
   an error that shows what to write. Returning a borrow of a local, of a parameter taken by value, or from a
@@ -8092,6 +8093,38 @@ Each is written here with its fix, and each fix came after a test that showed th
      in `tests/cli.rs` (`refuses_a_frame_no_stack_holds`: two arrays of 150 MB are refused together, one of
      100 MB is built); on Windows on Arm `needs_nothing_of_128_bits`, which failed there, passes again.
 
+Choices made in the hundred-and-seventeenth slice (the rules of borrowing, first part). 1340 was approved with
+the other fixes of the review on 18 November 2026; each of its parts is written here when it is fixed, with
+the choices it raised:
+
+1340. **The rules of borrowing, where the review found them weak**: eleven faults of the checker, each a
+     program it took that read freed memory in compiled code or made the interpreter panic. They share one
+     cause: a borrow was followed through the variables that hold it, and lost where no variable held it.
+     Fixed so far:
+     (1) **What a part of a call lends lasts until the call runs.** `f(read xs[0], g(ref xs))` lent the first
+     item, `g` emptied the list, and `f` read the freed text; `consume(read p, p)` gave `p` away while lending
+     it, `p.eat(p.a)` moved a field out of the value `eat` changes, `both(ref r, ref xs)` lent `xs` twice as
+     `ref`, once through `var r = ref xs`, and `s[change(ref s)..]` cut a text that its bound had replaced.
+     The parts of a call (the value a method is called on, then the arguments) and of an index or a range
+     (the value looked into, then the bounds) are computed from left to right as before, and what an earlier
+     part lends (a `read` or `ref` borrow, a variable that holds one, a value that carries one, the value a
+     method looks at) cannot be changed or moved by a later part: *`xs` cannot be changed here: `read xs[0]`
+     is given to this call before it, and the call still uses it*, with the place where it was lent and the
+     hint to compute the later part first. A later part may read it (`xs.add(xs.length())`, `addTwo(ref xs,
+     xs.length())`), and a borrow that a part makes ends with that part. This is Rust's rule, with its
+     two-phase borrows. Tested by `error_call_lent_then_changed`, `_lent_then_moved`, `_receiver_then_changed`,
+     `_receiver_field_moved`, `_borrow_var_then_changed`, `_ref_alias`, `error_range_bound_changes_text` and
+     `ok_call_parts_in_order`; the checker took each of the errors before.
+1347. **No exception for plain data**, approved on 19 November 2026: a later part that changes what an earlier
+     one lends is an error also where the change frees nothing, as with a local struct of numbers in
+     `counter.plus(counter.next(), counter.next())`, where compiled code gave `plus` the value after the
+     arguments. `ok_evaluation_order` had that line; it shows the receiver computed first with a receiver made
+     by a call now. Rust refuses it too (E0502). One rule also covers the texts: a `read string` is given as
+     where its bytes are, so `show(read s, change(ref s))` read bytes that `change` had freed. Tested by
+     `error_call_receiver_changed_by_argument` and `error_call_text_lent_then_changed`. `cargo test` passes on
+     macOS (403 of 1675 programs compile through C, 97 of them under the thread sanitizer); only the checker
+     changed, so it was not run again on Linux and Windows.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -8661,5 +8694,6 @@ value nested too deep for the interpreter's stack is a panic, and a large frame 
 before it is used, so a function never runs past its stack into another thread's (1338, 1341-1345); a
 file a program takes in lies in the folder of the file that names it, a name goes to the linker whole, a
 DLL is copied by its name only, a task lets go of its task while it has the turn, and C is lent a value at
-the alignment of its type (1339); a function whose frame no stack holds is an error of `sg build` (1346). The next two
-fix the rules of borrowing; then fuzzing and mutants of the rules of safety (1323-1325).
+the alignment of its type (1339); a function whose frame no stack holds is an error of `sg build` (1346). The
+hundred-and-seventeenth and the next fix the rules of borrowing: what a part of a call lends lasts until the
+call runs, with no exception (1340, 1347); then fuzzing and mutants of the rules of safety (1323-1325).

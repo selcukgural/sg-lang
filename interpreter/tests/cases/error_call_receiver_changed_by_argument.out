@@ -1,0 +1,10 @@
+error: `counter` cannot be changed here: `counter` is what this method is called on, and the call still uses it
+  the parts of a call are computed from left to right, and it runs after the last one
+  --> error_call_receiver_changed_by_argument.sg:18:24
+ 18 |     print(counter.plus(counter.next(), counter.next()))
+    |                        ^^^^^^^
+  lent to the call here:
+  --> error_call_receiver_changed_by_argument.sg:18:11
+ 18 |     print(counter.plus(counter.next(), counter.next()))
+    |           ^^^^^^^
+  hint: compute it before the call: `var value = counter.next()`, then give it `value`

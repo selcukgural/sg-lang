@@ -23,6 +23,11 @@ struct Counter {
     }
 }
 
+Counter made(read string what) {
+    print($"made {what}")
+    return Counter { value = 100 }
+}
+
 int say(read string what, int value) {
     print($"{what} {value}")
     return value
@@ -75,8 +80,8 @@ void main() {
     }
 
     // The receiver of a method and its arguments.
+    print(made("receiver").plus(say("a", 1), say("b", 2)))
     var counter = Counter { value = 0 }
-    print(counter.plus(counter.next(), counter.next()))
     print(sub(counter.next(), counter.next()))
 
     // A formatted text.

@@ -1,0 +1,10 @@
+error: `s` cannot be changed here: `s` is what this range looks into, and the range still uses it
+  the parts of a range are computed from left to right, and it runs after the last one
+  --> error_range_bound_changes_text.sg:8:26
+ 8 |     var t = s[change(ref s)..]
+   |                          ^
+  lent to the range here:
+  --> error_range_bound_changes_text.sg:8:13
+ 8 |     var t = s[change(ref s)..]
+   |             ^
+  hint: compute it before the range: `var value = change(ref s)`, then give it `value`

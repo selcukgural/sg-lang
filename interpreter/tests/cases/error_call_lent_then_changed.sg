@@ -1,0 +1,12 @@
+// An item lent to a call, and a later argument that empties the list: the call would read freed text.
+int g(ref List<string> xs) {
+    xs.clear()
+    return 1
+}
+void f(read string s, int n) {
+    print(s)
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap, number one".clone() }
+    f(read xs[0], g(ref xs))
+}

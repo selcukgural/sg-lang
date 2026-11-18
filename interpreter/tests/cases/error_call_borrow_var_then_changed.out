@@ -1,0 +1,10 @@
+error: `xs` cannot be changed here: `r` is given to this call before it, and the call still uses it
+  the parts of a call are computed from left to right, and it runs after the last one
+  --> error_call_borrow_var_then_changed.sg:12:19
+ 12 |     show(r, g(ref xs))
+    |                   ^^
+  lent to the call here:
+  --> error_call_borrow_var_then_changed.sg:12:10
+ 12 |     show(r, g(ref xs))
+    |          ^
+  hint: compute it before the call: `var value = g(ref xs)`, then give it `value`

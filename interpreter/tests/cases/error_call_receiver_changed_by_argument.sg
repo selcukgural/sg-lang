@@ -1,0 +1,19 @@
+// The value a method is called on is lent to the call until it runs: an argument cannot change
+// it, even a struct of plain data that a change frees nothing of, as in Rust.
+struct Counter {
+    int value
+
+    int next(ref this) {
+        this.value += 1
+        return this.value
+    }
+
+    int plus(read this, int a, int b) {
+        return this.value + a + b
+    }
+}
+
+void main() {
+    var counter = Counter { value = 0 }
+    print(counter.plus(counter.next(), counter.next()))
+}

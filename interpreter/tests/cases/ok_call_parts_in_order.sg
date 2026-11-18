@@ -1,0 +1,28 @@
+// The parts of a call are computed from left to right. A later part may read what an earlier
+// one lent, and a borrow that a part makes ends with that part.
+nint clearAll(ref List<string> xs) {
+    var count = xs.length()
+    xs.clear()
+    return count
+}
+
+void show(read string s, nint n) {
+    print($"{s} {n}")
+}
+
+void addTwo(ref List<nint> xs, nint n) {
+    xs.add(n)
+    xs.add(n)
+}
+
+void main() {
+    var numbers = List<nint> { 1, 2 }
+    numbers.add(numbers.length())
+    addTwo(ref numbers, numbers.length())
+    print(numbers)
+    var words = List<string> { "one".clone(), "two".clone() }
+    show(read words[1], words.length())
+    var cleared = clearAll(ref words)
+    words.add("three".clone())
+    show(read words[0], cleared)
+}

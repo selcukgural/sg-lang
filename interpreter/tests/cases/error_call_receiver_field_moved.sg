@@ -1,0 +1,12 @@
+// A method takes `ref this`, and its argument moves a field out of that same value.
+struct Pair {
+    string a
+    void eat(ref this, string s) {
+        _ = s
+        print(this.a)
+    }
+}
+void main() {
+    var p = Pair { a = "a long text that lives on the heap one".clone() }
+    p.eat(p.a)
+}

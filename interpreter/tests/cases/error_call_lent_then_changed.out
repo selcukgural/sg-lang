@@ -1,0 +1,10 @@
+error: `xs` cannot be changed here: `read xs[0]` is given to this call before it, and the call still uses it
+  the parts of a call are computed from left to right, and it runs after the last one
+  --> error_call_lent_then_changed.sg:11:25
+ 11 |     f(read xs[0], g(ref xs))
+    |                         ^^
+  lent to the call here:
+  --> error_call_lent_then_changed.sg:11:7
+ 11 |     f(read xs[0], g(ref xs))
+    |       ^^^^^^^^^^
+  hint: compute it before the call: `var value = g(ref xs)`, then give it `value`

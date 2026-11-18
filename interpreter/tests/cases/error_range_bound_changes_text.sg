@@ -1,0 +1,10 @@
+// The bound of a range changes the text that is cut.
+int change(ref string s) {
+    s = "a new long text that lives on the heap two".clone()
+    return 1
+}
+void main() {
+    var s = "a long text that lives on the heap one, comma".clone()
+    var t = s[change(ref s)..]
+    print(t)
+}
