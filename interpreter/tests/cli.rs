@@ -352,3 +352,55 @@ fn emits_c() {
     left.sort();
     assert_eq!(left, ["calc.sg", "hello.sg", "tests.sg", "wrong.sg"]);
 }
+
+/// `sg` with these words, in `dir`, with `tmp` as the temporary folder.
+fn sg_in(dir: &Path, tmp: &Path, words: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_sg")).args(words).current_dir(dir).env("TMPDIR", tmp).env("TMP", tmp).env("TEMP", tmp).stdin(Stdio::null()).output().unwrap()
+}
+
+/// What is in a folder, by name.
+fn names_in(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    names
+}
+
+/// The files a build makes on the way (the C, the object of a library, the program of compiled
+/// tests) are in a folder of the temporary folder that only this user opens, made new each time,
+/// and gone at the end (choice 1333): nothing another user put there at a name that could be
+/// guessed is written through or run.
+#[test]
+fn keeps_its_temporary_files_to_itself() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("keeps_its_temporary_files_to_itself");
+    let tmp = dir.join("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    write(&dir, "hello.sg", HELLO);
+    write(&dir, "tests.sg", TESTS);
+    write(&dir, "calc.sg", LIBRARY);
+    for words in [&["build", "hello.sg"][..], &["build", "calc.sg", "--library"][..], &["build", "calc.sg", "--shared"][..], &["test", "tests.sg", "--compiled"][..]] {
+        let (code, _, err) = ran(&sg_in(&dir, &tmp, words));
+        assert_eq!((code, err.as_str()), (0, ""), "{words:?}");
+        assert_eq!(names_in(&tmp), Vec::<String>::new(), "{words:?}");
+    }
+    // What another user plants at the names of the process (`exec` keeps the number of the
+    // shell): a link to a file of the user, and a file where a folder would be made.
+    #[cfg(unix)]
+    {
+        let precious = write(&dir, "precious.txt", "precious\n");
+        let planted = |words: &str| {
+            let script = format!("ln -s \"$0\" \"$TMPDIR/sg-$$.c\"; ln -s \"$0\" \"$TMPDIR/sg-test-$$\"; : > \"$TMPDIR/sg-$$\"; exec \"$1\" {words}");
+            Command::new("sh").arg("-c").arg(script).arg(&precious).arg(env!("CARGO_BIN_EXE_sg")).current_dir(&dir).env("TMPDIR", &tmp).stdin(Stdio::null()).output().unwrap()
+        };
+        for words in ["build hello.sg -o planted", "build calc.sg --library", "test tests.sg --compiled"] {
+            let (code, _, err) = ran(&planted(words));
+            assert_eq!((code, err.as_str()), (0, ""), "{words}");
+            assert_eq!(std::fs::read_to_string(&precious).unwrap(), "precious\n", "{words}");
+            for name in names_in(&tmp) {
+                std::fs::remove_file(tmp.join(name)).unwrap();
+            }
+        }
+    }
+}

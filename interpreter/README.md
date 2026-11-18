@@ -7880,6 +7880,25 @@ What writing the tests of the command found, from 1326. Approved on 18 November 
      there, and `emit-c`. `cargo test` passes on macOS and on Linux in a container (395 of 1639 programs compile
      through C, 90 of them under the thread sanitizer); on Windows on Arm `tests/cli.rs` passes.
 
+Choices made in the hundred-and-sixteenth slice (fixing what the review of 1319 found). The review found 36
+faults, each shown by a program; the fixes were put to the author as choices and approved on 18 November 2026.
+Each is written here with its fix, and each fix came after a test that showed the fault:
+
+1332. **The order**: the fixes come first, fuzzing and mutants (1323-1325) after them. This slice fixes the
+     small faults, each in one place; the next two the rules of borrowing, whose faults share one cause.
+1333. **The files a build makes on the way are its own**: `sg build` wrote its C at `sg-<number of the
+     process>.c` in the temporary folder, put the object of a static library in `sg-<number>`, and `sg test
+     --compiled` built and ran its program at `sg-test-<number>`. Where the temporary folder is shared
+     (`/tmp`), another user who guessed the number could put a link there, so the C was written over a file
+     of the user's, or a pipe, so the C compiler read the other user's C and the tests ran it. Now each
+     build makes a folder of its own there, with a name no one can guess, that only its user opens (`0700`;
+     on Windows a list of access that gives only its owner anything), made new and never one that was there
+     already, and removes it at the end: the C, the object, the manifest of Windows and the program of the
+     tests are in it. The wrappers of `extern` blocks the interpreter builds were in such a folder already.
+     Rust's `tempfile` and Go's `os.MkdirTemp` make folders the same way. Tested in `tests/cli.rs`
+     (`keeps_its_temporary_files_to_itself`: nothing is left in the temporary folder, and on Linux and macOS
+     links and a file planted at the old names are not written through).
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -8428,4 +8447,6 @@ and read in RFC 3339 (1300-1317). The hundred-and-fifteenth begins the hardening
 command line tested end to end, with its exit codes written down, and the few command lines it took that
 were not usages refused; an output closed early ends a program the same way interpreted and compiled
 (1318-1330); a review of the soundness of the checker, the boundary of `unsafe` and C, the C runtime and the
-tool runs beside it. Next fuzzing and mutants of the rules of safety (1323-1325).
+tool runs beside it. The hundred-and-sixteenth fixes what that review found, first the small faults, each in
+one place: the files a build makes on the way are in a folder only its user opens (1332, 1333). The next two
+fix the rules of borrowing; then fuzzing and mutants of the rules of safety (1323-1325).

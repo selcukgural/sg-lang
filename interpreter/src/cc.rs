@@ -81,6 +81,26 @@ pub fn link_flags(work: &Path) -> std::io::Result<Vec<String>> {
     ])
 }
 
+/// A folder of its own for what a build makes on the way (the C, the object of a library, the
+/// manifest, the program of compiled tests): new, in the temporary folder, opened only by this
+/// user, and at a name no one could guess (choice 1333). Removed when the build is done.
+pub struct Work(std::path::PathBuf);
+
+impl Work {
+    pub fn new() -> std::io::Result<Self> {
+        crate::sys::private_dir().map(Work)
+    }
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Work {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// What makes a static library of an object: `ar` on Linux and macOS; on Windows LLVM's
 /// `llvm-lib`, from the folder of the C compiler when it is named with one, else from `PATH`.
 pub fn archive(out: &Path, object: &Path) -> std::process::Command {

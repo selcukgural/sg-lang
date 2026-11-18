@@ -91,7 +91,14 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         print!("{code}");
         return ExitCode::SUCCESS;
     };
-    let c_file = std::env::temp_dir().join(format!("sg-{}.c", std::process::id()));
+    let work = match sg::cc::Work::new() {
+        Ok(work) => work,
+        Err(error) => {
+            eprintln!("error: cannot make a folder for the build in the temporary folder: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let c_file = work.path().join(format!("{name}.c"));
     // The libraries the `extern` blocks of the program name.
     let libs = sg::emit_c::link_flags(&code);
     if let Err(error) = std::fs::write(&c_file, code) {
@@ -109,7 +116,6 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         _ => match sg::cc::compiler() {
             Ok(compiler) => compiler,
             Err(error) => {
-                let _ = std::fs::remove_file(&c_file);
                 eprintln!("error: {error}");
                 return ExitCode::FAILURE;
             }
@@ -121,7 +127,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         cc.args(sg::cc::compile_flags(!release));
     }
     let system = match made {
-        Made::Program | Made::Tests | Made::Shared => match sg::cc::link_flags(&std::env::temp_dir()) {
+        Made::Program | Made::Tests | Made::Shared => match sg::cc::link_flags(work.path()) {
             Ok(flags) => flags,
             Err(error) => {
                 eprintln!("error: cannot write the manifest of the program: {error}");
@@ -136,14 +142,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     };
     // A library is code that may be placed anywhere, so that the static one goes into a
     // program that is (PIE) and into a shared library too.
-    let objects = std::env::temp_dir().join(format!("sg-{}", std::process::id()));
-    let object = objects.join(format!("{name}.o"));
-    if made == Made::Static {
-        if let Err(error) = std::fs::create_dir_all(&objects) {
-            eprintln!("error: cannot make {}: {error}", objects.display());
-            return ExitCode::FAILURE;
-        }
-    }
+    let object = work.path().join(format!("{name}.o"));
     match made {
         Made::Program | Made::Tests => {
             cc.arg("-o").arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
@@ -186,14 +185,12 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         }
     }
     let status = cc.status();
-    let _ = std::fs::remove_file(&c_file);
     let status = match (made, status) {
         // The static library is the object alone, in an archive made new.
         (Made::Static, Ok(status)) if status.success() => {
             let _ = std::fs::remove_file(&out);
             let archiver = if cfg!(windows) { "llvm-lib" } else { "ar" };
             let archived = sg::cc::archive(std::path::Path::new(&out), &object).status();
-            let _ = std::fs::remove_dir_all(&objects);
             match archived {
                 Ok(archived) if archived.success() => Ok(archived),
                 Ok(_) => {
@@ -280,30 +277,23 @@ fn library_name(path: &str) -> String {
     path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_else(|| "library".to_string())
 }
 
-/// The test command on compiled code: the tests are built into a program next to the other
-/// temporary files, that program is run, and its exit code is given on.
+/// The test command on compiled code: the tests are built into a program in a folder of its own
+/// (`sg::cc::Work`), where on Windows the DLLs of `-L` are copied beside it; that program is run,
+/// and its exit code is given on.
 fn test_compiled(path: &str, dirs: &[PathBuf]) -> ExitCode {
-    let stem = std::env::temp_dir().join(format!("sg-test-{}", std::process::id()));
-    // On Windows in a folder of its own, where the DLLs of `-L` are copied beside it.
-    let folder = cfg!(windows).then(|| stem.clone());
-    if let Some(folder) = &folder {
-        if let Err(error) = std::fs::create_dir(folder) {
-            eprintln!("error: cannot make {}: {error}", folder.display());
+    let work = match sg::cc::Work::new() {
+        Ok(work) => work,
+        Err(error) => {
+            eprintln!("error: cannot make a folder for the tests in the temporary folder: {error}");
             return ExitCode::FAILURE;
         }
-    }
-    let binary = sg::cc::program_file(&folder.as_ref().map_or(stem, |folder| folder.join("tests")).to_string_lossy());
+    };
+    let binary = sg::cc::program_file(&work.path().join("tests").to_string_lossy());
     let built = build(path, Some(binary.clone()), false, Made::Tests, &Machine::default(), dirs);
     let status = match built == ExitCode::SUCCESS {
         true => Some(std::process::Command::new(&binary).status()),
         false => None,
     };
-    let _ = std::fs::remove_file(&binary);
-    // What a debugger reads, which a debug build writes beside the program on Windows.
-    let _ = std::fs::remove_file(std::path::Path::new(&binary).with_extension("pdb"));
-    if let Some(folder) = &folder {
-        let _ = std::fs::remove_dir_all(folder);
-    }
     let Some(status) = status else { return built };
     match status {
         Ok(status) if status.success() => ExitCode::SUCCESS,

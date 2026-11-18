@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 18 November 2026, the hundred-and-fifteenth slice.
+Last brought up to date: 18 November 2026, the hundred-and-sixteenth slice.
 
 ## Functions and variables
 
@@ -507,7 +507,7 @@ Last brought up to date: 18 November 2026, the hundred-and-fifteenth slice.
 | `#[test] fn name()` | `test "name" { }` | built | At the top level of the file, next to the code |
 | `cargo test` | `sg test file.sg` | built | `sg test --compiled` runs them compiled, each test in a process of its own (the program starts itself again with `--only N`), where Rust's harness runs them on threads of one process |
 | `cargo run` | `sg file.sg` | built | The interpreter |
-| `cargo build`, `cargo build --release` | `sg build file.sg`, `sg build file.sg --release` | built | A debug build checks overflow and reports leaks |
+| `cargo build`, `cargo build --release` | `sg build file.sg`, `sg build file.sg --release` | built | A debug build checks overflow and reports leaks. What it makes on the way is in a folder of the temporary folder only its user opens, made new and removed at the end, where Cargo keeps it in `target/` |
 | a test that leaks `Rc` passes | the test fails with the leak report | built | |
 | a leak is seen only under a tool (LSan, Valgrind, Miri) | a debug build counts the blocks of its values and reports those not given back | built | On every system, Windows too, where there is no LSan; raw memory is not counted |
 | Cargo, crates.io | none yet | designed | No package manager yet |
