@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 18 November 2026, the hundred-and-fourteenth slice.
+Last brought up to date: 18 November 2026, the hundred-and-fifteenth slice.
 
 ## Functions and variables
 
@@ -53,7 +53,7 @@ Last brought up to date: 18 November 2026, the hundred-and-fourteenth slice.
 | `panic!("...")` | `panic("...")` | built | |
 | `#[track_caller]` on the standard library | nothing to write | built | A panic inside the language's own module (`r.nextInt(5, 5)`, `Duration.fromSeconds` of a count too large) is shown at the call of the program, without the hint about the module's code; a function of your own cannot ask for it |
 | `assert!(a == b)`, `assert_eq!(a, b)` | `assert(a == b)` | built | The message shows the expression and both sides |
-| `println!("{}", x)` | `print(x)` | built | |
+| `println!("{}", x)` | `print(x)` | built | Into an output that was closed (`program \| head`) Rust panics (exit code 101); SG ends by `SIGPIPE` on Linux and macOS, as C and Go do, and with 0 on Windows |
 | `eprintln!("{}", x)` | `printError(x)` | built | |
 | closures `\|x\| x + 1` | a named function | not in SG | A `Func` is the address of a named function |
 | macros (`macro_rules!`, `#[derive]`) | none | not in SG | What `#[derive]` gives is an interface after `:` (below) |

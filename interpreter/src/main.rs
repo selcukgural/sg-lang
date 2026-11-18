@@ -407,7 +407,7 @@ fn main() -> ExitCode {
             let Some(dirs) = take_folders(&mut rest) else { return ExitCode::from(2) };
             match rest.as_slice() {
                 [path] if path != "--compiled" => (path.clone(), true, dirs, 0),
-                [first, second] if first == "--compiled" || second == "--compiled" => {
+                [first, second] if (first == "--compiled") != (second == "--compiled") => {
                     return test_compiled(if first == "--compiled" { second } else { first }, &dirs);
                 }
                 _ => return usage(),
@@ -422,7 +422,9 @@ fn main() -> ExitCode {
             let Some(dirs) = take_folders(&mut ours) else { return ExitCode::from(2) };
             ours.extend(rest[split..].iter().cloned());
             // A debug build checks integer overflow; `--release` wraps and optimises.
-            let (mut path, mut out, mut release, mut made, mut twice) = (None, None, false, Made::Program, false);
+            // Not a usage: a second program, a flag given twice, `-o` or `--target` with nothing
+            // after it (choices 1326 and 1327).
+            let (mut path, mut out, mut release, mut made, mut wrong) = (None, None, false, Made::Program, false);
             let mut machine = Machine::default();
             let mut rest = ours.iter();
             while let Some(arg) = rest.next() {
@@ -434,23 +436,37 @@ fn main() -> ExitCode {
                     _ => None,
                 };
                 match arg.as_str() {
-                    "--release" => release = true,
-                    "-o" => out = rest.next().cloned(),
-                    "--target" => machine.target = rest.next().cloned(),
+                    "--release" => {
+                        wrong |= release;
+                        release = true;
+                    }
+                    "-o" => {
+                        wrong |= out.is_some();
+                        out = rest.next().cloned();
+                        wrong |= out.is_none();
+                    }
+                    "--target" => {
+                        wrong |= machine.target.is_some();
+                        machine.target = rest.next().cloned();
+                        wrong |= machine.target.is_none();
+                    }
                     "--" => {
                         machine.flags = rest.by_ref().cloned().collect();
                     }
                     _ if kind.is_some() => {
-                        twice |= made != Made::Program;
+                        wrong |= made != Made::Program;
                         made = kind.expect("matched");
                     }
-                    _ if path.is_none() => path = Some(arg),
-                    _ => path = None,
+                    _ => {
+                        wrong |= path.is_some();
+                        path = Some(arg);
+                    }
                 }
             }
-            // A target and flags of C are for a machine without an operating system.
+            // A target and flags of C are for a machine without an operating system; `emit-c`
+            // writes to the output, so `-o` is not its (1328).
             let stray = made != Made::Freestanding && (machine.target.is_some() || !machine.flags.is_empty());
-            let Some(path) = path.filter(|_| !twice && !stray) else {
+            let Some(path) = path.filter(|_| !wrong && !stray && !(command == "emit-c" && out.is_some())) else {
                 return usage();
             };
             let name = library_name(path);
@@ -464,6 +480,15 @@ fn main() -> ExitCode {
                 _ => std::path::Path::new(path).file_stem().map(|stem| stem.to_string_lossy().into_owned()),
             };
             let out = (command == "build").then(|| out.or(stem).unwrap_or_else(|| "a.out".to_string()));
+            // An output into a folder that is not there is told before anything is compiled, as
+            // a program that cannot be read is (1329).
+            if let Some(out) = &out {
+                let folder = std::path::Path::new(out).parent().filter(|folder| !folder.as_os_str().is_empty());
+                if let Some(folder) = folder.filter(|folder| !folder.is_dir()) {
+                    eprintln!("error: cannot write {out}: there is no folder {}", folder.display());
+                    return ExitCode::from(2);
+                }
+            }
             return build(path, out, release, made, &machine, &dirs);
         }
         [..] if lead < args.len() => {
@@ -511,10 +536,15 @@ fn main() -> ExitCode {
     // Output written so far goes out before any error message.
     let flushed = out.flush();
 
+    // An output closed before the end ends the program as compiled code ends (1330).
+    let closed = || {
+        sg::signals::end_by_closed_output();
+        ExitCode::SUCCESS
+    };
     match result {
         Ok(()) => match flushed {
             Ok(()) => ExitCode::SUCCESS,
-            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => closed(),
             Err(error) => {
                 eprintln!("error: cannot write output: {error}");
                 ExitCode::FAILURE
@@ -529,15 +559,17 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
         Err(Stop::TestsFailed) => ExitCode::FAILURE,
-        // What was printed is out; an output that was closed meanwhile does not change the code.
+        // What was printed is out, or the output was closed meanwhile, which ends the program
+        // as it ends compiled code, whose writes go out at `exit`.
         Err(Stop::Exit(code)) => match flushed {
-            Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => {
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => closed(),
+            Err(error) => {
                 eprintln!("error: cannot write output: {error}");
                 ExitCode::FAILURE
             }
-            _ => ExitCode::from(code),
+            Ok(()) => ExitCode::from(code),
         },
-        Err(Stop::OutputClosed) => ExitCode::SUCCESS,
+        Err(Stop::OutputClosed) => closed(),
         Err(Stop::OutputFailed(error)) => {
             eprintln!("error: cannot write output: {error}");
             ExitCode::FAILURE

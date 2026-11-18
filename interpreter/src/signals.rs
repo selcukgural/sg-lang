@@ -164,6 +164,20 @@ pub fn raise_kind(kind: usize) {
     hand_on(&mut table());
 }
 
+/// The end of a program whose output was closed before it was through, as `head` closes it: by
+/// `SIGPIPE`, as compiled code ends, and C's and Go's programs (choice 1330). Rust starts the
+/// interpreter with that signal ignored, so its default is set back first. Returns only if the
+/// signal did not end the program.
+pub fn end_by_closed_output() {
+    const SIGPIPE: c_int = 13;
+    const SIG_DFL: usize = 0;
+    // SAFETY: the default of a signal nothing here listens for, and that signal to this thread.
+    unsafe {
+        signal(SIGPIPE, SIG_DFL);
+        raise(SIGPIPE);
+    }
+}
+
 pub fn number(kind: usize) -> i32 {
     NUMBERS[kind]
 }

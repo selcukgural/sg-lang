@@ -144,6 +144,10 @@ pub fn forget_waiter(id: u64) {
     }
 }
 
+/// The end of a program whose output was closed before it was through: Windows has no signal for
+/// it, so the program ends with 0, as compiled code does there (choice 1330).
+pub fn end_by_closed_output() {}
+
 /// The signal of the kind to this program: handed on here when someone listens; otherwise its
 /// default, the end of the program as Ctrl-C ends it, and nothing for `WindowChange`.
 pub fn raise_kind(kind: usize) {

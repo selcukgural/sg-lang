@@ -950,6 +950,16 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 It is a library with a thin command line on top, so that a language server can later reuse the parser and the
 checks.
 
+The command's exit codes, tested from outside in `tests/cli.rs` (1322):
+
+| Code | When |
+|---|---|
+| 0 | All went well: the program ended, every test passed, the build was made |
+| what `exit` gives | The program called `exit(code)`, a `byte` |
+| 1 | An error the checker or the C compiler finds, a panic, a failed test, a program that leaks or races |
+| 2 | A command line that is not one of the usages (a second program, a flag given twice, `-o` or `--target` with nothing after it, `-o` with `emit-c`), a folder of `-L` that is not there, a program that cannot be read (no such file, not UTF-8, a folder with no `.sg` file), an output into a folder that is not there |
+| `SIGPIPE` | On Linux and macOS, an output closed before the program was through (`sg x.sg \| head`), interpreted and compiled, as C's and Go's programs end (1330); on Windows that is 0 |
+
 Tests are golden files: every `.sg` file in `examples/` and `tests/cases/` is run and its output (what it
 printed, then the error or panic message) is compared with the `.out` file next to it. After an intended change,
 regenerate them with `UPDATE_GOLDEN=1 cargo test` and review the diff. What the program wrote to the standard
@@ -7812,6 +7822,64 @@ Approved on 18 November 2026:
      interpreted and compiled, and the zone of the machine, Istanbul's, takes the rules of each year (2010 in
      summer `+03:00`). `dates` takes 0.126 s against 0.425 s for C, as before.
 
+Choices made in the hundred-and-fifteenth slice (making it sturdier: a review of its safety, fuzzing, mutants,
+and tests of the `sg` command). 1318 to 1325 were put to the author before the slice and approved on 18
+November 2026:
+
+1318. **The order**: this slice writes the tests of the command (1322) while the review (1319) runs beside
+     it; the next one fuzzes (1323, 1324) and tries mutants (1325). What the review finds comes as choices of
+     their own.
+1319. **The review** is read-only, by four reviewers at once, each over one part: the soundness of the
+     checker (programs it takes whose C is undefined), the generated C and its runtime, the boundary of
+     `unsafe` and C, and the Rust side of the tool (its `unsafe`, signals, waits, and the files the command
+     writes). Rust has Miri, cargo-geiger and RustSec for this; Go has gosec.
+1320. **A finding counts only with a proof**: a program the checker takes, with a report of a sanitizer
+     (address, undefined behaviour, threads) on its C or an output that differs between the interpreter and
+     the compiled code, or a panic or crash of the tool. What could not be shown is listed apart and read,
+     not counted.
+1321. **Each finding is a choice**, with the fix put forward; once it is approved a test that shows it comes
+     first, then the fix. Its details are not written anywhere public before the fix is.
+1322. **Tests of the command** (`tests/cli.rs`): each command and flag on a way that works, what it writes
+     and where, and its exit code; and the ways it fails. The codes are written down below.
+1323. **Fuzzing the front end**: a crate of its own, `fuzz/` at the root, so `sg` keeps no dependencies,
+     with cargo-fuzz (libFuzzer, Rust nightly) in a Linux container: the lexer, the parser and the checker
+     never panic or hang on any input, starting from the programs of `tests/cases`.
+1324. **Fuzzing for differences**: a generator of our own, as Csmith is for C, of small programs that are
+     typed, end and have no undefined behaviour, its reach growing step by step; the interpreter's output
+     must be that of the compiled program under the address and undefined-behaviour sanitizers, a panic's
+     message and code with it. Runs of about two hours in a container.
+1325. **Mutants** (cargo-mutants, a tool installed, not a dependency) only of the functions that make the
+     rules of safety (moves, borrows, lifetimes, bounds in the checker; the checks of bounds and overflow the
+     C gets), named in a list, then `--in-diff`; each mutant runs the quick part of the golden tests. A mutant
+     that lives is a test that is missing.
+
+What writing the tests of the command found, from 1326. Approved on 18 November 2026:
+
+1326. **A second program, or a flag of `sg` given twice, is not a usage**: `sg build a.sg b.sg c.sg` built
+     `c.sg` (the third word took the place the second had emptied), and `sg test --compiled --compiled` looked
+     for a file named `--compiled`. Both now give the usage, code 2, as two programs already did; so do `-o`,
+     `--target`, `--release` and the kind of build (`--test`, `--library`, ...) given twice. rustc refuses `-o`
+     given twice; Go's flags keep the last.
+1327. **`-o` and `--target` with nothing after them are the usage**: `sg build a.sg -o` built `a`, and
+     `--target` at the end built for this machine, saying nothing.
+1328. **`emit-c` with `-o` is the usage**: the `-o` was passed over and the C went to the output. `> file`
+     writes it into a file; a second way to do that is left out.
+1329. **An output into a folder that is not there is told before the C compiler runs**: `-o /no/such/x` gave
+     the linker's message and then "this is a mistake in sg". Now `error: cannot write /no/such/x: there is no
+     folder /no/such`, code 2, as a program that cannot be read has: both are paths of the command line.
+1330. **An output closed early ends a program the same way interpreted and compiled**: on Linux and macOS a
+     compiled program is ended by `SIGPIPE`, as C and Go programs are (a shell shows 141, which `set -o
+     pipefail` sees), while the interpreter, which Rust starts with that signal ignored, ended with 0. The
+     interpreter now sets the signal back and raises it when its output is closed; on Windows, which has no
+     such signal, both end with 0. Nothing changes in compiled code.
+1331. **Documents and tests**: this list, the table of exit codes under "How it is built", "Next"; 04 (the row of
+     `print` and "The `sg` command, as built"), 06, the root README. `tests/cli.rs` has 10 tests: running a
+     program with its words and `-L`, the codes of a run, an output closed early (interpreted and compiled),
+     the test command interpreted and compiled, building a program, a library (static and shared) and an
+     object for a machine without a system, the command lines refused, an output into a folder that is not
+     there, and `emit-c`. `cargo test` passes on macOS and on Linux in a container (395 of 1639 programs compile
+     through C, 90 of them under the thread sanitizer); on Windows on Arm `tests/cli.rs` passes.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -8356,6 +8424,8 @@ place of a condition variable that is told by hand, `await lock ... when` in asy
 hundred-and-thirteenth is written: channels, `Channel<T>(n)` and the `Sender<T>`s it makes, which end for their
 receivers when the last sender ends, with no `close` to forget (1276-1299). The hundred-and-fourteenth is written:
 the local time zone, `DateTimeOffset` (`d.toLocal()`, `withOffset`, `DateTimeOffset.local`), and dates written
-and read in RFC 3339 (1300-1317). Next the hardening, before the preview: a review of the soundness of the
-checker, the boundary of `unsafe` and C, and the C runtime; fuzzing; mutants of the rules of safety; and the
-command line tested end to end.
+and read in RFC 3339 (1300-1317). The hundred-and-fifteenth begins the hardening, before the preview: the
+command line tested end to end, with its exit codes written down, and the few command lines it took that
+were not usages refused; an output closed early ends a program the same way interpreted and compiled
+(1318-1330); a review of the soundness of the checker, the boundary of `unsafe` and C, the C runtime and the
+tool runs beside it. Next fuzzing and mutants of the rules of safety (1323-1325).

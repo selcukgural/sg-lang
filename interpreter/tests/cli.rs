@@ -1,0 +1,354 @@
+//! The `sg` command from outside (choice 1322): each command and flag on a path that works, what
+//! it writes and where, and its exit code; and the ways it fails, each with its code. What the
+//! programs themselves do is tested in `golden.rs`; here only the command around them.
+//!
+//! The exit codes: 0 when all went well; what `exit` gives; 1 for an error the checker or the C
+//! compiler finds, a panic, or a failed test; 2 for a command line that is not one of the usages, a
+//! folder of `-L` that is not there, a program that cannot be read, and an output into a folder
+//! that is not there. An output closed before the end (`sg x.sg | head`) ends the program by
+//! `SIGPIPE` on Linux and macOS, with 0 on Windows.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+/// A folder of its own for each test, made new: the tests run at once.
+fn work(name: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("cli").join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+/// `sg` with these words, in `dir`.
+fn sg(dir: &Path, words: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_sg")).args(words).current_dir(dir).stdin(Stdio::null()).output().unwrap()
+}
+
+fn text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// The exit code, and what was written to the output and to standard error.
+fn ran(out: &Output) -> (i32, String, String) {
+    (out.status.code().unwrap_or(-1), text(&out.stdout), text(&out.stderr))
+}
+
+/// Whether there is a C compiler: the commands that compile are tried only then.
+fn has_compiler() -> bool {
+    let found = sg::cc::compiler().is_ok();
+    if !found {
+        eprintln!("no C compiler found: the commands that compile are not tested");
+    }
+    found
+}
+
+/// A program built in `dir`: on Windows with `.exe`.
+fn program(dir: &Path, stem: &str) -> PathBuf {
+    PathBuf::from(sg::cc::program_file(&dir.join(stem).to_string_lossy()))
+}
+
+const HELLO: &str = "void main() {\n    print(\"hello\")\n}\n";
+const WORDS: &str = "void main(List<string> args) {\n    for word in args {\n        print(word)\n    }\n}\n";
+const EXIT: &str = "void main() {\n    exit(7)\n}\n";
+const PANICS: &str = "void main() {\n    var xs = int[2](0)\n    var i = 5\n    print(xs[i])\n}\n";
+const WRONG: &str = "void main() {\n    print(nope)\n}\n";
+const TESTS: &str = "test \"adds\" {\n    assert(1 + 1 == 2)\n}\n\ntest \"multiplies\" {\n    assert(2 * 3 == 6)\n}\n";
+const FAILS: &str = "test \"adds\" {\n    assert(1 + 1 == 2)\n}\n\ntest \"is wrong\" {\n    assert(1 == 2)\n}\n";
+const LIBRARY: &str = "export int add(int a, int b) {\n    return a + b\n}\n";
+const MANY: &str = "void main() {\n    for i in 0..1000000 {\n        print(i)\n    }\n}\n";
+
+#[test]
+fn runs_a_program() {
+    let dir = work("runs_a_program");
+    write(&dir, "hello.sg", HELLO);
+    write(&dir, "words.sg", WORDS);
+    assert_eq!(ran(&sg(&dir, &["hello.sg"])), (0, "hello\n".into(), String::new()));
+    // The words after the program are its own, flags of `sg` among them.
+    assert_eq!(ran(&sg(&dir, &["words.sg", "one", "--release", "-L", "two words"])), (0, "one\n--release\n-L\ntwo words\n".into(), String::new()));
+    // `-L` before the program, as two words or one; the folder must be there.
+    std::fs::create_dir_all(dir.join("libs")).unwrap();
+    assert_eq!(ran(&sg(&dir, &["-L", "libs", "words.sg", "a"])), (0, "a\n".into(), String::new()));
+    assert_eq!(ran(&sg(&dir, &["-Llibs", "words.sg", "a"])), (0, "a\n".into(), String::new()));
+    // A folder is a program of every file in it.
+    let folder = dir.join("app");
+    std::fs::create_dir_all(&folder).unwrap();
+    write(&folder, "main.sg", HELLO);
+    assert_eq!(ran(&sg(&dir, &["app"])), (0, "hello\n".into(), String::new()));
+}
+
+#[test]
+fn exit_codes_of_a_run() {
+    let dir = work("exit_codes_of_a_run");
+    write(&dir, "exit.sg", EXIT);
+    write(&dir, "panics.sg", PANICS);
+    write(&dir, "wrong.sg", WRONG);
+    std::fs::write(dir.join("bytes.sg"), b"\xff\xfe").unwrap();
+    std::fs::create_dir_all(dir.join("empty")).unwrap();
+    assert_eq!(ran(&sg(&dir, &["exit.sg"])).0, 7);
+    let (code, out, err) = ran(&sg(&dir, &["panics.sg"]));
+    assert_eq!((code, out.as_str()), (1, ""));
+    assert!(err.starts_with("panic: index 5 is out of range: the length is 2\n  --> panics.sg:4:11"), "{err}");
+    let (code, _, err) = ran(&sg(&dir, &["wrong.sg"]));
+    assert_eq!(code, 1);
+    assert!(err.starts_with("error: there is no variable named `nope`\n  --> wrong.sg:2:11"), "{err}");
+    // A program that cannot be read, and a command line that is not one of the usages: 2.
+    let (code, _, err) = ran(&sg(&dir, &["missing.sg"]));
+    assert_eq!(code, 2);
+    assert!(err.starts_with("error: cannot read missing.sg"), "{err}");
+    let (code, _, err) = ran(&sg(&dir, &["bytes.sg"]));
+    assert_eq!(code, 2);
+    assert!(err.starts_with("error: cannot read bytes.sg") && err.contains("UTF-8"), "{err}");
+    assert_eq!(ran(&sg(&dir, &["empty"])), (2, String::new(), "error: there is no `.sg` file in empty\n".into()));
+    let (code, _, err) = ran(&sg(&dir, &[]));
+    assert_eq!(code, 2);
+    assert!(err.starts_with("usage: sg "), "{err}");
+    assert_eq!(ran(&sg(&dir, &["-L"])), (2, String::new(), "error: -L names a folder: `-L folder`\n".into()));
+    let (code, _, err) = ran(&sg(&dir, &["-L", "nowhere", "exit.sg"]));
+    assert_eq!(code, 2);
+    assert!(err.starts_with("error: -L nowhere"), "{err}");
+}
+
+/// An output closed before the program ends, as `head` closes it, ends it the same way interpreted
+/// and compiled (1330): by `SIGPIPE` on Linux and macOS, as C's and Go's programs end; with 0 on
+/// Windows, which has no such signal.
+#[test]
+fn an_output_closed_early() {
+    use std::io::BufRead;
+    let dir = work("an_output_closed_early");
+    write(&dir, "many.sg", MANY);
+    let mut ways = vec![(Command::new(env!("CARGO_BIN_EXE_sg")), "interpreted")];
+    ways[0].0.arg("many.sg");
+    if has_compiler() {
+        assert_eq!(sg(&dir, &["build", "many.sg"]).status.code(), Some(0));
+        ways.push((Command::new(program(&dir, "many")), "compiled"));
+    }
+    for (mut command, way) in ways {
+        let mut child = command.current_dir(&dir).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut first = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut first).unwrap();
+        assert_eq!(first, "0\n", "{way}");
+        let out = child.wait_with_output().unwrap();
+        assert_eq!((text(&out.stdout), text(&out.stderr)), (String::new(), String::new()), "{way}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!((out.status.code(), out.status.signal()), (None, Some(13)), "{way}");
+        }
+        #[cfg(windows)]
+        assert_eq!(out.status.code(), Some(0), "{way}");
+    }
+}
+
+#[test]
+fn runs_tests() {
+    let dir = work("runs_tests");
+    write(&dir, "tests.sg", TESTS);
+    write(&dir, "fails.sg", FAILS);
+    let (code, out, err) = ran(&sg(&dir, &["test", "tests.sg"]));
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert!(out.ends_with("2 test(s) passed\n"), "{out}");
+    // A failed test is told in the output, as the others are; the code is 1.
+    let (code, out, err) = ran(&sg(&dir, &["test", "fails.sg"]));
+    assert_eq!((code, err.as_str()), (1, ""));
+    assert!(out.contains("FAIL  is wrong") && out.ends_with("1 of 2 test(s) failed\n"), "{out}");
+    let (code, _, err) = ran(&sg(&dir, &["test", "tests.sg", "more"]));
+    assert_eq!(code, 2);
+    assert!(err.starts_with("usage: sg "), "{err}");
+    assert_eq!(ran(&sg(&dir, &["test"])).0, 2);
+    if !has_compiler() {
+        return;
+    }
+    // Compiled, `--compiled` before or after the path; the program it builds does not stay.
+    for words in [&["test", "--compiled", "tests.sg"][..], &["test", "tests.sg", "--compiled"][..]] {
+        let (code, out, err) = ran(&sg(&dir, words));
+        assert_eq!((code, err.as_str()), (0, ""), "{words:?}");
+        assert!(out.ends_with("2 test(s) passed\n"), "{out}");
+    }
+    let (code, out, _) = ran(&sg(&dir, &["test", "--compiled", "fails.sg"]));
+    assert_eq!(code, 1);
+    assert!(out.ends_with("1 of 2 test(s) failed\n"), "{out}");
+    let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    left.sort();
+    assert_eq!(left, ["fails.sg", "tests.sg"]);
+}
+
+#[test]
+fn builds_a_program() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("builds_a_program");
+    write(&dir, "hello.sg", HELLO);
+    write(&dir, "panics.sg", PANICS);
+    write(&dir, "wrong.sg", WRONG);
+    write(&dir, "tests.sg", TESTS);
+    // Named after the file without `-o`, says nothing when it is built.
+    assert_eq!(ran(&sg(&dir, &["build", "hello.sg"])), (0, String::new(), String::new()));
+    let built = Command::new(program(&dir, "hello")).output().unwrap();
+    assert_eq!(ran(&built), (0, "hello\n".into(), String::new()));
+    // `-o` and `--release`, in any order.
+    assert_eq!(ran(&sg(&dir, &["build", "--release", "hello.sg", "-o", "fast"])).0, 0);
+    assert_eq!(ran(&Command::new(program(&dir, "fast")).output().unwrap()).1, "hello\n");
+    // A panic of compiled code is the interpreter's, with the same code.
+    assert_eq!(ran(&sg(&dir, &["build", "panics.sg"])).0, 0);
+    let (code, _, err) = ran(&Command::new(program(&dir, "panics")).output().unwrap());
+    assert_eq!(code, 1);
+    assert!(err.starts_with("panic: index 5 is out of range: the length is 2"), "{err}");
+    // An error of the program: 1, and nothing is written.
+    let (code, _, err) = ran(&sg(&dir, &["build", "wrong.sg"]));
+    assert_eq!(code, 1);
+    assert!(err.starts_with("error: there is no variable named `nope`"), "{err}");
+    assert!(!program(&dir, "wrong").exists());
+    // `--test`: the program that runs the tests.
+    assert_eq!(ran(&sg(&dir, &["build", "tests.sg", "--test", "-o", "check"])).0, 0);
+    let (code, out, _) = ran(&Command::new(program(&dir, "check")).output().unwrap());
+    assert_eq!(code, 0);
+    assert!(out.ends_with("2 test(s) passed\n"), "{out}");
+    let (code, _, err) = ran(&sg(&dir, &["build", "missing.sg"]));
+    assert_eq!(code, 2);
+    assert!(err.starts_with("error: cannot read missing.sg"), "{err}");
+}
+
+#[test]
+fn builds_a_library() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("builds_a_library");
+    write(&dir, "calc.sg", LIBRARY);
+    write(&dir, "hello.sg", HELLO);
+    let (static_name, shared_name) = if cfg!(windows) {
+        ("calc.lib", "calc.dll")
+    } else if cfg!(target_os = "macos") {
+        ("libcalc.a", "libcalc.dylib")
+    } else {
+        ("libcalc.a", "libcalc.so")
+    };
+    // Each says what it built and how a program links it, and writes the header beside it.
+    let (code, out, err) = ran(&sg(&dir, &["build", "calc.sg", "--library"]));
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert!(out.starts_with(&format!("built {static_name} and calc.h; a program links it with `")), "{out}");
+    assert!(dir.join(static_name).exists() && dir.join("calc.h").exists());
+    let header = std::fs::read_to_string(dir.join("calc.h")).unwrap();
+    assert!(header.contains("add("), "{header}");
+    std::fs::remove_file(dir.join("calc.h")).unwrap();
+    let (code, out, err) = ran(&sg(&dir, &["build", "calc.sg", "--shared"]));
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert!(out.starts_with(&format!("built {shared_name}")), "{out}");
+    assert!(dir.join(shared_name).exists() && dir.join("calc.h").exists());
+    // A library has no `main`.
+    let (code, _, err) = ran(&sg(&dir, &["build", "hello.sg", "--library"]));
+    assert_eq!(code, 1);
+    assert!(err.starts_with("error: a library has no `main`"), "{err}");
+}
+
+#[test]
+fn builds_for_a_machine_without_a_system() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("builds_for_a_machine_without_a_system");
+    write(&dir, "board.sg", "export long start() {\n    return 42\n}\n\nvoid onPanic(read string message) {\n}\n");
+    write(&dir, "hello.sg", HELLO);
+    let (code, out, err) = ran(&sg(&dir, &["build", "board.sg", "--freestanding"]));
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert!(out.starts_with("built board.o for a machine without an operating system"), "{out}");
+    assert!(dir.join("board.o").exists());
+    // Flags after `--` go to the C compiler as they are.
+    assert_eq!(ran(&sg(&dir, &["build", "board.sg", "--freestanding", "-o", "small.o", "--", "-Os"])).0, 0);
+    assert!(dir.join("small.o").exists());
+    let (code, _, err) = ran(&sg(&dir, &["build", "hello.sg", "--freestanding"]));
+    assert_eq!(code, 1);
+    assert!(err.starts_with("error: a program without an operating system has no `main`"), "{err}");
+}
+
+/// Command lines that are not one of the usages: 2, with the usage, and nothing built.
+#[test]
+fn refuses_what_is_not_a_usage() {
+    let dir = work("refuses_what_is_not_a_usage");
+    write(&dir, "hello.sg", HELLO);
+    let refused: &[&[&str]] = &[
+        &["build"],
+        &["build", "hello.sg", "--test", "--library"],
+        &["build", "hello.sg", "--shared", "--freestanding"],
+        &["build", "hello.sg", "--target", "riscv32-unknown-none-elf"],
+        &["build", "hello.sg", "--", "-Os"],
+        &["build", "hello.sg", "--relase"],
+        &["build", "hello.sg", "other.sg"],
+        // A third program, and a flag twice (1326).
+        &["build", "hello.sg", "other.sg", "third.sg"],
+        &["build", "hello.sg", "-o", "a", "-o", "b"],
+        &["build", "hello.sg", "--release", "--release"],
+        &["build", "hello.sg", "--test", "--test"],
+        &["build", "hello.sg", "--freestanding", "--target", "a", "--target", "b"],
+        &["test", "--compiled", "--compiled"],
+        &["test", "--compiled", "hello.sg", "--compiled"],
+        // A flag with nothing after it (1327).
+        &["build", "hello.sg", "-o"],
+        &["build", "hello.sg", "--target"],
+        &["build", "hello.sg", "--freestanding", "--target"],
+        // `-o` is not `emit-c`'s (1328).
+        &["emit-c", "hello.sg", "-o", "hello.c"],
+        &["emit-c"],
+        &["test", "--compiled"],
+    ];
+    for words in refused {
+        let (code, out, err) = ran(&sg(&dir, words));
+        assert_eq!((code, out.as_str()), (2, ""), "{words:?}: {err}");
+        assert!(err.starts_with("usage: sg "), "{words:?}: {err}");
+    }
+    let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    left.sort();
+    assert_eq!(left, ["hello.sg"]);
+}
+
+/// An output into a folder that is not there is told before anything is compiled, as a program
+/// that cannot be read is: 2 (1329).
+#[test]
+fn refuses_an_output_folder_that_is_not_there() {
+    let dir = work("refuses_an_output_folder_that_is_not_there");
+    write(&dir, "hello.sg", HELLO);
+    write(&dir, "calc.sg", LIBRARY);
+    write(&dir, "file", "");
+    let nowhere = Path::new("nowhere").join("hello").display().to_string();
+    let in_a_file = Path::new("file").join("hello").display().to_string();
+    for (words, folder) in [
+        (vec!["build", "hello.sg", "-o", &nowhere], "nowhere"),
+        (vec!["build", "hello.sg", "-o", &in_a_file], "file"),
+        (vec!["build", "calc.sg", "--library", "-o", &nowhere], "nowhere"),
+        (vec!["build", "hello.sg", "--test", "-o", &nowhere], "nowhere"),
+    ] {
+        let target = words.last().unwrap().to_string();
+        assert_eq!(ran(&sg(&dir, &words)), (2, String::new(), format!("error: cannot write {target}: there is no folder {folder}\n")), "{words:?}");
+    }
+    let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    left.sort();
+    assert_eq!(left, ["calc.sg", "file", "hello.sg"]);
+}
+
+#[test]
+fn emits_c() {
+    let dir = work("emits_c");
+    write(&dir, "hello.sg", HELLO);
+    write(&dir, "wrong.sg", WRONG);
+    write(&dir, "tests.sg", TESTS);
+    write(&dir, "calc.sg", LIBRARY);
+    // The C goes to the output, and nothing is written.
+    for words in [&["emit-c", "hello.sg"][..], &["emit-c", "hello.sg", "--release"][..], &["emit-c", "tests.sg", "--test"][..], &["emit-c", "calc.sg", "--library"][..]] {
+        let (code, out, err) = ran(&sg(&dir, words));
+        assert_eq!((code, err.as_str()), (0, ""), "{words:?}");
+        assert!(out.starts_with('#') && out.contains("#include"), "{words:?}");
+    }
+    let (code, out, err) = ran(&sg(&dir, &["emit-c", "wrong.sg"]));
+    assert_eq!((code, out.as_str()), (1, ""));
+    assert!(err.starts_with("error: there is no variable named `nope`"), "{err}");
+    let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    left.sort();
+    assert_eq!(left, ["calc.sg", "hello.sg", "tests.sg", "wrong.sg"]);
+}
