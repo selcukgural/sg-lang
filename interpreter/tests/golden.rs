@@ -623,9 +623,10 @@ fn compiled() {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         // Deep recursion is caught by the interpreter's own count of calls; compiled code has
         // no such count yet (the stack depth question of the design is open).
-        // So is a value nested too deep for the interpreter's stack, and an array too big for
-        // the memory: compiled code makes it on the stack, which ends at its guard page.
-        if matches!(name.as_str(), "panic_stack_overflow.sg" | "panic_deep_value_written.sg" | "panic_array_no_memory.sg") {
+        // So is a value nested too deep for the interpreter's stack: compiled code makes it on
+        // the stack, which ends at its guard page. (An array too big for the memory, of
+        // `panic_array_no_memory`, is refused by `sg build`: no stack holds it, choice 1346.)
+        if matches!(name.as_str(), "panic_stack_overflow.sg" | "panic_deep_value_written.sg") {
             continue;
         }
         // Tasks that wait on channels for each other: the interpreter stops with a panic, and

@@ -8055,6 +8055,16 @@ Each is written here with its fix, and each fix came after a test that showed th
      touch per page in those functions only; the others are as they were. Rust's stack probes do the same
      on every machine.
 
+1346. **A frame no stack holds is an error of `sg build`**, found when 1338 ran on Windows on Arm: there the C
+     compiler fails (*Stack size cannot exceed 256MB*) on a function whose frame passes 256 MB, such as the
+     `byte[1000000000000000]` of `panic_array_no_memory`, and `sg build` called that a mistake of its own.
+     Such a function could run nowhere, since a thread of SG has 8 MB of stack. Now a function whose values
+     may take more than 256 MB of its stack, counted as 1345 counts them, is an error on every machine, at its
+     name, with the hint of a `List<T>`; the interpreter, which keeps them on its heap, is as it was. Rust and
+     C build it and it ends at the guard page when it runs; Go moves a large value to the heap itself. Tested
+     in `tests/cli.rs` (`refuses_a_frame_no_stack_holds`: two arrays of 150 MB are refused together, one of
+     100 MB is built); on Windows on Arm `needs_nothing_of_128_bits`, which failed there, passes again.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -8621,6 +8631,7 @@ included, and faster (1336); eight faults of the tool itself, where a program ma
 stack or wait, are errors or panics of the program (1337); what had no bound has one, said where it is met:
 a value takes at most 2^61 - 1 bytes, a program nests at most 1000 deep, a const stops growing at 64 MB, a
 value nested too deep for the interpreter's stack is a panic, and a large frame is touched page by page
-before it is used, so a function never runs past its stack into another thread's (1338, 1341-1345). The
-paths and the linker (1339) come next. The next two
+before it is used, so a function never runs past its stack into another thread's (1338, 1341-1345), and a
+function whose frame no stack holds is an error of `sg build` (1346). The paths and the linker (1339) come
+next. The next two
 fix the rules of borrowing; then fuzzing and mutants of the rules of safety (1323-1325).

@@ -1,5 +1,5 @@
 // An array the checker allows may still be more than the memory holds: a panic, not a fault
-// of the interpreter. (Compiled code makes it on the stack, which ends at its guard page.)
+// of the interpreter. (`sg build` refuses it: no thread's stack holds it, choice 1346.)
 void main() {
     var data = byte[1000000000000000]
     print(data[0])

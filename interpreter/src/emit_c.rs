@@ -11320,6 +11320,10 @@ struct NamedLoop {
 /// `sg_probe_stack`: the smallest page a system leaves free below a stack.
 const PROBE_FROM: u64 = 4096;
 
+/// The most bytes the values of a function may take of its stack in compiled code: what Windows
+/// on Arm unwinds (LLVM refuses a larger frame there); no stack of SG's holds more (choice 1346).
+const FRAME_LIMIT: u64 = 256 << 20;
+
 /// What `sg_probe_stack` touches beyond the values counted: what C keeps on the stack besides
 /// them (saved registers, the arguments of calls, values it spills).
 const PROBE_SPARE: u64 = 64 << 10;
@@ -13937,6 +13941,13 @@ impl<'a> Emitter<'a> {
         self.at = false;
         self.declare_guards(&mut text);
         text.push_str(&body);
+        // A frame that no thread's stack holds is an error on every machine (choice 1346): it
+        // could not run, and Windows on Arm builds none above 256 MB.
+        if self.frame > FRAME_LIMIT {
+            return Err(Diag::error(func.name_span, format!("the values of `{}` may take more than 256 MB of its stack", func.name))
+                .note("its parameters, its variables and the values it makes are counted; a thread of SG has 8 MB of stack, and the C compiler of Windows on Arm builds no function whose frame passes 256 MB")
+                .hint("a `List<T>` keeps its items on the heap, as many as the memory holds"));
+        }
         // A frame that may be larger than a page is made after the stack below was touched
         // (see `sg_probe_stack`): the function is the body, called through a small one.
         if self.frame >= PROBE_FROM {

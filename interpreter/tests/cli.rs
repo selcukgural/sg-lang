@@ -404,3 +404,23 @@ fn keeps_its_temporary_files_to_itself() {
         }
     }
 }
+
+/// A function whose values no thread's stack holds is refused by `sg build` on every machine
+/// (choice 1346): it could not run, and the C compiler of Windows on Arm fails on a frame above
+/// 256 MB. Two variables that each fit count together; the interpreter keeps them on its heap.
+#[test]
+fn refuses_a_frame_no_stack_holds() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("refuses_a_frame_no_stack_holds");
+    write(&dir, "big.sg", "void main() {\n    var first = byte[150000000]\n    var second = byte[150000000]\n    print(first[0] + second[0])\n}\n");
+    let (code, out, err) = ran(&sg(&dir, &["build", "big.sg"]));
+    assert_eq!((code, out.as_str()), (1, ""), "{err}");
+    assert!(err.starts_with("error: the values of `main` may take more than 256 MB of its stack"), "{err}");
+    assert!(!program(&dir, "big").exists());
+    // Under the bound it is built.
+    write(&dir, "fits.sg", "void main() {\n    var data = byte[100000000]\n    print(data[0])\n}\n");
+    let (code, _, err) = ran(&sg(&dir, &["build", "fits.sg"]));
+    assert_eq!((code, err.as_str()), (0, ""));
+}
