@@ -1517,52 +1517,24 @@ fn shutdown_on_signals() {
 }
 
 /// `examples/shutdown` on Windows, interpreted and compiled, sent Ctrl-C and Ctrl-Break as a
-/// console sends them, and its console closed (choice 1046). The server runs with a console of its
-/// own; a small program of C attaches to that console and raises the event there, or closes its
-/// window, so the tests do not lose their own console. A closed console is `Terminate`.
+/// console sends them, and its console closed (choice 1046). A small program of C, `tests/sender.c`,
+/// attaches to the server's console and raises the event there, so the tests do not lose their
+/// own console; for a closed console it runs the server in a pseudo console of its own and closes
+/// that, as Windows Terminal closes a tab. A closed console is `Terminate`.
 #[cfg(windows)]
 fn shutdown_on_signals_windows() {
     use std::io::{BufRead, Read, Write};
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
     const CTRL_C: &str = "0";
     const CTRL_BREAK: &str = "1";
-    const CLOSE: &str = "close";
-    // Asked to close a console, it also says which programs the console has and what its window
-    // is, for the message of a server that did not end.
-    const SENDER: &str = "#include <windows.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\
-        static BOOL WINAPI kept(DWORD event) { (void)event; return TRUE; }\n\
-        int main(int argc, char** argv) {\n\
-            if (argc != 3) return 2;\n\
-            FreeConsole();\n\
-            if (!AttachConsole((DWORD)atoi(argv[1]))) return 3;\n\
-            SetConsoleCtrlHandler(kept, TRUE);\n\
-            if (strcmp(argv[2], \"close\") == 0) {\n\
-                HWND window = GetConsoleWindow();\n\
-                DWORD ids[64];\n\
-                DWORD count = GetConsoleProcessList(ids, 64);\n\
-                char kind[128] = \"\";\n\
-                if (window) GetClassNameA(window, kind, sizeof kind);\n\
-                DWORD owner = 0;\n\
-                if (window) GetWindowThreadProcessId(window, &owner);\n\
-                printf(\"window %p of class '%s', of process %lu, visible %d, hung %d; programs of the console:\", (void*)window, kind, (unsigned long)owner, window ? IsWindowVisible(window) : -1, window ? IsHungAppWindow(window) : -1);\n\
-                for (DWORD i = 0; i < count && i < 64; i++) printf(\" %lu\", (unsigned long)ids[i]);\n\
-                printf(\"\\n\");\n\
-                fflush(stdout);\n\
-                FreeConsole();\n\
-                return window && PostMessageA(window, WM_CLOSE, 0, 0) ? 0 : 5;\n\
-            }\n\
-            return GenerateConsoleCtrlEvent((DWORD)atoi(argv[2]), 0) ? 0 : 4;\n\
-        }\n";
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let example = root.join("examples/shutdown");
     let work = root.join("target").join("shutdown");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).unwrap();
-    std::fs::write(work.join("sender.c"), SENDER).unwrap();
     let sender = program_at(&work, "sender");
-    let cc = c_command().arg("-o").arg(&sender).arg(work.join("sender.c")).args(system_libs(&work)).arg("-luser32").output().unwrap();
+    let cc = c_command().arg("-o").arg(&sender).arg(root.join("tests/sender.c")).args(system_libs(&work)).output().unwrap();
     assert!(cc.status.success(), "the C compiler rejected the sender:\n{}", String::from_utf8_lossy(&cc.stderr));
     let binary = program_at(&work, "shutdown");
     let built = std::process::Command::new(env!("CARGO_BIN_EXE_sg")).arg("build").arg(example.join("main.sg")).arg("-o").arg(&binary).output().unwrap();
@@ -1570,23 +1542,26 @@ fn shutdown_on_signals_windows() {
     let ways: Vec<(&str, Vec<std::ffi::OsString>)> = vec![("interpreted", vec![env!("CARGO_BIN_EXE_sg").into(), example.join("main.sg").into()]), ("compiled", vec![binary.into()])];
     for (way, command) in &ways {
         for scenario in ["idle", "one open", "cut", "closed"] {
-            // A console closed is one with a window to close.
-            let mut child = std::process::Command::new(&command[0])
-                .args(&command[1..])
-                .arg("127.0.0.1:0")
-                .creation_flags(if scenario == "closed" { CREATE_NEW_CONSOLE } else { CREATE_NO_WINDOW })
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .unwrap();
-            let pid = child.id().to_string();
-            let told = std::cell::RefCell::new(String::new());
-            let send = |event: &str| {
-                let sent = std::process::Command::new(&sender).args([&pid[..], event]).creation_flags(CREATE_NO_WINDOW).output().unwrap();
-                told.borrow_mut().push_str(&String::from_utf8_lossy(&sent.stdout));
-                assert!(sent.status.success(), "{way}, {scenario}: the event could not be raised ({})", sent.status);
+            // A console closed is a pseudo console the sender makes: the server's first line is the
+            // sender's, with the server's number.
+            let mut server = if scenario == "closed" {
+                let mut line = std::ffi::OsString::new();
+                for part in command {
+                    line.push("\"");
+                    line.push(part);
+                    line.push("\" ");
+                }
+                line.push("127.0.0.1:0");
+                let mut pty = std::process::Command::new(&sender);
+                pty.arg("pty").arg(line).stdin(std::process::Stdio::piped());
+                pty
+            } else {
+                let mut server = std::process::Command::new(&command[0]);
+                server.args(&command[1..]).arg("127.0.0.1:0").stdin(std::process::Stdio::null());
+                server
             };
+            let mut child = server.creation_flags(CREATE_NO_WINDOW).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+            let mut pid = child.id().to_string();
             let (lines, heard) = std::sync::mpsc::channel();
             let stdout = child.stdout.take().unwrap();
             std::thread::spawn(move || {
@@ -1597,9 +1572,18 @@ fn shutdown_on_signals_windows() {
                 }
             });
             let next = || heard.recv_timeout(std::time::Duration::from_secs(20)).unwrap_or_else(|_| panic!("{way}, {scenario}: the server said nothing more"));
-            let first = next();
+            let mut first = next();
+            if scenario == "closed" {
+                pid = first.strip_prefix("server ").unwrap_or_else(|| panic!("{way}, {scenario}: {first}")).to_string();
+                first = next();
+            }
             let port: u16 = first.strip_prefix("listening on port ").and_then(|port| port.parse().ok()).unwrap_or_else(|| panic!("{way}, {scenario}: {first}"));
             let mut said = vec![first];
+            let pid = pid;
+            let send = |event: &str| {
+                let sent = std::process::Command::new(&sender).args([&pid[..], event]).creation_flags(CREATE_NO_WINDOW).status().unwrap();
+                assert!(sent.success(), "{way}, {scenario}: the event could not be raised ({sent})");
+            };
             let talk = |conn: &mut std::net::TcpStream, text: &str| {
                 conn.write_all(text.as_bytes()).unwrap();
                 let mut back = vec![0u8; text.len()];
@@ -1608,7 +1592,7 @@ fn shutdown_on_signals_windows() {
             };
             match scenario {
                 "idle" => send(CTRL_C),
-                "closed" => send(CLOSE),
+                "closed" => child.stdin.take().unwrap().write_all(b"close\n").unwrap(),
                 "one open" => {
                     let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
                     talk(&mut conn, "hello");
@@ -1639,7 +1623,7 @@ fn shutdown_on_signals_windows() {
                 if waited == 300 {
                     let loaded = std::process::Command::new("tasklist").args(["/m", "/fi", &format!("PID eq {pid}")]).output().map(|out| String::from_utf8_lossy(&out.stdout).into_owned()).unwrap_or_default();
                     let _ = child.kill();
-                    panic!("{way}, {scenario}: the server did not end; it said {said:?}; the sender said: {}; it had loaded:\n{loaded}", told.borrow());
+                    panic!("{way}, {scenario}: the server did not end; it said {said:?}; it had loaded:\n{loaded}");
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 waited += 1;

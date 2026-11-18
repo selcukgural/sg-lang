@@ -6919,10 +6919,15 @@ approved on 17 November 2026:
      folder and `\folder` not looked in, a quoted folder with `;` looked in, `.exe` added, a batch file with
      `%PATH%`, quotes and an empty word, one named without its extension not found, a line break refused, a
      code `0xC0000005` in hex), interpreted and compiled; `shutdown_on_signals` on Windows: the server runs
-     with a console of its own, and a small program of C attaches to it and raises Ctrl-C (twice
-     Ctrl-Break to cut a connection) or closes its window, interpreted and compiled: a closed console is
-     `Terminate`, and the server ends cleanly with 0 within the time Windows gives. The close was put to
-     be tried by hand; it runs in the harness instead. On the machine the tests ran over `ssh`, whose
+     with a console of its own, and a small program of C (`tests/sender.c`) attaches to it and raises
+     Ctrl-C (twice Ctrl-Break to cut a connection), interpreted and compiled; for a closed console it
+     runs the server in a pseudo console of its own and closes that, as Windows Terminal closes a tab: a
+     closed console is `Terminate`, and the server ends cleanly with 0 within the time Windows gives.
+     The close was put to be tried by hand; it runs in the harness instead. It first posted `WM_CLOSE`
+     to the window of a console made with `CREATE_NEW_CONSOLE`, which on GitHub's machine of x86-64 is
+     only a stand-in (`PseudoConsoleWindow`, the console going to a terminal of its own) that closes
+     nothing; a pseudo console is closed the same way on every machine, with the same
+     `CTRL_CLOSE_EVENT` (18 November 2026). On the machine the tests ran over `ssh`, whose
      programs start with Ctrl-C ignored, which Windows hands on: a listener of `Interrupt` turns that off
      (`SetConsoleCtrlHandler(NULL, FALSE)`), as a listener on Linux and macOS takes the place of an
      ignored signal. Unlike there, the ignoring does not come back when the last listener ends: Windows
@@ -7962,13 +7967,11 @@ check off.
 - **Of Windows**, after its six slices: no thread sanitizer there (1011), and a library built from SG is not run
   under the sanitizers there (1062). Job objects, so that a program started ends with the one that started
   it (934), and services of Windows (933). A DLL a DLL of `-L` needs and that lies elsewhere is not copied
-  beside the program (1054). On GitHub's machine of x86-64 the interpreter has not ended when its console
-  was closed (`shutdown_on_signals`), where compiled code and both on 64-bit Arm do, and the interpreter
-  built for x86-64 does on 64-bit Arm: why is not known yet, and the test now says what the interpreter had
-  loaded, what the console's window is and which programs the console has. On the same machine the test
-  of `examples/curl` that a server which does not answer is a timeout got the connection reset once, in
-  its first run there; whether it comes again is watched. Windows on x86-64 is not measured against C
-  (1076).
+  beside the program (1054). Windows on x86-64 is not measured against C (1076). (Two tests were red on
+  GitHub's machines until 18 November 2026, both from the tests, not from SG: `shutdown_on_signals` closed
+  a console through a window that is only a stand-in there (1046 says how it closes one now), and the
+  server of `examples/curl`'s tests, by all that was seen, ended at a reset from a client that gave up,
+  which took the next request down with its listener; a reset there now ends only that connection.)
 - **Of datagrams**: multicast, sending to every host of a network (broadcast), the options of a socket (the
   time to live, the size of its buffers), a look at a datagram that leaves it in the socket (`peek`), and the
   zone of a v6 address (`fe80::1%en0`), so a link-local address cannot be answered (648).

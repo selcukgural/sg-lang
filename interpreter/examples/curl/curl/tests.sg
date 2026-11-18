@@ -64,7 +64,10 @@ Result<bool, IoError> handle(ref TcpStream conn) {
     var got = try reader.readBytes(ref buffer[0..length])
     var body = (string.fromUtf8(buffer[0..got]) ?? "").clone()
     if path == "/slow" {
-        while try reader.readLine(ref line) {
+        // Read until the client gives up. Its close may come as a reset (on Windows), which ends
+        // this connection, not the server: a server ended here would take the next request down
+        // with its listener.
+        while reader.readLine(ref line) is Ok(true) {
         }
     } else if path == "/long" {
         _ = conn.send("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".asBytes())
