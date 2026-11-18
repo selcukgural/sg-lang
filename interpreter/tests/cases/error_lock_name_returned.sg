@@ -1,0 +1,14 @@
+// Nor can a function return it: the lock is let go when the block ends.
+read string peek(read shared locked string cell) {
+    lock cell as c {
+        return c
+    }
+}
+void main() {
+    var cell = new shared locked "a long text that lives on the heap".clone()
+    var r = peek(read cell)
+    lock cell as c {
+        c = "a brand new long text that lives on the heap".clone()
+    }
+    print(r)
+}

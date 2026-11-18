@@ -1,0 +1,13 @@
+// A borrow taken at the end of a round is held when the next round starts.
+void main() {
+    var text = "first text that is long enough for the heap".clone()
+    var other = "other".clone()
+    var r = read other
+    var i = 0
+    while i < 3 {
+        text = "a new text that is long enough for the heap".clone()
+        print(r)
+        r = read text
+        i += 1
+    }
+}

@@ -1,0 +1,9 @@
+error: `a` cannot be changed here: `w` borrows from it and is used again later
+  --> error_branch_carrier_joined.sg:12:5
+ 12 |     a = "changed".clone()
+    |     ^
+  `w` borrowed it here:
+  --> error_branch_carrier_joined.sg:8:27
+ 8 |     var w = Word { text = read a }
+   |                           ^^^^^^
+  hint: finish with `w` before this line: a borrow ends at its last use

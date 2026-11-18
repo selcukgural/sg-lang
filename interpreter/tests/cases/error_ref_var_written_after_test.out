@@ -1,0 +1,9 @@
+error: `n` cannot be used here: `r` holds a `ref` borrow of it and is used again later
+  --> error_ref_var_written_after_test.sg:9:8
+ 9 |     if n is not null {
+   |        ^
+  `r` borrowed it here:
+  --> error_ref_var_written_after_test.sg:8:13
+ 8 |     var r = ref n
+   |             ^^^^^
+  hint: finish with `r` before this line: a borrow ends at its last use

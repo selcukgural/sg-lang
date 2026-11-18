@@ -1,0 +1,9 @@
+error: `xs[0]` cannot be used here: `x` holds a `ref` borrow of it and is used again later
+  --> error_for_ref_item_list_read.sg:5:26
+ 5 |         var first = read xs[0]
+   |                          ^^^^^
+  `x` borrowed it here:
+  --> error_for_ref_item_list_read.sg:4:14
+ 4 |     for x in ref xs {
+   |              ^^^^^^
+  hint: finish with `x` before this line: a borrow ends at its last use

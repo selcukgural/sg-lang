@@ -1,0 +1,6 @@
+error: this returns a borrow of what `c` opened, and `c` is closed at the end of its block
+  what `c` opens is lent for the block only: after it another task, or another owner, may change it
+  --> error_lock_name_returned.sg:4:16
+ 4 |         return c
+   |                ^
+  hint: return a copy: `.clone()`

@@ -1,0 +1,9 @@
+error: `xs` cannot be changed here: `r` borrows from it and is used again later
+  --> error_for_item_kept_after_loop.sg:9:5
+ 9 |     xs.clear()
+   |     ^^
+  `r` borrowed it here:
+  --> error_for_item_kept_after_loop.sg:6:14
+ 6 |     for x in read xs {
+   |              ^^^^^^^
+  hint: finish with `r` before this line: a borrow ends at its last use

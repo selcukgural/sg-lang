@@ -1,0 +1,15 @@
+// A name of `read ... as` lends a `shared checked` value for the block only: another owner may change it after.
+struct Counter {
+    string name
+}
+void main() {
+    var a = new shared checked Counter { name = "a long text that lives on the heap, number one".clone() }
+    var b = share a
+    var other = "other".clone()
+    var r = read other
+    read a as c {
+        r = read c.name
+    }
+    b.name = "changed to a new long text on the heap".clone()
+    print(r)
+}

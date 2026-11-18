@@ -1,0 +1,9 @@
+// A `ref` item holds a `ref` borrow of the list: the list is not read again while the item is used.
+void main() {
+    var xs = List<string> { "first long text that lives on the heap".clone(), "b".clone() }
+    for x in ref xs {
+        var first = read xs[0]
+        x = "changed to another long text on the heap".clone()
+        print(first)
+    }
+}

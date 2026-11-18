@@ -1,0 +1,12 @@
+// The items of a list with no name are gone when the loop ends, and a variable outside cannot keep one.
+List<string> make() {
+    return List<string> { "first long text that lives on the heap".clone() }
+}
+void main() {
+    var other = "other".clone()
+    var r = read other
+    for x in read make() {
+        r = read x
+    }
+    print(r)
+}

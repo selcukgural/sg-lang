@@ -1,0 +1,9 @@
+error: `a` cannot be changed here: `r` borrows from it and is used again later
+  --> error_branch_borrows_joined.sg:9:5
+ 9 |     a = "changed".clone()
+   |     ^
+  `r` borrowed it here:
+  --> error_branch_borrows_joined.sg:5:13
+ 5 |     var r = read a
+   |             ^^^^^^
+  hint: finish with `r` before this line: a borrow ends at its last use

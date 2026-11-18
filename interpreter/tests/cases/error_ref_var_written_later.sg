@@ -1,0 +1,8 @@
+// Writing through a `ref` variable uses its borrow, so the place is not lent to another meanwhile.
+void main() {
+    var s = "a long text that lives on the heap one".clone()
+    var r = ref s
+    var v = read s
+    r = "a new long text that lives on the heap two".clone()
+    print(v)
+}

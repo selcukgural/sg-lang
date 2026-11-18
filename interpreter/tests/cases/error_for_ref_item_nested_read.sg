@@ -1,0 +1,13 @@
+// A loop that reads the list inside a loop that lends its items as `ref`.
+void swapish(ref string a, read string b) {
+    a = "a brand new long text that lives on the heap".clone()
+    print(b)
+}
+void main() {
+    var xs = List<string> { "first long text that lives on the heap".clone() }
+    for x in ref xs {
+        for y in read xs {
+            swapish(ref x, read y)
+        }
+    }
+}

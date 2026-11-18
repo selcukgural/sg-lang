@@ -1,0 +1,9 @@
+error: this returns a borrow of `local`, and `local` is gone when the function returns
+  --> error_for_item_returned.sg:5:16
+ 5 |         return x
+   |                ^
+  it is borrowed here:
+  --> error_for_item_returned.sg:4:14
+ 4 |     for x in read local {
+   |              ^^^^^^^^^^
+  hint: return the value itself instead of a borrow of it

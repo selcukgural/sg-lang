@@ -1,0 +1,14 @@
+// What a `lock` opens is used inside the block, and a copy of it may be kept after.
+void main() {
+    var cell = new shared locked "first".clone()
+    var kept = "none".clone()
+    lock cell as c {
+        kept = c.clone()
+        var look = read c
+        print(look)
+    }
+    lock cell as c {
+        c = "second".clone()
+    }
+    print(kept)
+}

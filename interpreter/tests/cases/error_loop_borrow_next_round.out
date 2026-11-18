@@ -1,0 +1,10 @@
+error: `text` cannot be changed here: `r` borrows from it and is used again later
+  the loop comes round again, and `r` still holds the borrow of the round before
+  --> error_loop_borrow_next_round.sg:8:9
+ 8 |         text = "a new text that is long enough for the heap".clone()
+   |         ^^^^
+  `r` borrowed it here:
+  --> error_loop_borrow_next_round.sg:10:13
+ 10 |         r = read text
+    |             ^^^^^^^^^
+  hint: finish with `r` before this line: a borrow ends at its last use

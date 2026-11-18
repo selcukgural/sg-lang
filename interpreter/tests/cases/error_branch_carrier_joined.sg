@@ -1,0 +1,14 @@
+// The same for a value that carries a borrow.
+struct Word<from source> : Copyable {
+    read string text
+}
+void main() {
+    var a = "first text that is long enough for the heap".clone()
+    var b = "second text that is long enough for the heap".clone()
+    var w = Word { text = read a }
+    if b.length() < 3 {
+        w = Word { text = read b }
+    }
+    a = "changed".clone()
+    print(w.text)
+}

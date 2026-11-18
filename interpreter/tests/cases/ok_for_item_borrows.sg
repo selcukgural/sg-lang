@@ -1,0 +1,30 @@
+// An item a loop lends borrows the list only while it is used: after the loop the list is free,
+// and a variable may keep an item while the list is left as it is.
+string longest(read List<string> words) {
+    var best = ""
+    for word in read words {
+        if word.length() > best.length() {
+            best = word.clone()
+        }
+    }
+    return best
+}
+
+void main() {
+    var xs = List<string> { "first".clone(), "second".clone() }
+    var other = "none".clone()
+    var kept = read other
+    for x in read xs {
+        kept = read x
+    }
+    print(kept)
+    for x in ref xs {
+        x = $"{x}!".toString()
+    }
+    print(longest(read xs))
+    xs.clear()
+    var n = 1
+    var r = ref n
+    r = 2
+    print(n)
+}

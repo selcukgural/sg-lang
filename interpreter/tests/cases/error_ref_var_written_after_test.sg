@@ -1,0 +1,13 @@
+// Writing through a `ref` variable uses its borrow: the variable it borrows cannot be tested meanwhile.
+struct Node {
+    int value
+    Node*? next
+}
+void main() {
+    Node*? n = new Node { value = 1, next = null }
+    var r = ref n
+    if n is not null {
+        r = null
+        print(n.value)
+    }
+}

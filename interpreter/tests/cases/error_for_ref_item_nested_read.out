@@ -1,0 +1,9 @@
+error: `xs` cannot be used here: `x` holds a `ref` borrow of it and is used again later
+  --> error_for_ref_item_nested_read.sg:9:23
+ 9 |         for y in read xs {
+   |                       ^^
+  `x` borrowed it here:
+  --> error_for_ref_item_nested_read.sg:8:14
+ 8 |     for x in ref xs {
+   |              ^^^^^^
+  hint: finish with `x` before this line: a borrow ends at its last use

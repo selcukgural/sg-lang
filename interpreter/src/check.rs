@@ -3858,6 +3858,11 @@ struct Loan {
     span: Span,
 }
 
+/// Whether two loans lend the same place in the same way.
+fn same_loan(a: &Loan, b: &Loan) -> bool {
+    a.root == b.root && a.path == b.path && a.mutable == b.mutable && a.held == b.held
+}
+
 /// Where in the function something happens: its position, the branches of `if` and `match`
 /// it is in, and the loops around it.
 #[derive(Clone, Default)]
@@ -3891,6 +3896,8 @@ struct Clash {
     holder_name: String,
     /// For an owner that reached the end of its block: its name.
     owner_name: String,
+    /// The owner is a name of `lock` or `read ... as`, closed at the end of its block.
+    closed: bool,
     /// The place is itself a borrow of a value that can be copied: the type to write to
     /// get a copy of the value instead of a second borrow.
     copy_as: Option<String>,
@@ -3918,10 +3925,12 @@ struct Borrows {
     binds: Vec<Loan>,
     /// How far the function has been read.
     pos: usize,
-    /// Every change and move of a place, in the order the checker came to them: the variable,
-    /// the fields, how, and where. A call looks here for what its later parts did to what
-    /// its earlier parts lent.
-    touched: Vec<(usize, String, Access, Span)>,
+    /// Every touch of a place, in the order the checker came to them: the variable, the
+    /// fields, how, and where. A call looks here for what its later parts did to what its
+    /// earlier parts lent, and a loop for what its next round does to what a round lent.
+    touched: Vec<(usize, String, Access, Span, Point)>,
+    /// The names about to be declared are those of a `lock` or a `read ... as`.
+    opening: bool,
 }
 
 struct Var {
@@ -3948,6 +3957,9 @@ struct Var {
     /// one), the `id` of the channel's variable: a `for` over that channel while this one lives
     /// would never end.
     sender_of: Option<usize>,
+    /// A name `lock` or `read ... as` gives what it opened: what it lends is closed at the
+    /// end of the block, as a value that is gone there.
+    opened: bool,
 }
 
 /// What has been moved out of a variable.
@@ -3963,6 +3975,9 @@ struct Moved {
     /// `whole` is a loop `while tasks.length() > 0`, after which a list of tasks is empty:
     /// its tasks count as waited for, and the list as used up.
     emptied: bool,
+    /// In a saved state of the function (`Checker::moves`): what the variable borrowed then.
+    /// A variable keeps its loans in `Var::loans`, and this stays empty there.
+    loans: Vec<Loan>,
 }
 
 #[derive(Default)]
@@ -4307,7 +4322,7 @@ impl<'a> Checker<'a> {
         let id = self.borrows.next_id;
         self.borrows.next_id += 1;
         let decl_loops = self.borrows.loops.clone();
-        scope.vars.push(Var { id, decl_loops, loans: Vec::new(), param: false, name: name.to_string(), unopened: None, declared: ty.clone(), current: ty, moved, assigned: 0, at: span, sender_of: None });
+        scope.vars.push(Var { id, decl_loops, loans: Vec::new(), param: false, name: name.to_string(), unopened: None, declared: ty.clone(), current: ty, moved, assigned: 0, at: span, sender_of: None, opened: false });
         Ok(())
     }
 
@@ -5284,10 +5299,8 @@ impl<'a> Checker<'a> {
         let root = var.id;
         let behind = var.declared.strip_borrow().clone();
         let copy_as = (var.declared.is_borrow() && behind.is_copyable(self.copyable)).then(|| behind.to_string());
-        if access != Access::Read {
-            self.borrows.touched.push((root, path.clone(), access, expr.span));
-        }
         let at = self.point(expr.span.start);
+        self.borrows.touched.push((root, path.clone(), access, expr.span, at.clone()));
         let mut found = Vec::new();
         for var in self.scopes.iter().flat_map(|scope| &scope.vars) {
             if var.id == root {
@@ -5300,6 +5313,7 @@ impl<'a> Checker<'a> {
                         holder: var.id,
                         holder_name: var.name.clone(),
                         owner_name: String::new(),
+                        closed: false,
                         copy_as: copy_as.clone().filter(|_| loan.path.is_empty()),
                         holder_loops: var.decl_loops.clone(),
                         loan: loan.clone(),
@@ -5331,6 +5345,12 @@ impl<'a> Checker<'a> {
             let Some((_, later)) = used_later else { continue };
             let text = &self.src[clash.span.start..clash.span.end];
             let holder = &clash.holder_name;
+            if clash.access == Access::Gone && clash.closed {
+                let owner = &clash.owner_name;
+                return Err(Diag::error(clash.span, format!("`{holder}` borrows from `{owner}` here, but `{owner}` is closed at the end of its block and `{holder}` is used after that"))
+                    .note(format!("what `{owner}` opens is lent for the block only: after it another task, or another owner, may change it"))
+                    .hint("to keep something after the block, copy it there (`.clone()`) into a variable that owns it"));
+            }
             if clash.access == Access::Gone {
                 let owner = &clash.owner_name;
                 return Err(Diag::error(clash.span, format!("`{holder}` borrows from `{owner}` here, but `{owner}` is gone at the end of its block and `{holder}` is used after that"))
@@ -5342,6 +5362,10 @@ impl<'a> Checker<'a> {
                 (Access::Move | Access::Gone, _) => Diag::error(clash.span, format!("`{text}` cannot be moved here: `{holder}` borrows from it and is used again later")),
             };
             let mut diag = diag.related(clash.loan.span, format!("`{holder}` borrowed it here"));
+            // Borrowed further down in a loop: the touch is in the next round.
+            if clash.loan.span.start > clash.span.start && !clash.at.loops.is_empty() {
+                diag = diag.note(format!("the loop comes round again, and `{holder}` still holds the borrow of the round before"));
+            }
             // Used by the place of the assignment whose right side touched it.
             if later.placed.is_some_and(|from| clash.at.placed.is_none() && (from..=later.pos).contains(&clash.at.pos)) {
                 diag = diag.note(format!("the right side of an assignment is computed first, then the place on the left is found: `{holder}` is used there after this"));
@@ -5362,6 +5386,11 @@ impl<'a> Checker<'a> {
         for loan in loans {
             let Some(var) = self.scopes.iter().flat_map(|scope| &scope.vars).find(|var| var.id == loan.root) else { continue };
             let name = &var.name;
+            if var.opened {
+                return Err(Diag::error(value.span, format!("this returns a borrow of what `{name}` opened, and `{name}` is closed at the end of its block"))
+                    .note(format!("what `{name}` opens is lent for the block only: after it another task, or another owner, may change it"))
+                    .hint("return a copy: `.clone()`"));
+            }
             let written = |source: &Source| match (source.held, source.param.as_str()) {
                 (true, "this") => self.owner.and_then(|owner| self.names.carriers.get(owner)).cloned().unwrap_or_else(|| "this".to_string()),
                 (true, param) => match self.var_named(param).and_then(|var| carrier(&var.declared, self.names)) {
@@ -5536,13 +5565,14 @@ impl<'a> Checker<'a> {
         let scope = self.scopes.pop().expect("an open scope");
         // A variable outside that still holds a borrow of an owner that ends here.
         let at = self.point(self.borrows.pos);
-        for owner in scope.vars.iter().filter(|var| !var.declared.is_borrow()) {
+        for owner in scope.vars.iter().filter(|var| !var.declared.is_borrow() || var.opened) {
             for holder in self.scopes.iter().flat_map(|outer| &outer.vars) {
                 for loan in holder.loans.iter().filter(|loan| loan.root == owner.id && !loan.held) {
                     self.borrows.clashes.push(Clash {
                         holder: holder.id,
                         holder_name: holder.name.clone(),
                         owner_name: owner.name.clone(),
+                        closed: owner.opened,
                         copy_as: None,
                         holder_loops: holder.decl_loops.clone(),
                         loan: loan.clone(),
@@ -5565,22 +5595,31 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// What is moved out of each variable, and what each borrows: the state that the
+    /// branches of an `if` or a `match` and the rounds of a loop start from and join.
     fn moves(&self) -> Moves {
-        self.scopes.iter().map(|scope| scope.vars.iter().map(|var| var.moved.clone()).collect()).collect()
+        self.scopes.iter().map(|scope| scope.vars.iter().map(|var| Moved { loans: var.loans.clone(), ..var.moved.clone() }).collect()).collect()
     }
 
     fn set_moves(&mut self, moves: &Moves) {
         for (scope, saved) in self.scopes.iter_mut().zip(moves) {
             for (var, moved) in scope.vars.iter_mut().zip(saved) {
-                var.moved = moved.clone();
+                var.loans = moved.loans.clone();
+                var.moved = Moved { loans: Vec::new(), ..moved.clone() };
             }
         }
     }
 
-    /// After two branches a variable is gone if either branch moved it.
+    /// After two branches a variable is gone if either branch moved it, and it borrows what
+    /// it borrowed on either.
     fn merge_moves(&mut self, other: &Moves) {
         for (scope, saved) in self.scopes.iter_mut().zip(other) {
             for (var, moved) in scope.vars.iter_mut().zip(saved) {
+                for loan in &moved.loans {
+                    if !var.loans.iter().any(|known| same_loan(known, loan)) {
+                        var.loans.push(loan.clone());
+                    }
+                }
                 var.moved.partly = var.moved.partly || moved.partly || var.moved.whole.is_some() != moved.whole.is_some();
                 if var.moved.whole.is_none() {
                     var.moved.emptied = moved.emptied;
@@ -5636,11 +5675,14 @@ impl<'a> Checker<'a> {
     /// was lent from.
     fn declare_binds(&mut self, binds: Binds) -> Res<()> {
         let loans = std::mem::take(&mut self.borrows.binds);
+        let opened = std::mem::take(&mut self.borrows.opening);
         for (name, ty, span) in binds {
             let borrows = self.holds(&ty);
             self.declare_local(&name, ty, span)?;
+            let var = self.find(&name).expect("just declared");
+            var.opened = opened;
             if borrows {
-                self.find(&name).expect("just declared").loans = loans.clone();
+                var.loans = loans.clone();
             }
         }
         Ok(())
@@ -5729,7 +5771,9 @@ impl<'a> Checker<'a> {
                 }
                 let target_ty = match &target.kind {
                     ExprKind::Var(name) => {
-                        let var = if op.is_some() { self.live_var(name, target.span)? } else { self.var(name, target.span)? };
+                        // Writing through a `ref` variable uses the borrow it holds.
+                        let through_ref = self.find(name).is_some_and(|var| matches!(var.declared, Ty::Ref(_)));
+                        let var = if op.is_some() || through_ref { self.live_var(name, target.span)? } else { self.var(name, target.span)? };
                         match &var.declared {
                             // Assigning to a `ref` variable writes to what it borrows.
                             Ty::Ref(inner) => {
@@ -6067,6 +6111,7 @@ impl<'a> Checker<'a> {
                     ExprKind::Slice { recv, .. } => recv,
                     _ => source,
                 };
+                let source_text = self.src[source.span.start..source.span.end].to_string();
                 let lock = store_path(source).and_then(|(name, path)| {
                     let text = self.src[source.span.start..source.span.end].to_string();
                     Some(Lock { var: self.var_id(name)?, path, text, positions: false, span: iter.span })
@@ -6171,6 +6216,7 @@ impl<'a> Checker<'a> {
                 // The variable is new in every round, so an owned item can be used up.
                 // A borrowed collection stays as it is until the loop ends.
                 let locked = mode.is_some() && lock.is_some();
+                let locked_var = lock.as_ref().map(|lock| lock.var);
                 if locked {
                     let positions = matches!(found.strip_borrow(), Ty::List(_) | Ty::Ptr(_) | Ty::Array(..) | Ty::Slice(_));
                     self.locks.extend(lock.map(|lock| Lock { positions, ..lock }));
@@ -6189,7 +6235,27 @@ impl<'a> Checker<'a> {
                     }
                     self.borrows.binds = loans;
                 } else {
-                    self.borrows.binds.clear();
+                    // An item lent by the loop borrows what the collection is: the variable
+                    // that holds it, or what a borrow of it borrowed (`for x in s` with
+                    // `var s = xs[0..2]`), and that is kept from changing while the loop runs.
+                    // An owned item carries what the collection's items borrowed. Through a
+                    // `shared` value each access is checked on its own (and a `shared checked`
+                    // one is lent for the loop), and the loop keeps the variable as it is.
+                    let shared = matches!(found.strip_borrow(), Ty::Shared(..));
+                    let loans = if shared { Vec::new() } else { self.loans_of(iter, mode == Some(Mode::Ref)) };
+                    if mode.is_some() {
+                        for loan in loans.iter().filter(|loan| !loan.held) {
+                            let Some(at) = self.var_at(loan.root) else { continue };
+                            if locked_var == Some(at) {
+                                continue;
+                            }
+                            let text = source_text.clone();
+                            let positions = matches!(found.strip_borrow(), Ty::List(_) | Ty::Ptr(_) | Ty::Array(..) | Ty::Slice(_));
+                            self.locks.push(Lock { var: at, path: loan.path.clone(), text, positions, span: iter.span });
+                            text_locks += 1;
+                        }
+                    }
+                    self.borrows.binds = loans;
                 }
                 let node = self.node();
                 self.borrows.loops.push(node);
@@ -6241,6 +6307,7 @@ impl<'a> Checker<'a> {
                     true => self.place_loans(value, false, value.span),
                     false => Vec::new(),
                 };
+                self.borrows.opening = true;
                 self.block_with(body, &[], vec![(name.clone(), ty, *name_span)])?;
             }
             StmtKind::Lock { items, when, awaited, body } => {
@@ -6334,6 +6401,7 @@ impl<'a> Checker<'a> {
                 }
                 // Each name borrows what its value holds, so the values stay where they are.
                 self.borrows.binds = loans;
+                self.borrows.opening = true;
                 self.block_with(body, &[], binds)?;
             }
             StmtKind::Unsafe(body) => {
@@ -6708,6 +6776,7 @@ impl<'a> Checker<'a> {
             }
         }
         let before = self.moves();
+        let mark = self.borrows.touched.len();
         self.loops += 1;
         self.loop_cx.push(LoopCx { depth: self.scopes.len(), label: label.cloned(), used: false, breaks: Vec::new(), continues: Vec::new(), before: Vec::new() });
         let result = self.block_with(body, narrow, binds);
@@ -6724,6 +6793,7 @@ impl<'a> Checker<'a> {
         }
         for start in &starts {
             self.moved_for_next_round(&before, start)?;
+            self.lent_for_next_round(&before, start, mark);
         }
         cx.continues = starts;
         cx.before = before;
@@ -6745,6 +6815,38 @@ impl<'a> Checker<'a> {
             }
         }
         Ok(())
+    }
+
+    /// A variable from outside the loop that a round leaves with a new borrow holds it when
+    /// the next round starts: what the body touches of that place may clash with it, as a
+    /// touch in the same round would. `mark`: where the touches of the body start.
+    fn lent_for_next_round(&mut self, before: &Moves, start: &Moves, mark: usize) {
+        let mut found = Vec::new();
+        for (scope, (saved, now)) in self.scopes.iter().zip(before.iter().zip(start)) {
+            for ((var, was), then) in scope.vars.iter().zip(saved).zip(now) {
+                for loan in then.loans.iter().filter(|loan| !loan.held && !was.loans.iter().any(|old| same_loan(old, loan))) {
+                    for (root, path, access, span, at) in &self.borrows.touched[mark..] {
+                        let overlaps = path.is_empty() || loan.path.is_empty() || within(path, &loan.path) || within(&loan.path, path);
+                        if *root != loan.root || *root == var.id || !overlaps || (!loan.mutable && *access == Access::Read) {
+                            continue;
+                        }
+                        found.push(Clash {
+                            holder: var.id,
+                            holder_name: var.name.clone(),
+                            owner_name: String::new(),
+                            closed: false,
+                            copy_as: None,
+                            holder_loops: var.decl_loops.clone(),
+                            loan: loan.clone(),
+                            access: *access,
+                            span: *span,
+                            at: at.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        self.borrows.clashes.extend(found);
     }
 
     /// What is moved after a loop: what was moved where a `break` left it, and, when the loop
@@ -7490,7 +7592,7 @@ impl<'a> Checker<'a> {
         let mark = self.borrows.touched.len();
         let ty = self.expr_untyped(expr, expected)?;
         expr.ty = ty.clone();
-        if self.borrows.touched.len() > mark {
+        if self.borrows.touched[mark..].iter().any(|touch| touch.2 != Access::Read) {
             self.lent_to_the_end(expr, mark)?;
         }
         Ok(ty)
@@ -7539,8 +7641,8 @@ impl<'a> Checker<'a> {
             if loans.is_empty() {
                 continue;
             }
-            for (root, path, access, span) in touched {
-                if span.start < part.span.end || span.start >= expr.span.end {
+            for (root, path, access, span, _) in touched {
+                if *access == Access::Read || span.start < part.span.end || span.start >= expr.span.end {
                     continue;
                 }
                 let overlaps = |loan: &Loan| path.is_empty() || loan.path.is_empty() || within(path, &loan.path) || within(&loan.path, path);

@@ -1,0 +1,11 @@
+// An item a loop lends borrows the list: returned, it would outlive the local list.
+read string first() {
+    var local = List<string> { "a long text that lives on the heap one".clone() }
+    for x in read local {
+        return x
+    }
+    return "none"
+}
+void main() {
+    print(first())
+}

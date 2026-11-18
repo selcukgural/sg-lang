@@ -1,0 +1,9 @@
+// A loop over a range of a list keeps the list itself from changing.
+void main() {
+    var xs = List<string> { "first long text that lives on the heap".clone(), "second long text that lives on the heap".clone() }
+    var s = xs[0..2]
+    for x in s {
+        xs.clear()
+        print(x)
+    }
+}

@@ -1,0 +1,11 @@
+// A variable that keeps an item of a loop borrows the list after the loop, which then cannot be emptied.
+void main() {
+    var other = "other".clone()
+    var r = read other
+    var xs = List<string> { "first long text that lives on the heap".clone() }
+    for x in read xs {
+        r = read x
+    }
+    xs.clear()
+    print(r)
+}

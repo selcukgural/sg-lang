@@ -1,0 +1,13 @@
+// A name of `lock` lends what is locked for the block only: a variable outside cannot keep it.
+void main() {
+    var cell = new shared locked "a long text that lives on the heap".clone()
+    var other = "other".clone()
+    var r = read other
+    lock cell as c {
+        r = read c
+    }
+    lock cell as c {
+        c = "a brand new long text that lives on the heap".clone()
+    }
+    print(r)
+}

@@ -8115,6 +8115,35 @@ the choices it raised:
      two-phase borrows. Tested by `error_call_lent_then_changed`, `_lent_then_moved`, `_receiver_then_changed`,
      `_receiver_field_moved`, `_borrow_var_then_changed`, `_ref_alias`, `error_range_bound_changes_text` and
      `ok_call_parts_in_order`; the checker took each of the errors before.
+     (2) **An item a loop lends borrows the collection.** `for x in read local { return x }` returned a
+     borrow of a list that was gone after the return, `r = read x` kept an item past the loop while the list
+     was emptied, and `for x in s`, where `var s = xs[0..2]`, let the body empty `xs`: the item borrowed
+     nothing. Now it borrows what the collection is (the variable, or what a borrow of it borrowed), so the
+     returned borrow, the kept item and the emptied list are the usual errors; the list a borrow of it
+     reaches is kept from changing while the loop runs, as the variable gone over is (*`xs` cannot be
+     changed or moved while a `for` goes over `s`*); and an owned item carries what the items borrowed.
+     Through a `shared` value each access is checked as before. (3) **Borrows join where ways join.** After
+     an `if`, a `match` or a loop a variable borrows what it borrowed on any way that reaches there, as a
+     value is moved if any way moved it; before, the last branch read decided (`var r = read a`, `if ... { r
+     = read b }`, then `a` changed and `r` read). A borrow that a round of a loop leaves in a variable from
+     outside is held when the next round starts, so what that round does to the place is an error when the
+     variable is used again, with a note that the loop comes round. Like the rest of the check, a variable
+     given another borrow still counts as holding the first until its last use. (4) **Writing through a
+     `ref` variable uses it**: `r = value`, with `var r = ref s`, did not count as a use, so `s` could be lent
+     to another before it (`var v = read s`), or tested for `null` and then emptied through `r`. Tested by
+     `error_for_item_returned`, `_item_kept_after_loop`, `_item_of_unnamed`, `_over_range_changed`,
+     `_ref_item_list_read`, `_ref_item_nested_read`, `error_branch_borrows_joined`, `_carrier_joined`,
+     `error_loop_borrow_next_round`, `error_ref_var_written_later`, `_written_after_test` and
+     `ok_for_item_borrows`; the checker took each of the errors before. (5) **What `lock` and `read ... as`
+     open is lent for the block only.** `lock cell as c { r = read c }` let `r`, from outside, keep looking at
+     the locked text after the lock was let go, when another `lock` gave it a new text and freed the old one;
+     a function could return `c`, and `read a as c` let a borrow of a `shared checked` value outlive the
+     block while another owner changed it. The name now counts as a value that is gone at the end of its
+     block: *`r` borrows from `c` here, but `c` is closed at the end of its block and `r` is used after
+     that*, with the hint to copy what is needed there; returning it is an error with the hint `.clone()`.
+     Tested by `error_lock_name_kept`, `_returned`, `error_as_name_kept` and `ok_lock_name_copied`. `cargo test` passes on
+     macOS (405 of 1691 programs compile through C, 98 of them under the thread sanitizer); only the checker
+     changed, so it was not run again on Linux and Windows.
 1347. **No exception for plain data**, approved on 19 November 2026: a later part that changes what an earlier
      one lends is an error also where the change frees nothing, as with a local struct of numbers in
      `counter.plus(counter.next(), counter.next())`, where compiled code gave `plus` the value after the
@@ -8696,4 +8725,7 @@ file a program takes in lies in the folder of the file that names it, a name goe
 DLL is copied by its name only, a task lets go of its task while it has the turn, and C is lent a value at
 the alignment of its type (1339); a function whose frame no stack holds is an error of `sg build` (1346). The
 hundred-and-seventeenth and the next fix the rules of borrowing: what a part of a call lends lasts until the
-call runs, with no exception (1340, 1347); then fuzzing and mutants of the rules of safety (1323-1325).
+call runs, with no exception (1340, 1347); an item a loop lends borrows the collection, borrows join where
+ways join and are held into the next round of a loop, writing through a `ref` variable uses it, and
+what `lock` and `read ... as` open is lent for their block only (1340);
+then fuzzing and mutants of the rules of safety (1323-1325).

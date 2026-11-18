@@ -1,0 +1,11 @@
+// After an `if` a variable borrows what it borrowed on either way through it.
+void main() {
+    var a = "first text that is long enough for the heap".clone()
+    var b = "second text that is long enough for the heap".clone()
+    var r = read a
+    if b.length() < 3 {
+        r = read b
+    }
+    a = "changed".clone()
+    print(r)
+}
