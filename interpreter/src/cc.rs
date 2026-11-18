@@ -45,6 +45,13 @@ pub fn shown_here() -> String {
 /// also writes what a debugger reads beside the program (`x.pdb`).
 pub fn compile_flags(debug: bool) -> Vec<String> {
     let mut flags = Vec::new();
+    // A frame larger than the page the system leaves free below a stack is touched page by
+    // page as it is made: without that a function with a large local value starts below its
+    // stack, in the memory of another thread, and writes there. GCC and Clang do it on Linux;
+    // on Windows the compiler does it for every frame larger than a page (`__chkstk`).
+    if cfg!(target_os = "linux") {
+        flags.push("-fstack-clash-protection".to_string());
+    }
     if cfg!(windows) {
         flags.extend(["-fuse-ld=lld", "-fms-runtime-lib=static"].map(String::from));
         if debug {

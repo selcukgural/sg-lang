@@ -31,7 +31,7 @@ macOS, whose own Clang knows only its own processor: `brew install llvm lld qemu
 `CC=$(brew --prefix llvm)/bin/clang PATH=$(brew --prefix lld)/bin:$PATH cargo test`. On Linux the image
 of `tests/Containerfile` has them.
 
-## What runs today (18 November 2026)
+## What runs today (19 November 2026)
 
 | Area | Supported |
 |---|---|
@@ -7991,6 +7991,69 @@ Each is written here with its fix, and each fix came after a test that showed th
      that panic, and the run ends. `cargo test` passes on macOS and on Linux in a container (400 of 1652
      programs compile through C, 96 of them under the thread sanitizer); on Windows on Arm the new programs give
      the same output (interpreted and compiled where they run), and `libraries` passes.
+1338. **Limits, each said where it is met**: what had no bound made `sg` panic, overflow its stack, wait for
+     ever, or take minutes and gigabytes. (1) A value too big for any machine (`byte[9223372036854775807]`,
+     or a struct of two fields that each fit) made the interpreter panic in Rust, and wait for ever when a
+     task was running; the C compiler refused it, and `Memory.sizeOf` wrapped around to 0. It is an error
+     now (1341). An array the checker allows but the memory does not hold is a panic of the program in the
+     interpreter (`there is no memory for an array of ... items`), as a text repeated too often already was.
+     (2) A fault of the interpreter itself, while a task waited, left the run waiting for the task's thread;
+     the tasks now end first, and the fault goes on as it is. No program is known to reach one now; this was
+     checked with a fault put in by hand. (3) A source nested 100 000 deep overflowed the stack of the
+     parser or the checker, and 10 000 nested `if` blocks took 2.6 GB; a program nests at most 1000 deep
+     (1342), and a chain of 100 000 names (`a.b.b...`) took 10 GB before it was read, since every start of
+     the chain was tried as a module: those are taken only as long as a program may nest. (4) Writing or
+     comparing a value nested a million deep (a list of links) overflowed the interpreter's stack; it is a
+     panic of the program now (1343). (5) A const grew to what the memory held before its limit of 64 MB was
+     looked at: `"ab".repeat(1 << 33)` took 25 GB and 17 seconds before its error. Now a text repeated, a text
+     made while a const is found and a list grown by `add` and `addAll` stop when they pass 64 MB, with the
+     error the checker gives a value found too big. (6) A function whose values took more than the stack of
+     its thread wrote past the stack, into memory that is not its own (1344, 1345). Tested by
+     `error_value_too_big`, `error_struct_too_big`, `error_field_too_big`, `panic_array_no_memory`,
+     `error_nested_too_deep`, `error_const_too_big_repeat`, `error_const_too_big_text` and
+     `panic_deep_value_written` (the two panics are the interpreter's: compiled code makes the value on its
+     stack, which ends at the guard page, as in the open stack depth question), and in `tests/golden.rs`
+     `deep_sources_are_errors` (seven shapes nested 100 000 deep, each refused in under ten seconds) and
+     `large_frames_touch_their_stack` (it fails on Linux without the touching). `cargo test` passes on macOS and on
+     Linux in a container (400 of 1660 programs compile through C, 96 of them under the thread sanitizer); on
+     Windows on Arm the new programs give the same output, and the two new tests pass.
+1341. **A value takes at most 2^61 - 1 bytes**, as in Rust: the largest object whose addresses pointer
+     arithmetic counts right is `isize::MAX`, and Clang lets an array have at most 2^61 bytes on a machine
+     of 64 bits, so that is the bound. A type whose values would take more (an array, a struct, an enum, a
+     `T?`) is an error where it is written, a struct's at the field too big on its own or at its name, with
+     the hint of a `List<T>`. The sizes are counted as C lays the values out, padding included, a field of
+     bits as its whole type and a tag as eight bytes, so the bound is never reached by a value smaller than
+     it. A machine of 32 bits would have 2^31 - 1; SG has none yet (906). Rust says *values of the type ...
+     are too big for the target architecture*; GCC's bound is `PTRDIFF_MAX`; Go has a bound of its own too.
+1342. **A program nests at most 1000 deep**: blocks, expressions, the operators of a chain (`a + b + c` is
+     `(a + b) + c`, one deeper with each), the fields, calls and indexes read one after another, unary
+     operators, types and patterns, counted together. Beyond that the error is *this is nested more than
+     1000 deep*, with the hint to give a part a name or a function of its own. A program written by hand
+     does not come near it, and one a tool writes does not either but for a long sum, which a variable or a
+     loop splits. Rust and Go have no such bound, and grow the stack of the compiler instead; C# gives
+     *an expression is too long or complex to compile*; Clang allows 256 nested brackets.
+1343. **The interpreter watches its stack**: each thread of it notes where its stack starts, and writing,
+     comparing and ordering a value look at how much of it is used before they go one level deeper. When
+     less than 64 MB of its gigabyte is left, it is a panic of the program at the line (*stack overflow:
+     the value is nested too deep to be written here*), noting that a loop of the program walks such a value
+     link by link. The count of 5000 nested calls stays. Comparing a list of three million links still
+     works.
+1344. **A large frame is touched before it is used**: a function whose values took more than the stack of
+     its thread had its whole frame made at once, below the page the system leaves free under a stack, so
+     what the function called ran in memory that is not its own and wrote there: on Linux, where the
+     stacks of threads lie next to each other, a task whose function held a `byte[10000000]` in a branch
+     that never ran wrote 64 KB of another thread's stack and the program went on (with GCC and Clang, in
+     debug and release builds). GCC and Clang touch such a frame page by page on Linux with
+     `-fstack-clash-protection`, which `sg build` gives them now; the program then ends at that page, as
+     deep recursion does. Apple's Clang does it on macOS on its own, and so does the compiler on Windows
+     (`__chkstk`).
+1345. **And SG touches it itself**, since a Clang that is not Apple's does not on macOS: a function whose
+     values may take a page (4096 bytes) of its stack or more (its parameters, its variables, and each
+     struct, array or enum it makes, counted as 1341 counts them) is called through a small one that takes
+     that room and 64 KB more below itself and touches it a page at a time from the top
+     (`sg_probe_stack`), then calls the body, which C is told not to inline into it. It costs a call and a
+     touch per page in those functions only; the others are as they were. Rust's stack probes do the same
+     on every machine.
 
 ## Slower than C, and could be better
 
@@ -7998,6 +8061,16 @@ Places where a measurement found SG slower than the same program in C and a fix 
 here to be talked over when their time comes; none of them breaks a program, and none is fixed by turning a
 check off.
 
+- **The interpreter keeps every item in a cell of its own** (measured on 19 November 2026): a `List<T>` or
+  a `T[N]` holds each item as a value on the heap of its own (`Rc<RefCell<Value>>`, about a hundred
+  bytes), so that an item can be lent. A list of 64 million `int`s that a const builds while the program
+  is compiled took 13 GB, where compiled code holds it in 256 MB, and a `byte[N]` takes about a hundred
+  times its size. This touches programs run by the interpreter and the consts every build finds, not
+  compiled programs. Candidate: hold plain data (numbers, `bool`, `char`, and structs and arrays
+  of them) as its bytes, laid out as C lays it out, as Rust's evaluation of consts does (an allocation of
+  bytes, with a mask of the bytes set and a table of the ones that hold a pointer); `raw.rs` already reads
+  and writes values in that layout. Zig keeps an array of bytes as one slice of bytes too. The work is in
+  how the interpreter lends an item that is no longer a cell, so it is a choice of its own.
 - **Eight tasks that spin on one queue** (`queue`, 1.39 times on macOS and 1.42 on Linux, choice 859): four producers and four
   consumers of `examples/queue`'s queue take 0.475 s against 0.341 s for the same queue in C. The loop of a
   producer is the same instructions as C's (one more for the bound of the list), and neither taking that
@@ -8545,5 +8618,9 @@ one place: the files a build makes on the way are in a folder only its user open
 function is called from any thread, and C's names are not taken by one (1334); a struct with no fields
 holds one byte (1335); a line is written with the lengths of its texts, the byte 0 and more than 2 GB
 included, and faster (1336); eight faults of the tool itself, where a program made `sg` panic, overflow its
-stack or wait, are errors or panics of the program (1337). The next two
+stack or wait, are errors or panics of the program (1337); what had no bound has one, said where it is met:
+a value takes at most 2^61 - 1 bytes, a program nests at most 1000 deep, a const stops growing at 64 MB, a
+value nested too deep for the interpreter's stack is a panic, and a large frame is touched page by page
+before it is used, so a function never runs past its stack into another thread's (1338, 1341-1345). The
+paths and the linker (1339) come next. The next two
 fix the rules of borrowing; then fuzzing and mutants of the rules of safety (1323-1325).

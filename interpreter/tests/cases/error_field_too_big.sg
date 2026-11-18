@@ -1,0 +1,9 @@
+// A field too big on its own is shown where it is written.
+struct Wide {
+    int count
+    long[2000000000000000000] data
+}
+
+void main() {
+    print("unreachable")
+}

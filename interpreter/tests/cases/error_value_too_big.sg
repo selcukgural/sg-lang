@@ -1,0 +1,6 @@
+// A value takes at most 2^61 - 1 bytes, as many as Clang lets an array have on a machine of
+// 64 bits: the largest object whose addresses pointer arithmetic still counts right.
+void main() {
+    var data = byte[9223372036854775807]
+    print(data[0])
+}

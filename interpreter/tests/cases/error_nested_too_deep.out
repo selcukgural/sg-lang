@@ -1,0 +1,5 @@
+error: this is nested more than 1000 deep
+  --> error_nested_too_deep.sg:1002:9
+ 1002 | if true {
+      |         ^
+  hint: give a part a name of its own (`var part = ...`) or a function of its own

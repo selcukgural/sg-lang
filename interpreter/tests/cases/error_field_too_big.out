@@ -1,0 +1,6 @@
+error: a `long[2000000000000000000]` is too big: a value takes at most 2 305 843 009 213 693 951 bytes
+  that is the largest value whose addresses a pointer can count on a machine of 64 bits
+  --> error_field_too_big.sg:4:5
+ 4 |     long[2000000000000000000] data
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: a `List<long>` keeps its items on the heap, as many as the memory holds

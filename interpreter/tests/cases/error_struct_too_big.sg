@@ -1,0 +1,13 @@
+// Two fields that each fit, and a struct that holds both does not.
+struct Half {
+    byte[1200000000000000000] data
+}
+
+struct Two {
+    Half first
+    Half second
+}
+
+void main() {
+    print("unreachable")
+}

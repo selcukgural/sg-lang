@@ -623,7 +623,9 @@ fn compiled() {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         // Deep recursion is caught by the interpreter's own count of calls; compiled code has
         // no such count yet (the stack depth question of the design is open).
-        if name == "panic_stack_overflow.sg" {
+        // So is a value nested too deep for the interpreter's stack, and an array too big for
+        // the memory: compiled code makes it on the stack, which ends at its guard page.
+        if matches!(name.as_str(), "panic_stack_overflow.sg" | "panic_deep_value_written.sg" | "panic_array_no_memory.sg") {
             continue;
         }
         // Tasks that wait on channels for each other: the interpreter stops with a panic, and
@@ -2297,6 +2299,66 @@ fn const_steps_run_out() {
     let error = sg::emit_c(source, "spin.sg", true).expect_err("a const that never ends is refused");
     assert_eq!(error.msg, "finding the value of `Spun` takes more than 100 000 000 steps");
     assert_eq!(&source[error.span.start..error.span.end], "spin()");
+}
+
+/// A program nests at most 1000 deep (choice 1342), and one nested far deeper is that error,
+/// found quickly and in little memory: without the bound the parser, the checker or the reading
+/// of the module names (`a.b.b...`) overflowed the stack, took minutes or gigabytes.
+#[test]
+fn deep_sources_are_errors() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("deep-sources");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let n = 100_000;
+    let sources = [
+        ("parens", format!("void main() {{\n    var x = {}1{}\n    print(x)\n}}\n", "(".repeat(n), ")".repeat(n))),
+        ("unary", format!("void main() {{\n    var x = {}1\n    print(x)\n}}\n", "-".repeat(n))),
+        ("blocks", format!("void main() {{\n{}{}}}\n", "if true {\n".repeat(n), "}\n".repeat(n))),
+        ("chain", format!("void main() {{\n    var x = 1{}\n    print(x)\n}}\n", " + 1".repeat(n))),
+        ("calls", format!("int f(int x) {{\n    return x\n}}\n\nvoid main() {{\n    var x = {}1{}\n    print(x)\n}}\n", "f(".repeat(n), ")".repeat(n))),
+        ("types", format!("void main() {{\n    {}int{} x = null\n}}\n", "List<".repeat(n), ">".repeat(n))),
+        ("members", format!("void main() {{\n    var x = a{}\n}}\n", ".b".repeat(n))),
+    ];
+    for (name, source) in sources {
+        let path = work.join(format!("{name}.sg"));
+        std::fs::write(&path, &source).unwrap();
+        let started = std::time::Instant::now();
+        let loaded = sg::load(&path, false).unwrap();
+        let error = sg::emit_c_sources(&loaded, true).expect_err("a program nested 100 000 deep is refused");
+        assert_eq!(error.msg, "this is nested more than 1000 deep", "{name}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{name}: refusing it took {:?}", started.elapsed());
+    }
+}
+
+/// A function whose values take more than the stack of its thread (choices 1344 and 1345) ends
+/// at the guard page below the stack. Without the touching of `sg_probe_stack` its frame was
+/// made all at once below the guard, and `smash` wrote into memory that is not this thread's,
+/// and the program went on: on Linux the stacks of threads lie next to each other. The large
+/// array is in a branch that never runs; C makes the whole frame when the function starts.
+#[test]
+fn large_frames_touch_their_stack() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("large-frames");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    // `first` starts on a thread of its own, then `second` on the next, whose stack lies below.
+    // `second` keeps an array on its stack while `first` calls `victim`.
+    let source = "long smash() {\n    var marks = long[8192](4702111234474983745)\n    long sum = 0\n    for m in read marks {\n        sum += m % 7\n    }\n    return sum\n}\n\nlong victim(bool never, int at) {\n    var sum = smash()\n    if never {\n        var big = byte[SIZE]\n        big[at] = 1\n        sum += (long)big[at / 2]\n    }\n    return sum\n}\n\nlong first(Channel<int> go, Sender<int> done, bool never, int at) {\n    _ = go.receive()\n    var result = victim(never, at)\n    _ = done.send(1)\n    return result\n}\n\nlong second(Sender<int> go, Channel<int> done) {\n    var mine = long[400000](1)\n    _ = go.send(1)\n    _ = done.receive()\n    long sum = 0\n    for m in read mine {\n        sum += m\n    }\n    return sum\n}\n\nvoid main(List<string> args) {\n    var go = Channel<int>(1)\n    var done = Channel<int>(1)\n    var goSender = go.sender()\n    var doneSender = done.sender()\n    var a = Task.run(first, go, doneSender, args.length() > 5, (int)args.length() + 100)\n    var b = Task.run(second, goSender, done)\n    var damaged = b.wait()\n    _ = a.wait()\n    print($\"400000 expected, {damaged} found\")\n}\n";
+    for (size, ends) in [("16", true), ("10000000", false)] {
+        let code = sg::emit_c_sources(&sg::Sources::single(&source.replace("SIZE", size), "frames.sg"), false).unwrap();
+        let c_file = work.join(format!("frames{size}.c"));
+        std::fs::write(&c_file, code).unwrap();
+        let binary = program_at(&work, &format!("frames{size}"));
+        let cc = c_command().args(["-std=c11", "-O2", "-o"]).arg(&binary).arg(&c_file).args(system_libs(&work)).output().unwrap();
+        assert!(cc.status.success(), "{}", String::from_utf8_lossy(&cc.stderr));
+        let run = std::process::Command::new(&binary).output().unwrap();
+        let said = String::from_utf8_lossy(&run.stdout).into_owned();
+        match ends {
+            true => assert!(run.status.success() && said.trim() == "400000 expected, 400000 found", "a small frame: {said}{}", String::from_utf8_lossy(&run.stderr)),
+            false => assert!(!run.status.success() && said.is_empty(), "a frame of 10 MB on a stack of 8 MB went on: {said}"),
+        }
+    }
 }
 
 #[test]

@@ -1167,6 +1167,18 @@ static inline void sg_raw_aligned_free(void* p) { sg_c_free(p); }
 /* A panic is never the usual path: its code is kept out of the way of the code that runs. */
 #define SG_COLD __attribute__((cold, noinline))
 
+/* A function whose frame may be larger than a page (`SG_PROBE_FROM`) is called through a small
+   one that first takes the room it needs below itself and touches it a page at a time, from the
+   top down. Below a stack the system leaves a page or more that no program may touch: a frame
+   made all at once could start beyond it, in the memory of another thread, and write there.
+   Touched from the top, the stack ends on that page, as deep recursion does. Rust's stack
+   probes do the same; GCC and Clang do it on Linux with `-fstack-clash-protection`, Apple's
+   Clang and Windows on their own, but not every Clang on macOS. */
+__attribute__((noinline, unused)) static void sg_probe_stack(size_t bytes) {
+    volatile unsigned char* room = (volatile unsigned char*)__builtin_alloca(bytes);
+    for (size_t at = bytes; at > 0; at = at > 4096 ? at - 4096 : 0) room[at - 1] = 0;
+}
+
 /* Threads, locks and conditions, the one way the runtime reaches them (`SG_SYNC`: a program with
    threads of its own or of the runtime): pthread on Linux and macOS; on Windows a slim
    reader/writer lock taken only one way, its condition variable and `_beginthreadex`. A lock is
@@ -9986,6 +9998,8 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         locs: Vec::new(),
         sums: Vec::new(),
         temps: 0,
+        layouts: &prog.value_layouts,
+        frame: 0,
         scopes: Vec::new(),
         loops: Vec::new(),
         loop_names: Vec::new(),
@@ -11302,6 +11316,14 @@ struct NamedLoop {
     next: (String, bool),
 }
 
+/// A function whose values may take this many bytes of its stack or more is called through
+/// `sg_probe_stack`: the smallest page a system leaves free below a stack.
+const PROBE_FROM: u64 = 4096;
+
+/// What `sg_probe_stack` touches beyond the values counted: what C keeps on the stack besides
+/// them (saved registers, the arguments of calls, values it spills).
+const PROBE_SPARE: u64 = 64 << 10;
+
 struct Emitter<'a> {
     sources: &'a Sources,
     /// What each const holds (`Program::const_values`).
@@ -11332,6 +11354,11 @@ struct Emitter<'a> {
     /// check needs to tell an overflow of the sum (see `sg_sum`), one `static` each.
     sums: Vec<String>,
     temps: usize,
+    /// The size and the alignment of each struct and enum (`Program::value_layouts`).
+    layouts: &'a HashMap<String, (u64, u64)>,
+    /// The bytes the values of the function being written may take on the stack, at most: its
+    /// parameters and variables, and each value of a struct, an array or an enum it makes.
+    frame: u64,
     /// The variables in scope, innermost last.
     scopes: Vec<Vec<Local>>,
     /// For each loop around: how many scopes were open where it starts.
@@ -13865,9 +13892,11 @@ impl<'a> Emitter<'a> {
             params.push(format!("{} v_this", self.ctype(&ty, func.name_span)?));
             scope.push(Local { name: "this".to_string(), cname: "v_this".to_string(), ty, gone: false, drop: None });
         }
+        self.frame = 0;
         for param in &func.params {
             let ty = self.written(&param.ty)?;
             params.push(format!("{} v_{}", self.ctype(&ty, param.ty.span)?, param.name));
+            self.on_stack(&ty);
             scope.push(Local { name: param.name.clone(), cname: format!("v_{}", param.name), ty, gone: false, drop: None });
         }
         self.at = self.tracked.contains(&name);
@@ -13877,9 +13906,10 @@ impl<'a> Emitter<'a> {
         // The C names of the parameters, to tell which the body never uses.
         let params_c: Vec<String> = params.iter().filter_map(|param| param.rsplit(' ').next().map(str::to_string)).collect();
         let params = if params.is_empty() { "void".to_string() } else { params.join(", ") };
-        let head = format!("static {} {name}({params})", self.ctype(&ret, func.ret.span)?);
+        let ret_c = self.ctype(&ret, func.ret.span)?;
+        let head = format!("static {ret_c} {name}({params})");
         let _ = writeln!(protos, "{head};");
-        let _ = writeln!(bodies, "{head} {{");
+        let mut text = String::new();
         self.ret = ret;
         self.temps = 0;
         self.scopes = vec![scope];
@@ -13905,8 +13935,26 @@ impl<'a> Emitter<'a> {
         let unused: String = params_c.iter().filter(|param| !mentions(&body, param)).map(|param| format!("    (void){param};\n")).collect();
         body.insert_str(0, &unused);
         self.at = false;
-        self.declare_guards(bodies);
-        bodies.push_str(&body);
+        self.declare_guards(&mut text);
+        text.push_str(&body);
+        // A frame that may be larger than a page is made after the stack below was touched
+        // (see `sg_probe_stack`): the function is the body, called through a small one.
+        if self.frame >= PROBE_FROM {
+            let inner = format!("{name}_body");
+            // Kept apart: inlined, its frame would be made before the touching.
+            let _ = writeln!(protos, "__attribute__((noinline)) static {ret_c} {inner}({params});");
+            let call = format!("{inner}({})", params_c.join(", "));
+            let bytes = self.frame.saturating_add(PROBE_SPARE).min(crate::check::VALUE_BYTES);
+            let ends = match ret_c.as_str() {
+                "void" => format!("{call};"),
+                _ => format!("return {call};"),
+            };
+            let _ = writeln!(bodies, "{head} {{\n    sg_probe_stack({bytes}u);\n    {ends}\n}}\n");
+            let _ = writeln!(bodies, "__attribute__((noinline)) static {ret_c} {inner}({params}) {{");
+        } else {
+            let _ = writeln!(bodies, "{head} {{");
+        }
+        bodies.push_str(&text);
         bodies.push_str("}\n\n");
         Ok(())
     }
@@ -14342,11 +14390,21 @@ impl<'a> Emitter<'a> {
         self.scopes.iter_mut().rev().find_map(|scope| scope.iter_mut().rev().find(|local| local.name == name)).expect("names are checked before the back end runs")
     }
 
+    /// A value of `ty` the function being written may keep on its stack.
+    fn on_stack(&mut self, ty: &Ty) {
+        let bytes = match ty {
+            Ty::Read(_) | Ty::Ref(_) => 8,
+            ty => crate::check::value_layout(ty, self.layouts).map_or(u64::MAX, |(size, _)| size),
+        };
+        self.frame = self.frame.saturating_add(bytes);
+    }
+
     fn local(&self, name: &str) -> &Local {
         self.scopes.iter().rev().find_map(|scope| scope.iter().rev().find(|local| local.name == name)).expect("names are checked before the back end runs")
     }
 
     fn declare(&mut self, name: &str, ty: Ty) -> String {
+        self.on_stack(&ty);
         self.temps += 1;
         let cname = format!("v_{}_{}", local_cname(name), self.temps);
         self.scopes.last_mut().expect("an open scope").push(Local { name: name.to_string(), cname: cname.clone(), ty, gone: false, drop: None });
@@ -14545,6 +14603,7 @@ impl<'a> Emitter<'a> {
                     let cname = format!("v_{}_{}", local_cname(name), self.temps);
                     let _ = writeln!(out, "{pad}{ctype} {cname};");
                     self.match_stmt(init, &Dest::Place(cname.clone(), ty.clone()), depth, out)?;
+                    self.on_stack(&ty);
                     self.scopes.last_mut().expect("an open scope").push(Local { name: name.clone(), cname, ty, gone: false, drop: None });
                     return Ok(());
                 }
@@ -18185,6 +18244,9 @@ impl<'a> Emitter<'a> {
     /// The value of an expression as C writes it. A use that the checker marked as a move
     /// takes the value out of its place and leaves the place empty.
     fn value(&mut self, expr: &'a Expr) -> Res<String> {
+        if matches!(expr.ty, Ty::Array(..) | Ty::Struct(_) | Ty::Enum(_) | Ty::Nullable(_) | Ty::Result(..)) {
+            self.on_stack(&expr.ty);
+        }
         let head = std::mem::replace(&mut self.head, false);
         match &expr.kind {
             ExprKind::Int(value, ty) => Ok(int_literal(*value, *ty)),

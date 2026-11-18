@@ -1,0 +1,6 @@
+error: `Two` is too big: a value takes at most 2 305 843 009 213 693 951 bytes
+  that is the largest value whose addresses a pointer can count on a machine of 64 bits
+  --> error_struct_too_big.sg:6:8
+ 6 | struct Two {
+   |        ^^^
+  hint: keep the large part on the heap, in a `List<T>`

@@ -66,6 +66,9 @@ pub struct Program {
     /// Every `static`, of a module and of a block, in the order of the text. One written in a
     /// block is kept here too, under a name of its own, as a const is.
     pub statics: Vec<StaticDecl>,
+    /// The size and the alignment of each struct and enum, at most what C gives them. Filled in
+    /// by the checker.
+    pub value_layouts: std::collections::HashMap<String, (u64, u64)>,
 }
 
 /// `const int BlockSize = 4096`: a value known when the program is compiled.

@@ -26,10 +26,10 @@ pub fn parse(src: &str) -> Res<Program> {
 /// belongs to. What a module defines gets its full name here: `Product` in the folder `stock`
 /// is `stock.Product`.
 pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> {
-    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default(), library: false, freestanding: false, other_machine: false, left_out: Default::default(), lib_dirs: Vec::new(), home: None, consts: Vec::new(), const_values: Default::default(), embeds: Vec::new(), sizes: Default::default(), statics: Vec::new() };
+    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default(), library: false, freestanding: false, other_machine: false, left_out: Default::default(), lib_dirs: Vec::new(), home: None, consts: Vec::new(), const_values: Default::default(), embeds: Vec::new(), sizes: Default::default(), statics: Vec::new(), value_layouts: Default::default() };
     for (start, end, module) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
-        let mut parser = Parser { src, toks, i: 0, struct_literals: true, visible: Vec::new(), embed_base: program.embeds.len(), embeds: Vec::new(), in_text: false, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new() };
+        let mut parser = Parser { src, toks, i: 0, struct_literals: true, visible: Vec::new(), embed_base: program.embeds.len(), embeds: Vec::new(), in_text: false, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: 0 };
         let (structs, enums, funcs, aliases) = (program.structs.len(), program.enums.len(), program.funcs.len(), program.aliases.len());
         let (cvars, blocks, consts, statics) = (program.cvars.len(), program.blocks.len(), program.consts.len(), program.statics.len());
         let uses = parser.file(&mut program)?;
@@ -59,6 +59,10 @@ pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> 
     Ok(program)
 }
 
+/// How deep a program may nest blocks, expressions, the operators of a chain (`a + b + c`),
+/// the fields, calls and indexes read one after another, types and patterns.
+pub const MAX_NESTING: usize = 1000;
+
 struct Parser<'a> {
     src: &'a str,
     toks: Vec<Token>,
@@ -81,9 +85,39 @@ struct Parser<'a> {
     visible_statics: Vec<Vec<(String, String)>>,
     /// The statics written in blocks, with the functions that give their values.
     statics_found: Vec<(StaticDecl, Func)>,
+    /// How deep the tree being read is nested: blocks, expressions, the operators of a chain,
+    /// types and patterns. At most `MAX_NESTING`.
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
+    /// Reads one level deeper; the level is given back however the reading ends.
+    fn nest<T>(&mut self, read: impl FnOnce(&mut Self) -> Res<T>) -> Res<T> {
+        let before = self.depth;
+        let found = self.deeper().and_then(|()| read(self));
+        self.depth = before;
+        found
+    }
+
+    /// Reads what nests the tree by its own count (`deeper`), and gives the level back.
+    fn keep<T>(&mut self, read: impl FnOnce(&mut Self) -> Res<T>) -> Res<T> {
+        let before = self.depth;
+        let found = read(self);
+        self.depth = before;
+        found
+    }
+
+    /// One level deeper, at most `MAX_NESTING`: the checker, the interpreter and the back end
+    /// walk the tree by recursion, and a tree without a bound would overflow their stack.
+    fn deeper(&mut self) -> Res<()> {
+        self.depth += 1;
+        match self.depth > MAX_NESTING {
+            true => Err(Diag::error(self.span(), format!("this is nested more than {MAX_NESTING} deep"))
+                .hint("give a part a name of its own (`var part = ...`) or a function of its own")),
+            false => Ok(()),
+        }
+    }
+
     fn peek(&self) -> &Tok {
         &self.toks[self.i].tok
     }
@@ -165,6 +199,10 @@ impl<'a> Parser<'a> {
 
     /// `[read | ref] [shared | weak [checked | locked]] Name [<Type, ...>] { * | ? }`
     fn type_expr(&mut self) -> Res<TypeExpr> {
+        self.nest(|parser| parser.type_expr_in())
+    }
+
+    fn type_expr_in(&mut self) -> Res<TypeExpr> {
         let start = self.span();
         let mode = match self.peek() {
             Tok::Read => Some(Mode::Read),
@@ -1137,6 +1175,10 @@ impl<'a> Parser<'a> {
     }
 
     fn block(&mut self) -> Res<Block> {
+        self.nest(|parser| parser.block_in())
+    }
+
+    fn block_in(&mut self) -> Res<Block> {
         self.open_brace()?;
         let outer = std::mem::replace(&mut self.struct_literals, true);
         self.visible.push(Vec::new());
@@ -1659,6 +1701,10 @@ impl<'a> Parser<'a> {
     /// A pattern; `inside` is true within the parentheses of a variant, where a name alone
     /// takes the value.
     fn pattern_at(&mut self, inside: bool) -> Res<Pattern> {
+        self.nest(|parser| parser.pattern_at_in(inside))
+    }
+
+    fn pattern_at_in(&mut self, inside: bool) -> Res<Pattern> {
         let start = self.span();
         let kind = match self.peek().clone() {
             Tok::Var if inside => {
@@ -1766,6 +1812,10 @@ impl<'a> Parser<'a> {
 
     /// `a ?? b` binds loosest and groups to the right, as in C#.
     fn expr(&mut self) -> Res<Expr> {
+        self.nest(|parser| parser.expr_in())
+    }
+
+    fn expr_in(&mut self) -> Res<Expr> {
         let left = self.binary(0)?;
         if !self.eat(&Tok::QuestionQuestion) {
             return Ok(left);
@@ -1789,6 +1839,10 @@ impl<'a> Parser<'a> {
     /// shifts, additive, multiplicative. The same as C# except that `&`, `^` and `|` bind
     /// tighter than a comparison, so `flags & mask == 0` tests the masked value.
     fn binary(&mut self, level: usize) -> Res<Expr> {
+        self.keep(|parser| parser.binary_in(level))
+    }
+
+    fn binary_in(&mut self, level: usize) -> Res<Expr> {
         const LEVELS: &[&[(Tok, BinOp)]] = &[
             &[(Tok::OrOr, BinOp::Or)],
             &[(Tok::AndAnd, BinOp::And)],
@@ -1819,6 +1873,8 @@ impl<'a> Parser<'a> {
                 return Ok(left);
             };
             self.bump();
+            // Each operator of a chain nests the tree one more: `a + b + c` is `(a + b) + c`.
+            self.deeper()?;
             let right = self.binary(level + 1)?;
             let span = left.span.to(right.span);
             left = Expr { ty: Ty::Void, moved: false, kind: ExprKind::Binary(op, Box::new(left), Box::new(right)), span };
@@ -1872,6 +1928,10 @@ impl<'a> Parser<'a> {
     }
 
     fn unary(&mut self) -> Res<Expr> {
+        self.keep(|parser| parser.unary_in())
+    }
+
+    fn unary_in(&mut self) -> Res<Expr> {
         let start = self.span();
         let wrap = |kind: fn(Box<Expr>) -> ExprKind, operand: Expr| {
             let span = start.to(operand.span);
@@ -1887,17 +1947,17 @@ impl<'a> Parser<'a> {
                         return int_literal(-(value as i128), span);
                     }
                 }
-                let operand = self.unary()?;
+                let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(|e| ExprKind::Unary(UnOp::Neg, e), operand))
             }
             Tok::Bang => {
                 self.bump();
-                let operand = self.unary()?;
+                let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(|e| ExprKind::Unary(UnOp::Not, e), operand))
             }
             Tok::Tilde => {
                 self.bump();
-                let operand = self.unary()?;
+                let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(|e| ExprKind::Unary(UnOp::BitNot, e), operand))
             }
             Tok::New => {
@@ -1909,7 +1969,7 @@ impl<'a> Parser<'a> {
                     if checked || locked {
                         self.bump();
                     }
-                    let operand = self.unary()?;
+                    let operand = self.nest(|parser| parser.unary())?;
                     let span = start.to(operand.span);
                     return Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::NewShared { value: Box::new(operand), checked, locked }, span });
                 }
@@ -1921,19 +1981,19 @@ impl<'a> Parser<'a> {
                     return Err(Diag::error(self.span(), "a `weak` value is not made with `new`: it looks at a `shared` one")
                         .hint("make it `shared` and look at it with `weak`: `var owner = new shared Node { ... }`, then `weak owner`"));
                 }
-                let operand = self.unary()?;
+                let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(ExprKind::New, operand))
             }
             Tok::Ident(word) if word == "share" => {
                 self.bump();
-                let operand = self.unary()?;
+                let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(ExprKind::Share, operand))
             }
             // `atomic 0`: the value as an `atomic int`, like `locked` in `new shared locked 0`.
             // `atomic uint[3] { ... }` is an array of atomic values, since no array is one.
             Tok::Ident(word) if word == "atomic" => {
                 self.bump();
-                let mut operand = self.unary()?;
+                let mut operand = self.nest(|parser| parser.unary())?;
                 if let ExprKind::Array { ty, .. } = &mut operand.kind {
                     if ty.atomic.is_none() && ty.raw == 0 && ty.holder.is_none() {
                         ty.atomic = Some(0);
@@ -1945,12 +2005,12 @@ impl<'a> Parser<'a> {
             }
             Tok::Ident(word) if word == "weak" => {
                 self.bump();
-                let operand = self.unary()?;
+                let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(ExprKind::WeakOf, operand))
             }
             Tok::Ident(word) if word == "await" => {
                 self.bump();
-                let operand = self.unary()?;
+                let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(ExprKind::Await, operand))
             }
             // A prefix, like `try`: `unsafe p[0] + 1` reads one item and adds to it.
@@ -1960,7 +2020,7 @@ impl<'a> Parser<'a> {
                     return Err(Diag::error(start.to(self.span()), "`unsafe { }` is a block of statements, not a value")
                         .hint("for a value, write `unsafe` in front of it: `var first = unsafe p[0]`"));
                 }
-                let operand = self.unary()?;
+                let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(ExprKind::Unsafe, operand))
             }
             // `(raw byte)p`: a raw pointer read as one to another type; `(CFunc<int, int>)p`:
@@ -1969,24 +2029,24 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let ty = self.type_expr()?;
                 self.expect(Tok::RParen, "`)`")?;
-                let operand = self.unary()?;
+                let operand = self.nest(|parser| parser.unary())?;
                 let span = start.to(operand.span);
                 Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::RawCast { ty, expr: Box::new(operand) }, span })
             }
             // A prefix, like `await`: `try a().b()` tries the whole chain.
             Tok::Try => {
                 self.bump();
-                let operand = self.unary()?;
+                let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(|e| ExprKind::Try { expr: e, kind: TryKind::Null }, operand))
             }
             Tok::Read => {
                 self.bump();
-                let operand = self.unary()?;
+                let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(|e| ExprKind::Borrow { mutable: false, expr: e }, operand))
             }
             Tok::Ref => {
                 self.bump();
-                let operand = self.unary()?;
+                let operand = self.nest(|parser| parser.unary())?;
                 Ok(wrap(|e| ExprKind::Borrow { mutable: true, expr: e }, operand))
             }
             // `(int)x`, `(char)code`: a number type or `char` alone in parentheses is a cast.
@@ -1995,7 +2055,7 @@ impl<'a> Parser<'a> {
                     self.bump();
                     self.bump();
                     self.bump();
-                    let operand = self.unary()?;
+                    let operand = self.nest(|parser| parser.unary())?;
                     let span = start.to(operand.span);
                     Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::Cast { ty, expr: Box::new(operand) }, span })
                 }
@@ -2040,8 +2100,14 @@ impl<'a> Parser<'a> {
     }
 
     /// The fields, methods and items read after `expr`.
-    fn postfix_from(&mut self, mut expr: Expr) -> Res<Expr> {
+    fn postfix_from(&mut self, expr: Expr) -> Res<Expr> {
+        self.keep(|parser| parser.postfix_from_in(expr))
+    }
+
+    fn postfix_from_in(&mut self, mut expr: Expr) -> Res<Expr> {
         loop {
+            // Each field, call or index read after another nests the tree one more.
+            self.deeper()?;
             if *self.peek() == Tok::LBracket {
                 expr = self.index_or_slice(expr)?;
                 continue;
@@ -2368,7 +2434,7 @@ impl<'a> Parser<'a> {
                 Part::Text(text) => result.push(InterpPart::Text(text)),
                 Part::Code(range, spec) => {
                     let toks = lex(self.src, range, true)?;
-                    let mut inner = Parser { src: self.src, toks, i: 0, struct_literals: true, visible: Vec::new(), embeds: Vec::new(), embed_base: 0, in_text: true, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new() };
+                    let mut inner = Parser { src: self.src, toks, i: 0, struct_literals: true, visible: Vec::new(), embeds: Vec::new(), embed_base: 0, in_text: true, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new(), depth: self.depth };
                     let expr = inner.expr()?;
                     if *inner.peek() != Tok::Eof {
                         let diag = inner.unexpected("`}`");

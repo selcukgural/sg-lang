@@ -281,7 +281,10 @@ fn on_large_stack<T: Send>(work: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(STACK_BYTES)
-            .spawn_scoped(scope, work)
+            .spawn_scoped(scope, || {
+                crate::interp::mark_stack();
+                work()
+            })
             .expect("could not start the interpreter thread")
             .join()
             .expect("the interpreter stopped unexpectedly")

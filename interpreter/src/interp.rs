@@ -2036,9 +2036,11 @@ pub fn run_program<'a>(prog: &'a Program, sources: &'a crate::source::Sources, o
     let consts = Consts::given(prog);
     std::thread::scope(|scope| {
         let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: false, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
-        let result = run_main(&mut interp);
+        // A fault of the interpreter itself still ends the tasks that wait, so that the scope
+        // does not wait for their threads forever; then it goes on as the fault it is.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_main(&mut interp)));
         interp.end_fibers();
-        result
+        result.unwrap_or_else(|crash| std::panic::resume_unwind(crash))
     })
 }
 
@@ -2100,7 +2102,9 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
     let consts = Consts::given(prog);
     std::thread::scope(|scope| {
         let mut interp = Interp { funcs, methods, structs, enums, src, io: &io, scope, me: 0, depth: 0, in_test: true, guards: Vec::new(), aliases, started: Vec::new(), plain: &prog.plain, foreign: &prog.foreign, std_from: std_from(prog), errno: [0; 2], locking: 0, atomics: 0, consts: &consts };
-        run_each_test(&mut interp, prog, sources)
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_each_test(&mut interp, prog, sources)));
+        interp.end_fibers();
+        result.unwrap_or_else(|crash| std::panic::resume_unwind(crash))
     })
 }
 
@@ -2379,6 +2383,13 @@ fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)
                 Ok(slot) => {
                     found.insert(decl.name.clone(), const_of(&slot.borrow()));
                 }
+                Err(Unwind::Stop(Stop::Diag(_))) if CONST_TOO_BIG.get().is_some() => {
+                    ENDING.with(|ending| ending.set(false));
+                    let (count, items) = CONST_TOO_BIG.take().expect("looked at above");
+                    let least = if items { "at least " } else { "" };
+                    return Err(Diag::error(decl.init.span, format!("the value of `{name}` takes {least}{} MB, and a const takes at most 64 MB", count.div_ceil(1 << 20)))
+                        .note("a const is written into the program; a larger value is a `static`, found when the program first uses it"));
+                }
                 Err(Unwind::Stop(Stop::Diag(_))) if consts.steps.as_ref().is_some_and(|left| left.get() == 0) => {
                     ENDING.with(|ending| ending.set(false));
                     return Err(Diag::error(decl.init.span, format!("finding the value of `{name}` takes more than {} steps", group_digits(CONST_STEPS)))
@@ -2400,8 +2411,61 @@ fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)
     })
 }
 
+thread_local! {
+    /// Where the stack of this thread of the interpreter begins (`crate::STACK_BYTES` long);
+    /// 0 on a thread that did not mark it.
+    static STACK_BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// What is kept free at the end of the stack: more than one step of the recursion below
+/// takes between two looks.
+const STACK_SPARE: usize = 64 << 20;
+
+/// Marks where the stack of this thread begins: the first thing a thread of the interpreter
+/// does.
+pub(crate) fn mark_stack() {
+    let here = 0u8;
+    STACK_BASE.set(std::hint::black_box(&here) as *const u8 as usize);
+}
+
+/// The values the interpreter writes, compares and copies are walked by recursion, as deep as
+/// they are nested (a list of a million links). Before the stack runs out that is a panic of
+/// the program, as deep recursion of its own is, not a fault of the interpreter. The stack
+/// grows down on every machine the interpreter runs on.
+fn stack_room(span: Span, what: &str) -> Res<()> {
+    let base = STACK_BASE.get();
+    let here = 0u8;
+    let used = base.saturating_sub(std::hint::black_box(&here) as *const u8 as usize);
+    match base != 0 && used > crate::STACK_BYTES - STACK_SPARE {
+        true => Err(Diag::panic(span, format!("stack overflow: the value is nested too deep to be {what} here"))
+            .note("the interpreter walks a value by recursion; a loop of the program can walk it one link at a time")
+            .into()),
+        false => Ok(()),
+    }
+}
+
+/// While a const is found: a value that would hold more than a const may (64 MB) stops before
+/// the memory for it is taken. `unit` says what `count` counts: bytes, or the items of a list,
+/// each of which takes one at least.
+fn const_room(count: u64, unit: &str, span: Span) -> Res<()> {
+    match count > crate::EMBED_LIMIT {
+        true => {
+            // Said at the const, as the checker says a value found too big (`run_consts`).
+            CONST_TOO_BIG.set(Some((count, unit == "items")));
+            Err(Diag::panic(span, format!("a const takes at most 64 MB, and this would hold {} {unit}", group_digits(count))).into())
+        }
+        false => Ok(()),
+    }
+}
+
+thread_local! {
+    /// A const that grew past what a const may hold: the count `const_room` met, and whether it
+    /// counts items.
+    static CONST_TOO_BIG: std::cell::Cell<Option<(u64, bool)>> = const { std::cell::Cell::new(None) };
+}
+
 /// `100000000` as `100 000 000`.
-fn group_digits(count: u64) -> String {
+pub(crate) fn group_digits(count: u64) -> String {
     let digits = count.to_string();
     let mut out = String::new();
     for (position, digit) in digits.chars().enumerate() {
@@ -3547,6 +3611,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             }
         });
         let spawned = std::thread::Builder::new().stack_size(crate::STACK_BYTES).spawn_scoped(self.scope, move || {
+            mark_stack();
             let work = work;
             (work.0)()
         });
@@ -4029,6 +4094,15 @@ impl<'a, 'e> Interp<'a, 'e> {
     }
 
     fn expr(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
+        let value = self.expr_value(expr, frame)?;
+        // While a const is found, a text grows only as far as a const may hold.
+        if let (Some(_), Value::Str(text) | Value::Fmt(text)) = (&self.consts.steps, &value) {
+            const_room(text.len() as u64, "bytes", expr.span)?;
+        }
+        Ok(value)
+    }
+
+    fn expr_value(&mut self, expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
         match &expr.kind {
             ExprKind::Int(value, ty) => Ok(Value::Int(*ty, *value)),
             ExprKind::Float(text, ty) => Ok(Value::Float(*ty, float_literal(text, *ty))),
@@ -4260,7 +4334,12 @@ impl<'a, 'e> Interp<'a, 'e> {
             ExprKind::Char(value) => Ok(Value::Char(*value)),
             ExprKind::Array { args, items, .. } => {
                 let Ty::Array(item, length) = &expr.ty else { unreachable!("the checker gives an array its type") };
+                // An array the checker allows may still be more than the memory holds: that is
+                // a panic, as in compiled code, not an abort. Each item is a cell of its own here.
                 let mut cells = Vec::new();
+                if cells.try_reserve_exact(*length).is_err() {
+                    return Err(Diag::panic(expr.span, format!("there is no memory for an array of {} items", group_digits(*length as u64))).into());
+                }
                 match (items, args.first()) {
                     (Some(items), _) => {
                         for given in items {
@@ -4974,6 +5053,13 @@ impl<'a, 'e> Interp<'a, 'e> {
                     }
                     let recv = as_list(recv);
                     if matches!(recv, Value::List(_) | Value::Map(_) | Value::Set(_)) {
+                        if let (Some(_), Value::List(items), "add" | "addAll") = (&self.consts.steps, &recv, name.as_str()) {
+                            let added = match name.as_str() {
+                                "add" => 1,
+                                _ => cells_of(&values[0]).len(),
+                            };
+                            const_room(items.borrow().len().saturating_add(added) as u64, "items", expr.span)?;
+                        }
                         return self.collection_method(recv, name, values, expr.span);
                     }
                     // A separator that is empty would split nowhere and everywhere.
@@ -4996,6 +5082,10 @@ impl<'a, 'e> Interp<'a, 'e> {
                             // As in compiled code, a text too big for the memory stops the program
                             // with a panic instead of aborting it.
                             let size = (text.len() as i128).checked_mul(*times).filter(|size| *size <= isize::MAX as i128);
+                            if self.consts.steps.is_some() {
+                                let wanted = (text.len() as i128).saturating_mul(*times);
+                                const_room(u64::try_from(wanted).unwrap_or(u64::MAX), "bytes", expr.span)?;
+                            }
                             let mut repeated = String::new();
                             if size.is_none_or(|size| repeated.try_reserve_exact(size as usize).is_err()) {
                                 return Err(Diag::panic(expr.span, format!("there is no memory for a text of {} bytes repeated {times} times", text.len())).into());
@@ -5653,6 +5743,7 @@ impl<'a, 'e> Interp<'a, 'e> {
     /// itself; any other struct or enum is written field by field. `inside`: the value is
     /// part of another one, where text is quoted to keep the parts apart.
     fn show(&mut self, value: &Value, inside: bool, span: Span) -> Res<String> {
+        stack_room(span, "written")?;
         let list = |interp: &mut Self, fields: &[Cell]| -> Res<Vec<String>> {
             let mut parts = Vec::new();
             for field in fields {
@@ -5771,6 +5862,7 @@ impl<'a, 'e> Interp<'a, 'e> {
 
     /// `a.equals(b)`: the struct's own `equals`, or field by field.
     fn equal(&mut self, left: &Value, right: &Value, span: Span) -> Res<bool> {
+        stack_room(span, "compared")?;
         let (left, right) = (as_list(owned(left.clone())), as_list(owned(right.clone())));
         if let Some(result) = self.compared("equals", &left, &right, span)? {
             return Ok(matches!(result, Value::Bool(true)));
@@ -5827,6 +5919,7 @@ impl<'a, 'e> Interp<'a, 'e> {
 
     /// `a.compare(b)`: the struct's own `compare`; numbers and text have their order.
     fn compare(&mut self, left: &Value, right: &Value, span: Span) -> Res<std::cmp::Ordering> {
+        stack_room(span, "compared")?;
         let (left, right) = (owned(left.clone()), owned(right.clone()));
         match self.compared("compare", &left, &right, span)? {
             Some(Value::Int(_, result)) => Ok(result.cmp(&0)),

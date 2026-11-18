@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 18 November 2026, the hundred-and-sixteenth slice.
+Last brought up to date: 19 November 2026, the hundred-and-sixteenth slice.
 
 ## Functions and variables
 
@@ -142,6 +142,7 @@ Last brought up to date: 18 November 2026, the hundred-and-sixteenth slice.
 | `v.binary_search(&x).ok()` | `xs.binarySearch(x)` | built | `nint?`, the first of equal items, where Rust gives any one of them; the place to insert is `lowerBound` |
 | `v.partition_point(\|y\| *y < x)`, `v.partition_point(\|y\| *y <= x)` | `xs.lowerBound(x)`, `xs.upperBound(x)` | built | By the order of the items; with a function of its own (`binary_search_by`, `partition_point` on any test) not yet |
 | `[i32; 3]`, `[0u8; 16]`, `[255u8; 16]` | `int[3]`, `byte[16]`, `byte[16](255)` | built | |
+| *values of the type `[u8; N]` are too big for the target architecture* | an error: *a `byte[N]` is too big: a value takes at most 2 305 843 009 213 693 951 bytes* | built | Rust's bound is `isize::MAX`; SG's is 2^61 - 1, what Clang allows an array on a machine of 64 bits. Both touch a large frame page by page before it is used (Rust's stack probes, SG's `sg_probe_stack`) |
 | `&[T]`, `&mut [T]` | `read T[]`, `ref T[]` | built | `read xs` gives one where a slice is expected |
 | `HashMap<K, V>` | `HashMap<K, V>` | built | A hash table with a random key (SipHash), no order |
 | `m.insert(k, v)` (on a new key) | `map.add(k, v)` | built | A key that is there already is a panic; `map[k] = v` changes it |

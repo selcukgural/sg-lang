@@ -223,9 +223,16 @@ fn named_paths(text: &str, range: Span) -> Vec<String> {
         }
         // The last name of `billing.Line` is what is taken from the module; after `use` the
         // whole chain is the module.
-        let longest = if after_use { chain.len() } else { chain.len() - 1 };
-        for length in 1..=longest {
-            paths.push(chain[..length].join("."));
+        // A chain longer than a program may nest is an error of the parser; its paths are not
+        // all tried, which would take memory as the square of its length.
+        let longest = if after_use { chain.len() } else { chain.len() - 1 }.min(crate::parser::MAX_NESTING);
+        let mut path = String::new();
+        for name in &chain[..longest] {
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(name);
+            paths.push(path.clone());
         }
     }
     paths

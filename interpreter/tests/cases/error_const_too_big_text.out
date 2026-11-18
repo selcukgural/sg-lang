@@ -1,0 +1,5 @@
+error: the value of `Big` takes 128 MB, and a const takes at most 64 MB
+  a const is written into the program; a larger value is a `static`, found when the program first uses it
+  --> error_const_too_big_text.sg:10:20
+ 10 | const string Big = doubled(40)
+    |                    ^^^^^^^^^^^

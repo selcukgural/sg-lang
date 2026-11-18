@@ -1,0 +1,22 @@
+// The interpreter writes a value by recursion, as deep as it is nested. A chain of a million
+// links stops with a panic before its stack runs out. (Compiled code has no count of its stack
+// yet: the stack depth question of the design is open.)
+struct Node : Formattable {
+    int value
+    Node*? next
+}
+
+Node chain(int count) {
+    var head = Node { value = 0, next = null }
+    for i in 1..count {
+        head = Node { value = i, next = new head }
+    }
+    return head
+}
+
+void main() {
+    var head = chain(1000000)
+    print("built")
+    var text = $"{head}".toString()
+    print(text.length())
+}

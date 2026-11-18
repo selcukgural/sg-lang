@@ -1,0 +1,6 @@
+error: a `byte[9223372036854775807]` is too big: a value takes at most 2 305 843 009 213 693 951 bytes
+  that is the largest value whose addresses a pointer can count on a machine of 64 bits
+  --> error_value_too_big.sg:4:16
+ 4 |     var data = byte[9223372036854775807]
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: a `List<byte>` keeps its items on the heap, as many as the memory holds

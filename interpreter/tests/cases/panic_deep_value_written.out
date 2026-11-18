@@ -1,0 +1,6 @@
+built
+panic: stack overflow: the value is nested too deep to be written here
+  the interpreter walks a value by recursion; a loop of the program can walk it one link at a time
+  --> panic_deep_value_written.sg:20:19
+ 20 |     var text = $"{head}".toString()
+    |                   ^^^^

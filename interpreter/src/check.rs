@@ -105,6 +105,9 @@ struct Names {
     /// What each integer const holds, by full name (one of a block too), found before the types
     /// are, for the count of an array (`byte[BlockSize]`); or why it cannot be found then.
     sizes: HashMap<String, Result<i128, String>>,
+    /// The size and the alignment of each struct and enum, at most what C gives them, once the
+    /// types are known: a type written after that is measured against `VALUE_BYTES`.
+    layouts: Option<HashMap<String, (u64, u64)>>,
     /// The statics of the modules, by full name.
     statics: HashSet<String>,
     /// What each static holds (one of a block too), once the types are known; for `static
@@ -1045,6 +1048,15 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     // After that check: the layout rules walk the fields a struct holds by value, and would not
     // end on a struct that holds itself.
     layout_rules(prog, &structs)?;
+    let layouts = value_layouts(prog, &structs, &enums)?;
+    prog.value_layouts = layouts.clone();
+    names.layouts = Some(layouts);
+    // The signatures of the methods were read before the sizes were known.
+    for (decl, methods) in prog.structs.iter().map(|decl| (&decl.name, &decl.methods)).chain(prog.enums.iter().map(|decl| (&decl.name, &decl.methods))) {
+        for method in methods {
+            func_sig(method, &names, Some(decl))?;
+        }
+    }
 
     // A type that holds a borrow, or a value that carries one, names its source; and a type
     // that names a source holds something that borrows.
@@ -1950,6 +1962,154 @@ fn const_text(value: &ConstVal, structs: &HashMap<String, StructInfo>) -> String
     }
 }
 
+/// The most bytes a value of one type takes. As in Rust, the largest object whose addresses
+/// pointer arithmetic still counts right (`isize`), cut to what Clang accepts for an array on
+/// a machine of 64 bits. A machine of 32 bits, once one is supported, would have 2^31 - 1.
+pub const VALUE_BYTES: u64 = (1 << 61) - 1;
+
+/// The size and the alignment of a value of `ty`, at most what C gives it (a field of bits
+/// counted as its whole type, a tag as eight bytes); `None` past `VALUE_BYTES`. What lies
+/// on the heap (a text, a list, a `shared T`) counts as the handle a value keeps.
+pub(crate) fn value_layout(ty: &Ty, layouts: &HashMap<String, (u64, u64)>) -> Option<(u64, u64)> {
+    let found = match ty {
+        Ty::Int(int) if int.is_c() => (8, 8),
+        Ty::Int(int) => (u64::from(int.bits() / 8), u64::from(int.bits() / 8)),
+        Ty::Float(FloatTy::Float) | Ty::Char => (4, 4),
+        Ty::Float(_) => (8, 8),
+        Ty::Bool => (1, 1),
+        Ty::Void | Ty::Never | Ty::Null => (0, 1),
+        Ty::Array(item, count) => {
+            let (size, align) = value_layout(item, layouts)?;
+            (size.checked_mul(*count as u64)?, align)
+        }
+        Ty::Struct(name) | Ty::Enum(name) => *layouts.get(name).unwrap_or(&(0, 1)),
+        Ty::Atomic(inner) => {
+            let (size, _) = value_layout(inner, layouts)?;
+            (size, size.max(1))
+        }
+        Ty::Nullable(inner) if matches!(**inner, Ty::Ptr(_) | Ty::Raw(_)) => (8, 8),
+        // The value and a `bool` beside it.
+        Ty::Nullable(inner) | Ty::Locked(inner) => {
+            let (size, align) = value_layout(inner, layouts)?;
+            (size.checked_add(align.max(8))?, align.max(8))
+        }
+        Ty::Result(ok, error) => {
+            let (ok_size, ok_align) = value_layout(ok, layouts)?;
+            let (error_size, error_align) = value_layout(error, layouts)?;
+            (ok_size.max(error_size).checked_add(8)?, ok_align.max(error_align).max(8))
+        }
+        Ty::Entry(key, value) => {
+            let (key_size, key_align) = value_layout(key, layouts)?;
+            let (value_size, value_align) = value_layout(value, layouts)?;
+            (key_size.checked_add(value_size)?.checked_add(key_align.max(value_align))?, key_align.max(value_align))
+        }
+        _ => (32, 8),
+    };
+    (found.0 <= VALUE_BYTES).then_some(found)
+}
+
+/// A type whose values would take more than `VALUE_BYTES` is an error.
+fn too_big(ty: &Ty, layouts: &HashMap<String, (u64, u64)>, at: Span) -> Res<()> {
+    match value_layout(ty, layouts) {
+        Some(_) => Ok(()),
+        None => Err(Diag::error(at, format!("a `{ty}` is too big: a value takes at most {} bytes", crate::interp::group_digits(VALUE_BYTES)))
+            .note("that is the largest value whose addresses a pointer can count on a machine of 64 bits")
+            .hint(match ty.strip_borrow() {
+                Ty::Array(item, _) => format!("a `List<{item}>` keeps its items on the heap, as many as the memory holds"),
+                _ => "keep the large part on the heap, in a `List<T>`".to_string(),
+            })),
+    }
+}
+
+/// The layout of every struct and enum, after the check that none holds itself. One that
+/// would take more than `VALUE_BYTES` is an error at its name.
+fn value_layouts(prog: &Program, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>) -> Res<HashMap<String, (u64, u64)>> {
+    fn measure(name: &str, prog: &Program, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, layouts: &mut HashMap<String, (u64, u64)>) -> Option<(u64, u64)> {
+        if let Some(found) = layouts.get(name) {
+            return Some(*found);
+        }
+        // What a type holds by value is measured first.
+        let fields: Vec<&Ty> = match (structs.get(name), enums.get(name)) {
+            (Some(info), _) => info.fields.iter().map(|(_, ty)| ty).collect(),
+            (_, Some(info)) => info.variants.iter().flat_map(|(_, fields)| fields.iter().map(|(_, ty)| ty)).collect(),
+            _ => Vec::new(),
+        };
+        for field in &fields {
+            let mut inner = *field;
+            while let Ty::Array(item, _) | Ty::Atomic(item) | Ty::Nullable(item) | Ty::Locked(item) = inner {
+                inner = item;
+            }
+            if let Ty::Struct(other) | Ty::Enum(other) = inner {
+                measure(other, prog, structs, enums, layouts)?;
+            }
+            for part in match inner {
+                Ty::Result(ok, error) | Ty::Entry(ok, error) => vec![&**ok, &**error],
+                _ => Vec::new(),
+            } {
+                if let Ty::Struct(other) | Ty::Enum(other) = part.strip_borrow() {
+                    measure(other, prog, structs, enums, layouts)?;
+                }
+            }
+        }
+        let round = |size: u64, align: u64| size.checked_next_multiple_of(align.max(1));
+        let found = match (structs.get(name), enums.get(name)) {
+            (Some(_), _) => {
+                let decl = prog.structs.iter().find(|decl| decl.name == name).expect("a struct the checker knows");
+                let packed = decl.layout.packed.is_some();
+                let mut size = 0u64;
+                let mut align = decl.layout.align.map_or(1, |(align, _)| align);
+                for field in &fields {
+                    let (field_size, field_align) = value_layout(field, layouts)?;
+                    let field_align = if packed { 1 } else { field_align };
+                    align = align.max(field_align);
+                    size = match decl.layout.union {
+                        true => size.max(field_size),
+                        false => round(size, field_align)?.checked_add(field_size)?,
+                    };
+                }
+                // The bits left empty, each counted as its whole type.
+                size = size.checked_add(8u64.checked_mul(decl.layout.gaps.len() as u64)?)?;
+                (round(size, align)?, align)
+            }
+            (_, Some(info)) => {
+                let mut payload = 0u64;
+                let mut align = 8u64;
+                for (_, variant) in &info.variants {
+                    let mut size = 0u64;
+                    for (_, field) in variant {
+                        let (field_size, field_align) = value_layout(field, layouts)?;
+                        align = align.max(field_align);
+                        size = round(size, field_align)?.checked_add(field_size)?;
+                    }
+                    payload = payload.max(size);
+                }
+                (round(payload.checked_add(8)?, align)?, align)
+            }
+            _ => (0, 1),
+        };
+        (found.0 <= VALUE_BYTES).then(|| {
+            layouts.insert(name.to_string(), found);
+            found
+        })
+    }
+    let mut layouts = HashMap::new();
+    let named = prog.structs.iter().filter(|decl| !decl.opaque).map(|decl| (&decl.name, decl.name_span)).chain(prog.enums.iter().map(|decl| (&decl.name, decl.name_span)));
+    for (name, span) in named {
+        if measure(name, prog, structs, enums, &mut layouts).is_none() {
+            // A field too big on its own is shown where it is written.
+            let written = prog.structs.iter().filter(|decl| &decl.name == name).flat_map(|decl| decl.fields.iter().zip(&structs[name].fields))
+                .chain(prog.enums.iter().filter(|decl| &decl.name == name).flat_map(|decl| decl.variants.iter().flat_map(|variant| &variant.fields)).zip(enums.get(name).into_iter().flat_map(|info| info.variants.iter().flat_map(|(_, fields)| fields))));
+            for (field, (_, ty)) in written {
+                too_big(ty, &layouts, field.ty.span)?;
+            }
+            return Err(Diag::error(span, format!("`{}` is too big: a value takes at most {} bytes", short_name(name), crate::interp::group_digits(VALUE_BYTES)))
+                .note("that is the largest value whose addresses a pointer can count on a machine of 64 bits")
+                .hint("keep the large part on the heap, in a `List<T>`"));
+        }
+    }
+    Ok(layouts)
+}
+
 /// How many bytes a value of the type of a const takes in the program, a text not counted.
 fn type_bytes(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>) -> u64 {
     match ty {
@@ -2582,6 +2742,9 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
     };
     if nested || (ty.mode.is_some() && keeps_tasks(&resolved)) {
         return Err(task_kept(ty.span));
+    }
+    if let Some(layouts) = &names.layouts {
+        too_big(&resolved, layouts, ty.span)?;
     }
     Ok(match ty.mode {
         Some(Mode::Read) => Ty::Read(Box::new(resolved)),

@@ -1,0 +1,4 @@
+panic: there is no memory for an array of 1 000 000 000 000 000 items
+  --> panic_array_no_memory.sg:4:16
+ 4 |     var data = byte[1000000000000000]
+   |                ^^^^^^^^^^^^^^^^^^^^^^
