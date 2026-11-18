@@ -1,0 +1,9 @@
+// The value of `?.` is used, as the value of `.` is.
+struct Point : Copyable {
+    int x
+}
+
+void main() {
+    Point? p = Point { x = 1 }
+    p?.x
+}

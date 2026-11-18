@@ -1,0 +1,5 @@
+error: a field that borrows has no default value
+  what it borrows is given when the value is built
+  --> error_field_default_borrow.sg:3:22
+ 3 |     read string text = "none"
+   |                      ^

@@ -1,0 +1,11 @@
+Point { x = 1, y = 2 }
+Point { x = 5, y = 2 }
+Point { x = 5, y = 9 }
+0
+closing one
+after with
+Job { title = "second", handle = Handle { name = "two" }, steps = [] }
+other
+[1]
+closing m
+closing two

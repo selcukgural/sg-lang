@@ -1,0 +1,13 @@
+// `with` takes the value; one that is lent is copied only when it is `Copyable`.
+struct Line {
+    string text
+    int number
+}
+
+void renumber(read Line line) {
+    var next = line with { number = 2 }
+}
+
+void main() {
+    renumber(read Line { text = "a", number = 1 })
+}

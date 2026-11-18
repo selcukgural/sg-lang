@@ -1,0 +1,7 @@
+// What a field borrows is given when the value is built.
+struct View<from source> {
+    read string text = "none"
+}
+
+void main() {
+}

@@ -1,0 +1,5 @@
+error: `p` is a `Point`, which is never `null`
+  --> error_null_conditional_never_null.sg:8:11
+ 8 |     print(p?.x ?? 0)
+   |           ^
+  hint: write `.` instead of `?.`

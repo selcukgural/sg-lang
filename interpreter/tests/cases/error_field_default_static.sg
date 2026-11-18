@@ -1,0 +1,10 @@
+// A static is found when the program runs, too late for the default value of a field.
+static int Port = 80
+
+struct Server {
+    int port = Port
+}
+
+void main() {
+    var server = Server {}
+}

@@ -1,0 +1,9 @@
+error: `a` cannot be changed here: `name` borrows from it and is used again later
+  --> error_null_conditional_lent.sg:9:5
+ 9 |     a = null
+   |     ^
+  `name` borrowed it here:
+  --> error_null_conditional_lent.sg:8:16
+ 8 |     var name = a?.name
+   |                ^
+  hint: finish with `name` before this line: a borrow ends at its last use

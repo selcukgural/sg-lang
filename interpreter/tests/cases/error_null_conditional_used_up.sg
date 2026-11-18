@@ -1,0 +1,14 @@
+// A method that takes `this` uses the value up, through `?.` as through `.`.
+struct Ticket {
+    int number
+
+    void spend(this) {
+        print(this.number)
+    }
+}
+
+void main() {
+    Ticket? ticket = Ticket { number = 1 }
+    ticket?.spend()
+    print(ticket?.number ?? 0)
+}

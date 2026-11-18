@@ -1,0 +1,12 @@
+// In a condition `{` starts the block, so `with` needs parentheses.
+struct Point : Copyable, Equatable {
+    int x
+    int y
+}
+
+void main() {
+    var p = Point { x = 1, y = 2 }
+    if p with { x = 2 } == p {
+        print("same")
+    }
+}

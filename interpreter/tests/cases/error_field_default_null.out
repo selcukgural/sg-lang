@@ -1,0 +1,5 @@
+error: `int` cannot be `null`
+  --> error_field_default_null.sg:3:17
+ 3 |     int count = null
+   |                 ^^^^
+  hint: a value that may be missing has the type `int?`

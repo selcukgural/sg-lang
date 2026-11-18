@@ -1,0 +1,5 @@
+error: `with` needs parentheses here, where `{` starts the block
+  --> error_with_condition.sg:9:10
+ 9 |     if p with { x = 2 } == p {
+   |          ^^^^
+  hint: `(p with { ... })`

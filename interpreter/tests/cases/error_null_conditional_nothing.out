@@ -1,0 +1,5 @@
+error: `door?.open()` gives nothing, so `?.` has no value to give
+  --> error_null_conditional_nothing.sg:10:18
+ 10 |     var opened = door?.open()
+    |                  ^^^^^^^^^^^^
+  hint: write it on a line of its own

@@ -1,0 +1,24 @@
+// Defaults written in this module are what the literals of other modules get: the names in them are
+// found here.
+
+const int BasePort = 8000
+
+public struct Item : Copyable, Formattable {
+    public int count = 1
+}
+
+public struct Settings : Formattable {
+    public string host = "localhost"
+    public int port = BasePort + 80
+    public List<Item> items = List<Item>()
+}
+
+// A field that is not public keeps the literal, and `with`, inside this module, default or not.
+public struct Account : Formattable {
+    public string owner
+    long balance = 0
+
+    public Account create(string owner) {
+        return Account { owner = owner }
+    }
+}

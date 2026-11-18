@@ -1,0 +1,5 @@
+error: the value of this expression is not used
+  --> error_null_conditional_unused.sg:8:5
+ 8 |     p?.x
+   |     ^^^^
+  hint: only a call, an assignment or a declaration can be a statement

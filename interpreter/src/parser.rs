@@ -811,7 +811,8 @@ impl<'a> Parser<'a> {
                     }
                     layout.gaps.push(Gap { before: fields.len(), ty, bits: width, span: Span::new(span.start, self.prev_end()) });
                 } else {
-                    fields.push(FieldDecl { public, readonly, ty, name: member, span, bits });
+                    let default = if *self.peek() == Tok::Assign { Some(self.field_default(&name, &member, span, &ty, layout.union)?) } else { None };
+                    fields.push(FieldDecl { public, readonly, ty, name: member, span, bits, default });
                 }
             }
             if *self.peek() != Tok::RBrace {
@@ -821,6 +822,39 @@ impl<'a> Parser<'a> {
         }
         self.bump();
         Ok(StructDecl { public: false, name, name_span, sources, interfaces, fields, methods, opaque: false, layout })
+    }
+
+    /// `int port = 80` in a struct: the default value of the field. `null` and an empty
+    /// collection are put into a literal as written; anything else is a value known when the
+    /// program is compiled, held by a const of its own, of the type the field has without its
+    /// `?`.
+    fn field_default(&mut self, owner: &str, field: &str, span: Span, ty: &TypeExpr, union: bool) -> Res<FieldDefault> {
+        let assign = self.bump().span;
+        if union {
+            return Err(Diag::error(assign, "a field of a union has no default value")
+                .note("a union is built with the one field it holds"));
+        }
+        if ty.mode.is_some() {
+            return Err(Diag::error(assign, "a field that borrows has no default value")
+                .note("what it borrows is given when the value is built"));
+        }
+        let visible: Vec<(String, String)> = self.visible.iter().flatten().cloned().collect();
+        self.in_const = true;
+        let init = self.expr();
+        self.in_const = false;
+        let init = init?;
+        match &init.kind {
+            ExprKind::Null => return Ok(FieldDefault::Expr(init)),
+            ExprKind::Collection { args, items: None, .. } if args.is_empty() => return Ok(FieldDefault::Expr(init)),
+            _ => {}
+        }
+        let mut ty = ty.clone();
+        if ty.suffixes.last() == Some(&Suffix::Nullable) {
+            ty.suffixes.pop();
+        }
+        let full = format!("{field}#{}", span.start);
+        self.consts_found.push(ConstDecl { public: false, name: full.clone(), name_span: span, ty, init, local: Some(format!("{owner}.{field}")), visible, assert: None });
+        Ok(FieldDefault::Const(full))
     }
 
     /// `<from source>` after the name of a struct or an enum that carries a borrow.
@@ -932,7 +966,7 @@ impl<'a> Parser<'a> {
                 while *self.peek() != Tok::RParen {
                     let ty = self.type_expr()?;
                     let (field, span) = self.ident("a field name")?;
-                    fields.push(FieldDecl { public: true, readonly: false, ty, name: field, span, bits: None });
+                    fields.push(FieldDecl { public: true, readonly: false, ty, name: field, span, bits: None, default: None });
                     if !self.eat(&Tok::Comma) {
                         break;
                     }
@@ -1753,7 +1787,7 @@ impl<'a> Parser<'a> {
             &[(Tok::Star, BinOp::Mul), (Tok::Slash, BinOp::Div), (Tok::Percent, BinOp::Rem)],
         ];
         if level == LEVELS.len() {
-            return self.unary();
+            return self.with_expr();
         }
         let mut left = self.binary(level + 1)?;
         loop {
@@ -1802,6 +1836,24 @@ impl<'a> Parser<'a> {
             _ => return Err(self.unexpected("`null` or a variant name").note("`is` tests for `null` or for one variant of an enum")),
         };
         Ok(Expr { ty: Ty::Void, moved: false, kind, span: Span::new(start, self.prev_end()) })
+    }
+
+    /// `p with { x = 3 }`: a copy of a struct with the fields written changed, as in C#. It
+    /// binds tighter than any binary operator and looser than a prefix, so `try load() with {
+    /// ... }` changes what `try` gives.
+    fn with_expr(&mut self) -> Res<Expr> {
+        let mut expr = self.unary()?;
+        while self.at_word("with") && *self.peek_at(1) == Tok::LBrace {
+            if !self.struct_literals {
+                return Err(Diag::error(self.span(), "`with` needs parentheses here, where `{` starts the block")
+                    .hint(format!("`({} with {{ ... }})`", &self.src[expr.span.start..expr.span.end])));
+            }
+            self.bump();
+            let fields = self.struct_fields()?;
+            let span = Span::new(expr.span.start, self.prev_end());
+            expr = Expr { ty: Ty::Void, moved: false, kind: ExprKind::With { base: Box::new(expr), fields }, span };
+        }
+        Ok(expr)
     }
 
     fn unary(&mut self) -> Res<Expr> {
@@ -1968,11 +2020,33 @@ impl<'a> Parser<'a> {
     }
 
     fn postfix(&mut self) -> Res<Expr> {
-        let mut expr = self.primary()?;
+        let expr = self.primary()?;
+        self.postfix_from(expr)
+    }
+
+    /// The fields, methods and items read after `expr`.
+    fn postfix_from(&mut self, mut expr: Expr) -> Res<Expr> {
         loop {
             if *self.peek() == Tok::LBracket {
                 expr = self.index_or_slice(expr)?;
                 continue;
+            }
+            // `a?.b.c`: if `a` is `null`, so is the whole chain, and the rest of it does not
+            // run (C#). Read as `match a { null => null, var held => held.b.c }`, where `held`
+            // has a name no program can write; the checker lends `a` when it is a place.
+            if *self.peek() == Tok::Question && *self.peek_at(1) == Tok::Dot {
+                let mark = self.bump().span;
+                let held = format!("{OR_NULL}{}", mark.start);
+                let start = expr.span.start;
+                let stand_in = Expr { ty: Ty::Void, moved: false, kind: ExprKind::Var(held.clone()), span: expr.span };
+                let rest = self.postfix_from(stand_in)?;
+                let null = Expr { ty: Ty::Void, moved: false, kind: ExprKind::Null, span: mark };
+                let arms = vec![
+                    Arm { pattern: Pattern { kind: PatternKind::Null, span: mark }, guard: None, body: Vec::new(), value: Some(null), span: mark },
+                    Arm { pattern: Pattern { kind: PatternKind::Bind(held), span: mark }, guard: None, body: Vec::new(), span: rest.span, value: Some(rest) },
+                ];
+                let kind = ExprKind::Match { subject: Box::new(expr), arms, borrowed: false };
+                return Ok(Expr { ty: Ty::Void, moved: false, kind, span: Span::new(start, self.prev_end()) });
             }
             if !self.eat(&Tok::Dot) {
                 break;

@@ -1,0 +1,9 @@
+// `a?.b = 5` is not in the language: test `a` first.
+struct Point : Copyable {
+    int x
+}
+
+void main() {
+    Point? p = Point { x = 1 }
+    p?.x = 5
+}

@@ -1,0 +1,11 @@
+// `with` moves a value that is not `Copyable`.
+struct Line {
+    string text
+    int number
+}
+
+void main() {
+    var line = Line { text = "a", number = 1 }
+    var next = line with { number = 2 }
+    print(line.number)
+}

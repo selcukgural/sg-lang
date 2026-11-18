@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 18 November 2026, the hundred-and-seventh slice.
+Last brought up to date: 18 November 2026, the hundred-and-eighth slice.
 
 ## Functions and variables
 
@@ -144,6 +144,8 @@ Last brought up to date: 18 November 2026, the hundred-and-seventh slice.
 | `struct P { x: i32 }` | `struct P { int x }` | built | One field per line |
 | `P { x: 1 }` | `P { x = 1 }` | built | |
 | `impl P { fn len(&self) -> i32 }` | `int len(read this)` in the struct body | built | Fields are `this.x` |
+| `struct Config { port: u16 = 80 }` (`default_field_values`, not stable yet), `Config { ..Default::default() }` | `struct Config { int port = 80 }`, `Config {}` | built | No `..` at the literal. A default is what a const can be (found when the program is compiled), `null` or an empty collection |
+| `Point { x: 3, ..p }` | `p with { x = 3 }` | built | C#'s notation. `p` is moved, or copied when it is `Copyable`; what the fields written held is dropped there. A struct with a field another module does not see is not copied with `with` there, as in Rust |
 | `&mut self`, `self` | `ref this`, `this` | built | |
 | `P::new(1)` | `P.create(1)`, or `P(1)` for short | built | A function without `this` is called on the type |
 | `enum Shape { Circle(i32) }` | `enum Shape { Circle(int radius) }` | built | What a variant carries has a name |
@@ -180,6 +182,8 @@ Last brought up to date: 18 November 2026, the hundred-and-seventh slice.
 | `x.unwrap_or(d)` | `x ?? d` | built | |
 | `x.expect("...")` | `x ?? panic("...")` | built | |
 | `x?` on an `Option` | `try x` | built | |
+| `x.as_ref().map(\|p\| &p.name)`, `x.as_ref().and_then(\|p\| p.next.as_ref())` | `x?.name`, `x?.next?.name` | built | The rest of the chain does not run on `null`; a field that is not `Copyable` is lent (`read string?`), one that is copied (`int?`). `x?.name is not null` narrows `x` |
+| `if let Some(p) = &mut x { p.items.push(1) }` | `x?.items.add(1)` | built | `x` is lent as `ref` when the chain calls a method that changes it |
 | `x.take()`, `std::mem::replace(&mut x, v)` | `x.take()`, `x.replace(v)` | built | |
 
 ## Errors

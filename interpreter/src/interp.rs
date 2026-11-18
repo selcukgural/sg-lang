@@ -4085,6 +4085,28 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let disposed_as = self.structs[name.as_str()].disposable().then(|| name.as_str().into());
                 Ok(Value::Struct(name.as_str().into(), Rc::new(Fields { cells, disposed_as })))
             }
+            // The value of `base`, owned here, with the fields written given anew: what they
+            // held is dropped as each is replaced.
+            ExprKind::With { base, fields } => {
+                let Value::Struct(name, old) = self.expr(base, frame)? else { unreachable!("the checker gives `with` a struct") };
+                let mut values: Vec<Value> = match Rc::try_unwrap(old) {
+                    // Moved here: the value is this one, so it is not disposed of.
+                    Ok(mut whole) => {
+                        whole.disposed_as = None;
+                        std::mem::take(&mut whole.cells).into_iter().map(|field| field.borrow().clone()).collect()
+                    }
+                    Err(copied) => copied.cells.iter().map(|field| field.borrow().clone()).collect(),
+                };
+                for init in fields {
+                    let value = self.expr(&init.value, frame)?;
+                    if let Some(width) = self.plain.get(&*name).and_then(|plain| plain.bits[init.index]) {
+                        fits_bits(&value, width, init.value.span)?;
+                    }
+                    drop(std::mem::replace(&mut values[init.index], value));
+                }
+                let disposed_as = self.structs[&*name].disposable().then(|| name.clone());
+                Ok(Value::Struct(name, Rc::new(Fields { cells: values.into_iter().map(cell).collect(), disposed_as })))
+            }
             ExprKind::New(inner) => Ok(Value::Ptr(cell(self.expr(inner, frame)?))),
             // An atomic value is kept as the value itself: one task runs at a time.
             ExprKind::Atomic(inner) => self.expr(inner, frame),

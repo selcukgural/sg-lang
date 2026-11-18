@@ -1,0 +1,8 @@
+// A `Result` holds an error, not a `null`.
+Result<int, string> parse(read string text) {
+    return Error("not a number")
+}
+
+void main() {
+    print(parse("x")?.abs() ?? 0)
+}

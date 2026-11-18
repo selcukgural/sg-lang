@@ -1,0 +1,4 @@
+error: `with` takes the value of `line`, which is lent here, and a `Line` is not `Copyable`
+  --> error_with_lent.sg:8:16
+ 8 |     var next = line with { number = 2 }
+   |                ^^^^

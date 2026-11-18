@@ -1,0 +1,9 @@
+error: `answer` cannot be changed here: `text` borrows from it and is used again later
+  --> error_match_lends.sg:13:5
+ 13 |     answer = Answer.Nothing
+    |     ^^^^^^
+  `text` borrowed it here:
+  --> error_match_lends.sg:9:22
+ 9 |     var text = match read answer {
+   |                      ^^^^^^^^^^^
+  hint: finish with `text` before this line: a borrow ends at its last use

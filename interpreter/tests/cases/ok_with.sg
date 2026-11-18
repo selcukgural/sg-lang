@@ -1,0 +1,48 @@
+// `p with { x = 3 }`: a new value of a struct, with the fields written changed.
+
+struct Point : Copyable, Formattable {
+    int x
+    int y
+}
+
+struct Handle : Disposable, Formattable {
+    string name
+
+    void dispose(ref this) {
+        print($"closing {this.name}")
+    }
+}
+
+struct Job : Formattable {
+    string title
+    Handle handle
+    List<int> steps
+}
+
+Job make() {
+    return Job { title = "made", handle = Handle { name = "m" }, steps = List<int> { 1 } }
+}
+
+Point moved(read Point p) {
+    return p with { y = 9 }       // a `Copyable` value lent is copied
+}
+
+void main() {
+    var p = Point { x = 1, y = 2 }
+    var q = p with { x = 5 }
+    print(p)
+    print(q)
+    print(moved(read q))
+    print((p with { y = 0 }).y)
+
+    // `job` is moved; the handle replaced is dropped there, before the next line.
+    var job = Job { title = "first", handle = Handle { name = "one" }, steps = List<int>() }
+    var next = job with { handle = Handle { name = "two" }, title = "second" }
+    print("after with")
+    print(next)
+
+    // From a value with no name.
+    var other = make() with { title = "other" }
+    print(other.title)
+    print(other.steps)
+}

@@ -1,0 +1,8 @@
+error: `line` was moved and can no longer be used
+  --> error_with_moved.sg:10:11
+ 10 |     print(line.number)
+    |           ^^^^
+  it was moved here:
+  --> error_with_moved.sg:9:16
+ 9 |     var next = line with { number = 2 }
+   |                ^^^^

@@ -40,7 +40,7 @@ of `tests/Containerfile` has them.
 | Types | `sbyte`, `byte`, `short`, `ushort`, `int` (32 bit), `uint`, `long`, `ulong`, `nint`, `nuint`, `CLong` and `CULong` (C's `long` and `unsigned long`), `float`, `double`, `bool`, `char`, `string`, `void` as return type, structs, enums, `T*`, `T?`, `shared T`, `weak T`, `shared checked T`, `weak checked T`, `shared locked T`, `weak locked T`, `Task<R>`, `CancellationSource`, `CancellationToken`, `TcpListener`, `TcpStream`, `UdpSocket`, `SocketAddress`, `CString`, `Duration`, `Instant`, `DateTime`, `Random`, `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, arrays `T[N]`, slices `read T[]` and `ref T[]`, raw pointers `raw T`, pointers to functions of C `CFunc<A, R>`, types of C seen only behind a raw pointer (`struct sqlite3` in an `extern` block), `read T` and `ref T` in signatures |
 | Type aliases | `using NodeRef = shared Node`, `public using P = Point`: a second name for the same type, which also builds it (`new NodeRef(1, null)`, `P(1, 2)`, `P { x = 1, y = 2 }`) |
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
-| Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
+| Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows. A field may have a default value, which a literal that leaves it out gives it (`struct Config { int port = 80 }`, `Config {}`): what a const can be, found when the program is compiled, `null` or an empty collection. `p with { x = 3 }` is a new value with the fields written changed: `p` is moved, or copied when it is `Copyable`, and what those fields held is dropped there |
 | Methods | Written in the body of a struct or an enum with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`, and an enum looks at itself with `match this`. Called as `stack.push(1)`, `shape.area()`, also through pointers and borrows. With a type in front of `this` (`read FolderRef this`, `FolderRef this`) a method is called on the `shared` value that holds the struct. A function without `this` is called on the type: `Stack.create()`, `Shape.unit()`. `Stack(args)` is short for `Stack.create(args)` |
 | Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line, and methods after or between them. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)`. An enum with numbers names their integer type first: `enum Block : byte, Copyable { Image = 0x2C` / `Trailer = 0x3B }`, its variants carry nothing, and one without a number has one more than the variant above; `(byte)block` gives the number, `Block.fromValue(b)` the variant or `null`, and `: Comparable` orders by the numbers without a `compare` written |
 | `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a pattern for each value it carries (a name, `_`, or a pattern inside: `Add(Number(0), right)`, `Word("let")`, `Paint(Red)`), `_`, `var other`; a condition with `when`. On an integer the patterns are numbers and characters, on a `char` characters (`match c { '+' => ... _ => ... }`), on a text texts (`match word { "if" => ... _ => ... }`), on a `bool` `true` and `false`. Patterns are joined with `or` (`Add(l, _) or Mul(l, _)`, `'+' or '-'`), and each names the same values; numbers and characters come in ranges that take both ends (`'a'..='z'`, `0..=9`). On a `T?` the patterns are `null` and those of the `T`, also inside a variant (`Node(null, _)`); a name below an arm `null` takes a value that is not `null`. A value no arm takes, or an arm that can never run, is a compile error that names the value: `does not handle Add(Name(_), _)`, `no arm takes 128..=255`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
@@ -80,7 +80,7 @@ of `tests/Containerfile` has them.
 | Signals | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })`: while the listener lives, those signals do not end the program; `signals.next()` waits for the next and gives it, `await signals.nextAsync(read token)` without holding the thread. Several of one kind before a call are one; every listener gets each signal it listens for. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`. `Signals.raise(signal)` sends one to this program. Written in SG in the module `std`; the handler only writes into a pipe, and a thread hands each signal on. On Windows `Interrupt` is Ctrl-C and Ctrl-Break, `Terminate` the console closed, the user logging off and the system shutting down (the program is then held until it ends, within the few seconds Windows gives); the others never come there, and `raise` hands them to listeners all the same; with no listener a raised signal ends the program as Ctrl-C does (`0xC000013A`), and `WindowChange` does nothing |
 | Atomic values | `atomic T` for an integer, `bool`, `float`, `double` or `raw T`, made with `atomic 0` and written anywhere a value is (a field, a local, a list, an array `atomic uint[4] { ... }`, raw memory as `Memory.allocate<atomic long>(n)` or `(raw atomic int)p`); tasks share one as `new shared atomic 0` or in a `shared` struct, since its methods work through `read` and `shared`. `count.load()`, `count.store(v)`, `count.exchange(v)`, `count.compareExchange(expected, desired)` and `compareExchangeWeak` (a `Result<T, T>`: `Ok` with the value it wrote over, `Error` with the one it found), `count.fetchAdd(n)` and `fetchSub` on numbers (the value before; overflow is a panic in a debug build and wraps in a release build, `wrappingFetchAdd` wraps in both), `fetchAnd`, `fetchOr`, `fetchXor` on integers and `bool`. Each is sequentially consistent unless an order follows the values, written as a variant: `count.load(MemoryOrder.Acquire)`, `count.compareExchange(a, b, MemoryOrder.AcquireRelease, MemoryOrder.Relaxed)`; an order the operation cannot keep is a compile error. `Atomic.fence(order)`, `Atomic.compilerFence(order)`, `Atomic.spinLoop()`. `struct Pool : unsafe Sendable` goes to another task with its raw pointers, as its writer promises. `examples/queue` is a queue without locks for many producers and many consumers, with no `unsafe` |
 | `volatile` | `unsafe Memory.readVolatile(regs[0].status)` and `unsafe Memory.writeVolatile(regs[0].control, 1)`: a place in raw memory read or written once, where it is written, for the registers of a device; it orders nothing between tasks |
-| Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
+| Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }`. `a?.b.c`, `a?.m()`, `a?.b?.c`: `null` when `a` is, and the rest of the chain does not run; a field that is not `Copyable` is lent (`a?.name` is a `read string?`), and `a?.b is not null` narrows `a` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place. A name never hides another: a new local, the name of a `for` or of a pattern with the name of a local or a parameter of a block around it is a compile error, as in C#; blocks side by side, and code after a block has ended, may use one name |
 | Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for i in (a..b).reversed()` (from `b - 1` down to `a`), `for x in xs`, `break`, `continue`, `return`. A loop may have a name, `outer: for ...` or `outer: while ...`, which `break outer` and `continue outer` use from a loop inside it; a name not used is an error. What a loop moved is gone after it as it was at each `break`, before its first round and at the end of each round |
 | Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x`. On integers `& \| ^ ~ << >>`; they bind tighter than a comparison, so `flags & mask == 0` tests the masked value |
@@ -181,7 +181,7 @@ Design rules that are already enforced:
 - A method that takes `this` by value uses the receiver up, like passing it to a function.
 - The receiver is never written with `read` or `ref` at the call; the method's first parameter decides.
 - Inside a method a bare field name is an error whose hint is `this.name`.
-- Every field of a struct literal gets a value. A struct or an enum cannot contain itself by value; the hint
+- Every field of a struct literal gets a value, written or its default. A struct or an enum cannot contain itself by value; the hint
   is `T*`.
 - A `match` handles every variant, or the error names the missing ones. An arm with `when` does not settle its
   variant. A bare name that is not a variant is an error whose hint is `var name`.
@@ -7388,6 +7388,48 @@ numbers", "The bits of an integer"). What building them asked for besides, from 
      as errors, took a test and a statement after it on one line of the new helpers for a misleading indent;
      they are written in braces.
 
+Choices made in the hundred-and-eighth slice (the default value of a field, `with`, `?.`). 1193 to 1201 were put
+to the author before the slice and approved on 18 November 2026; they are in the decisions file ("The default
+value of a field", "`with`", "`?.`"). What building them asked for besides, from 1202. Approved on
+18 November 2026:
+
+1202. **A default is a const of its own**, as the number of a variant is (1184): `port#` and where it is written,
+     checked by the rules of a const and found with the others, so a literal that leaves the field out reads one
+     value. The messages speak of the field (`the default value of a field cannot be a List<int>`, with what a
+     default can be). A field `int? limit = 5` holds a const of `int`. `null` and an empty collection are no
+     const; they are checked where they are written (`int count = null` is an error there, not at a literal).
+1203. **A field that borrows has no default**, nor does one of a union: what a field borrows is given when the
+     value is built, and a union is built with the one field it holds.
+1204. **Where `with` stands among the operators**: tighter than any operator between two values, looser than one
+     in front, as in C#: `try load() with { ... }` changes what `try` gives, `a + b with { ... }` changes `b`. In a
+     condition it needs parentheses, as a literal does, with an error that says so; `with { }` is an error.
+1205. **The order of `with`**: the value it starts from first, then the values written in their order, and only
+     then are the old values of those fields dropped (compiled, one expression of C; the interpreter drops each
+     where it is replaced, which shows only as the order of two `dispose`). A value lent is taken only when it is
+     `Copyable`; the hint is `p.clone() with { ... }` when the struct has `clone`.
+1206. **`?.` is a `match`** the parser writes (`match a { null => null, var held => held.b }`, `held` a name no
+     program can write), so its borrows, its moves and its C are those of `match`. A place is lent: `read`, or
+     `ref` when the first method of the chain, reached through fields and items, changes what it is called on
+     (`cache?.items.add(1)`); a method of the program that takes `this`, as the first step, uses the place up,
+     as `.` does (`ticket?.spend()`). From a value with no name a field is taken, as `make().name` takes it
+     (`find(3)?.name` is a `string?`).
+1207. **The type of `?.`** is that of the chain made a `T?`: a place that is `Copyable` is copied (`a?.age` is an
+     `int?`), and a `T?` stays one. Where a value that is not a `T?` is expected (`int x = a?.age`), the error
+     is that of an `int?` there, with the hint `??`.
+1208. **Found on the way**: a `match` that gave a borrow of what it looked at (`var text = match read answer {
+     Text(t) => t ... }`) did not keep it lent, so `answer` could be changed while `text` was still used, and
+     compiled code would read what was freed. What a `match` gives now borrows from what it looks at, as the
+     names of its arms do. A program that changed the value while the borrow lived is now a compile error.
+1209. **Found on the way**: `null` where a `read T*?` or a `read shared T?` goes (`missing(null)`) was not in
+     the C back end; it is a pointer to a pointer that is `NULL`, one for each type, which nothing writes.
+1210. **Documents and tests**: this list, the table above, "Not here yet", "Next"; 02 ("Construction", "`?.`"),
+     04 ("The default value of a field", "`with`", "`?.`", each with its row "as built"), 06; the root README.
+     Tests: `ok_field_defaults`, `ok_with`, `ok_null_conditional`, the module `tests/modules/defaults` with
+     `ok_defaults_module`, and 20 `error_*` (what a default can be, `with` on what it cannot copy or another
+     module cannot build, `?.` on what is never `null` and on a `Result`, a borrow of `?.` and of `match` kept,
+     a value used up). `cargo test` passes on macOS and on Linux in a container (378 of 1584 programs compile
+     through C, 84 of them under the thread sanitizer), the kernel in QEMU included.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -7508,6 +7550,10 @@ check off.
 
 ## Not here yet
 
+- **Of the hundred-and-eighth slice**: `a?.b = 5` and `a?[i]` (1200); a default found where the value is built,
+  as C#'s initializer (1194); a default on a field of a variant, on one that borrows and on one of a union
+  (1203); `with` on a variant of an enum, and in a const; a field narrowed by `a.b?.c is not null` (fields are
+  not narrowed); `?.` on a `Result` (`try` and `??` open it).
 - **Of the hundred-and-seventh slice**: an enum open to numbers that are no variant (Zig's `_`); an enum with
   numbers in a signature of C, a struct of plain data or raw memory (1176); a variant's number named by the
   variant alone (`Image + 1`: it is `(byte)Block.Image + 1`), or given by a function (1184); flags joined with
@@ -7893,7 +7939,8 @@ and those taken come in three slices before the library's. The hundred-and-sixth
 which alone measures the size of a type; on the way, what a loop moved is followed at every way out of it
 (1148-1166). The hundred-and-seventh is written: an enum with numbers of a type it names (`enum Block : byte {
 Image = 0x2C }`, `(byte)block`, `Block.fromValue(b)`) and the operations on the bits of an integer (C23's
-`<stdbit.h>`: `countOnes`, `rotateLeft`, `reverseBytes`, `log2` and the others) (1167-1192). Next the default
-value of a field, `with` and `?.`;
-then the library, by the order of C11: seeking in a file and temporary files, the rest of `<math.h>`,
+`<stdbit.h>`: `countOnes`, `rotateLeft`, `reverseBytes`, `log2` and the others) (1167-1192). The
+hundred-and-eighth is written: the default value of a field (`int port = 80`), `p with { x = 3 }` and `a?.b`
+(1193-1210); on the way, a `match` that gives a borrow keeps what it looks at lent. Next the library, by the
+order of C11: seeking in a file and temporary files, the rest of `<math.h>`,
 `binarySearch`, condition variables, the local time zone with the writing and reading of dates.

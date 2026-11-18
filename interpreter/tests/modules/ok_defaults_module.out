@@ -1,0 +1,3 @@
+Settings { host = "localhost", port = 8080, items = [] }
+Settings { host = "example.org", port = 1, items = [Item { count = 1 }] }
+Account { owner = "ann", balance = 0 }

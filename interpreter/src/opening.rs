@@ -120,7 +120,7 @@ fn key_of(expr: &Expr) -> Option<String> {
 }
 
 /// The methods of the built-in types that change their receiver.
-fn changes(name: &str) -> bool {
+pub(crate) fn changes(name: &str) -> bool {
     matches!(name, "add" | "addAll" | "clear" | "removeLast" | "reverse" | "remove" | "getOrAdd" | "sort" | "write" | "next")
 }
 
@@ -416,6 +416,12 @@ impl Opener<'_> {
                 }
             }
             ExprKind::StructLit { fields, .. } => {
+                for field in fields {
+                    self.expr(&mut field.value, Use::Value)?;
+                }
+            }
+            ExprKind::With { base, fields } => {
+                self.expr(base, Use::Value)?;
                 for field in fields {
                     self.expr(&mut field.value, Use::Value)?;
                 }

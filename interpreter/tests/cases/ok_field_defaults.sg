@@ -1,0 +1,58 @@
+// The default value of a field: a struct literal that leaves the field out gives it that value.
+
+enum Mode : Copyable, Formattable {
+    Fast
+    Slow
+}
+
+struct Point : Copyable, Formattable {
+    int x
+    int y
+}
+
+int twice(int n) {
+    return n * 2
+}
+
+const int BasePort = 8000
+
+struct Config : Formattable {
+    string host = "localhost"
+    int port = BasePort + 80
+    int retries = twice(3)            // found when the program is compiled
+    Mode mode = Mode.Slow
+    Point origin = Point { x = 1, y = 2 }
+    int? limit = 5                    // a value where a `T?` goes
+    string? note = null
+    List<int> items = List<int>()     // empty: nothing is allocated
+    HashMap<string, int> seen = HashMap<string, int>()
+    double ratio = 0.5
+    bool verbose
+}
+
+// Every field has one: `{}` is enough.
+struct Counter : Copyable, Formattable {
+    int count = 0
+    int step = 1
+}
+
+// A const of a struct leaves fields out too.
+const Counter ByTwo = Counter { step = 2 }
+
+struct Flags : Formattable {
+    uint version : 4 = 3
+    uint kind : 4
+}
+
+void main() {
+    var a = Config { verbose = false }
+    print(a)
+    var b = Config { host = "example.org", port = 443, limit = null, verbose = true }
+    print(b)
+    b.items.add(1)
+    b.seen.add("x", 1)
+    print(b.items)
+    print(Counter {})
+    print(ByTwo)
+    print(Flags { kind = 5 })
+}

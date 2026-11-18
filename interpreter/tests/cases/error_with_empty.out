@@ -1,0 +1,5 @@
+error: `with { }` changes nothing
+  --> error_with_empty.sg:9:13
+ 9 |     var q = p with { }
+   |             ^^^^^^^^^^
+  hint: write at least one field: `p with { x = 3 }`

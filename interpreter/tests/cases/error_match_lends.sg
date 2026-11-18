@@ -1,0 +1,15 @@
+// A `match` that gives a borrow of what it looks at keeps it lent.
+enum Answer {
+    Text(string text)
+    Nothing
+}
+
+void main() {
+    var answer = Answer.Text("hello")
+    var text = match read answer {
+        Text(text) => text
+        Nothing => "none"
+    }
+    answer = Answer.Nothing
+    print(text)
+}

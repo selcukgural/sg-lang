@@ -1,0 +1,9 @@
+// `?.` reads past a `null`, and this value is never `null`.
+struct Point : Copyable {
+    int x
+}
+
+void main() {
+    var p = Point { x = 1 }
+    print(p?.x ?? 0)
+}

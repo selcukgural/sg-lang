@@ -1,0 +1,8 @@
+// The default value of a field is found when the program is compiled; a list with items is not.
+struct Order {
+    List<int> lines = List<int> { 1 }
+}
+
+void main() {
+    var order = Order {}
+}

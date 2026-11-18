@@ -275,6 +275,19 @@ pub struct FieldDecl {
     pub span: Span,
     /// `uint version : 4`: a field of that many bits, as C has it.
     pub bits: Option<(u64, Span)>,
+    /// `int port = 80`: what a struct literal that leaves the field out gives it.
+    pub default: Option<FieldDefault>,
+}
+
+/// The default value of a field.
+#[derive(Clone)]
+pub enum FieldDefault {
+    /// A value known when the program is compiled, held by a const the parser makes for it, by
+    /// its full name (`port#812`).
+    Const(String),
+    /// `null`, or an empty collection (`List<int>()`), which allocates nothing: put into the
+    /// literal as if it were written there.
+    Expr(Expr),
 }
 
 #[derive(Clone)]
@@ -1004,6 +1017,8 @@ pub enum ExprKind {
     Cast { ty: Ty, expr: Box<Expr> },
     /// `Node { value = 1, next = null }`
     StructLit { name: String, name_span: Span, fields: Vec<FieldInit> },
+    /// `p with { x = 3 }`: the value of `base`, a struct, with the fields written given anew.
+    With { base: Box<Expr>, fields: Vec<FieldInit> },
     /// `new e`: puts the value on the heap, gives `T*`.
     New(Box<Expr>),
     /// `new shared e`: puts the value on the heap with a count of its owners, gives `shared T`.
@@ -1142,6 +1157,10 @@ pub enum TryKind {
 
 /// One arm of a `match`: `Circle(r) when r > 0 => body`. The body is a single expression
 /// (`value` alone), a statement such as `return`, or a block whose last line may be the value.
+/// The first character of the name a `match` read from `a?.b` binds: no program can write
+/// it, and it tells that `match` from one that is written.
+pub const OR_NULL: char = '?';
+
 #[derive(Clone)]
 pub struct Arm {
     pub pattern: Pattern,

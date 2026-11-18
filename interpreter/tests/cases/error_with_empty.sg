@@ -1,0 +1,10 @@
+// `with` changes at least one field.
+struct Point : Copyable {
+    int x
+    int y
+}
+
+void main() {
+    var p = Point { x = 1, y = 2 }
+    var q = p with { }
+}

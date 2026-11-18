@@ -1,0 +1,8 @@
+// A union is built with the one field it holds.
+union Number {
+    int whole = 1
+    float part
+}
+
+void main() {
+}

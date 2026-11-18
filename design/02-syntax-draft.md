@@ -619,6 +619,36 @@ int sum(read string a, read string b) {
 }
 ```
 
+### `?.`
+
+`a?.b` is `null` when `a` is, and `a.b` when it is not; the rest of the chain does not run (C#'s rule, also Swift's
+and JavaScript's), so `a?.b.c` needs no second `?.`. The value is a `T?`, never a `T??`, and `??` gives a fallback:
+
+```
+int? peek(read this) {
+    return this.top?.value                                 // `null` for an empty stack
+}
+
+var boss = person?.boss?.name ?? "nobody"
+print(names.get(5)?.length() ?? -1)
+cache?.items.add(key)                                      // a method that changes it: `cache` is lent as `ref`
+none?.items.get(expensive())                               // `expensive` does not run
+```
+
+A field that is not `Copyable` is lent, not moved: `person?.name` is a `read string?`, and `person` stays lent while it
+is used; `person?.name.clone()` owns its copy. A method that takes `this` uses the value up, as `.` does; from a value
+with no name, a field is taken, as `make().name` takes it. `a?.b is not null` says that `a` is there:
+
+```
+if node?.next is not null {
+    print(node.value)                                      // `node` is not `null` here
+}
+```
+
+`?.` goes only on a `T?`: on a value that is never `null` the hint is `.`, and a `Result` is opened with `try` or `??`.
+A method that gives nothing is called through `?.` on a line of its own. There is no `a?.b = 5` and no `a?[i]` yet:
+`if a is not null { a.b = 5 }`.
+
 ### Error model
 
 Panic is for programmer errors. Conditions expected from the environment are returned as values with `Result`:
@@ -754,6 +784,38 @@ public struct Lexer<from source> {
 var lexer = Lexer(input)
 var parser = try Parser(input)                   // create returns a Result
 ```
+
+A field can have a default value, which a literal that leaves the field out gives it, as in C# and Go; there is no
+mark at the literal (Rust's `..`):
+
+```
+struct Config {
+    string host = "localhost"
+    int port = 80
+    int retries = twice(3)                       // found when the program is compiled
+    int? limit = 5
+    string? note = null
+    List<string> tags = List<string>()           // empty: nothing is allocated
+}
+
+var a = Config {}
+var b = Config { port = 8080 }
+```
+
+A default is what a const can be, found once when the program is compiled (a call included), or `null`, or an empty
+collection; nothing runs where the literal is. A field that is not `public` still keeps a literal out of other modules,
+with or without a default. A field that borrows, and one of a union, has none.
+
+`with` makes a new value from a struct, with the fields written changed (C#'s `with`, Rust's `Point { x: 3, ..p }`):
+
+```
+var moved = p with { x = 3 }                     // `p` is moved, or copied when it is `Copyable`
+var kept = job.clone() with { title = "copy" }   // a copy is written where it is made
+```
+
+The values the fields written held are dropped where `with` is, and a `Disposable` one is disposed of there. `with`
+follows the rule of a literal: a struct with a field another module does not see is not copied with `with` there.
+In a condition, where `{` starts the block, it needs parentheses, as a literal does.
 
 `HashMap` and `List` are the values themselves and manage their own heap memory, so they do not take `new`. In a
 collection initializer each element is an `add` call:

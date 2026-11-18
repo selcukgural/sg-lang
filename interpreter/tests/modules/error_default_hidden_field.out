@@ -1,0 +1,5 @@
+error: `balance` is not public, so a `Account` cannot be built field by field outside the `defaults` module
+  --> error_default_hidden_field.sg:4:19
+ 4 |     var account = Account { owner = "ann" }
+   |                   ^^^^^^^
+  hint: `Account(owner)`

@@ -1,0 +1,11 @@
+// `a?.name` lends the name: `a` cannot change while the borrow is used.
+struct Person {
+    string name
+}
+
+void main() {
+    Person? a = Person { name = "ann" }
+    var name = a?.name
+    a = null
+    print(name ?? "nobody")
+}

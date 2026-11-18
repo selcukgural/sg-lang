@@ -1,0 +1,5 @@
+// `with` copies a struct.
+void main() {
+    var count = 3
+    var other = count with { value = 4 }
+}

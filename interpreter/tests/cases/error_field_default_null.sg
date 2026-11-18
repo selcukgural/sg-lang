@@ -1,0 +1,7 @@
+// `null` is the default value only of a field that may be `null`.
+struct Item {
+    int count = null
+}
+
+void main() {
+}

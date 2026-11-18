@@ -302,6 +302,7 @@ pub(crate) fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
             from.iter().chain(to.iter()).for_each(|end| each(end));
         }
         ExprKind::StructLit { fields, .. } => fields.iter().for_each(|field| each(&field.value)),
+        ExprKind::With { base, fields } => std::iter::once(&**base).chain(fields.iter().map(|field| &field.value)).for_each(each),
         ExprKind::Return(value) => value.iter().for_each(|value| each(value)),
         ExprKind::Match { subject, arms, .. } => {
             each(subject);

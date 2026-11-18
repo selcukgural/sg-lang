@@ -1,0 +1,12 @@
+// The defaults of a struct of another module, and `with` on it.
+
+use defaults
+
+void main() {
+    var settings = Settings {}
+    print(settings)
+    var other = Settings { port = 1 } with { host = "example.org" }
+    other.items.add(Item {})
+    print(other)
+    print(Account("ann"))
+}

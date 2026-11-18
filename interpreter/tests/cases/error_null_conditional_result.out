@@ -1,0 +1,5 @@
+error: `?.` goes past a `null`, and `parse("x")` is a `Result<int, string>`, which holds a value or an error
+  --> error_null_conditional_result.sg:7:11
+ 7 |     print(parse("x")?.abs() ?? 0)
+   |           ^^^^^^^^^^
+  hint: `(try parse("x"))` passes the error on, and `(parse("x") ?? fallback)` puts a value in its place

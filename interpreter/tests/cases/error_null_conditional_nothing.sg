@@ -1,0 +1,11 @@
+// A method that gives nothing gives `?.` no value.
+struct Door {
+    void open(read this) {
+        print("open")
+    }
+}
+
+void main() {
+    Door? door = Door {}
+    var opened = door?.open()
+}

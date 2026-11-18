@@ -1,0 +1,4 @@
+error: the left side of an assignment must be a variable, a field or an item
+  --> error_null_conditional_assign.sg:8:5
+ 8 |     p?.x = 5
+   |     ^^^^

@@ -1,0 +1,108 @@
+// `a?.b`: if `a` is `null`, so is the whole chain, and the rest of it does not run.
+
+struct Node {
+    int value
+    string name
+    Node*? next
+    List<int> items
+
+    int twice(read this) {
+        return this.value * 2
+    }
+
+    void bump(ref this) {
+        this.value += 1
+    }
+
+    void finish(this) {
+        print($"finished {this.name}")
+    }
+}
+
+struct Stack {
+    Node*? top
+
+    int? peek(read this) {
+        return this.top?.value
+    }
+
+    int? second(read this) {
+        return this.top?.next?.value
+    }
+}
+
+Node*? find(int n) {
+    if n > 0 {
+        return new Node { value = n, name = "found", next = null, items = List<int>() }
+    }
+    return null
+}
+
+void show(read string? text) {
+    print(text ?? "none")
+}
+
+bool missing(read Node*? node) {
+    return node is null
+}
+
+int counted() {
+    print("counted ran")
+    return 1
+}
+
+void main() {
+    Node*? a = new Node { value = 1, name = "a", next = new Node { value = 2, name = "b", next = null, items = List<int>() }, items = List<int>() }
+    Node*? none = null
+    print(a?.value ?? -1)
+    print(none?.value ?? -1)
+    print(a?.next?.value ?? -1)
+    print(a?.next?.next?.value ?? -1)
+    print(a?.twice() ?? 0)
+
+    // A field that is not `Copyable` is lent, not moved.
+    show(a?.name)
+    show(none?.name)
+    var name = a?.name
+    print(name ?? "")
+    var owned = a?.name.clone()
+    print(owned ?? "")
+
+    // A method that changes the value: `a` is lent as `ref`.
+    a?.bump()
+    a?.items.add(4)
+    print(a?.items.length() ?? 0)
+    print(a?.value ?? 0)
+
+    // The rest of the chain does not run when there is nothing.
+    print(none?.items.get(counted()) ?? -1)
+
+    // From a value with no name.
+    print(find(3)?.value ?? 0)
+    print(find(0)?.name.length() ?? 0)
+
+    // `a?.b is not null` says that `a` is there.
+    if a?.next is not null {
+        print(a.value)
+    }
+    var age = a?.value
+    print(age is null)
+
+    // In a method, from a field.
+    var stack = Stack { top = find(7) }
+    print(stack.peek() ?? -1)
+    print(stack.second() ?? -1)
+
+    // From what `get` lends.
+    var names = List<string> { "ab", "cde" }
+    print(names.get(1)?.length() ?? -1)
+    print(names.get(5)?.length() ?? -1)
+
+    // `null` where a `read T*?` goes.
+    print(missing(null))
+
+    // A method that takes `this` uses `a` up, as `.` does.
+    Node? last = Node { value = 9, name = "last", next = null, items = List<int>() }
+    last?.finish()
+    print($"{none?.name.length() ?? 0} and {a?.next?.name ?? "?"}")
+}

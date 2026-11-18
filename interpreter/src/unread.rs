@@ -344,6 +344,12 @@ impl<'p> Pass<'p> {
                     self.expr(&field.value);
                 }
             }
+            ExprKind::With { base, fields } => {
+                self.expr(base);
+                for field in fields {
+                    self.expr(&field.value);
+                }
+            }
             ExprKind::Return(value) => {
                 if let Some(value) = value {
                     self.expr(value);

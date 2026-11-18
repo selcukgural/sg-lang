@@ -9804,6 +9804,11 @@ fn cname_of_init(init: &str) -> String {
     cname(init)
 }
 
+/// A local as C can name it: the name `a?.b` binds has a `?`, which C does not take.
+fn local_cname(name: &str) -> String {
+    name.replace(OR_NULL, "held")
+}
+
 /// The C name of a const: `sg_k_` and its full name, one of a block with where it is written.
 fn const_cname(full: &str) -> String {
     format!("sg_k_{}", cname(full).replace('#', "_at"))
@@ -10122,6 +10127,7 @@ fn may_leave(expr: &Expr) -> bool {
             InterpPart::Text(_) => None,
         })),
         ExprKind::StructLit { fields, .. } => any(&mut fields.iter().map(|field| &field.value)),
+        ExprKind::With { base, fields } => any(&mut std::iter::once(&**base).chain(fields.iter().map(|field| &field.value))),
         ExprKind::Variant { args, .. } | ExprKind::Call { args, .. } => any(&mut args.iter()),
         ExprKind::Method { recv, args, .. } => may_leave(recv) || any(&mut args.iter()),
         ExprKind::Collection { args, items, .. } => any(&mut args.iter()) || any(&mut items.iter().flatten().flat_map(|item| item.values.iter())),
@@ -10894,6 +10900,17 @@ impl<'a> Emitter<'a> {
             "static {gives_one} sg_any_{name}({list}* v, sg_task* t) {{ int64_t i = 0; while (&v->ptr[i]->head != t) i++; {held} one = v->ptr[i]; memmove(&v->ptr[i], &v->ptr[i + 1], (size_t)(v->len - i - 1) * sizeof({held})); v->len--; {ret}sg_wait_{task}(one); }}"
         );
         Ok(())
+    }
+
+    /// A `read T*?` (or `read shared T?`) with nothing in it: a pointer to a pointer that is
+    /// `NULL`, one for each type, which nothing writes.
+    fn lent_nothing(&mut self, option: &Ty, span: Span) -> Res<String> {
+        let ctype = self.ctype(option, span)?;
+        let name = format!("sg_nothing_{}", mangle(option).expect("a `T?` has a C type"));
+        if self.made.insert(name.clone()) {
+            let _ = writeln!(self.types, "static {ctype} const {name} = NULL;");
+        }
+        Ok(format!("(({ctype}*)&{name})"))
     }
 
     /// A `read T?` with nothing in it.
@@ -13183,7 +13200,7 @@ impl<'a> Emitter<'a> {
 
     fn declare(&mut self, name: &str, ty: Ty) -> String {
         self.temps += 1;
-        let cname = format!("v_{name}_{}", self.temps);
+        let cname = format!("v_{}_{}", local_cname(name), self.temps);
         self.scopes.last_mut().expect("an open scope").push(Local { name: name.to_string(), cname: cname.clone(), ty, gone: false, drop: None });
         cname
     }
@@ -13352,7 +13369,7 @@ impl<'a> Emitter<'a> {
                 // after it, so an arm that leaves does not drop it.
                 if matches!(init.kind, ExprKind::Match { .. }) {
                     self.temps += 1;
-                    let cname = format!("v_{name}_{}", self.temps);
+                    let cname = format!("v_{}_{}", local_cname(name), self.temps);
                     let _ = writeln!(out, "{pad}{ctype} {cname};");
                     self.match_stmt(init, &Dest::Place(cname.clone(), ty.clone()), depth, out)?;
                     self.scopes.last_mut().expect("an open scope").push(Local { name: name.clone(), cname, ty, gone: false, drop: None });
@@ -13542,7 +13559,7 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(out, "{pad}while ({high} > {low}) {{");
                 let _ = writeln!(out, "{pad}    {high}--;");
                 self.temps += 1;
-                let cname = format!("v_{var}_{}", self.temps);
+                let cname = format!("v_{}_{}", local_cname(var), self.temps);
                 let line = format!("{ty} {cname} = {high};{}", unnamed(var, &cname));
                 let local = Local { name: var.clone(), cname, ty: from.ty.clone(), gone: false, drop: None };
                 self.loops.push(self.scopes.len());
@@ -13568,7 +13585,7 @@ impl<'a> Emitter<'a> {
                 let Ty::Int(counter_ty) = from.ty else { return Err(not_yet(from.span, "a range of this type")) };
                 self.counted_loop(&pad, out, (&counter, counter_ty), &format!("{counter} < {end}"), var, body, depth, |this| {
                     this.temps += 1;
-                    let cname = format!("v_{var}_{}", this.temps);
+                    let cname = format!("v_{}_{}", local_cname(var), this.temps);
                     let line = format!("{ty} {cname} = {counter};{}", unnamed(var, &cname));
                     Ok(vec![(Local { name: var.clone(), cname, ty: from.ty.clone(), gone: false, drop: None }, line)])
                 })?;
@@ -13610,7 +13627,7 @@ impl<'a> Emitter<'a> {
                         let item_c = self.ctype(&item, iter.span)?;
                         self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}.len"), var, body, depth + 1, |this| {
                             this.temps += 1;
-                            let cname = format!("v_{var}_{}", this.temps);
+                            let cname = format!("v_{}_{}", local_cname(var), this.temps);
                             let line = format!("{item_c} {cname} = {it}.entries[{at}]{at_item};{}", unnamed(var, &cname));
                             Ok(vec![(Local { name: var.clone(), cname, ty: item.clone(), gone: false, drop: None }, line)])
                         })?;
@@ -13655,7 +13672,7 @@ impl<'a> Emitter<'a> {
                         self.scopes.push(vec![Local { name: String::new(), cname: it.clone(), ty: Ty::Void, gone: false, drop: rest.clone() }]);
                         self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {length}"), var, body, depth + 1, |this| {
                             this.temps += 1;
-                            let cname = format!("v_{var}_{}", this.temps);
+                            let cname = format!("v_{}_{}", local_cname(var), this.temps);
                             let line = format!("{held} {cname} = {it}.items[{at}];{}", unnamed(var, &cname));
                             Ok(vec![(Local { name: var.clone(), cname, ty: (**item).clone(), gone: false, drop: None }, line)])
                         })?;
@@ -13685,7 +13702,7 @@ impl<'a> Emitter<'a> {
                 self.flush_post(&inner, out);
                 let _ = writeln!(out, "{inner}while ({}(&{it}, &{at})) {{", next_of(kind));
                 self.temps += 1;
-                let cname = format!("v_{var}_{}", self.temps);
+                let cname = format!("v_{}_{}", local_cname(var), self.temps);
                 let line = format!("{held} {cname} = {at};{}", unnamed(var, &cname));
                 let local = Local { name: var.clone(), cname, ty: item, gone: false, drop: None };
                 self.loops.push(self.scopes.len());
@@ -13734,7 +13751,7 @@ impl<'a> Emitter<'a> {
                         self.scopes.push(vec![Local { name: String::new(), cname: it.clone(), ty: list.clone(), gone: false, drop: Some(rest.clone()) }]);
                         self.counted_loop(&inner, out, (&at, IntTy::Long), &format!("{at} < {it}.len"), var, body, depth + 1, |this| {
                             this.temps += 1;
-                            let cname = format!("v_{var}_{}", this.temps);
+                            let cname = format!("v_{}_{}", local_cname(var), this.temps);
                             let line = format!("{held} {cname} = {it}.ptr[{at}];{}", unnamed(var, &cname));
                             Ok(vec![(Local { name: var.clone(), cname, ty: (**item).clone(), gone: false, drop: None }, line)])
                         })?;
@@ -14202,7 +14219,7 @@ impl<'a> Emitter<'a> {
                     None => {
                         let ctype = self.ctype(ty, span)?;
                         self.temps += 1;
-                        let cname = format!("v_{name}_{}", self.temps);
+                        let cname = format!("v_{}_{}", local_cname(name), self.temps);
                         let line = format!("{ctype} {cname} = {place};");
                         names.push((Local { name: name.clone(), cname, ty: ty.clone(), gone: false, drop: None }, line));
                     }
@@ -14306,7 +14323,7 @@ impl<'a> Emitter<'a> {
         };
         let ctype = self.ctype(&ty, span)?;
         self.temps += 1;
-        let cname = format!("v_{name}_{}", self.temps);
+        let cname = format!("v_{}_{}", local_cname(name), self.temps);
         let line = format!("{ctype} {cname} = {init};");
         Ok((Local { name: name.to_string(), cname, ty, gone: false, drop: None }, line))
     }
@@ -14693,6 +14710,8 @@ impl<'a> Emitter<'a> {
                 _ => Err(not_yet(span, &format!("a `{found}` lent as `{want}`"))),
             },
             Ty::Raw(_) | Ty::CFunc(..) if *found == Ty::Null => Ok("NULL".to_string()),
+            // A `read T*?` points at the pointer, and `null` points at one that is `NULL`.
+            Ty::Read(to) if matches!(**to, Ty::Nullable(_)) && *found == Ty::Null => self.lent_nothing(to, span),
             _ if *found == Ty::Null => Err(not_yet(span, "`null` here")),
             // A pointer to a value is not a pointer to a value and a flag.
             Ty::Ref(to) if is_option(to) && found.is_borrow() && !matches!(found.strip_borrow(), Ty::Nullable(_)) => {
@@ -14920,6 +14939,7 @@ impl<'a> Emitter<'a> {
                 InterpPart::Text(_) => None,
             })),
             ExprKind::StructLit { fields, .. } => all(&mut fields.iter().map(|field| &field.value)),
+            ExprKind::With { base, fields } => all(&mut std::iter::once(&**base).chain(fields.iter().map(|field| &field.value))),
             ExprKind::Variant { args, .. } => all(&mut args.iter()),
             ExprKind::Borrow { mutable: true, .. } => Effect::Changes,
             ExprKind::Borrow { expr: inner, .. } => of(inner),
@@ -17665,6 +17685,46 @@ impl<'a> Emitter<'a> {
                     inits.push(format!(".m_{} = {value}", field.name));
                 }
                 let made = self.handed_over(format!("((S_{}){{ {} }})", cname(name), inits.join(", ")), &expr.ty, &taking.handed, expr.span)?;
+                Ok(sequence(&names, made))
+            }
+            // `p with { x = 3 }`: the value of `p` in a temporary, each field written dropped
+            // there and given its new value; `p` first, then the fields in the order written.
+            ExprKind::With { base, fields } => {
+                let Ty::Struct(name) = &expr.ty else { unreachable!("the checker gives `with` a struct") };
+                let decl: &'a StructDecl = self.structs[name.as_str()];
+                let mut taking = Taking { head, handed: Vec::new() };
+                let before = self.mark();
+                let value = self.first_as(base, &expr.ty, taking.head)?;
+                let later = fields.iter().any(|field| may_leave(&field.value));
+                let mut parts = vec![self.taken(base, value, &expr.ty, before, later, &mut taking)?];
+                let mut wants = Vec::new();
+                for (position, field) in fields.iter().enumerate() {
+                    let want = self.written(&decl.fields[field.index].ty)?;
+                    let before = self.mark();
+                    let value = self.first_as(&field.value, &want, taking.head)?;
+                    let later = fields[position + 1..].iter().any(|field| may_leave(&field.value));
+                    parts.push(self.taken(&field.value, value, &want, before, later, &mut taking)?);
+                    wants.push(want);
+                }
+                let (values, names) = self.in_order(parts)?;
+                let temp = self.temp();
+                let mut lines = format!("S_{} {temp} = {}; ", cname(name), values[0]);
+                for ((field, value), want) in fields.iter().zip(&values[1..]).zip(&wants) {
+                    let value = match (decl.fields[field.index].bits, self.checked, want) {
+                        (Some((width, _)), true, Ty::Int(ty)) => {
+                            let loc = self.loc(field.value.span);
+                            format!("({})sg_bits_{}({value}, {width}, {loc})", int_ctype(*ty), if ty.signed() { "s" } else { "u" })
+                        }
+                        _ => value.clone(),
+                    };
+                    let place = format!("{temp}.m_{}", field.name);
+                    if self.droppable(want) {
+                        lines.push_str(&self.drop_of(want, &place));
+                        lines.push(' ');
+                    }
+                    let _ = write!(lines, "{place} = {value}; ");
+                }
+                let made = self.handed_over(format!("({{ {lines}{temp}; }})"), &expr.ty, &taking.handed, expr.span)?;
                 Ok(sequence(&names, made))
             }
             ExprKind::Await(inner) => self.await_value(inner, head, expr),

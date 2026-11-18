@@ -38,6 +38,8 @@ struct StructInfo {
     open: Vec<bool>,
     /// For each field: whether it is `readonly`.
     readonly: Vec<bool>,
+    /// For each field: what a literal that leaves it out gives it (`int port = 80`).
+    defaults: Vec<Option<FieldDefault>>,
     /// Functions written in the struct body, with or without `this`.
     methods: HashMap<String, FuncSig>,
     /// Written with `: Disposable`: its `dispose` runs when its last owner ends.
@@ -410,7 +412,7 @@ fn text_error() -> StructDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
     let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, atomic: None, raw: 0, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
-    let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere, bits: None };
+    let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere, bits: None, default: None };
     StructDecl { public: true, name: TEXT_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, fields: vec![position], methods: Vec::new(), opaque: false, layout: LayoutDecl::default() }
 }
 
@@ -424,7 +426,7 @@ fn number_error() -> EnumDecl {
     let nowhere = Span::new(0, 0);
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
     let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, atomic: None, raw: 0, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
-    let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere, bits: None };
+    let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere, bits: None, default: None };
     let variants = vec![
         VariantDecl { name: "Invalid".to_string(), span: nowhere, fields: vec![position], number: None },
         VariantDecl { name: "OutOfRange".to_string(), span: nowhere, fields: Vec::new(), number: None },
@@ -467,7 +469,7 @@ fn io_error() -> EnumDecl {
     let interfaces = ["Copyable", "Formattable", "Equatable"].iter().map(|name| (name.to_string(), nowhere)).collect();
     let field = |ty: &str, name: &str| {
         let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, atomic: None, raw: 0, name: ty.to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
-        FieldDecl { public: true, readonly: true, ty, name: name.to_string(), span: nowhere, bits: None }
+        FieldDecl { public: true, readonly: true, ty, name: name.to_string(), span: nowhere, bits: None, default: None }
     };
     let variant = |name: &str, fields: Vec<FieldDecl>| VariantDecl { name: name.to_string(), span: nowhere, fields, number: None };
     let variants = vec![
@@ -896,12 +898,29 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
                 return Err(Diag::error(field.span, format!("an `{field_ty}` field is not `readonly`: its methods change it through a `read` borrow"))
                     .hint(format!("keep the field to its module and give a method that reads it: `{} {}(read this) {{ return this.{}.load() }}`", field_ty.strip_borrow().to_string().trim_start_matches("atomic "), field.name, field.name)));
             }
+            // `null` and an empty collection are checked here, where they are written, and not
+            // only in the literals that leave the field out.
+            if let Some(FieldDefault::Expr(written)) = &field.default {
+                match &written.kind {
+                    ExprKind::Null if !matches!(field_ty, Ty::Nullable(_)) => {
+                        return Err(Diag::error(written.span, format!("`{field_ty}` cannot be `null`")).hint(format!("a value that may be missing has the type `{field_ty}?`")));
+                    }
+                    ExprKind::Collection { ty, .. } => {
+                        let made = resolve_type(ty, &names, false)?;
+                        if made != field_ty {
+                            return Err(Diag::error(written.span, format!("expected `{field_ty}`, found `{made}`")));
+                        }
+                    }
+                    _ => {}
+                }
+            }
             fields.push((field.name.clone(), field_ty));
         }
         let taken = fields.iter().map(|(name, _)| name.as_str());
         let methods = type_methods(&decl.name, &decl.methods, taken, "a field", &names, &formattable)?;
         let open = decl.fields.iter().map(|field| field.public).collect();
         let readonly = decl.fields.iter().map(|field| field.readonly).collect();
+        let defaults = decl.fields.iter().map(|field| field.default.clone()).collect();
         let said = |interface: &str| decl.interfaces.iter().any(|(name, _)| name == interface);
         let (disposable, closable, opaque) = (said("Disposable"), said("Closable"), decl.opaque);
         let shape = crate::raw::Plain {
@@ -912,7 +931,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             packed: decl.layout.packed.is_some(),
             align: decl.layout.align.map_or(0, |(align, _)| align as usize),
         };
-        structs.insert(decl.name.clone(), StructInfo { fields, open, readonly, methods, disposable, closable, opaque, shape });
+        structs.insert(decl.name.clone(), StructInfo { fields, open, readonly, defaults, methods, disposable, closable, opaque, shape });
     }
     layout_rules(prog, &structs)?;
 
@@ -1279,8 +1298,25 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     // running the initializers when the program is compiled.
     prog.plain = plain_types(&structs);
     let mut const_table = ConstTable { embeds: prog.embeds.iter().map(|embed| embed.bytes.as_ref().map_or(0, |bytes| bytes.len())).collect(), ..ConstTable::default() };
+    // The consts the parser made for the default values of fields speak of the field.
+    let field_defaults: HashSet<String> = prog
+        .structs
+        .iter()
+        .flat_map(|decl| &decl.fields)
+        .filter_map(|field| match &field.default {
+            Some(FieldDefault::Const(full)) => Some(full.clone()),
+            _ => None,
+        })
+        .collect();
+    let of_field = |decl: &ConstDecl, mut diag: Diag| {
+        if field_defaults.contains(&decl.name) {
+            diag.msg = diag.msg.replacen("a const cannot hold a", "the default value of a field cannot be a", 1).replacen("a const cannot read it", "the default value of a field cannot read it", 1);
+            diag.notes = vec![FIELD_DEFAULT.to_string()];
+        }
+        diag
+    };
     for decl in &prog.consts {
-        let ty = const_type(decl, &names, &structs, &enums, &copyable, &const_table.embeds, &sigs)?;
+        let ty = const_type(decl, &names, &structs, &enums, &copyable, &const_table.embeds, &sigs).map_err(|diag| of_field(decl, diag))?;
         // What a module shows the others is made of what they can see.
         if decl.public && !module_of(&decl.name).is_empty() {
             exposes(short_name(&decl.name), decl.name_span, &ty, &names)?;
@@ -1328,8 +1364,16 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             extern_arg: false,
             seen: crate::unread::Seen::default(),
         };
+        let is_field = field_defaults.contains(&decl.name);
         checker.typed(&mut decl.init, &ty).map_err(|diag| match diag.msg.starts_with("there is no variable named") {
+            true if is_field => diag.note(FIELD_DEFAULT),
             true => diag.note("a const sees other consts, not variables: its value is found when the program is compiled"),
+            false if is_field && diag.msg.contains("a const cannot read it") => {
+                let mut diag = diag;
+                diag.msg = diag.msg.replacen("a const cannot read it", "the default value of a field cannot read it", 1);
+                diag.hint = None;
+                diag.note(FIELD_DEFAULT)
+            }
             false => diag,
         })?;
         constant_only(&decl.init, decl.assert.is_some())?;
@@ -2639,6 +2683,9 @@ fn const_type(decl: &ConstDecl, names: &Names, structs: &HashMap<String, StructI
     Ok(ty)
 }
 
+/// What the default value of a field can be.
+const FIELD_DEFAULT: &str = "the default value of a field is found when the program is compiled, as a const's is: numbers, `bool`, `char`, a text, and arrays, structs and enums of them; or `null`, or an empty collection such as `List<int>()`";
+
 /// Why a const cannot hold a value of this type, if it cannot. `top`: the const itself, where a
 /// text may be.
 fn not_const_type(ty: &Ty, top: bool, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, copyable: &HashSet<String>) -> Option<String> {
@@ -3833,7 +3880,12 @@ fn null_facts(cond: &Expr) -> (Vec<String>, Vec<String>) {
         ExprKind::IsNull { expr, negated } => match &expr.kind {
             ExprKind::Var(name) if *negated => (vec![name.clone()], Vec::new()),
             ExprKind::Var(name) => (Vec::new(), vec![name.clone()]),
-            _ => (Vec::new(), Vec::new()),
+            // `a?.b is not null` holds only when `a` is there.
+            _ => match or_null_root(expr) {
+                Some(name) if *negated => (vec![name.to_string()], Vec::new()),
+                Some(name) => (Vec::new(), vec![name.to_string()]),
+                None => (Vec::new(), Vec::new()),
+            },
         },
         ExprKind::Unary(UnOp::Not, inner) => {
             let (holds, fails) = null_facts(inner);
@@ -3853,6 +3905,57 @@ fn null_facts(cond: &Expr) -> (Vec<String>, Vec<String>) {
             }
         }
         _ => (Vec::new(), Vec::new()),
+    }
+}
+
+/// The name the `match` read from `a?.b` binds, if `arms` are its arms.
+fn or_null_held(arms: &[Arm]) -> Option<String> {
+    match arms {
+        [_, Arm { pattern: Pattern { kind: PatternKind::Bind(name), .. }, .. }] if name.starts_with(OR_NULL) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// The variable a chain of `?.` starts from: `a` in `a?.b`, also once the checker lends it.
+fn or_null_root(expr: &Expr) -> Option<&str> {
+    let ExprKind::Match { subject, arms, .. } = &expr.kind else { return None };
+    or_null_held(arms)?;
+    match &subject.kind {
+        ExprKind::Var(name) => Some(name),
+        ExprKind::Borrow { expr: inner, .. } => match &inner.kind {
+            ExprKind::Var(name) => Some(name),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The steps of the chain after `?.`, from the one read from `held` on: fields, methods and
+/// items. A `?.` further on ends them.
+fn chain_steps<'e>(expr: &'e Expr, held: &str, steps: &mut Vec<&'e Expr>) -> bool {
+    let inner = match &expr.kind {
+        ExprKind::Field { recv, .. } | ExprKind::Method { recv, .. } | ExprKind::Index { recv, .. } | ExprKind::Slice { recv, .. } => recv,
+        ExprKind::Match { subject, .. } => return chain_steps(subject, held, steps),
+        _ => return false,
+    };
+    let found = match &inner.kind {
+        ExprKind::Var(name) if name == held => true,
+        _ => chain_steps(inner, held, steps),
+    };
+    if found {
+        steps.push(expr);
+    }
+    found
+}
+
+/// The type made one that may be `null`: `int` gives `int?`, `read string` gives `read
+/// string?`, and a `T?` stays as it is.
+fn nullable_of(ty: Ty) -> Ty {
+    match ty {
+        Ty::Nullable(_) | Ty::Null => ty,
+        Ty::Read(inner) => Ty::Read(Box::new(nullable_of(*inner))),
+        Ty::Ref(inner) => Ty::Ref(Box::new(nullable_of(*inner))),
+        other => Ty::Nullable(Box::new(other)),
     }
 }
 
@@ -4362,6 +4465,197 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// What the `match` read from `a?.b` looks at, checked. A place is lent: `read`, or `ref`
+    /// when the chain starts with a method that changes it. A method that uses its receiver up
+    /// takes the place, as `.` does, and any other value is the `match`'s own. When what it
+    /// looks at is lent, a place at the end of the chain is lent too, not moved: `a?.name`
+    /// gives a `read string?`. Gives the type of what it looks at.
+    fn or_null_subject(&mut self, subject: &mut Expr, arms: &mut [Arm], held: &str, unused: bool) -> Res<Ty> {
+        if unused {
+            arms[0].value = None;
+        }
+        let mut steps = Vec::new();
+        if let Some(rest) = &arms[1].value {
+            chain_steps(rest, held, &mut steps);
+        }
+        // The first method of the chain, reached through fields and items: how it takes its
+        // receiver, and whether the receiver is what `a` holds.
+        let mut this = None;
+        let mut ty = self.peek_type(subject).and_then(|ty| without_null(&ty));
+        for (position, step) in steps.iter().enumerate() {
+            let Some(at) = ty.take() else { break };
+            let mut at = at.strip_borrow().clone();
+            while let Ty::Ptr(inner) = at {
+                at = *inner;
+            }
+            match &step.kind {
+                ExprKind::Method { name, .. } => {
+                    this = self.method_this(&at, name).map(|this| (this, position == 0));
+                    break;
+                }
+                ExprKind::Field { name, .. } => {
+                    let Ty::Struct(owner) = &at else { break };
+                    ty = self.structs.get(owner.as_str()).and_then(|info| info.fields.iter().find(|(field, _)| field == name)).map(|(_, ty)| ty.clone());
+                }
+                ExprKind::Index { .. } => {
+                    ty = match at {
+                        Ty::List(item) | Ty::Array(item, _) | Ty::Map(_, item) => Some(*item),
+                        _ => None,
+                    };
+                }
+                _ => break,
+            }
+        }
+        let found = match this {
+            Some((This::Value, true)) => None,
+            _ => self.place(subject)?,
+        };
+        let this = this.map(|(this, _)| this);
+        let ty = match found {
+            Some((ty, writable)) => {
+                self.maybe_null(&ty, subject)?;
+                if Expr::in_raw_memory(subject) {
+                    return Err(Diag::error(subject.span, "a place in raw memory is not lent yet: the checker cannot follow how long it lives")
+                        .hint("copy it out first: `var item = unsafe ...`"));
+                }
+                if let Some(diag) = not_lent(subject, self.structs, self.src) {
+                    return Err(diag);
+                }
+                let mutable = this == Some(This::Ref) && writable && self.readonly(subject).is_none();
+                if mutable {
+                    self.not_locked(subject, Access::Write)?;
+                }
+                let base = Box::new(ty.strip_borrow().clone());
+                let lent = if mutable { Ty::Ref(base) } else { Ty::Read(base) };
+                wrap(subject, |inner| ExprKind::Borrow { mutable, expr: inner });
+                subject.ty = lent.clone();
+                lent
+            }
+            None => {
+                let ty = self.expr(subject, None)?;
+                self.maybe_null(&ty, subject)?;
+                ty
+            }
+        };
+        if ty.is_borrow() {
+            if let Some(rest) = &mut arms[1].value {
+                if matches!(rest.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) {
+                    wrap(rest, |inner| ExprKind::Borrow { mutable: false, expr: inner });
+                }
+            }
+        }
+        Ok(ty)
+    }
+
+    /// `?.` goes on only from a value that may be `null`.
+    fn maybe_null(&self, ty: &Ty, subject: &Expr) -> Res<()> {
+        if without_null(ty).is_some() {
+            return Ok(());
+        }
+        let text = &self.src[subject.span.start..subject.span.end];
+        Err(match ty.strip_borrow() {
+            Ty::Result(..) => Diag::error(subject.span, format!("`?.` goes past a `null`, and `{text}` is a `{ty}`, which holds a value or an error"))
+                .hint(format!("`(try {text})` passes the error on, and `({text} ?? fallback)` puts a value in its place")),
+            _ => Diag::error(subject.span, format!("`{text}` is a `{ty}`, which is never `null`")).hint("write `.` instead of `?.`"),
+        })
+    }
+
+    /// The value of `a?.b` when `a` is there: a place lent that can be copied is copied, and
+    /// the type is made a `T?` (one that already is stays as it is).
+    fn held_value(&mut self, value: &mut Expr, ty: Ty) -> Res<Ty> {
+        let mut ty = ty;
+        if let (ExprKind::Borrow { mutable: false, .. }, Ty::Read(inner)) = (&value.kind, &ty) {
+            if inner.is_copyable(self.copyable) {
+                ty = (**inner).clone();
+                let ExprKind::Borrow { expr: place, .. } = std::mem::replace(&mut value.kind, ExprKind::Null) else { unreachable!("matched above") };
+                *value = *place;
+            }
+        }
+        if ty == Ty::Void {
+            let text = &self.src[value.span.start..value.span.end];
+            return Err(Diag::error(value.span, format!("`{text}` gives nothing, so `?.` has no value to give"))
+                .hint("write it on a line of its own"));
+        }
+        Ok(nullable_of(ty))
+    }
+
+    /// The type of a variable, or of a field of one, as far as it is known before it is
+    /// checked: enough to find the method a chain starts with.
+    fn peek_type(&mut self, expr: &Expr) -> Option<Ty> {
+        match &expr.kind {
+            ExprKind::Var(name) => self.var_named(name).map(|var| var.current.clone()),
+            ExprKind::Field { recv, name, .. } => {
+                let mut ty = self.peek_type(recv)?.strip_borrow().clone();
+                while let Ty::Ptr(inner) = ty {
+                    ty = *inner;
+                }
+                let Ty::Struct(owner) = &ty else { return None };
+                self.structs.get(owner.as_str())?.fields.iter().find(|(field, _)| field == name).map(|(_, ty)| ty.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// How a method of a value of this type takes `this`, when it is known.
+    fn method_this(&self, ty: &Ty, name: &str) -> Option<This> {
+        let mut ty = ty.strip_borrow();
+        while let Ty::Ptr(inner) = ty {
+            ty = inner;
+        }
+        match ty {
+            Ty::Struct(owner) | Ty::Enum(owner) if self.structs.contains_key(owner.as_str()) || self.enums.contains_key(owner.as_str()) => {
+                self.methods_of(owner).get(name).and_then(|sig| sig.this)
+            }
+            Ty::List(_) | Ty::Map(..) | Ty::Set(_) => Some(if crate::opening::changes(name) { This::Ref } else { This::Read }),
+            _ => None,
+        }
+    }
+
+    /// A struct is built field by field, by a literal or by `with`, only where every field is
+    /// seen: in its module, or anywhere when every field is `public`.
+    fn built_here(&self, name: &str, info: &StructInfo, span: Span, how: &str) -> Res<()> {
+        if self.inside(name) {
+            return Ok(());
+        }
+        let short = short_name(name);
+        if module_of(name) == STD_MODULE {
+            return Err(Diag::error(span, format!("a `{short}` is made by its functions, not field by field")).hint(std_makers(short)));
+        }
+        if let Some(position) = info.open.iter().position(|open| !open) {
+            let field = &info.fields[position].0;
+            let diag = Diag::error(span, format!("`{field}` is not public, so a `{short}` cannot be {how} outside the `{}` module", module_of(name)));
+            return Err(match info.methods.get("create") {
+                Some(create) if create.public && how.starts_with("built") => diag.hint(format!("`{short}({})`", create.param_names.join(", "))),
+                _ => diag,
+            });
+        }
+        Ok(())
+    }
+
+    /// The fields written in a literal or after `with`: each one of the struct, once, of its
+    /// type. Gives which fields were written.
+    fn field_values(&mut self, name: &str, info: &StructInfo, fields: &mut [FieldInit]) -> Res<Vec<bool>> {
+        let mut given = vec![false; info.fields.len()];
+        for init in fields.iter_mut() {
+            let Some(position) = info.fields.iter().position(|(field, _)| *field == init.name) else {
+                let diag = Diag::error(init.span, format!("`{name}` has no field `{}`", init.name));
+                return Err(match nearest(&init.name, info.fields.iter().map(|(field, _)| field.as_str())) {
+                    Some(close) => diag.hint(format!("`{close}`")),
+                    None => diag,
+                });
+            };
+            if std::mem::replace(&mut given[position], true) {
+                return Err(Diag::error(init.span, format!("field `{}` is given twice", init.name)));
+            }
+            init.index = position;
+            self.typed(&mut init.value, &info.fields[position].1)?;
+            if let Some(width) = info.shape.bits[position] {
+                fits_bits(&init.value, &info.fields[position].1, width)?;
+            }
+        }
+        Ok(given)
+    }
+
     /// What an alias names, if `name` is one.
     fn alias_target(&self, name: &str, span: Span) -> Res<Option<Ty>> {
         match self.names.kinds.get(name) {
@@ -4591,6 +4885,16 @@ impl<'a> Checker<'a> {
             ExprKind::Coalesce { left, right, .. } => union(&mut [&**left, &**right].into_iter()),
             // A value built from borrows carries them.
             ExprKind::StructLit { fields, .. } => union(&mut fields.iter().map(|field| &field.value)),
+            ExprKind::With { base, fields } => union(&mut std::iter::once(&**base).chain(fields.iter().map(|field| &field.value))),
+            // What a `match` gives borrows from what its arms give; the names of an arm are gone
+            // by now, and what they lent comes from what the `match` looks at.
+            ExprKind::Match { subject, arms, .. } => {
+                let mut loans = union(&mut arms.iter().filter_map(|arm| arm.value.as_ref()));
+                if expr.ty.is_borrow() || self.holds(&expr.ty) {
+                    loans.extend(self.loans_of(subject, mutable));
+                }
+                loans
+            }
             ExprKind::Variant { args, .. } => union(&mut args.iter()),
             // What a call returns borrows from what its signature names: the one borrowed
             // parameter, or those after `from`. A built-in method lends from its receiver.
@@ -7430,39 +7734,8 @@ impl<'a> Checker<'a> {
                     return Err(Diag::error(*name_span, format!("`{}` is a type of C whose insides SG does not see, so only C makes one", short_name(name)))
                         .note("a function of C gives a `raw` pointer to it"));
                 }
-                // A field that cannot be seen cannot be given a value.
-                if !self.inside(name) {
-                    if module_of(name) == STD_MODULE {
-                        let short = short_name(name);
-                        return Err(Diag::error(*name_span, format!("a `{short}` is made by its functions, not field by field")).hint(std_makers(short)));
-                    }
-                    if let Some(position) = info.open.iter().position(|open| !open) {
-                        let (short, field) = (short_name(name), &info.fields[position].0);
-                        let diag = Diag::error(*name_span, format!("`{field}` is not public, so a `{short}` cannot be built field by field outside the `{}` module", module_of(name)));
-                        return Err(match info.methods.get("create") {
-                            Some(create) if create.public => diag.hint(format!("`{short}({})`", create.param_names.join(", "))),
-                            _ => diag,
-                        });
-                    }
-                }
-                let mut given = vec![false; info.fields.len()];
-                for init in fields.iter_mut() {
-                    let Some(position) = info.fields.iter().position(|(field, _)| *field == init.name) else {
-                        let diag = Diag::error(init.span, format!("`{name}` has no field `{}`", init.name));
-                        return Err(match nearest(&init.name, info.fields.iter().map(|(field, _)| field.as_str())) {
-                            Some(close) => diag.hint(format!("`{close}`")),
-                            None => diag,
-                        });
-                    };
-                    if std::mem::replace(&mut given[position], true) {
-                        return Err(Diag::error(init.span, format!("field `{}` is given twice", init.name)));
-                    }
-                    init.index = position;
-                    self.typed(&mut init.value, &info.fields[position].1)?;
-                    if let Some(width) = info.shape.bits[position] {
-                        fits_bits(&init.value, &info.fields[position].1, width)?;
-                    }
-                }
+                self.built_here(name, info, *name_span, "built field by field")?;
+                let mut given = self.field_values(name, info, fields)?;
                 if info.shape.union {
                     let short = short_name(name);
                     return match fields.len() {
@@ -7472,6 +7745,27 @@ impl<'a> Checker<'a> {
                         _ => Err(Diag::error(fields[1].span, format!("a union is built with one of its fields, and this gives {}", fields.len()))
                             .note("a union holds one field at a time: they all start where it starts")),
                     };
+                }
+                // A field left out takes its default value, as if it were written here.
+                for (position, (field, field_ty)) in info.fields.iter().enumerate() {
+                    if given[position] {
+                        continue;
+                    }
+                    let mut value = match &info.defaults[position] {
+                        None => continue,
+                        Some(FieldDefault::Expr(written)) => written.clone(),
+                        Some(FieldDefault::Const(full)) => {
+                            let kind = match (self.consts.types.get(full), self.consts.values.get(full)) {
+                                (_, Some((_, ConstVal::Str(text)))) => ExprKind::Str(text.clone()),
+                                (Some(Ty::Str), None) if !self.in_const => return Err(needs(full, span)),
+                                _ => ExprKind::Const(full.clone()),
+                            };
+                            Expr { kind, span, ty: Ty::Void, moved: false }
+                        }
+                    };
+                    self.typed(&mut value, field_ty)?;
+                    given[position] = true;
+                    fields.push(FieldInit { name: field.clone(), span, value, index: position });
                 }
                 let missing: Vec<String> = info
                     .fields
@@ -7485,6 +7779,38 @@ impl<'a> Checker<'a> {
                         .note("every field gets a value; there is no uninitialized memory"));
                 }
                 Ok(Ty::Struct(name.clone()))
+            }
+            // `p with { x = 3 }`: `p` is used as a value (moved, or copied when it can be), and
+            // the fields written are given anew; the values they held are dropped there.
+            ExprKind::With { base, fields } => {
+                let found = self.expr(base, None)?;
+                let name = match found.strip_borrow() {
+                    Ty::Struct(name) => name.clone(),
+                    other => {
+                        return Err(Diag::error(base.span, format!("`with` makes a new value of a struct from another, and this is a `{other}`"))
+                            .note("a struct is copied with its fields changed: `p with { x = 3 }`"));
+                    }
+                };
+                let info = &self.structs[name.as_str()];
+                if found.is_borrow() && !found.strip_borrow().is_copyable(self.copyable) {
+                    let text = &self.src[base.span.start..base.span.end];
+                    let diag = Diag::error(base.span, format!("`with` takes the value of `{text}`, which is lent here, and a `{}` is not `Copyable`", short_name(&name)));
+                    return Err(match info.methods.contains_key("clone") {
+                        true => diag.hint(format!("make a copy: `{text}.clone() with {{ ... }}`")),
+                        false => diag,
+                    });
+                }
+                self.coerce(base, found, &Ty::Struct(name.clone()))?;
+                if info.shape.union {
+                    return Err(Diag::error(span, format!("a union is built anew: `{} {{ {} = ... }}`", short_name(&name), info.fields[0].0))
+                        .note("a union holds one field at a time"));
+                }
+                if fields.is_empty() {
+                    return Err(Diag::error(span, "`with { }` changes nothing").hint("write at least one field: `p with { x = 3 }`"));
+                }
+                self.built_here(&name, info, base.span, "copied with `with`")?;
+                self.field_values(&name, info, fields)?;
+                Ok(Ty::Struct(name))
             }
             ExprKind::New(inner) => {
                 let wanted = expected.and_then(|ty| match ty {
@@ -8439,8 +8765,13 @@ impl<'a> Checker<'a> {
         expected: Option<&Ty>,
         unused: bool,
     ) -> Res<Ty> {
-        // Like `var y = subject`: an owned value is moved in, a borrow stays a borrow.
-        let subject_ty = self.expr(subject, None)?;
+        // Like `var y = subject`: an owned value is moved in, a borrow stays a borrow. The
+        // `match` read from `a?.b` lends `a` when it is a place.
+        let held = or_null_held(arms);
+        let subject_ty = match &held {
+            Some(held) => self.or_null_subject(subject, arms, held, unused)?,
+            None => self.expr(subject, None)?,
+        };
         // On an integer the arms are numbers, on a `char` characters, on a text texts; on a
         // `bool` or a `T?` patterns as inside a pattern; on anything else, the variants of an
         // enum.
@@ -8490,7 +8821,8 @@ impl<'a> Checker<'a> {
         // On a `T?`, whether an arm without a condition has taken `null`: a name below it
         // takes a value that is not `null`.
         let mut null_taken = false;
-        let mut result: Option<Ty> = expected.cloned();
+        // `a?.b` where no `T?` is expected gives the type of `b`, made a `T?`.
+        let mut result: Option<Ty> = expected.filter(|ty| held.is_none() || without_null(ty).is_some()).cloned();
         let before = self.moves();
         let mut after: Option<Moves> = None;
         for (arm_index, arm) in arms.iter_mut().enumerate() {
@@ -8586,6 +8918,9 @@ impl<'a> Checker<'a> {
                     }
                     None => match self.expr(value, None)? {
                         Ty::Never => {}
+                        // The `null` of `a?.b` takes the type the other arm gives.
+                        Ty::Null if held.is_some() => {}
+                        ty if held.is_some() => result = Some(self.held_value(value, ty)?),
                         Ty::Null => {
                             return Err(Diag::error(value.span, "the type of this `match` cannot be found from `null` alone")
                                 .hint("write the type where the result goes, for example `int? x = match ...`"));
@@ -8668,6 +9003,12 @@ impl<'a> Checker<'a> {
         }
         if let Some(after) = &after {
             self.set_moves(after);
+        }
+        if let (Some(_), Some(ty), Some(null)) = (&held, &result, &mut arms[0].value) {
+            if null.ty == Ty::Null {
+                let ty = ty.clone();
+                self.typed(null, &ty)?;
+            }
         }
         Ok(match (unused, after) {
             (_, None) => Ty::Never,
@@ -12106,6 +12447,7 @@ fn parts(expr: &Expr) -> Vec<Part<'_>> {
         }
         ExprKind::Call { args, .. } | ExprKind::Variant { args, .. } | ExprKind::Allocate { args, .. } => list.extend(args.iter().map(Part::Expr)),
         ExprKind::StructLit { fields, .. } => list.extend(fields.iter().map(|field| Part::Expr(&field.value))),
+        ExprKind::With { base, fields } => list.extend(std::iter::once(&**base).chain(fields.iter().map(|field| &field.value)).map(Part::Expr)),
         ExprKind::Interp(pieces) => {
             for piece in pieces {
                 if let InterpPart::Expr(inner, _) = piece {
