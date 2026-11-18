@@ -1,0 +1,14 @@
+// The loop ends only once every sender has ended, and this function keeps one alive.
+void produce(Sender<int> tx) {
+    _ = tx.send(1)
+}
+
+void main() {
+    var jobs = Channel<int>(4)
+    var tx = jobs.sender()
+    var task = Task.run(produce, tx.clone())
+    for job in jobs {
+        print(job)
+    }
+    task.wait()
+}

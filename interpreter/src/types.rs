@@ -353,6 +353,14 @@ pub enum Ty {
     Locked(Box<Ty>),
     /// `Task<R>`: a function started with `Task.run`, to be waited for; `R` is what it returns.
     Task(Box<Ty>),
+    /// `Channel<T>`: the end of a channel that receives, made with room for a number of items
+    /// (`Channel<int>(16)`). Several ends receive from one channel (`.clone()`), each item
+    /// going to one of them. It ends, for those that receive, once every `Sender<T>` has ended
+    /// and nothing is left in it.
+    Channel(Box<Ty>),
+    /// `Sender<T>`: an end of a channel that sends, made by `channel.sender()`; `.clone()`
+    /// gives one more. The last one to end closes the channel.
+    Sender(Box<Ty>),
     /// `atomic T`: an integer, a `bool`, a `float`, a `double` or a `raw T` that every task
     /// reads and changes as one step, through its methods (`load`, `store`, `fetchAdd`); also
     /// through a `read` borrow and inside `shared`. As large as `T`, aligned to its size.
@@ -414,7 +422,7 @@ impl Ty {
             Ty::Nullable(inner) | Ty::Array(inner, _) => inner.is_copyable(declared),
             Ty::Result(ok, error) => ok.is_copyable(declared) && error.is_copyable(declared),
             Ty::Struct(name) | Ty::Enum(name) => declared.contains(name),
-            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(_) | Ty::Writer | Ty::Locked(_) | Ty::Atomic(_) | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString => false,
+            Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::Formatter | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Entry(..) | Ty::Slice(_) | Ty::TextIter(_) | Ty::Reader(_) | Ty::Writer | Ty::Locked(_) | Ty::Atomic(_) | Ty::Task(_) | Ty::Channel(_) | Ty::Sender(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString => false,
         }
     }
 
@@ -470,6 +478,8 @@ impl fmt::Display for Ty {
             Ty::Locked(inner) => write!(f, "locked {inner}"),
             Ty::Atomic(inner) => write!(f, "atomic {inner}"),
             Ty::Task(result) => write!(f, "Task<{result}>"),
+            Ty::Channel(item) => write!(f, "Channel<{item}>"),
+            Ty::Sender(item) => write!(f, "Sender<{item}>"),
             Ty::Source => f.write_str("CancellationSource"),
             Ty::Token => f.write_str("CancellationToken"),
             Ty::Listener => f.write_str("TcpListener"),

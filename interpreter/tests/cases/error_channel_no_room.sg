@@ -1,0 +1,5 @@
+// A channel has room for at least one item.
+void main() {
+    var jobs = Channel<int>(0)
+    print(jobs.receive() ?? 0)
+}

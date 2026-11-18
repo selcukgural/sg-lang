@@ -1,0 +1,142 @@
+// Channels: a `Channel<T>` receives, the `Sender<T>`s it makes send, and the channel ends for its
+// receivers once every sender has ended and nothing is left in it.
+struct Note : Disposable {
+    string text
+
+    void dispose(ref this) {
+        print($"dropped {this.text}")
+    }
+}
+
+struct Job {
+    int id
+    string name
+    List<int> parts
+}
+
+struct Pipe {
+    Sender<int> out
+}
+
+void produce(Sender<int> tx, int from) {
+    for i in from..from + 50 {
+        if !tx.send(i) {
+            return
+        }
+    }
+}
+
+int work(Channel<int> jobs) {
+    var sum = 0
+    for job in jobs {
+        sum += job
+    }
+    return sum
+}
+
+// Ends the sender it is given, with what it sent left in the channel.
+void fill(Sender<string> tx, int count) {
+    for i in 0..count {
+        _ = tx.send($"item {i}".toString())
+    }
+}
+
+// The channel ends here: what is sent to the sender it gives is dropped.
+Sender<Note> lonely() {
+    var notes = Channel<Note>(1)
+    return notes.sender()
+}
+
+// A borrowed channel is received from as it is.
+int firstTwo(read Channel<int> jobs) {
+    var sum = 0
+    var count = 0
+    for job in read jobs {
+        sum += job
+        count += 1
+        if count == 2 {
+            break
+        }
+    }
+    return sum
+}
+
+void main() {
+    // Two producers and three receivers: each item goes to one of them.
+    var jobs = Channel<int>(4)
+    var a = Task.run(produce, jobs.sender(), 0)
+    var b = Task.run(produce, jobs.sender(), 1000)
+    var w1 = Task.run(work, jobs.clone())
+    var w2 = Task.run(work, jobs.clone())
+    var mine = work(jobs)
+    a.wait()
+    b.wait()
+    print(w1.wait() + w2.wait() + mine)
+
+    // One sender and one receiver: the items come in the order they were sent.
+    var words = Channel<string>(3)
+    fill(words.sender(), 3)
+    while true {
+        var word = words.receive()
+        if word is null {
+            break
+        }
+        print(word)
+    }
+    print(words.receive() ?? "ended")
+
+    // Items that own what they hold go through the channel as they are.
+    var queue = Channel<Job>(2)
+    var tx = queue.sender()
+    _ = tx.send(Job { id = 1, name = "first", parts = List<int> { 1, 2, 3 } })
+    _ = tx.send(Job { id = 2, name = "second", parts = List<int>() })
+    var job = queue.receive()
+    if job is not null {
+        print($"{job.id} {job.name} {job.parts.length()}")
+    }
+
+    // No end receives: the item is dropped where it is sent, and `send` says so.
+    var gone = lonely()
+    print(gone.send(Note { text = "unread" }))
+
+    // What is left in a channel is dropped when its last end ends.
+    var notes = Channel<Note>(2)
+    var noteTx = notes.sender()
+    _ = noteTx.send(Note { text = "one" })
+    _ = noteTx.send(Note { text = "two" })
+    var note = notes.receive()
+    if note is not null {
+        print($"received {note.text}")
+    }
+
+    // A borrowed channel, left with a `break`, is received from again later.
+    var counts = Channel<int>(8)
+    var pipe = Pipe { out = counts.sender() }
+    for i in 1..6 {
+        _ = pipe.out.send(i)
+    }
+    print(firstTwo(read counts))
+    print(counts.receive() ?? -1)
+
+    // A token gives up on a wait.
+    var empty = Channel<int>(1)
+    var keep = empty.sender()
+    var source = CancellationSource.after(20)
+    var token = source.token()
+    match empty.receive(read token) {
+        Ok(value) => print($"got {value ?? -1}")
+        Error(_) => print("cancelled")
+    }
+    // An item that is there is taken even after the token is cancelled.
+    print(keep.send(9))
+    match empty.receive(read token) {
+        Ok(value) => print($"got {value ?? -1}")
+        Error(_) => print("cancelled")
+    }
+    print(keep.send(10))
+    match keep.send(11, read token) {
+        Ok(sent) => print($"sent {sent}")
+        Error(_) => print("the send was cancelled")
+    }
+    print("end")
+}

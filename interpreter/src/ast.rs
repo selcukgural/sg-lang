@@ -413,6 +413,12 @@ pub enum Callee {
     StreamAsync(StreamCall),
     /// What makes, cancels and looks at a `CancellationSource` or a `CancellationToken`.
     Cancel(CancelCall),
+    /// The methods of a `Channel<T>` and a `Sender<T>`: `channel.sender()`, `.clone()`,
+    /// `sender.send(x)` and `channel.receive()`. With `true`, a token was given last.
+    Chan(ChanCall, bool),
+    /// `sender.sendAsync(x)` and `channel.receiveAsync()`, awaited where they are written. With
+    /// `true`, a token was given last.
+    ChanAsync(ChanCall, bool),
     /// `Memory.free(p)`, `Memory.copy(source, target, count)`.
     Memory(MemoryCall),
     /// `TcpListener.bind(address)`, `listener.accept()`, `TcpStream.connect(address)`,
@@ -631,6 +637,21 @@ pub enum CancelCall {
     Check,
     /// `token.clone()`: one more token of the same source.
     Clone,
+}
+
+/// What is done with the ends of a channel.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ChanCall {
+    /// `channel.sender()`: one more end that sends into the channel.
+    Sender,
+    /// `channel.clone()`, `sender.clone()`: one more end of the same kind.
+    Clone,
+    /// `sender.send(x)`: the item goes into the channel, waiting while it is full; `false` when
+    /// no end receives any more, and the item is dropped.
+    Send,
+    /// `channel.receive()`: the first item, waiting while there is none; `null` once every end
+    /// that sends has ended and nothing is left.
+    Receive,
 }
 
 /// The functions of the network: a `TcpListener` and a `TcpStream`. Each that can fail gives a

@@ -86,6 +86,9 @@ pub enum Value {
     /// `Task<R>`: a task started with `Task.run`, by the call of an async function, or by
     /// `Task.delay`.
     Task(Rc<RefCell<Task>>),
+    /// An end of a channel: a `Channel<T>`, which receives, or a `Sender<T>`. A copy is the
+    /// same end; `.clone()` makes another.
+    Chan(Rc<ChanEnd>),
     /// `TcpListener`, which does not block. Closed when the last place that holds it lets it
     /// go: a moved value leaves its place empty, so that is where compiled code closes it.
     Listener(Rc<std::net::TcpListener>),
@@ -107,6 +110,58 @@ pub struct Cancel {
     delays: Vec<(u64, u64)>,
     /// The fibers that wait for the network or for a thread, given a token of it.
     waits: Vec<usize>,
+}
+
+/// A channel: the items sent and not received yet, in the order they were sent, and how many
+/// ends of each kind are alive. The fibers that wait on it are in `State::chan_waits`. What is
+/// left in it ends with the last end.
+#[derive(Debug)]
+pub struct Chan {
+    items: RefCell<VecDeque<Value>>,
+    room: usize,
+    senders: std::cell::Cell<usize>,
+    receivers: std::cell::Cell<usize>,
+}
+
+impl Chan {
+    /// Whether a fiber that waits to send (`sends`) or to receive can go on: there is room, or
+    /// an item, or no end of the other kind is left.
+    fn ready(&self, sends: bool) -> bool {
+        match sends {
+            true => self.receivers.get() == 0 || self.items.borrow().len() < self.room,
+            false => self.senders.get() == 0 || !self.items.borrow().is_empty(),
+        }
+    }
+}
+
+/// One end of a channel, counted while it lives: a `Sender<T>` when `sends`, a `Channel<T>`
+/// otherwise.
+#[derive(Debug)]
+pub struct ChanEnd {
+    chan: Rc<Chan>,
+    sends: bool,
+}
+
+impl ChanEnd {
+    fn new(chan: &Rc<Chan>, sends: bool) -> Rc<ChanEnd> {
+        let count = if sends { &chan.senders } else { &chan.receivers };
+        count.set(count.get() + 1);
+        Rc::new(ChanEnd { chan: chan.clone(), sends })
+    }
+}
+
+impl Drop for ChanEnd {
+    fn drop(&mut self) {
+        let count = if self.sends { &self.chan.senders } else { &self.chan.receivers };
+        count.set(count.get() - 1);
+    }
+}
+
+/// A fiber that waits on a channel, to send (`sends`) or to receive.
+struct ChanWait {
+    fiber: usize,
+    chan: Rc<Chan>,
+    sends: bool,
 }
 
 /// What a fiber waits for outside the run: a socket to be ready to read (or, `true`, to
@@ -213,6 +268,8 @@ struct State {
     lazy: Vec<std::rc::Weak<RefCell<Task>>>,
     /// The fibers that wait in `lock ... when` for their condition, in the order they began.
     lock_waits: Vec<LockWait>,
+    /// The fibers that wait on a channel, in the order they began.
+    chan_waits: Vec<ChanWait>,
 }
 
 /// A fiber that waits in `lock ... when`: a `lock` block that ends on one of its values wakes
@@ -262,6 +319,7 @@ impl Sched {
             works: 0,
             lazy: Vec::new(),
             lock_waits: Vec::new(),
+            chan_waits: Vec::new(),
         };
         Sched { state: Mutex::new(state) }
     }
@@ -337,6 +395,13 @@ impl Sched {
             let (alone, waiting): (Vec<LockWait>, Vec<LockWait>) = std::mem::take(&mut state.lock_waits).into_iter().partition(LockWait::alone);
             state.lock_waits = waiting;
             state.ready.extend(alone.iter().map(|wait| wait.fiber));
+        }
+        // A fiber that waits on a channel goes on once the channel lets it: what the fiber
+        // that had the turn did there is seen here, when the turn changes hands.
+        if state.chan_waits.iter().any(|wait| wait.chan.ready(wait.sends)) {
+            let (woken, waiting): (Vec<ChanWait>, Vec<ChanWait>) = std::mem::take(&mut state.chan_waits).into_iter().partition(|wait| wait.chan.ready(wait.sends));
+            state.chan_waits = waiting;
+            state.ready.extend(woken.iter().map(|wait| wait.fiber));
         }
         loop {
             if let Some(fiber) = state.ready.pop_front() {
@@ -456,6 +521,10 @@ impl Sched {
         // what it gives is not lost where it can be kept (the input).
         for fiber in waits {
             if state.outside.remove(&fiber).is_some() {
+                state.cut.insert(fiber);
+                state.ready.push_back(fiber);
+            } else if let Some(at) = state.chan_waits.iter().position(|wait| wait.fiber == fiber) {
+                state.chan_waits.remove(at);
                 state.cut.insert(fiber);
                 state.ready.push_back(fiber);
             }
@@ -2822,6 +2891,105 @@ impl<'a, 'e> Interp<'a, 'e> {
     }
 
     /// The source a token argument looks at; `None` for `CancellationToken.None`.
+    /// The methods of the ends of a channel. One that waits gives its value in a `Result`
+    /// when a token is given (`told`), `Error(Cancelled)` when the token cuts the wait short.
+    fn chan(&mut self, call: ChanCall, told: bool, recv: &'a Expr, args: &'a [Expr], at: Span, frame: &mut Frame) -> Res<Value> {
+        let Value::Chan(end) = owned(self.expr(recv, frame)?) else { unreachable!("the checker calls these on an end of a channel") };
+        let item = match call {
+            ChanCall::Send => Some(strip(self.expr(&args[0], frame)?)),
+            _ => None,
+        };
+        let source = match told {
+            true => self.token(&args[usize::from(call == ChanCall::Send)], frame)?,
+            false => None,
+        };
+        let done = match call {
+            ChanCall::Sender => return Ok(Value::Chan(ChanEnd::new(&end.chan, true))),
+            ChanCall::Clone => return Ok(Value::Chan(ChanEnd::new(&end.chan, end.sends))),
+            ChanCall::Send => self.send(&end.chan, item.expect("computed above"), source.as_ref(), at)?,
+            ChanCall::Receive => self.receive(&end.chan, source.as_ref(), at)?,
+        };
+        Ok(match (done, told) {
+            (Ok(value), false) => value,
+            (Ok(value), true) => ok(value),
+            (Err(()), _) => failed(cancelled()),
+        })
+    }
+
+    /// `sender.send(item)`: `true` once the item is in the channel, waiting while it is full;
+    /// `false` when no end receives any more, and the item ends here. `Err` when the token is
+    /// cancelled first: a channel with room takes the item all the same.
+    fn send(&mut self, chan: &Rc<Chan>, item: Value, source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<Result<Value, ()>> {
+        // An item the channel does not take ends here, as in compiled code: its `dispose` runs
+        // before the call gives its answer.
+        loop {
+            if chan.receivers.get() == 0 {
+                drop(item);
+                self.disposals()?;
+                return Ok(Ok(Value::Bool(false)));
+            }
+            if chan.items.borrow().len() < chan.room {
+                chan.items.borrow_mut().push_back(item);
+                return Ok(Ok(Value::Bool(true)));
+            }
+            if self.chan_wait(chan, true, source, at)? {
+                drop(item);
+                self.disposals()?;
+                return Ok(Err(()));
+            }
+        }
+    }
+
+    /// `channel.receive()`: the first item, waiting while there is none; `null` once no end
+    /// sends any more and nothing is left. `Err` when the token is cancelled first: an item
+    /// that is there is taken all the same.
+    fn receive(&mut self, chan: &Rc<Chan>, source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<Result<Value, ()>> {
+        loop {
+            if let Some(item) = chan.items.borrow_mut().pop_front() {
+                return Ok(Ok(item));
+            }
+            if chan.senders.get() == 0 {
+                return Ok(Ok(Value::Null));
+            }
+            if self.chan_wait(chan, false, source, at)? {
+                return Ok(Err(()));
+            }
+        }
+    }
+
+    /// This fiber waits until the channel may let it go on, or the token is cancelled: gives
+    /// whether the token cut the wait short. A fiber woken looks at the channel again, since
+    /// another may have taken what woke it.
+    fn chan_wait(&mut self, chan: &Rc<Chan>, sends: bool, source: Option<&Rc<RefCell<Cancel>>>, at: Span) -> Res<bool> {
+        let cancelled = |source: Option<&Rc<RefCell<Cancel>>>| source.is_some_and(|source| source.borrow().cancelled);
+        if cancelled(source) {
+            return Ok(true);
+        }
+        // What a task of `Task.run` that has not started yet does may end the wait.
+        self.start_lazy()?;
+        if chan.ready(sends) {
+            return Ok(false);
+        }
+        if cancelled(source) {
+            return Ok(true);
+        }
+        if let Some(source) = source {
+            source.borrow_mut().waits.push(self.me);
+        }
+        self.io.sched.lock().chan_waits.push(ChanWait { fiber: self.me, chan: chan.clone(), sends });
+        let waited = self.io.sched.block(self.me, at);
+        if let Some(source) = source {
+            source.borrow_mut().waits.retain(|fiber| *fiber != self.me);
+        }
+        let cut = {
+            let mut state = self.io.sched.lock();
+            state.chan_waits.retain(|wait| wait.fiber != self.me);
+            state.cut.remove(&self.me)
+        };
+        waited?;
+        Ok(cut)
+    }
+
     fn token(&mut self, arg: &'a Expr, frame: &mut Frame) -> Res<Option<Rc<RefCell<Cancel>>>> {
         match owned(self.expr(arg, frame)?) {
             Value::Token(source) => Ok(source),
@@ -3668,6 +3836,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                         (_, Some(items)) => items.get(next).cloned(),
                         (Value::Iter(cursor), _) => cursor.borrow_mut().next().map(cell),
                         (Value::Lines(lines), _) => self.next_line(lines, iter.span)?.map(cell),
+                        (Value::Chan(end), _) => match self.receive(&end.chan, None, iter.span)? {
+                            Ok(Value::Null) => None,
+                            Ok(item) => Some(cell(item)),
+                            Err(_) => unreachable!("no token is given"),
+                        },
                         (Value::List(items), _) => items.borrow().get(next).cloned(),
                         (Value::Array(items) | Value::Slice(items), _) => items.get(next).cloned(),
                         _ => unreachable!("the checker only lets `for` go over a collection"),
@@ -3677,6 +3850,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                     let bound = match (by, owns) {
                         (Some(_), _) => Value::Borrow(item),
                         (None, true) => item.replace(Value::Null),
+                        (None, false) if matches!(collection, Value::Chan(_)) => item.replace(Value::Null),
                         (None, false) => item.borrow().clone(),
                     };
                     frame.scopes.push(Scope::default());
@@ -3916,6 +4090,15 @@ impl<'a, 'e> Interp<'a, 'e> {
             ExprKind::Embed(index) => {
                 let bytes = self.consts.embeds[*index].bytes.as_ref().expect("read before the checker runs");
                 Ok(Value::Array(Rc::new(bytes.iter().map(|byte| cell(Value::Int(IntTy::Byte, *byte as i128))).collect())))
+            }
+            // `Channel<T>(n)`: the end that receives, of a channel with room for `n` items.
+            ExprKind::Collection { ty, args, .. } if ty.name == "Channel" => {
+                let Value::Int(_, room) = strip(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the room an `nint`") };
+                if room < 1 {
+                    return Err(Diag::panic(args[0].span, format!("a channel has room for at least one item, and this is {room}")).into());
+                }
+                let chan = Rc::new(Chan { items: RefCell::new(VecDeque::new()), room: usize::try_from(room).unwrap_or(usize::MAX), senders: std::cell::Cell::new(0), receivers: std::cell::Cell::new(0) });
+                Ok(Value::Chan(ChanEnd::new(&chan, false)))
             }
             ExprKind::Collection { ty, items, .. } => {
                 let given = items.iter().flatten();
@@ -4584,6 +4767,13 @@ impl<'a, 'e> Interp<'a, 'e> {
                 Callee::Memory(call) => self.memory(*call, args, expr.span, frame),
                 Callee::Stream(call) => self.stream(*call, recv, args, None, frame),
                 Callee::Net(call) => self.net(*call, recv, args, None, expr.span, frame),
+                Callee::Chan(call, told) => self.chan(*call, *told, recv, args, expr.span, frame),
+                // Awaited where it is written: in the interpreter a fiber waits the same way
+                // whether its task is async or not.
+                Callee::ChanAsync(call, told) => {
+                    let value = self.chan(*call, *told, recv, args, expr.span, frame)?;
+                    Ok(self.ended_task(value, expr.span))
+                }
                 // Awaited where it is written: the wait is done here, and the task given has
                 // ended.
                 Callee::NetAsync(call) => {

@@ -1,0 +1,16 @@
+// Two tasks that each wait for the other to send first: every task waits, and nothing is left
+// that could end a wait. The interpreter sees it exactly; compiled code waits for ever there
+// until the count of waiting tasks comes with the hardening.
+void ping(Channel<int> inbox, Sender<int> out) {
+    var x = inbox.receive() ?? 0
+    _ = out.send(x + 1)
+}
+
+void main() {
+    var a = Channel<int>(1)
+    var b = Channel<int>(1)
+    var first = Task.run(ping, a.clone(), b.sender())
+    var second = Task.run(ping, b.clone(), a.sender())
+    first.wait()
+    second.wait()
+}

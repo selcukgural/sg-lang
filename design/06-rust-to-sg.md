@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 18 November 2026, the hundred-and-twelfth slice.
+Last brought up to date: 18 November 2026, the hundred-and-thirteenth slice.
 
 ## Functions and variables
 
@@ -309,6 +309,14 @@ Last brought up to date: 18 November 2026, the hundred-and-twelfth slice.
 | lock poisoning | none | built | A panic stops the process |
 | `let g = cv.wait_while(m.lock().unwrap(), \|q\| q.is_empty()).unwrap();` with `cv.notify_one()` where it changes | `lock m as q when q.length() > 0 { ... }` | built | No `Condvar` and no notify: every `lock` block on the value that ends wakes those that wait. The condition is computed under the lock, may not read an atomic or the clock, and the task that is left the only owner panics instead of waiting for ever |
 | `tokio::sync::Notify` or an async `Condvar` beside a `Mutex` | `await lock m as q when ... { }` | built | The task waits and its thread goes on; the same `locked` value serves async and blocking code |
+| `let (tx, rx) = mpsc::sync_channel(16);` | `var rx = Channel<int>(16)`, `var tx = rx.sender()` | built | No tuple: the channel is the end that receives and makes its senders. Always with room, at least one; no channel without a limit (`mpsc::channel()`) and none with no room (`sync_channel(0)`) |
+| `tx.clone()`, `drop(tx)` | `tx.clone()`, the sender ends where its owner ends | built | The last sender to end closes the channel; there is no `close`, so none to forget |
+| `tx.send(x).unwrap()` | `_ = tx.send(x)`, or `if !tx.send(x) { return }` | built | `false` when no end receives any more, and the item is dropped; Rust gives it back in the error |
+| `rx.recv()`, `for x in rx` | `rx.receive()` (a `T?`, `null` at the end), `for x in rx` | built | The loop does not take the channel; one while a sender this function made of it lives is a compile error, Rust's best known mistake with channels |
+| `Arc<Mutex<Receiver<T>>>` for a pool of workers, crossbeam's `rx.clone()` | `rx.clone()` | built | Several receivers share the items, each going to one of them |
+| `rx.recv_timeout(d)`, `send_timeout` | `rx.receive(read token)`, `tx.send(x, read token)` with `CancellationSource.after(ms)` | built | A `Result` whose error is `Cancelled`; an item that is there is taken all the same |
+| `tokio::sync::mpsc`, `rx.recv().await`, `tx.send(x).await` | `await rx.receiveAsync()`, `await tx.sendAsync(x)` | built | The same channel serves async and blocking code |
+| `rx.try_recv()`, `select!`, crossbeam's `select!` | none | not in SG | A loop that asks without waiting holds its thread; waiting on several channels at once is not here yet |
 | `AtomicI64::new(0)`, `AtomicBool`, `AtomicPtr<T>` | `atomic 0` of the type `atomic long`, `atomic bool`, `atomic raw T` | built | Any integer type, `bool`, `float`, `double` and a raw pointer; as large as its type and aligned to its size, in a struct, a list, an array or raw memory |
 | `Arc<AtomicI64>` | `shared atomic long`, made with `new shared atomic 0` | built | Its methods work through `read` and `shared`, as Rust's through `&self` |
 | `a.load(Ordering::SeqCst)`, `a.store(v, Ordering::Release)` | `a.load()`, `a.store(v, MemoryOrder.Release)` | built | Sequentially consistent unless an order is written; an order the operation cannot keep is a compile error, where Rust panics at run time |

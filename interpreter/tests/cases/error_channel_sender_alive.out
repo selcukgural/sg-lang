@@ -1,0 +1,9 @@
+error: this loop ends only when every sender of `jobs` has ended, and `tx` lives on in this function: it would wait for ever
+  --> error_channel_sender_alive.sg:10:16
+ 10 |     for job in jobs {
+    |                ^^^^
+  `tx` is made here:
+  --> error_channel_sender_alive.sg:8:9
+ 8 |     var tx = jobs.sender()
+   |         ^^
+  hint: give the last sender away, `Task.run(produce, tx)`, or make each sender where it is given: `Task.run(produce, jobs.sender())`

@@ -1,0 +1,4 @@
+// `receive` gives `null` once the channel has ended, so an item is never `null`.
+void main() {
+    var jobs = Channel<int?>(4)
+}

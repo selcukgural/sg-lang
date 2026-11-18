@@ -1,0 +1,76 @@
+// Channels in async code: `await sender.sendAsync(x)` and `await channel.receiveAsync()` wait
+// with the task, and its thread runs other tasks meanwhile. A sender on a thread of its own
+// wakes them, and a token gives up on a wait.
+struct Note : Disposable {
+    string text
+
+    void dispose(ref this) {
+        print($"dropped {this.text}")
+    }
+}
+
+async void produce(Sender<int> tx, int from) {
+    for i in from..from + 200 {
+        if !await tx.sendAsync(i) {
+            return
+        }
+    }
+}
+
+async long consume(Channel<int> jobs) {
+    long sum = 0
+    while true {
+        var job = await jobs.receiveAsync()
+        if job is null {
+            return sum
+        }
+        sum += job
+    }
+    return sum
+}
+
+// Sends from a thread that blocks, to tasks that await.
+void blocking(Sender<int> tx) {
+    for i in 0..100 {
+        _ = tx.send(i)
+    }
+}
+
+async void main() {
+    // A channel with room for one: the senders wait for the receivers, and the other way round.
+    var jobs = Channel<int>(1)
+    var tasks = List<Task<void>>()
+    tasks.add(produce(jobs.sender(), 0))
+    tasks.add(produce(jobs.sender(), 10000))
+    tasks.add(produce(jobs.sender(), 20000))
+    var c1 = consume(jobs.clone())
+    var c2 = consume(jobs.clone())
+    var mine = await consume(jobs)
+    await Task.whenAll(tasks)
+    print(await c1 + await c2 + mine)
+
+    var fromThread = Channel<int>(2)
+    var thread = Task.run(blocking, fromThread.sender())
+    var total = await consume(fromThread)
+    await thread
+    print(total)
+
+    // A token gives up on a wait for an item, and on a wait for room.
+    var quiet = Channel<Note>(1)
+    var tx = quiet.sender()
+    var source = CancellationSource.after(20)
+    match await quiet.receiveAsync(read source.token()) {
+        Ok(note) => print($"got {note?.text ?? "nothing"}")
+        Error(_) => print("cancelled")
+    }
+    print(await tx.sendAsync(Note { text = "kept" }))
+    match await tx.sendAsync(Note { text = "late" }, read source.token()) {
+        Ok(sent) => print($"sent {sent}")
+        Error(_) => print("the send was cancelled")
+    }
+    var kept = await quiet.receiveAsync()
+    if kept is not null {
+        print($"received {kept.text}")
+    }
+    print("end")
+}

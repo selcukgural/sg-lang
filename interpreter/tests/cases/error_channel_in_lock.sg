@@ -1,0 +1,9 @@
+// A send waits while the channel is full, and a `lock` block does not wait.
+void main() {
+    var total = new shared locked 0
+    var jobs = Channel<int>(1)
+    var tx = jobs.sender()
+    lock total as t {
+        _ = tx.send(t)
+    }
+}

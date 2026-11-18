@@ -275,6 +275,44 @@ lock jobs as q when q.items.length() > 0 || Stop.load() { }  // error: an `atomi
 A task left the only owner of what it waits for, with no `weak` look at it, waits for what no other task could
 change: a panic, whose hint is the `done` field. The rows "Waiting under a lock" of the decisions file have the rest.
 
+Tasks also hand each other items through a channel. `Channel<T>(n)` is the end that receives, with room for `n`
+items; the senders it makes send. The last sender to end closes it, so there is no `close` to forget, as C#'s
+`Writer.Complete()` and Go's `close` can be:
+
+```
+void produce(Sender<int> tx, int from) {
+    for i in from..from + 100 {
+        if !tx.send(i) { return }                // waits while the channel is full; `false`: nobody receives
+    }
+}                                                // `tx` ends here
+
+int work(Channel<int> jobs) {
+    var sum = 0
+    for job in jobs { sum += job }               // ends once every sender has ended and nothing is left
+    return sum
+}
+
+void main() {
+    var jobs = Channel<int>(16)
+    var a = Task.run(produce, jobs.sender(), 0)
+    var b = Task.run(produce, jobs.sender(), 1000)
+    var other = Task.run(work, jobs.clone())     // two receivers: each item goes to one of them
+    var mine = work(jobs)
+    a.wait()
+    b.wait()
+    print(mine + other.wait())
+}
+
+var tx = jobs.sender()
+for job in jobs { }                              // error: `tx` lives on in this function, so the loop would never end
+int? next = jobs.receive()                       // `null` at the end; `Channel<int?>` is an error
+var got = jobs.receive(read token)               // Result<int?, Cancelled>
+var item = await jobs.receiveAsync()             // in an async function; `await tx.sendAsync(x)` sends
+```
+
+A send or a receive waits, so it is not written in a `lock` block. The rows "Channels" of the decisions file have
+the rest.
+
 ### Generics and interfaces
 
 > **Deferred on 12 November 2026.** Generics of your own, `where` and your own `interface` are not in the first

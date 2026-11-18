@@ -27,6 +27,8 @@ enum How {
     Lock,
     Wait,
     Await,
+    /// It sends or receives on a channel, or goes over one with `for`.
+    Channel,
 }
 
 /// Why a function waits, or holds its thread.
@@ -94,6 +96,15 @@ pub fn check(prog: &Program) -> Res<()> {
         if let Some(span) = when {
             if scan.holds.as_ref().is_none_or(|(other, _)| span.start < other.start) {
                 scan.holds = Some((span, "`lock ... when`".to_string()));
+            }
+        }
+        // `for x in jobs` receives from the channel in each round.
+        if let Some(span) = first_channel_loop(body) {
+            if scan.holds.as_ref().is_none_or(|(other, _)| span.start < other.start) {
+                scan.holds = Some((span, "a `for` over a channel".to_string()));
+            }
+            if scan.itself.is_none_or(|(other, _)| span.start < other.start) {
+                scan.itself = Some((span, How::Channel));
             }
         }
         // The one written first.
@@ -275,7 +286,52 @@ fn held_in(body: &Block, holds: &HashMap<String, Why>, taken: &[(String, usize, 
         },
         &mut |_| {},
     );
+    if let (None, Some(span)) = (&error, first_channel_loop(body)) {
+        error = Some(
+            Diag::error(span, "a `for` over a channel holds the thread while it waits for an item, and an async function does not hold its thread")
+                .note(NO_HOLD)
+                .hint("receive in a loop: `while true { var item = await jobs.receiveAsync(); if item is null { break } ... }`"),
+        );
+    }
     error.map_or(Ok(()), Err)
+}
+
+/// Where the first `for` over a channel is in the block, also inside the blocks in it.
+fn first_channel_loop(block: &Block) -> Option<Span> {
+    let mut first: Option<Span> = None;
+    channel_loops(block, &mut |stmt| {
+        if first.is_none_or(|other| stmt.span.start < other.start) {
+            first = Some(stmt.span);
+        }
+    });
+    first
+}
+
+/// Calls `each` with every `for` over a channel in `block`, also inside the blocks in it.
+fn channel_loops<'a>(block: &'a Block, each: &mut dyn FnMut(&'a Stmt)) {
+    for stmt in block {
+        match &stmt.kind {
+            StmtKind::ForEach { iter, body, .. } => {
+                if matches!(iter.ty.strip_borrow(), Ty::Channel(_)) {
+                    each(stmt);
+                }
+                channel_loops(body, each);
+            }
+            StmtKind::If { then, els, .. } => {
+                channel_loops(then, each);
+                if let Some(els) = els {
+                    channel_loops(els, each);
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::As { body, .. } | StmtKind::Unsafe(body) | StmtKind::Lock { body, .. } => channel_loops(body, each),
+            _ => {}
+        }
+        let mut arms: Vec<&'a Block> = Vec::new();
+        stmt_arms(stmt, &mut arms);
+        for arm in arms {
+            channel_loops(arm, each);
+        }
+    }
 }
 
 /// The full names of the functions of the language's own module start with it.
@@ -359,6 +415,7 @@ fn holding(expr: &Expr) -> Option<(Span, String)> {
         }
         ExprKind::Method { name, name_span, callee: Callee::Net(NetCall::Accept), .. } => Some((*name_span, format!("`{name}` on a listener"))),
         ExprKind::Method { name, name_span, callee: Callee::Net(NetCall::Receive | NetCall::Send), .. } => Some((*name_span, format!("`{name}` on a connection"))),
+        ExprKind::Method { name, name_span, callee: Callee::Chan(ChanCall::Send | ChanCall::Receive, _), .. } => Some((*name_span, format!("`{name}` on a channel"))),
         _ => None,
     }
 }
@@ -371,6 +428,7 @@ fn async_version(expr: &Expr) -> Option<String> {
         ExprKind::Method { callee: Callee::Stream(StreamCall::Lines), .. } => return None,
         ExprKind::Call { callee: Callee::Net(NetCall::Connect), args, .. } | ExprKind::Method { callee: Callee::Net(NetCall::Connect), args, .. } => ("TcpStream.connectAsync".to_string(), args),
         ExprKind::Method { recv, name, callee: Callee::Net(NetCall::Accept | NetCall::Receive | NetCall::Send), args, .. } => (format!("{}.{name}Async", short_reader(recv)?), args),
+        ExprKind::Method { recv, name, callee: Callee::Chan(ChanCall::Send | ChanCall::Receive, _), args, .. } => (format!("{}.{name}Async", short_reader(recv)?), args),
         ExprKind::Method { recv, name, callee: Callee::Stream(_), args, .. } => {
             let reader = match stream_name(recv) {
                 Some(name) => name.to_string(),
@@ -484,6 +542,9 @@ fn look(expr: &Expr, scan: &mut Body, taken: &mut Vec<(String, usize, Ty)>) {
     match &expr.kind {
         ExprKind::Method { callee: Callee::Wait, name_span, .. } => {
             scan.itself.get_or_insert((*name_span, How::Wait));
+        }
+        ExprKind::Method { callee: Callee::Chan(ChanCall::Send | ChanCall::Receive, _), name_span, .. } => {
+            scan.itself.get_or_insert((*name_span, How::Channel));
         }
         ExprKind::Await(inner) => {
             scan.itself.get_or_insert((expr.span, How::Await));
@@ -771,6 +832,11 @@ fn inside(body: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize, T
                         .note(NO_WAIT)
                         .hint("await the task before the block or after it"),
                 ),
+                ExprKind::Method { name, name_span, callee: Callee::Chan(ChanCall::Send | ChanCall::Receive, _), .. } => Some(
+                    Diag::error(*name_span, format!("`{name}` waits on a channel, and a `lock` block does not wait"))
+                        .note(NO_WAIT)
+                        .hint(format!("{name} before the block or after it")),
+                ),
                 ExprKind::Method { name, name_span, callee: Callee::Method { owner, .. }, .. } => called(&format!("{owner}.{name}"), *name_span, waits),
                 ExprKind::Call { callee: Callee::Static { owner, name }, name_span, .. } => called(&format!("{owner}.{name}"), *name_span, waits),
                 ExprKind::Call { name, name_span, callee: Callee::Plain, .. } => called(name, *name_span, waits),
@@ -793,6 +859,11 @@ fn inside(body: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize, T
     if let Some(diag) = error {
         return Err(diag);
     }
+    if let Some(span) = first_channel_loop(body) {
+        return Err(Diag::error(span, "a `for` over a channel waits for each item, and a `lock` block does not wait")
+            .note(NO_WAIT)
+            .hint("go over the channel before the block or after it"));
+    }
     if let Some(span) = nested {
         return Err(Diag::error(span, "a `lock` block does not take another lock")
             .note(NO_WAIT)
@@ -811,6 +882,7 @@ fn static_waits(decl: &StaticDecl, scan: &Body, waits: &HashMap<String, Why>, ta
                 How::Lock => "takes a lock",
                 How::Wait => "waits for a task",
                 How::Await => "awaits a task",
+                How::Channel => "waits on a channel",
             };
             Diag::error(*span, format!("the value of the static `{name}` is found where it is first used, and this {what}"))
         }
@@ -876,6 +948,7 @@ fn explained(diag: Diag, name: &str, waits: &HashMap<String, Why>) -> Diag {
                     How::Lock => "takes a lock",
                     How::Wait => "waits for a task",
                     How::Await => "awaits a task",
+                    How::Channel => "waits on a channel",
                 };
                 let path = match chain.len() {
                     1 => format!("`{}` {what} here", chain[0]),

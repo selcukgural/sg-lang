@@ -243,6 +243,7 @@ fn barred_call(callee: &Callee) -> Option<&'static str> {
         Callee::Value | Callee::FieldValue(_) => "calls a function value",
         Callee::TaskRun | Callee::Wait | Callee::WhenAll | Callee::WhenAny | Callee::Delay(_) => "starts or waits for a task",
         Callee::Cancel(_) => "cancels tasks",
+        Callee::Chan(..) | Callee::ChanAsync(..) => "sends or receives on a channel",
         _ => return None,
     })
 }

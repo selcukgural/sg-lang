@@ -2313,9 +2313,9 @@ fn check_tests(
 }
 
 fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
-    if !matches!(ty.name.as_str(), "Result" | "List" | "HashMap" | "HashSet" | "Func" | "CFunc" | "Task") && !ty.args.is_empty() {
+    if !matches!(ty.name.as_str(), "Result" | "List" | "HashMap" | "HashSet" | "Func" | "CFunc" | "Task" | "Channel" | "Sender") && !ty.args.is_empty() {
         return Err(Diag::error(ty.span, format!("`{}<...>`: generic types are not in the interpreter yet", ty.name))
-            .note("the types written with `<` and `>` for now are `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, `Func<A, R>` and `Task<R>`"));
+            .note("the types written with `<` and `>` for now are `Result<T, E>`, `List<T>`, `HashMap<K, V>`, `HashSet<T>`, `Func<A, R>`, `Task<R>`, `Channel<T>` and `Sender<T>`"));
     }
     let no_borrow = |arg: &TypeExpr, of: &str| match arg.mode {
         Some(_) => Err(Diag::error(arg.span, format!("a `{of}` that holds borrows is not in the interpreter yet"))
@@ -2331,6 +2331,22 @@ fn resolve_type(ty: &TypeExpr, names: &Names, allow_void: bool) -> Res<Ty> {
             };
             no_borrow(result, "Task")?;
             Ty::Task(Box::new(resolve_type(result, names, true)?))
+        }
+        // The two ends of a channel. An item is never `null`, which `receive` gives at the end.
+        _ if ty.name == "Channel" || ty.name == "Sender" => {
+            let [item] = ty.args.as_slice() else {
+                return Err(Diag::error(ty.span, format!("`{0}` is written with the type of its items: `{0}<T>`", ty.name)));
+            };
+            no_borrow(item, &ty.name)?;
+            let item_ty = resolve_type(item, names, false)?;
+            if let Ty::Nullable(inner) = &item_ty {
+                return Err(Diag::error(item.span, format!("the items of a channel are not `{item_ty}`: `receive` gives `null` when the channel has ended, and a `null` item would read the same"))
+                    .hint(format!("an enum with a variant for the missing value, or a `List<{inner}>` of one item or none")));
+            }
+            match ty.name.as_str() {
+                "Channel" => Ty::Channel(Box::new(item_ty)),
+                _ => Ty::Sender(Box::new(item_ty)),
+            }
         }
         _ if ty.name == "List" => {
             let [item] = ty.args.as_slice() else {
@@ -3025,7 +3041,7 @@ fn stays_in(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<Stri
         Ty::Raw(_) if promised => None,
         Ty::Shared(_, true) | Ty::Weak(_, true) | Ty::Raw(_) => Some((ty.clone(), String::new())),
         Ty::Shared(inner, false) | Ty::Weak(inner, false) | Ty::Locked(inner) | Ty::Atomic(inner) => stays(inner, seen),
-        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) => stays(inner, seen),
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) | Ty::Channel(inner) | Ty::Sender(inner) => stays(inner, seen),
         Ty::Result(a, b) | Ty::Map(a, b) => stays(a, seen).or_else(|| stays(b, seen)),
         Ty::Struct(name) | Ty::Enum(name) => {
             let promised = promised || names.sendable.contains(name);
@@ -3051,6 +3067,31 @@ fn stays_in(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<Stri
             found
         }
         _ => None,
+    }
+}
+
+/// Whether a `StreamWriter` lies in the type: one left in a channel would be closed where the
+/// channel ends, on a thread that may run async tasks.
+fn holds_writer(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, seen: &mut Vec<String>) -> bool {
+    match ty {
+        Ty::Writer => true,
+        Ty::Ptr(inner) | Ty::Nullable(inner) | Ty::List(inner) | Ty::Set(inner) | Ty::Array(inner, _) | Ty::Shared(inner, _) | Ty::Locked(inner) | Ty::Channel(inner) | Ty::Sender(inner) => {
+            holds_writer(inner, structs, enums, seen)
+        }
+        Ty::Result(a, b) | Ty::Map(a, b) => holds_writer(a, structs, enums, seen) || holds_writer(b, structs, enums, seen),
+        Ty::Struct(name) | Ty::Enum(name) => {
+            if seen.contains(name) {
+                return false;
+            }
+            seen.push(name.clone());
+            let fields: Vec<&(String, Ty)> = match (structs.get(name), enums.get(name)) {
+                (Some(info), _) => info.fields.iter().collect(),
+                (_, Some(info)) => info.variants.iter().flat_map(|(_, fields)| fields).collect(),
+                _ => Vec::new(),
+            };
+            fields.iter().any(|(_, field)| holds_writer(field, structs, enums, seen))
+        }
+        _ => false,
     }
 }
 
@@ -3735,6 +3776,10 @@ struct Var {
     assigned: u32,
     /// Where it is declared.
     at: Span,
+    /// For a `Sender` made from a channel in this function (`jobs.sender()`, or a `.clone()` of
+    /// one), the `id` of the channel's variable: a `for` over that channel while this one lives
+    /// would never end.
+    sender_of: Option<usize>,
 }
 
 /// What has been moved out of a variable.
@@ -4094,7 +4139,7 @@ impl<'a> Checker<'a> {
         let id = self.borrows.next_id;
         self.borrows.next_id += 1;
         let decl_loops = self.borrows.loops.clone();
-        scope.vars.push(Var { id, decl_loops, loans: Vec::new(), param: false, name: name.to_string(), unopened: None, declared: ty.clone(), current: ty, moved, assigned: 0, at: span });
+        scope.vars.push(Var { id, decl_loops, loans: Vec::new(), param: false, name: name.to_string(), unopened: None, declared: ty.clone(), current: ty, moved, assigned: 0, at: span, sender_of: None });
         Ok(())
     }
 
@@ -5465,8 +5510,10 @@ impl<'a> Checker<'a> {
                     false => Vec::new(),
                 };
                 self.kept_unnamed(&loans, init, &format!("`{name}`"))?;
+                let sender_of = self.sender_of(init);
                 self.declare_local(name, ty, *name_span)?;
                 self.find(name).expect("just declared").loans = loans;
+                self.find(name).expect("just declared").sender_of = sender_of;
                 if holds_result {
                     self.find(name).expect("just declared").unopened = Some(*name_span);
                 }
@@ -5853,7 +5900,27 @@ impl<'a> Checker<'a> {
                     let text = self.src[source.span.start..source.span.end].to_string();
                     Some(Lock { var: self.var_id(name)?, path, text, positions: false, span: iter.span })
                 });
-                let found = self.expr(iter, None)?;
+                // A channel in a variable is received from, not handed over to the loop.
+                let in_variable = match &iter.kind {
+                    ExprKind::Var(name) => self.find(name).is_some_and(|var| matches!(var.current.strip_borrow(), Ty::Channel(_))),
+                    _ => false,
+                };
+                let found = match in_variable {
+                    true => self.place(iter)?.expect("a variable is a place").0,
+                    false => self.expr(iter, None)?,
+                };
+                if let Ty::Channel(item) = found.strip_borrow() {
+                    let item = (**item).clone();
+                    self.channel_loop(iter)?;
+                    *by = None;
+                    self.borrows.binds.clear();
+                    let node = self.node();
+                    self.borrows.loops.push(node);
+                    let result = self.loop_body(body, &[], vec![(var.clone(), item, *var_span)], label.as_ref());
+                    self.borrows.loops.pop();
+                    self.after_loop(result?, true);
+                    return Ok(());
+                }
                 let mut mode = None;
                 let mut inner = &found;
                 loop {
@@ -7578,6 +7645,9 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Collection { ty, args, items } => {
                 let built = resolve_type(ty, self.names, false)?;
+                if matches!(built, Ty::Channel(_) | Ty::Sender(_)) {
+                    return self.new_channel(&built, ty.span, args, items.is_some(), span);
+                }
                 if let Some(arg) = args.first() {
                     return Err(Diag::error(arg.span, format!("`{built}(...)` takes no arguments"))
                         .hint("the items are written in braces: `List<int> { 1, 2 }`"));
@@ -10295,6 +10365,171 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// The `id` of the channel a new `Sender` comes from, when this function made it: `var tx
+    /// = jobs.sender()`, or `var more = tx.clone()` of such a sender.
+    fn sender_of(&mut self, init: &Expr) -> Option<usize> {
+        let ExprKind::Method { recv, callee: Callee::Chan(call, _), .. } = &init.kind else { return None };
+        let recv = match &recv.kind {
+            ExprKind::Borrow { expr, .. } => expr,
+            _ => recv,
+        };
+        let ExprKind::Var(name) = &recv.kind else { return None };
+        let var = self.find(name)?;
+        match call {
+            ChanCall::Sender => Some(var.id),
+            ChanCall::Clone => var.sender_of,
+            _ => None,
+        }
+    }
+
+    /// `for x in jobs` ends only once every `Sender` of the channel has ended: one this function
+    /// made, and has not given away on every path to here, would keep it from ever ending.
+    fn channel_loop(&mut self, iter: &Expr) -> Res<()> {
+        let source = match &iter.kind {
+            ExprKind::Borrow { expr, .. } => expr,
+            _ => iter,
+        };
+        let ExprKind::Var(channel) = &source.kind else { return Ok(()) };
+        let Some(id) = self.find(channel).map(|var| var.id) else { return Ok(()) };
+        let alive = self.scopes.iter().flat_map(|scope| &scope.vars).find(|var| var.sender_of == Some(id) && (var.moved.whole.is_none() || var.moved.partly));
+        let Some(sender) = alive else { return Ok(()) };
+        let (name, at) = (sender.name.clone(), sender.at);
+        Err(Diag::error(iter.span, format!("this loop ends only when every sender of `{channel}` has ended, and `{name}` lives on in this function: it would wait for ever"))
+            .related(at, format!("`{name}` is made here"))
+            .hint(format!("give the last sender away, `Task.run(produce, {name})`, or make each sender where it is given: `Task.run(produce, {channel}.sender())`")))
+    }
+
+    /// `Channel<T>(capacity)`: a channel with room for that many items, at least one, whose
+    /// items go to other tasks. A `Sender<T>` is made by the channel.
+    fn new_channel(&mut self, built: &Ty, ty_span: Span, args: &mut [Expr], braced: bool, span: Span) -> Res<Ty> {
+        let item = match built {
+            Ty::Channel(item) => (**item).clone(),
+            _ => {
+                return Err(Diag::error(ty_span, format!("a `{built}` is made by its channel"))
+                    .hint("`var tx = channel.sender()`"));
+            }
+        };
+        if braced {
+            return Err(Diag::error(span, "a channel is made empty, with room for a number of items: `Channel<int>(16)`")
+                .hint("send the items into it: `tx.send(x)`"));
+        }
+        let [capacity] = args else {
+            return Err(Diag::error(span, format!("`{built}(...)` takes how many items it has room for: `{built}(16)`"))
+                .note("a channel always has a limit, so a sender that runs ahead waits instead of filling the memory"));
+        };
+        self.typed(capacity, &Ty::Int(IntTy::Nint))?;
+        let written = match &unwidened(capacity).kind {
+            ExprKind::Int(value, _) => Some(*value),
+            ExprKind::Unary(UnOp::Neg, inner) => match &unwidened(inner).kind {
+                ExprKind::Int(value, _) => Some(-*value),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(value) = written.filter(|value| *value < 1) {
+            return Err(Diag::error(capacity.span, format!("a channel has room for at least one item, and this is {value}"))
+                .note("a sender that waits for its receiver is a task waited for: `task.wait()`"));
+        }
+        if let Some((part, at)) = stays(&item, self.structs, self.enums, self.names, &mut Vec::new()) {
+            let what = if at.is_empty() { String::new() } else { at };
+            return Err(Diag::error(ty_span, format!("an item of a channel goes to another task, and a `{item}` cannot{what}: {}", why_it_stays(&part, self.names))).note(THREAD_RULE));
+        }
+        if holds_writer(&item, self.structs, self.enums, &mut Vec::new()) {
+            return Err(Diag::error(ty_span, format!("a channel of a `{item}`, which holds a `StreamWriter`, is not in the interpreter yet"))
+                .note("a writer left in a channel would be closed where the channel ends, which async code has to await")
+                .hint("send what is to be written, and keep the writer in the task that writes"));
+        }
+        Ok(built.clone())
+    }
+
+    /// The methods of the ends of a channel: `channel.sender()`, `.clone()`, `sender.send(x)`,
+    /// `channel.receive()` and their async versions, each through a `read` borrow, since the
+    /// channel keeps its items safe for several tasks itself. A token may come last on those
+    /// that wait; then what they give is in a `Result` whose error is `Cancelled`. The async
+    /// versions lend the end, so they are awaited where they are written.
+    #[allow(clippy::too_many_arguments)]
+    fn chan_method(&mut self, recv: &mut Expr, target: &Ty, name: &str, name_span: Span, args: &mut [Expr], callee: &mut Callee, span: Span, awaited: bool) -> Res<Ty> {
+        let (receives, item) = match target {
+            Ty::Channel(item) => (true, (**item).clone()),
+            Ty::Sender(item) => (false, (**item).clone()),
+            _ => unreachable!("called for the ends of a channel"),
+        };
+        let (base, is_async) = match name.strip_suffix("Async") {
+            Some(base) => (base, true),
+            None => (name, false),
+        };
+        let text = self.src[recv.span.start..recv.span.end].to_string();
+        let (call, params) = match (receives, base) {
+            (true, "sender") if !is_async => (ChanCall::Sender, Vec::new()),
+            (_, "clone") if !is_async => (ChanCall::Clone, Vec::new()),
+            (false, "send") => (ChanCall::Send, vec![item.clone()]),
+            (true, "receive") => (ChanCall::Receive, Vec::new()),
+            _ => {
+                let known: &[&str] = match receives {
+                    true => &["receive", "receiveAsync", "sender", "clone"],
+                    false => &["send", "sendAsync", "clone"],
+                };
+                let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
+                return Err(match (receives, base) {
+                    (true, "send") => diag.note("a `Channel<T>` is the end that receives; its senders send").hint(format!("`var tx = {text}.sender()`, then `tx.{name}(...)`")),
+                    (false, "receive") => diag.note("a `Sender<T>` only sends; the `Channel<T>` it was made from receives"),
+                    (false, "sender") => diag.hint(format!("one more sender: `{text}.clone()`")),
+                    (_, "close" | "complete" | "dispose") => diag.note("a channel closes when its last `Sender` ends: there is nothing to call, and nothing to forget"),
+                    (_, "tryReceive" | "trySend" | "tryRead" | "tryWrite" | "length" | "count" | "isEmpty" | "isFull") => {
+                        diag.note("a loop that asks a channel without waiting would hold its thread; `receive` and `send` wait, and a token gives up after a time: `CancellationSource.after(ms)`")
+                    }
+                    _ => match nearest(name, known.iter().copied()) {
+                        Some(close) => diag.hint(format!("`{close}`")),
+                        None => diag.note(format!("methods: {}", known.join(", "))),
+                    },
+                });
+            }
+        };
+        let waits = matches!(call, ChanCall::Send | ChanCall::Receive);
+        let count = params.len();
+        match waits {
+            true if args.len() != count && args.len() != count + 1 => {
+                return Err(Diag::error(span, format!("`{name}` takes {count} argument(s), or {} with a token last; {} given", count + 1, args.len())));
+            }
+            false if args.len() != count => return Err(Diag::error(span, format!("`{name}` takes {count} argument(s), {} given", args.len()))),
+            _ => {}
+        }
+        let (given, token) = args.split_at_mut(count);
+        self.args(name, given, &params, span)?;
+        let told = match token.first_mut() {
+            Some(token) => {
+                self.token_arg(token)?;
+                true
+            }
+            None => false,
+        };
+        self.touch(recv, Access::Read);
+        let gives = match call {
+            ChanCall::Sender => Ty::Sender(Box::new(item)),
+            ChanCall::Clone => target.clone(),
+            ChanCall::Send => Ty::Bool,
+            ChanCall::Receive => Ty::Nullable(Box::new(item)),
+        };
+        let gives = match told {
+            true => Ty::Result(Box::new(gives), Box::new(Ty::Struct(CANCELLED.to_string()))),
+            false => gives,
+        };
+        if !is_async {
+            *callee = Callee::Chan(call, told);
+            return Ok(gives);
+        }
+        if !awaited {
+            let text = &self.src[span.start..span.end];
+            let diag = Diag::error(span, format!("`{name}` lends the end of the channel, and a call without `await` starts it as a task of its own, which a borrow cannot go to"));
+            return Err(match self.is_async {
+                true => diag.hint(format!("`await {text}` runs it as part of this task, where it can borrow")),
+                false => diag.note(format!("a channel is awaited in an async function; elsewhere `{base}` does the same work")),
+            });
+        }
+        *callee = Callee::ChanAsync(call, told);
+        Ok(Ty::Task(Box::new(gives)))
+    }
+
     /// `reader.readLineAsync(ref line)`, `Stdin.readTextAsync()`: the methods of a reader as a
     /// task, with a token that may come last. The task lends the reader, so the call is
     /// awaited where it is written.
@@ -11602,6 +11837,10 @@ impl<'a> Checker<'a> {
         if matches!(target, Ty::Source | Ty::Token) {
             let target = target.clone();
             return self.cancel_method(recv, &target, name, name_span, args, callee, span);
+        }
+        if matches!(target, Ty::Channel(_) | Ty::Sender(_)) {
+            let target = target.clone();
+            return self.chan_method(recv, &target, name, name_span, args, callee, span, awaited);
         }
         if *target == Ty::Socket && matches!(name, "remoteAddress" | "localAddress") {
             return self.stream_address(recv, name, args, callee, span);

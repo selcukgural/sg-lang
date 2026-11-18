@@ -1,0 +1,9 @@
+// `receive` holds the thread while it waits; async code awaits `receiveAsync`.
+async int take(Channel<int> jobs) {
+    return jobs.receive() ?? 0
+}
+
+async void main() {
+    var jobs = Channel<int>(1)
+    print(await take(jobs.clone()))
+}

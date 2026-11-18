@@ -626,6 +626,11 @@ fn compiled() {
         if name == "panic_stack_overflow.sg" {
             continue;
         }
+        // Tasks that wait on channels for each other: the interpreter stops with a panic, and
+        // compiled code waits for ever until the count of waiting tasks comes with the hardening.
+        if name == "panic_channel_deadlock.sg" {
+            continue;
+        }
         // The interpreter checks every read and write of raw memory against the blocks of
         // `Memory.allocate`; compiled code checks nothing there (it is written inside `unsafe`),
         // and leaves it to the sanitizers.
@@ -1001,7 +1006,7 @@ fn compiled_small_pools() {
     std::fs::create_dir_all(&work).unwrap();
     let sanitizers = std::env::var_os("SG_NO_SANITIZERS").is_none();
     let mut failures = Vec::new();
-    for stem in ["ok_net_wakes_from_thread", "ok_pool_queues", "ok_net_echo", "ok_net_cancel", "ok_net_slots", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel", "ok_wake_races", "ok_lock_when_async"] {
+    for stem in ["ok_net_wakes_from_thread", "ok_pool_queues", "ok_net_echo", "ok_net_cancel", "ok_net_slots", "ok_udp_async", "ok_async_results", "ok_process_async", "ok_process_cancel", "ok_wake_races", "ok_lock_when_async", "ok_channel_async"] {
         let source = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.sg"))).unwrap();
         let expected = std::fs::read_to_string(root.join("tests/cases").join(format!("{stem}.out"))).unwrap();
         let c_file = work.join(format!("{stem}.c"));

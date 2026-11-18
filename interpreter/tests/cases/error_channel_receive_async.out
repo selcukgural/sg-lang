@@ -1,0 +1,6 @@
+error: `receive` on a channel holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_channel_receive_async.sg:3:17
+ 3 |     return jobs.receive() ?? 0
+   |                 ^^^^^^^
+  hint: `await jobs.receiveAsync()` does the same work without holding the thread

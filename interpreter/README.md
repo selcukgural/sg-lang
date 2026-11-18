@@ -70,6 +70,7 @@ of `tests/Containerfile` has them.
 | A kernel | `examples/kernel` is a kernel for RISC-V that QEMU's `virt` machine boots in machine mode, with no firmware: it writes to the serial port, takes five interrupts of the timer and powers the machine off. The serial port, the timer and the device that powers off are driven in SG with `Memory.readVolatile` and `writeVolatile`; what SG has no words for (the start of the core, the vector of its traps, its own registers and `wfi`) is the C file beside it, compiled into the same object. The vector hands `onTrap` the kernel's state through `mscratch`, and the interrupt counts in an `atomic ulong`. An unexpected trap is a panic told on the serial port. `sg build` takes the Clang `CC` names; the object links alone, with nothing of the C compiler's library, and `--gc-sections` leaves out what nothing calls |
 | Async | `async int count(string path) { ... }` is an async function: a call gives a `Task<int>` that has started and runs until it first waits, then the caller goes on, as in C#. `await t` waits for a task without holding the thread and gives what it returns (`try await f()` passes its error on); `await f(read xs)` runs `f` as part of this task, so it can borrow, while a call without `await` follows the thread rule. `Task.delay(ms)` is a task that ends after so many milliseconds. `async void main()` and `async Result<void, E> main()` await too. In an async function `wait` is an error (`await` instead), and so is anything that holds the thread: input and output that is not async, and a function that does it, followed through the calls (`await Task.run(work, x)` runs such work apart). `await` in a `lock` block is an error, and an async function that awaits itself, directly or around. Compiled too: a machine with its variables in a frame, run by a pool of threads, each with a queue of its own that the others steal from. A method is async too (`public async int total(read this)`): one that lends `this` is awaited where it is written, one that takes it by value may start as a task; `create`, `format`, `equals`, `hash` and `compare` are not async |
 | Cancellation | `CancellationSource()` or `CancellationSource.after(ms)` makes a source; `source.token()` gives a `CancellationToken` (`token.clone()` one more, `CancellationToken.None` one never cancelled), `source.cancel()` cancels, through a `read` borrow too. A task looks at its token where it chooses: `token.isCancelled()`, or `try token.check()`, which gives `Error(Cancelled { })`; `try` turns it into `IoError.Cancelled(...)` in a function that returns an `IoError`. `await Task.delay(ms, read token)` ends early with that error. Compiled too |
+| Channels | `var jobs = Channel<int>(16)` is the end that receives, with room for 16 items; `jobs.sender()` gives a `Sender<int>`, and `.clone()` one more end of either kind. `tx.send(x)` waits while the channel is full and gives `false` when no end receives any more (the item is dropped); `jobs.receive()` waits while it is empty and gives `null` once every sender has ended and nothing is left, so there is no `close` to forget. `for job in jobs` receives until then. Several receivers share the items, each going to one of them in the order they were sent. In async code `await tx.sendAsync(x)` and `await jobs.receiveAsync()`; a token may come last on all four, which then give a `Result` whose error is `Cancelled`. An item goes to another task, so it follows the thread rule, and is never a `T?`; a send or a receive waits, so it is not in a `lock` block; a `for` over a channel while a sender this function made of it lives is an error, since it would never end. Tasks that wait on channels for each other stop the interpreter with a panic |
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
 | Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`, on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`, `readSomeAsync(ref buffer)`, and on a writer (`Stdout` and `Stderr` too) `writeAsync(x)`, `writeLineAsync(x)`, `writeBytesAsync(bytes)`, `flushAsync()` and `closeAsync()`: the work of the function without `Async`, as a task, with a token that may come last (`read token`; not for `closeAsync`). A call given a borrow, and `closeAsync`, is awaited where it is written. A writer an async function drops without `closeAsync` is written and closed the async way, awaited where it is dropped. In the interpreter the work is done when it is called; the token is looked at first. Compiled too: the work is done on a thread of input and output while the task waits, and what the block of a reader or a writer can do is done in place. A read of an input that can make the program wait (a pipe, a terminal) waits on a thread in both, and a cancel ends the wait; what comes later stays for the next read |
 | Network | `TcpListener.bind("127.0.0.1:8080")` (a number, `localhost`, or `":8080"` for every address of the machine; port 0 lets the system choose, `listener.port()` tells which), `listener.accept()`, `TcpStream.connect("example.com:80")` (the host looked up by name, each of its addresses tried in turn), `stream.receive(ref buffer)` (what has come, at most what the buffer holds; how many, 0 once the other side has let go) and `stream.send(bytes)` (all of them, through a `read` borrow): each gives a `Result` with an `IoError` (`ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong` are the network's). `stream.reader()` gives a `StreamReader` that borrows the stream and reads it through a block of its own (`readLine`, `lines()`, `readText`, `readBytes`, `readSome` and their async versions), while the stream goes on sending; a line or a text longer than 64 KB (`stream.reader(limit)` for another limit) is `LineTooLong`, and so is every read after it. A `receive` while the reader is used again is a compile error, and neither `send` nor `reader()` goes through a `shared` stream. `acceptAsync`, `connectAsync`, `receiveAsync` and `sendAsync` do the same work as a task, awaited where they are written, with a token that may come last; a cancel ends a wait at once and loses nothing that came. A socket sends without a buffer and is closed when it ends. In an async function the calls without `Async` are an error, as for files. `stream.localAddress()` and `stream.remoteAddress()` give the two ends as a `SocketAddress`. Datagrams: `UdpSocket.bind("127.0.0.1:0")`, `socket.sendTo(bytes, to)` (one message, whole) and `socket.receiveFrom(ref buffer)` (one message and who sent it, a `Received`), `connect(to)` with `send` and `receive`, all through a `read` borrow so a `shared` socket serves several tasks; a datagram that does not fit is `MessageTooLong`. A `SocketAddress` is read by `SocketAddress.parse("[::1]:53")` and printed the same way, and `SocketAddress.lookup("example.com:53")` gives the addresses of a name. In the interpreter a socket that is not ready gives the turn away, and the scheduler waits for the sockets with `poll` when no task can run. Compiled too: a call that has to wait waits with `poll`, and an async one on the loop of the network (epoll, kqueue), which a thread of the pool with nothing to do waits on. On Windows the same, through Winsock: the loop asks the driver under the sockets (AFD) on an I/O completion port, as mio and Tokio do, and the interpreter waits with `WSAPoll`; a listener and a datagram socket hold their port alone, and a datagram socket that is not connected is not told of a datagram that came back, as on Linux and macOS. Windows tells of a refused connection after about two seconds, and `localhost` tries `::1` before `127.0.0.1` (1025) |
@@ -7634,6 +7635,96 @@ Approved on 18 November 2026:
      thread sanitizer); on Windows on Arm `ok_lock_when`, `ok_lock_when_async` and `panic_lock_when_alone` give
      the same output interpreted and compiled.
 
+Choices made in the hundred-and-thirteenth slice (channels). 1276 to 1289 were put to the author before the
+slice and approved on 18 November 2026; they are in the decisions file ("Channels"). What building them asked
+for besides, from 1290; 1290 to 1299 were put to the author once the slice was built and approved on 18 November
+2026.
+
+1276. **What is written**: `var jobs = Channel<int>(16)` is the end that receives; `jobs.sender()` gives a
+     `Sender<int>`; both are made more with `.clone()`. The methods are `send` and `receive`, the names of a
+     `TcpStream`. Rust gives a pair `(tx, rx)`, which needs a tuple; Go has one `chan`; C# has
+     `Channel.CreateBounded<T>(n)` with its `.Writer` and `.Reader`.
+1277. **The end**: once the last `Sender` has ended, the receivers take what is left and then `receive` gives
+     `null`. There is no `close()`: C#'s `Writer.Complete()` is forgotten and its reader waits for ever, and
+     Go's `close` twice is a panic. Rust ends it the same way, with `drop`.
+1278. **A send with no end to receive** gives `false`, and the item is dropped; the rule of the unused value
+     makes the program look: `if !tx.send(x) { return }` or `_ = tx.send(x)`. Rust gives the item back in an
+     error, Go waits for ever, C#'s `TryWrite` gives `false`.
+1279. **Room**: always given, at least 1; the ring is taken once, when the channel is made (Go). No channel
+     without a limit, whose memory could grow without end (the reason of the 64 KB line), and none with no room
+     (Go's unbuffered channel): a task waited for does that. Below 1 is a panic, and a compile error when it is
+     written as a number.
+1280. **Several receivers**: `jobs.clone()` is one more end that receives from the same channel; each item goes
+     to one of them, in the order it was sent, so a pool of workers is written with it. Go, C# and crossbeam do
+     this; Rust's `mpsc` does not (`Arc<Mutex<Receiver>>`).
+1281. **Async**: `sendAsync` and `receiveAsync`. A token may come last on these and on `send` and `receive`; then
+     they give `Result<bool, Cancelled>` and `Result<T?, Cancelled>`. A time limit is
+     `CancellationSource.after(ms)`. `receive` in async code is the error of a call that holds the thread, whose
+     hint is `await jobs.receiveAsync()`.
+1282. **The loop**: `for job in jobs` in code that is not async; in async code `while` and `receiveAsync`. A `for`
+     that awaits stays with `linesAsync` in "Not here yet".
+1283. **Not taken**: Go's `select`; `tryReceive`, `trySend` and `length`, since a loop that asks without waiting
+     holds its thread (the reason there is no `isCompleted`); a `close` by hand.
+1284. **Rules**: a send and a receive wait, so they are not in a `lock` block or a condition of `when`. An item
+     goes to another task, so its type follows the thread rule. `Channel<int?>` is an error: a `null` item would
+     read as the end; the hint is an enum.
+1285. **A sender that keeps the loop from ending**: `for ... in jobs` while a `Sender` this function made of
+     `jobs` (`jobs.sender()`, or a `.clone()` of one) has not been given away on every path is a compile error,
+     whose hint is to give the last one away (`Task.run(produce, tx)`). Rust's best known mistake with channels.
+     Only `for` is looked at: one `receive` may find an item.
+1286. **Tasks that wait for each other**: the interpreter stops with the panic of 399; compiled code waits for
+     ever for now, and the count of waiting tasks comes with the hardening, as for 1263.
+1287. **What is left** is dropped when the last end ends, `dispose` too. When the last receiver ends, the
+     senders that wait for room wake and get `false`.
+1288. **Compiled code**: one block, a header (a mutex, the counts of the two kinds of end, the two lists of
+     those that wait) and the ring; a thread sleeps on a condition of its own, an async task is woken through
+     the pool. The items are copied as bytes, and a C function of each type of item drops them. A program
+     without channels carries none of it.
+1289. **Documents and tests**: below in 1299.
+
+Approved on 18 November 2026:
+
+1290. **The async versions are awaited where they are written**: they lend the end, as the async methods of the
+     network do, so `var t = jobs.receiveAsync()` is an error whose hint is `await`.
+1291. **A `for` over a channel in a variable receives from it, and does not take it**: after a `break` the
+     channel is still there to receive from (`for x in read jobs` is the same); a channel with no name ends with
+     the loop. A `for` over a channel is an error in async code, whose hint is the `while` loop, and in a `lock`
+     block.
+1292. **A wait the channel lets go on is not cancelled**: an item that is there is taken, and room that is
+     there takes the item, also with a token already cancelled; a cancel ends only a wait. A send that is
+     cancelled drops its item, as a send with no end to receive does (Rust's `send_timeout` gives it back in
+     the error, which needs a generic error type).
+1293. **A channel of a `StreamWriter`, or of a value that holds one, is not here yet**: a writer left in a
+     channel would be closed where the channel ends, which async code has to await ("A writer dropped in
+     async code").
+1294. **What 1285 follows**: a local of the same function made by `.sender()` of the channel's variable, or by
+     `.clone()` of such a local. A sender in a field, given as a parameter or made by another function is not
+     followed; there the interpreter's panic of 1286 says it.
+1295. **An item that is not taken ends inside the call**, and its `dispose` runs before `send` gives its answer,
+     in the interpreter as in compiled code.
+1296. **Who is woken**: in compiled code an item wakes the first receiver that waits, and room the first sender,
+     in the order they came; the last end of a kind wakes all of the other kind. One woken looks again, since
+     another may have taken what woke it. The interpreter looks at those that wait at each change of turn, in
+     the order they began, so a run goes the same way every time. Making and ending an end takes the mutex.
+1297. **The room is an `nint`**. A room whose ring does not fit in memory is a panic of compiled code (`a channel
+     with room for ... items of ... bytes does not fit in memory`); the interpreter grows its ring as items come,
+     and does not see it.
+1298. **A token on the calls that block**: no other call that blocks takes one yet, and 1281 gives one to
+     `send` and `receive`; a thread asleep on a channel is woken by the cancel. The cancel only marks the wait
+     and wakes it, under the lock of the clock, and never takes the channel's mutex; whoever wakes a waiter
+     takes it out of the list under the mutex, so a wait in the frame of a task is never touched after it has
+     gone on.
+1299. **Documents and tests**: this list, the table above, "Not here yet", "Next"; 02, 04 (the rows of the
+     decision and "as built", the promise at the end), 06; the root README. Tests: `ok_channel` (two producers
+     and three receivers, the order of one sender, items that own memory, a send with no receiver, what is
+     left dropped, a borrowed channel left with `break`, tokens on the calls that block), `ok_channel_async`
+     (senders and receivers that await on a channel with room for one, a sender on a thread, tokens; also among
+     the small pools with the pauses of `SG_PAUSE_WAKES`), `panic_channel_deadlock` (interpreted only), and 5
+     `error_*` (a send in a `lock` block, a `T?` item, a sender alive at the loop, `receive` in async code, no
+     room). `cargo test` passes on macOS and on Linux in a container (394 of 1635 programs compile through C, 90 of
+     them under the thread sanitizer); on Windows on Arm `ok_channel` and `ok_channel_async` give the same output
+     interpreted and compiled.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -7754,6 +7845,11 @@ check off.
 
 ## Not here yet
 
+- **Of the hundred-and-thirteenth slice**: in compiled code, tasks that wait on channels for each other wait
+  for ever, where the interpreter stops with a panic (1286): the count of waiting tasks comes with the hardening.
+  Waiting on several channels at once (Go's `select`), a `for` that awaits (`for await job in jobs`, with
+  `linesAsync`), a channel of a `StreamWriter` (1293), and a `Sender` this function did not make by name followed
+  by the rule of 1285 (1294).
 - **Of the hundred-and-twelfth slice**: a time limit and a cancellation of `lock ... when` (`cnd_timedwait`; 1264);
   in compiled code, waiters that wait for each other in a circle, or several owners that all wait, are not
   seen and wait for ever, where the interpreter stops with a panic (1263, 1271): a count of the tasks that
@@ -7875,7 +7971,7 @@ check off.
   `Closable` on an enum. A `Disposable` value that holds a `raw T` going to another task. `.toString()` on a `Formattable` struct or enum.
 - Generics other than the built-in `Result<T, E>`, `List<T>`, `HashMap<K, V>` and `HashSet<T>` (generics of your own are deferred
   in the design), and so an alias with type parameters (`using Link<T> = ...`).
-- Channels; the task of `Task.whenAll` kept in a variable to be awaited later (`var all =
+- The task of `Task.whenAll` kept in a variable to be awaited later (`var all =
   Task.whenAll(tasks)`), and a `for` over a list of tasks (a `break` would leave tasks); a method or a function of a struct
   started as a task (a `Func` is a function written at the top level). Of async: `linesAsync` (a `for`
   that awaits), an async function or method kept as a `Func`. A token cancelled while a file is
@@ -8164,5 +8260,7 @@ saturating operations and conversions on integers, `tryNegate`, and `Memory.zero
 hundred-and-eleventh is written: `binarySearch` on items in order, which gives the first equal one, with
 `lowerBound` and `upperBound` (1249-1257). The hundred-and-twelfth is written: `lock ... when`, a block that
 waits under a lock until its condition holds and is woken by every `lock` block on the value that ends, in
-place of a condition variable that is told by hand, `await lock ... when` in async code (1259-1275). Next
-channels, then the local time zone with the writing and reading of dates.
+place of a condition variable that is told by hand, `await lock ... when` in async code (1259-1275). The
+hundred-and-thirteenth is written: channels, `Channel<T>(n)` and the `Sender<T>`s it makes, which end for their
+receivers when the last sender ends, with no `close` to forget (1276-1299). Next the local time zone with the
+writing and reading of dates.

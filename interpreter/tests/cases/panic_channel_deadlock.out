@@ -1,0 +1,4 @@
+panic: every task waits, and nothing is left that could end a wait
+  --> panic_channel_deadlock.sg:5:13
+ 5 |     var x = inbox.receive() ?? 0
+   |             ^^^^^^^^^^^^^^^

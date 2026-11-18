@@ -1,0 +1,5 @@
+error: a channel has room for at least one item, and this is 0
+  a sender that waits for its receiver is a task waited for: `task.wait()`
+  --> error_channel_no_room.sg:3:29
+ 3 |     var jobs = Channel<int>(0)
+   |                             ^

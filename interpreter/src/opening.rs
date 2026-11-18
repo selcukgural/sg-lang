@@ -504,6 +504,8 @@ impl Opener<'_> {
                     Callee::Take | Callee::Replace | Callee::Stream(_) => (Use::LendChange, true),
                     Callee::Net(NetCall::Receive) | Callee::NetAsync(NetCall::Receive) => (Use::LendChange, true),
                     Callee::Net(NetCall::Accept | NetCall::Port | NetCall::Send | NetCall::Reader) | Callee::NetAsync(NetCall::Accept | NetCall::Send) => (Use::Lend, true),
+                    // A channel keeps its items safe for several tasks: its ends are only read.
+                    Callee::Chan(..) | Callee::ChanAsync(..) => (Use::Lend, true),
                     _ => (Use::Value, false),
                 };
                 let first = self.borrowed.len();

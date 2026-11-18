@@ -1,0 +1,5 @@
+error: the items of a channel are not `int?`: `receive` gives `null` when the channel has ended, and a `null` item would read the same
+  --> error_channel_nullable_item.sg:3:24
+ 3 |     var jobs = Channel<int?>(4)
+   |                        ^^^^
+  hint: an enum with a variant for the missing value, or a `List<int>` of one item or none

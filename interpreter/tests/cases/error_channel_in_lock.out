@@ -1,0 +1,6 @@
+error: `send` waits on a channel, and a `lock` block does not wait
+  a task that holds a lock never waits, so it always lets the lock go: locks and waits cannot deadlock
+  --> error_channel_in_lock.sg:7:16
+ 7 |         _ = tx.send(t)
+   |                ^^^^
+  hint: send before the block or after it

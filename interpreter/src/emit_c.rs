@@ -4255,6 +4255,309 @@ static sg_cancel* sg_cancel_after(int32_t ms, const char* loc) {
 /// What a program that uses the network needs: the sockets of the system, which never block,
 /// and the calls of `TcpListener` and `TcpStream` for code that is not async, which wait for a
 /// socket with `poll`. Added only to such a program, after `IO_RUNTIME`.
+/// Channels: a `Channel<T>` and its `Sender<T>`s point at one block, a header and then a ring
+/// of `cap` items, copied in and out as bytes. Everything is changed under the channel's mutex;
+/// whoever waits there is in one of its two lists, a thread asleep on its own condition or an
+/// async task woken through the pool, and is taken out of the list, and woken, under the mutex,
+/// so the wait in the frame of a task, or on the stack of a thread, is never touched after its
+/// waiter has gone on. A token's cancel only marks the wait and wakes it, under the clock's
+/// lock: the mutex comes first where both are held. After `TASK_RUNTIME`.
+const CHAN_RUNTIME: &str = r#"
+typedef struct sg_chan_wait sg_chan_wait;
+typedef struct sg_chan {
+    sg_mtx m;
+    int64_t senders;
+    int64_t receivers;
+    int64_t cap;
+    int64_t head;
+    int64_t len;
+    size_t size;
+    bool aligned;
+    void (*drop)(void*);
+    /* Who waits to send and who waits to receive, first come first woken. */
+    sg_chan_wait* to_send;
+    sg_chan_wait* to_send_last;
+    sg_chan_wait* to_receive;
+    sg_chan_wait* to_receive_last;
+    unsigned char* items;
+} sg_chan;
+/* A thread asleep until it is woken. */
+typedef struct { sg_mtx m; sg_cnd c; bool woken; } sg_chan_sleeper;
+/* One that waits on a channel: a thread (`thread`) or the async task of `d.job`. `d` is what a
+   token's cancel ends, on the list of the token while `d.token` is set. `item` is what is sent,
+   or where what is received goes; `gave` says how it went: 1 the item went in or came out, 0
+   no end of the other kind was left. */
+struct sg_chan_wait {
+    sg_delay d;
+    sg_chan_wait* prev;
+    sg_chan_wait* next;
+    sg_chan_sleeper* thread;
+    sg_chan* chan;
+    sg_cancel* token;
+    void* item;
+    void* dropped;
+    bool sends;
+    bool listed;
+    /* Put on the token's list once; `d.token` is read only under the clock's lock, since a
+       cancel takes it off there. */
+    bool linked;
+    int cut;
+    int state;
+    int gave;
+};
+SG_COLD static _Noreturn void sg_chan_huge(int64_t cap, size_t size, const char* loc) {
+    sg_panicf(loc, "a channel with room for %lld items of %llu bytes does not fit in memory", (long long)cap, (unsigned long long)size);
+}
+/* `Channel<T>(cap)`: one block, the header and the ring after it. */
+static sg_chan* sg_chan_new(int64_t cap, size_t size, size_t align, void (*drop)(void*), const char* loc) {
+    if (cap < 1) sg_panicf(loc, "a channel has room for at least one item, and this is %lld", (long long)cap);
+    if (size == 0) size = 1;
+    if (align < 16) align = 16;
+    size_t front = (sizeof(sg_chan) + align - 1) & ~(align - 1);
+    if ((uint64_t)cap > (PTRDIFF_MAX - front) / size) sg_chan_huge(cap, size, loc);
+    sg_chan* c = sg_alloc(front + (size_t)cap * size, align);
+    if (!c) abort();
+    memset(c, 0, sizeof *c);
+    sg_mtx_init(&c->m);
+    c->receivers = 1;
+    c->cap = cap;
+    c->size = size;
+    c->aligned = align > 16;
+    c->drop = drop;
+    c->items = (unsigned char*)c + front;
+    return c;
+}
+static inline unsigned char* sg_chan_slot(sg_chan* c, int64_t i) { return c->items + (size_t)((c->head + i) % c->cap) * c->size; }
+/* The mutex is held: the wait goes last in its list. */
+static void sg_chan_list(sg_chan* c, sg_chan_wait* w) {
+    sg_chan_wait** first = w->sends ? &c->to_send : &c->to_receive;
+    sg_chan_wait** last = w->sends ? &c->to_send_last : &c->to_receive_last;
+    w->next = NULL;
+    w->prev = *last;
+    if (*last) (*last)->next = w;
+    else *first = w;
+    *last = w;
+    w->listed = true;
+}
+static void sg_chan_unlist(sg_chan* c, sg_chan_wait* w) {
+    sg_chan_wait** first = w->sends ? &c->to_send : &c->to_receive;
+    sg_chan_wait** last = w->sends ? &c->to_send_last : &c->to_receive_last;
+    if (w->prev) w->prev->next = w->next;
+    else *first = w->next;
+    if (w->next) w->next->prev = w->prev;
+    else *last = w->prev;
+    w->prev = w->next = NULL;
+    w->listed = false;
+}
+/* The mutex is held: the first that waits to send (`sends`) or to receive is taken out of its
+   list and woken, or every one of them with `all`. One woken looks at the channel again. */
+static void sg_chan_wake(sg_chan* c, bool sends, bool all) {
+    for (;;) {
+        sg_chan_wait* w = sends ? c->to_send : c->to_receive;
+        if (!w) return;
+        sg_chan_unlist(c, w);
+        if (w->thread) {
+            sg_mtx_lock(&w->thread->m);
+            w->thread->woken = true;
+            sg_cnd_signal(&w->thread->c);
+            sg_mtx_unlock(&w->thread->m);
+        } else {
+            SG_WAKE_PAUSE();
+            sg_wake(w->d.job);
+        }
+        if (!all) return;
+    }
+}
+/* One more end: a `Sender` (`sends`) or one more `Channel`. */
+static sg_chan* sg_chan_more(sg_chan* c, bool sends) {
+    sg_mtx_lock(&c->m);
+    if (sends) c->senders++;
+    else c->receivers++;
+    sg_mtx_unlock(&c->m);
+    return c;
+}
+/* An end lets go. The last of its kind wakes every one that waits on the other side, which now
+   goes on alone; the last of all frees the block and drops what is left in it. */
+static void sg_chan_less(sg_chan* c, bool sends) {
+    sg_mtx_lock(&c->m);
+    int64_t left = sends ? --c->senders : --c->receivers;
+    if (left == 0) sg_chan_wake(c, !sends, true);
+    bool last = c->senders == 0 && c->receivers == 0;
+    sg_mtx_unlock(&c->m);
+    if (!last) return;
+    if (c->drop) {
+        for (int64_t i = 0; i < c->len; i++) c->drop(sg_chan_slot(c, i));
+    }
+    sg_mtx_destroy(&c->m);
+    if (c->aligned) sg_aligned_free(c);
+    else free(c);
+}
+static inline void sg_chan_drop_receiver(sg_chan** p) { sg_chan* c = *p; *p = NULL; if (c) sg_chan_less(c, false); }
+static inline void sg_chan_drop_sender(sg_chan** p) { sg_chan* c = *p; *p = NULL; if (c) sg_chan_less(c, true); }
+static inline sg_chan* sg_chan_move(sg_chan** p) { sg_chan* c = *p; *p = NULL; return c; }
+/* The mutex is held: the send or the receive is done if the channel lets it, and `gave` says how.
+   An item no end receives is handed back in `dropped`, to be dropped once the mutex is let go. */
+static bool sg_chan_try(sg_chan* c, sg_chan_wait* w) {
+    if (w->sends) {
+        if (c->receivers == 0) {
+            w->gave = 0;
+            w->dropped = w->item;
+            return true;
+        }
+        if (c->len == c->cap) return false;
+        memcpy(sg_chan_slot(c, c->len), w->item, c->size);
+        c->len++;
+        w->gave = 1;
+        sg_chan_wake(c, false, false);
+        return true;
+    }
+    if (c->len > 0) {
+        memcpy(w->item, sg_chan_slot(c, 0), c->size);
+        c->head = (c->head + 1) % c->cap;
+        c->len--;
+        w->gave = 1;
+        sg_chan_wake(c, true, false);
+        return true;
+    }
+    if (c->senders == 0) {
+        w->gave = 0;
+        return true;
+    }
+    return false;
+}
+/* A cancel, under the clock's lock: the token has taken the wait off its list already. */
+static void sg_chan_cut(sg_delay* d) {
+    sg_chan_wait* w = (sg_chan_wait*)d;
+    d->token = NULL;
+    __atomic_store_n(&w->cut, 1, __ATOMIC_RELEASE);
+    if (w->thread) {
+        sg_mtx_lock(&w->thread->m);
+        w->thread->woken = true;
+        sg_cnd_signal(&w->thread->c);
+        sg_mtx_unlock(&w->thread->m);
+    } else {
+        SG_WAKE_PAUSE();
+        sg_wake(d->job);
+    }
+}
+static void sg_chan_wait_init(sg_chan_wait* w, sg_chan* c, bool sends, void* item, sg_cancel* token, sg_chan_sleeper* thread) {
+    memset(w, 0, sizeof *w);
+    w->d.job = thread ? NULL : sg_job_now;
+    w->d.over = sg_chan_cut;
+    w->d.at = -1;
+    w->thread = thread;
+    w->chan = c;
+    w->token = token;
+    w->item = item;
+    w->sends = sends;
+    w->state = SG_WAITING;
+}
+/* The mutex is held, and the channel cannot let the wait go on: true when the token is
+   cancelled, otherwise the wait is on the token's list (once) and in the channel's. */
+static bool sg_chan_park(sg_chan* c, sg_chan_wait* w) {
+    if (__atomic_load_n(&w->cut, __ATOMIC_ACQUIRE)) return true;
+    if (w->token && !w->linked) {
+        w->linked = true;
+        sg_mtx_lock(&sg_clock_lock);
+        bool cancelled = w->token->cancelled;
+        if (!cancelled) {
+            w->d.token = w->token;
+            w->d.prev = NULL;
+            w->d.next = w->token->first;
+            if (w->token->first) w->token->first->prev = &w->d;
+            w->token->first = &w->d;
+        }
+        sg_mtx_unlock(&sg_clock_lock);
+        if (cancelled) return true;
+    }
+    sg_chan_list(c, w);
+    return false;
+}
+/* The wait is over: it leaves its token's list, and an item that no end received is dropped. */
+static void sg_chan_done(sg_chan_wait* w) {
+    if (w->linked) {
+        sg_mtx_lock(&sg_clock_lock);
+        sg_delay* d = &w->d;
+        if (d->token) {
+            if (d->prev) d->prev->next = d->next;
+            else d->token->first = d->next;
+            if (d->next) d->next->prev = d->prev;
+            d->token = NULL;
+        }
+        sg_mtx_unlock(&sg_clock_lock);
+    }
+    if (w->dropped && w->chan->drop) w->chan->drop(w->dropped);
+}
+/* `send` and `receive` on a thread: 1 or 0 as `gave` says, -1 when the token is cancelled
+   first. A channel that lets the wait go on is not left for a cancel. A sent item the channel
+   does not take is dropped. */
+static int sg_chan_block(sg_chan* c, bool sends, void* item, sg_cancel* token) {
+    sg_chan_sleeper s;
+    sg_chan_wait w;
+    sg_chan_wait_init(&w, c, sends, item, token, &s);
+    bool slept = false;
+    int result;
+    sg_mtx_lock(&c->m);
+    for (;;) {
+        if (sg_chan_try(c, &w)) {
+            result = w.gave;
+            break;
+        }
+        if (!slept) {
+            sg_mtx_init(&s.m);
+            sg_cnd_init(&s.c);
+            slept = true;
+        }
+        s.woken = false;
+        if (sg_chan_park(c, &w)) {
+            result = -1;
+            w.dropped = sends ? item : NULL;
+            break;
+        }
+        sg_mtx_unlock(&c->m);
+        sg_mtx_lock(&s.m);
+        while (!s.woken) sg_cnd_wait(&s.c, &s.m);
+        sg_mtx_unlock(&s.m);
+        sg_mtx_lock(&c->m);
+        if (w.listed) sg_chan_unlist(c, &w);
+    }
+    sg_mtx_unlock(&c->m);
+    sg_chan_done(&w);
+    if (slept) {
+        sg_mtx_destroy(&s.m);
+        sg_cnd_destroy(&s.c);
+    }
+    return result;
+}
+static inline int sg_chan_send(sg_chan* c, void* item, sg_cancel* token) { return sg_chan_block(c, true, item, token); }
+static inline int sg_chan_receive(sg_chan* c, void* out, sg_cancel* token) { return sg_chan_block(c, false, out, token); }
+/* `await sender.sendAsync(item)`, `await channel.receiveAsync()`, in the frame of the async
+   function: the work is looked at where it starts and each time the task is woken
+   (`sg_chan_ready`), until it is done (SG_OVER, with `gave`) or cancelled (SG_CANCELLED). */
+static bool sg_chan_ready(sg_chan_wait* w) {
+    if (w->state != SG_WAITING) return true;
+    sg_chan* c = w->chan;
+    sg_mtx_lock(&c->m);
+    if (w->listed) sg_chan_unlist(c, w);
+    bool done = true;
+    if (sg_chan_try(c, w)) {
+        w->state = SG_OVER;
+    } else if (sg_chan_park(c, w)) {
+        w->state = SG_CANCELLED;
+        w->dropped = w->sends ? w->item : NULL;
+    } else {
+        done = false;
+    }
+    sg_mtx_unlock(&c->m);
+    if (done) sg_chan_done(w);
+    return done;
+}
+static inline void sg_chan_start(sg_chan_wait* w, sg_chan* c, bool sends, void* item, sg_cancel* token) {
+    sg_chan_wait_init(w, c, sends, item, token, NULL);
+    (void)sg_chan_ready(w);
+}
+"#;
+
 const NET_RUNTIME: &str = r#"
 #if defined(_WIN32)
 /* Windows: the sockets of Winsock. A socket is a handle, kept where a descriptor is on Linux and
@@ -9751,6 +10054,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     if emitter.made.contains("tasks") {
         out.push_str(TASK_RUNTIME);
     }
+    if emitter.made.contains("chan") {
+        out.push_str(CHAN_RUNTIME);
+    }
     if emitter.made.contains("statics") {
         out.push_str(STATIC_RUNTIME);
     }
@@ -10400,6 +10706,8 @@ fn mangle(ty: &Ty) -> Option<String> {
         // A task is named after what it gives.
         Ty::Task(result) if **result == Ty::Void => "TK_void".to_string(),
         Ty::Task(result) => format!("TK_{}", mangle(result)?),
+        Ty::Channel(item) => format!("CH_{}", mangle(item)?),
+        Ty::Sender(item) => format!("SN_{}", mangle(item)?),
         Ty::Nullable(inner) => match &**inner {
             // A pointer that may be `null` is the same pointer.
             Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) => mangle(inner)?,
@@ -11200,6 +11508,11 @@ impl<'a> Emitter<'a> {
                 self.made.insert("tasks".to_string());
                 "sg_cancel*".to_string()
             }
+            // The ends of a channel point at one block (see `CHAN_RUNTIME`).
+            Ty::Channel(_) | Ty::Sender(_) => {
+                self.chan_names(ty);
+                "sg_chan*".to_string()
+            }
             Ty::Void => "void".to_string(),
             Ty::CString => {
                 self.made.insert("ffi".to_string());
@@ -11903,6 +12216,8 @@ impl<'a> Emitter<'a> {
             (None, [item]) if ty.name == "List" => Ty::List(Box::new(self.written(item)?)),
             (None, [result]) if ty.name == "Task" => Ty::Task(Box::new(self.written(result)?)),
             (None, [item]) if ty.name == "HashSet" => Ty::Set(Box::new(self.written(item)?)),
+            (None, [item]) if ty.name == "Channel" => Ty::Channel(Box::new(self.written(item)?)),
+            (None, [item]) if ty.name == "Sender" => Ty::Sender(Box::new(self.written(item)?)),
             (None, [key, value]) if ty.name == "HashMap" => Ty::Map(Box::new(self.written(key)?), Box::new(self.written(value)?)),
             (None, [params @ .., ret]) if ty.name == "Func" || ty.name == "CFunc" => {
                 let params = params.iter().map(|param| self.written(param)).collect::<Res<Vec<Ty>>>()?;
@@ -11981,6 +12296,7 @@ impl<'a> Emitter<'a> {
     fn droppable(&self, ty: &Ty) -> bool {
         match ty {
             Ty::Str | Ty::Ptr(_) | Ty::Shared(..) | Ty::Weak(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Reader(_) | Ty::Writer | Ty::Task(_) | Ty::Source | Ty::Token | Ty::Listener | Ty::Socket | Ty::CString => true,
+            Ty::Channel(_) | Ty::Sender(_) => true,
             Ty::Entry(key, value) => self.droppable(key) || self.droppable(value),
             Ty::Nullable(inner) | Ty::Array(inner, _) => self.droppable(inner),
             Ty::Result(ok, error) => self.droppable(ok) || self.droppable(error),
@@ -12933,6 +13249,81 @@ impl<'a> Emitter<'a> {
             Some(open) => format!("({open}, {temp})"),
             None => temp,
         })
+    }
+
+    /// The names the helpers of a type of an end of a channel have, which are the runtime's.
+    fn chan_names(&mut self, ty: &Ty) {
+        self.made.insert("chan".to_string());
+        self.made.insert("tasks".to_string());
+        let Some(name) = mangle(ty) else { return };
+        if !self.made.insert(name.clone()) {
+            return;
+        }
+        let drop = if matches!(ty, Ty::Sender(_)) { "sg_chan_drop_sender" } else { "sg_chan_drop_receiver" };
+        let _ = writeln!(self.glue_protos, "#define sg_drop_{name} {drop}\n#define sg_move_{name} sg_chan_move");
+    }
+
+    /// What drops an item left in a channel of `item`, as a C function of a `void*`: `NULL` for
+    /// an item that owns nothing.
+    fn chan_item_drop(&mut self, item: &Ty) -> String {
+        if !self.droppable(item) {
+            return "NULL".to_string();
+        }
+        let name = format!("sg_chan_item_{}", mangle(item).expect("an item of a channel has a C type"));
+        if self.made.insert(name.clone()) {
+            let held = self.ctype(item, Span::new(0, 0)).expect("the type of the item is known");
+            let _ = writeln!(self.glue_protos, "static void {name}(void* p);");
+            let _ = writeln!(self.glue, "static void {name}(void* p) {{ {} }}", self.drop_of(item, &format!("(*({held}*)p)")));
+        }
+        name
+    }
+
+    /// What a send or a receive gives, from how it went (`gave`: 1, 0, or -1 for a cancel) and
+    /// the item received into `slot`: a `bool` or a `T?`, in a `Result` when a token is given.
+    fn chan_gives(&mut self, call: ChanCall, told: bool, item: &Ty, gave: &str, slot: &str, span: Span) -> Res<String> {
+        let plain = match call {
+            ChanCall::Send => Ty::Bool,
+            _ => Ty::Nullable(Box::new(item.clone())),
+        };
+        let plain_c = self.ctype(&plain, span)?;
+        let value = match call {
+            ChanCall::Send => format!("(({gave}) == 1)"),
+            _ if is_option(&plain) => format!("(({gave}) == 1 ? ({plain_c}){{ .has = true, .value = {slot} }} : ({plain_c}){{ .has = false }})"),
+            _ => format!("(({gave}) == 1 ? {slot} : NULL)"),
+        };
+        if !told {
+            return Ok(value);
+        }
+        let gives = self.ctype(&Ty::Result(Box::new(plain), Box::new(Ty::Struct("Cancelled".to_string()))), span)?;
+        Ok(format!("(({gave}) < 0 ? ({gives}){{ .tag = 1 }} : ({gives}){{ .tag = 0, .u.v0 = {{ {value} }} }})"))
+    }
+
+    /// The methods of the ends of a channel in code that is not async: a send or a receive
+    /// waits on this thread.
+    fn chan_call(&mut self, call: ChanCall, told: bool, recv: &'a Expr, args: &'a [Expr], expr: &'a Expr) -> Res<String> {
+        let chan = format!("(*{})", self.list_address(recv)?);
+        let (Ty::Channel(item) | Ty::Sender(item)) = recv.ty.strip_borrow().clone() else { unreachable!("the checker calls these on an end of a channel") };
+        match call {
+            ChanCall::Sender => return Ok(format!("sg_chan_more({chan}, true)")),
+            ChanCall::Clone => return Ok(format!("sg_chan_more({chan}, {})", matches!(recv.ty.strip_borrow(), Ty::Sender(_)))),
+            _ => {}
+        }
+        let held = self.ctype(&item, expr.span)?;
+        let sends = call == ChanCall::Send;
+        let token = match told {
+            true => format!("(*{})", self.value(&args[usize::from(sends)])?),
+            false => "NULL".to_string(),
+        };
+        let (slot, gave) = (self.temp(), self.temp());
+        let start = match sends {
+            true => {
+                let value = self.value_as(&args[0], &item)?;
+                format!("{held} {slot} = {value}; int {gave} = sg_chan_send({chan}, &{slot}, {token});")
+            }
+            false => format!("{held} {slot}; int {gave} = sg_chan_receive({chan}, &{slot}, {token});"),
+        };
+        let gives = self.chan_gives(call, told, &item, &gave, &slot, expr.span)?;
+        Ok(format!("({{ {start} {gives}; }})"))
     }
 
     fn list_address(&mut self, recv: &'a Expr) -> Res<String> {
@@ -14207,6 +14598,44 @@ impl<'a> Emitter<'a> {
                         let _ = writeln!(out, "{pad}}}");
                     }
                 }
+            }
+            // `for x in jobs`: an item after the other, until every sender has ended and nothing
+            // is left. A channel the loop is handed (a value with no name) ends with it.
+            StmtKind::ForEach { var, iter, body, .. } if matches!(iter.ty.strip_borrow(), Ty::Channel(_)) => {
+                let Ty::Channel(item) = iter.ty.strip_borrow().clone() else { unreachable!("tested above") };
+                let item = *item;
+                let held = self.ctype(&item, iter.span)?;
+                let (it, at) = (self.temp(), self.temp());
+                let inner = format!("{pad}    ");
+                self.nothing_gone();
+                let owns = !iter.ty.is_borrow() && (iter.moved || !iter.is_place());
+                let chan = match owns {
+                    true => self.first(iter, true)?,
+                    false => format!("(*{})", self.list_address(iter)?),
+                };
+                self.flush_pre(&pad, out);
+                let _ = writeln!(out, "{pad}{{");
+                let _ = writeln!(out, "{inner}sg_chan* {it} = {chan}; {held} {at};");
+                self.flush_post(&inner, out);
+                if owns {
+                    self.scopes.push(vec![Local { name: String::new(), cname: it.clone(), ty: Ty::Channel(Box::new(item.clone())), gone: false, drop: Some(format!("sg_chan_less({it}, false);")) }]);
+                }
+                let _ = writeln!(out, "{inner}while (sg_chan_receive({it}, &{at}, NULL) == 1) {{");
+                self.temps += 1;
+                let cname = format!("v_{}_{}", local_cname(var), self.temps);
+                let line = format!("{held} {cname} = {at};{}", unnamed(var, &cname));
+                let local = Local { name: var.clone(), cname, ty: item.clone(), gone: false, drop: None };
+                self.loops.push(self.scopes.len());
+                self.block_with(body, depth + 2, out, vec![(local, line)])?;
+                self.next_round_label(&format!("{inner}    "), out);
+                self.loops.pop();
+                let _ = writeln!(out, "{inner}}}");
+                if owns {
+                    self.scopes.pop();
+                    let _ = writeln!(out, "{inner}sg_chan_less({it}, false);");
+                }
+                let _ = writeln!(out, "{pad}}}");
+                self.loop_end_label(&pad, out);
             }
             // What goes over a text gives one part after the other, until it has none.
             StmtKind::ForEach { var, iter, body, .. } if matches!(iter.ty, Ty::TextIter(_)) => {
@@ -16554,6 +16983,30 @@ impl<'a> Emitter<'a> {
                 let value = self.await_net(*call, recv, args, expr)?;
                 result(self, value)
             }
+            // `await sender.sendAsync(item)`, `await channel.receiveAsync()`: the wait lies in the
+            // frame, with the item, and is looked at each time the task is woken.
+            ExprKind::Method { recv, args, callee: Callee::ChanAsync(call, told), .. } => {
+                let chan = format!("(*{})", self.list_address(recv)?);
+                let (Ty::Channel(item) | Ty::Sender(item)) = recv.ty.strip_borrow().clone() else { unreachable!("the checker calls these on an end of a channel") };
+                let held = self.ctype(&item, inner.span)?;
+                let (wait, slot) = (self.temp(), self.temp());
+                let sends = *call == ChanCall::Send;
+                let token = match told {
+                    true => format!("(*{})", self.value(&args[usize::from(sends)])?),
+                    false => "NULL".to_string(),
+                };
+                match sends {
+                    true => {
+                        let value = self.value_as(&args[0], &item)?;
+                        self.pre.push(format!("{held} {slot} = {value}; sg_chan_wait {wait}; sg_chan_start(&{wait}, {chan}, true, &{slot}, {token});"));
+                    }
+                    false => self.pre.push(format!("{held} {slot}; sg_chan_wait {wait}; sg_chan_start(&{wait}, {chan}, false, &{slot}, {token});")),
+                }
+                self.resume_point(expr.span);
+                self.pre.push(format!("if (!sg_chan_ready(&{wait})) return false;"));
+                let gives = self.chan_gives(*call, *told, &item, &format!("({wait}.state == SG_CANCELLED ? -1 : {wait}.gave)"), &slot, inner.span)?;
+                result(self, gives)
+            }
             ExprKind::Method { recv, args, callee: Callee::StreamAsync(call), .. } if !matches!(call, StreamCall::ReadLine | StreamCall::ReadText | StreamCall::ReadBytes | StreamCall::ReadSome) => {
                 let value = self.await_writer(*call, recv, args, expr)?;
                 result(self, value)
@@ -18133,6 +18586,15 @@ impl<'a> Emitter<'a> {
                 }
                 Ok(format!("({{ {names}{ctype} {temp} = {{ 0 }}; {adds}{temp}; }})"))
             }
+            // `Channel<T>(n)`: the block of the channel, with what drops an item left in it.
+            ExprKind::Collection { args, .. } if matches!(expr.ty, Ty::Channel(_)) => {
+                let Ty::Channel(item) = &expr.ty else { unreachable!("matched above") };
+                self.ctype(&expr.ty, expr.span)?;
+                let held = self.ctype(item, expr.span)?;
+                let drop = self.chan_item_drop(item);
+                let room = self.value_as(&args[0], &Ty::Int(IntTy::Nint))?;
+                Ok(format!("sg_chan_new({room}, sizeof({held}), _Alignof({held}), {drop}, {})", self.loc(args[0].span)))
+            }
             ExprKind::Collection { items, .. } => {
                 let Ty::List(item) = &expr.ty else { return Err(not_yet(expr.span, &format!("a `{}`", expr.ty))) };
                 let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
@@ -18389,6 +18851,7 @@ impl<'a> Emitter<'a> {
                         CancelCall::New | CancelCall::After => unreachable!("functions of the type, written above"),
                     })
                 }
+                Callee::Chan(call, told) => self.chan_call(*call, *told, recv, args, expr),
                 // `t.wait()`: the task is taken (the checker marked the move), joined and freed.
                 // `Task.whenAll(tasks).wait()`, `Task.whenAny(ref tasks).wait()`: the thread
                 // sleeps until the group says the tasks have ended.
