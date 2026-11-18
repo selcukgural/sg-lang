@@ -245,15 +245,30 @@ pub fn text_length(p: RawPtr) -> Result<usize, Fault> {
 /// Given back when it ends.
 pub struct Scratch {
     base: usize,
+    /// Made by `aligned_alloc`, for an alignment above what `calloc` gives.
+    aligned: bool,
 }
 
 impl Scratch {
-    /// `size` bytes, all zero, aligned for any value.
-    pub fn new(size: usize) -> Scratch {
-        // SAFETY: at least one byte is asked for.
-        let base = unsafe { calloc(size.max(1), 1) } as usize;
+    /// `size` bytes, all zero, at an address that is a multiple of `align`: C is told the
+    /// alignment of a type (`align(64)`) and may count on it.
+    pub fn new(size: usize, align: usize) -> Scratch {
+        let bytes = size.max(1);
+        let aligned = align > BLOCK_ALIGN;
+        let base = match aligned {
+            // SAFETY: at least one byte is asked for.
+            false => unsafe { calloc(bytes, 1) },
+            true => {
+                let base = aligned_alloc(bytes, align);
+                if !base.is_null() {
+                    // SAFETY: the block holds at least this many bytes.
+                    unsafe { std::ptr::write_bytes(base.cast::<u8>(), 0, bytes) };
+                }
+                base
+            }
+        } as usize;
         assert!(base != 0, "no memory for a value lent to C");
-        Scratch { base }
+        Scratch { base, aligned }
     }
 
     pub fn addr(&self) -> usize {
@@ -263,8 +278,14 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        // SAFETY: the memory came from `calloc` and is given back once.
-        unsafe { c_free(self.base as *mut c_void) };
+        // SAFETY: the memory came from `calloc` or `aligned_alloc`, as `aligned` says, and is
+        // given back once.
+        unsafe {
+            match self.aligned {
+                false => c_free(self.base as *mut c_void),
+                true => aligned_free(self.base as *mut c_void),
+            }
+        }
     }
 }
 

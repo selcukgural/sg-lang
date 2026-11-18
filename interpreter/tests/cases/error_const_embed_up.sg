@@ -1,0 +1,6 @@
+// A file of `embed` lies in the folder of the file it is written in or below it.
+const byte[] Secret = embed("../../secret.txt")
+
+void main() {
+    print(Secret.length())
+}

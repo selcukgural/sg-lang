@@ -83,6 +83,7 @@ fn c_files(prog: &mut ast::Program, sources: &Sources) -> Result<(), Diag> {
                     .note(format!("it is looked for at {}", place.display())))
             }
         };
+        inside(&folder, &place, written, foreign.span)?;
         let path = path.to_string_lossy().into_owned();
         found.insert(foreign.span.start, path.clone());
         foreign.path = Some(path);
@@ -102,6 +103,26 @@ fn c_files(prog: &mut ast::Program, sources: &Sources) -> Result<(), Diag> {
     Ok(())
 }
 
+/// A file a program takes in (`embed`, `extern "./native.c"`) lies in the folder of the file
+/// that names it or below it, also where a link leads: a module of someone else's does not read
+/// a file of the machine that builds it (choice 1339).
+fn inside(folder: &std::path::Path, place: &std::path::Path, written: &str, span: crate::diag::Span) -> Result<(), Diag> {
+    let folder = if folder.as_os_str().is_empty() { std::path::Path::new(".") } else { folder };
+    match (std::fs::canonicalize(folder), std::fs::canonicalize(place)) {
+        (Ok(folder), Ok(found)) if found.starts_with(&folder) => Ok(()),
+        (_, found) => {
+            let leads = found.map(|found| format!("it leads to {}", sys_path(&found))).unwrap_or_else(|error| format!("where it leads cannot be found: {error}"));
+            Err(Diag::error(span, format!("`{written}` lies outside the folder of this file")).note(leads).note("a file a program takes in lies in the folder of the file that names it or below it, also where a link leads"))
+        }
+    }
+}
+
+/// A path as the system writes it, without Windows' `\\?\`.
+fn sys_path(path: &std::path::Path) -> String {
+    let text = path.display().to_string();
+    text.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(text)
+}
+
 /// The most bytes a file of `embed` may have: a program carries them, and its C writes each.
 pub const EMBED_LIMIT: u64 = 64 << 20;
 
@@ -116,6 +137,7 @@ fn embeds(prog: &mut ast::Program, sources: &Sources) -> Result<(), Diag> {
             Ok(found) if found.is_file() => found.len(),
             _ => return Err(Diag::error(embed.span, format!("there is no file `{}` beside this file", embed.written)).note(format!("it is looked for at {}", place.display()))),
         };
+        inside(&folder, &place, &embed.written, embed.span)?;
         if size > EMBED_LIMIT {
             return Err(Diag::error(embed.span, format!("`{}` has {size} bytes, and `embed` takes a file of at most 64 MB", embed.written))
                 .note("the program carries the bytes, and so does the C it is compiled from"));

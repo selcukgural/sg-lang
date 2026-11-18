@@ -1,0 +1,17 @@
+// Many tasks that end one after the other: each lets go of its task while it still has the
+// turn, before the task that awaits it may let the task itself go (choice 1339).
+async int quick(int n) {
+    await Task.delay(0)
+    return n
+}
+
+async void main() {
+    long sum = 0
+    for i in 0..300 {
+        var first = quick(i)
+        var second = quick(i)
+        sum += await first
+        sum += await second
+    }
+    print(sum)
+}

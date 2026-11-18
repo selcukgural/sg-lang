@@ -8055,6 +8055,33 @@ Each is written here with its fix, and each fix came after a test that showed th
      touch per page in those functions only; the others are as they were. Rust's stack probes do the same
      on every machine.
 
+1339. **Paths and the linker, each taken as written**: five faults where a name or a path from outside went
+     further than it should. (1) `embed("../../secret.txt")` and `embed("/etc/passwd")` read any file of the
+     machine that builds the program into it, though a C file (`extern "./native.c"`) had a rule against `..`
+     already: a module of someone else's could carry out a key. Now a path of `embed` is written from the
+     folder of its file with `/`, without `..`, `.`, an empty part, a `\` or a `:` (as Go's `//go:embed` takes
+     it), and a file of `embed` or a C file must lie in that folder or below it also where a link leads;
+     otherwise *`token.txt` lies outside the folder of this file*, with where it leads. (2) `sg build
+     --shared` gave the linker the name of the library after `-Wl,`, where a comma starts another option: a
+     library named `v,-map,PLANTED` made the linker of macOS write a file `PLANTED`. The names, of the library
+     on macOS and of the import library and the manifest on Windows, go to the linker whole with `-Xlinker`
+     now. (3) On Windows the names of the DLLs read out of an import library or a DLL were joined to folders
+     as they were, so a name with `..` in it was copied from and written to a place outside them; only a name
+     of a file is taken now, and a name that points past the end of the file no longer panics. (4) A task of
+     the interpreter let go of its task after the turn had gone on, while the task that awaited it could let
+     the task itself go on its own thread; the counts of the value are not counted across threads, so they
+     could be wrong. It lets go while it has the turn now, on every way a task ends. (5) The interpreter lent
+     C a struct of `align(64)` (by `read`, by `ref`, as the items of a buffer) at a multiple of 16, though C
+     is told the type lies at a multiple of 64 and may count on it; it lends it at the alignment of its type
+     now, as compiled code does. Tested by `error_const_embed_up`, `_absolute` and `_drive`,
+     `ok_async_many_ends` (the thread sanitizer saw the fault in each of three runs of a longer one, and in
+     none of six after the fix), the module `aligned` (each address C is given is a multiple of 64; 752 bytes
+     off without the fix), in `tests/cli.rs` `a_comma_in_a_name_goes_to_the_linker_whole` and
+     `takes_in_no_file_from_outside_its_folder` (links to a file outside, from the folder and from one below
+     it, by `embed` and as a C file), and in `src/link.rs` `copies_only_dlls_by_name`; each fails without its
+     fix but `ok_async_many_ends`, which only the thread sanitizer tells apart. `cargo test` passes on macOS
+     and on Linux in a container (402 of 1665 programs compile through C, 97 of them under the thread
+     sanitizer); on Windows on Arm the new tests pass, the linker taking the names given with `-Xlinker`.
 1346. **A frame no stack holds is an error of `sg build`**, found when 1338 ran on Windows on Arm: there the C
      compiler fails (*Stack size cannot exceed 256MB*) on a function whose frame passes 256 MB, such as the
      `byte[1000000000000000]` of `panic_array_no_memory`, and `sg build` called that a mistake of its own.
@@ -8631,7 +8658,8 @@ included, and faster (1336); eight faults of the tool itself, where a program ma
 stack or wait, are errors or panics of the program (1337); what had no bound has one, said where it is met:
 a value takes at most 2^61 - 1 bytes, a program nests at most 1000 deep, a const stops growing at 64 MB, a
 value nested too deep for the interpreter's stack is a panic, and a large frame is touched page by page
-before it is used, so a function never runs past its stack into another thread's (1338, 1341-1345), and a
-function whose frame no stack holds is an error of `sg build` (1346). The paths and the linker (1339) come
-next. The next two
+before it is used, so a function never runs past its stack into another thread's (1338, 1341-1345); a
+file a program takes in lies in the folder of the file that names it, a name goes to the linker whole, a
+DLL is copied by its name only, a task lets go of its task while it has the turn, and C is lent a value at
+the alignment of its type (1339); a function whose frame no stack holds is an error of `sg build` (1346). The next two
 fix the rules of borrowing; then fuzzing and mutants of the rules of safety (1323-1325).

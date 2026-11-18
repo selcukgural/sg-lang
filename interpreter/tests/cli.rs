@@ -405,6 +405,69 @@ fn keeps_its_temporary_files_to_itself() {
     }
 }
 
+/// A name the linker is given whole (choice 1339): a comma in the name of a library is part of
+/// its name, not the start of another option of the linker (`-map` would write a file).
+#[test]
+fn a_comma_in_a_name_goes_to_the_linker_whole() {
+    if !has_compiler() {
+        return;
+    }
+    let dir = work("a_comma_in_a_name_goes_to_the_linker_whole");
+    write(&dir, "v,-map,PLANTED.sg", LIBRARY);
+    let (code, out, err) = ran(&sg(&dir, &["build", "v,-map,PLANTED.sg", "--shared"]));
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    let shared = if cfg!(windows) {
+        "v,-map,PLANTED.dll"
+    } else if cfg!(target_os = "macos") {
+        "libv,-map,PLANTED.dylib"
+    } else {
+        "libv,-map,PLANTED.so"
+    };
+    assert!(dir.join(shared).exists(), "{:?}", names_in(&dir));
+    assert!(!dir.join("PLANTED").exists() && !dir.join("PLANTED.dylib").exists() && !dir.join("PLANTED.dll.lib").exists(), "{:?}", names_in(&dir));
+    if cfg!(windows) {
+        assert!(dir.join("v,-map,PLANTED.dll.lib").exists(), "{:?}", names_in(&dir));
+    }
+    // The name a program that links it looks for it by.
+    if cfg!(target_os = "macos") {
+        if let Ok(told) = Command::new("otool").arg("-D").arg(dir.join(shared)).output() {
+            assert!(text(&told.stdout).contains("@rpath/libv,-map,PLANTED.dylib"), "{}", text(&told.stdout));
+        }
+    }
+}
+
+/// A file a program takes in, by `embed` or as a C file, lies in the folder of the file that
+/// names it or below it, also where a link leads (choice 1339): a module of someone else's does
+/// not read a file of the machine it is built on into the program.
+#[cfg(unix)]
+#[test]
+fn takes_in_no_file_from_outside_its_folder() {
+    let dir = work("takes_in_no_file_from_outside_its_folder");
+    write(&dir, "secret.txt", "SECRET\n");
+    write(&dir, "secret.c", "static int f(void) { return 1; }\n");
+    let project = dir.join("project");
+    std::fs::create_dir_all(project.join("data")).unwrap();
+    std::os::unix::fs::symlink("../secret.txt", project.join("token.txt")).unwrap();
+    std::os::unix::fs::symlink("../../secret.txt", project.join("data/token.txt")).unwrap();
+    std::os::unix::fs::symlink("../secret.c", project.join("native.c")).unwrap();
+    write(&project, "inside.txt", "inside\n");
+    std::os::unix::fs::symlink("inside.txt", project.join("also.txt")).unwrap();
+    for (name, program) in [
+        ("token.sg", "const byte[] Token = embed(\"token.txt\")\n\nvoid main() {\n    print(Token.length())\n}\n"),
+        ("deeper.sg", "const byte[] Token = embed(\"data/token.txt\")\n\nvoid main() {\n    print(Token.length())\n}\n"),
+        ("native.sg", "extern \"./native.c\" {\n    int f()\n}\n\nvoid main() {\n    print(unsafe f())\n}\n"),
+    ] {
+        write(&project, name, program);
+        let (code, out, err) = ran(&sg(&project, &[name]));
+        assert_eq!((code, out.as_str()), (1, ""), "{name}: {err}");
+        assert!(err.contains("lies outside the folder of this file") && err.contains("secret."), "{name}: {err}");
+    }
+    // A link that stays inside is taken.
+    write(&project, "also.sg", "const byte[] Also = embed(\"also.txt\")\n\nvoid main() {\n    print(Also.length())\n}\n");
+    let (code, out, err) = ran(&sg(&project, &["also.sg"]));
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "7\n", ""));
+}
+
 /// A function whose values no thread's stack holds is refused by `sg build` on every machine
 /// (choice 1346): it could not run, and the C compiler of Windows on Arm fails on a frame above
 /// 256 MB. Two variables that each fit count together; the interpreter keeps them on its heap.

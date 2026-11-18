@@ -546,7 +546,7 @@ impl Sched {
         state.wakers.remove(&me);
         let next = match result {
             Ok(value) => {
-                if let Some(task) = task {
+                if let Some(task) = &task {
                     let mut task = task.borrow_mut();
                     task.state = TaskState::Done(Some(value));
                     let waiters = std::mem::take(&mut task.waiters);
@@ -561,6 +561,8 @@ impl Sched {
             }
             Err(_) => unreachable!("`return` ends at its call, `break` and `continue` at their loop"),
         };
+        // Let go before the turn goes on, on every way out (see where fibers are started).
+        drop(task);
         state.thread = Some(Thread::take());
         Self::give(&mut state, next);
     }
@@ -3598,9 +3600,15 @@ impl<'a, 'e> Interp<'a, 'e> {
                     other => other,
                 })
             }));
+            // The look at the task is let go here, while this fiber has the turn: once the turn
+            // goes on, the fiber that awaits the task may let the task itself go, and the counts
+            // of an `Rc` are not counted across threads.
+            let task = weak.upgrade();
+            drop(weak);
             match ran {
-                Ok(result) => sched.finish(id, weak.upgrade(), result, started),
+                Ok(result) => sched.finish(id, task, result, started),
                 Err(crash) => {
+                    drop(task);
                     let mut state = sched.lock();
                     state.fibers.remove(&id);
                     state.wakers.remove(&id);
@@ -5292,7 +5300,10 @@ impl<'a, 'e> Interp<'a, 'e> {
     fn call_c(&mut self, through: Option<usize>, name: &str, params: &[Ty], ret: &Ty, args: &'a [Expr], expr: &'a Expr, frame: &mut Frame) -> Res<Value> {
         let (params, ret) = (params.to_vec(), ret.clone());
         // A struct C gives back is written into room whose address follows the arguments.
-        let returned_struct = matches!(ret, Ty::Struct(_)).then(|| raw::Scratch::new(raw::layout(&ret, self.plain).0));
+        let returned_struct = matches!(ret, Ty::Struct(_)).then(|| {
+            let (size, align) = raw::layout(&ret, self.plain);
+            raw::Scratch::new(size, align)
+        });
         let mut slots: Vec<crate::ffi::Slot> = vec![0; args.len() + usize::from(returned_struct.is_some())];
         if let Some(room) = &returned_struct {
             slots[args.len()] = room.addr() as crate::ffi::Slot;
@@ -5314,8 +5325,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                 let items = cells_of(&owned(holder.borrow().clone()));
                 let Ty::Raw(item) = &arg_pointer_type(arg) else { unreachable!("`pointer()` gives a raw pointer") };
                 let item = (**item).clone();
-                let (size, _) = raw::layout(&item, self.plain);
-                let scratch = raw::Scratch::new(items.len() * size);
+                let (size, align) = raw::layout(&item, self.plain);
+                let scratch = raw::Scratch::new(items.len() * size, align);
                 for (position, held) in items.iter().enumerate() {
                     store(scratch.addr() + position * size, &item, &held.borrow(), self.plain);
                 }
@@ -5335,8 +5346,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                     Ty::Float(_) | Ty::Bool | Ty::Raw(_) | Ty::CFunc(..) => store(at as usize, param, &value, self.plain),
                     // A struct given by value is copied out for C, which may change its copy.
                     Ty::Struct(_) => {
-                        let (size, _) = raw::layout(param, self.plain);
-                        let scratch = raw::Scratch::new(size);
+                        let (size, align) = raw::layout(param, self.plain);
+                        let scratch = raw::Scratch::new(size, align);
                         store(scratch.addr(), param, &strip(value), self.plain);
                         at.cast::<usize>().write(scratch.addr());
                         lent.push((scratch, param.clone(), Vec::new()));
@@ -5349,8 +5360,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                             at.cast::<usize>().write(text.as_ptr() as usize);
                             continue;
                         }
-                        let (size, _) = raw::layout(inner, self.plain);
-                        let scratch = raw::Scratch::new(size);
+                        let (size, align) = raw::layout(inner, self.plain);
+                        let scratch = raw::Scratch::new(size, align);
                         store(scratch.addr(), inner, &target.borrow(), self.plain);
                         at.cast::<usize>().write(scratch.addr());
                         // What C was lent to read is not written back.

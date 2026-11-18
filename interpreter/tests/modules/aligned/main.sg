@@ -1,0 +1,27 @@
+// A struct of `align(64)` lent to C, by `read`, by `ref` and as the items of a buffer: C is
+// told the alignment of the type and may count on it, so each address it is given is a
+// multiple of 64, in the interpreter as in compiled code.
+align(64) struct Slot : Copyable {
+    long count
+}
+
+extern "./native.c" {
+    long offBy(read Slot s)
+    long offByItems(raw Slot items, long count)
+    long bump(ref Slot s)
+}
+
+void main() {
+    var slot = Slot { count = 1 }
+    var slots = List<Slot>()
+    long wrong = 0
+    for i in 0..16 {
+        slots.add(Slot { count = i })
+        wrong += unsafe offBy(read slot)
+        wrong += unsafe offByItems(slots.pointer(), (long)slots.length())
+    }
+    print($"bytes past a multiple of 64, summed over 32 calls: {wrong}")
+    for _ in 0..3 {
+        print(unsafe bump(ref slot))
+    }
+}

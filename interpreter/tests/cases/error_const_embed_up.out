@@ -1,0 +1,6 @@
+error: `../../secret.txt` is not a file beside this one
+  a file of `embed` lies in the folder of the file it is written in or below it, and its path is written from there with `/`, without `..`
+  --> error_const_embed_up.sg:2:23
+ 2 | const byte[] Secret = embed("../../secret.txt")
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `embed("logo.gif")`, `embed("images/logo.gif")`

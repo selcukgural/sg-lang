@@ -1,0 +1,6 @@
+// A path of `embed` is written with `/`, and names no drive.
+const byte[] Hosts = embed("C:\\Windows\\win.ini")
+
+void main() {
+    print(Hosts.length())
+}

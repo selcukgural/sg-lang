@@ -2323,6 +2323,7 @@ impl<'a> Parser<'a> {
                     return Err(Diag::error(span, "`embed` is written where a const is given its value")
                         .hint("`const byte[] Logo = embed(\"logo.gif\")`, then `Logo` where the bytes are needed"));
                 }
+                embed_path(&written, span)?;
                 self.embeds.push(Embed { written, span, bytes: None });
                 ExprKind::Embed(self.embed_base + self.embeds.len() - 1)
             }
@@ -2513,6 +2514,20 @@ fn assign_op(tok: &Tok) -> Option<Option<BinOp>> {
 
 /// `./native.c` and `./c/helpers.c`: a C file in the module's folder or below it. It ends in
 /// `.c`, and no part of it leaves the folder (`..`) or is empty.
+/// The path of a file of `embed`: in the folder of the file it is written in or below it,
+/// written with `/`, without `..`, `.` or an empty part, and not from the root or a drive (as
+/// Go's `//go:embed` takes it). Where a link leads is looked at when the file is read.
+fn embed_path(written: &str, span: Span) -> Res<()> {
+    let parts_fine = written.split('/').all(|part| !part.is_empty() && part != "." && part != "..");
+    let chars_fine = !written.chars().any(|c| c == '\\' || c == ':' || c.is_control());
+    if !parts_fine || !chars_fine {
+        return Err(Diag::error(span, format!("`{written}` is not a file beside this one"))
+            .note("a file of `embed` lies in the folder of the file it is written in or below it, and its path is written from there with `/`, without `..`")
+            .hint("`embed(\"logo.gif\")`, `embed(\"images/logo.gif\")`"));
+    }
+    Ok(())
+}
+
 fn c_file_path(written: &str, span: Span) -> Res<String> {
     let rest = &written[2..];
     let parts_fine = rest.split('/').all(|part| !part.is_empty() && part != "." && part != "..");

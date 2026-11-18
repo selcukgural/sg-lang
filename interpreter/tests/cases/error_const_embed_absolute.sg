@@ -1,0 +1,6 @@
+// A file of `embed` is written from the folder of its file, not from the root.
+const byte[] Hosts = embed("/etc/hosts")
+
+void main() {
+    print(Hosts.length())
+}

@@ -191,6 +191,9 @@ pub fn copy_dlls(libs: &[String], dirs: &[PathBuf], out: &Path) -> Vec<String> {
             }
         }
     }
+    // A name read from a file is only a name: a path in it would read or write outside the
+    // folders (choice 1339).
+    wanted.retain(|(dll, _)| plain_file_name(dll));
     let mut at = 0;
     while at < wanted.len() {
         let (dll, named) = wanted[at].clone();
@@ -202,7 +205,7 @@ pub fn copy_dlls(libs: &[String], dirs: &[PathBuf], out: &Path) -> Vec<String> {
             continue;
         };
         let Ok(bytes) = std::fs::read(&found) else { continue };
-        for needed in dll_imports(&bytes) {
+        for needed in dll_imports(&bytes).into_iter().filter(|needed| plain_file_name(needed)) {
             if !wanted.iter().any(|(known, _)| known.eq_ignore_ascii_case(&needed)) {
                 wanted.push((needed, false));
             }
@@ -217,6 +220,12 @@ pub fn copy_dlls(libs: &[String], dirs: &[PathBuf], out: &Path) -> Vec<String> {
         }
     }
     said
+}
+
+/// A name of a file and nothing more: no folder (`/`, `\\`), no drive or stream (`:`), not `.`
+/// or `..`, no byte below 32.
+fn plain_file_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.chars().any(|c| matches!(c, '/' | '\\' | ':') || c.is_control())
 }
 
 /// The names of the DLLs a DLL (or a program) imports from: its table of imports, in the
@@ -249,8 +258,12 @@ fn dll_imports(bytes: &[u8]) -> Vec<String> {
     // Each entry is 20 bytes, the RVA of the name of its DLL at 12; an empty one ends them.
     while let Some(name_rva) = u32_at(entry + 12).filter(|rva| *rva != 0) {
         if let Some(start) = offset_of(name_rva) {
-            let end = bytes[start..].iter().position(|byte| *byte == 0).map_or(bytes.len(), |n| start + n);
-            names.push(String::from_utf8_lossy(&bytes[start..end]).into_owned());
+            if let Some(rest) = bytes.get(start..) {
+                let end = rest.iter().position(|byte| *byte == 0).unwrap_or(rest.len());
+                if end > 0 {
+                    names.push(String::from_utf8_lossy(&rest[..end]).into_owned());
+                }
+            }
         }
         entry += 20;
     }
@@ -292,7 +305,24 @@ fn dll_names(bytes: &[u8]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dll_imports, dll_names};
+    use super::{copy_dlls, dll_imports, dll_names};
+
+    /// A member of an archive, as `ar` writes it.
+    fn member(name: &str, data: &[u8]) -> Vec<u8> {
+        let mut bytes = format!("{name:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n", 0, 0, 0, 644, data.len()).into_bytes();
+        bytes.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            bytes.push(b'\n');
+        }
+        bytes
+    }
+
+    /// A short import of `deflate` from `dll`.
+    fn import_of(dll: &str) -> Vec<u8> {
+        let mut import = vec![0u8, 0, 0xFF, 0xFF, 0, 0, 0x64, 0x86, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        import.extend_from_slice(format!("deflate\0{dll}\0").as_bytes());
+        import
+    }
 
     /// A PE32+ image of one section whose table of imports names `zlib1.dll` and `KERNEL32.dll`.
     #[test]
@@ -318,21 +348,42 @@ mod tests {
         image[0x310..0x31c].copy_from_slice(b"KERNEL32.dll");
         assert_eq!(dll_imports(&image), vec!["zlib1.dll".to_string(), "KERNEL32.dll".to_string()]);
         assert!(dll_imports(b"MZ not an image").is_empty());
+        // A name past the end of the file is no name, and no panic.
+        let mut cut = image.clone();
+        cut.truncate(0x300);
+        assert!(dll_imports(&cut).is_empty());
+        let mut far = image;
+        far[0x200 + 12..0x200 + 16].copy_from_slice(&0x11f0u32.to_le_bytes());
+        far.truncate(0x3e0);
+        assert_eq!(dll_imports(&far), vec!["KERNEL32.dll".to_string()]);
+    }
+
+    /// The name of a DLL read from an import library is a name, not a path: one that would lead
+    /// out of the folders is not copied, the others are.
+    #[test]
+    fn copies_only_dlls_by_name() {
+        let root = crate::sys::private_dir().unwrap();
+        let (libs, out) = (root.join("a/libs"), root.join("b/out"));
+        std::fs::create_dir_all(&libs).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        let mut archive = b"!<arch>\n".to_vec();
+        for dll in ["../outside.dll", "..\\outside.dll", "zlib1.dll"] {
+            archive.extend(member("x.dll/", &import_of(dll)));
+        }
+        std::fs::write(libs.join("z.lib"), archive).unwrap();
+        std::fs::write(root.join("a/outside.dll"), b"not to be copied").unwrap();
+        std::fs::write(libs.join("zlib1.dll"), b"a DLL").unwrap();
+        let said = copy_dlls(&["-lz".to_string()], std::slice::from_ref(&libs), &out.join("program.exe"));
+        assert!(!root.join("b/outside.dll").exists(), "{said:?}");
+        assert_eq!(std::fs::read(out.join("zlib1.dll")).ok().as_deref(), Some(&b"a DLL"[..]), "{said:?}");
+        assert_eq!(said.len(), 1, "{said:?}");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// An archive of one short import of `deflate` from `zlib1.dll`, and a member that is not one.
     #[test]
     fn names_of_dlls() {
-        let mut import = vec![0u8, 0, 0xFF, 0xFF, 0, 0, 0x64, 0x86, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        import.extend_from_slice(b"deflate\0zlib1.dll\0");
-        let member = |name: &str, data: &[u8]| {
-            let mut bytes = format!("{name:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n", 0, 0, 0, 644, data.len()).into_bytes();
-            bytes.extend_from_slice(data);
-            if data.len() % 2 == 1 {
-                bytes.push(b'\n');
-            }
-            bytes
-        };
+        let import = import_of("zlib1.dll");
         let mut archive = b"!<arch>\n".to_vec();
         archive.extend(member("other.obj/", b"not an import"));
         archive.extend(member("zlib1.dll/", &import));

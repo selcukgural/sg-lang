@@ -82,7 +82,9 @@ pub fn link_flags(work: &Path) -> std::io::Result<Vec<String>> {
     Ok(vec![
         "-Wl,/STACK:8388608".to_string(),
         "-Wl,/MANIFEST:EMBED".to_string(),
-        format!("-Wl,/MANIFESTINPUT:{}", manifest.display()),
+        // Given whole: a comma in the temporary folder would end it after `-Wl,`.
+        "-Xlinker".to_string(),
+        format!("/MANIFESTINPUT:{}", manifest.display()),
         "-Wl,/MANIFESTUAC:NO".to_string(),
         "-Wl,/DEPENDENTLOADFLAG:0x1000".to_string(),
     ])

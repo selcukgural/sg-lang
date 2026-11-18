@@ -165,6 +165,8 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
             }
             cc.args(&machine.flags).arg("-o").arg(&out).arg(&c_file);
         }
+        // What goes to the linker with a name in it is given whole with `-Xlinker`: after
+        // `-Wl,` a comma in a name would be read as the start of another option (choice 1339).
         // Only the `export` functions are seen from outside. A shared library is never
         // unloaded: the threads of its tasks would run on in code that is gone (Linux keeps it
         // with `nodelete`; macOS does not unload a library with variables of its threads).
@@ -172,13 +174,13 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
         // `x.dll.lib`, beside it (Rust's name: `x.lib` is the static one).
         Made::Shared if cfg!(windows) => {
             cc.args(["-shared", "-o"]).arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
-            cc.arg(format!("-Wl,/IMPLIB:{out}.lib"));
+            cc.args(["-Xlinker".to_string(), format!("/IMPLIB:{out}.lib")]);
         }
         Made::Shared => {
             cc.args(["-fPIC", "-shared", "-fvisibility=hidden", "-o"]).arg(&out).arg(&c_file).args(sg::link::folder_flags(dirs, true)).args(&libs).args(&system);
             if cfg!(target_os = "macos") {
                 let file = std::path::Path::new(&out).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-                cc.arg(format!("-Wl,-install_name,@rpath/{file}"));
+                cc.args(["-Xlinker", "-install_name", "-Xlinker"]).arg(format!("@rpath/{file}"));
             } else {
                 cc.arg("-Wl,-z,nodelete");
             }
