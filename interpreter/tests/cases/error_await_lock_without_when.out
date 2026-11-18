@@ -1,0 +1,5 @@
+error: a `lock` without `when` does not wait, so there is nothing to await
+  --> error_await_lock_without_when.sg:6:5
+ 6 |     await lock box as b {
+   |     ^^^^^^^^^^^^^^^^^^^^^
+  hint: drop the `await`: an ordinary `lock` is written as it is in an async function

@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 18 November 2026, the hundred-and-eleventh slice.
+Last brought up to date: 18 November 2026, the hundred-and-twelfth slice.
 
 ## Functions and variables
 
@@ -307,6 +307,8 @@ Last brought up to date: 18 November 2026, the hundred-and-eleventh slice.
 | two locks, one after the other | `lock a as x, b as y { }` | built | Taken in a fixed order; a lock inside a lock is an error |
 | a lock held across a wait | a compile error | built | Nothing in a `lock` block waits, so locks and waits cannot deadlock |
 | lock poisoning | none | built | A panic stops the process |
+| `let g = cv.wait_while(m.lock().unwrap(), \|q\| q.is_empty()).unwrap();` with `cv.notify_one()` where it changes | `lock m as q when q.length() > 0 { ... }` | built | No `Condvar` and no notify: every `lock` block on the value that ends wakes those that wait. The condition is computed under the lock, may not read an atomic or the clock, and the task that is left the only owner panics instead of waiting for ever |
+| `tokio::sync::Notify` or an async `Condvar` beside a `Mutex` | `await lock m as q when ... { }` | built | The task waits and its thread goes on; the same `locked` value serves async and blocking code |
 | `AtomicI64::new(0)`, `AtomicBool`, `AtomicPtr<T>` | `atomic 0` of the type `atomic long`, `atomic bool`, `atomic raw T` | built | Any integer type, `bool`, `float`, `double` and a raw pointer; as large as its type and aligned to its size, in a struct, a list, an array or raw memory |
 | `Arc<AtomicI64>` | `shared atomic long`, made with `new shared atomic 0` | built | Its methods work through `read` and `shared`, as Rust's through `&self` |
 | `a.load(Ordering::SeqCst)`, `a.store(v, Ordering::Release)` | `a.load()`, `a.store(v, MemoryOrder.Release)` | built | Sequentially consistent unless an order is written; an order the operation cannot keep is a compile error, where Rust panics at run time |

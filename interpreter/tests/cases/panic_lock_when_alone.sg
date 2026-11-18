@@ -1,0 +1,32 @@
+// The task that gives the work lets the value go without saying it is done: the task that
+// waits is left its only owner, and nothing could make its condition hold.
+struct Jobs {
+    List<int> items
+    bool done
+}
+
+int consume(shared locked Jobs jobs) {
+    var sum = 0
+    while true {
+        var next = 0
+        lock jobs as q when q.items.length() > 0 || q.done {
+            next = q.items.removeLast() ?? 0
+        }
+        sum += next
+    }
+    return sum
+}
+
+void produce(shared locked Jobs jobs) {
+    lock jobs as q {
+        q.items.add(1)
+    }
+}
+
+void main() {
+    var jobs = new shared locked Jobs { items = List<int>(), done = false }
+    var consumer = Task.run(consume, share jobs)
+    var producer = Task.run(produce, jobs)
+    producer.wait()
+    print(consumer.wait())
+}

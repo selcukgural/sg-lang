@@ -168,8 +168,8 @@ fn scan(body_of: &Block, is_async: bool, name_span: Span, rule: &Rule) -> Body {
                 body.calls.push(call);
             }
         },
-        &mut |span| {
-            lock.get_or_insert(span);
+        &mut |stmt| {
+            lock.get_or_insert(stmt.span);
         },
     );
     if let (Some(span), Some(what)) = (lock, rule.lock) {

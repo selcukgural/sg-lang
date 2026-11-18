@@ -193,10 +193,13 @@ impl<'p> Pass<'p> {
                 self.declared(*name_span, Kind::Block);
                 self.block(body);
             }
-            StmtKind::Lock { items, body } => {
+            StmtKind::Lock { items, when, body, .. } => {
                 for item in items {
                     self.expr(&item.value);
                     self.declared(item.name_span, Kind::Block);
+                }
+                if let Some(when) = when {
+                    self.expr(when);
                 }
                 self.block(body);
             }

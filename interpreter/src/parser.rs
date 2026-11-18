@@ -1297,24 +1297,12 @@ impl<'a> Parser<'a> {
                 let body = self.block()?;
                 StmtKind::As { mutable, value, name, name_span, body }
             }
-            // `lock total as c { ... }`, `lock a as x, b as y { ... }`
-            Tok::Ident(word) if word == "lock" => {
+            // `lock total as c { ... }`, `lock a as x, b as y { ... }`, `lock q as x when c { ... }`
+            Tok::Ident(word) if word == "lock" => self.lock_stmt(false)?,
+            // `await lock q as x when c { ... }`, in an async function.
+            Tok::Ident(word) if word == "await" && matches!(self.peek_at(1), Tok::Ident(next) if next == "lock") => {
                 self.bump();
-                let mut items = Vec::new();
-                loop {
-                    let value = self.head_expr(false)?;
-                    if !matches!(self.peek(), Tok::Ident(word) if word == "as") {
-                        return Err(self.unexpected("`as` and a name for what is locked").hint("`lock total as c { c += 1 }`"));
-                    }
-                    self.bump();
-                    let (name, name_span) = self.ident("a name for what is locked")?;
-                    items.push(LockItem { value, name, name_span });
-                    if !self.eat(&Tok::Comma) {
-                        break;
-                    }
-                }
-                let body = self.block()?;
-                StmtKind::Lock { items, body }
+                self.lock_stmt(true)?
             }
             // `const int Size = 64`: seen from here to the end of the block.
             Tok::Ident(word) if word == "const" => {
@@ -1489,6 +1477,33 @@ impl<'a> Parser<'a> {
             self.bump();
         }
         Ok(Some((from, to)))
+    }
+
+    /// `lock a as x, b as y when c { ... }`, from the word `lock`; `when c` may be left out.
+    fn lock_stmt(&mut self, awaited: bool) -> Res<StmtKind> {
+        self.bump();
+        let mut items = Vec::new();
+        loop {
+            let value = self.head_expr(false)?;
+            if !matches!(self.peek(), Tok::Ident(word) if word == "as") {
+                return Err(self.unexpected("`as` and a name for what is locked").hint("`lock total as c { c += 1 }`"));
+            }
+            self.bump();
+            let (name, name_span) = self.ident("a name for what is locked")?;
+            items.push(LockItem { value, name, name_span });
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        let when = match self.peek() {
+            Tok::Ident(word) if word == "when" => {
+                self.bump();
+                Some(Box::new(self.head_expr(false)?))
+            }
+            _ => None,
+        };
+        let body = self.block()?;
+        Ok(StmtKind::Lock { items, when, awaited, body })
     }
 
     fn as_block_ahead(&mut self) -> Res<bool> {

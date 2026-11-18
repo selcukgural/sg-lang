@@ -1,0 +1,5 @@
+error: `lock ... when` waits, and an async function awaits what waits: its task waits, and its thread goes on
+  --> error_lock_when_not_awaited.sg:6:5
+ 6 |     lock box as b when b.n > 0 {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: write `await lock ... when ...`

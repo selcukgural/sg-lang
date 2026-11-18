@@ -1,0 +1,15 @@
+struct Box {
+    int n
+}
+
+static atomic bool Stop = atomic false
+
+void take(shared locked Box box) {
+    lock box as b when b.n > 0 || Stop.load() {
+        b.n -= 1
+    }
+}
+
+void main() {
+    take(new shared locked Box { n = 1 })
+}

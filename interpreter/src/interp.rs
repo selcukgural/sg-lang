@@ -211,6 +211,29 @@ struct State {
     /// The tasks of `Task.run` started in this run, which run when they are waited for, or
     /// when a fiber is about to wait outside the run.
     lazy: Vec<std::rc::Weak<RefCell<Task>>>,
+    /// The fibers that wait in `lock ... when` for their condition, in the order they began.
+    lock_waits: Vec<LockWait>,
+}
+
+/// A fiber that waits in `lock ... when`: a `lock` block that ends on one of its values wakes
+/// it to look again, and so does an owner of them that lets go, when it is left the only one.
+struct LockWait {
+    fiber: usize,
+    /// The cells of what the values hold, by address.
+    keys: Vec<usize>,
+    /// The `shared` values, each with how many of its counted owners are not owners of the
+    /// program: this one, and the copy the `lock` took of a value that lies in a place. Empty
+    /// when one of the values is a static, which every task reaches.
+    held: Vec<(Rc<Held>, usize)>,
+}
+
+impl LockWait {
+    /// Whether the fiber that waits is the only owner of every value, with nothing that looks
+    /// at one of them (`weak`, beside the look the leak report keeps): no other task could
+    /// change what it waits for.
+    fn alone(&self) -> bool {
+        !self.held.is_empty() && self.held.iter().all(|(held, extra)| Rc::strong_count(held) == extra + 1 && Rc::weak_count(held) == 1)
+    }
 }
 
 // SAFETY: as for `Baton`: what `State` holds of the program is touched only by the fiber that
@@ -238,6 +261,7 @@ impl Sched {
             wake: None,
             works: 0,
             lazy: Vec::new(),
+            lock_waits: Vec::new(),
         };
         Sched { state: Mutex::new(state) }
     }
@@ -307,6 +331,13 @@ impl Sched {
     /// first timer comes. When there is no timer either, nothing could end a wait, and the
     /// run stops with a panic.
     fn next(state: &mut State, at: Span) -> usize {
+        // A fiber of `lock ... when` that is left the only owner of what it waits for looks
+        // again, and stops the run when the condition still fails.
+        if state.lock_waits.iter().any(LockWait::alone) {
+            let (alone, waiting): (Vec<LockWait>, Vec<LockWait>) = std::mem::take(&mut state.lock_waits).into_iter().partition(LockWait::alone);
+            state.lock_waits = waiting;
+            state.ready.extend(alone.iter().map(|wait| wait.fiber));
+        }
         loop {
             if let Some(fiber) = state.ready.pop_front() {
                 return fiber;
@@ -2897,6 +2928,49 @@ impl<'a, 'e> Interp<'a, 'e> {
         Ok(gives)
     }
 
+    /// `lock ... when`: the condition is computed with the values locked; while it fails, this
+    /// fiber lets them go and waits until a `lock` block on one of them ends, then looks again.
+    /// A fiber that is the only owner of every value waits for what nobody could change: a panic.
+    #[allow(clippy::too_many_arguments)]
+    fn lock_wait(&mut self, items: &'a [LockItem], when: &'a Expr, taken: &[Rc<Held>], placed: &[bool], keys: &[usize], statics: bool, at: Span, frame: &mut Frame) -> Res<()> {
+        loop {
+            self.locking += 1;
+            let holds = self.condition(when, frame);
+            self.locking -= 1;
+            if holds? {
+                return Ok(());
+            }
+            let held = match statics {
+                true => Vec::new(),
+                false => taken.iter().zip(placed).map(|(held, placed)| (held.clone(), 1 + usize::from(*placed))).collect(),
+            };
+            let wait = LockWait { fiber: self.me, keys: keys.to_vec(), held };
+            if wait.alone() {
+                return Err(Diag::panic(when.span, lonely_wait(&self.src[when.span.start..when.span.end], items, |item| &self.src[item.value.span.start..item.value.span.end]))
+                    .hint(lonely_hint(&self.src[items[0].value.span.start..items[0].value.span.end], &items[0].name))
+                    .into());
+            }
+            // What a task of `Task.run` that has not started yet does may end the wait.
+            self.start_lazy()?;
+            self.io.sched.lock().lock_waits.push(wait);
+            let waited = self.io.sched.block(self.me, at);
+            self.io.sched.lock().lock_waits.retain(|wait| wait.fiber != self.me);
+            waited?;
+        }
+    }
+
+    /// A `lock` block on the values whose cells are `keys` has ended: the fibers that wait in
+    /// `lock ... when` on one of them look again.
+    fn lock_ended(&self, keys: &[usize]) {
+        let mut state = self.io.sched.lock();
+        if state.lock_waits.is_empty() {
+            return;
+        }
+        let (woken, waiting): (Vec<LockWait>, Vec<LockWait>) = std::mem::take(&mut state.lock_waits).into_iter().partition(|wait| wait.keys.iter().any(|key| keys.contains(key)));
+        state.lock_waits = waiting;
+        state.ready.extend(woken.iter().map(|wait| wait.fiber));
+    }
+
     /// Where an atomic operation lets the other tasks run: the turn goes to the next fiber that
     /// is ready, the tasks of `Task.run` not started yet start, and this fiber is ready again
     /// after them. A fiber alone, or one inside a `lock` block, keeps the turn.
@@ -3632,8 +3706,10 @@ impl<'a, 'e> Interp<'a, 'e> {
             StmtKind::Unsafe(body) => return self.block(body, frame),
             // A const of a block: its value was found when the program was compiled.
             StmtKind::Const { .. } | StmtKind::Static { .. } => {}
-            StmtKind::Lock { items, body } => {
+            StmtKind::Lock { items, when, body, .. } => {
                 let mut taken: Vec<Rc<Held>> = Vec::new();
+                let mut keys: Vec<usize> = Vec::new();
+                let mut placed: Vec<bool> = Vec::new();
                 frame.scopes.push(Scope::default());
                 let mut statics: Vec<(&str, usize)> = Vec::new();
                 for (position, item) in items.iter().enumerate() {
@@ -3644,6 +3720,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                             return Err(Diag::panic(item.value.span, format!("`{}` and `{}` are one value, which a `lock` takes once", items[first].name, item.name)).into());
                         }
                         let slot = self.static_cell(name, item.value.span)?;
+                        keys.push(Rc::as_ptr(&slot) as *const () as usize);
                         frame.declare(&item.name, Value::Borrow(slot));
                         statics.push((name, position));
                         continue;
@@ -3654,13 +3731,22 @@ impl<'a, 'e> Interp<'a, 'e> {
                         frame.scopes.pop();
                         return Err(Diag::panic(item.value.span, format!("`{}` and `{}` are one value, which a `lock` takes once", items[first].name, item.name)).into());
                     }
+                    keys.push(Rc::as_ptr(&held.value) as *const () as usize);
                     frame.declare(&item.name, Value::Borrow(held.value.clone()));
+                    placed.push(item.value.is_place());
                     taken.push(held);
+                }
+                if let Some(when) = when {
+                    if let Err(unwind) = self.lock_wait(items, when, &taken, &placed, &keys, !statics.is_empty(), stmt.span, frame) {
+                        frame.scopes.pop();
+                        return Err(unwind);
+                    }
                 }
                 self.locking += 1;
                 let flow = self.block(body, frame);
                 self.locking -= 1;
                 frame.scopes.pop();
+                self.lock_ended(&keys);
                 return flow;
             }
             StmtKind::Return(value) => {
@@ -7655,4 +7741,16 @@ fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {
         (Value::Iter(cursor), "next", []) => cursor.borrow_mut().next().unwrap_or(Value::Null),
         _ => unreachable!("the checker only lets known methods through"),
     }
+}
+
+/// The panic of a task that waits in `lock ... when` for what no other task could change: it
+/// is the only owner of the values it locks. Compiled code says the same.
+pub(crate) fn lonely_wait<'i>(cond: &str, items: &'i [LockItem], text: impl Fn(&'i LockItem) -> &'i str) -> String {
+    let names: Vec<String> = items.iter().map(|item| format!("`{}`", text(item))).collect();
+    format!("this task waits until `{cond}`, and no other task could make it hold: it is the only owner of {}", names.join(" and "))
+}
+
+/// The hint of `lonely_wait`: the task that gives says, inside the value, that it is done.
+pub(crate) fn lonely_hint(value: &str, name: &str) -> String {
+    format!("a task with no more to give says so inside the value before it lets it go, `lock {value} as {name} {{ {name}.done = true }}`, and the condition looks at it: `when ... || {name}.done`")
 }

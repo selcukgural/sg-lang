@@ -1,0 +1,71 @@
+// `await lock ... when` in an async function: the task waits for the condition, and its thread
+// runs other tasks meanwhile. An ordinary `lock` wakes it, from a task or from a thread.
+struct Jobs {
+    List<int> items
+    bool done
+}
+
+static locked int Ready = 0
+
+async int consume(shared locked Jobs jobs) {
+    var sum = 0
+    while true {
+        var next = 0
+        var finished = false
+        await lock jobs as q when q.items.length() > 0 || q.done {
+            var last = q.items.removeLast()
+            if last is null {
+                finished = true
+            } else {
+                next = last
+            }
+        }
+        if finished {
+            return sum
+        }
+        sum += next
+    }
+    return sum
+}
+
+async void produce(shared locked Jobs jobs, int count) {
+    await lock Ready as ready when ready > 0 {
+        ready -= 1
+    }
+    for i in 1..count + 1 {
+        lock jobs as q {
+            q.items.add(i)
+        }
+        if i % 100 == 0 {
+            await Task.delay(1)
+        }
+    }
+    lock jobs as q {
+        q.done = true
+    }
+}
+
+// From a thread of its own, which the tasks wait for.
+void open(int count) {
+    lock Ready as ready {
+        ready += count
+    }
+}
+
+async void main() {
+    var jobs = new shared locked Jobs { items = List<int>(), done = false }
+    var tasks = List<Task<int>>()
+    for _ in 0..4 {
+        tasks.add(consume(share jobs))
+    }
+    var first = produce(share jobs, 1000)
+    var second = produce(share jobs, 1000)
+    await Task.run(open, 2)
+    await first
+    await second
+    var total = 0
+    for sum in await Task.whenAll(tasks) {
+        total += sum
+    }
+    print(total)
+}

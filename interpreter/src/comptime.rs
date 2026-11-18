@@ -145,8 +145,8 @@ fn shown_name(name: &str) -> String {
 fn scan_body(func: &Func, bodies: &HashMap<String, &Func>) -> Scan {
     let mut scan = Scan::default();
     let mut locked = None;
-    crate::waits::walk_block(&func.body, &mut |expr| look(expr, &mut scan, bodies), &mut |span| {
-        locked.get_or_insert(span);
+    crate::waits::walk_block(&func.body, &mut |expr| look(expr, &mut scan, bodies), &mut |stmt| {
+        locked.get_or_insert(stmt.span);
     });
     if let Some(span) = locked {
         if scan.barred.as_ref().is_none_or(|(first, ..)| span.start < first.start) {

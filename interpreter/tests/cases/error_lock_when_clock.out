@@ -1,0 +1,6 @@
+error: the condition of `when` calls `Instant.now`, which reads the clock, and a task waiting for it is woken only when a `lock` block on the same value ends
+  a change outside the locked value would not wake it, and it would wait for ever
+  --> error_lock_when_clock.sg:6:45
+ 6 |     lock box as b when b.deadline < Instant.now().elapsed().milliseconds() {
+   |                                             ^^^
+  hint: keep what the condition looks at inside the locked value, and change it in a `lock` block

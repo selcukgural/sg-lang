@@ -83,9 +83,19 @@ pub fn check(prog: &Program) -> Res<()> {
     for (name, body) in &bodies {
         let mut scan = Body::default();
         let mut lock = None;
-        walk_block(body, &mut |expr| look(expr, &mut scan, &mut taken), &mut |span| {
-            lock.get_or_insert(span);
+        let mut when = None;
+        walk_block(body, &mut |expr| look(expr, &mut scan, &mut taken), &mut |stmt| {
+            lock.get_or_insert(stmt.span);
+            // `lock ... when` that is not awaited waits on its thread.
+            if let StmtKind::Lock { when: Some(_), awaited: false, .. } = &stmt.kind {
+                when.get_or_insert(stmt.span);
+            }
         });
+        if let Some(span) = when {
+            if scan.holds.as_ref().is_none_or(|(other, _)| span.start < other.start) {
+                scan.holds = Some((span, "`lock ... when`".to_string()));
+            }
+        }
         // The one written first.
         if let Some(span) = lock {
             if scan.itself.is_none_or(|(wait, _)| span.start < wait.start) {
@@ -128,6 +138,30 @@ pub fn check(prog: &Program) -> Res<()> {
 
     for (_, body) in &bodies {
         locks_in(body, &waits, &taken, &exports)?;
+    }
+    // What the language's own functions read that changes while no `lock` block ends: the
+    // conditions of `when` do not call them.
+    let mut outside: HashMap<&str, &'static str> = HashMap::new();
+    for (name, body) in bodies.iter().filter(|(name, _)| name.starts_with(STD_PREFIX)) {
+        let mut found = None;
+        walk_block(body, &mut |expr| found = found.or_else(|| unwoken_here(expr).map(|(_, what)| what)), &mut |_| {});
+        if let Some(what) = found {
+            outside.insert(name, what);
+        }
+    }
+    loop {
+        let found: Vec<(&str, &'static str)> = scans
+            .iter()
+            .filter(|(name, _)| name.starts_with(STD_PREFIX) && !outside.contains_key(*name))
+            .filter_map(|(name, scan)| scan.calls.iter().find_map(|(callee, _)| outside.get(callee.as_str())).map(|what| (*name, *what)))
+            .collect();
+        if found.is_empty() {
+            break;
+        }
+        outside.extend(found);
+    }
+    for body in bodies.iter().map(|(_, body)| *body).chain(prog.tests.iter().map(|test| &test.body)) {
+        whens_in(body, &outside)?;
     }
     // What gives the value of a static does not wait either: a task that finds it holds up
     // every task that reads it meanwhile.
@@ -475,6 +509,76 @@ fn look(expr: &Expr, scan: &mut Body, taken: &mut Vec<(String, usize, Ty)>) {
     }
 }
 
+/// Refuses a condition of `lock ... when` that reads what may change while no `lock` block on
+/// the value ends: a task that waits for it would not be woken. What it reads itself counts,
+/// and what the language's own functions it calls read (`outside`); the functions of the
+/// program it calls are not looked into.
+fn whens_in(block: &Block, outside: &HashMap<&str, &'static str>) -> Res<()> {
+    let mut error: Option<(Span, String)> = None;
+    walk_block(block, &mut |_| {}, &mut |stmt| {
+        let StmtKind::Lock { when: Some(cond), .. } = &stmt.kind else { return };
+        walk_expr(
+            cond,
+            &mut |expr| {
+                // The first written, of the first condition.
+                let found = unwoken_here(expr).map(|(span, what)| (span, what.to_string())).or_else(|| {
+                    let (name, span) = reached_by(expr)?;
+                    let what = outside.get(name.as_str())?;
+                    Some((span, format!("calls `{}`, which {what}", shown_std(&name))))
+                });
+                if let Some((span, what)) = found {
+                    if error.as_ref().is_none_or(|(first, _)| span.start < first.start) {
+                        error = Some((span, what));
+                    }
+                }
+            },
+            &mut |_| {},
+        );
+    });
+    match error {
+        Some((span, what)) => Err(Diag::error(span, format!("the condition of `when` {what}, and a task waiting for it is woken only when a `lock` block on the same value ends"))
+            .note("a change outside the locked value would not wake it, and it would wait for ever")
+            .hint("keep what the condition looks at inside the locked value, and change it in a `lock` block")),
+        None => Ok(()),
+    }
+}
+
+/// What an expression does by itself that may change while no `lock` block ends: it reads an
+/// `atomic`, the clock or random bytes of the system, or reads or writes outside the program.
+fn unwoken_here(expr: &Expr) -> Option<(Span, &'static str)> {
+    if matches!(expr.ty.strip_borrow(), Ty::Atomic(_)) {
+        return Some((expr.span, "reads an `atomic`"));
+    }
+    let (ExprKind::Call { callee, name, name_span, .. } | ExprKind::Method { callee, name, name_span, .. }) = &expr.kind else { return None };
+    match callee {
+        Callee::Clock(_) => Some((*name_span, "reads the clock")),
+        Callee::Entropy => Some((*name_span, "draws random bytes of the system")),
+        Callee::Io(_) | Callee::IoAsync(_) | Callee::Stream(_) | Callee::StreamAsync(_) | Callee::Net(_) | Callee::NetAsync(_) | Callee::System(_) => {
+            Some((*name_span, "reads or writes outside the program"))
+        }
+        Callee::Plain if matches!(expr.kind, ExprKind::Call { .. }) && (name == "print" || name == "printError") => Some((*name_span, "writes out")),
+        _ => None,
+    }
+}
+
+/// The function a call reaches, by the name `bodies` gives it, and where its name is written.
+fn reached_by(expr: &Expr) -> Option<(String, Span)> {
+    match &expr.kind {
+        ExprKind::Method { name, name_span, callee: Callee::Method { owner, .. }, .. } | ExprKind::Call { name_span, callee: Callee::Static { owner, name }, .. } => Some((format!("{owner}.{name}"), *name_span)),
+        ExprKind::Method { name_span, callee: Callee::Static { owner, name }, .. } => Some((format!("{owner}.{name}"), *name_span)),
+        ExprKind::Call { name, name_span, callee: Callee::Plain, .. } => Some((name.clone(), *name_span)),
+        _ => None,
+    }
+}
+
+/// A function of the language's own module as a program writes it: `Instant.now`.
+fn shown_std(name: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((owner, method)) => format!("{}.{method}", short_name(owner)),
+        None => name.to_string(),
+    }
+}
+
 /// Where the expression calls C, if it does: a function of C, or one through a `CFunc`.
 fn calls_c(expr: &Expr) -> Option<Span> {
     match &expr.kind {
@@ -500,13 +604,13 @@ pub(crate) fn walk_here<'a>(stmt: &'a Stmt, each: &mut dyn FnMut(&'a Expr)) {
 }
 
 /// Walks a block: `each` sees every expression, `lock` every `lock` statement.
-pub(crate) fn walk_block<'a>(block: &'a Block, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn FnMut(Span)) {
+pub(crate) fn walk_block<'a>(block: &'a Block, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn FnMut(&'a Stmt)) {
     for stmt in block {
         walk_stmt(stmt, each, lock);
     }
 }
 
-pub(crate) fn walk_stmt<'a>(stmt: &'a Stmt, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn FnMut(Span)) {
+pub(crate) fn walk_stmt<'a>(stmt: &'a Stmt, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn FnMut(&'a Stmt)) {
     match &stmt.kind {
         StmtKind::Let { init, .. } => walk_expr(init, each, lock),
         StmtKind::Assign { target, value, .. } => {
@@ -548,10 +652,13 @@ pub(crate) fn walk_stmt<'a>(stmt: &'a Stmt, each: &mut dyn FnMut(&'a Expr), lock
             walk_expr(value, each, lock);
             walk_block(body, each, lock);
         }
-        StmtKind::Lock { items, body } => {
-            lock(stmt.span);
+        StmtKind::Lock { items, when, body, .. } => {
+            lock(stmt);
             for item in items {
                 walk_expr(&item.value, each, lock);
+            }
+            if let Some(when) = when {
+                walk_expr(when, each, lock);
             }
             walk_block(body, each, lock);
         }
@@ -566,7 +673,7 @@ pub(crate) fn walk_stmt<'a>(stmt: &'a Stmt, each: &mut dyn FnMut(&'a Expr), lock
     }
 }
 
-pub(crate) fn walk_expr<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn FnMut(Span)) {
+pub(crate) fn walk_expr<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr), lock: &mut dyn FnMut(&'a Stmt)) {
     each(expr);
     if let ExprKind::Match { arms, .. } = &expr.kind {
         for arm in arms {
@@ -579,7 +686,15 @@ pub(crate) fn walk_expr<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr), lock
 /// Finds every `lock` block in a body and refuses what waits inside it.
 fn locks_in(block: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize, Ty)], exports: &[String]) -> Res<()> {
     let mut error = None;
-    each_lock(block, &mut |body| {
+    each_lock(block, &mut |stmt| {
+        let StmtKind::Lock { when, body, .. } = &stmt.kind else { unreachable!("a `lock` statement") };
+        if error.is_none() {
+            // The condition of `when` is computed under the locks, as the block runs.
+            if let Some(when) = when {
+                let cond = vec![Stmt { kind: StmtKind::Expr((**when).clone()), span: when.span }];
+                error = inside(&cond, waits, taken, exports).err();
+            }
+        }
         if error.is_none() {
             error = inside(body, waits, taken, exports).err();
         }
@@ -587,11 +702,11 @@ fn locks_in(block: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize
     error.map_or(Ok(()), Err)
 }
 
-/// Calls `each` with the body of every outermost `lock` block in `block`.
-fn each_lock<'a>(block: &'a Block, each: &mut dyn FnMut(&'a Block)) {
+/// Calls `each` with every outermost `lock` statement in `block`.
+fn each_lock<'a>(block: &'a Block, each: &mut dyn FnMut(&'a Stmt)) {
     for stmt in block {
         match &stmt.kind {
-            StmtKind::Lock { body, .. } => each(body),
+            StmtKind::Lock { .. } => each(stmt),
             StmtKind::If { then, els, .. } => {
                 each_lock(then, each);
                 if let Some(els) = els {
@@ -671,8 +786,8 @@ fn inside(body: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize, T
                 _ => None,
             };
         },
-        &mut |span| {
-            nested.get_or_insert(span);
+        &mut |stmt| {
+            nested.get_or_insert(stmt.span);
         },
     );
     if let Some(diag) = error {

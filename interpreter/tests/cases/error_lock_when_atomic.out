@@ -1,0 +1,6 @@
+error: the condition of `when` reads an `atomic`, and a task waiting for it is woken only when a `lock` block on the same value ends
+  a change outside the locked value would not wake it, and it would wait for ever
+  --> error_lock_when_atomic.sg:8:35
+ 8 |     lock box as b when b.n > 0 || Stop.load() {
+   |                                   ^^^^
+  hint: keep what the condition looks at inside the locked value, and change it in a `lock` block

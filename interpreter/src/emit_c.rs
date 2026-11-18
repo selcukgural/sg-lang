@@ -2874,8 +2874,14 @@ typedef struct { const char* name; int (*through)(const void* value); const char
 typedef struct sg_live { struct sg_live* prev; struct sg_live* next; const char* made; const sg_kind* kind; void* value; } __attribute__((aligned(16))) sg_live;
 static sg_live sg_alive = { &sg_alive, &sg_alive, NULL, NULL, NULL };
 #if SG_THREADS
-/* The mutex of a `locked` value: taken by `lock`, in front of the counts. */
-typedef struct { sg_mtx m; } __attribute__((aligned(16))) sg_mutex;
+/* The mutex of a `locked` value: taken by `lock`, in front of the counts. In a program with
+   `lock ... when`, the list of those that wait for the value too (see `sg_when_on`). */
+typedef struct {
+    sg_mtx m;
+#if SG_WHEN
+    uintptr_t waiters;
+#endif
+} __attribute__((aligned(16))) sg_mutex;
 static sg_mtx sg_alive_lock __attribute__((unused)) = SG_MTX_INIT;
 #define SG_ALIVE_TAKE() sg_mtx_lock(&sg_alive_lock)
 #define SG_ALIVE_GIVE() sg_mtx_unlock(&sg_alive_lock)
@@ -2888,6 +2894,58 @@ typedef struct { char none; } __attribute__((aligned(16))) sg_mutex;
 static inline sg_rc* sg_rc_of(void* p) { return (sg_rc*)p - 1; }
 static inline sg_lock* sg_lock_of(void* p) { return (sg_lock*)sg_rc_of(p) - 1; }
 static inline sg_mutex* sg_mutex_of(void* p) { return (sg_mutex*)sg_rc_of(p) - 1; }
+#if SG_WHEN
+/* `lock ... when`: who waits for a value is in a list in front of it, with a link of its own for
+   each value it waits for; a thread waits on its own condition (`sg_when`), an async task is woken
+   to run again. The lowest bit of `waiters` is a lock of the list alone, held only inside these
+   functions and never while code of the program runs, so that an owner that lets go can wake
+   the waiters, also while its own task holds the value in a `lock` block. */
+typedef struct { sg_mtx m; sg_cnd c; bool woken; } sg_when;
+typedef struct sg_when_link { struct sg_when_link* next; sg_when* thread; sg_task* job; } sg_when_link;
+static inline sg_when_link* sg_when_hold(sg_mutex* mx) {
+    for (;;) {
+        uintptr_t list = __atomic_load_n(&mx->waiters, __ATOMIC_RELAXED);
+        if (!(list & 1) && __atomic_compare_exchange_n(&mx->waiters, &list, list | 1, true, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return (sg_when_link*)list;
+        sg_yield();
+    }
+}
+static inline void sg_when_let(sg_mutex* mx, sg_when_link* list) { __atomic_store_n(&mx->waiters, (uintptr_t)list, __ATOMIC_RELEASE); }
+/* Each waiter of the list looks at its condition again. Done while the list is held: a waiter
+   takes it off the other lists it is in only after this, and only then lets its link go. */
+static void sg_when_wake(sg_when_link* l) {
+    while (l) {
+        sg_when_link* next = l->next;
+        if (l->job) {
+            sg_wake(l->job);
+        } else {
+            sg_mtx_lock(&l->thread->m);
+            l->thread->woken = true;
+            sg_cnd_signal(&l->thread->c);
+            sg_mtx_unlock(&l->thread->m);
+        }
+        l = next;
+    }
+}
+/* A `lock` block on the value ends: those that wait for it look again. */
+SG_COLD static void sg_when_ended(void* p) {
+    sg_mutex* mx = sg_mutex_of(p);
+    sg_when_wake(sg_when_hold(mx));
+    sg_when_let(mx, NULL);
+}
+/* An owner lets go, or one that looks at the value: those that wait for it look again, since
+   one of them may now be the only owner. True if it was the last of its kind. */
+static bool sg_when_let_go(void* p, int64_t* count) {
+    sg_mutex* mx = sg_mutex_of(p);
+    sg_when_link* list = sg_when_hold(mx);
+    bool last = __atomic_fetch_sub(count, 1, __ATOMIC_ACQ_REL) == 1;
+    if (!last && list) {
+        sg_when_wake(list);
+        list = NULL;
+    }
+    sg_when_let(mx, list);
+    return last;
+}
+#endif
 /* `how` says what lies in front of the value (bits 0 and 1), and from bit 2 the alignment of a
    value aligned beyond 16 bytes, which the front is made a multiple of. */
 static inline size_t sg_front(int how) {
@@ -2903,7 +2961,12 @@ static void* sg_rc_new(size_t size, int how, const sg_kind* kind, const char* ma
     *sg_rc_of(p) = (sg_rc){ 1, 1 };
     if ((how & 3) == 1) *sg_lock_of(p) = (sg_lock){ NULL, NULL };
 #if SG_THREADS
-    if ((how & 3) == 2) sg_mtx_init(&sg_mutex_of(p)->m);
+    if ((how & 3) == 2) {
+        sg_mtx_init(&sg_mutex_of(p)->m);
+#if SG_WHEN
+        sg_mutex_of(p)->waiters = 0;
+#endif
+    }
 #endif
 #if SG_TRACK
     sg_live* live = (sg_live*)block;
@@ -2923,6 +2986,11 @@ static inline void* sg_rc_share(void* p) { if (p) __atomic_fetch_add(&sg_rc_of(p
 static inline void* sg_rc_weaken(void* p) { if (p) __atomic_fetch_add(&sg_rc_of(p)->weak, 1, __ATOMIC_RELAXED); return p; }
 /* An owner lets go: true if it was the last, and the value is to be dropped. */
 static inline bool sg_rc_last(void* p, int how) {
+#if SG_WHEN
+    if ((how & 3) == 2) {
+        if (!sg_when_let_go(p, &sg_rc_of(p)->strong)) return false;
+    } else
+#endif
     if (__atomic_fetch_sub(&sg_rc_of(p)->strong, 1, __ATOMIC_RELEASE) != 1) return false;
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
 #if SG_TRACK
@@ -2938,6 +3006,11 @@ static inline bool sg_rc_last(void* p, int how) {
 }
 /* A looker lets go (or the owners, together, once the value is dropped): the last frees the block. */
 static inline void sg_rc_unweak(void* p, int how) {
+#if SG_WHEN
+    if ((how & 3) == 2) {
+        if (!sg_when_let_go(p, &sg_rc_of(p)->weak)) return;
+    } else
+#endif
     if (__atomic_fetch_sub(&sg_rc_of(p)->weak, 1, __ATOMIC_RELEASE) != 1) return;
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
 #if SG_THREADS
@@ -3017,7 +3090,14 @@ static void sg_change_reserved(sg_guard* g) {
 /* `lock`: a value is taken by its mutex. Two or more are taken in the order of their addresses,
    so two tasks that lock the same values never wait for each other in a circle. */
 static inline void sg_take(void* p) { sg_mtx_lock(&sg_mutex_of(p)->m); }
-static inline void sg_give(void* p) { sg_mtx_unlock(&sg_mutex_of(p)->m); }
+/* A `lock` block ends. The list is changed only under the mutex, which this thread holds, or by
+   an owner that lets go, which only takes from it. */
+static inline void sg_give(void* p) {
+#if SG_WHEN
+    if (__builtin_expect(__atomic_load_n(&sg_mutex_of(p)->waiters, __ATOMIC_RELAXED) != 0, 0)) sg_when_ended(p);
+#endif
+    sg_mtx_unlock(&sg_mutex_of(p)->m);
+}
 static inline void sg_take_two(void* a, void* b) {
     if ((uintptr_t)a < (uintptr_t)b) { sg_take(a); sg_take(b); }
     else { sg_take(b); sg_take(a); }
@@ -3035,6 +3115,78 @@ SG_COLD static _Noreturn void sg_lock_twice(const char* first, const char* secon
     fprintf(stderr, "panic: `%s` and `%s` are one value, which a `lock` takes once\n", first, second);
     sg_die(loc);
 }
+#if SG_WHEN
+/* The values of `lock ... when` taken again after a wait, in the order of their addresses, with
+   the order of `values` kept: link `i` is in the list of value `i`. They are not one value twice. */
+static void sg_when_take(void** values, int count) {
+    uintptr_t last = 0;
+    for (int k = 0; k < count; k++) {
+        void* next = NULL;
+        for (int i = 0; i < count; i++) {
+            if ((uintptr_t)values[i] > last && (!next || (uintptr_t)values[i] < (uintptr_t)next)) next = values[i];
+        }
+        sg_take(next);
+        last = (uintptr_t)next;
+    }
+}
+SG_COLD static _Noreturn void sg_when_alone(const char* what, const char* hint, const char* loc) {
+    SG_PANIC_START();
+    fprintf(stderr, "panic: %s\n", what);
+    sg_die_hint(loc, hint);
+}
+/* The condition of `lock ... when` fails, with the values locked: the waiter (a thread or the async
+   task running now) goes in the list of each value. One that is the only owner of every value
+   (`counted`: none is a static), with nothing that looks at them, waits for what no other task
+   could change: a panic. Seen under the list, as an owner that lets go changes the count, so
+   either this sees it gone or it sees this waiter and wakes it. */
+static void sg_when_on(sg_when_link* links, void** values, int count, sg_when* thread, bool counted, const char* what, const char* hint, const char* loc) {
+    bool alone = counted;
+    for (int i = 0; i < count; i++) {
+        sg_mutex* mx = sg_mutex_of(values[i]);
+        sg_when_link* list = sg_when_hold(mx);
+        sg_rc* rc = sg_rc_of(values[i]);
+        alone = alone && __atomic_load_n(&rc->strong, __ATOMIC_ACQUIRE) == 1 && __atomic_load_n(&rc->weak, __ATOMIC_ACQUIRE) == 1;
+        links[i] = (sg_when_link){ list, thread, thread ? NULL : sg_job_now };
+        sg_when_let(mx, &links[i]);
+    }
+    if (alone) sg_when_alone(what, hint, loc);
+}
+/* After a wait, with the values locked again: the links still in a list are taken out (a wake
+   takes out the whole list it wakes). A link never put in one is not found. */
+static void sg_when_off(sg_when_link* links, void** values, int count) {
+    for (int i = 0; i < count; i++) {
+        sg_mutex* mx = sg_mutex_of(values[i]);
+        sg_when_link* list = sg_when_hold(mx);
+        sg_when_link** at = &list;
+        while (*at && *at != &links[i]) at = &(*at)->next;
+        if (*at) *at = links[i].next;
+        sg_when_let(mx, list);
+    }
+}
+/* `lock ... when` on a thread: the locks are let go and the thread sleeps until a waker tells it,
+   then takes them again. */
+static void sg_when_sleep(sg_when_link* links, void** values, int count, bool counted, const char* what, const char* hint, const char* loc) {
+    sg_when w;
+    sg_mtx_init(&w.m);
+    sg_cnd_init(&w.c);
+    w.woken = false;
+    sg_when_on(links, values, count, &w, counted, what, hint, loc);
+    for (int i = 0; i < count; i++) sg_mtx_unlock(&sg_mutex_of(values[i])->m);
+    sg_mtx_lock(&w.m);
+    while (!w.woken) sg_cnd_wait(&w.c, &w.m);
+    sg_mtx_unlock(&w.m);
+    sg_when_take(values, count);
+    sg_when_off(links, values, count);
+    sg_mtx_destroy(&w.m);
+    sg_cnd_destroy(&w.c);
+}
+/* `await lock ... when` in an async task: the locks are let go and the machine returns to wait;
+   woken, it takes them again where it stopped (`sg_when_off` after). */
+static void sg_when_wait(sg_when_link* links, void** values, int count, bool counted, const char* what, const char* hint, const char* loc) {
+    sg_when_on(links, values, count, NULL, counted, what, hint, loc);
+    for (int i = 0; i < count; i++) sg_mtx_unlock(&sg_mutex_of(values[i])->m);
+}
+#endif
 #endif
 
 #if SG_TRACK
@@ -9559,6 +9711,8 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     }
     // An async function that may drop a writer has it closed on a thread (`sg_closing_put`).
     let _ = writeln!(out, "#define SG_CLOSING {}", u8::from(emitter.made.contains("closing")));
+    // `lock ... when`: a list of waiters in front of each `locked` value (see `sg_when_on`).
+    let _ = writeln!(out, "#define SG_WHEN {}", u8::from(emitter.made.contains("when")));
     // The reader of a connection is read the async way on the loop of the network.
     if emitter.made.contains("net") && emitter.made.contains("async io") {
         emitter.made.insert("net async".to_string());
@@ -11994,10 +12148,10 @@ impl<'a> Emitter<'a> {
         // `lock` finds its mutex in front of it, as for `new shared locked`.
         match (decl.locked, &init) {
             (true, Some(init)) => {
-                let _ = writeln!(out, "static struct {{ sg_mutex m; sg_rc rc; {ctype} value; }} {cname} = {{ .m = {{ SG_MTX_INIT }}, .rc = {{ 1, 1 }}, .value = {init} }};");
+                let _ = writeln!(out, "static struct {{ sg_mutex m; sg_rc rc; {ctype} value; }} {cname} = {{ .m = {{ .m = SG_MTX_INIT }}, .rc = {{ 1, 1 }}, .value = {init} }};");
             }
             (true, None) => {
-                let _ = writeln!(out, "static struct {{ sg_mutex m; sg_rc rc; {ctype} value; }} {cname} = {{ .m = {{ SG_MTX_INIT }}, .rc = {{ 1, 1 }} }};");
+                let _ = writeln!(out, "static struct {{ sg_mutex m; sg_rc rc; {ctype} value; }} {cname} = {{ .m = {{ .m = SG_MTX_INIT }}, .rc = {{ 1, 1 }} }};");
             }
             (false, Some(init)) if !self.holds_atomic(&decl.ty) => {
                 let _ = writeln!(out, "static const {ctype} {cname} = {init};");
@@ -13364,6 +13518,70 @@ impl<'a> Emitter<'a> {
     /// Holds back what the statement would free at its end (the values in it that have no
     /// name), for a block whose names point into them: `for x in read make()`. They are
     /// freed where `release` writes the line, and on every way out of the block before that.
+    /// The wait of `lock ... when`, with the values locked: the condition is computed with each
+    /// name lent to read, and while it fails the locks are let go until a `lock` block on one of
+    /// the values ends (`sg_when_sleep` on a thread). An async function returns to wait instead,
+    /// and comes back to its `SG_RESUME` mark before the locks are taken (`sg_when_wait`).
+    #[allow(clippy::too_many_arguments)]
+    fn lock_when(&mut self, when: &'a Expr, items: &[LockItem], reads: Vec<(Local, String)>, (links, values, count): (&str, &str, usize), awaited: bool, depth: usize, out: &mut String) -> Res<()> {
+        let pad = "    ".repeat(depth);
+        let inner = format!("{pad}    ");
+        let text = |span: Span| self.sources.text[span.start..span.end].to_string();
+        let what = crate::interp::lonely_wait(&text(when.span), items, |item| &self.sources.text[item.value.span.start..item.value.span.end]);
+        let hint = crate::interp::lonely_hint(&text(items[0].value.span), &items[0].name);
+        let counted = items.iter().all(|item| !matches!(item.value.kind, ExprKind::Static(_)));
+        let loc = self.loc(when.span);
+        let _ = writeln!(out, "{pad}{{");
+        self.scopes.push(Vec::new());
+        for (local, line) in reads {
+            let _ = writeln!(out, "{inner}{line}");
+            self.scopes.last_mut().expect("an open scope").push(local);
+        }
+        if awaited {
+            let _ = writeln!(out, "{inner}sg_when_off({links}, {values}, {count});");
+        }
+        // The names an `is` gives are seen in the condition only: declared here, set by the test.
+        let (cond, _, chained, decls) = self.condition(when, true)?;
+        for line in decls {
+            let _ = writeln!(out, "{inner}{line}");
+        }
+        let args = format!("{links}, {values}, {count}, {counted}, {}, {}, {loc}", c_string(&what), c_string(&hint));
+        let (wait, again) = match awaited {
+            true => (format!("{{ sg_when_wait({args}); return false; }}"), "if"),
+            false => (format!("sg_when_sleep({args});"), "while"),
+        };
+        if self.pre.is_empty() && self.post.is_empty() {
+            let _ = writeln!(out, "{inner}{again} (!({cond})) {wait}");
+        } else {
+            let temp = self.temp();
+            let body = format!("{inner}    ");
+            let (open, close) = match awaited {
+                true => ("{", "}"),
+                false => ("while (1) {", "}"),
+            };
+            let _ = writeln!(out, "{inner}{open}");
+            self.flush_pre(&body, out);
+            let _ = writeln!(out, "{body}bool {temp} = {cond};");
+            self.flush_post(&body, out);
+            match awaited {
+                true => {
+                    let _ = writeln!(out, "{body}if (!{temp}) {wait}");
+                }
+                false => {
+                    let _ = writeln!(out, "{body}if ({temp}) break;");
+                    let _ = writeln!(out, "{body}{wait}");
+                }
+            }
+            let _ = writeln!(out, "{inner}{close}");
+        }
+        if chained {
+            self.scopes.pop();
+        }
+        self.scopes.pop();
+        let _ = writeln!(out, "{pad}}}");
+        Ok(())
+    }
+
     fn hold(&mut self) -> Option<String> {
         if self.post.is_empty() {
             return None;
@@ -13571,9 +13789,10 @@ impl<'a> Emitter<'a> {
             // more in the order of their addresses, and given back after the block and on every
             // way out of it (a `Local` whose drop line gives them back). The same value twice
             // is a panic at the second.
-            StmtKind::Lock { items, body } => {
+            StmtKind::Lock { items, when, awaited, body } => {
                 let mut pointers = Vec::new();
                 let mut names = Vec::new();
+                let mut reads = Vec::new();
                 for item in items {
                     let Ty::Shared(held, _) = item.value.ty.strip_borrow() else { unreachable!("the checker locks only a `shared locked` value") };
                     let Ty::Locked(held) = &**held else { unreachable!("the checker locks only a `shared locked` value") };
@@ -13585,6 +13804,9 @@ impl<'a> Emitter<'a> {
                     let temp = self.temp();
                     let ctype = self.ctype(&held, item.value.span)?;
                     self.pre.push(format!("{ctype}* {temp} = {place};"));
+                    if when.is_some() {
+                        reads.push(self.borrowed_name(&item.name, Ty::Read(Box::new(held.clone())), &format!("(*{temp})"), item.name_span)?);
+                    }
                     names.push(self.borrowed_name(&item.name, Ty::Ref(Box::new(held)), &format!("(*{temp})"), item.name_span)?);
                     pointers.push(temp);
                 }
@@ -13595,6 +13817,24 @@ impl<'a> Emitter<'a> {
                         self.pre.push(format!("if ((void*){} == (void*){}) sg_lock_twice({a}, {b}, {loc});", pointers[first], pointers[second]));
                     }
                 }
+                // `when`: the values in a list, and a link for each in the list of its waiters;
+                // an async function comes back to take the locks again.
+                let waits = match when {
+                    Some(_) => {
+                        self.made.extend(["when".to_string(), "tasks".to_string()]);
+                        let (links, values, count) = (self.temp(), self.temp(), pointers.len());
+                        self.pre.push(format!("sg_when_link {links}[{count}];"));
+                        self.pre.push(format!("void* {values}[{count}];"));
+                        for (at, pointer) in pointers.iter().enumerate() {
+                            self.pre.push(format!("{values}[{at}] = {pointer};"));
+                        }
+                        if *awaited {
+                            self.resume_point(stmt.span);
+                        }
+                        Some((links, values, count))
+                    }
+                    None => None,
+                };
                 let take = match pointers.as_slice() {
                     [one] => format!("sg_take({one});"),
                     [a, b] => format!("sg_take_two({a}, {b});"),
@@ -13610,6 +13850,9 @@ impl<'a> Emitter<'a> {
                 // Named `lock`, which no variable can be: what it gives back is a lock.
                 self.scopes.push(vec![Local { name: "lock".to_string(), cname: String::new(), ty: Ty::Void, gone: false, drop: Some(give.clone()) }]);
                 let _ = writeln!(out, "{pad}{{");
+                if let (Some(when), Some((links, values, count))) = (when, waits) {
+                    self.lock_when(when, items, reads, (&links, &values, count), *awaited, depth + 1, out)?;
+                }
                 self.block_with(body, depth + 1, out, names)?;
                 self.scopes.pop();
                 if !ends_by_leaving(body) {

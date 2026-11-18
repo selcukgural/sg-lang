@@ -1,0 +1,13 @@
+struct Box {
+    int n
+}
+
+void take(shared locked Box box) {
+    lock box as b when b.n > 0 {
+        b.n -= 1
+    }
+}
+
+async void main() {
+    take(new shared locked Box { n = 1 })
+}

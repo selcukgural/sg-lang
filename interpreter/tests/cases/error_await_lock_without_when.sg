@@ -1,0 +1,13 @@
+struct Box {
+    int n
+}
+
+async void add(shared locked Box box) {
+    await lock box as b {
+        b.n += 1
+    }
+}
+
+async void main() {
+    await add(new shared locked Box { n = 1 })
+}

@@ -6005,7 +6005,19 @@ impl<'a> Checker<'a> {
                 };
                 self.block_with(body, &[], vec![(name.clone(), ty, *name_span)])?;
             }
-            StmtKind::Lock { items, body } => {
+            StmtKind::Lock { items, when, awaited, body } => {
+                if *awaited && !self.is_async {
+                    return Err(Diag::error(stmt_span, "`await lock` is written in an async function")
+                        .hint("here `lock ... when` waits without `await`: its thread sleeps until the condition holds"));
+                }
+                if *awaited && when.is_none() {
+                    return Err(Diag::error(stmt_span, "a `lock` without `when` does not wait, so there is nothing to await")
+                        .hint("drop the `await`: an ordinary `lock` is written as it is in an async function"));
+                }
+                if when.is_some() && !*awaited && self.is_async {
+                    return Err(Diag::error(stmt_span, "`lock ... when` waits, and an async function awaits what waits: its task waits, and its thread goes on")
+                        .hint("write `await lock ... when ...`"));
+                }
                 let mut binds = Vec::new();
                 let mut loans = Vec::new();
                 for position in 0..items.len() {
@@ -6066,6 +6078,21 @@ impl<'a> Checker<'a> {
                         loans.extend(self.place_loans(&item.value, false, item.value.span));
                     }
                     binds.push((item.name.clone(), Ty::Ref(Box::new(inner)), item.name_span));
+                }
+                // `when`: computed under the locks, each name lent to read.
+                if let Some(when) = when {
+                    self.scopes.push(Scope::default());
+                    self.borrows.binds = loans.clone();
+                    let reads = binds.iter().map(|(name, ty, span): &(String, Ty, Span)| (name.clone(), Ty::Read(Box::new(ty.strip_borrow().clone())), *span)).collect();
+                    let checked = self.declare_binds(reads).and_then(|()| self.typed(when, &Ty::Bool));
+                    // The names are lent to read here, whatever the parameters are.
+                    checked.map_err(|mut diag| {
+                        if diag.hint.as_deref() == Some("take the value as `ref` instead of `read`") {
+                            diag.hint = Some("the condition only looks at what is locked; change it in the block".to_string());
+                        }
+                        diag
+                    })?;
+                    self.pop_scope(true)?;
                 }
                 // Each name borrows what its value holds, so the values stay where they are.
                 self.borrows.binds = loans;
@@ -12666,9 +12693,12 @@ fn changed_in<'b>(block: &'b Block, names: &mut Vec<&'b str>) {
                 taken_in(iter, names);
                 changed_in(body, names);
             }
-            StmtKind::Lock { items, body } => {
+            StmtKind::Lock { items, when, body, .. } => {
                 for item in items {
                     taken_in(&item.value, names);
+                }
+                if let Some(when) = when {
+                    taken_in(when, names);
                 }
                 changed_in(body, names);
             }
@@ -13535,7 +13565,7 @@ fn breaks_of(block: &Block, label: Option<&str>, nested: bool) -> Option<Span> {
         StmtKind::For { from, to, body, .. } => breaks_in(from, label, nested).or_else(|| breaks_in(to, label, nested)).or_else(|| inner(body)),
         // The block of `as` is not a loop: a `break` in it leaves the loop around it.
         StmtKind::As { value, body, .. } => breaks_in(value, label, nested).or_else(|| breaks_of(body, label, nested)),
-        StmtKind::Lock { items, body } => items.iter().find_map(|item| breaks_in(&item.value, label, nested)).or_else(|| breaks_of(body, label, nested)),
+        StmtKind::Lock { items, when, body, .. } => items.iter().find_map(|item| breaks_in(&item.value, label, nested)).or_else(|| when.as_ref().and_then(|when| breaks_in(when, label, nested))).or_else(|| breaks_of(body, label, nested)),
         StmtKind::Unsafe(body) => breaks_of(body, label, nested),
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Discard(expr) | StmtKind::Let { init: expr, .. } => breaks_in(expr, label, nested),
         StmtKind::Assign { target, value, .. } => breaks_in(target, label, nested).or_else(|| breaks_in(value, label, nested)),

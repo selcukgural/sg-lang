@@ -1,0 +1,13 @@
+struct Box {
+    List<int> items
+}
+
+void take(shared locked Box box) {
+    lock box as b when (b.items.removeLast() ?? 0) > 0 {
+        b.items.clear()
+    }
+}
+
+void main() {
+    take(new shared locked Box { items = List<int>() })
+}

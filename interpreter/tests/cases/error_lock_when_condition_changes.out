@@ -1,0 +1,5 @@
+error: `removeLast` changes the list, but it is reached through a `read` borrow
+  --> error_lock_when_condition_changes.sg:6:25
+ 6 |     lock box as b when (b.items.removeLast() ?? 0) > 0 {
+   |                         ^^^^^^^
+  hint: the condition only looks at what is locked; change it in the block

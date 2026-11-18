@@ -1,0 +1,170 @@
+// `lock ... when`: a block that waits, with the locks let go, until its condition holds. A
+// `lock` block on the value that ends wakes it to look again; nothing has to be told.
+struct Jobs {
+    List<int> items
+    // Set by the one that gives the work when it has no more: the takers stop on it.
+    bool done
+}
+
+// Takes jobs until there are none and no more will come.
+int consume(shared locked Jobs jobs) {
+    var sum = 0
+    while true {
+        var next = 0
+        var finished = false
+        lock jobs as q when q.items.length() > 0 || q.done {
+            var last = q.items.removeLast()
+            if last is null {
+                finished = true
+            } else {
+                next = last
+            }
+        }
+        if finished {
+            return sum
+        }
+        sum += next
+    }
+    return sum
+}
+
+void produce(shared locked Jobs jobs, int count) {
+    for i in 1..count + 1 {
+        lock jobs as q {
+            q.items.add(i)
+        }
+    }
+    lock jobs as q {
+        q.done = true
+    }
+}
+
+struct Box {
+    int n
+    bool done
+}
+
+// Two values waited for together: either may wake it.
+int takeEither(shared locked Box a, shared locked Box b) {
+    var got = 0
+    while true {
+        var stop = false
+        lock a as x, b as y when x.n > 0 || y.n > 0 || (x.done && y.done) {
+            if x.n > 0 {
+                x.n -= 1
+                got += 1
+            } else if y.n > 0 {
+                y.n -= 1
+                got += 1
+            } else {
+                stop = true
+            }
+        }
+        if stop {
+            return got
+        }
+    }
+    return got
+}
+
+void fill(shared locked Box box, int count) {
+    for _ in 0..count {
+        lock box as x {
+            x.n += 1
+        }
+    }
+    lock box as x {
+        x.done = true
+    }
+}
+
+enum Slot {
+    Full(int value)
+    Empty
+}
+
+struct Shelf {
+    Slot slot
+}
+
+// The names an `is` gives are seen in the condition.
+int takeBig(shared locked Shelf shelf) {
+    var got = 0
+    lock shelf as s when s.slot is Full(v) && v > 10 {
+        if s.slot is Full(v) {
+            got = v
+        }
+        s.slot = Slot.Empty
+    }
+    return got
+}
+
+// A `static locked` value is waited for the same way.
+static locked int Gate = 0
+
+int throughGate(int value) {
+    lock Gate as open when open > 0 {
+        open -= 1
+    }
+    return value * 2
+}
+
+void main() {
+    var jobs = new shared locked Jobs { items = List<int>(), done = false }
+    var takers = List<Task<int>>()
+    for _ in 0..4 {
+        takers.add(Task.run(consume, share jobs))
+    }
+    var giver = Task.run(produce, share jobs, 1000)
+    giver.wait()
+    var total = 0
+    for sum in Task.whenAll(takers).wait() {
+        total += sum
+    }
+    print(total)
+
+    var a = new shared locked Box { n = 0, done = false }
+    var b = new shared locked Box { n = 0, done = false }
+    var both = List<Task<int>>()
+    for _ in 0..3 {
+        both.add(Task.run(takeEither, share a, share b))
+    }
+    var one = Task.run(fill, share a, 500)
+    var two = Task.run(fill, share b, 300)
+    one.wait()
+    two.wait()
+    var taken = 0
+    for got in Task.whenAll(both).wait() {
+        taken += got
+    }
+    print(taken)
+
+    var passing = Task.run(throughGate, 21)
+    lock Gate as open {
+        open += 1
+    }
+    print(passing.wait())
+
+    // An owner let go inside a `lock` block of the same value, and one that only looks at the
+    // value: neither holds up the program.
+    shared locked Box? other = share a
+    var looker = weak a
+    lock a as x when x.done {
+        other = null
+        x.n = 7
+    }
+    var owner = share looker
+    if owner is not null {
+        lock owner as x {
+            print(x.n)
+        }
+    }
+    print(other is null)
+
+    var shelf = new shared locked Shelf { slot = Slot.Full(3) }
+    var big = Task.run(takeBig, share shelf)
+    lock shelf as s {
+        s.slot = Slot.Full(30)
+    }
+    print(big.wait())
+}

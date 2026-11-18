@@ -159,9 +159,12 @@ impl<'a> Scan<'a> {
                 self.expr(value);
                 self.block(body);
             }
-            StmtKind::Lock { items, body } => {
+            StmtKind::Lock { items, when, body, .. } => {
                 for item in items {
                     self.expr(&item.value);
+                }
+                if let Some(when) = when {
+                    self.expr(when);
                 }
                 self.block(body);
             }

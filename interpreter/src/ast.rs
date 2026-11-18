@@ -947,7 +947,11 @@ pub enum StmtKind {
     As { mutable: bool, value: Expr, name: String, name_span: Span, body: Block },
     /// `lock total as c { ... }`, `lock a as x, b as y { ... }`: what `shared locked` values
     /// hold, each lent to change under a name for the block, while no other task reaches it.
-    Lock { items: Vec<LockItem>, body: Block },
+    /// `lock jobs as q when q.length() > 0 { ... }`: the block waits, with the locks let go,
+    /// until `when` holds, which is computed under the locks with each name lent to read; a
+    /// `lock` block on one of the values that ends wakes it to look again. `awaited`: written
+    /// `await lock`, in an async function, where the task waits and its thread goes on.
+    Lock { items: Vec<LockItem>, when: Option<Box<Expr>>, awaited: bool, body: Block },
     Return(Option<Expr>),
     /// `break`, or `break outer`: leaves the loop named `outer` from a loop inside it.
     Break(Option<Label>),

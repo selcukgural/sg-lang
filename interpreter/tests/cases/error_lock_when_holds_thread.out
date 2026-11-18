@@ -1,0 +1,10 @@
+error: `take` holds the thread until it is done, and an async function does not hold its thread
+  the tasks of async functions share a few threads: one that holds its thread keeps the others from running
+  --> error_lock_when_holds_thread.sg:12:5
+ 12 |     take(new shared locked Box { n = 1 })
+    |     ^^^^
+  `take` does `lock ... when` here:
+  --> error_lock_when_holds_thread.sg:6:5
+ 6 |     lock box as b when b.n > 0 {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: a function that does it runs on a thread of its own with `await Task.run(work, x)`

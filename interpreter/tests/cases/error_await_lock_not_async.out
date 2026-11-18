@@ -1,0 +1,5 @@
+error: `await lock` is written in an async function
+  --> error_await_lock_not_async.sg:6:5
+ 6 |     await lock box as b when b.n > 0 {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: here `lock ... when` waits without `await`: its thread sleeps until the condition holds

@@ -235,6 +235,46 @@ together with `lock a as x, b as y { }`, so locks and waits cannot deadlock. The
 in the same line: `Task.delay(100).wait()` pauses code that is not async. The rules are in the decisions file
 (rows "Starting a task" to "Tasks in the interpreter"), and async is to come the same way ("Async, the direction").
 
+A task that waits until a locked value is ready writes `when` after the names. The wait is at the head of the block
+only, with the locks let go; the block itself still waits for nothing. Every `lock` block on the value that ends
+wakes those that wait, so nothing is told by hand, as a condition variable must be (C's `cnd_signal`, C#'s
+`Monitor.Pulse`, Rust's `notify_one`):
+
+```
+struct Jobs {
+    List<int> items
+    bool done                                    // set by the giver when no more will come
+}
+
+int consume(shared locked Jobs jobs) {
+    var sum = 0
+    while true {
+        int? next = null
+        lock jobs as q when q.items.length() > 0 || q.done {   // q is `read` in the condition, `ref` in the block
+            next = q.items.removeLast()
+        }
+        if next is null { return sum }
+        sum += next
+    }
+    return sum
+}
+
+void finish(shared locked Jobs jobs) {
+    lock jobs as q { q.done = true }             // wakes the takers: one ends its wait, the others look again
+}
+
+async void take(shared locked Jobs jobs) {
+    await lock jobs as q when q.items.length() > 0 { ... }   // in an async function: the task waits, its thread goes on
+}
+
+lock jobs as q when q.items.length() > 0 || Stop.load() { }  // error: an `atomic` changes without a `lock`, so it
+                                                             // would not wake the task. The clock, random bytes and
+                                                             // input and output are errors there too
+```
+
+A task left the only owner of what it waits for, with no `weak` look at it, waits for what no other task could
+change: a panic, whose hint is the `done` field. The rows "Waiting under a lock" of the decisions file have the rest.
+
 ### Generics and interfaces
 
 > **Deferred on 12 November 2026.** Generics of your own, `where` and your own `interface` are not in the first

@@ -60,7 +60,7 @@ of `tests/Containerfile` has them.
 | Several owners | `new shared x` gives a `shared T`, one of the owners of a value on the heap; `share x` makes one more without moving `x` (so does `x.clone()`), and a move hands one over. What a `shared T` points to is read (`node.value`, a method that takes `read this`, `match`, `for item in read node.items`, `read node` where a `read T` goes) and never written or taken out; what a `shared checked T` points to is changed too (the next row). `weak x` gives a `weak T`, which looks without owning: `share w` gives a `shared T?`, `null` once the last owner is gone. `same(a, b)` tells whether two point to one object, `==` compares what they point to |
 | Changed through several owners | `new shared checked x` gives a `shared checked T`: what it points to is changed through any of its owners (`a.count += 1`, `a.items.add(x)`, a method that takes `ref this`, `ref a` where a `ref T` goes), and each access is checked against the borrows of it in progress, one that changes it or any number that read it. A read or a write borrows nothing after it; a value lent to a call is borrowed until the call returns, the head of a `for` for the loop, a `match` and an `is` with names for the statement. `read x as n { ... }` and `ref x as n { ... }` lend it for a block. A conflict through the same variable is a compile error, one through another variable a panic that shows both lines. A method can take the owner itself, `read FolderRef this`, so that it can write `share this` and `weak this`. The `shared` values still alive when a program or a test ends hold each other up and are reported (`leak: ...`; in compiled code by a debug build) |
 | Tasks | `Task.run(work, x, share total)` starts `work(x, share total)` as a task and gives a `Task<R>`, `R` being what `work` returns; a `Func` can be started too. `t.wait()` waits for it and gives that value (`try t.wait()` passes its error on). A task that is not waited for on every path is a compile error, and so is `Task.run(...)` alone or dropped with `_ =`. What a task is given and gives back owns all it holds: no borrow, no `shared checked` value, no `Task` (the thread rule, also inside fields). In the interpreter a task runs on a thread of its own when it is waited for, so the output is the same on every run; compiled code starts a thread of the system for it at once. A panic inside one names the line that started it |
-| Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock |
+| Changed by several tasks | `new shared locked x` gives a `shared locked T`, which several tasks own; what it holds follows the thread rule and is reached only inside `lock total as c { c += 1 }`, where `c` is a `ref T` for the block. `lock a as x, b as y { }` takes two together; the same value twice is a panic. A `lock` block does not wait: no other `lock`, no `wait`, and no call of a function that does one, followed through the calls (a call of a `Func` there is refused when it could be one), so locks and waits cannot deadlock. `lock jobs as q when q.items.length() > 0 \|\| q.done { ... }` waits first, with the locks let go, until the condition holds: it is computed under the locks with each name lent to read, and every `lock` block on the value that ends wakes it to look again, so nothing is told by hand; an async function writes `await lock ... when`. The condition does not read an `atomic`, the clock, random bytes or input and output, which change while no `lock` ends. A task left the only owner of the values, with no `weak` look at them, waits for what nobody could change: a panic, whose hint is a `done` field the giver sets |
 | Raw memory | `raw T` is an address that owns nothing and may be `null`; it points at plain data (numbers, `bool`, `char`, raw pointers, and arrays and structs of them), laid out as C lays it, or is a `raw void`. `Memory.allocate<T>(n)` gives room for `n` items, all zero (C's `calloc`, in the interpreter too). `p[i]` reads and writes an item (`p[i] = v`, `p[i].x += 1`), `p + n` and `p - n` move by items, `(raw byte)p` reads the memory as another type, `Memory.copy(source, target, count)` copies items (also over itself), `Memory.view(p, count)` looks at `count` items as a `read T[]` (C's memory added to a list in one copy, read as text where it lies), `Memory.viewRef(p, count)` writes them as a `ref T[]` (a buffer C wants filled), `Memory.readUnaligned(p)` and `Memory.writeUnaligned(p, v)` reach an item at any address, and `Memory.free(p)` gives the block back, or memory C gave with `malloc`; each of them is written inside `unsafe { ... }`, or with `unsafe` in front of a value (`var first = unsafe p[0]`), and an `unsafe` that nothing needs is an error. `p == q` and `p == null` need no `unsafe`, nor do `p < q` and `p - q` (the order of two addresses, and the count of items between them) and `(nuint)p` (an address as a number); `unsafe (raw T)n` makes a pointer out of a `nint` or a `nuint` (`(raw void)(nint)-1`). The interpreter checks every item against the block it came from and panics outside it, after `Memory.free` and through `null`; compiled code checks nothing of that, and a `raw T` is a `T*`. An item reached at an address that is not a multiple of the alignment of its type is a panic in the interpreter and in a debug build, and costs nothing in a release build. `Memory.sizeOf<T>()` and `Memory.alignOf<T>()` give what C has for a type of plain data. `Memory.zeroSecurely(ref key)` writes zeros over a list, an array or a window of plain data that the C compiler keeps although nothing reads them again, without `unsafe`. A window of `Memory.view` borrows the variable or the field that holds its pointer, so it does not outlive it; a count below 0, and `null` with items, are panics in both. A raw pointer does not go to another task |
 | Calling C | `extern "z" { int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen) }` declares functions of C, a block for each library (linked as `-lz`; `extern { }` is the C library itself), each called inside `unsafe`. `extern "z", "zlib" { }` gives the names a library has on the systems, and the first one the C compiler finds is linked; `-L folder` (on `sg build`, `sg test`, and before the file on `sg -L folder main.sg`) names a folder looked in first, written into the program so that it runs without `LD_LIBRARY_PATH`; on Windows, which has no such thing, `sg build` copies the DLLs it linked from there beside the program. A C function takes integers, `float`, `double`, `bool`, `raw T`, `ref T` and `read T` of plain data (C's `T*` and `const T*`, for the time of the call; `ref raw T` is `T**`), a struct of plain data by value, laid out as C lays it out, and `read CString`, and gives a number, a `bool`, a `raw T`, a struct of plain data or nothing. `struct sqlite3` without a body in an `extern` block is a type of C that SG only points at (`raw sqlite3`). `CString.from(text)` gives a `Result<CString, TextError>`, an error for a zero byte inside; `unsafe string.fromCString(p)` copies what C ended with a zero byte and checks that it is UTF-8. `buffer.pointer()` on a list, an array or a slice of plain data is written only as an argument of a C function. The functions are private to their module unless `public` is written on one, so a module can hide a library behind a safe interface, and a `Disposable` type gives back what C made when it ends (`examples/zlib`, whose `Deflater` holds zlib's stream). `extern "./native.c" { ... }` names a C file of the module's folder in place of a library: it is compiled with the program, in the same unit, so its macros, `static inline` functions, builtins and assembly are reached through functions it declares, and an inline one is inlined; a library block of the module (`extern "z" { }`, also empty) links what the file needs. `int opterr` in an `extern` block, without parentheses, is a variable of C, read and written inside `unsafe` (`unsafe opterr`, `unsafe { opterr = 0 }`, `unsafe { origin.y = 4 }`) as an item of raw memory. `C.errno()` gives what the last call of C left in `errno`, read right after it, `C.setErrno(n)` sets what the next one finds, and `IoError.fromErrno(n)` makes an `IoError` of it; `C.lastError()` and `C.setLastError(n)` are the system's last error (`errno` on Linux and macOS, `GetLastError` on Windows), made an `IoError` by `IoError.fromCode(n)`, and the one taken for the other is an error. C's `long` and `unsigned long` are `CLong` and `CULong` (64 bits on Linux and macOS, 32 on Windows): an `int` becomes one and one becomes a `long` on their own, a `long` crosses with a cast, a number written for one fits in 32 bits, and they are compared and printed but have no arithmetic. `int snprintf(raw byte s, nuint n, read CString format, ...)` declares a function that takes a varying count of arguments: each value after the parameters says the type C reads, so a `byte`, a `bool` or a `float` there, and a number or `null` written without a type, are errors whose hint is the cast (`(long)30`). The interpreter builds a small library of wrappers with the C compiler and opens it (`dlopen`, on Windows a DLL with `LoadLibraryExW`, looked for in the program's folder, the folders of `-L` and `System32`); compiled code calls C directly. In an `if` on `OperatingSystem.isWindows()`, a function of C of the other system is not linked, so one file calls each system's own. While a call of C waits, the other tasks run, in the interpreter too. `examples/sqlite` and `examples/curl` wrap SQLite and libcurl in modules whose users write no `unsafe` |
 | The layout of C | `union Bits { uint word` / `float number }` holds one field at a time in the same bytes: built with one (`Bits { number = 1.5 }`), written whole (`bits.word = 3`), read inside `unsafe` (`unsafe bits.word`), never lent. `uint version : 4` is a bit field of a struct, signed or not, `bool` too, and `uint _ : 4` leaves bits empty; a value that does not fit is a panic, as overflow is (the lowest bits in a release build). `packed struct Header { ... }` has no padding, and its fields are copied out, not lent. `align(64) struct Slot { ... }` lies at a multiple of 64 bytes wherever it is kept, on the heap too. Each is laid out as C lays it out on the machine, Windows' rules for bit fields included. `Header.fromBytes(bytes)` reads a struct of integers, fractions, bit fields and unions out of exactly as many bytes as it takes, with no `unsafe` (`examples/headers`: a BMP header and an IPv4 header) |
@@ -7571,6 +7571,69 @@ put to the author before the slice and approved on 18 November 2026; they are in
      found neither name. The DLL comes from the table of imports of the library, whatever its name (1061), so
      nothing else changes. Tried on Windows on Arm with only a `libz.lib`, interpreted and compiled.
 
+Choices made in the hundred-and-twelfth slice (`lock ... when`). 1259 to 1265 were put to the author before
+the slice and approved on 18 November 2026; they are in the decisions file ("Waiting under a lock"). What
+building them asked for besides, from 1266. 1266 to 1268 were put to the author while the slice was built and
+approved on 18 November 2026:
+
+1266. **The condition does not read what changes while no `lock` ends**: an `atomic` (a field, a static, its
+     methods), the clock, random bytes of the system, files, streams, the network, other programs and `print`,
+     written in the condition, are a compile error (`` the condition of `when` reads an `atomic`, and a task
+     waiting for it is woken only when a `lock` block on the same value ends ``), whose hint is to keep it inside
+     the locked value. The functions of the language's own module are followed (`` calls `Instant.now`, which
+     reads the clock ``); those of the program are not.
+1267. **`await lock` without `when` is an error**: an ordinary `lock` does not wait, so there is nothing to
+     await; the hint drops the `await`. One way to write each thing.
+1268. **Only a program with `when` pays for it**: the list of waiters is a pointer in the block in front of a
+     `locked` value (`SG_WHEN`), which takes 80 bytes on macOS instead of 64 and stays 48 on Linux and 16 on
+     Windows; a program without `when` has neither the pointer nor the reads of it.
+
+Approved on 18 November 2026:
+
+1269. **The list is guarded by its lowest bit, not by the mutex.** An owner that lets go of a `locked` value
+     wakes those that wait (one of them may be left the only owner), and it may do so inside a `lock` block of
+     the same value, through another owner (`other = null`), where taking the mutex would wait for itself. So
+     the list has a lock of its own in its lowest bit, held only inside the runtime and never while code of
+     the program runs; an owner that lets go, and one that looks with `weak`, take it, and so does the end of a
+     `lock` block, after one read of the list under the mutex finds a waiter. The waiter checks the counts and
+     puts itself in the list under the same bit, so either it sees the owner gone, or the owner sees it.
+1270. **A waiter is a link in the list of each value**: a thread sleeps on a condition of its own, made on its
+     stack for the wait, and an async task returns from its machine and is woken through the pool (`sg_wake`),
+     coming back to take the locks again where it stopped. A wake takes the whole list out, and each waiter
+     takes its other links out once it holds the locks again. The values are taken again in the order of
+     their addresses, as `lock` takes them.
+1271. **The interpreter**: a fiber that waits is in a list of the scheduler with the cells of its values; a
+     `lock` block that ends on one of them makes it ready, and at each change of turn one that is left the only
+     owner is made ready to look again and panic. The tasks of `Task.run` not started yet start before a fiber
+     waits, since one of them may make the condition hold. Waiters that wait for each other, or several owners
+     that all wait, stop the run with the panic of 399, exactly; compiled code waits there for now (see "Not
+     here yet").
+1272. **What is written**: `when` is no reserved word, read only after the last `as name`; `await lock` starts a
+     statement. In the condition each name is lent to read, and a change there is the error of a `read` borrow
+     with the hint `the condition only looks at what is locked; change it in the block`; the names an `is`
+     gives there are seen in the condition only. The condition follows the rules of the block (no `lock`, no
+     wait, followed through the calls) and is computed again after each wake, so it may run many times.
+1273. **A `lock ... when` that is not awaited holds its thread**: a function that has one, called from an async
+     function, is the error of 654 (`` `take` does `lock ... when` here ``); written in an async function, the
+     error's hint is `await lock ... when ...`. `await lock` in code that is not async says that there it waits
+     without `await`.
+1274. **The panic of the only owner** is the same in the interpreter and compiled code: `` this task waits until
+     `<condition>`, and no other task could make it hold: it is the only owner of `jobs` ``, at the condition,
+     with the task that waits and the hint `` a task with no more to give says so inside the value before it lets
+     it go, `lock jobs as q { q.done = true }`, and the condition looks at it: `when ... || q.done` ``. A value
+     that is a `static` is never alone: every task reaches it.
+1275. **Documents and tests**: this list, the table above, "Not here yet", "Next"; 02, 04 (the rows of the
+     decision and "as built", the promise at the end), 06; the root README. Tests: `ok_lock_when` (four takers
+     and a giver on threads, two values waited for together, a `static locked`, an owner let go inside a `lock`
+     of the same value and a `weak` look), `ok_lock_when_async` (async takers and givers woken from tasks and
+     from a thread, also among the small pools with the pauses of `SG_PAUSE_WAKES`), `panic_lock_when_alone`,
+     and 8 `error_*` (an `atomic`, the clock through `Instant.now`, a change in the condition, a lock in it, a
+     `when` not awaited, `await` without `when`, `await lock` not in async code, a function with `when` called
+     from async code). `ok_lock_when` also waits on names an `is` gives in the condition. `cargo test`
+     passes on macOS and on Linux in a container (392 of 1627 programs compile through C, 88 of them under the
+     thread sanitizer); on Windows on Arm `ok_lock_when`, `ok_lock_when_async` and `panic_lock_when_alone` give
+     the same output interpreted and compiled.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -7691,6 +7754,10 @@ check off.
 
 ## Not here yet
 
+- **Of the hundred-and-twelfth slice**: a time limit and a cancellation of `lock ... when` (`cnd_timedwait`; 1264);
+  in compiled code, waiters that wait for each other in a circle, or several owners that all wait, are not
+  seen and wait for ever, where the interpreter stops with a panic (1263, 1271): a count of the tasks that
+  wait, as Go keeps, comes with the hardening before the preview.
 - **Of the hundred-and-eighth slice**: `a?.b = 5` and `a?[i]` (1200); a default found where the value is built,
   as C#'s initializer (1194); a default on a field of a variant, on one that borrows and on one of a union
   (1203); `with` on a variant of an enum, and in a const; a field narrowed by `a.b?.c is not null` (fields are
@@ -8095,5 +8162,7 @@ order of C11. The hundred-and-ninth is written: a reader and a writer of a file 
 `erf`, `gamma`, `expMinusOne`, `roundToEven`, `exponent`, `nextUp` and the others), `abs`, `clamp` and the
 saturating operations and conversions on integers, `tryNegate`, and `Memory.zeroSecurely` (1225-1248). The
 hundred-and-eleventh is written: `binarySearch` on items in order, which gives the first equal one, with
-`lowerBound` and `upperBound` (1249-1257). Next condition variables, then the local time zone with the
-writing and reading of dates.
+`lowerBound` and `upperBound` (1249-1257). The hundred-and-twelfth is written: `lock ... when`, a block that
+waits under a lock until its condition holds and is woken by every `lock` block on the value that ends, in
+place of a condition variable that is told by hand, `await lock ... when` in async code (1259-1275). Next
+channels, then the local time zone with the writing and reading of dates.

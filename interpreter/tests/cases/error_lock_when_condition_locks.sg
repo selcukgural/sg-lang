@@ -1,0 +1,21 @@
+struct Box {
+    int n
+}
+
+bool open(shared locked Box gate) {
+    var result = false
+    lock gate as g {
+        result = g.n > 0
+    }
+    return result
+}
+
+void take(shared locked Box box, shared locked Box gate) {
+    lock box as b when b.n > 0 && open(gate) {
+        b.n -= 1
+    }
+}
+
+void main() {
+    take(new shared locked Box { n = 1 }, new shared locked Box { n = 1 })
+}

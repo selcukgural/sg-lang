@@ -1,0 +1,13 @@
+struct Box {
+    long deadline
+}
+
+void take(shared locked Box box) {
+    lock box as b when b.deadline < Instant.now().elapsed().milliseconds() {
+        b.deadline = 0
+    }
+}
+
+void main() {
+    take(new shared locked Box { deadline = 0 })
+}
