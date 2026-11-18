@@ -1,0 +1,4 @@
+void main() {
+    var xs = List<int> { 1, 2, 3 }
+    print(xs.binary_search(2) ?? -1)
+}

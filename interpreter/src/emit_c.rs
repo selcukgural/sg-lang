@@ -12470,6 +12470,36 @@ impl<'a> Emitter<'a> {
                 );
                 self.sigs.insert(helper.clone(), Vec::new());
             }
+            // The first place whose item is not less than the value (`upper`: greater than it),
+            // found by halving with one test of the order at each step; `binarySearch` gives it
+            // if the item there is equal, and -1 otherwise. A list's are the same on its window.
+            "bound" => {
+                let (given, order) = match &**item {
+                    Ty::Int(_) | Ty::Char => (held.clone(), "((v.ptr[i] > item) - (v.ptr[i] < item))".to_string()),
+                    Ty::Float(_) => (held.clone(), "sg_fcmp(v.ptr[i], item)".to_string()),
+                    Ty::Str => ("sg_str".to_string(), "sg_cmp(sg_view(&v.ptr[i]), item)".to_string()),
+                    _ => (format!("{held} const*"), format!("{}(&v.ptr[i], item)", self.item_compare(item, slice, span)?)),
+                };
+                let _ = writeln!(
+                    self.glue,
+                    "static inline int64_t {helper}({window} v, {given} item, bool upper, bool equal) {{ int64_t low = 0, count = v.len; \
+                     while (count > 0) {{ int64_t half = count / 2, i = low + half; int c = {order}; \
+                     if (upper ? c <= 0 : c < 0) {{ low = i + 1; count -= half + 1; }} else count = half; }} \
+                     if (!equal) return low; if (low == v.len) return -1; int64_t i = low; return {order} == 0 ? low : -1; }}"
+                );
+            }
+            "binarySearch" | "lowerBound" | "upperBound" => {
+                let bound = self.window_helper(slice, "bound", span)?;
+                let given = match &**item {
+                    Ty::Int(_) | Ty::Char | Ty::Float(_) => held.clone(),
+                    Ty::Str => "sg_str".to_string(),
+                    _ => format!("{held} const*"),
+                };
+                let (upper, equal) = (what == "upperBound", what == "binarySearch");
+                let _ = writeln!(self.glue, "static inline int64_t {helper}({window} v, {given} item) {{ return {bound}(v, item, {upper}, {equal}); }}");
+                let key = if **item == Ty::Str { Ty::Read(item.clone()) } else { (**item).clone() };
+                self.sigs.insert(helper.clone(), vec![key]);
+            }
             _ => unreachable!("the helpers are named here"),
         }
         Ok(helper)
@@ -15201,7 +15231,7 @@ impl<'a> Emitter<'a> {
                     Callee::Method { this: This::Ref, .. } | Callee::Take | Callee::Replace => Effect::Changes,
                     // The built-in methods of numbers and text compute a value and nothing else.
                     // A list is only read by these.
-                    Callee::Plain if list_behind(&recv.ty).is_some() && matches!(name.as_str(), "length" | "get" | "indexOf" | "contains") => Effect::Reads,
+                    Callee::Plain if list_behind(&recv.ty).is_some() && matches!(name.as_str(), "length" | "get" | "indexOf" | "contains" | "binarySearch" | "lowerBound" | "upperBound") => Effect::Reads,
                     Callee::Plain if list_behind(&recv.ty).is_some() => Effect::Changes,
                     Callee::Plain if items_behind(&recv.ty).is_some() && matches!(name.as_str(), "sort" | "reverse") => Effect::Changes,
                     Callee::Plain if table_behind(&recv.ty).is_some() && matches!(name.as_str(), "length" | "get" | "contains") => Effect::Reads,
@@ -18266,6 +18296,35 @@ impl<'a> Emitter<'a> {
                             Ok(self.reserved(reserved, &helper, vec![address, key, value]))
                         }
                         _ => Err(not_yet(expr.span, &format!("the method `{name}`"))),
+                    }
+                }
+                // The searches in items that are in order, on a list, an array or a window,
+                // each through the window of its items.
+                Callee::Plain if matches!(name.as_str(), "binarySearch" | "lowerBound" | "upperBound") && (list_behind(&recv.ty).is_some() || items_behind(&recv.ty).is_some()) => {
+                    let item = match list_behind(&recv.ty) {
+                        Some((Ty::List(item), _)) => item.clone(),
+                        _ => match items_behind(&recv.ty) {
+                            Some(Ty::Array(item, _) | Ty::Slice(item)) => item.clone(),
+                            _ => unreachable!("just tested"),
+                        },
+                    };
+                    let slice = Ty::Slice(item.clone());
+                    self.ctype(&slice, expr.span)?;
+                    let helper = self.window_helper(&slice, name, expr.span)?;
+                    let before = self.mark();
+                    let window = self.window(recv)?;
+                    let called = if matches!(*item, Ty::Int(_) | Ty::Float(_) | Ty::Char | Ty::Str) {
+                        let receiver = self.part(recv, &Ty::Read(Box::new(slice.clone())), window, before);
+                        self.call(helper, Some(receiver), args, false, &Ty::Int(IntTy::Nint))?
+                    } else {
+                        format!("{helper}({window}, {})", self.pointer(&args[0])?)
+                    };
+                    match name.as_str() {
+                        "binarySearch" => {
+                            let (ctype, temp) = (self.ctype(&expr.ty, expr.span)?, self.temp());
+                            Ok(format!("({{ int64_t {temp} = {called}; (({ctype}){{ {temp} >= 0, {temp} }}); }})"))
+                        }
+                        _ => Ok(called),
                     }
                 }
                 Callee::Plain if list_behind(&recv.ty).is_some() => {

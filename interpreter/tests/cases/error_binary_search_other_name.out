@@ -1,0 +1,5 @@
+error: `List<int>` has no method `binary_search`
+  --> error_binary_search_other_name.sg:3:14
+ 3 |     print(xs.binary_search(2) ?? -1)
+   |              ^^^^^^^^^^^^^
+  hint: `binarySearch`

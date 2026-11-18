@@ -1550,6 +1550,12 @@ scores[2..5].sort()                              // a range in front of sort or 
                                                  // those items are put in order where they are
 void sortAll(ref int[] items) { items.sort() }   // sort and reverse through a ref T[] and on an array;
                                                  // through a read T[] it is an error. Hint: ref xs
+var at = sorted.binarySearch(42)                 // nint?: the first item equal to 42, found by halving the
+                                                 // items, which are in order (not checked); null if none
+var from = sorted.lowerBound(10)                 // nint: the first place whose item is not less than 10
+var count = sorted.upperBound(20) - from         // upperBound: greater than 20; so the items from 10 to 20
+var inner = sorted[4..].binarySearch(42)         // on a list, an array, a slice and a range: from its start
+sorted.binary_search(42)                         // error. Hint: `binarySearch`
 
 var width = ushort.fromLittleEndian(data[6..8])  // a number out of exactly as many bytes as its type takes,
                                                  // the lowest first. Rust: u16::from_le_bytes, Go: binary.LittleEndian

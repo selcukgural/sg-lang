@@ -1,5 +1,5 @@
 // Much of the runtime in a program without an operating system: texts and their searches,
-// lists sorted, a struct and an enum written, fractional numbers written, the case of a
+// lists sorted and searched, a struct and an enum written, fractional numbers written, the case of a
 // character, `shared` values, atomics, raw memory, `CString`, and `Duration` of the
 // language's own module. The machine of the test gives `board_write` and the memory.
 extern {
@@ -47,6 +47,7 @@ export void start() {
     }
     words.sort()
     say(string.join(", ", read words))
+    say($"{words.binarySearch("fig") ?? -1} {words.lowerBound("b")} {words.upperBound("zebra")}".toString())
     say($"{Point { x = 3, y = -4 }} {area(Shape.Circle(1.5))} {area(Shape.Square(0.1))}".toString())
     say($"{2.0 / 3.0:F3} {1e21} {0.1 + 0.2} {(float)0.1} {255:X4} {-17,6}|".toString())
     say("ğüşiöç straße".toUpper())

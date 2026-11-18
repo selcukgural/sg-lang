@@ -1,0 +1,4 @@
+error: expected `read string`, found `int`
+  --> error_binary_search_wrong_type.sg:3:28
+ 3 |     print(names.upperBound(3))
+   |                            ^

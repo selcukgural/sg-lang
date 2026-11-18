@@ -1,0 +1,5 @@
+error: `int[3]` has no method `bisectLeft`
+  --> error_lower_bound_other_name.sg:3:14
+ 3 |     print(xs.bisectLeft(2))
+   |              ^^^^^^^^^^
+  hint: `lowerBound`

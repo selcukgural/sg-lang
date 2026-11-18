@@ -1,0 +1,5 @@
+error: `lowerBound` compares the items, and `Point` is not `Comparable`
+  --> error_slice_search_not_comparable.sg:6:19
+ 6 |     return points.lowerBound(p)
+   |                   ^^^^^^^^^^
+  hint: add it to the definition: `Point : Comparable`

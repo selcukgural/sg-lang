@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 18 November 2026, the hundred-and-tenth slice.
+Last brought up to date: 18 November 2026, the hundred-and-eleventh slice.
 
 ## Functions and variables
 
@@ -139,6 +139,8 @@ Last brought up to date: 18 November 2026, the hundred-and-tenth slice.
 | `v[i]`, `v.get(i)` | `xs[i]`, `xs.get(i)` | built | `get` gives a `T?` |
 | `v.extend_from_slice(&s)` | `xs.addAll(s)` | built | For `Copyable` items |
 | `v.sort()`, `v.reverse()`, `v.contains(&x)`, `v.iter().position(...)` | `xs.sort()`, `xs.reverse()`, `xs.contains(x)`, `xs.indexOf(x)` | built | `sort` is stable |
+| `v.binary_search(&x).ok()` | `xs.binarySearch(x)` | built | `nint?`, the first of equal items, where Rust gives any one of them; the place to insert is `lowerBound` |
+| `v.partition_point(\|y\| *y < x)`, `v.partition_point(\|y\| *y <= x)` | `xs.lowerBound(x)`, `xs.upperBound(x)` | built | By the order of the items; with a function of its own (`binary_search_by`, `partition_point` on any test) not yet |
 | `[i32; 3]`, `[0u8; 16]`, `[255u8; 16]` | `int[3]`, `byte[16]`, `byte[16](255)` | built | |
 | `&[T]`, `&mut [T]` | `read T[]`, `ref T[]` | built | `read xs` gives one where a slice is expected |
 | `HashMap<K, V>` | `HashMap<K, V>` | built | A hash table with a random key (SipHash), no order |

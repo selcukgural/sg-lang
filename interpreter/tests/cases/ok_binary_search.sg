@@ -1,0 +1,101 @@
+struct Version : Comparable {
+    int major
+    int minor
+
+    int compare(read this, read Version other) {
+        if this.major != other.major {
+            return this.major.compare(other.major)
+        }
+        return this.minor.compare(other.minor)
+    }
+}
+
+// The items of a slice that lie between two values, the first one counted and the last not.
+nint between(read int[] xs, int low, int high) {
+    return xs.lowerBound(high) - xs.lowerBound(low)
+}
+
+void main() {
+    // Equal items: `binarySearch` gives the first of them, the place `indexOf` gives.
+    var xs = List<int> { 3, 7, 7, 7, 9, 12, 15, 15, 20 }
+    print(xs.binarySearch(7) ?? -1)
+    print(xs.indexOf(7) ?? -1)
+    print(xs.binarySearch(15) ?? -1)
+    print(xs.binarySearch(3) ?? -1)
+    print(xs.binarySearch(20) ?? -1)
+    print(xs.binarySearch(8) is null)
+    print(xs.binarySearch(1) is null)
+    print(xs.binarySearch(99) is null)
+    print($"{xs.lowerBound(7)} {xs.upperBound(7)}")
+    print($"{xs.lowerBound(8)} {xs.upperBound(8)}")
+    print($"{xs.lowerBound(0)} {xs.upperBound(99)}")
+    print(between(read xs, 7, 15))
+
+    // Every value, found or not, against a search that looks at each item.
+    var all = true
+    for v in 0..22 {
+        nint first = xs.indexOf(v) ?? -1
+        nint found = xs.binarySearch(v) ?? -1
+        nint low = 0
+        while low < xs.length() && xs[low] < v {
+            low += 1
+        }
+        nint high = low
+        while high < xs.length() && xs[high] <= v {
+            high += 1
+        }
+        if first != found || xs.lowerBound(v) != low || xs.upperBound(v) != high {
+            print($"wrong at {v}")
+            all = false
+        }
+    }
+    print(all)
+
+    // Nothing to look in.
+    var none = List<int>()
+    print(none.binarySearch(5) is null)
+    print($"{none.lowerBound(5)} {none.upperBound(5)}")
+
+    // A range: the place is counted from its start.
+    print(xs[4..8].binarySearch(15) ?? -1)
+    print(xs[4..].lowerBound(13))
+
+    // An array, a `ref` slice and the order of `double` that `sort` uses: `NaN` first.
+    var ds = double[5] { 2.5, double.NaN, -1.0, 0.0, 8.0 }
+    ds.sort()
+    print(ds.binarySearch(double.NaN) ?? -1)
+    print(ds.binarySearch(-0.0) ?? -1)
+    print(ds.binarySearch(8.0) ?? -1)
+    print(ds.lowerBound(3.0))
+
+    var letters = char[6] { 'q', 'b', 'x', 'b', 'm', 'a' }
+    letters.sort()
+    print(letters.binarySearch('b') ?? -1)
+    print(letters.upperBound('b'))
+
+    var big = List<ulong> { 1, 18446744073709551615, 9223372036854775808 }
+    big.sort()
+    print(big.binarySearch(18446744073709551615) ?? -1)
+
+    // Text, also looked for through a borrow.
+    var names = List<string> { "grace", "ada", "edsger", "barbara", "alan" }
+    names.sort()
+    string wanted = "edsger"
+    print(names.binarySearch(read wanted) ?? -1)
+    print(names.binarySearch("linus") is null)
+    print(names.lowerBound("b"))
+
+    // Items of a type that wrote its own `compare`.
+    var versions = List<Version> {
+        Version { major = 1, minor = 2 },
+        Version { major = 2, minor = 0 },
+        Version { major = 1, minor = 10 },
+        Version { major = 0, minor = 9 },
+    }
+    versions.sort()
+    var v110 = Version { major = 1, minor = 10 }
+    print(versions.binarySearch(read v110) ?? -1)
+    var v15 = Version { major = 1, minor = 5 }
+    print(versions.binarySearch(read v15) is null)
+    print(versions.lowerBound(read v15))
+}

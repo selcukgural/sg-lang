@@ -1,0 +1,4 @@
+void main() {
+    var flags = List<bool> { false, true }
+    print(flags.binarySearch(true) ?? -1)
+}

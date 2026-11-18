@@ -5587,6 +5587,37 @@ impl<'a, 'e> Interp<'a, 'e> {
                     (_, None) => Value::Null,
                 })
             }
+            // The first place whose item is not less than the value (`upperBound`: greater
+            // than it), found by halving; `binarySearch` gives it if the item there is equal.
+            (Value::List(items), "binarySearch" | "lowerBound" | "upperBound") => {
+                let items: Vec<Cell> = items.borrow().clone();
+                let (mut low, mut count) = (0, items.len());
+                while count > 0 {
+                    let half = count / 2;
+                    let item = items[low + half].borrow().clone();
+                    let ordering = self.compare(&item, &args[0], span)?;
+                    let before = match name {
+                        "upperBound" => ordering.is_le(),
+                        _ => ordering.is_lt(),
+                    };
+                    if before {
+                        low += half + 1;
+                        count -= half + 1;
+                    } else {
+                        count = half;
+                    }
+                }
+                if name != "binarySearch" {
+                    return Ok(Value::Int(IntTy::Nint, low as i128));
+                }
+                if let Some(item) = items.get(low) {
+                    let item = item.borrow().clone();
+                    if self.compare(&item, &args[0], span)?.is_eq() {
+                        return Ok(Value::Int(IntTy::Nint, low as i128));
+                    }
+                }
+                Ok(Value::Null)
+            }
             (Value::List(items), "sort") => {
                 let sorted = self.sorted(items.borrow().clone(), span)?;
                 *items.borrow_mut() = sorted;

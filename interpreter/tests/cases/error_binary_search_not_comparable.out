@@ -1,0 +1,5 @@
+error: `binarySearch` compares the items, and `bool` is not `Comparable`
+  `Comparable`: numbers, `char`, `string` and the types written with `: Comparable`
+  --> error_binary_search_not_comparable.sg:3:17
+ 3 |     print(flags.binarySearch(true) ?? -1)
+   |                 ^^^^^^^^^^^^

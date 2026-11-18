@@ -1,0 +1,10 @@
+struct Point {
+    int x
+}
+
+nint find(read Point[] points, read Point p) {
+    return points.lowerBound(p)
+}
+
+void main() {
+}

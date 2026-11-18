@@ -396,6 +396,16 @@ const TEXT_METHODS: &[&str] = &[
     "toUpper", "toLower", "foldCase", "equalsIgnoreCase",
 ];
 
+/// The searches in items that are in order, by the names other languages give them.
+fn search_name(name: &str) -> Option<&'static str> {
+    match name {
+        "binary_search" | "BinarySearch" | "bsearch" | "search" => Some("binarySearch"),
+        "lower_bound" | "partition_point" | "partitionPoint" | "bisect_left" | "bisectLeft" => Some("lowerBound"),
+        "upper_bound" | "bisect_right" | "bisectRight" | "bisect" => Some("upperBound"),
+        _ => None,
+    }
+}
+
 /// A method a `char` or a `string` does not have: the one it may have meant.
 /// What a `StringBuilder` of C# is here.
 const STRING_BUILDER: &str = "a `string` is built where it is: `var text = \"\"`, then `text.write(...)`";
@@ -11576,13 +11586,13 @@ impl<'a> Checker<'a> {
         // An array and a slice have the methods of a list that only look, and the two that
         // change the order of the items without changing how many there are.
         if let Ty::Array(item, _) | Ty::Slice(item) = target {
-            if !matches!(name, "length" | "get" | "indexOf" | "contains" | "sort" | "reverse") {
+            if !matches!(name, "length" | "get" | "indexOf" | "contains" | "binarySearch" | "lowerBound" | "upperBound" | "sort" | "reverse") {
                 let diag = Diag::error(name_span, format!("`{target}` has no method `{name}`"));
                 return Err(match name {
                     "add" | "addAll" | "removeLast" | "clear" => diag.note(format!("`{target}` has a fixed number of items; a `List<{item}>` grows and shrinks")),
-                    _ => match nearest(name, ["length", "get", "indexOf", "contains", "sort", "reverse"].into_iter()) {
+                    _ => match search_name(name).or_else(|| nearest(name, ["length", "get", "indexOf", "contains", "binarySearch", "lowerBound", "upperBound", "sort", "reverse"].into_iter())) {
                         Some(close) => diag.hint(format!("`{close}`")),
-                        None => diag.note("methods for now: length, get, indexOf, contains, sort, reverse"),
+                        None => diag.note("methods for now: length, get, indexOf, contains, binarySearch, lowerBound, upperBound, sort, reverse"),
                     },
                 });
             }
@@ -12206,7 +12216,7 @@ impl<'a> Checker<'a> {
             _ if needs == "Equatable" && can_equal => Ok(()),
             _ if needs == "Comparable" && can_order => Ok(()),
             Ty::Struct(inner) | Ty::Enum(inner) => Err(lacks(Diag::error(name_span, format!("`{name}` compares the items, and `{inner}` is not `{needs}`")), inner, needs)),
-            Ty::List(_) | Ty::Set(_) | Ty::Map(..) if needs == "Comparable" => Err(Diag::error(name_span, format!("`{name}` puts the items in order, and a collection has no order of its own"))),
+            Ty::List(_) | Ty::Set(_) | Ty::Map(..) if needs == "Comparable" => Err(Diag::error(name_span, format!("`{name}` {} the items in order, and a collection has no order of its own", if name == "sort" { "puts" } else { "looks for a place among" }))),
             other => Err(Diag::error(name_span, format!("`{name}` compares the items, and `{other}` is not `{needs}`"))
                 .note(format!("`{needs}`: numbers{}, `char`, `string` and the types written with `: {needs}`", if needs == "Equatable" { ", `bool`" } else { "" }))),
         };
@@ -12289,6 +12299,18 @@ impl<'a> Checker<'a> {
                 self.typed(&mut args[0], &self.key_param(item))?;
                 Ok(Ty::Bool)
             }
+            // A search that halves the items each time: they are in order (`sort`), and that is
+            // not checked, which would look at every one. Out of order, the place given is
+            // some place in the list or `null`.
+            (Ty::List(item), "binarySearch" | "lowerBound" | "upperBound") => {
+                arity(1)?;
+                compares(item, "Comparable")?;
+                self.typed(&mut args[0], &self.key_param(item))?;
+                Ok(match name {
+                    "binarySearch" => nullable(&Ty::Int(IntTy::Nint)),
+                    _ => Ty::Int(IntTy::Nint),
+                })
+            }
             (Ty::List(item), "sort") => {
                 arity(0)?;
                 changes()?;
@@ -12349,7 +12371,7 @@ impl<'a> Checker<'a> {
             }
             _ => {
                 let known: &[&str] = match target {
-                    Ty::List(_) => &["add", "addAll", "get", "length", "indexOf", "contains", "sort", "removeLast", "reverse", "clear"],
+                    Ty::List(_) => &["add", "addAll", "get", "length", "indexOf", "contains", "binarySearch", "lowerBound", "upperBound", "sort", "removeLast", "reverse", "clear"],
                     Ty::Map(..) => &["add", "get", "getOrAdd", "contains", "remove", "length", "clear"],
                     _ => &["add", "contains", "remove", "length", "clear"],
                 };
@@ -12361,6 +12383,7 @@ impl<'a> Checker<'a> {
                     (Ty::List(_), "pop") => Some("removeLast"),
                     (_, "containsKey" | "has" | "includes") => Some("contains"),
                     (Ty::List(_), "find") => Some("indexOf"),
+                    (Ty::List(_), _) if search_name(name).is_some() => search_name(name),
                     (Ty::List(_), "at") => Some("get"),
                     _ => None,
                 };
