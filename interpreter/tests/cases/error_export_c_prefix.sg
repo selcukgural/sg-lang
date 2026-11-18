@@ -1,0 +1,7 @@
+// The code SG writes names the function `main` of SG `f_main` in C.
+export int f_main(int n) {
+    return n
+}
+
+void main() {
+}

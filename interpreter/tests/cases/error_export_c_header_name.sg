@@ -1,0 +1,7 @@
+// `atoi` is declared by a header of C the code SG writes includes.
+export int atoi(int n) {
+    return n
+}
+
+void main() {
+}

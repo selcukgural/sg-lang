@@ -1,0 +1,5 @@
+error: C cannot see a function of SG named `atoi`
+  `atoi` is a function of C's library or of the system, which the code SG writes uses
+  --> error_export_c_header_name.sg:2:12
+ 2 | export int atoi(int n) {
+   |            ^^^^

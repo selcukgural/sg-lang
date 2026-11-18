@@ -554,6 +554,99 @@ SG_FS_PLAIN __int128 __modti3(__int128 a, __int128 b) {
 }
 "#;
 
+/// The functions of the standard headers of C the runtime includes (`<math.h>`, `<stdio.h>`,
+/// `<stdlib.h>`, `<string.h>`, `<time.h>` and the others C11 names), whether the runtime calls
+/// them or not: an `export` function of one of these names would clash with its declaration or
+/// take its place in the whole program.
+const C_LIBRARY: &[&str] = &[
+    // <math.h>
+    "acos", "asin", "atan", "atan2", "cos", "sin", "tan", "acosh", "asinh", "atanh", "cosh", "sinh", "tanh", "exp", "exp2", "expm1",
+    "frexp", "ilogb", "ldexp", "log", "log10", "log1p", "log2", "logb", "modf", "scalbn", "scalbln", "cbrt", "fabs", "hypot", "pow",
+    "sqrt", "erf", "erfc", "lgamma", "tgamma", "ceil", "floor", "nearbyint", "rint", "lrint", "llrint", "round", "lround", "llround",
+    "trunc", "fmod", "remainder", "remquo", "copysign", "nan", "nextafter", "nexttoward", "fdim", "fmax", "fmin", "fma",
+    // <stdio.h>
+    "remove", "rename", "tmpfile", "tmpnam", "fclose", "fflush", "fopen", "freopen", "setbuf", "setvbuf", "fprintf", "fscanf", "printf",
+    "scanf", "snprintf", "sprintf", "sscanf", "vfprintf", "vfscanf", "vprintf", "vscanf", "vsnprintf", "vsprintf", "vsscanf", "fgetc",
+    "fgets", "fputc", "fputs", "getc", "getchar", "gets", "putc", "putchar", "puts", "ungetc", "fread", "fwrite", "fgetpos", "fseek",
+    "fsetpos", "ftell", "rewind", "clearerr", "feof", "ferror", "perror", "fileno", "flockfile", "funlockfile", "fdopen",
+    // <stdlib.h>
+    "atof", "atoi", "atol", "atoll", "strtod", "strtof", "strtold", "strtol", "strtoll", "strtoul", "strtoull", "rand", "srand",
+    "aligned_alloc", "calloc", "free", "malloc", "realloc", "abort", "atexit", "at_quick_exit", "exit", "_Exit", "getenv",
+    "quick_exit", "system", "bsearch", "qsort", "abs", "labs", "llabs", "div", "ldiv", "lldiv", "mblen", "mbtowc", "wctomb",
+    "mbstowcs", "wcstombs", "posix_memalign", "setenv", "unsetenv", "mkstemp", "realpath",
+    // <string.h>
+    "memcpy", "memmove", "strcpy", "strncpy", "strcat", "strncat", "memcmp", "strcmp", "strcoll", "strncmp", "strxfrm", "memchr",
+    "strchr", "strcspn", "strpbrk", "strrchr", "strspn", "strstr", "strtok", "memset", "strerror", "strlen", "strdup", "strndup",
+    // <time.h>, <signal.h>, <setjmp.h>, <locale.h>, <ctype.h>
+    "clock", "difftime", "mktime", "time", "asctime", "ctime", "gmtime", "localtime", "strftime", "timespec_get", "signal", "raise",
+    "setjmp", "longjmp", "setlocale", "localeconv", "isalnum", "isalpha", "isblank", "iscntrl", "isdigit", "isgraph", "islower",
+    "isprint", "ispunct", "isspace", "isupper", "isxdigit", "tolower", "toupper",
+];
+
+/// The runtime's C, every part of it, as `c_names_taken` reads it.
+const RUNTIME_PARTS: &[&str] = &[
+    FREESTANDING_PRELUDE, FREESTANDING_RUNTIME, FREESTANDING_DIVISION, RUNTIME, RAW_RUNTIME, CLOCK_RUNTIME, FFI_RUNTIME, TABLE,
+    STATIC_RUNTIME, TEST_SUPPORT, SHARED_RUNTIME, TASK_RUNTIME, CHAN_RUNTIME, NET_RUNTIME, UDP_RUNTIME, SIGNALS_RUNTIME,
+    UDP_ASYNC_RUNTIME, NET_ASYNC_RUNTIME, PROCESS_PIPES_RUNTIME, PROCESS_ASYNC_RUNTIME, PROCESS_RUNTIME, FILES_RUNTIME, IO_RUNTIME,
+    ASYNC_IO_RUNTIME, TEST_RUNNER, LEAKS,
+];
+
+/// Whether an `export` function may not be named `name` in C, and why: a name the code SG
+/// writes uses for its own (its prefixes), or a function of C's library or of the system that
+/// the runtime calls or that a header it includes declares, which a function of that name
+/// would clash with or replace in the whole program (choice 1334). The names the runtime calls
+/// are read from its C, so the list keeps up with it.
+pub fn c_name_taken(name: &str) -> Option<String> {
+    static CALLED: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+    if let Some(prefix) = ["sg_", "SG_", "f_", "S_", "E_", "v_"].into_iter().find(|prefix| name.starts_with(prefix)) {
+        return Some(format!("the names that start with `{prefix}` belong to the code SG writes"));
+    }
+    let called = CALLED.get_or_init(|| RUNTIME_PARTS.iter().flat_map(|part| called_in(part)).collect());
+    match C_LIBRARY.contains(&name) || called.contains(name) {
+        true => Some(format!("`{name}` is a function of C's library or of the system, which the code SG writes uses")),
+        false => None,
+    }
+}
+
+/// The names in a piece of C that come right before a `(`: the functions and the macros it
+/// calls or defines. Comments, texts and characters are left out, and so are the members called
+/// through a pointer (`task->run(task)`).
+fn called_in(code: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let bytes = code.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at..].starts_with(b"/*") {
+            at = code[at + 2..].find("*/").map_or(bytes.len(), |end| at + 2 + end + 2);
+        } else if bytes[at..].starts_with(b"//") {
+            at = code[at..].find('\n').map_or(bytes.len(), |end| at + end);
+        } else if bytes[at] == b'"' || bytes[at] == b'\'' {
+            let quote = bytes[at];
+            at += 1;
+            while at < bytes.len() && bytes[at] != quote {
+                at += if bytes[at] == b'\\' { 2 } else { 1 };
+            }
+            at += 1;
+        } else if bytes[at].is_ascii_alphabetic() || bytes[at] == b'_' {
+            let start = at;
+            while at < bytes.len() && (bytes[at].is_ascii_alphanumeric() || bytes[at] == b'_') {
+                at += 1;
+            }
+            let member = code[..start].ends_with('.') || code[..start].ends_with("->");
+            if bytes.get(at) == Some(&b'(') && !member {
+                names.push(code[start..at].to_string());
+            }
+        } else if bytes[at].is_ascii_digit() {
+            while at < bytes.len() && (bytes[at].is_ascii_alphanumeric() || bytes[at] == b'_') {
+                at += 1;
+            }
+        } else {
+            at += 1;
+        }
+    }
+    names
+}
+
 /// The functions of `FREESTANDING_DIVISION`, for a test that holds them to the C compiler's.
 pub fn freestanding_division() -> &'static str {
     FREESTANDING_DIVISION
@@ -9966,9 +10059,12 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     if !static_drops.is_empty() {
         let _ = writeln!(static_defs, "#define SG_STATICS 1\nstatic void sg_statics_end(void) {{\n{static_drops}}}");
     }
-    // C may call the functions of a library from several threads, each of which may find a
-    // static first.
-    if prog.library && emitter.made.contains("statics") {
+    // C may call an `export` function from threads of its own: a library from a program of C
+    // with threads, a function of a program from a thread a library of C started (a callback).
+    // The runtime is then built for several threads, its lists of values and its scratch shared
+    // under locks, and a static found first by one of them (choice 1334). Without an operating
+    // system there are no threads.
+    if !prog.freestanding && prog.funcs.iter().any(|func| func.export) {
         emitter.made.insert("threads".to_string());
     }
 

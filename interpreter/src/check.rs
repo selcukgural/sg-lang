@@ -1180,12 +1180,11 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             return Err(Diag::error(func.name_span, "`main` is where the program starts, and C does not call it")
                 .hint("give the function C calls a name of its own"));
         }
-        if c_name.starts_with("sg_") || C_WORDS.contains(&c_name) {
-            let diag = Diag::error(func.name_span, format!("C cannot see a function of SG named `{c_name}`"));
-            return Err(match c_name.starts_with("sg_") {
-                true => diag.note("the names that start with `sg_` belong to the code SG writes"),
-                false => diag.note(format!("`{c_name}` is a word of C")),
-            });
+        if C_WORDS.contains(&c_name) {
+            return Err(Diag::error(func.name_span, format!("C cannot see a function of SG named `{c_name}`")).note(format!("`{c_name}` is a word of C")));
+        }
+        if let Some(why) = crate::emit_c::c_name_taken(c_name) {
+            return Err(Diag::error(func.name_span, format!("C cannot see a function of SG named `{c_name}`")).note(why));
         }
         if let Some(other) = by_c_name.get(c_name) {
             return Err(Diag::error(func.name_span, format!("`{c_name}` is also the name of a function of C, and C has one function of a name"))

@@ -7898,6 +7898,26 @@ Each is written here with its fix, and each fix came after a test that showed th
      Rust's `tempfile` and Go's `os.MkdirTemp` make folders the same way. Tested in `tests/cli.rs`
      (`keeps_its_temporary_files_to_itself`: nothing is left in the temporary folder, and on Linux and macOS
      links and a file planted at the old names are not written through).
+1334. **An `export` function is called from any thread, and its name is one C does not have already**.
+     A program or a library that started no task of its own was built for one thread (`SG_THREADS 0`): the
+     runtime's lists of values and its scratch had no locks, so a program of C calling a library from two
+     threads, or a library of C calling back into a program from a thread of its own, broke the heap. Now
+     every program and library with an `export` function is built for several threads, as one with tasks
+     is. A lock is taken where the runtime shares something; a library that writes a list into a text, called
+     two million times from one thread, takes the same time either way (1.86 s on macOS). And an `export` function
+     took the name of a function of C the runtime calls (`export raw void realloc(...)` replaced C's
+     `realloc` in the whole program, under the runtime's texts) or a header it includes declares, or a
+     prefix of the names the code SG writes (`f_main` is the `main` of SG): these are errors now, beside
+     `sg_` and the words of C. The names the runtime calls are read from its C, so the list keeps up with
+     it; the standard functions of the headers of C it includes are listed. Rust lets `#[no_mangle]`
+     replace `malloc` (written `#[unsafe(no_mangle)]` since Rust 2024); in Go an exported name C has
+     already fails when the C is compiled or linked. Tested by
+     3 `error_*` (a name of C's library the runtime calls, one a header declares, a prefix) and in
+     `libraries` in `tests/golden.rs` (a library with no task called from four threads of C under the
+     thread sanitizer, and the C of a library and of a program with an `export` function built for several
+     threads). `cargo test` passes on macOS and on Linux in a container (395 of 1642 programs compile through C,
+     96 of them under the thread sanitizer: the 6 with an `export` function are new there); on Windows on Arm
+     `libraries` passes.
 
 ## Slower than C, and could be better
 
@@ -8448,5 +8468,6 @@ command line tested end to end, with its exit codes written down, and the few co
 were not usages refused; an output closed early ends a program the same way interpreted and compiled
 (1318-1330); a review of the soundness of the checker, the boundary of `unsafe` and C, the C runtime and the
 tool runs beside it. The hundred-and-sixteenth fixes what that review found, first the small faults, each in
-one place: the files a build makes on the way are in a folder only its user opens (1332, 1333). The next two
+one place: the files a build makes on the way are in a folder only its user opens (1332, 1333); an `export`
+function is called from any thread, and C's names are not taken by one (1334). The next two
 fix the rules of borrowing; then fuzzing and mutants of the rules of safety (1323-1325).

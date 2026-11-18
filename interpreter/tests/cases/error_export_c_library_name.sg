@@ -1,0 +1,11 @@
+// The code SG writes grows a text with C's `realloc`: an `export` function of that name would
+// take its place in the whole program.
+export raw void realloc(raw void block, CULong size) {
+    return block
+}
+
+void main() {
+    var text = "start".clone()
+    text.write(" more")
+    print(text.length())
+}

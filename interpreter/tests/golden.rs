@@ -1900,6 +1900,43 @@ fn libraries() {
         assert!(ran.status.success() && !String::from_utf8_lossy(&ran.stderr).contains("ThreadSanitizer"), "{}", String::from_utf8_lossy(&ran.stderr));
     }
 
+    // A library that starts no task of its own is called from threads of C just the same: every
+    // program with an `export` function is built for several threads (choice 1334), also one
+    // whose C calls back from a thread of its own.
+    let plain = work.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(plain.join("describe.sg"), "// Writes a list into a text and gives its length; no task, no `unsafe`.\nexport long describe(int n) {\n    var items = List<int>()\n    for i in 0..(n % 200) {\n        items.add(i)\n    }\n    var text = $\"the items {items} of {n}\".toString()\n    return text.length()\n}\n").unwrap();
+    std::fs::write(plain.join("callback.sg"), "export void tick(int n) {\n    print(n)\n}\n\nvoid main() {\n    tick(1)\n}\n").unwrap();
+    for name in ["describe.sg", "callback.sg"] {
+        let words: &[&str] = if name == "describe.sg" { &["emit-c", "describe.sg", "--library"] } else { &["emit-c", "callback.sg"] };
+        let code = std::process::Command::new(sg_bin).args(words).current_dir(&plain).output().unwrap();
+        assert!(code.status.success(), "{}", String::from_utf8_lossy(&code.stderr));
+        let code = String::from_utf8_lossy(&code.stdout).into_owned();
+        assert!(code.contains("#define SG_THREADS 1\n"), "{name} is not built for several threads");
+        if name == "describe.sg" {
+            std::fs::write(plain.join("describe.c"), code).unwrap();
+        }
+    }
+    let said = sg(&["describe.sg", "--library", "-o", if cfg!(windows) { "describe.lib" } else { "libdescribe.a" }], &plain);
+    assert!(said.starts_with("built "), "{said}");
+    let plain_c = plain.join("threads.c");
+    std::fs::write(
+        &plain_c,
+        "#include <stdio.h>\n#include \"describe.h\"\nstatic long sum_of(void) {\n    long total = 0;\n    for (int i = 0; i < 2000; i++) total += (long)describe(i);\n    return total;\n}\n#ifdef _WIN32\n#include <windows.h>\nstatic long sums[4];\nstatic DWORD WINAPI work(void *arg) {\n    *(long *)arg = sum_of();\n    return 0;\n}\nint main(void) {\n    HANDLE threads[4];\n    for (int i = 0; i < 4; i++) threads[i] = CreateThread(NULL, 0, work, &sums[i], 0, NULL);\n    WaitForMultipleObjects(4, threads, TRUE, INFINITE);\n    long total = 0;\n    for (int i = 0; i < 4; i++) { CloseHandle(threads[i]); total += sums[i]; }\n    printf(\"%ld\\n\", total);\n    return 0;\n}\n#else\n#include <pthread.h>\nstatic void *work(void *arg) {\n    (void)arg;\n    return (void *)sum_of();\n}\nint main(void) {\n    pthread_t threads[4];\n    for (int i = 0; i < 4; i++) pthread_create(&threads[i], NULL, work, NULL);\n    long total = 0;\n    for (int i = 0; i < 4; i++) { void *got; pthread_join(threads[i], &got); total += (long)got; }\n    printf(\"%ld\\n\", total);\n    return 0;\n}\n#endif\n",
+    )
+    .unwrap();
+    if cfg!(windows) {
+        let threads = program_at(&plain, "threads");
+        cc(&["-DDESCRIBE_STATIC".as_ref(), "-I".as_ref(), plain.as_os_str(), "-o".as_ref(), threads.as_os_str(), plain_c.as_os_str(), plain.join("describe.lib").as_os_str()]);
+        let ran = std::process::Command::new(&threads).output().unwrap();
+        assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    } else if std::env::var_os("SG_NO_SANITIZERS").is_none() {
+        let racy = plain.join("threads-tsan");
+        cc(&["-O1".as_ref(), "-g".as_ref(), "-fsanitize=thread".as_ref(), "-I".as_ref(), plain.as_os_str(), "-o".as_ref(), racy.as_os_str(), plain_c.as_os_str(), plain.join("describe.c").as_os_str()]);
+        let ran = std::process::Command::new(&racy).output().unwrap();
+        assert!(ran.status.success() && !String::from_utf8_lossy(&ran.stderr).contains("ThreadSanitizer"), "{}", String::from_utf8_lossy(&ran.stderr));
+    }
+
     // A panic writes its message and aborts: other threads of the program may be running, so
     // C's `exit` and the program's `atexit` functions do not run.
     let panics_c = work.join("panics.c");

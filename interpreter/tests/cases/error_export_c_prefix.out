@@ -1,0 +1,5 @@
+error: C cannot see a function of SG named `f_main`
+  the names that start with `f_` belong to the code SG writes
+  --> error_export_c_prefix.sg:2:12
+ 2 | export int f_main(int n) {
+   |            ^^^^^^

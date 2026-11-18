@@ -1,0 +1,5 @@
+error: C cannot see a function of SG named `realloc`
+  `realloc` is a function of C's library or of the system, which the code SG writes uses
+  --> error_export_c_library_name.sg:3:17
+ 3 | export raw void realloc(raw void block, CULong size) {
+   |                 ^^^^^^^
