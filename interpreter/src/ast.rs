@@ -38,6 +38,9 @@ pub struct Program {
     /// Built without an operating system (`sg build --freestanding`): no `main`, at least one
     /// `export` function, the program's `onPanic`, and nothing that needs a system.
     pub freestanding: bool,
+    /// Compiled for a machine other than this one (`--target`): a `const assert` that measures a
+    /// type is left to the compiler of C, which knows that machine's layout.
+    pub other_machine: bool,
     /// The functions of the language's own module a program built without an operating system
     /// leaves out: those that need a system, which nothing it calls reaches. Filled in by the
     /// checker.
@@ -81,6 +84,16 @@ pub struct ConstDecl {
     /// The consts of the blocks around it that it sees, as written and by their full names,
     /// the nearest last.
     pub visible: Vec<(String, String)>,
+    /// `const assert(cond, "message")`: a `bool` const with no name of its own (`assert#812`),
+    /// which must hold when the program is compiled.
+    pub assert: Option<ConstAssert>,
+}
+
+/// What a `const assert` says when its condition does not hold, and where it is written.
+#[derive(Clone)]
+pub struct ConstAssert {
+    pub message: Option<String>,
+    pub span: Span,
 }
 
 /// `static Table Crc = makeCrcTable()`: one value for the whole program, which lives until it
@@ -890,12 +903,12 @@ pub enum StmtKind {
     /// `after`: the names of an `is` in the condition that the code after the statement sees
     /// (`if r is not Ok(value) { return }`), set by the checker.
     If { cond: Expr, then: Block, els: Option<Block>, after: Vec<String> },
-    While { cond: Expr, body: Block, after: Vec<String> },
-    /// `for i in a..b`
-    For { var: String, var_span: Span, from: Expr, to: Expr, body: Block },
+    While { cond: Expr, body: Block, after: Vec<String>, label: Option<Label> },
+    /// `for i in a..b`; `reversed`: `for i in (a..b).reversed()`, from `b - 1` down to `a`.
+    For { var: String, var_span: Span, from: Expr, to: Expr, body: Block, reversed: bool, label: Option<Label> },
     /// `for x in xs`, `for x in read xs`, `for x in ref xs`. `by`: the items are lent to the
     /// loop, not handed over (set by the checker).
-    ForEach { var: String, var_span: Span, iter: Expr, body: Block, by: Option<Mode> },
+    ForEach { var: String, var_span: Span, iter: Expr, body: Block, by: Option<Mode>, label: Option<Label> },
     /// `read folder as f { ... }`, `ref folder as f { ... }`: what a `shared` value holds,
     /// lent under a name for the block. `value` is the `shared` value (opened by the checker).
     As { mutable: bool, value: Expr, name: String, name_span: Span, body: Block },
@@ -903,8 +916,10 @@ pub enum StmtKind {
     /// hold, each lent to change under a name for the block, while no other task reaches it.
     Lock { items: Vec<LockItem>, body: Block },
     Return(Option<Expr>),
-    Break,
-    Continue,
+    /// `break`, or `break outer`: leaves the loop named `outer` from a loop inside it.
+    Break(Option<Label>),
+    /// `continue`, or `continue outer`: the next round of the loop named `outer`.
+    Continue(Option<Label>),
     Expr(Expr),
     /// `_ = e`: runs `e` and drops its value on purpose.
     Discard(Expr),
@@ -917,6 +932,14 @@ pub enum StmtKind {
     /// `static int Hits = ...` in a block: the name as written and the full name of the static,
     /// which `Program::statics` holds. Seen from here to the end of the block.
     Static { name: String, name_span: Span, full: String },
+}
+
+/// The name of a loop (`outer: for ...`), or the loop a `break` or `continue` names, and where
+/// it is written.
+#[derive(Clone)]
+pub struct Label {
+    pub name: String,
+    pub span: Span,
 }
 
 /// One value of a `lock` block and the name of what it holds.

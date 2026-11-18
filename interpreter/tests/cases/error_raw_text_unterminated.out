@@ -1,0 +1,5 @@
+error: unterminated raw text
+  --> error_raw_text_unterminated.sg:2:16
+ 2 |     var text = """
+   |                ^^^
+  hint: close it with `"""` on a line of its own

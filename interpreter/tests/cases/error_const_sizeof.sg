@@ -1,0 +1,9 @@
+struct Header {
+    uint magic
+}
+
+const nint HeaderSize = Memory.sizeOf<Header>()
+
+void main() {
+    print(HeaderSize)
+}

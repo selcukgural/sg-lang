@@ -1714,8 +1714,10 @@ impl From<Diag> for Stop {
 enum Unwind {
     Stop(Stop),
     Return(Value),
-    Break,
-    Continue,
+    /// A `break` or a `continue` in an arm of a `match` inside an expression, with the loop
+    /// it names, if it names one.
+    Break(Option<String>),
+    Continue(Option<String>),
     /// Another fiber stopped the run, and this one ends without a word.
     Abandon,
 }
@@ -1737,9 +1739,28 @@ type Res<T> = Result<T, Unwind>;
 
 enum Flow {
     Next,
-    Break,
-    Continue,
+    /// `break` and `continue`, with the loop they name, if they name one.
+    Break(Option<String>),
+    Continue(Option<String>),
     Return(Value),
+}
+
+/// What a loop does after a round of its body.
+enum Round {
+    Next,
+    Stop,
+    /// A `return`, or a `break` or `continue` that names a loop around this one.
+    Leave(Flow),
+}
+
+fn round(flow: Flow, label: Option<&Label>) -> Round {
+    let ours = |named: &Option<String>| named.as_ref().is_none_or(|name| label.is_some_and(|label| label.name == *name));
+    match flow {
+        Flow::Next => Round::Next,
+        Flow::Continue(named) if ours(&named) => Round::Next,
+        Flow::Break(named) if ours(&named) => Round::Stop,
+        flow => Round::Leave(flow),
+    }
 }
 
 /// Moves the names of an `is` that the checker lets the code after an `if` or `while` see
@@ -1756,8 +1777,8 @@ fn keep_names(after: &[String], mut names: Scope, frame: &mut Frame) {
 /// in a `match` arm ends here.
 fn loop_flow(result: Res<Flow>) -> Res<Flow> {
     match result {
-        Err(Unwind::Break) => Ok(Flow::Break),
-        Err(Unwind::Continue) => Ok(Flow::Continue),
+        Err(Unwind::Break(label)) => Ok(Flow::Break(label)),
+        Err(Unwind::Continue(label)) => Ok(Flow::Continue(label)),
         other => other,
     }
 }
@@ -3486,7 +3507,7 @@ impl<'a, 'e> Interp<'a, 'e> {
                 keep_names(after, names, frame);
                 return Ok(flow);
             }
-            StmtKind::While { cond, body, after } => {
+            StmtKind::While { cond, body, after, label } => {
                 let depth = frame.scopes.len();
                 let mark = self.guards.len();
                 loop {
@@ -3499,35 +3520,36 @@ impl<'a, 'e> Interp<'a, 'e> {
                             // `while r is not Ok(value) { ... }`: the code after it sees `value`.
                             let names = frame.scopes.pop().expect("the scope of the condition");
                             keep_names(after, names, frame);
-                            Flow::Break
+                            Flow::Break(None)
                         }
                     };
                     frame.scopes.truncate(depth);
-                    match flow {
-                        Flow::Break => break,
-                        Flow::Return(value) => return Ok(Flow::Return(value)),
-                        Flow::Next | Flow::Continue => {}
+                    match round(flow, label.as_ref()) {
+                        Round::Next => {}
+                        Round::Stop => break,
+                        Round::Leave(flow) => return Ok(flow),
                     }
                 }
             }
-            StmtKind::For { var, from, to, body, .. } => {
+            StmtKind::For { var, from, to, body, reversed, label, .. } => {
                 let (Value::Int(ty, start), Value::Int(_, end)) = (self.expr(from, frame)?, self.expr(to, frame)?) else {
                     unreachable!("the checker makes range bounds integers")
                 };
                 let depth = frame.scopes.len();
-                for i in start..end {
+                let rounds: Box<dyn Iterator<Item = _>> = if *reversed { Box::new((start..end).rev()) } else { Box::new(start..end) };
+                for i in rounds {
                     frame.scopes.push(Scope::default());
                     frame.declare(var, Value::Int(ty, i));
                     let flow = loop_flow(self.block(body, frame))?;
                     frame.scopes.truncate(depth);
-                    match flow {
-                        Flow::Break => break,
-                        Flow::Return(value) => return Ok(Flow::Return(value)),
-                        Flow::Next | Flow::Continue => {}
+                    match round(flow, label.as_ref()) {
+                        Round::Next => {}
+                        Round::Stop => break,
+                        Round::Leave(flow) => return Ok(flow),
                     }
                 }
             }
-            StmtKind::ForEach { var, iter, body, by, .. } => {
+            StmtKind::ForEach { var, iter, body, by, label, .. } => {
                 let collection = owned(self.expr(iter, frame)?);
                 // A loop handed the collection owns its items one by one: each ends with its
                 // turn, as in compiled code, and not with the collection.
@@ -3564,10 +3586,10 @@ impl<'a, 'e> Interp<'a, 'e> {
                     frame.declare(var, bound);
                     let flow = loop_flow(self.block(body, frame))?;
                     frame.scopes.truncate(depth);
-                    match flow {
-                        Flow::Break => break,
-                        Flow::Return(value) => return Ok(Flow::Return(value)),
-                        Flow::Next | Flow::Continue => {}
+                    match round(flow, label.as_ref()) {
+                        Round::Next => {}
+                        Round::Stop => break,
+                        Round::Leave(flow) => return Ok(flow),
                     }
                 }
             }
@@ -3625,8 +3647,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                 };
                 return Ok(Flow::Return(value));
             }
-            StmtKind::Break => return Ok(Flow::Break),
-            StmtKind::Continue => return Ok(Flow::Continue),
+            StmtKind::Break(label) => return Ok(Flow::Break(label.as_ref().map(|label| label.name.clone()))),
+            StmtKind::Continue(label) => return Ok(Flow::Continue(label.as_ref().map(|label| label.name.clone()))),
             StmtKind::Expr(expr) | StmtKind::Discard(expr) => {
                 self.expr(expr, frame)?;
             }
@@ -4165,8 +4187,8 @@ impl<'a, 'e> Interp<'a, 'e> {
                         for stmt in &arm.body {
                             match self.stmt(stmt, frame)? {
                                 Flow::Next => {}
-                                Flow::Break => return Err(Unwind::Break),
-                                Flow::Continue => return Err(Unwind::Continue),
+                                Flow::Break(label) => return Err(Unwind::Break(label)),
+                                Flow::Continue(label) => return Err(Unwind::Continue(label)),
                                 Flow::Return(value) => return Err(Unwind::Return(value)),
                             }
                         }

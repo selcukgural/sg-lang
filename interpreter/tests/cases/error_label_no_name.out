@@ -1,0 +1,5 @@
+error: no loop around this `break` is named `outer`
+  --> error_label_no_name.sg:4:19
+ 4 |             break outer
+   |                   ^^^^^
+  hint: name the loop it leaves: `outer: for ...`

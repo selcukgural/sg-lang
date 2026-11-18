@@ -1,0 +1,6 @@
+const int BlockSize = 60
+
+const assert(BlockSize % 8 == 0, "a block holds whole words")
+
+void main() {
+}

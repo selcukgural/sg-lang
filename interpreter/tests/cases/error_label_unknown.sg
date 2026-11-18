@@ -1,0 +1,10 @@
+void main() {
+    rows: for i in 0..3 {
+        for j in 0..3 {
+            if i == j {
+                break columns
+            }
+        }
+        continue rows
+    }
+}

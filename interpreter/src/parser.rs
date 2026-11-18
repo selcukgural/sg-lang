@@ -26,7 +26,7 @@ pub fn parse(src: &str) -> Res<Program> {
 /// belongs to. What a module defines gets its full name here: `Product` in the folder `stock`
 /// is `stock.Product`.
 pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> {
-    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default(), library: false, freestanding: false, left_out: Default::default(), lib_dirs: Vec::new(), home: None, consts: Vec::new(), const_values: Default::default(), embeds: Vec::new(), sizes: Default::default(), statics: Vec::new() };
+    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default(), library: false, freestanding: false, other_machine: false, left_out: Default::default(), lib_dirs: Vec::new(), home: None, consts: Vec::new(), const_values: Default::default(), embeds: Vec::new(), sizes: Default::default(), statics: Vec::new() };
     for (start, end, module) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
         let mut parser = Parser { src, toks, i: 0, struct_literals: true, visible: Vec::new(), embed_base: program.embeds.len(), embeds: Vec::new(), in_text: false, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new() };
@@ -300,7 +300,11 @@ impl<'a> Parser<'a> {
     /// `const int BlockSize = 4096`, `const int[] Primes = { 2, 3, 5, 7 }`: the word `const` is
     /// next. `{ ... }` gives the items of an array, and a type written `T[]` takes their count.
     fn const_decl(&mut self) -> Res<ConstDecl> {
+        let start = self.span();
         self.bump();
+        if matches!(self.peek(), Tok::Ident(word) if word == "assert") && *self.peek_at(1) == Tok::LParen {
+            return self.const_assert(start);
+        }
         if *self.peek() == Tok::Var {
             return Err(Diag::error(self.span(), "a const has its type written: what it holds is part of what it says")
                 .hint("`const int Size = 64`"));
@@ -318,7 +322,38 @@ impl<'a> Parser<'a> {
         let init = self.const_value(&mut ty, &name);
         self.in_const = false;
         let init = init?;
-        Ok(ConstDecl { public: false, name, name_span, ty, init, local: None, visible })
+        Ok(ConstDecl { public: false, name, name_span, ty, init, local: None, visible, assert: None })
+    }
+
+    /// `const assert(cond)` or `const assert(cond, "message")`, after `const`: a `bool` const
+    /// named `assert#` and where it is written, which no other name has.
+    fn const_assert(&mut self, start: Span) -> Res<ConstDecl> {
+        let (_, name_span) = self.ident("`assert`")?;
+        self.bump();
+        let visible: Vec<(String, String)> = self.visible.iter().flatten().cloned().collect();
+        self.in_const = true;
+        let cond = self.expr();
+        self.in_const = false;
+        let init = cond?;
+        let message = match self.eat(&Tok::Comma) {
+            false => None,
+            true => match self.peek().clone() {
+                Tok::Str(text) => {
+                    self.bump();
+                    Some(text)
+                }
+                Tok::Interp(_) => {
+                    return Err(Diag::error(self.span(), "the message of a `const assert` is a text written out, with nothing put into it")
+                        .note("it is said when the program is compiled; the values of a comparison are shown beside it"))
+                }
+                _ => return Err(self.unexpected("the message, written out as a text")),
+            },
+        };
+        self.expect(Tok::RParen, "`)`")?;
+        let span = Span::new(start.start, self.prev_end());
+        let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, atomic: None, raw: 0, name: "bool".into(), args: Vec::new(), suffixes: Vec::new(), span: name_span };
+        let name = format!("assert#{}", start.start);
+        Ok(ConstDecl { public: false, name, name_span, ty, init, local: None, visible, assert: Some(ConstAssert { message, span }) })
     }
 
     /// `static Table Crc = makeCrcTable()`, `static atomic long Hits = atomic 0`, `static locked
@@ -1147,24 +1182,29 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let cond = self.head_expr(false)?;
                 let body = self.block()?;
-                StmtKind::While { cond, body, after: Vec::new() }
+                StmtKind::While { cond, body, after: Vec::new(), label: None }
             }
             Tok::For => {
                 self.bump();
                 let (var, var_span) = self.ident("a loop variable")?;
                 self.expect(Tok::In, "`in`")?;
-                let from = self.head_expr(true)?;
-                if *self.peek() == Tok::DotDotEq {
-                    return Err(Diag::error(self.span(), "`..=` is written only in a pattern; a `for` goes up to its end, without it")
-                        .hint("`for i in a..b + 1`"));
-                }
-                if self.eat(&Tok::DotDot) {
-                    let to = self.head_expr(true)?;
+                if let Some((from, to)) = self.reversed_range()? {
                     let body = self.block()?;
-                    StmtKind::For { var, var_span, from, to, body }
+                    StmtKind::For { var, var_span, from, to, body, reversed: true, label: None }
                 } else {
-                    let body = self.block()?;
-                    StmtKind::ForEach { var, var_span, iter: from, body, by: None }
+                    let from = self.head_expr(true)?;
+                    if *self.peek() == Tok::DotDotEq {
+                        return Err(Diag::error(self.span(), "`..=` is written only in a pattern; a `for` goes up to its end, without it")
+                            .hint("`for i in a..b + 1`"));
+                    }
+                    if self.eat(&Tok::DotDot) {
+                        let to = self.head_expr(true)?;
+                        let body = self.block()?;
+                        StmtKind::For { var, var_span, from, to, body, reversed: false, label: None }
+                    } else {
+                        let body = self.block()?;
+                        StmtKind::ForEach { var, var_span, iter: from, body, by: None, label: None }
+                    }
                 }
             }
             // `read folder as f { ... }`; anything else that starts with `read` or `ref` is read
@@ -1199,6 +1239,13 @@ impl<'a> Parser<'a> {
             // `const int Size = 64`: seen from here to the end of the block.
             Tok::Ident(word) if word == "const" => {
                 let mut decl = self.const_decl()?;
+                if decl.assert.is_some() {
+                    // No name to be seen: what it checks is checked with the consts.
+                    let (name, name_span) = (decl.name.clone(), decl.name_span);
+                    decl.local = Some(name.clone());
+                    self.consts_found.push(decl);
+                    return Ok(Ok(Stmt { kind: StmtKind::Const { name: name.clone(), name_span, full: name }, span: Span::new(start.start, self.prev_end()) }));
+                }
                 let written = std::mem::take(&mut decl.name);
                 let full = format!("{written}#{}", decl.name_span.start);
                 decl.name = full.clone();
@@ -1238,11 +1285,28 @@ impl<'a> Parser<'a> {
             }
             Tok::Break => {
                 self.bump();
-                StmtKind::Break
+                StmtKind::Break(self.loop_named()?)
             }
             Tok::Continue => {
                 self.bump();
-                StmtKind::Continue
+                StmtKind::Continue(self.loop_named()?)
+            }
+            // `outer: for ...`, `outer: while ...`: a loop with a name, which `break outer` and
+            // `continue outer` leave or go on with from a loop inside it.
+            Tok::Ident(_) if *self.peek_at(1) == Tok::Colon => {
+                let (name, span) = self.ident("the name of a loop")?;
+                self.bump();
+                if !matches!(self.peek(), Tok::For | Tok::While) {
+                    return Err(self.unexpected("`for` or `while`").note("a name followed by `:` names the loop after it: `outer: for i in 0..n { ... }`"));
+                }
+                let mut stmt = self.stmt()?;
+                let label = Some(Label { name, span });
+                match &mut stmt.kind {
+                    StmtKind::While { label: named, .. } | StmtKind::For { label: named, .. } | StmtKind::ForEach { label: named, .. } => *named = label,
+                    _ => unreachable!("a `for` or a `while` was read"),
+                }
+                stmt.span = start.to(stmt.span);
+                return Ok(Ok(stmt));
             }
             Tok::Match => {
                 let expr = self.match_expr()?;
@@ -1308,6 +1372,45 @@ impl<'a> Parser<'a> {
     }
 
     /// Whether `read x as name {` starts here: the word `as` follows the value.
+    /// The name after `break` or `continue`, if one is written on the same line.
+    fn loop_named(&mut self) -> Res<Option<Label>> {
+        if !matches!(self.peek(), Tok::Ident(_)) {
+            return Ok(None);
+        }
+        let (name, span) = self.ident("the name of a loop")?;
+        Ok(Some(Label { name, span }))
+    }
+
+    /// `(a..b).reversed()` at the head of a `for`: the range, gone over from its end down.
+    /// Anything else in front of `{` is left to be read as before.
+    fn reversed_range(&mut self) -> Res<Option<(Expr, Expr)>> {
+        if *self.peek() != Tok::LParen {
+            return Ok(None);
+        }
+        let at = self.i;
+        self.bump();
+        let from = match self.head_expr(true) {
+            Ok(from) if *self.peek() == Tok::DotDot => from,
+            _ => {
+                self.i = at;
+                return Ok(None);
+            }
+        };
+        self.bump();
+        let to = self.head_expr(true)?;
+        let open = self.span();
+        self.expect(Tok::RParen, "`)`")?;
+        let reversed = *self.peek() == Tok::Dot && matches!(self.peek_at(1), Tok::Ident(word) if word == "reversed") && *self.peek_at(2) == Tok::LParen && *self.peek_at(3) == Tok::RParen;
+        if !reversed {
+            return Err(Diag::error(open.to(self.span()), "a range in brackets is gone over with `.reversed()`")
+                .hint("`for i in (0..n).reversed()` goes from `n - 1` down to `0`; `for i in 0..n` goes up, with no brackets"));
+        }
+        for _ in 0..4 {
+            self.bump();
+        }
+        Ok(Some((from, to)))
+    }
+
     fn as_block_ahead(&mut self) -> Res<bool> {
         let at = self.i;
         self.bump();

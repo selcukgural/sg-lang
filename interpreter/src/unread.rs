@@ -207,7 +207,7 @@ impl<'p> Pass<'p> {
             }
             StmtKind::Expr(value) | StmtKind::Discard(value) => self.expr(value),
             StmtKind::Unsafe(body) => self.block(body),
-            StmtKind::Break | StmtKind::Continue | StmtKind::Const { .. } | StmtKind::Static { .. } => {}
+            StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Const { .. } | StmtKind::Static { .. } => {}
         }
     }
 

@@ -1,0 +1,15 @@
+// What a round moved before a `break` is gone after the loop.
+void take(List<int> xs) {
+    print(xs.length())
+}
+
+void main() {
+    var xs = List<int>()
+    for i in 0..3 {
+        if i == 1 {
+            take(xs)
+            break
+        }
+    }
+    take(xs)
+}

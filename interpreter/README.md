@@ -50,7 +50,7 @@ of `tests/Containerfile` has them.
 | Text of a collection | `print(xs)`, `$"{xs}"`: `[1, 2, 3]`, `{"ada": 36}`, `{1, 2, 3}`, when the items can be written as text |
 | `HashSet<T>` | Built in; an item is what a key of a `HashMap` can be. `HashSet<int>()`, `HashSet<int> { 1, 2 }`; `set.add(v)` gives `true` if the item was not there, `set.contains(v)`, `set.remove(v)` gives `true` if it was there, `set.length()`, `set.clear()` |
 | Arrays | `int[8] values`: a fixed number of items, kept where the value is (in the variable, inside the struct), with the length in the type. Built as `int[3] { 1, 2, 3 }` (the items), `byte[16](255)` (one value in every item) or `byte[16]` (zeros: 0, `false`, `null`). `xs[i]` to read and to write, `xs.length()`, `xs.get(i)`, `xs.indexOf(v)`, `xs.contains(v)`, `xs.sort()`, `xs.reverse()`, `==`, `print`. An array of items that can be copied is copied like a number; any other is moved |
-| Consts | `const int BlockSize = 4096`, at the top of a file (`public const` for other modules) or in a block, where it is seen to the end of the block. A number, `bool`, `char`, a text, or an array, a struct or an enum of numbers, `bool` and `char` (`: Copyable`). `const int[] Primes = { 2, 3, 5, 7 }` counts the items, `const byte[] Logo = embed("logo.gif")` holds the bytes of a file beside the source. The value is found when the program is compiled: numbers, texts, other consts, operators, casts, `MinValue` and the others, arrays, structs and variants built of them, `.length()` and an item or a field of a const, and calls: `const int[256] Crc = crcTable()` runs any function when the program is compiled, whose body, and those of the functions it calls, may not read or write, look at the clock or the system, use raw memory, C, tasks or a `Func`, or call `sin` and its kin (an error shows the calls that lead there), within 100 000 000 steps and 64 MB; an overflow or a panic there is a compile error. An integer const gives the count of an array (`byte[BlockSize]`, `int[N](0)`), and a const of a number, a `char`, a text or a `bool` is a pattern (`match tag { Trailer => ... }`). An array, a struct or an enum is lent where it is used, for the whole run, and never changed (`var copy = Masks` copies it); in compiled code it is one `static const`, which nothing copies |
+| Consts | `const int BlockSize = 4096`, at the top of a file (`public const` for other modules) or in a block, where it is seen to the end of the block. A number, `bool`, `char`, a text, or an array, a struct or an enum of numbers, `bool` and `char` (`: Copyable`). `const int[] Primes = { 2, 3, 5, 7 }` counts the items, `const byte[] Logo = embed("logo.gif")` holds the bytes of a file beside the source. The value is found when the program is compiled: numbers, texts, other consts, operators, casts, `MinValue` and the others, arrays, structs and variants built of them, `.length()` and an item or a field of a const, and calls: `const int[256] Crc = crcTable()` runs any function when the program is compiled, whose body, and those of the functions it calls, may not read or write, look at the clock or the system, use raw memory, C, tasks or a `Func`, or call `sin` and its kin (an error shows the calls that lead there), within 100 000 000 steps and 64 MB; an overflow or a panic there is a compile error. An integer const gives the count of an array (`byte[BlockSize]`, `int[N](0)`), and a const of a number, a `char`, a text or a `bool` is a pattern (`match tag { Trailer => ... }`). An array, a struct or an enum is lent where it is used, for the whole run, and never changed (`var copy = Masks` copies it); in compiled code it is one `static const`, which nothing copies. `const assert(cond)` and `const assert(cond, "message")` check a condition made as a const is, at the top of a file or in a block; a failed one says both sides of a comparison. `Memory.sizeOf<T>()` and `Memory.alignOf<T>()` are written only there: compiled code hands such an assert to C's `_Static_assert` too, for the machine it is compiled for |
 | Statics | `static uint[256] Crc = crcTable()`, `static atomic long Requests = atomic 0`, `static locked Config Settings = Config.defaults()`: one value for the whole program, never assigned, at the top of a file (`public static` for other modules) or in a function, where its name is seen to the end of the block. A value made as a const's is (numbers, consts, operators, no call; inside `atomic` and `locked` too) lies in the program from its start; any other is found the first time the static is used, once, whichever task comes first, and the others wait. What finds it cannot `lock`, `wait` or `await` through the calls, and one that needs itself is a compile error, or a panic through a `Func`. A number, a `bool`, a `char` or a function is read as a value, anything else lent as `read`; `static atomic` changes by its methods, `static locked` only inside `lock`. What a static holds follows the thread rule and is never closed or disposed of, so no file, stream or socket; each test starts with the statics not used yet, and what they hold is not a leak. In compiled code a static is a global of C, a `static const` when it is known from the start and holds no atomic value; a read of one found later is a load and a branch |
 | Slices | `read T[]` looks at items that something else owns, `ref T[]` can also write them. `read xs` and `ref xs` give one where a slice is expected, for a `List<T>` and a `T[N]`; a range gives one too: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` for a range that is written through. `s[i]`, `s.length()`, `s.get(i)`, `s.indexOf(v)`, `s.contains(v)`, `==`, `print`, `for`; `s.sort()` and `s.reverse()` through a `ref T[]`, and on a range in front of them: `xs[2..5].sort()` puts those items of `xs` in order where they are. `text.asBytes()` looks at a text as a `read byte[]`; `string.fromUtf8(bytes)` looks at bytes as text and gives a `Result<read string, TextError>` |
 | `for` over a collection | `for x in xs` hands the collection over and `x` owns each item; `for x in read xs` and `for x in ref xs` lend, and so does a collection that is already borrowed. Over a `HashMap` the variable has a `key` and a `value`; a `HashSet` is gone over by hand-over or `read`. An array is gone over like a list; a slice lends its items |
@@ -82,10 +82,10 @@ of `tests/Containerfile` has them.
 | `volatile` | `unsafe Memory.readVolatile(regs[0].status)` and `unsafe Memory.writeVolatile(regs[0].control, 1)`: a place in raw memory read or written once, where it is written, for the registers of a device; it orders nothing between tasks |
 | Null | `null`, `x is null`, `x is not null`, `a ?? b`, `a ?? panic("...")`, narrowing of local variables and parameters, also along `&&` and `\|\|` (`if name is not null && name.length() > 2`, `if text is null \|\| text.length() == 0 { return }`), under `!` (`if !(x is null)`) and after `while x is null { ... }` |
 | Variables | `var x = 1`, `int x = 1`, assignment, `+=` `-=` `*=` `/=` `%=`, `&=` `\|=` `^=` `<<=` `>>=`. A variable keeps its type. An assignment computes its right side first, then finds the place. A name never hides another: a new local, the name of a `for` or of a pattern with the name of a local or a parameter of a block around it is a compile error, as in C#; blocks side by side, and code after a block has ended, may use one name |
-| Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for x in xs`, `break`, `continue`, `return` |
+| Control flow | `if` / `else if` / `else`, `while`, `for i in a..b`, `for i in (a..b).reversed()` (from `b - 1` down to `a`), `for x in xs`, `break`, `continue`, `return`. A loop may have a name, `outer: for ...` or `outer: while ...`, which `break outer` and `continue outer` use from a loop inside it; a name not used is an error. What a loop moved is gone after it as it was at each `break`, before its first round and at the end of each round |
 | Operators | `+ - * / %`, `== != < <= > >=`, `&& \|\| !` (short circuit), unary `-`, cast `(int)x`. On integers `& \| ^ ~ << >>`; they bind tighter than a comparison, so `flags & mask == 0` tests the masked value |
 | Numbers | `42`, `0xde`, `0b1010`, and `_` between digits: `1_000_000`, `0xdead_beef` |
-| Text | `"..."` with `\n \t \r \0 \\ \" \'` and `\u{1F600}`, `$"{a}: {b}"` with `{{` and `}}`, `.toString()`, `text.length()`, `text.clone()`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string`. `trim()`, `trimStart()`, `trimEnd()` give a `read string`; `indexOf(x)` and `lastIndexOf(x)` a `nint?` in bytes; `contains(x)`, `startsWith(x)`, `endsWith(x)`, where `x` is a `char` or a `read string` (or a `byte` for the two positions); `equalsIgnoreAsciiCase(other)`. `replaceAll(old, new)` (each a `char` or a `read string`) and `repeat(n)` give a new `string`; a call of them whose result is not used is an error |
+| Text | `"..."` with `\n \t \r \0 \\ \" \'` and `\u{1F600}`, `$"{a}: {b}"` with `{{` and `}}`, raw text `"""a "quoted" C:\path"""` with no escapes, on lines with the indentation of its closing quotes taken off, and `$"""...{a}..."""`, `.toString()`, `text.length()`, `text.clone()`. `text[i]` reads one byte. `text[a..b]`, `text[..b]`, `text[a..]` and `text[..]` give a `read string`. `trim()`, `trimStart()`, `trimEnd()` give a `read string`; `indexOf(x)` and `lastIndexOf(x)` a `nint?` in bytes; `contains(x)`, `startsWith(x)`, `endsWith(x)`, where `x` is a `char` or a `read string` (or a `byte` for the two positions); `equalsIgnoreAsciiCase(other)`. `replaceAll(old, new)` (each a `char` or a `read string`) and `repeat(n)` give a new `string`; a call of them whose result is not used is an error |
 | Building text | A `string` grows at its end: `line.write(x)` adds whatever `print` takes (`$"{name}: {count}\n"`, a number, a `char`, a text, a `Formattable` value), `line.clear()` empties it and keeps its memory, `string.withCapacity(n)` is an empty text with room for `n` bytes |
 | Writing a number | Inside `$"..."` a width and a letter may follow the value, as in C#: `{n,5}` takes at least five characters with spaces in front, `{name,-10}` with spaces after (counted in characters, for every value `print` takes); `{b:X2}` and `{crc:x8}` write hex with at least so many digits, `{mask:b8}` binary, `{n:D3}` decimal with at least three digits, `{price:F2}` a fractional number with two digits after the point; `{price,8:F2}` both |
 | Going over text | `for c in text.chars()` gives each `char`; `text.split(',')` (a `char` or a `read string`), `text.splitWhitespace()` and `text.lines()` give each part as a `read string`, nothing copied. Kept in a `var`, the iterator gives the next part with `parts.next()`, `null` at the end |
@@ -7298,6 +7298,52 @@ building them asked for besides, from 1135. Approved on 18 November 2026:
      atomic value is the type it holds, so whether a static holds one is told from the type as written, or a
      counter known from the start would have been put where the program only reads.
 
+Choices made in the hundred-and-sixth slice (loops with a name, counting down, raw text, `const assert`).
+1148 to 1156 were put to the author before the slice, from the table of what the language lacks beside C23 and
+the draft of C2y, and approved on 18 November 2026; they are in the decisions file ("Loops with a name",
+"Counting down", "Raw text", "`const assert`"). What building them asked for besides, from 1157. Approved
+on 18 November 2026:
+
+1157. **What a loop moved** is followed at every way out of it, and a hole is closed. Each `continue` starts a
+     round, as the end of the body does, so what is moved before one is checked the same way; after the loop a
+     value is gone if it was gone at a `break`, before the first round (unless the loop is `while true`) or at
+     the end of a round. Before, a value moved before a `continue` or a `break`, or moved before a loop that gives
+     it back inside (`take(xs)`, then `for ... { xs = List<int>() }`, then `take(xs)`), was taken as there: the
+     interpreter stopped on it with an internal error and compiled code read an emptied list, which for a
+     pointer would have been a null one. Found while `break outer` was being built, since it leaves through
+     the same ways. No program of the repository was refused by it.
+1158. **The size of a type is measured only in a `const assert`**: `Memory.sizeOf` and `Memory.alignOf` in a
+     const are an error whose hint is the assert, and in a function a const calls an error of what may run when
+     the program is compiled (`` what it runs measures the size of a type ``); before, a function could measure
+     a type for a const, with the layout of the machine that compiled it.
+1159. **An assert that measures a type calls no function**, so that C can check it as well: a call there is an
+     error whose hint is an assert of its own. A limit of `nint` or `nuint` counts as measuring.
+1160. **The message is a text written out**, raw text included; `$"..."` is an error that says the values of a
+     comparison are shown beside it. A failed assert says the message, or the condition as written.
+1161. **Another machine**: `sg build --freestanding --target` leaves an assert that measures a type to C's
+     `_Static_assert`, whose message names the file and line of SG; on this machine the checker refuses it
+     first, and compiled code hands it to C either way. Only 64-bit machines are built for today (C's `__int128`
+     is used by the runtime), so the two have not differed yet.
+1162. **An assert is a const of its own**, named `assert#` and where it is written, which no program can name;
+     it is found with the other consts, by the same steps and limits, and nothing of it is in compiled code but
+     the `_Static_assert` of 1161.
+1163. **Raw text, the edges**: the opening quotes followed by text on the same line make a raw text of one line,
+     which cannot start or end with `"`; more quotes in a row than opened it are an error whose hint is to open
+     it with more; a line with nothing on it may be indented less; a `\r` before a line end is dropped, so a file
+     saved with Windows' line ends gives the same text.
+1164. **A range in brackets** at the head of a `for` is only `(a..b).reversed()`: without it, or with another
+     method, it is an error whose hint gives both ways; `..=` is refused there as at any `for`.
+1165. **Names of loops, the edges**: `break outer` that names the loop it is in is a `break`; the name of a loop
+     that is not around the `break` gives an error listing the loops around it that have a name, or the hint to
+     name one; a name and `:` in front of anything but `for` and `while` is an error.
+1166. **Documents and tests**: this list, the table above, "Next"; 02 ("Raw text", "Loops with a name, and
+     counting down", "Constants and statics"), 04 (the rows of 1148 to 1157), 06; the root README. Tests:
+     `ok_labeled_loops`, `ok_reversed_range`, `ok_raw_text`, `ok_const_assert`, 19 `error_*` (the names of
+     loops, the moves of 1157, raw text, `const assert`, `Memory.sizeOf` in a const), and
+     `measured_for_the_target` in the tests of programs without an operating system. `cargo test` passes on macOS and on Linux in a
+     container (368 of 1537 programs compile through C, 84 of them under the thread sanitizer), the kernel in
+     QEMU included.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -7418,6 +7464,10 @@ check off.
 
 ## Not here yet
 
+- **Of the hundred-and-sixth slice**: a range goes down only by one (no step, Rust's `step_by`), and only a
+  range is gone over backwards: a list is gone over from its end by its positions,
+  `for i in (0..xs.length()).reversed()`. C#'s `$$"""`, where a brace is written once, is not taken (1154).
+- **Of `const assert`**: one that measures a type calls no function (1159).
 - **Of consts**: a text inside an array, a struct or an enum (1110); an array of arrays, as anywhere; the
   count of an array in a type from a const that calls a function (1125).
 - **Of statics**: a static that holds a function is copied to a local to be called (`var f = Double`, 1140); a
@@ -7789,5 +7839,12 @@ hundred-and-fourth is written: a const given the value of any function, run by t
 program is compiled, with what the function and those it calls do checked to give the same value on every
 machine (1100-1108, 1124-1134). The hundred-and-fifth is written: statics, read only, `atomic` and `locked`,
 a value known from the start lying in the program's data and any other found the first time it is used, once,
-by whichever task comes first (1088-1097, 1135-1147). Next the lacks of the language and of its library
-measured against C23.
+by whichever task comes first (1088-1097, 1135-1147). The lacks of the language measured against C23 and the
+draft of C2y were put in a table, with what Rust, C#, Go and Zig have that costs nothing when the program runs,
+and those taken come in three slices before the library's. The hundred-and-sixth is written: loops with a name
+(`break outer`, `continue outer`), counting down with `(a..b).reversed()`, C#'s raw text and `const assert`,
+which alone measures the size of a type; on the way, what a loop moved is followed at every way out of it
+(1148-1166). Next an enum with numbers of a type it names (`enum Block : byte { Image = 0x2C }`) and the
+operations on the bits of an integer (C23's `<stdbit.h>`); then the default value of a field, `with` and `?.`;
+then the library, by the order of C11: seeking in a file and temporary files, the rest of `<math.h>`,
+`binarySearch`, condition variables, the local time zone with the writing and reading of dates.

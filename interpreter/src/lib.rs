@@ -236,9 +236,15 @@ pub fn emit_c_library(sources: &Sources, checked: bool, name: &str) -> Result<(S
 /// its C has no `main` and includes only the headers C promises there; the code that starts
 /// the machine calls its `export` functions.
 pub fn emit_c_freestanding(sources: &Sources, checked: bool) -> Result<String, Diag> {
+    emit_c_freestanding_for(sources, checked, false)
+}
+
+/// The same, for the machine Clang's `--target` names when `other_machine` is set.
+pub fn emit_c_freestanding_for(sources: &Sources, checked: bool, other_machine: bool) -> Result<String, Diag> {
     on_large_stack(|| {
         let mut prog = parse(sources, false)?;
         prog.freestanding = true;
+        prog.other_machine = other_machine;
         if let Err(diag) = check::check(&mut prog, &sources.text, false) {
             return Err(match missing_use(sources, &diag) {
                 Some(module) => diag.hint(format!("`use {module}` at the top of the file")),

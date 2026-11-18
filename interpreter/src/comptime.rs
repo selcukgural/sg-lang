@@ -186,6 +186,8 @@ fn look(expr: &Expr, scan: &mut Scan, bodies: &HashMap<String, &Func>) {
         },
         ExprKind::Await(_) => bar(scan, expr.span, "awaits a task"),
         ExprKind::Allocate { .. } => bar(scan, expr.span, "allocates raw memory"),
+        // The compiler of C lays a type out for the machine the program is compiled for.
+        ExprKind::SizeOf { align, .. } => bar(scan, expr.span, if *align { "measures the alignment of a type, which differs from machine to machine" } else { "measures the size of a type, which differs from machine to machine" }),
         ExprKind::CVar(name) => bar(scan, expr.span, &format!("reads `{}`, a variable of C", short_name(name))),
         ExprKind::Const(full) => scan.consts.push(full.clone()),
         // What a static holds is found when the program runs, and may change while it runs.

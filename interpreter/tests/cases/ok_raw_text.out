@@ -1,0 +1,21 @@
+a "quoted" word
+C:\Users\new\table.txt
+{
+  "name": "tea",
+  "tags": ["green", "hot"]
+}
+47
+first
+
+    second
+a """ inside
+"""
+quoted
+"""
+tea costs   7 "lira" {each}
+name:  tea
+count: 007
+hex:   FF
+matched
+usage: tool [options]
+  -h  this text

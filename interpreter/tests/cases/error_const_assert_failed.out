@@ -1,0 +1,6 @@
+error: const assert failed: a block holds whole words
+  left:  4
+  right: 0
+  --> error_const_assert_failed.sg:3:14
+ 3 | const assert(BlockSize % 8 == 0, "a block holds whole words")
+   |              ^^^^^^^^^^^^^^^^^^

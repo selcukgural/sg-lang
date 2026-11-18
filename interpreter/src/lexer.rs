@@ -303,6 +303,11 @@ impl<'a> Lexer<'a> {
                 }
                 b'0'..=b'9' => self.number()?,
                 b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.word(),
+                b'"' if self.quotes_at(self.pos) >= 3 => self.raw(start, false)?,
+                b'$' if self.quotes_at(self.pos + 1) >= 3 => {
+                    self.pos += 1;
+                    self.raw(start, true)?
+                }
                 b'"' => {
                     self.pos += 1;
                     let text = self.string_body(start)?;
@@ -524,6 +529,134 @@ impl<'a> Lexer<'a> {
             }
         }
         Ok(String::from_utf8(text).expect("source is valid UTF-8"))
+    }
+
+    /// How many `"` stand one after the other from `at`, within the range.
+    fn quotes_at(&self, at: usize) -> usize {
+        self.bytes[at.min(self.end)..self.end].iter().take_while(|&&byte| byte == b'"').count()
+    }
+
+    /// A raw text, C#'s: `"""a "quoted" word"""` on one line, or `"""` at the end of a line,
+    /// lines, and `"""` on a line of its own, whose indentation is taken off every line. Nothing
+    /// is an escape; more quotes open and close a text that holds `"""`. With `$` in front
+    /// (`interpolated`), `{value}` and `{{` are read as in `$"..."`.
+    fn raw(&mut self, start: usize, interpolated: bool) -> Result<(), Diag> {
+        let quotes = self.quotes_at(self.pos);
+        self.pos += quotes;
+        let line_end = self.bytes[self.pos..self.end].iter().position(|&byte| byte == b'\n').map_or(self.end, |at| self.pos + at);
+        let (mut parts, mut text) = (Vec::new(), Vec::new());
+        let blank = |bytes: &[u8]| bytes.iter().all(|&byte| matches!(byte, b' ' | b'\t' | b'\r'));
+        if !blank(&self.bytes[self.pos..line_end]) {
+            // One line: the text ends at the first `"""`.
+            if !self.raw_piece(line_end, quotes, true, interpolated, start, &mut parts, &mut text)? {
+                return Err(Diag::error(Span::new(start, line_end), "unterminated raw text")
+                    .hint(format!("close it with `{}` on the same line, or start its lines on the next one", "\"".repeat(quotes))));
+            }
+        } else {
+            // Lines: find the one that closes the text first, for the indentation.
+            let mut lines = Vec::new();
+            let mut at = line_end;
+            let close = loop {
+                if at >= self.end {
+                    return Err(Diag::error(Span::new(start, self.pos), "unterminated raw text")
+                        .hint(format!("close it with `{}` on a line of its own", "\"".repeat(quotes))));
+                }
+                let begin = at + 1;
+                let end = self.bytes[begin..self.end].iter().position(|&byte| byte == b'\n').map_or(self.end, |n| begin + n);
+                let indent = self.bytes[begin..end].iter().take_while(|&&byte| byte == b' ' || byte == b'\t').count();
+                let run = self.quotes_at(begin + indent);
+                if run >= quotes {
+                    if run > quotes {
+                        return Err(Diag::error(Span::new(begin + indent, begin + indent + run), format!("{run} quotes close a raw text opened with {quotes}"))
+                            .hint("open and close it with as many quotes"));
+                    }
+                    break (begin, indent);
+                }
+                lines.push((begin, end));
+                at = end;
+            };
+            let (close_line, indent) = close;
+            let prefix = &self.bytes[close_line..close_line + indent];
+            for (number, &(begin, end)) in lines.iter().enumerate() {
+                if number > 0 {
+                    text.push(b'\n');
+                }
+                let end = if end > begin && self.bytes[end - 1] == b'\r' { end - 1 } else { end };
+                if blank(&self.bytes[begin..end]) && end - begin <= indent {
+                    continue;
+                }
+                if !self.bytes[begin..end].starts_with(prefix) {
+                    let written = self.bytes[begin..end].iter().take_while(|&&byte| byte == b' ' || byte == b'\t').count();
+                    return Err(Diag::error(Span::new(begin, begin + written.max(1)), "this line is indented less than the closing quotes of its raw text")
+                        .hint("indent every line at least as far as the closing quotes, with the same spaces or tabs"));
+                }
+                self.pos = begin + indent;
+                self.raw_piece(end, quotes, false, interpolated, start, &mut parts, &mut text)?;
+            }
+            self.pos = close_line + indent + quotes;
+        }
+        if !interpolated {
+            self.push(Tok::Str(String::from_utf8(text).expect("source is valid UTF-8")), start);
+            return Ok(());
+        }
+        if !text.is_empty() {
+            parts.push(Part::Text(String::from_utf8(text).expect("source is valid UTF-8")));
+        }
+        self.push(Tok::Interp(parts), start);
+        Ok(())
+    }
+
+    /// Reads a raw text up to `end`, the end of a line, into `text` and `parts`. `one_line`: the
+    /// text is on one line and ends at its closing quotes, after which the position stands and
+    /// `true` is given.
+    #[allow(clippy::too_many_arguments)]
+    fn raw_piece(&mut self, end: usize, quotes: usize, one_line: bool, interpolated: bool, start: usize, parts: &mut Vec<Part>, text: &mut Vec<u8>) -> Result<bool, Diag> {
+        while self.pos < end {
+            match self.bytes[self.pos] {
+                b'"' => {
+                    let run = self.quotes_at(self.pos).min(end - self.pos);
+                    if run == quotes && one_line {
+                        self.pos += run;
+                        return Ok(true);
+                    }
+                    if run >= quotes {
+                        let span = Span::new(self.pos, self.pos + run);
+                        return Err(if one_line {
+                            Diag::error(span, format!("{run} quotes close a raw text opened with {quotes}"))
+                                .hint("a raw text on one line neither starts nor ends with `\"`; open and close it with more quotes than it holds")
+                        } else {
+                            Diag::error(span, format!("{run} quotes inside a raw text opened with {quotes}"))
+                                .hint(format!("open and close it with {} quotes, and the closing ones stand on a line of their own", run + 1))
+                        });
+                    }
+                    text.extend(std::iter::repeat_n(b'"', run));
+                    self.pos += run;
+                }
+                b'{' if interpolated && self.at(1) == Some(b'{') => {
+                    text.push(b'{');
+                    self.pos += 2;
+                }
+                b'}' if interpolated && self.at(1) == Some(b'}') => {
+                    text.push(b'}');
+                    self.pos += 2;
+                }
+                b'}' if interpolated => {
+                    return Err(Diag::error(Span::new(self.pos, self.pos + 1), "unmatched `}`").hint("write `}}` for a literal brace"))
+                }
+                b'{' if interpolated => {
+                    if !text.is_empty() {
+                        parts.push(Part::Text(String::from_utf8(std::mem::take(text)).expect("source is valid UTF-8")));
+                    }
+                    let (code, spec) = self.interpolation_code(start)?;
+                    parts.push(Part::Code(code, spec));
+                }
+                byte => {
+                    text.push(byte);
+                    self.pos += 1;
+                }
+            }
+        }
+        Ok(false)
     }
 
     fn unterminated(&self, start: usize) -> Diag {

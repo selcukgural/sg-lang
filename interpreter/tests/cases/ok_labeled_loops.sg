@@ -1,0 +1,95 @@
+// Loops with a name: `break outer` and `continue outer` from a loop inside, over every kind
+// of loop, with what the rounds own let go on the way out.
+struct Cell {
+    int row
+    int col
+}
+
+void main() {
+    var grid = List<List<int>>()
+    for r in 0..3 {
+        var row = List<int>()
+        for c in 0..4 {
+            row.add(r * 10 + c)
+        }
+        grid.add(row)
+    }
+
+    // Out of two loops at once.
+    Cell? found = null
+    search: for r in 0..3 {
+        for c in 0..4 {
+            if grid[r][c] == 12 {
+                found = Cell { row = r, col = c }
+                break search
+            }
+        }
+    }
+    if found is not null {
+        print($"found at {found.row}, {found.col}")
+    }
+
+    // The next round of the outer loop, over borrowed lists.
+    var counted = 0
+    rows: for row in read grid {
+        for value in read row {
+            if value % 10 == 2 {
+                continue rows
+            }
+            counted += 1
+        }
+    }
+    print($"counted {counted}")
+
+    // A round that owns a list leaves it behind at every way out.
+    var kept = 0
+    outer: while kept < 100 {
+        var round = List<string>()
+        round.add("x")
+        for i in 0..10 {
+            var inner = List<int>()
+            inner.add(i)
+            if i == 3 {
+                kept += (int)(round.length() + inner.length())
+                continue outer
+            }
+            if kept > 4 {
+                break outer
+            }
+        }
+    }
+    print($"kept {kept}")
+
+    // `while true` left only from inside: the code after it is reached.
+    var n = 0
+    spin: while true {
+        while true {
+            n += 1
+            if n == 5 {
+                break spin
+            }
+        }
+    }
+    print($"n {n}")
+
+    // From an arm of a `match` inside an expression, and naming the loop it is in.
+    var total = 0
+    var list = List<string> { "one", "two", "stop", "three" }
+    words: for word in read list {
+        for ch in word.chars() {
+            total += match ch {
+                's' => {
+                    break words
+                }
+                'w' => {
+                    continue words
+                }
+                _ => 1
+            }
+        }
+        each: for _ in 0..1 {
+            break each
+        }
+    }
+    print($"total {total}")
+}

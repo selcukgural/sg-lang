@@ -1,0 +1,7 @@
+void main() {
+    var text = """
+        first
+      second
+        """
+    print(text)
+}

@@ -1,0 +1,9 @@
+error: a loop around this one is already named `outer`
+  --> error_label_twice.sg:3:9
+ 3 |         outer: for j in 0..3 {
+   |         ^^^^^
+  it is named here:
+  --> error_label_twice.sg:2:5
+ 2 |     outer: for i in 0..3 {
+   |     ^^^^^
+  hint: give the inner loop a name of its own

@@ -1,0 +1,5 @@
+error: a range in brackets is gone over with `.reversed()`
+  --> error_range_brackets.sg:2:19
+ 2 |     for i in (0..3) {
+   |                   ^^^
+  hint: `for i in (0..n).reversed()` goes from `n - 1` down to `0`; `for i in 0..n` goes up, with no brackets

@@ -1,0 +1,8 @@
+error: `xs` was moved and can no longer be used
+  --> error_moved_loop_no_round.sg:12:10
+ 12 |     take(xs)
+    |          ^^
+  it was moved here:
+  --> error_moved_loop_no_round.sg:8:10
+ 8 |     take(xs)
+   |          ^^

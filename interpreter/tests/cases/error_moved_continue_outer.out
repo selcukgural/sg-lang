@@ -1,0 +1,4 @@
+error: `xs` is moved inside a loop, so the next iteration cannot use it
+  --> error_moved_continue_outer.sg:11:22
+ 11 |                 take(xs)
+    |                      ^^

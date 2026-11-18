@@ -1,0 +1,5 @@
+error: 3 quotes inside a raw text opened with 3
+  --> error_raw_text_quotes.sg:3:11
+ 3 |         a """ inside
+   |           ^^^
+  hint: open and close it with 4 quotes, and the closing ones stand on a line of their own

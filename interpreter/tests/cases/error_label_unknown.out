@@ -1,0 +1,5 @@
+error: no loop around this `break` is named `columns`
+  the loops around it that have a name: `rows`
+  --> error_label_unknown.sg:5:23
+ 5 |                 break columns
+   |                       ^^^^^^^

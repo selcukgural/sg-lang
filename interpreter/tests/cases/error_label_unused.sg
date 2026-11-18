@@ -1,0 +1,6 @@
+// A loop is named only for a loop inside it to leave it or go on with it.
+void main() {
+    outer: for i in 0..3 {
+        print(i)
+    }
+}

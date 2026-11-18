@@ -415,3 +415,16 @@ int main(void) {
     let ran = Command::new(&program).output().unwrap();
     assert!(ran.status.success() && String::from_utf8_lossy(&ran.stdout).trim_end() == "same", "{}", String::from_utf8_lossy(&ran.stdout));
 }
+
+/// A `const assert` that measures a type is left to the compiler of C when the program is built
+/// for another machine (`--target`), whose layout the checker does not know; on this machine
+/// the checker refuses it, and compiled code hands it to `_Static_assert` either way.
+#[test]
+fn measured_for_the_target() {
+    let src = "const assert(Memory.sizeOf<nint>() == 4, \"a word of four bytes\")\n\nexport int start() {\n    return 1\n}\n\nvoid onPanic(read string message) {\n}\n";
+    let sources = || sg::Sources::single(src, "measured.sg");
+    let here = sg::emit_c_freestanding(&sources(), true).expect_err("refused on this machine");
+    assert!(here.msg.contains("const assert failed: a word of four bytes"), "{}", here.msg);
+    let code = sg::emit_c_freestanding_for(&sources(), true, true).unwrap_or_else(|diag| panic!("{}", diag.render(src, "measured.sg")));
+    assert!(code.contains("_Static_assert((((int64_t)sizeof(int64_t)) == 4LL), \"measured.sg:1: const assert failed: a word of four bytes\");"), "no `_Static_assert` in the C");
+}

@@ -77,7 +77,7 @@ fn build(path: &str, out: Option<String>, release: bool, made: Made, machine: &M
     let emitted = match made {
         Made::Tests => sg::emit_c_tests(&sources, !release).map(|code| (code, None)),
         Made::Program => sg::emit_c_sources(&sources, !release).map(|code| (code, None)),
-        Made::Freestanding => sg::emit_c_freestanding(&sources, !release).map(|code| (code, None)),
+        Made::Freestanding => sg::emit_c_freestanding_for(&sources, !release, machine.target.is_some()).map(|code| (code, None)),
         Made::Static | Made::Shared => sg::emit_c_library(&sources, !release, &name).map(|(code, header)| (code, Some(header))),
     };
     let (code, header) = match emitted {

@@ -216,7 +216,7 @@ impl Opener<'_> {
                     self.block(els)?;
                 }
             }
-            StmtKind::While { cond, body, after } => {
+            StmtKind::While { cond, body, after, .. } => {
                 self.condition(cond, mark)?;
                 if !after.is_empty() {
                     if let Some(kept) = self.kept(mark) {
@@ -270,7 +270,7 @@ impl Opener<'_> {
                     }
                 }
             }
-            StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::Const { .. } | StmtKind::Static { .. } => {}
+            StmtKind::Return(None) | StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Const { .. } | StmtKind::Static { .. } => {}
             StmtKind::Expr(expr) | StmtKind::Discard(expr) => self.expr(expr, Use::Value)?,
         }
         Ok(())

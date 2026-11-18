@@ -1,0 +1,5 @@
+error: no `break outer` or `continue outer` uses the name of this loop
+  --> error_label_unused.sg:3:5
+ 3 |     outer: for i in 0..3 {
+   |     ^^^^^
+  hint: a loop needs a name only for a loop inside it to leave it: remove `outer:`

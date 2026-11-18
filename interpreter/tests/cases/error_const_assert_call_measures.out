@@ -1,0 +1,6 @@
+error: a `const assert` that measures a type calls no function
+  it is checked for the machine the program is compiled for, by the compiler of C as well, which runs no call
+  --> error_const_assert_call_measures.sg:9:41
+ 9 | const assert(Memory.sizeOf<Header>() == expected())
+   |                                         ^^^^^^^^
+  hint: check what the call gives in a `const assert` of its own

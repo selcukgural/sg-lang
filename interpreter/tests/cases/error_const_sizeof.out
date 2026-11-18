@@ -1,0 +1,5 @@
+error: the size of a type differs from machine to machine, and a const holds the same value on every one
+  --> error_const_sizeof.sg:5:25
+ 5 | const nint HeaderSize = Memory.sizeOf<Header>()
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^
+  hint: check it with `const assert(Memory.sizeOf<Header>() == ...)`, or find it when the program runs

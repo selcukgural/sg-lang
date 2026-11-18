@@ -1,0 +1,6 @@
+void main() {
+    var text = """
+        a """ inside
+        """
+    print(text)
+}

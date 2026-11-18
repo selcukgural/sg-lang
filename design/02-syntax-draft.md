@@ -1061,6 +1061,36 @@ var key = name.foldCase()                        // a key that does not care abo
 b.toUpper()                                      // error on a byte. Hint: toAsciiUpper()
 ```
 
+### Raw text
+
+C#'s raw text: between three quotes or more, nothing is an escape, so quotes, backslashes and braces are
+written as they are. On one line it ends at the first three quotes; on lines, the opening quotes end their
+line and the closing quotes stand on a line of their own, and what stands in front of them is taken off every
+line:
+
+```
+var path = """C:\Users\new\table.txt"""          // a backslash is a backslash
+print("""a "quoted" word""")
+var json = """
+    {
+      "name": "tea"
+    }
+    """                                          // {\n  "name": "tea"\n}: no line break at the end
+var help = $"""
+    usage: {name} [options]
+    count: {count,3} {{each}}
+    """                                          // `$` in front: values as in $"...", `{{` for a brace
+var inner = """"a """ inside""""                 // four quotes to hold three
+var bad = """
+      first
+    second                                       // error: indented less than the closing quotes
+      """
+```
+
+A line break in it is always `\n`, whatever the file was saved with. A line with nothing on it may be indented
+less. A raw text is a text like any other: a const, a pattern, an argument. Rust writes `r#"..."#` and takes
+no indentation off; C#'s `$$"""` (a brace written once) is not taken, so `$"""` reads braces as `$"..."` does.
+
 ### Going over text
 
 A text is split and trimmed without copying: each part is a `read string`, a look at the text where it is.
@@ -1265,6 +1295,40 @@ tracking it, and closing becomes the responsibility of whoever wrote that struct
 writes its buffer and loses the error; a panic does not unwind, so there what the buffer holds is lost. In C# the same idea is an analyzer
 warning (CA2000); Rust has no such check.
 
+### Loops with a name, and counting down
+
+A loop may have a name, so that a loop inside it can leave it or go on with its next round; the name is written
+before `for` or `while`, as in C2y, Go and Java (Rust writes `'outer:`):
+
+```
+search: for row in read grid {
+    for cell in read row {
+        if cell == wanted {
+            break search                         // leaves both loops
+        }
+        if cell < 0 {
+            continue search                      // the next row
+        }
+    }
+}
+outer: for i in 0..n { print(i) }                // error: no `break outer` or `continue outer` uses the name
+```
+
+A name that is not used is an error, as is the name of a loop around it again; side by side, loops may have
+the same name. What the rounds left own is let go on the way out, as with `break`. In compiled code it is a
+`goto`.
+
+A range is gone over from its end down with `.reversed()`: the same numbers as `a..b`, the last first, and
+none when `a` is not below `b`. On an unsigned type it stops at the start without going below it:
+
+```
+for i in (0..xs.length()).reversed() { }         // xs.length() - 1 down to 0
+for k in (0..n).reversed() { }                   // n is a uint: n - 1 down to 0, never wraps
+for i in (0..3) { }                              // error: a range in brackets is gone over with `.reversed()`
+```
+
+Rust writes `(0..n).rev()`, Swift `(0..<n).reversed()`.
+
 ### Function values
 
 `Func<int, bool>` is the type of a function; the last parameter is the return type, and `Func<int, void>` returns
@@ -1409,6 +1473,25 @@ const int Size = size()                                  // error: what it runs 
 A local never takes the name of a const it sees. In compiled code a number is written where it is used, and
 a table is one `static const`, which nothing copies. The rules are in the decisions file ("Consts", "Consts,
 as built", "Calls in a const").
+
+`const assert` checks a condition when the program is compiled, at the top of a file or in a block; it may
+call functions, as a const may, and leaves nothing in the program. The size and alignment of a type, which
+differ from machine to machine, are measured only here:
+
+```
+const assert(BlockSize % 8 == 0)
+const assert(Primes.length() == 4, "four primes")
+const assert(crcTable()[1] == 0x77073096)
+const assert(Memory.sizeOf<Header>() == 8, "a header is eight bytes, as the file has it")
+const nint Size = Memory.sizeOf<Header>()                // error: a const holds the same value on every machine
+const assert(BlockSize == 60)                            // error: const assert failed: BlockSize == 60
+                                                         //   left:  64
+                                                         //   right: 60
+```
+
+One that measures a type is checked for the machine the program is compiled for, and compiled code hands it
+to C's `_Static_assert` as well, so a machine the checker did not run on checks it too; it calls no function.
+C11 writes `static_assert`, Rust `const _: () = assert!(...)`, Zig `comptime assert`.
 
 A static is one value for the whole program, which lives until it ends and is never assigned. Its value
 may be found when the program runs; the type is written, and one of three kinds:

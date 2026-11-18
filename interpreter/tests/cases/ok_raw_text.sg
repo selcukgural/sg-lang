@@ -1,0 +1,53 @@
+// Raw text, C#'s: no escapes, quotes inside, lines whose indentation the closing quotes take
+// off, and `$` in front to put values in.
+void main() {
+    print("""a "quoted" word""")
+    print("""C:\Users\new\table.txt""")
+    var json = """
+        {
+          "name": "tea",
+          "tags": ["green", "hot"]
+        }
+        """
+    print(json)
+    print(json.length())
+
+    // A line with nothing on it may be shorter; one indented further keeps the rest.
+    var poem = """
+        first
+
+            second
+        """
+    print(poem)
+
+    // More quotes to hold three.
+    print(""""a """ inside"""")
+    var block = """"
+        """
+        quoted
+        """
+        """"
+    print(block)
+
+    // With values.
+    var name = "tea"
+    int count = 7
+    print($"""{name} costs {count,3} "lira" {{each}}""")
+    print($"""
+        name:  {name}
+        count: {count:D3}
+        hex:   {255:X}
+        """)
+
+    // A raw text is a text like any other: a const, a pattern.
+    match name {
+        """tea""" => print("matched")
+        _ => print("no")
+    }
+    print(Help)
+}
+
+const string Help = """
+    usage: tool [options]
+      -h  this text
+    """

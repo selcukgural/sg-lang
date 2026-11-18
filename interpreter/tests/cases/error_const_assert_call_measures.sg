@@ -1,0 +1,12 @@
+struct Header {
+    uint magic
+}
+
+int expected() {
+    return 4
+}
+
+const assert(Memory.sizeOf<Header>() == expected())
+
+void main() {
+}

@@ -1,0 +1,5 @@
+const int Size = 3
+const assert(Size > 4, $"too small: {Size}")
+
+void main() {
+}

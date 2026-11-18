@@ -1,0 +1,17 @@
+// `continue outer` starts the next round of the outer loop: what was moved is gone there.
+void take(List<int> xs) {
+    print(xs.length())
+}
+
+void main() {
+    var xs = List<int>()
+    outer: for i in 0..3 {
+        for j in 0..3 {
+            if j == 1 {
+                take(xs)
+                continue outer
+            }
+        }
+        xs.add(i)
+    }
+}

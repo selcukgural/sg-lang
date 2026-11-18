@@ -1,0 +1,5 @@
+error: the message of a `const assert` is a text written out, with nothing put into it
+  it is said when the program is compiled; the values of a comparison are shown beside it
+  --> error_const_assert_message.sg:2:24
+ 2 | const assert(Size > 4, $"too small: {Size}")
+   |                        ^^^^^^^^^^^^^^^^^^^^

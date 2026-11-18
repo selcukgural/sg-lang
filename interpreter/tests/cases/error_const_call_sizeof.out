@@ -1,0 +1,9 @@
+error: the value of `HeaderSize` is found when the program is compiled, and what it runs measures the size of a type, which differs from machine to machine
+  a value that cannot be found when the program is compiled is a `static`, found when the program first uses it: `static T Name = f()`
+  --> error_const_call_sizeof.sg:10:25
+ 10 | const nint HeaderSize = headerSize()
+    |                         ^^^^^^^^^^
+  `headerSize` measures the size of a type, which differs from machine to machine here:
+  --> error_const_call_sizeof.sg:7:12
+ 7 |     return Memory.sizeOf<Header>()
+   |            ^^^^^^^^^^^^^^^^^^^^^^^

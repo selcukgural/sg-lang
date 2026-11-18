@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 18 November 2026, the hundred-and-fifth slice.
+Last brought up to date: 18 November 2026, the hundred-and-sixth slice.
 
 ## Functions and variables
 
@@ -32,12 +32,15 @@ Last brought up to date: 18 November 2026, the hundred-and-fifth slice.
 | the `unused_variables` lint (a warning) | nothing to write | built | A local variable nothing reads is a compile error: `var x = 1` alone, a variable only written (`x += 1`, `p.x = 0` on a copy), the name of a `for` or of a pattern. A write through `ref`, `shared` or raw memory is a use; a parameter and a `Disposable` value are not looked at |
 | `let _guard = ...;` | `var guard = ...` | built | A variable of a `Disposable` type is kept for its end without being read; SG has no `_name` |
 | `for _ in 0..n`, `Some(_)` | `for _ in 0..n`, `Ok(_)` | built | |
+| `'outer: for ... { break 'outer; }` | `outer: for ... { break outer }` | built | Also `continue outer` and `outer: while`; C2y's and Go's notation, with no `'`. A name not used is an error. `loop { }` is `while true { }` |
+| `for i in (0..n).rev()` | `for i in (0..n).reversed()` | built | Only at the head of a `for`; `step_by` is not there |
 | the `unused_assignments` lint (`x = 2` never read after) | nothing | not in SG | Not looked at yet: a value given after the last read, or written over before it is read, passes; noted for later |
 | `type Id = u64;` | `using Id = ulong` | built | `public using` from a module |
 | `const BLOCK: usize = 4096;` | `const nint BlockSize = 4096` | built | At the top of a file (`public const` from a module) or in a block. Numbers, `bool`, `char`, a text, and arrays, structs and enums of numbers; the value is found when the program is compiled, an overflow there is a compile error. A name in PascalCase, as C#'s |
 | `const MASKS: [u32; 4] = [1, 3, 7, 15];` | `const uint[] Masks = { 1, 3, 7, 15 }` | built | The items are counted. Used where it lies, as a `read` borrow that lasts for the run; `var copy = Masks` copies it |
 | `const fn` called in a `const` | any function: `const int[256] Crc = crcTable()` | built | No mark on the function. The checker follows the calls and refuses input and output, the clock, the random bytes of the system, the environment, other programs, raw memory, C, tasks, locks, a call through a `Func`, and `sin`, `exp`, `log`, `pow` and their kin, whose last bit the C library of each system finds in its own way. A panic or an overflow is a compile error; at most 100 000 000 steps and 64 MB. Rust's `const fn` cannot allocate; here a function may use a `List`, a `HashMap` or a `string` inside |
 | `include_bytes!("logo.gif")` | `embed("logo.gif")`, in a const: `const byte[] Logo = embed("logo.gif")` | built | C23's `#embed`; the path from the folder of the source file, a file of at most 64 MB |
+| `const _: () = assert!(size_of::<Header>() == 8);` | `const assert(Memory.sizeOf<Header>() == 8, "eight bytes")` | built | At the top of a file or in a block; the condition is made as a const, calls included, and the error shows both sides of a comparison. One that measures a type calls no function, and compiled code hands it to C's `_Static_assert` too |
 | `match x { MAX => ... }` (a const in a pattern) | `match x { Max => ... }` | built | A const of a number, a `char`, a text or a `bool`; a local never takes the name of a const it sees, so the name means the const |
 | `static X: T = expr;` (a constant expression) | `static T X = expr` | built | Lies in the program's data from its start, with no check; a `static const` in C when it holds no atomic value |
 | `static X: LazyLock<T> = LazyLock::new(f);`, `OnceLock` | `static T X = f()` | built | Found the first time it is used, once, whichever task comes first; the others wait. A later read is an acquire load and a branch. Read as a `read` borrow |
@@ -84,6 +87,7 @@ Last brought up to date: 18 November 2026, the hundred-and-fifth slice.
 | `String` | `string` | built | Owns its bytes, always UTF-8 |
 | `&str` | `read string` | built | |
 | `format!("{a}: {b}")` | `$"{a}: {b}"` | built | A formatted text; `.toString()` makes it a `string` |
+| `r#"a "quoted" word"#`, `r"C:\dir"` | `"""a "quoted" word"""`, `"""C:\dir"""` | built | C#'s raw text; on lines, the indentation of the closing `"""` is taken off every line (Rust keeps it; `indoc!` takes it off). `$"""...{x}..."""` puts values in |
 | `{:>5}`, `{:<10}`, `{:02X}`, `{:08b}`, `{:.2}` | `{n,5}`, `{name,-10}`, `{b:X2}`, `{mask:b8}`, `{x:F2}` | built | C#'s widths and letters |
 | `impl Display for T` | `T : Formattable` with `void format(read this, ref Formatter f)` | built | Without the method the text is made from the fields |
 | `String::with_capacity(n)` | `string.withCapacity(n)` | built | |

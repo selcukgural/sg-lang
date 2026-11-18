@@ -1296,7 +1296,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             locks: Vec::new(),
             borrows: Borrows::default(),
             loops: 0,
-            loop_depths: Vec::new(),
+            loop_cx: Vec::new(),
             ret: Ty::Void,
             sources: Vec::new(),
             func_name: decl.name.clone(),
@@ -1317,7 +1317,16 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             true => diag.note("a const sees other consts, not variables: its value is found when the program is compiled"),
             false => diag,
         })?;
-        constant_only(&decl.init)?;
+        constant_only(&decl.init, decl.assert.is_some())?;
+        // What measures a type is checked for the machine the program is compiled for, by the
+        // compiler of C too, which runs no call.
+        if decl.assert.is_some() && measures_type(&decl.init) {
+            if let Some(call) = first_call(&decl.init) {
+                return Err(Diag::error(call, "a `const assert` that measures a type calls no function")
+                    .note("it is checked for the machine the program is compiled for, by the compiler of C as well, which runs no call")
+                    .hint("check what the call gives in a `const assert` of its own"));
+            }
+        }
     }
     // A const whose initializer calls a function (or names a const that does) is found once
     // the bodies it reaches are checked; the others are found now, before any body.
@@ -1349,7 +1358,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             locks: Vec::new(),
             borrows: Borrows::default(),
             loops: 0,
-            loop_depths: Vec::new(),
+            loop_cx: Vec::new(),
             ret: sig.ret.clone(),
             sources: sig.sources.clone(),
             func_name: func.name.clone(),
@@ -1455,6 +1464,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         finding.check_body(index, prog, &const_table, &body, false)?;
     }
     prog.const_values = const_table.values.clone();
+    const_asserts(prog, &const_table, &structs, src)?;
     let mut seen: Vec<crate::unread::Seen> = finding.seen.into_iter().map(|found| found.expect("every body is checked")).collect();
     if tests {
         seen.extend(check_tests(prog, &names, &const_table, &sets, &structs, &enums, &sigs, src)?);
@@ -1534,7 +1544,7 @@ fn statics_found(prog: &mut Program, src: &str, structs: &HashMap<String, Struct
         if !plain_constant(&value) || !const_able(&value.ty, structs, enums, &mut Vec::new()) {
             continue;
         }
-        let as_const = ConstDecl { public: false, name: decl.name.clone(), name_span: decl.name_span, ty: decl.ty.clone(), init: value, local: decl.local.clone(), visible: Vec::new() };
+        let as_const = ConstDecl { public: false, name: decl.name.clone(), name_span: decl.name_span, ty: decl.ty.clone(), init: value, local: decl.local.clone(), visible: Vec::new(), assert: None };
         found.push((position, crate::interp::find_called(prog, src, &prog.const_values, &as_const)?));
     }
     for (position, value) in found {
@@ -1758,6 +1768,77 @@ impl Finding<'_> {
         table.values.insert(name.to_string(), (ty, value));
         self.stack.pop();
         Ok(())
+    }
+}
+
+/// Whether a `const assert` measures a type (`Memory.sizeOf`, `Memory.alignOf`) or reads a
+/// limit of `nint` or `nuint`: what differs from machine to machine, which compiled code
+/// checks again with the compiler of C.
+pub fn measures_type(expr: &Expr) -> bool {
+    let mut found = match &expr.kind {
+        ExprKind::SizeOf { .. } => true,
+        ExprKind::Constant { ty: Ty::Int(int), .. } => matches!(int, IntTy::Nint | IntTy::Nuint),
+        _ => false,
+    };
+    crate::sums::children(expr, &mut |child| found |= measures_type(child));
+    found
+}
+
+/// Where the first call of a function or a method is, `length()` aside.
+fn first_call(expr: &Expr) -> Option<Span> {
+    match &expr.kind {
+        ExprKind::Call { name_span, .. } => return Some(*name_span),
+        ExprKind::Method { name, args, name_span, .. } if !(name == "length" && args.is_empty()) => return Some(*name_span),
+        _ => {}
+    }
+    let mut found = None;
+    crate::sums::children(expr, &mut |child| found = found.or_else(|| first_call(child)));
+    found
+}
+
+/// Each `const assert` holds, or is a compile error that says what it was found to be: for a
+/// comparison, the value of each side too.
+fn const_asserts(prog: &Program, table: &ConstTable, structs: &HashMap<String, StructInfo>, src: &str) -> Res<()> {
+    for decl in &prog.consts {
+        let Some(assert) = &decl.assert else { continue };
+        if matches!(table.values.get(&decl.name), Some((_, ConstVal::Bool(true)))) || (prog.other_machine && measures_type(&decl.init)) {
+            continue;
+        }
+        let mut diag = Diag::error(decl.init.span, match &assert.message {
+            Some(message) => format!("const assert failed: {message}"),
+            None => format!("const assert failed: {}", &src[decl.init.span.start..decl.init.span.end]),
+        });
+        if let ExprKind::Binary(op, left, right) = &decl.init.kind {
+            if matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
+                for (side, value) in [("left: ", left), ("right:", right)] {
+                    let as_const = ConstDecl { public: false, name: format!("{}#{}", decl.name, side.trim_end_matches([':', ' '])), name_span: decl.name_span, ty: decl.ty.clone(), init: (**value).clone(), local: decl.local.clone(), visible: decl.visible.clone(), assert: None };
+                    let found = crate::interp::find_called(prog, src, &table.values, &as_const)?;
+                    diag = diag.note(format!("{side} {}", const_text(&found, structs)));
+                }
+            }
+        }
+        return Err(diag);
+    }
+    Ok(())
+}
+
+/// A value of a const as a program writes it, for the message of a `const assert`.
+fn const_text(value: &ConstVal, structs: &HashMap<String, StructInfo>) -> String {
+    let items = |items: &[ConstVal]| items.iter().map(|item| const_text(item, structs)).collect::<Vec<_>>().join(", ");
+    match value {
+        ConstVal::Int(_, n) => n.to_string(),
+        ConstVal::Float(_, x) => x.to_string(),
+        ConstVal::Bool(b) => b.to_string(),
+        ConstVal::Char(c) => format!("{c:?}"),
+        ConstVal::Str(text) => format!("{text:?}"),
+        ConstVal::Array(values) => format!("{{ {} }}", items(values)),
+        ConstVal::Bytes(bytes) => format!("{{ {} }}", bytes.iter().map(|byte| byte.to_string()).collect::<Vec<_>>().join(", ")),
+        ConstVal::Struct(name, values) => {
+            let fields = structs.get(name).map(|info| info.fields.iter().zip(values).map(|((field, _), value)| format!("{field} = {}", const_text(value, structs))).collect::<Vec<_>>().join(", ")).unwrap_or_else(|| items(values));
+            format!("{} {{ {fields} }}", short_name(name))
+        }
+        ConstVal::Enum(name, _, values) if values.is_empty() => short_name(name).to_string(),
+        ConstVal::Enum(name, _, values) => format!("{}({})", short_name(name), items(values)),
     }
 }
 
@@ -2098,7 +2179,7 @@ fn check_tests(
             locks: Vec::new(),
             borrows: Borrows::default(),
             loops: 0,
-            loop_depths: Vec::new(),
+            loop_cx: Vec::new(),
             ret: Ty::Void,
             sources: Vec::new(),
             func_name: "test".to_string(),
@@ -2572,30 +2653,35 @@ fn not_const_type(ty: &Ty, top: bool, structs: &HashMap<String, StructInfo>, enu
 
 /// What a const is given is known when the program is compiled: numbers, texts, other consts,
 /// operators, casts, calls, and arrays, structs and enums built of them.
-fn constant_only(expr: &Expr) -> Res<()> {
+/// `measures`: the const is a `const assert`, where `Memory.sizeOf` and `Memory.alignOf` are
+/// written too.
+fn constant_only(expr: &Expr, measures: bool) -> Res<()> {
     match &expr.kind {
         ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Const(_) | ExprKind::Embed(_) | ExprKind::Constant { .. } | ExprKind::FuncRef(_) => Ok(()),
-        ExprKind::Unary(_, inner) | ExprKind::Cast { expr: inner, .. } | ExprKind::Widen(_, inner) | ExprKind::Load(inner) | ExprKind::Field { recv: inner, .. } => constant_only(inner),
+        ExprKind::Unary(_, inner) | ExprKind::Cast { expr: inner, .. } | ExprKind::Widen(_, inner) | ExprKind::Load(inner) | ExprKind::Field { recv: inner, .. } => constant_only(inner, measures),
         // What a call is given: `distinct(Digits)` lends the array as a slice.
-        ExprKind::AsSlice(inner) | ExprKind::Borrow { expr: inner, .. } | ExprKind::Unbox(inner) => constant_only(inner),
+        ExprKind::AsSlice(inner) | ExprKind::Borrow { expr: inner, .. } | ExprKind::Unbox(inner) => constant_only(inner, measures),
         ExprKind::Binary(_, left, right) | ExprKind::Index { recv: left, index: right, .. } => {
-            constant_only(left)?;
-            constant_only(right)
+            constant_only(left, measures)?;
+            constant_only(right, measures)
         }
-        ExprKind::Array { args, items, .. } => args.iter().chain(items.iter().flatten()).try_for_each(constant_only),
-        ExprKind::StructLit { fields, .. } => fields.iter().try_for_each(|field| constant_only(&field.value)),
-        ExprKind::Variant { args, .. } => args.iter().try_for_each(constant_only),
+        ExprKind::Array { args, items, .. } => args.iter().chain(items.iter().flatten()).try_for_each(|arg| constant_only(arg, measures)),
+        ExprKind::StructLit { fields, .. } => fields.iter().try_for_each(|field| constant_only(&field.value, measures)),
+        ExprKind::Variant { args, .. } => args.iter().try_for_each(|arg| constant_only(arg, measures)),
         // A call runs when the program is compiled; what the function does is checked with
         // the bodies it reaches (see `comptime`).
-        ExprKind::Call { args, .. } => args.iter().try_for_each(constant_only),
+        ExprKind::Call { args, .. } => args.iter().try_for_each(|arg| constant_only(arg, measures)),
         ExprKind::Method { recv, args, .. } => {
             // `Size.square(3)`, `int.parse(text)`: a name before the dot here is a type, since
             // a const sees no variable.
             if !matches!(recv.kind, ExprKind::Var(_)) {
-                constant_only(recv)?;
+                constant_only(recv, measures)?;
             }
-            args.iter().try_for_each(constant_only)
+            args.iter().try_for_each(|arg| constant_only(arg, measures))
         }
+        ExprKind::SizeOf { .. } if measures => Ok(()),
+        ExprKind::SizeOf { item, align, .. } => Err(Diag::error(expr.span, format!("the {} of a type differs from machine to machine, and a const holds the same value on every one", if *align { "alignment" } else { "size" }))
+            .hint(format!("check it with `const assert(Memory.{}<{}>() == ...)`, or find it when the program runs", if *align { "alignOf" } else { "sizeOf" }, item.name))),
         ExprKind::Var(name) => Err(Diag::error(expr.span, format!("`{name}` is a variable, and the value of a const is found when the program is compiled"))),
         _ => Err(Diag::error(expr.span, "this is not known when the program is compiled, and a const is given its value then")
             .note("a const is made of numbers, texts, other consts, operators, casts, calls, and arrays, structs and enums of them")),
@@ -3515,6 +3601,22 @@ impl ConstTable {
     }
 }
 
+/// A loop being checked.
+struct LoopCx {
+    /// How many scopes were open where the loop starts: a `break` ends those above.
+    depth: usize,
+    label: Option<Label>,
+    /// Whether a `break` or `continue` names the loop.
+    used: bool,
+    /// What was moved at each `break` that leaves the loop.
+    breaks: Vec<Moves>,
+    /// What was moved at each `continue` of the loop, and, once its body is checked, also at
+    /// its end if the end is reached: where the rounds after the first start.
+    continues: Vec<Moves>,
+    /// What was moved when the loop started.
+    before: Moves,
+}
+
 struct Checker<'a> {
     names: &'a Names,
     consts: &'a ConstTable,
@@ -3537,8 +3639,8 @@ struct Checker<'a> {
     locks: Vec<Lock>,
     borrows: Borrows,
     loops: usize,
-    /// How many scopes were open where each enclosing loop starts: a `break` ends those above.
-    loop_depths: Vec<usize>,
+    /// The enclosing loops, the innermost last.
+    loop_cx: Vec<LoopCx>,
     ret: Ty,
     /// Where a returned borrow may come from.
     sources: Vec<Source>,
@@ -5237,17 +5339,19 @@ impl<'a> Checker<'a> {
                 }
                 *after = self.names_after(named, "if")?;
             }
-            StmtKind::While { cond, body, after } => {
+            StmtKind::While { cond, body, after, label } => {
                 self.forget_narrowing_of_assigned(body, Some(cond));
                 let node = self.node();
                 self.borrows.loops.push(node);
                 self.scopes.push(Scope::default());
-                let exit = first_break(body);
+                let exit = first_break(body, label.as_ref());
                 let fails = exit.map_or(NamesSeen::Fails, NamesSeen::Break);
-                let result = self.condition(cond, fails).and_then(|(_, fails)| self.loop_body(body, &[], Vec::new()).map(|_| fails));
+                let result = self.condition(cond, fails).and_then(|(_, fails)| self.loop_body(body, &[], Vec::new(), label.as_ref()).map(|cx| (fails, cx)));
                 self.borrows.loops.pop();
-                let fails = result?;
+                let (fails, cx) = result?;
                 self.pop_scope(true)?;
+                // `while true` ends only by a `break`.
+                self.after_loop(cx, !matches!(cond.kind, ExprKind::Bool(true)));
                 // `while x is null { ... }`: the loop ends only when the condition fails, so
                 // after it `x` is not null, unless a `break` leaves it earlier; the same for
                 // the names of `while r is not Ok(value) { ... }`.
@@ -5266,7 +5370,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            StmtKind::For { var, var_span, from, to, body } => {
+            StmtKind::For { var, var_span, from, to, body, label, .. } => {
                 self.forget_narrowing_of_assigned(body, None);
                 let from_ty = self.int_operand(from, None, "the start of the range")?;
                 let to_ty = self.int_operand(to, Some(from_ty), "the end of the range")?;
@@ -5284,12 +5388,13 @@ impl<'a> Checker<'a> {
                 self.borrows.loops.push(node);
                 self.scopes.push(Scope::default());
                 self.declare_local(var, ty, *var_span)?;
-                let result = self.loop_body(body, &[], Vec::new());
+                let result = self.loop_body(body, &[], Vec::new(), label.as_ref());
                 self.borrows.loops.pop();
-                result?;
+                let cx = result?;
                 self.pop_scope(true)?;
+                self.after_loop(cx, true);
             }
-            StmtKind::ForEach { var, var_span, iter, body, by } => {
+            StmtKind::ForEach { var, var_span, iter, body, by, label } => {
                 self.forget_narrowing_of_assigned(body, None);
                 // Like `match`: an owned collection is handed over to the loop, a borrowed one
                 // lends its items.
@@ -5408,7 +5513,7 @@ impl<'a> Checker<'a> {
                 }
                 let node = self.node();
                 self.borrows.loops.push(node);
-                let result = self.loop_body(body, &[], vec![(var.clone(), item, *var_span)]);
+                let result = self.loop_body(body, &[], vec![(var.clone(), item, *var_span)], label.as_ref());
                 self.borrows.loops.pop();
                 if locked {
                     self.locks.pop();
@@ -5416,7 +5521,7 @@ impl<'a> Checker<'a> {
                 for _ in 0..text_locks {
                     self.locks.pop();
                 }
-                result?;
+                self.after_loop(result?, true);
             }
             StmtKind::As { mutable, value, name, name_span, body } => {
                 let found = match self.place(value)? {
@@ -5549,14 +5654,8 @@ impl<'a> Checker<'a> {
                 self.not_a_const(name, *name_span)?;
                 self.scopes.last_mut().expect("an open scope").statics.push((name.clone(), full.clone()));
             }
-            StmtKind::Break | StmtKind::Continue => {
-                let word = if matches!(stmt.kind, StmtKind::Break) { "break" } else { "continue" };
-                if self.loops == 0 {
-                    return Err(Diag::error(stmt_span, format!("`{word}` can only be written inside a loop")));
-                }
-                let depth = *self.loop_depths.last().expect("inside a loop");
-                self.unclosed(depth, Some((stmt_span, word)))?;
-            }
+            StmtKind::Break(label) => self.leave_round(label.as_ref(), true, stmt_span)?,
+            StmtKind::Continue(label) => self.leave_round(label.as_ref(), false, stmt_span)?,
             StmtKind::Expr(expr) => {
                 self.unused(expr)?;
             }
@@ -5858,22 +5957,79 @@ impl<'a> Checker<'a> {
         Ok(names)
     }
 
-    /// A value moved inside a loop is gone when the next iteration starts.
-    fn loop_body(&mut self, body: &mut Block, narrow: &[String], binds: Binds) -> Res<()> {
+    /// `break` (`leaves`) or `continue`, with the name of the loop if one is written.
+    fn leave_round(&mut self, label: Option<&Label>, leaves: bool, stmt_span: Span) -> Res<()> {
+        let word = if leaves { "break" } else { "continue" };
+        if self.loop_cx.is_empty() {
+            return Err(Diag::error(stmt_span, format!("`{word}` can only be written inside a loop")));
+        }
+        let index = match label {
+            None => self.loop_cx.len() - 1,
+            Some(label) => match self.loop_cx.iter().rposition(|cx| cx.label.as_ref().is_some_and(|named| named.name == label.name)) {
+                Some(index) => index,
+                None => {
+                    let named: Vec<String> = self.loop_cx.iter().rev().filter_map(|cx| cx.label.as_ref().map(|named| format!("`{}`", named.name))).collect();
+                    let diag = Diag::error(label.span, format!("no loop around this `{word}` is named `{}`", label.name));
+                    return Err(match named.is_empty() {
+                        true => diag.hint(format!("name the loop it {}: `{}: for ...`", if leaves { "leaves" } else { "goes on with" }, label.name)),
+                        false => diag.note(format!("the loops around it that have a name: {}", named.join(", "))),
+                    });
+                }
+            },
+        };
+        let depth = self.loop_cx[index].depth;
+        self.unclosed(depth, Some((stmt_span, word)))?;
+        let moves = self.moves();
+        let cx = &mut self.loop_cx[index];
+        cx.used |= label.is_some();
+        if leaves {
+            cx.breaks.push(moves);
+        } else {
+            cx.continues.push(moves);
+        }
+        Ok(())
+    }
+
+    /// A value moved inside a loop is gone when the next iteration starts: the end of the
+    /// body and every `continue` of the loop start one. `label`: the name of the loop.
+    fn loop_body(&mut self, body: &mut Block, narrow: &[String], binds: Binds, label: Option<&Label>) -> Res<LoopCx> {
+        if let Some(label) = label {
+            if let Some(outer) = self.loop_cx.iter().find_map(|cx| cx.label.as_ref().filter(|named| named.name == label.name)) {
+                return Err(Diag::error(label.span, format!("a loop around this one is already named `{}`", label.name))
+                    .related(outer.span, "it is named here")
+                    .hint("give the inner loop a name of its own"));
+            }
+        }
         let before = self.moves();
         self.loops += 1;
-        self.loop_depths.push(self.scopes.len());
+        self.loop_cx.push(LoopCx { depth: self.scopes.len(), label: label.cloned(), used: false, breaks: Vec::new(), continues: Vec::new(), before: Vec::new() });
         let result = self.block_with(body, narrow, binds);
-        self.loop_depths.pop();
+        let mut cx = self.loop_cx.pop().expect("pushed above");
         self.loops -= 1;
         result?;
-        if leaves(body, true) {
-            return Ok(());
+        if let Some(label) = cx.label.as_ref().filter(|_| !cx.used) {
+            return Err(Diag::error(label.span, format!("no `break {0}` or `continue {0}` uses the name of this loop", label.name))
+                .hint(format!("a loop needs a name only for a loop inside it to leave it: remove `{}:`", label.name)));
         }
-        for (scope, saved) in self.scopes.iter().zip(&before) {
-            for (var, was) in scope.vars.iter().zip(saved) {
-                let new_part = var.moved.parts.iter().find(|(path, _)| !was.parts.iter().any(|(old, _)| old == path));
-                let (what, at) = match (var.moved.whole, was.whole, new_part) {
+        let mut starts = std::mem::take(&mut cx.continues);
+        if !leaves(body, true) {
+            starts.push(self.moves());
+        }
+        for start in &starts {
+            self.moved_for_next_round(&before, start)?;
+        }
+        cx.continues = starts;
+        cx.before = before;
+        Ok(cx)
+    }
+
+    /// The error of a value that the loop moved and that the round starting with `start`
+    /// would find gone, if there is one. `before`: what was moved when the loop started.
+    fn moved_for_next_round(&self, before: &Moves, start: &Moves) -> Res<()> {
+        for (scope, (saved, now)) in self.scopes.iter().zip(before.iter().zip(start)) {
+            for ((var, was), moved) in scope.vars.iter().zip(saved).zip(now) {
+                let new_part = moved.parts.iter().find(|(path, _)| !was.parts.iter().any(|(old, _)| old == path));
+                let (what, at) = match (moved.whole, was.whole, new_part) {
                     (Some(at), None, _) => (var.name.clone(), at),
                     (_, _, Some((path, at))) => (format!("{}.{path}", var.name), *at),
                     _ => continue,
@@ -5882,6 +6038,22 @@ impl<'a> Checker<'a> {
             }
         }
         Ok(())
+    }
+
+    /// What is moved after a loop: what was moved where a `break` left it, and, when the loop
+    /// also ends by its head (`head`), what was moved before its first round and where each
+    /// round ended, since it may run no round or end after any.
+    fn after_loop(&mut self, cx: LoopCx, head: bool) {
+        let mut exits = cx.breaks;
+        if head {
+            exits.push(cx.before);
+            exits.extend(cx.continues);
+        }
+        let Some((first, rest)) = exits.split_first() else { return };
+        self.set_moves(first);
+        for other in rest {
+            self.merge_moves(other);
+        }
     }
 
     /// What was known about a variable before a loop does not hold inside it if the loop
@@ -11754,7 +11926,7 @@ fn changed_in<'b>(block: &'b Block, names: &mut Vec<&'b str>) {
             }
             StmtKind::Unsafe(body) => changed_in(body, names),
             StmtKind::Return(Some(expr)) | StmtKind::Expr(expr) | StmtKind::Discard(expr) => taken_in(expr, names),
-            StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::Const { .. } | StmtKind::Static { .. } => {}
+            StmtKind::Return(None) | StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Const { .. } | StmtKind::Static { .. } => {}
         }
     }
 }
@@ -12569,10 +12741,10 @@ fn leaves(block: &Block, in_loop: bool) -> bool {
     let Some(last) = block.last() else { return false };
     match &last.kind {
         StmtKind::Return(_) => true,
-        StmtKind::Break | StmtKind::Continue => in_loop,
+        StmtKind::Break(_) | StmtKind::Continue(_) => in_loop,
         StmtKind::If { then, els: Some(els), .. } => leaves(then, in_loop) && leaves(els, in_loop),
         StmtKind::As { body, .. } | StmtKind::Lock { body, .. } | StmtKind::Unsafe(body) => leaves(body, in_loop),
-        StmtKind::While { cond, body, .. } => matches!(cond.kind, ExprKind::Bool(true)) && !has_break(body),
+        StmtKind::While { cond, body, label, .. } => matches!(cond.kind, ExprKind::Bool(true)) && first_break(body, label.as_ref()).is_none(),
         StmtKind::Expr(expr) => never_returns(expr, in_loop),
         _ => false,
     }
@@ -12595,34 +12767,37 @@ fn arm_leaves(arm: &Arm, in_loop: bool) -> bool {
     }
 }
 
-/// Whether a `break` leaves this loop (those of inner loops do not count), also from inside
-/// a `match` anywhere in an expression: `1 + match k { 1 => { break } _ => 2 }`.
-fn has_break(block: &Block) -> bool {
-    first_break(block).is_some()
+/// The first `break` that leaves this loop, also from inside a `match` anywhere in an
+/// expression (`1 + match k { 1 => { break } _ => 2 }`): a `break` of no name outside the
+/// loops inside it, and one that names this loop (`label`) anywhere.
+fn first_break(block: &Block, label: Option<&Label>) -> Option<Span> {
+    breaks_of(block, label.map(|label| label.name.as_str()), false)
 }
 
-/// The first `break` that leaves this loop, as `has_break` finds them.
-fn first_break(block: &Block) -> Option<Span> {
+/// `nested`: the block is inside a loop within the one looked at.
+fn breaks_of(block: &Block, label: Option<&str>, nested: bool) -> Option<Span> {
+    let inner = |body: &Block| label.and_then(|_| breaks_of(body, label, true));
     block.iter().find_map(|stmt| match &stmt.kind {
-        StmtKind::Break => Some(stmt.span),
-        StmtKind::If { cond, then, els, .. } => breaks_in(cond).or_else(|| first_break(then)).or_else(|| els.as_ref().and_then(first_break)),
+        StmtKind::Break(None) => (!nested).then_some(stmt.span),
+        StmtKind::Break(Some(named)) => (label == Some(named.name.as_str())).then_some(stmt.span),
+        StmtKind::If { cond, then, els, .. } => breaks_in(cond, label, nested).or_else(|| breaks_of(then, label, nested)).or_else(|| els.as_ref().and_then(|els| breaks_of(els, label, nested))),
         // The condition, the range and the collection are reached outside the inner loop.
-        StmtKind::While { cond: expr, .. } | StmtKind::ForEach { iter: expr, .. } => breaks_in(expr),
-        StmtKind::For { from, to, .. } => breaks_in(from).or_else(|| breaks_in(to)),
+        StmtKind::While { cond: expr, body, .. } | StmtKind::ForEach { iter: expr, body, .. } => breaks_in(expr, label, nested).or_else(|| inner(body)),
+        StmtKind::For { from, to, body, .. } => breaks_in(from, label, nested).or_else(|| breaks_in(to, label, nested)).or_else(|| inner(body)),
         // The block of `as` is not a loop: a `break` in it leaves the loop around it.
-        StmtKind::As { value, body, .. } => breaks_in(value).or_else(|| first_break(body)),
-        StmtKind::Lock { items, body } => items.iter().find_map(|item| breaks_in(&item.value)).or_else(|| first_break(body)),
-        StmtKind::Unsafe(body) => first_break(body),
-        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Discard(expr) | StmtKind::Let { init: expr, .. } => breaks_in(expr),
-        StmtKind::Assign { target, value, .. } => breaks_in(target).or_else(|| breaks_in(value)),
-        StmtKind::Return(None) | StmtKind::Continue | StmtKind::Const { .. } | StmtKind::Static { .. } => None,
+        StmtKind::As { value, body, .. } => breaks_in(value, label, nested).or_else(|| breaks_of(body, label, nested)),
+        StmtKind::Lock { items, body } => items.iter().find_map(|item| breaks_in(&item.value, label, nested)).or_else(|| breaks_of(body, label, nested)),
+        StmtKind::Unsafe(body) => breaks_of(body, label, nested),
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Discard(expr) | StmtKind::Let { init: expr, .. } => breaks_in(expr, label, nested),
+        StmtKind::Assign { target, value, .. } => breaks_in(target, label, nested).or_else(|| breaks_in(value, label, nested)),
+        StmtKind::Return(None) | StmtKind::Continue(_) | StmtKind::Const { .. } | StmtKind::Static { .. } => None,
     })
 }
 
-/// The first `break` in an arm of a `match` in this expression.
-fn breaks_in(expr: &Expr) -> Option<Span> {
+/// The first `break` in an arm of a `match` in this expression, as `breaks_of` finds them.
+fn breaks_in(expr: &Expr, label: Option<&str>, nested: bool) -> Option<Span> {
     parts(expr).into_iter().find_map(|part| match part {
-        Part::Expr(inner) => breaks_in(inner),
-        Part::Block(block) => first_break(block),
+        Part::Expr(inner) => breaks_in(inner, label, nested),
+        Part::Block(block) => breaks_of(block, label, nested),
     })
 }

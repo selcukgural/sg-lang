@@ -8988,6 +8988,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         temps: 0,
         scopes: Vec::new(),
         loops: Vec::new(),
+        loop_names: Vec::new(),
         pre: Vec::new(),
         post: Vec::new(),
         types: String::new(),
@@ -9171,6 +9172,20 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         let init = emitter.const_init(ty, value)?;
         let _ = writeln!(const_defs, "static const {ctype} {} = {init};", const_cname(&name));
     }
+    // A `const assert` that measures a type is checked again by the compiler of C, for the
+    // machine the program is compiled for, which may not be the one the checker ran on.
+    let mut asserts = String::new();
+    for decl in prog.consts.iter().filter(|decl| decl.assert.is_some() && crate::check::measures_type(&decl.init)) {
+        let cond = emitter.assert_c(&decl.init, &prog.const_values)?;
+        let file = sources.file_at(decl.init.span.start);
+        let line = sources.text[file.start..decl.init.span.start].matches('\n').count() + 1;
+        let at = format!("{}:{line}", file.path);
+        let message = match decl.assert.as_ref().and_then(|assert| assert.message.as_deref()) {
+            Some(message) => format!("{at}: const assert failed: {message}"),
+            None => format!("{at}: const assert failed: {}", &sources.text[decl.init.span.start..decl.init.span.end]),
+        };
+        let _ = writeln!(asserts, "_Static_assert({cond}, {});", c_string(&message));
+    }
     // The statics the code reads, each defined once; a debug build lets go of what they hold
     // before it counts what is left (`sg_statics_end`).
     let mut static_defs = String::new();
@@ -9348,6 +9363,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     out.push_str(&emitter.late_types);
     out.push_str(&emitter.frame_types());
     out.push('\n');
+    out.push_str(&asserts);
     out.push_str(&const_defs);
     out.push_str(&emitter.glue_protos);
     out.push('\n');
@@ -10245,6 +10261,28 @@ struct Local {
 }
 
 
+/// A number of C of any integer type, with the suffix that keeps it whole.
+fn c_number(n: i128) -> String {
+    match n {
+        n if n == i128::from(i64::MIN) => "(-9223372036854775807LL - 1)".into(),
+        n if n < 0 => format!("({n}LL)"),
+        n if n > i128::from(i64::MAX) => format!("{n}ULL"),
+        n => format!("{n}LL"),
+    }
+}
+
+/// A loop with a name, being written: `break outer` and `continue outer` from a loop inside it
+/// go to its labels in C.
+struct NamedLoop {
+    name: String,
+    /// Where the loop is in `loops`.
+    index: usize,
+    /// The label after the loop, and whether a `break` goes there.
+    end: (String, bool),
+    /// The label at the end of its body, where a `continue` goes, and whether one does.
+    next: (String, bool),
+}
+
 struct Emitter<'a> {
     sources: &'a Sources,
     /// What each const holds (`Program::const_values`).
@@ -10279,6 +10317,8 @@ struct Emitter<'a> {
     scopes: Vec<Vec<Local>>,
     /// For each loop around: how many scopes were open where it starts.
     loops: Vec<usize>,
+    /// The loops being written that have a name (`outer: for ...`), innermost last.
+    loop_names: Vec<NamedLoop>,
     /// Lines that go before the statement being written: values kept in a temporary.
     pre: Vec<String>,
     /// Lines that go after it: those temporaries are dropped.
@@ -13137,13 +13177,24 @@ impl<'a> Emitter<'a> {
         let from = self.guards.len();
         self.reserving = None;
         let start = out.len();
+        let named = match &stmt.kind {
+            StmtKind::While { label: Some(label), .. } | StmtKind::For { label: Some(label), .. } | StmtKind::ForEach { label: Some(label), .. } => {
+                let (end, next) = (self.temp(), self.temp());
+                self.loop_names.push(NamedLoop { name: label.name.clone(), index: self.loops.len(), end: (end, false), next: (next, false) });
+                true
+            }
+            _ => false,
+        };
         let written = self.stmt_in(stmt, depth, out);
+        if named {
+            self.loop_names.pop();
+        }
         if let (Some(stmts), Some(text)) = (&mut self.written_stmts, out.get(start..)) {
             stmts.push((stmt.span, self.in_func.clone(), text.to_string()));
         }
         self.end_guards(from);
         // The writers the statement dropped are closed before the next one.
-        let leaves = matches!(stmt.kind, StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue);
+        let leaves = matches!(stmt.kind, StmtKind::Return(_) | StmtKind::Break(_) | StmtKind::Continue(_));
         if let Some(line) = self.closing_line().filter(|_| !leaves && !self.in_lock() && self.stmt_mentions_writer(stmt, false)) {
             let _ = writeln!(out, "{}{line}", "    ".repeat(depth));
         }
@@ -13376,7 +13427,7 @@ impl<'a> Emitter<'a> {
                 }
                 self.scopes.last_mut().expect("an open scope").extend(lasting.into_iter().flatten());
             }
-            StmtKind::While { cond, body, after } => {
+            StmtKind::While { cond, body, after, .. } => {
                 self.nothing_gone();
                 let (cond, names, chained, decls) = self.condition(cond, !after.is_empty())?;
                 // Declared before the loop, so that the code after it sees the names that
@@ -13405,11 +13456,39 @@ impl<'a> Emitter<'a> {
                 }
                 self.block_with(body, depth + 1, out, names)?;
                 self.release(kept, &format!("{pad}    "), out);
+                self.next_round_label(&format!("{pad}    "), out);
                 self.loops.pop();
                 let _ = writeln!(out, "{pad}}}");
+                self.loop_end_label(&pad, out);
                 if chained {
                     self.keep_names(after);
                 }
+            }
+            StmtKind::For { var, from, to, body, reversed: true, .. } => {
+                // `(a..b).reversed()`: the ends are computed once, the left first; the upper end
+                // is taken down by one before each round, so it never goes below the lower one
+                // and cannot overflow, on an unsigned type and at `MinValue` too.
+                let ty = self.ctype(&from.ty, from.span)?;
+                let (low, high) = (self.temp(), self.temp());
+                let (from_value, to_value) = (self.value(from)?, self.value(to)?);
+                self.flush_pre(&pad, out);
+                let _ = writeln!(out, "{pad}{{");
+                let _ = writeln!(out, "{pad}{ty} {low} = {from_value}; {ty} {high} = {to_value};");
+                self.flush_post(&pad, out);
+                self.nothing_gone();
+                let _ = writeln!(out, "{pad}while ({high} > {low}) {{");
+                let _ = writeln!(out, "{pad}    {high}--;");
+                self.temps += 1;
+                let cname = format!("v_{var}_{}", self.temps);
+                let line = format!("{ty} {cname} = {high};{}", unnamed(var, &cname));
+                let local = Local { name: var.clone(), cname, ty: from.ty.clone(), gone: false, drop: None };
+                self.loops.push(self.scopes.len());
+                self.block_with(body, depth + 1, out, vec![(local, line)])?;
+                self.next_round_label(&format!("{pad}    "), out);
+                self.loops.pop();
+                let _ = writeln!(out, "{pad}}}");
+                self.loop_end_label(&pad, out);
+                let _ = writeln!(out, "{pad}}}");
             }
             StmtKind::For { var, from, to, body, .. } => {
                 // The ends are computed once; the counter stops before the end, so it cannot
@@ -13548,8 +13627,10 @@ impl<'a> Emitter<'a> {
                 let local = Local { name: var.clone(), cname, ty: item, gone: false, drop: None };
                 self.loops.push(self.scopes.len());
                 self.block_with(body, depth + 2, out, vec![(local, line)])?;
+                self.next_round_label(&format!("{inner}    "), out);
                 self.loops.pop();
                 let _ = writeln!(out, "{inner}}}\n{pad}}}");
+                self.loop_end_label(&pad, out);
             }
             StmtKind::ForEach { var, iter, body, by, .. } => {
                 let list = match (by, list_behind(&iter.ty)) {
@@ -13605,22 +13686,38 @@ impl<'a> Emitter<'a> {
                     let _ = writeln!(out, "{pad}{line}");
                 }
             }
-            StmtKind::Break | StmtKind::Continue => {
-                // What the loop body declared ends here.
-                let from = *self.loops.last().expect("the checker allows these only in a loop");
+            StmtKind::Break(label) | StmtKind::Continue(label) => {
+                let leaves = matches!(stmt.kind, StmtKind::Break(_));
+                // A name of a loop around this one: its label in C. The C code of a body that is
+                // written twice (`counted_loop`) holds no loop, so these labels are written once.
+                let named = label.as_ref().map(|label| {
+                    self.loop_names.iter().rposition(|named| named.name == label.name).expect("the checker finds the loop a name stands for")
+                });
+                let named = named.filter(|&at| self.loop_names[at].index + 1 < self.loops.len());
+                // What the loop body declared ends here, and with a name, what the bodies of the
+                // loops it leaves declared.
+                let from = match named {
+                    Some(at) => self.loops[self.loop_names[at].index],
+                    None => *self.loops.last().expect("the checker allows these only in a loop"),
+                };
                 for line in self.drops(from) {
                     let _ = writeln!(out, "{pad}{line}");
                 }
                 self.ways_out += 1;
-                match (&stmt.kind, &self.break_to) {
-                    (StmtKind::Break, Some((label, _))) => {
+                match (leaves, named, &self.break_to) {
+                    (_, Some(at), _) => {
+                        let to = if leaves { &mut self.loop_names[at].end } else { &mut self.loop_names[at].next };
+                        to.1 = true;
+                        let _ = writeln!(out, "{pad}goto {};", to.0);
+                    }
+                    (true, None, Some((label, _))) => {
                         let _ = writeln!(out, "{pad}goto {label};");
                         self.break_to = Some((label.clone(), true));
                     }
-                    (StmtKind::Break, None) => {
+                    (true, None, None) => {
                         let _ = writeln!(out, "{pad}break;");
                     }
-                    _ => {
+                    (false, None, _) => {
                         let _ = writeln!(out, "{pad}continue;");
                     }
                 }
@@ -13629,6 +13726,67 @@ impl<'a> Emitter<'a> {
             StmtKind::Expr(expr) => self.expr_stmt(bare(expr), depth, out)?,
         }
         Ok(())
+    }
+
+    /// The condition of a `const assert` that measures a type, as a constant expression of C:
+    /// numbers, consts of numbers, the limits of the integer types, operators and casts.
+    fn assert_c(&mut self, expr: &Expr, values: &std::collections::BTreeMap<String, (Ty, ConstVal)>) -> Res<String> {
+        Ok(match &expr.kind {
+            ExprKind::SizeOf { align, of, .. } => {
+                let ctype = self.ctype(of, expr.span)?;
+                format!("((int64_t){}({ctype}))", if *align { "_Alignof" } else { "sizeof" })
+            }
+            ExprKind::Constant { ty: Ty::Int(int), name } => match (int, name.as_str()) {
+                (IntTy::Nint, "MaxValue") => "INTPTR_MAX".into(),
+                (IntTy::Nint, _) => "INTPTR_MIN".into(),
+                (IntTy::Nuint, "MaxValue") => "UINTPTR_MAX".into(),
+                (IntTy::Nuint, _) => "((uintptr_t)0)".into(),
+                (int, "MaxValue") => c_number(int.max()),
+                (int, _) => c_number(int.min()),
+            },
+            ExprKind::Int(n, _) => c_number(*n),
+            ExprKind::Bool(b) => if *b { "1" } else { "0" }.into(),
+            ExprKind::Const(name) => match values.get(name) {
+                Some((_, ConstVal::Int(_, n))) => c_number(*n),
+                Some((_, ConstVal::Bool(b))) => if *b { "1" } else { "0" }.into(),
+                _ => return Err(not_yet(expr.span, "a const that is not a number in a `const assert` that measures a type")),
+            },
+            ExprKind::Binary(op, left, right) => format!("({} {} {})", self.assert_c(left, values)?, op.symbol(), self.assert_c(right, values)?),
+            ExprKind::Unary(op, inner) => {
+                let sign = match op {
+                    UnOp::Neg => "-",
+                    UnOp::Not => "!",
+                    UnOp::BitNot => "~",
+                };
+                format!("({sign}{})", self.assert_c(inner, values)?)
+            }
+            ExprKind::Cast { ty, expr: inner } | ExprKind::Widen(ty, inner) => format!("(({})({}))", self.ctype(ty, expr.span)?, self.assert_c(inner, values)?),
+            _ => return Err(not_yet(expr.span, "this in a `const assert` that measures a type")),
+        })
+    }
+
+    /// The named loop being closed, if the innermost loop has a name.
+    fn closing_named(&mut self) -> Option<&mut NamedLoop> {
+        let index = self.loops.len().checked_sub(1)?;
+        self.loop_names.last_mut().filter(|named| named.index == index)
+    }
+
+    /// The label a `continue` of a loop inside goes to, at the end of the body of the loop
+    /// being closed, written when one goes there.
+    fn next_round_label(&mut self, pad: &str, out: &mut String) {
+        if let Some(named) = self.closing_named().filter(|named| named.next.1) {
+            let _ = writeln!(out, "{pad}{}: ;", named.next.0);
+            named.next.1 = false;
+        }
+    }
+
+    /// The label a `break` of a loop inside goes to, after the loop just closed.
+    fn loop_end_label(&mut self, pad: &str, out: &mut String) {
+        let index = self.loops.len();
+        if let Some(named) = self.loop_names.last_mut().filter(|named| named.index == index && named.end.1) {
+            let _ = writeln!(out, "{pad}{}: ;", named.end.0);
+            named.end.1 = false;
+        }
     }
 
     /// A loop that goes by a counter declared before it, `counter` (its C name and type),
@@ -13695,12 +13853,14 @@ impl<'a> Emitter<'a> {
         let outer = self.break_to.take();
         self.loops.push(self.scopes.len());
         self.block_with(body, depth + 1, out, lent)?;
+        self.next_round_label(&format!("{pad}    "), out);
         self.loops.pop();
         self.break_to = outer;
         let _ = writeln!(out, "{pad}}}");
         if let Some(label) = label {
             let _ = writeln!(out, "{pad}{label}: ;");
         }
+        self.loop_end_label(pad, out);
         Ok(())
     }
 
@@ -18405,7 +18565,7 @@ fn sequence(names: &str, value: String) -> String {
 
 /// Whether the block ends with a statement that leaves it: what follows would never run.
 fn ends_by_leaving(block: &Block) -> bool {
-    matches!(block.last().map(|stmt| &stmt.kind), Some(StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue))
+    matches!(block.last().map(|stmt| &stmt.kind), Some(StmtKind::Return(_) | StmtKind::Break(_) | StmtKind::Continue(_)))
 }
 
 /// The names of a pattern, each with the C line that declares it.

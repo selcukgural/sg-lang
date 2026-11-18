@@ -1,0 +1,13 @@
+// A loop may run no round: what it gives back is not there after it then.
+void take(List<int> xs) {
+    print(xs.length())
+}
+
+void main(List<string> args) {
+    var xs = List<int>()
+    take(xs)
+    for _ in 0..args.length() {
+        xs = List<int>()
+    }
+    take(xs)
+}

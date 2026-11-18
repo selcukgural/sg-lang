@@ -1,0 +1,17 @@
+// A `continue` starts the next round too: what the round moved is gone there.
+void take(List<int> xs) {
+    print(xs.length())
+}
+
+void main() {
+    var xs = List<int>()
+    var n = 0
+    while n < 3 {
+        n += 1
+        take(xs)
+        if n == 1 {
+            continue
+        }
+        xs = List<int>()
+    }
+}

@@ -1,0 +1,60 @@
+// `for i in (a..b).reversed()`: from `b - 1` down to `a`, none when `a >= b`.
+void main() {
+    var line = ""
+    for i in (0..5).reversed() {
+        line.write($"{i} ")
+    }
+    print(line)
+
+    // An unsigned counter down to 0 does not wrap.
+    uint low = 0
+    uint sum = 0
+    for k in (low..4).reversed() {
+        sum += k
+    }
+    print($"sum {sum}")
+
+    // Nothing to go over.
+    for i in (5..2).reversed() {
+        print($"never {i}")
+    }
+    for i in (3..3).reversed() {
+        print($"never {i}")
+    }
+
+    // The ends are found once, the left first.
+    var calls = List<string>()
+    for i in (start(ref calls)..end(ref calls)).reversed() {
+        calls.add($"{i}".toString())
+    }
+    print(string.join(" ", read calls))
+
+    // At the bottom of the type.
+    for b in (byte.MinValue..2).reversed() {
+        print($"byte {b}")
+    }
+
+    // Back over a list, skipping and stopping.
+    var xs = List<int> { 1, 2, 3, 4, 5, 6 }
+    var seen = ""
+    for i in (0..xs.length()).reversed() {
+        if xs[i] == 5 {
+            continue
+        }
+        if xs[i] == 2 {
+            break
+        }
+        seen.write($"{xs[i]} ")
+    }
+    print(seen)
+}
+
+int start(ref List<string> calls) {
+    calls.add("start")
+    return 1
+}
+
+int end(ref List<string> calls) {
+    calls.add("end")
+    return 4
+}

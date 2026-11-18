@@ -1,0 +1,8 @@
+struct Header {
+    uint magic
+    ushort version
+}
+
+void main() {
+    const assert(Memory.sizeOf<Header>() == 6)
+}

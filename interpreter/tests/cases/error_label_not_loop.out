@@ -1,0 +1,5 @@
+error: expected `for` or `while`, found `if`
+  a name followed by `:` names the loop after it: `outer: for i in 0..n { ... }`
+  --> error_label_not_loop.sg:3:12
+ 3 |     check: if x > 0 {
+   |            ^^
