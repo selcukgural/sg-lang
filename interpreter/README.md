@@ -7565,6 +7565,11 @@ put to the author before the slice and approved on 18 November 2026; they are in
      other languages), and a line of `ok_runtime` without an operating system. `cargo test` passes on macOS and on Linux in a
      container (389 of 1616 programs compile through C, 85 of them under the thread sanitizer); on Windows on
      Arm `ok_binary_search` gives the same output interpreted and compiled.
+1258. **zlib is named `extern "z", "zlib", "libz"`** in `examples/zlib` and the tests that link it (a fix after
+     the slice). vcpkg's zlib 1.4 (13 November 2026) is built by zlib's own CMake, which names the library
+     `libz.lib` on Windows, where 1.3 gave `z.lib`; the CI of Windows on Arm took the new vcpkg of its image and
+     found neither name. The DLL comes from the table of imports of the library, whatever its name (1061), so
+     nothing else changes. Tried on Windows on Arm with only a `libz.lib`, interpreted and compiled.
 
 ## Slower than C, and could be better
 

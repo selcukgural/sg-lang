@@ -21,7 +21,7 @@ struct ZStream {
     CULong reserved
 }
 
-extern "z", "zlib" {
+extern "z", "zlib", "libz" {
     raw byte zlibVersion()
     int deflateInit_(raw ZStream strm, int level, raw byte version, int streamSize)
     int deflate(raw ZStream strm, int flush)

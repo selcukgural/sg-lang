@@ -1,6 +1,6 @@
 // zlib, linked with `-lz` (on Windows `zlib.lib` of vcpkg): a round trip through compress and
 // uncompress, and a checksum. zlib's `uLong` is C's `unsigned long`.
-extern "z", "zlib" {
+extern "z", "zlib", "libz" {
     nuint compressBound(nuint sourceLen)
     int compress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen)
     int uncompress(raw byte dest, ref nuint destLen, raw byte source, nuint sourceLen)

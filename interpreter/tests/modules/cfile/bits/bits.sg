@@ -7,7 +7,7 @@ extern "./bits.c" {
 
 // What `bits.c` calls: nothing of it is declared here. zlib is `-lz`, or on Windows `zlib.lib`
 // of vcpkg.
-extern "z", "zlib" {
+extern "z", "zlib", "libz" {
 }
 
 public int countBits(ulong n) {
