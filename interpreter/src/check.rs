@@ -101,6 +101,13 @@ struct Names {
     /// What each integer const holds, by full name (one of a block too), found before the types
     /// are, for the count of an array (`byte[BlockSize]`); or why it cannot be found then.
     sizes: HashMap<String, Result<i128, String>>,
+    /// The statics of the modules, by full name.
+    statics: HashSet<String>,
+    /// What each static holds (one of a block too), once the types are known; for `static
+    /// locked T`, the `T`.
+    static_types: HashMap<String, Ty>,
+    /// The statics written `static locked`.
+    locked_statics: HashSet<String>,
 }
 
 thread_local! {
@@ -119,7 +126,7 @@ impl Names {
     }
 
     fn known(&self, full: &str) -> bool {
-        self.kinds.contains_key(full) || self.funcs.contains(full) || self.cvars.contains(full) || self.consts.contains(full)
+        self.kinds.contains_key(full) || self.funcs.contains(full) || self.cvars.contains(full) || self.consts.contains(full) || self.statics.contains(full)
     }
 
     /// The full name of the type or function that `written` means in the file at `at`: a name
@@ -707,6 +714,24 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             names.public.insert(decl.name.clone());
         }
     }
+    for decl in prog.statics.iter().filter(|decl| decl.local.is_none()) {
+        if names.funcs.contains(&decl.name) || names.cvars.contains(&decl.name) || names.consts.contains(&decl.name) || !names.statics.insert(decl.name.clone()) {
+            let diag = Diag::error(decl.name_span, format!("`{}` is declared twice in this module", short_name(&decl.name)));
+            return Err(match names.spans.get(&decl.name) {
+                Some(other) => diag.related(*other, "the other declaration"),
+                None => diag,
+            });
+        }
+        names.spans.insert(decl.name.clone(), decl.name_span);
+        if decl.public {
+            names.public.insert(decl.name.clone());
+        }
+    }
+    for decl in &prog.statics {
+        if decl.locked {
+            names.locked_statics.insert(decl.name.clone());
+        }
+    }
     let types = prog
         .structs
         .iter()
@@ -734,6 +759,15 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
         if names.consts.contains(name) {
             return Err(Diag::error(span, format!("`{}` is already the name of a const", short_name(name))).related(names.spans[name], "the const"));
+        }
+        if names.statics.contains(name) {
+            return Err(Diag::error(span, format!("`{}` is already the name of a static", short_name(name))).related(names.spans[name], "the static"));
+        }
+    }
+    for decl in &prog.statics {
+        let short = decl.local.as_deref().unwrap_or_else(|| short_name(&decl.name));
+        if BUILTINS.contains(&short) || BUILTIN_TYPES.contains(&short) || Ty::from_name(short).is_some() {
+            return Err(Diag::error(decl.name_span, format!("`{short}` is a name of the language, so a static cannot have it")));
         }
     }
     for decl in &prog.consts {
@@ -1215,6 +1249,17 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
     }
 
+    // The statics: what each holds is the type its function gives. Every task reaches it, for
+    // the whole run.
+    for decl in &prog.statics {
+        let ty = sigs[&decl.init].ret.clone();
+        static_type(decl, &ty, &structs, &enums, &names)?;
+        if decl.public && !module_of(&decl.name).is_empty() {
+            exposes(short_name(&decl.name), decl.name_span, &ty, &names)?;
+        }
+        names.static_types.insert(decl.name.clone(), ty);
+    }
+
     // The consts: the type of each, then its initializer, checked, then what each holds, found by
     // running the initializers when the program is compiled.
     prog.plain = plain_types(&structs);
@@ -1230,7 +1275,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         let size = type_bytes(&ty, &structs, &enums);
         if size > crate::EMBED_LIMIT {
             return Err(Diag::error(decl.ty.span, format!("a `{ty}` takes {} MB, and a const takes at most 64 MB", size.div_ceil(1 << 20)))
-                .note("a const is written into the program; a larger value is found when the program runs, by a function it calls"));
+                .note("a const is written into the program; a larger value is a `static`, found when the program first uses it"));
         }
         const_table.types.insert(decl.name.clone(), ty);
     }
@@ -1284,7 +1329,11 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     }
     prog.const_values = const_table.values.clone();
 
+    // What gives the value of a static of a block sees the consts and statics of the blocks
+    // around it.
+    let sees: HashMap<String, Scope> = prog.statics.iter().map(|decl| (decl.init.clone(), Scope { consts: decl.consts.clone(), statics: decl.statics.clone(), ..Scope::default() })).collect();
     let body = |func: &mut Func, sig: &FuncSig, owner: Option<&str>, const_table: &ConstTable| -> Res<crate::unread::Seen> {
+        let first = sees.get(&func.name).map_or_else(Scope::default, |scope| Scope { consts: scope.consts.clone(), statics: scope.statics.clone(), ..Scope::default() });
         let mut checker = Checker {
             names: &names,
             consts: const_table,
@@ -1296,7 +1345,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             structs: &structs,
             enums: &enums,
             sigs: &sigs,
-            scopes: vec![Scope::default()],
+            scopes: vec![first],
             locks: Vec::new(),
             borrows: Borrows::default(),
             loops: 0,
@@ -1415,6 +1464,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     // What lies in raw memory is laid out from the types of the fields.
     prog.plain = plain_types(&structs);
     crate::waits::check(prog)?;
+    statics_found(prog, src, &structs, &enums)?;
     // A program without an operating system is held to the rule of its own.
     if prog.freestanding {
         // The types the program writes in its signatures and its fields.
@@ -1459,7 +1509,118 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
         prog.sizes.insert(at, count);
     }
+    // A static whose value was found here needs no function to find it.
+    let found: HashSet<String> = prog.statics.iter().filter(|decl| decl.value.is_some()).map(|decl| decl.init.clone()).collect();
+    prog.funcs.retain(|func| !found.contains(&func.name));
     Ok(())
+}
+
+/// The statics, once every body is checked: the value of one given what the rule of a const
+/// allows, of a type a const can hold (atomic and `locked` too), is found now and lies in the
+/// program from its start; any other is found the first time the static is used, which must
+/// not need the static itself, through the functions it calls and the statics they read.
+fn statics_found(prog: &mut Program, src: &str, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>) -> Res<()> {
+    let shown = |full: &str| full.split('#').next().map(|name| short_name(name).to_string()).unwrap_or_default();
+    let given = |decl: &StaticDecl, prog: &Program| -> Expr {
+        let func = prog.funcs.iter().find(|func| func.name == decl.init).expect("every static has the function of its value");
+        match &func.body[0].kind {
+            StmtKind::Return(Some(value)) => value.clone(),
+            _ => unreachable!("the function of a static returns what it is given"),
+        }
+    };
+    let mut found = Vec::new();
+    for (position, decl) in prog.statics.iter().enumerate() {
+        let value = given(decl, prog);
+        if !plain_constant(&value) || !const_able(&value.ty, structs, enums, &mut Vec::new()) {
+            continue;
+        }
+        let as_const = ConstDecl { public: false, name: decl.name.clone(), name_span: decl.name_span, ty: decl.ty.clone(), init: value, local: decl.local.clone(), visible: Vec::new() };
+        found.push((position, crate::interp::find_called(prog, src, &prog.const_values, &as_const)?));
+    }
+    for (position, value) in found {
+        prog.statics[position].value = Some(value);
+    }
+    // What each static found when it is first used reads on the way, through the calls.
+    let mut bodies: HashMap<String, &Func> = prog.funcs.iter().filter(|func| func.foreign.is_none()).map(|func| (func.name.clone(), func)).collect();
+    for (owner, methods) in prog.structs.iter().map(|decl| (&decl.name, &decl.methods)).chain(prog.enums.iter().map(|decl| (&decl.name, &decl.methods))) {
+        bodies.extend(methods.iter().map(|method| (format!("{owner}.{}", method.name), method)));
+    }
+    let mut reads: HashMap<&str, Vec<(String, Span)>> = HashMap::new();
+    for decl in prog.statics.iter().filter(|decl| decl.value.is_none()) {
+        let reach = crate::comptime::reach(&given(decl, prog), &bodies, &HashSet::new());
+        reads.insert(&decl.name, reach.statics);
+    }
+    // A static that needs itself, around any number of others.
+    fn around<'p>(name: &'p str, reads: &HashMap<&'p str, Vec<(String, Span)>>, path: &mut Vec<&'p str>, done: &mut HashSet<&'p str>) -> Option<Vec<&'p str>> {
+        if let Some(at) = path.iter().position(|each| *each == name) {
+            let mut circle = path[at..].to_vec();
+            circle.push(name);
+            return Some(circle);
+        }
+        if !done.insert(name) {
+            return None;
+        }
+        path.push(name);
+        for (read, _) in reads.get(name).into_iter().flatten() {
+            let Some((key, _)) = reads.get_key_value(read.as_str()) else { continue };
+            if let Some(circle) = around(key, reads, path, done) {
+                return Some(circle);
+            }
+        }
+        path.pop();
+        None
+    }
+    let mut done = HashSet::new();
+    for decl in prog.statics.iter().filter(|decl| decl.value.is_none()) {
+        if let Some(circle) = around(&decl.name, &reads, &mut Vec::new(), &mut done) {
+            let first = prog.statics.iter().find(|each| each.name == circle[0]).expect("a static of the program");
+            let at = reads[circle[0]].iter().find(|(read, _)| read == circle[1]).map(|(_, span)| *span).expect("read on the way");
+            let path: Vec<String> = circle.iter().map(|name| format!("`{}`", shown(name))).collect();
+            return Err(Diag::error(first.name_span, format!("the value of `{}` needs itself: {}", shown(circle[0]), path.join(" -> ")))
+                .related(at, format!("`{}` is read here, on the way to its value", shown(circle[1])))
+                .note("the value of a static is found the first time it is used, by running what it is given and every function that calls, so it cannot need the static itself"));
+        }
+    }
+    Ok(())
+}
+
+/// What the value of a static is given is known when the program is compiled, by the rule of a
+/// const that calls no function: numbers, other consts, operators, casts, and arrays, structs,
+/// enums and atomic values of them.
+fn plain_constant(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Char(_) | ExprKind::Const(_) | ExprKind::Constant { .. } => true,
+        ExprKind::Unary(_, inner) | ExprKind::Cast { expr: inner, .. } | ExprKind::Widen(_, inner) | ExprKind::Load(inner) | ExprKind::Atomic(inner) => plain_constant(inner),
+        ExprKind::Binary(_, left, right) | ExprKind::Index { recv: left, index: right, .. } => plain_constant(left) && plain_constant(right),
+        ExprKind::Field { recv, .. } => plain_constant(recv),
+        ExprKind::Array { args, items, .. } => args.iter().chain(items.iter().flatten()).all(plain_constant),
+        ExprKind::StructLit { fields, .. } => fields.iter().all(|field| plain_constant(&field.value)),
+        ExprKind::Variant { args, .. } => args.iter().all(plain_constant),
+        _ => false,
+    }
+}
+
+/// A type whose value a const can hold, atomic values of numbers and of `bool` inside it too.
+fn const_able(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, seen: &mut Vec<String>) -> bool {
+    match ty {
+        Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char => true,
+        Ty::Atomic(inner) => matches!(**inner, Ty::Int(_) | Ty::Float(_) | Ty::Bool),
+        Ty::Array(item, _) => const_able(item, structs, enums, seen),
+        Ty::Struct(name) | Ty::Enum(name) => {
+            if seen.contains(name) {
+                return false;
+            }
+            seen.push(name.clone());
+            let able = match (structs.get(name), enums.get(name)) {
+                (Some(info), _) => !info.opaque && info.fields.iter().all(|(_, field)| const_able(field, structs, enums, seen)),
+                (_, Some(info)) => info.variants.iter().flat_map(|(_, fields)| fields).all(|(_, field)| const_able(field, structs, enums, seen)),
+                _ => false,
+            };
+            seen.pop();
+            able
+        }
+        _ => false,
+    }
 }
 
 /// Where a body lies in the program: a function, or a method of a struct or of an enum.
@@ -1591,7 +1752,7 @@ impl Finding<'_> {
         let size = held_bytes(&value);
         if size > crate::EMBED_LIMIT {
             return Err(Diag::error(decl.init.span, format!("the value of `{}` takes {} MB, and a const takes at most 64 MB", shown(name), size.div_ceil(1 << 20)))
-                .note("a const is written into the program; a larger value is found when the program runs, by a function it calls"));
+                .note("a const is written into the program; a larger value is a `static`, found when the program first uses it"));
         }
         let ty = table.types[name].clone();
         table.values.insert(name.to_string(), (ty, value));
@@ -1817,6 +1978,62 @@ fn async_method_rules(prog: &Program) -> Res<()> {
         }
     }
     Ok(())
+}
+
+/// What a static may hold: every task reaches it, so it follows the thread rule, and it is never
+/// dropped, so nothing in it is to be closed or disposed of.
+fn static_type(decl: &StaticDecl, ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, names: &Names) -> Res<()> {
+    let span = decl.ty.span;
+    if matches!(ty, Ty::Void | Ty::Never) {
+        return Err(Diag::error(span, "a static holds a value"));
+    }
+    if decl.locked && matches!(ty, Ty::Atomic(_)) {
+        return Err(Diag::error(span, "`static locked` holds the value itself, which is reached inside a `lock` block"));
+    }
+    if let Some((part, at)) = stays(ty, structs, enums, names, &mut Vec::new()) {
+        let what = if part == *ty { String::new() } else { format!(", which holds a `{part}`{at}") };
+        return Err(Diag::error(span, format!("a static cannot hold a `{ty}`{what}: {}", why_it_stays(&part, names)))
+            .note("every task reaches a static, so what it holds owns all it holds: no borrow, no `shared checked` value, no `Task`"));
+    }
+    if let Some((part, at)) = kept_open(ty, structs, enums, &mut Vec::new()) {
+        let what = if part == *ty { String::new() } else { format!(", which holds a `{part}`{at}") };
+        let diag = Diag::error(span, format!("a static cannot hold a `{ty}`{what}: a static is never dropped, so it would never be closed"));
+        return Err(diag.hint("open it where it is used and lend it to the functions that need it, as a parameter"));
+    }
+    Ok(())
+}
+
+/// The part of a type that is closed or disposed of when it ends, and where it lies: a file, a
+/// stream, a socket, a `Closable` or `Disposable` struct.
+fn kept_open(ty: &Ty, structs: &HashMap<String, StructInfo>, enums: &HashMap<String, EnumInfo>, seen: &mut Vec<String>) -> Option<(Ty, String)> {
+    let inner = |ty: &Ty, seen: &mut Vec<String>| kept_open(ty, structs, enums, seen);
+    match ty {
+        Ty::Reader(_) | Ty::Writer | Ty::Listener | Ty::Socket => Some((ty.clone(), String::new())),
+        Ty::Struct(name) if structs.get(name).is_some_and(|info| info.disposable || info.closable) => Some((ty.clone(), String::new())),
+        Ty::Shared(inner_ty, _) | Ty::Weak(inner_ty, _) | Ty::Locked(inner_ty) | Ty::Atomic(inner_ty) => inner(inner_ty, seen),
+        Ty::Ptr(item) | Ty::Nullable(item) | Ty::List(item) | Ty::Set(item) | Ty::Array(item, _) => inner(item, seen),
+        Ty::Result(a, b) | Ty::Map(a, b) => inner(a, seen).or_else(|| inner(b, seen)),
+        Ty::Struct(name) | Ty::Enum(name) => {
+            if seen.contains(name) {
+                return None;
+            }
+            seen.push(name.clone());
+            let fields: Vec<&(String, Ty)> = match (structs.get(name), enums.get(name)) {
+                (Some(info), _) => info.fields.iter().collect(),
+                (_, Some(info)) => info.variants.iter().flat_map(|(_, fields)| fields).collect(),
+                _ => Vec::new(),
+            };
+            let found = fields.iter().find_map(|(field, field_ty)| {
+                inner(field_ty, seen).map(|(part, at)| match at.is_empty() {
+                    true => (part, format!(" (the field `{field}` of `{}`)", short_name(name))),
+                    false => (part, at),
+                })
+            });
+            seen.pop();
+            found
+        }
+        _ => None,
+    }
 }
 
 /// What each `shared locked T` holds follows the thread rule: several tasks reach it.
@@ -2717,7 +2934,7 @@ fn known_width(src: &str, expr: &Expr) -> Option<i128> {
 /// expression.
 fn steady(expr: &Expr) -> bool {
     match &expr.kind {
-        ExprKind::Var(_) => true,
+        ExprKind::Var(_) | ExprKind::Static(_) => true,
         ExprKind::Field { recv, .. } => steady(recv),
         _ => false,
     }
@@ -3144,7 +3361,7 @@ const UNNAMED: usize = usize::MAX;
 /// is judged by what it borrowed.
 fn unnamed_owner(expr: &Expr) -> bool {
     match &expr.kind {
-        ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Const(_) => false,
+        ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Const(_) | ExprKind::Static(_) => false,
         ExprKind::Borrow { .. } | ExprKind::Slice { .. } | ExprKind::Unbox(_) | ExprKind::AsSlice(_) => false,
         _ => !expr.ty.is_borrow() && !matches!(expr.ty, Ty::Void | Ty::Never | Ty::Null),
     }
@@ -3269,6 +3486,8 @@ struct Scope {
     vars: Vec<Var>,
     /// The consts written in this block so far, as written and by their full names.
     consts: Vec<(String, String)>,
+    /// The statics written in this block so far, the same way.
+    statics: Vec<(String, String)>,
     /// Narrowings that end with this scope: variable, type before, assignment count at the time.
     narrowed: Vec<(String, Ty, u32)>,
 }
@@ -3560,10 +3779,64 @@ impl<'a> Checker<'a> {
         Ok(self.names.full(written, span)?.filter(|full| self.names.consts.contains(full)))
     }
 
-    /// A local never takes the name of a const it sees: in a pattern the name is the const.
+    /// The full name of the static a name written here means: one of a block around here, then
+    /// one of a module.
+    fn static_named(&self, written: &str, span: Span) -> Res<Option<String>> {
+        let local = self.scopes.iter().rev().flat_map(|scope| scope.statics.iter().rev()).find(|(name, _)| name == written);
+        if let Some((_, full)) = local {
+            return Ok(Some(full.clone()));
+        }
+        Ok(self.names.full(written, span)?.filter(|full| self.names.statics.contains(full)))
+    }
+
+    /// What the name of a static gives where it is used: a number, a `bool`, a `char` or a
+    /// function is its value; anything else a `read` borrow of the one value, which lasts for
+    /// the run. One of `static locked` is reached only by `lock`.
+    fn static_use(&self, full: &str, span: Span) -> Res<Ty> {
+        if self.names.locked_statics.contains(full) {
+            let text = &self.src[span.start..span.end];
+            return Err(Diag::error(span, format!("`{text}` is a `static locked` value, reached only inside a `lock` block, where no other task reaches it"))
+                .hint(format!("`lock {text} as name {{ ... }}`")));
+        }
+        Ok(match &self.names.static_types[full] {
+            ty @ (Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Func(..) | Ty::CFunc(..)) => ty.clone(),
+            ty => Ty::Read(Box::new(ty.clone())),
+        })
+    }
+
+    /// The error for a static written or lent to change.
+    fn static_changed(name: &str, span: Span) -> Diag {
+        Diag::error(span, format!("`{name}` is a static, and a static is never assigned: it is read by every task"))
+            .note("a static that changes is `static atomic`, changed by its atomic methods, or `static locked`, changed inside a `lock` block")
+    }
+
+    /// The static a place is reached from, as it is written (`Table` in `Table[0]`), if it is one.
+    fn static_root(&self, place: &Expr) -> Option<String> {
+        let mut base = place;
+        while let ExprKind::Field { recv, .. } | ExprKind::Index { recv, .. } = &base.kind {
+            base = recv;
+        }
+        match &base.kind {
+            ExprKind::Var(name) if name != "this" && self.var_named(name).is_none() => self.static_named(name, base.span).ok().flatten().map(|_| name.clone()),
+            ExprKind::Static(full) => Some(full.split('#').next().map(|name| short_name(name).to_string()).unwrap_or_default()),
+            _ => None,
+        }
+    }
+
+    /// A local never takes the name of a const it sees: in a pattern the name is the const. Nor
+    /// that of a static: a name means one thing in a function.
     fn not_a_const(&self, name: &str, span: Span) -> Res<()> {
         if name == "_" || name == "this" {
             return Ok(());
+        }
+        if let Some(full) = self.static_named(name, span).ok().flatten() {
+            let diag = Diag::error(span, format!("`{name}` is the name of a static, and a local cannot take it"))
+                .note("a name means one thing in a function")
+                .hint("give the local another name");
+            return Err(match self.names.spans.get(&full) {
+                Some(at) => diag.related(*at, "the static"),
+                None => diag,
+            });
         }
         let Some(full) = self.const_named(name, span).ok().flatten() else { return Ok(()) };
         let diag = Diag::error(span, format!("`{name}` is the name of a const, and a local cannot take it"))
@@ -3853,6 +4126,14 @@ impl<'a> Checker<'a> {
                     (Some(Ty::Str), None) if !self.in_const => return Err(needs(&full, span)),
                     _ => ExprKind::Const(full),
                 };
+                return Ok(());
+            }
+            if let Some(full) = self.static_named(&written.clone(), span)? {
+                if self.in_const {
+                    return Err(Diag::error(span, format!("`{written}` is a static, and a const cannot read it: what a static holds is found when the program runs"))
+                        .hint(format!("a `static` can be given the value: `static ... = {written}`")));
+                }
+                expr.kind = ExprKind::Static(full);
                 return Ok(());
             }
         }
@@ -4621,7 +4902,7 @@ impl<'a> Checker<'a> {
                     }
                     None => match self.expr(init, None)? {
                         // A borrowed variable used as a value is the value behind it.
-                        Ty::Read(inner) | Ty::Ref(inner) if matches!(init.kind, ExprKind::Var(_) | ExprKind::Const(_)) && inner.is_copyable(self.copyable) => {
+                        Ty::Read(inner) | Ty::Ref(inner) if matches!(init.kind, ExprKind::Var(_) | ExprKind::Const(_) | ExprKind::Static(_)) && inner.is_copyable(self.copyable) => {
                             wrap(init, ExprKind::Load);
                             init.ty = (*inner).clone();
                             *inner
@@ -4670,6 +4951,9 @@ impl<'a> Checker<'a> {
                 // so a borrow that the right side reads last ends before the write (`b = Box { n
                 // = r.n + 1 }`), and a borrow the place goes through must outlive the right side.
                 let (first_use, first_clash) = (self.borrows.uses.len(), self.borrows.clashes.len());
+                if let Some(name) = self.static_root(target) {
+                    return Err(Checker::static_changed(&name, target.span));
+                }
                 if let Some(name) = self.const_root(target) {
                     return Err(Checker::const_changed(&name, target.span));
                 }
@@ -5179,7 +5463,21 @@ impl<'a> Checker<'a> {
                 let mut loans = Vec::new();
                 for position in 0..items.len() {
                     let item = &mut items[position];
-                    let found = match self.place(&mut item.value)? {
+                    // `lock Settings as s`: a `static locked` value.
+                    if let ExprKind::Var(written) = &item.value.kind {
+                        if self.find(written).is_none() {
+                            if let Some(full) = self.static_named(&written.clone(), item.value.span)?.filter(|full| self.names.locked_statics.contains(full)) {
+                                let held = self.names.static_types[&full].clone();
+                                item.value.kind = ExprKind::Static(full);
+                                item.value.ty = Ty::Read(Box::new(Ty::Shared(Box::new(Ty::Locked(Box::new(held))), false)));
+                            }
+                        }
+                    }
+                    let found = match &item.value.kind {
+                        ExprKind::Static(_) => Some((item.value.ty.clone(), false)),
+                        _ => self.place(&mut item.value)?,
+                    };
+                    let found = match found {
                         Some((ty, _)) => ty,
                         None => self.expr(&mut item.value, None)?,
                     };
@@ -5241,6 +5539,15 @@ impl<'a> Checker<'a> {
                 }
                 self.not_a_const(name, *name_span)?;
                 self.scopes.last_mut().expect("an open scope").consts.push((name.clone(), full.clone()));
+            }
+            // A static of the block: seen from here to the end of the block.
+            StmtKind::Static { name, name_span, full } => {
+                if let Some(var) = self.var_named(name) {
+                    return Err(Diag::error(*name_span, format!("`{name}` is already a local variable here, and a static cannot take its name"))
+                        .related(var.at, "it is declared here"));
+                }
+                self.not_a_const(name, *name_span)?;
+                self.scopes.last_mut().expect("an open scope").statics.push((name.clone(), full.clone()));
             }
             StmtKind::Break | StmtKind::Continue => {
                 let word = if matches!(stmt.kind, StmtKind::Break) { "break" } else { "continue" };
@@ -6303,6 +6610,25 @@ impl<'a> Checker<'a> {
         // `read Masks`: a const array, struct or enum is lent already, for the whole run.
         // `ref Masks` would change it.
         if let ExprKind::Borrow { mutable, expr: inner } = &mut expr.kind {
+            // `read Table`: a static is lent already, for the whole run, as a const is.
+            if let Some(name) = self.static_root(inner) {
+                if *mutable {
+                    return Err(Checker::static_changed(&name, inner.span));
+                }
+                if matches!(inner.kind, ExprKind::Var(_)) {
+                    let inner = std::mem::replace(&mut **inner, Expr { kind: ExprKind::Null, span, ty: Ty::Void, moved: false });
+                    *expr = Expr { span, ..inner };
+                    let ty = self.expr_untyped(expr, expected)?;
+                    return match ty {
+                        Ty::Read(_) => Ok(ty),
+                        _ => {
+                            let text = &self.src[span.start..span.end];
+                            Err(Diag::error(span, format!("`{}` is a static of `{ty}`, which is copied where it is used, not lent", text.trim_start_matches("read").trim()))
+                                .hint(format!("`{}`", text.trim_start_matches("read").trim())))
+                        }
+                    };
+                }
+            }
             if let Some(name) = self.const_root(inner) {
                 if *mutable {
                     return Err(Checker::const_changed(&name, inner.span));
@@ -7124,6 +7450,7 @@ impl<'a> Checker<'a> {
             ExprKind::Match { subject, arms, borrowed } => self.match_expr(subject, arms, borrowed, expected, false),
             ExprKind::Var(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => unreachable!("places are handled above"),
             ExprKind::Const(full) => Ok(self.consts.use_type(full)),
+            ExprKind::Static(full) => self.static_use(full, expr.span),
             ExprKind::Embed(index) => match self.in_const {
                 true => Ok(Ty::Array(Box::new(Ty::Int(IntTy::Byte)), self.consts.embeds[*index])),
                 false => Err(Diag::error(span, "`embed` is written where a const is given its value")
@@ -8517,6 +8844,9 @@ impl<'a> Checker<'a> {
                 let sigs = self.sigs;
                 let Some(sig) = sigs.get(name) else {
                     let diag = Diag::error(name_span, format!("there is no function named `{name}`"));
+                    if self.static_named(name, name_span).ok().flatten().is_some() {
+                        return Err(diag.note(format!("`{name}` is a static, which a call does not read")).hint(format!("copy the function it holds to a local first: `var f = {name}`, then `f(...)`")));
+                    }
                     if name == "StringBuilder" {
                         return Err(diag.hint(STRING_BUILDER));
                     }
@@ -11424,7 +11754,7 @@ fn changed_in<'b>(block: &'b Block, names: &mut Vec<&'b str>) {
             }
             StmtKind::Unsafe(body) => changed_in(body, names),
             StmtKind::Return(Some(expr)) | StmtKind::Expr(expr) | StmtKind::Discard(expr) => taken_in(expr, names),
-            StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::Const { .. } => {}
+            StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::Const { .. } | StmtKind::Static { .. } => {}
         }
     }
 }
@@ -11522,6 +11852,7 @@ fn parts(expr: &Expr) -> Vec<Part<'_>> {
         | ExprKind::CVar(_)
         | ExprKind::Constant { .. }
         | ExprKind::Const(_)
+        | ExprKind::Static(_)
         | ExprKind::Embed(_)
         | ExprKind::Return(None) => {}
     }
@@ -12284,7 +12615,7 @@ fn first_break(block: &Block) -> Option<Span> {
         StmtKind::Unsafe(body) => first_break(body),
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Discard(expr) | StmtKind::Let { init: expr, .. } => breaks_in(expr),
         StmtKind::Assign { target, value, .. } => breaks_in(target).or_else(|| breaks_in(value)),
-        StmtKind::Return(None) | StmtKind::Continue | StmtKind::Const { .. } => None,
+        StmtKind::Return(None) | StmtKind::Continue | StmtKind::Const { .. } | StmtKind::Static { .. } => None,
     })
 }
 

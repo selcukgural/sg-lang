@@ -1,0 +1,5 @@
+error: a static has its type written
+  --> error_static_var.sg:2:8
+ 2 | static var Limit = 3
+   |        ^^^
+  hint: `static int Seed = seed()`

@@ -1,0 +1,15 @@
+// What gives the value of a static does not wait for a task.
+int work() {
+    return 1
+}
+
+int make() {
+    var task = Task.run(work)
+    return task.wait()
+}
+
+static int Value = make()
+
+void main() {
+    print(Value)
+}

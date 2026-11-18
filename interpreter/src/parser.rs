@@ -14,7 +14,7 @@ const NOT_YET: &[&str] = &[
 /// Words of the language that are read where they stand, not names: `shared T`, `weak T`,
 /// `shared checked T`, `shared locked T`, `share x`, `weak x`, `using Name = T`,
 /// `lock x as c { }`, `async int f()`, `await t`, `raw byte p`, `unsafe { }`.
-const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock", "async", "await", "raw", "unsafe", "extern", "export", "atomic", "const"];
+const WORDS: &[&str] = &["shared", "weak", "share", "using", "checked", "locked", "lock", "async", "await", "raw", "unsafe", "extern", "export", "atomic", "const", "static"];
 
 type Res<T> = Result<T, Diag>;
 
@@ -26,12 +26,12 @@ pub fn parse(src: &str) -> Res<Program> {
 /// belongs to. What a module defines gets its full name here: `Product` in the folder `stock`
 /// is `stock.Product`.
 pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> {
-    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default(), library: false, freestanding: false, left_out: Default::default(), lib_dirs: Vec::new(), home: None, consts: Vec::new(), const_values: Default::default(), embeds: Vec::new(), sizes: Default::default() };
+    let mut program = Program { structs: Vec::new(), enums: Vec::new(), funcs: Vec::new(), tests: Vec::new(), aliases: Vec::new(), files: Vec::new(), plain: Default::default(), foreign: Default::default(), cvars: Vec::new(), cvar_types: Default::default(), blocks: Vec::new(), exported: Default::default(), variadic: Default::default(), library: false, freestanding: false, left_out: Default::default(), lib_dirs: Vec::new(), home: None, consts: Vec::new(), const_values: Default::default(), embeds: Vec::new(), sizes: Default::default(), statics: Vec::new() };
     for (start, end, module) in files {
         let toks = lex(src, Span::new(*start, *end), false)?;
-        let mut parser = Parser { src, toks, i: 0, struct_literals: true, visible: Vec::new(), embed_base: program.embeds.len(), embeds: Vec::new(), in_text: false, consts_found: Vec::new(), in_const: false };
+        let mut parser = Parser { src, toks, i: 0, struct_literals: true, visible: Vec::new(), embed_base: program.embeds.len(), embeds: Vec::new(), in_text: false, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new() };
         let (structs, enums, funcs, aliases) = (program.structs.len(), program.enums.len(), program.funcs.len(), program.aliases.len());
-        let (cvars, blocks, consts) = (program.cvars.len(), program.blocks.len(), program.consts.len());
+        let (cvars, blocks, consts, statics) = (program.cvars.len(), program.blocks.len(), program.consts.len(), program.statics.len());
         let uses = parser.file(&mut program)?;
         program.embeds.append(&mut parser.embeds);
         program.blocks[blocks..].iter_mut().for_each(|(of, _)| *of = module.clone());
@@ -43,8 +43,17 @@ pub fn parse_files(src: &str, files: &[(usize, usize, String)]) -> Res<Program> 
             program.aliases[aliases..].iter_mut().for_each(|alias| full(&mut alias.name));
             program.cvars[cvars..].iter_mut().for_each(|var| full(&mut var.name));
             program.consts[consts..].iter_mut().for_each(|decl| full(&mut decl.name));
+            for decl in &mut program.statics[statics..] {
+                full(&mut decl.name);
+                decl.init = static_init(&decl.name);
+            }
         }
         program.consts.append(&mut parser.consts_found);
+        // A static of a block, and the function that gives its value.
+        for (decl, init) in parser.statics_found.drain(..) {
+            program.statics.push(decl);
+            program.funcs.push(init);
+        }
         program.files.push(FileScope { start: *start, end: *end, module: module.clone(), uses });
     }
     Ok(program)
@@ -68,6 +77,10 @@ struct Parser<'a> {
     consts_found: Vec<ConstDecl>,
     /// Reading what a const is given: `embed` may be written there.
     in_const: bool,
+    /// The statics of the blocks being read, as `visible` holds the consts.
+    visible_statics: Vec<Vec<(String, String)>>,
+    /// The statics written in blocks, with the functions that give their values.
+    statics_found: Vec<(StaticDecl, Func)>,
 }
 
 impl<'a> Parser<'a> {
@@ -308,6 +321,46 @@ impl<'a> Parser<'a> {
         Ok(ConstDecl { public: false, name, name_span, ty, init, local: None, visible })
     }
 
+    /// `static Table Crc = makeCrcTable()`, `static atomic long Hits = atomic 0`, `static locked
+    /// Config Settings = Config.defaults()`: the word `static` is next. Gives the static and the
+    /// function that gives its value, named after it (`static_init`), whose body returns what
+    /// is written after `=`.
+    fn static_decl(&mut self) -> Res<(StaticDecl, Func)> {
+        self.bump();
+        if *self.peek() == Tok::Var {
+            return Err(Diag::error(self.span(), "a static has its type written").hint("`static int Seed = seed()`"));
+        }
+        let locked = self.at_word("locked");
+        if locked {
+            self.bump();
+        }
+        let ty = self.type_expr()?;
+        if let Some(mode) = ty.mode {
+            let word = if mode == Mode::Read { "read" } else { "ref" };
+            return Err(Diag::error(ty.span, format!("a static owns its value, and `{word}` makes it a borrow"))
+                .note("a static lives until the program ends, longer than anything it could borrow from"));
+        }
+        if locked && (ty.holder.is_some() || ty.atomic.is_some()) {
+            return Err(Diag::error(ty.span, "`static locked` holds the value itself, which is reached inside a `lock` block")
+                .hint("`static locked Config Settings = Config.defaults()`"));
+        }
+        let (name, name_span) = match self.peek() {
+            Tok::Assign => return Err(Diag::error(self.span(), "a static has a type and a name: `static int Seed = seed()`")),
+            _ => self.ident("the name of the static")?,
+        };
+        let written = &self.src[ty.span.start..ty.span.end];
+        let shown = if locked { format!("locked {written}") } else { written.to_string() };
+        self.expect(Tok::Assign, "`=`").map_err(|d| d.hint(format!("a static is given its value where it is declared: `static {shown} {name} = ...`")))?;
+        let init = self.expr()?;
+        let consts: Vec<(String, String)> = self.visible.iter().flatten().cloned().collect();
+        let statics: Vec<(String, String)> = self.visible_statics.iter().flatten().cloned().collect();
+        let span = init.span;
+        let body = vec![Stmt { kind: StmtKind::Return(Some(init)), span }];
+        let func = Func { public: false, is_async: false, export: false, ret: ty.clone(), name: static_init(&name), name_span, this: None, this_ty: None, params: Vec::new(), from: Vec::new(), body, foreign: None, variadic: false };
+        let decl = StaticDecl { public: false, init: func.name.clone(), name, name_span, locked, ty, local: None, consts, statics, value: None };
+        Ok((decl, func))
+    }
+
     /// What a const is given: an expression, or `{ ... }` for the items of an array.
     fn const_value(&mut self, ty: &mut TypeExpr, name: &str) -> Res<Expr> {
         Ok(match *self.peek() == Tok::LBrace {
@@ -460,9 +513,18 @@ impl<'a> Parser<'a> {
                 let mut decl = self.const_decl()?;
                 decl.public = public;
                 program.consts.push(decl);
+            } else if self.at_word("static") {
+                if export || is_async {
+                    let word = if export { export_span } else { async_span };
+                    return Err(Diag::error(word, format!("`{}` is written in front of a function", self.src[word.start..word.end].trim())));
+                }
+                let (mut decl, init) = self.static_decl()?;
+                decl.public = public;
+                program.statics.push(decl);
+                program.funcs.push(init);
             } else {
                 let ret = self.type_expr().map_err(|d| {
-                    d.hint("only structs, enums, consts, functions and tests are written at the top level: `void main() { ... }`")
+                    d.hint("only structs, enums, consts, statics, functions and tests are written at the top level: `void main() { ... }`")
                 })?;
                 let (name, name_span) = self.ident("a function name")?;
                 let mut func = self.func(ret, name, name_span, false)?;
@@ -963,6 +1025,7 @@ impl<'a> Parser<'a> {
         self.open_brace()?;
         let outer = std::mem::replace(&mut self.struct_literals, true);
         self.visible.push(Vec::new());
+        self.visible_statics.push(Vec::new());
         let mut stmts = Vec::new();
         self.skip_newlines();
         while *self.peek() != Tok::RBrace {
@@ -978,6 +1041,7 @@ impl<'a> Parser<'a> {
         self.bump();
         self.struct_literals = outer;
         self.visible.pop();
+        self.visible_statics.pop();
         Ok(stmts)
     }
 
@@ -1144,6 +1208,21 @@ impl<'a> Parser<'a> {
                 self.visible.last_mut().expect("a statement is inside a block").push((written.clone(), full.clone()));
                 StmtKind::Const { name: written, name_span, full }
             }
+            // `static int Hits = ...`: one value for the whole program, its name seen from here to
+            // the end of the block.
+            Tok::Ident(word) if word == "static" => {
+                let (mut decl, mut init) = self.static_decl()?;
+                let written = std::mem::take(&mut decl.name);
+                let full = format!("{written}#{}", decl.name_span.start);
+                decl.name = full.clone();
+                decl.init = static_init(&full);
+                init.name = decl.init.clone();
+                decl.local = Some(written.clone());
+                let name_span = decl.name_span;
+                self.statics_found.push((decl, init));
+                self.visible_statics.last_mut().expect("a statement is inside a block").push((written.clone(), full.clone()));
+                StmtKind::Static { name: written, name_span, full }
+            }
             // `unsafe { ... }`; `unsafe` in front of a value is read as an expression.
             Tok::Ident(word) if word == "unsafe" && *self.peek_at(1) == Tok::LBrace => {
                 self.bump();
@@ -1286,6 +1365,7 @@ impl<'a> Parser<'a> {
         self.open_brace()?;
         let outer = std::mem::replace(&mut self.struct_literals, true);
         self.visible.push(Vec::new());
+        self.visible_statics.push(Vec::new());
         let mut stmts = Vec::new();
         let mut value = None;
         self.skip_newlines();
@@ -1305,6 +1385,7 @@ impl<'a> Parser<'a> {
         self.bump();
         self.struct_literals = outer;
         self.visible.pop();
+        self.visible_statics.pop();
         Ok((stmts, value))
     }
 
@@ -2038,7 +2119,7 @@ impl<'a> Parser<'a> {
                 Part::Text(text) => result.push(InterpPart::Text(text)),
                 Part::Code(range, spec) => {
                     let toks = lex(self.src, range, true)?;
-                    let mut inner = Parser { src: self.src, toks, i: 0, struct_literals: true, visible: Vec::new(), embeds: Vec::new(), embed_base: 0, in_text: true, consts_found: Vec::new(), in_const: false };
+                    let mut inner = Parser { src: self.src, toks, i: 0, struct_literals: true, visible: Vec::new(), embeds: Vec::new(), embed_base: 0, in_text: true, consts_found: Vec::new(), in_const: false, visible_statics: Vec::new(), statics_found: Vec::new() };
                     let expr = inner.expr()?;
                     if *inner.peek() != Tok::Eof {
                         let diag = inner.unexpected("`}`");

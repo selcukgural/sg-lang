@@ -1,0 +1,8 @@
+error: `Settings` is locked twice in one `lock`
+  --> error_static_lock_twice.sg:9:25
+ 9 |     lock Settings as a, Settings as b {
+   |                         ^^^^^^^^
+  the first time:
+  --> error_static_lock_twice.sg:9:10
+ 9 |     lock Settings as a, Settings as b {
+   |          ^^^^^^^^

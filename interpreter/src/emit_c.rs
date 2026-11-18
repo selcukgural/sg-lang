@@ -2607,6 +2607,73 @@ static inline bool sg_remove_@N(sg_@N* m, @P key) {
 }@S}
 "#;
 
+/// What a program with a static found where it is first used needs. `state` is 0 before, 1
+/// while a thread finds the value, 2 after; once a thread reads 2 with an acquire load, the
+/// value is there, so a static found already costs a load and a branch. A thread that finds
+/// the value being found by another waits for it: what finds a value never waits itself (the
+/// checker sees to it), so the wait ends. One that finds it being found by itself, or by a
+/// thread that waits for a static this thread is finding, would wait for ever, and panics: a
+/// circle the checker cannot see, through a function value. Without other threads, being
+/// found is being found by this one; without an operating system the core spins, since there
+/// is no lock to wait on.
+const STATIC_RUNTIME: &str = r#"
+typedef struct sg_once_who { struct sg_once* waits; } sg_once_who;
+typedef struct sg_once { int state; sg_once_who* by; const char* name; } sg_once;
+SG_COLD static _Noreturn void sg_static_circle(const char* name, const char* other, const char* loc) {
+    SG_PANIC_START();
+    if (other) fprintf(stderr, "panic: the value of `%s` is being found by another task, which waits for `%s`, which this task is finding\n", name, other);
+    else fprintf(stderr, "panic: the value of `%s` needs itself: it is read while it is being found\n", name);
+    fputs("  the compiler follows the calls, not a function value, so the circle was found when the program ran\n", stderr);
+    sg_die(loc);
+}
+#if SG_THREADS
+static sg_mtx sg_once_lock = SG_MTX_INIT;
+static sg_cnd sg_once_told = SG_CND_INIT;
+static _Thread_local sg_once_who sg_once_me;
+static void sg_once_run(sg_once* o, void (*find)(const char*), const char* loc) {
+    sg_mtx_lock(&sg_once_lock);
+    while (__atomic_load_n(&o->state, __ATOMIC_RELAXED) == 1) {
+        /* The thread that finds it, the static that thread waits for, the thread that finds
+           that one: back to this thread is a circle. */
+        if (o->by == &sg_once_me) { sg_mtx_unlock(&sg_once_lock); sg_static_circle(o->name, NULL, loc); }
+        for (sg_once_who* at = o->by; at->waits && __atomic_load_n(&at->waits->state, __ATOMIC_RELAXED) == 1; at = at->waits->by) {
+            if (at->waits->by == &sg_once_me) { sg_mtx_unlock(&sg_once_lock); sg_static_circle(o->name, at->waits->name, loc); }
+        }
+        sg_once_me.waits = o;
+        sg_cnd_wait(&sg_once_told, &sg_once_lock);
+        sg_once_me.waits = NULL;
+    }
+    if (__atomic_load_n(&o->state, __ATOMIC_RELAXED) == 2) { sg_mtx_unlock(&sg_once_lock); return; }
+    __atomic_store_n(&o->state, 1, __ATOMIC_RELAXED);
+    o->by = &sg_once_me;
+    sg_mtx_unlock(&sg_once_lock);
+    find(loc);
+    sg_mtx_lock(&sg_once_lock);
+    o->by = NULL;
+    __atomic_store_n(&o->state, 2, __ATOMIC_RELEASE);
+    sg_cnd_broadcast(&sg_once_told);
+    sg_mtx_unlock(&sg_once_lock);
+}
+#elif SG_FREESTANDING
+static void sg_once_run(sg_once* o, void (*find)(const char*), const char* loc) {
+    int before = 0;
+    if (__atomic_compare_exchange_n(&o->state, &before, 1, false, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE)) {
+        find(loc);
+        __atomic_store_n(&o->state, 2, __ATOMIC_RELEASE);
+        return;
+    }
+    while (__atomic_load_n(&o->state, __ATOMIC_ACQUIRE) != 2) { }
+}
+#else
+static void sg_once_run(sg_once* o, void (*find)(const char*), const char* loc) {
+    if (o->state == 1) sg_static_circle(o->name, NULL, loc);
+    o->state = 1;
+    find(loc);
+    __atomic_store_n(&o->state, 2, __ATOMIC_RELEASE);
+}
+#endif
+"#;
+
 /// What the `test` blocks of a program call: it stands before them.
 const TEST_SUPPORT: &str = r#"
 static int sg_test_error = 0;
@@ -8706,6 +8773,9 @@ static int sg_run_test(const sg_test* test) {
 #endif
     test->run();
     fflush(stdout);
+#if defined(SG_STATICS) && (defined(SG_LEAKS) || SG_COUNT)
+    sg_statics_end();
+#endif
 #ifdef SG_LEAKS
     if (sg_test_error == 0 && sg_leaks("the test")) return 1;
 #endif
@@ -8958,6 +9028,8 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         consts: &prog.const_values,
         consts_used: std::collections::BTreeSet::new(),
         sizes: &prog.sizes,
+        statics: prog.statics.iter().map(|decl| (decl.name.as_str(), decl)).collect(),
+        statics_used: std::collections::BTreeSet::new(),
     };
     // Every struct and enum is named first, so that a type can point at itself or at a later
     // one. Then the types themselves, each after the types it holds by value.
@@ -9099,6 +9171,21 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         let init = emitter.const_init(ty, value)?;
         let _ = writeln!(const_defs, "static const {ctype} {} = {init};", const_cname(&name));
     }
+    // The statics the code reads, each defined once; a debug build lets go of what they hold
+    // before it counts what is left (`sg_statics_end`).
+    let mut static_defs = String::new();
+    let mut static_drops = String::new();
+    for name in std::mem::take(&mut emitter.statics_used) {
+        static_defs.push_str(&emitter.static_def(&name, &mut static_drops)?);
+    }
+    if !static_drops.is_empty() {
+        let _ = writeln!(static_defs, "#define SG_STATICS 1\nstatic void sg_statics_end(void) {{\n{static_drops}}}");
+    }
+    // C may call the functions of a library from several threads, each of which may find a
+    // static first.
+    if prog.library && emitter.made.contains("statics") {
+        emitter.made.insert("threads".to_string());
+    }
 
     // Where the program starts. An error that `main` ends with is written out, and the
     // program ends with the exit code 1.
@@ -9112,7 +9199,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
         // language uses knows, Clang on Windows too. A DLL holds itself loaded until the
         // process ends (`GET_MODULE_HANDLE_EX_FLAG_PIN`): the threads of its tasks would run on
         // in code that is gone; in a program the call does nothing.
-        None if prog.library => "#if defined(SG_LEAKS) || SG_COUNT\nstatic void sg_library_end(void) {\n#ifdef SG_LEAKS\n    if (sg_leaks(\"the library\")) return;\n#endif\n#if SG_COUNT\n    (void)sg_blocks_left(\"the library\", 0);\n#endif\n}\n#endif\n\
+        None if prog.library => "#if defined(SG_LEAKS) || SG_COUNT\nstatic void sg_library_end(void) {\n#ifdef SG_STATICS\n    sg_statics_end();\n#endif\n#ifdef SG_LEAKS\n    if (sg_leaks(\"the library\")) return;\n#endif\n#if SG_COUNT\n    (void)sg_blocks_left(\"the library\", 0);\n#endif\n}\n#endif\n\
              __attribute__((constructor)) static void sg_library_start(void) {\n#if defined(_WIN32)\n    HMODULE self;\n    (void)GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN, (LPCWSTR)(void*)&sg_library_start, &self);\n#endif\n#if defined(SG_LEAKS) || SG_COUNT\n    atexit(sg_library_end);\n#endif\n}\n"
             .to_string(),
         // Without an operating system, the code that starts the machine calls the `export`
@@ -9207,6 +9294,9 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     if emitter.made.contains("tasks") {
         out.push_str(TASK_RUNTIME);
     }
+    if emitter.made.contains("statics") {
+        out.push_str(STATIC_RUNTIME);
+    }
     if emitter.made.contains("io") {
         out.push_str(IO_RUNTIME);
     }
@@ -9264,6 +9354,7 @@ pub fn emit(prog: &Program, sources: &Sources, checked: bool, tests: bool) -> Re
     // The helpers call the methods a type wrote itself (`format`, `equals`, `compare`).
     out.push_str(&protos);
     out.push('\n');
+    out.push_str(&static_defs);
     out.push_str(&emitter.glue);
     // The byte after the terminating zero says whether the place is a call of the module (see `sg_called`).
     for (number, (text, called)) in emitter.locs.iter().enumerate() {
@@ -9638,6 +9729,16 @@ fn float_literal(text: &str, ty: FloatTy) -> String {
     format!("({text}{point}{suffix})")
 }
 
+/// The C name of a static: `sg_s_` and its full name.
+fn static_cname(full: &str) -> String {
+    format!("sg_s_{}", cname(full))
+}
+
+/// The C name of the function that gives the value of a static (`StaticDecl::init`).
+fn cname_of_init(init: &str) -> String {
+    cname(init)
+}
+
 /// The C name of a const: `sg_k_` and its full name, one of a block with where it is written.
 fn const_cname(full: &str) -> String {
     format!("sg_k_{}", cname(full).replace('#', "_at"))
@@ -9903,7 +10004,9 @@ fn cname(full: &str) -> String {
     for part in parts {
         let _ = write!(out, "{}{part}_", part.len());
     }
-    out + name
+    // A const or a static of a block, and the function of a static's value, have `#` in their
+    // names, which no name written in the program has.
+    out + &name.replace('#', "_at")
 }
 
 /// Whether computing the expression can leave the function (`may_leave`) or wait: it holds an
@@ -9927,7 +10030,7 @@ fn may_leave(expr: &Expr) -> bool {
         ExprKind::Try { .. } | ExprKind::Return(_) | ExprKind::Match { .. } => true,
         ExprKind::Await(inner) | ExprKind::Unsafe(inner) | ExprKind::RawCast { expr: inner, .. } => may_leave(inner),
         ExprKind::Allocate { args, .. } => any(&mut args.iter()),
-        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Embed(_) | ExprKind::SizeOf { .. } => false,
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Static(_) | ExprKind::Embed(_) | ExprKind::SizeOf { .. } => false,
         ExprKind::Array { args, items, .. } => any(&mut args.iter().chain(items.iter().flatten())),
         ExprKind::AsSlice(inner) => may_leave(inner),
         ExprKind::Field { recv: inner, .. }
@@ -10054,7 +10157,7 @@ const MOVED_TAG: usize = 255;
 
 /// What `main` does after it has returned and its values are gone: a `shared` value still
 /// alive holds itself up, and is reported (only a debug build keeps the list, see `sg_leaks`).
-const LEAKS: &str = "#ifdef SG_LEAKS\n    if (sg_leaks(\"the program\")) return 1;\n#endif\n#if SG_COUNT\n    if (sg_blocks_left(\"the program\", 0)) return 1;\n#endif\n";
+const LEAKS: &str = "#if defined(SG_STATICS) && (defined(SG_LEAKS) || SG_COUNT)\n    sg_statics_end();\n#endif\n#ifdef SG_LEAKS\n    if (sg_leaks(\"the program\")) return 1;\n#endif\n#if SG_COUNT\n    if (sg_blocks_left(\"the program\", 0)) return 1;\n#endif\n";
 
 /// What computing an expression can do besides giving its value. It decides whether the
 /// order in which two expressions are computed can be seen.
@@ -10151,6 +10254,10 @@ struct Emitter<'a> {
     consts_used: std::collections::BTreeSet<String>,
     /// The count each `[Name]` in a type stands for (`Program::sizes`).
     sizes: &'a std::collections::BTreeMap<usize, usize>,
+    /// The statics of the program, by full name.
+    statics: HashMap<&'a str, &'a StaticDecl>,
+    /// The statics the code reads: each is defined once, outside the functions.
+    statics_used: std::collections::BTreeSet<String>,
     /// The functions of the language's own module left out of the C (`Program::left_out`).
     left_out: &'a std::collections::BTreeSet<String>,
     /// The files of the program: a type name is looked up from the file it is written in.
@@ -11467,6 +11574,110 @@ impl<'a> Emitter<'a> {
     /// type of every value it carries. `None` for any other type. `span`: where to point for
     /// a `Result`, whose variants are written nowhere.
     /// What a const of an array, a struct or an enum holds, as the braces of C give it.
+    /// The address of what the static `name` holds, as a `T*`: where it lies, or, for one whose
+    /// value is found where it is first used, what gives it once it is found. For `static
+    /// locked`, the value behind its lock.
+    fn static_at(&mut self, name: &str, span: Span) -> Res<String> {
+        self.statics_used.insert(name.to_string());
+        let decl = self.statics[name];
+        if decl.locked {
+            self.made.insert("shared".to_string());
+            self.made.insert("threads".to_string());
+        }
+        let cname = static_cname(name);
+        Ok(match (&decl.value, decl.locked) {
+            // Kept with what the program only reads, and lent as a borrow that only reads.
+            (Some(_), false) if !self.holds_atomic(&decl.ty) => {
+                let ctype = self.ctype(&self.written(&decl.ty)?, span)?;
+                format!("(({ctype}*)&{cname})")
+            }
+            (Some(_), false) => format!("(&{cname})"),
+            (Some(_), true) => format!("(&{cname}.value)"),
+            (None, _) => {
+                self.made.insert("statics".to_string());
+                format!("{cname}_at({})", self.loc(span))
+            }
+        })
+    }
+
+    /// Whether a value of the type written has atomic values in it, which are written where they
+    /// lie. The C type of an atomic value is the type it holds, so the words written are looked at.
+    fn holds_atomic(&self, ty: &TypeExpr) -> bool {
+        if ty.atomic.is_some() {
+            return true;
+        }
+        if ty.holder.is_some() || ty.raw > 0 || ty.suffixes.iter().any(|suffix| matches!(suffix, Suffix::Pointer | Suffix::Nullable)) {
+            return false;
+        }
+        match self.full(&ty.name, ty.span) {
+            Some(full) => match (self.structs.get(full.as_str()), self.enums.get(full.as_str())) {
+                (Some(decl), _) => decl.fields.iter().any(|field| self.holds_atomic(&field.ty)),
+                (_, Some(decl)) => decl.variants.iter().flat_map(|variant| &variant.fields).any(|field| self.holds_atomic(&field.ty)),
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
+    /// What defines a static the code reads: its value, in the data of the program, and for one
+    /// found where it is first used, what finds it once; and what lets it go at the end of a
+    /// build that counts its leaks, as `drops`.
+    fn static_def(&mut self, name: &str, drops: &mut String) -> Res<String> {
+        let decl = self.statics[name];
+        let ty = self.written(&decl.ty)?;
+        let ctype = self.ctype(&ty, decl.ty.span)?;
+        let cname = static_cname(name);
+        let shown = c_string(decl.local.as_deref().unwrap_or_else(|| short_name(name)));
+        let mut out = String::new();
+        let init = match &decl.value {
+            Some(value) => Some(self.const_init(&ty, value)?),
+            None => None,
+        };
+        // A `static locked` value lies after a lock and the counts of a `shared` value, so that
+        // `lock` finds its mutex in front of it, as for `new shared locked`.
+        match (decl.locked, &init) {
+            (true, Some(init)) => {
+                let _ = writeln!(out, "static struct {{ sg_mutex m; sg_rc rc; {ctype} value; }} {cname} = {{ .m = {{ SG_MTX_INIT }}, .rc = {{ 1, 1 }}, .value = {init} }};");
+            }
+            (true, None) => {
+                let _ = writeln!(out, "static struct {{ sg_mutex m; sg_rc rc; {ctype} value; }} {cname} = {{ .m = {{ SG_MTX_INIT }}, .rc = {{ 1, 1 }} }};");
+            }
+            (false, Some(init)) if !self.holds_atomic(&decl.ty) => {
+                let _ = writeln!(out, "static const {ctype} {cname} = {init};");
+            }
+            (false, Some(init)) => {
+                let _ = writeln!(out, "static {ctype} {cname} = {init};");
+            }
+            (false, None) => {
+                let _ = writeln!(out, "static {ctype} {cname};");
+            }
+        }
+        if decl.locked {
+            let _ = writeln!(out, "_Static_assert(__builtin_offsetof(__typeof__({cname}), value) == sizeof(sg_mutex) + sizeof(sg_rc), \"a static locked value is aligned to at most 16 bytes\");");
+        }
+        if init.is_none() {
+            let value = if decl.locked { format!("{cname}.value") } else { cname.clone() };
+            let func = format!("f_{}", cname_of_init(&decl.init));
+            // A function of the language's own module is told where it was called from: here,
+            // where the static was first used.
+            let call = match self.tracked.contains(&func) {
+                true => format!("{func}(loc)"),
+                false => format!("{func}(); (void)loc"),
+            };
+            let _ = writeln!(out, "static sg_once {cname}_once = {{ 0, NULL, {shown} }};");
+            let _ = writeln!(out, "static void {cname}_find(const char* loc) {{ {value} = {call}; }}");
+            let _ = writeln!(
+                out,
+                "static inline {ctype}* {cname}_at(const char* loc) {{\n    if (__builtin_expect(__atomic_load_n(&{cname}_once.state, __ATOMIC_ACQUIRE) != 2, 0)) sg_once_run(&{cname}_once, {cname}_find, loc);\n    return &{value};\n}}"
+            );
+            if self.droppable(&ty) {
+                let drop = self.drop_of(&ty, &value);
+                let _ = writeln!(drops, "    if ({cname}_once.state == 2) {{ {drop} }}");
+            }
+        }
+        Ok(out)
+    }
+
     fn const_init(&mut self, ty: &Ty, value: &ConstVal) -> Res<String> {
         Ok(match (ty, value) {
             (Ty::Array(..), ConstVal::Bytes(bytes)) => {
@@ -12955,7 +13166,10 @@ impl<'a> Emitter<'a> {
                     let Ty::Shared(held, _) = item.value.ty.strip_borrow() else { unreachable!("the checker locks only a `shared locked` value") };
                     let Ty::Locked(held) = &**held else { unreachable!("the checker locks only a `shared locked` value") };
                     let held = (**held).clone();
-                    let place = self.look(&item.value)?;
+                    let place = match &item.value.kind {
+                        ExprKind::Static(name) => self.static_at(name, item.value.span)?,
+                        _ => self.look(&item.value)?,
+                    };
                     let temp = self.temp();
                     let ctype = self.ctype(&held, item.value.span)?;
                     self.pre.push(format!("{ctype}* {temp} = {place};"));
@@ -12994,7 +13208,7 @@ impl<'a> Emitter<'a> {
             }
             // A block of its own: what is declared in it ends with it.
             // A const of a block lies with the others, outside the functions.
-            StmtKind::Const { .. } => {}
+            StmtKind::Const { .. } | StmtKind::Static { .. } => {}
             StmtKind::Unsafe(body) => {
                 let _ = writeln!(out, "{pad}{{");
                 self.block(body, depth + 1, out)?;
@@ -14436,6 +14650,11 @@ impl<'a> Emitter<'a> {
         let all = |list: &mut dyn Iterator<Item = &Expr>| list.map(|inner| self.effect(inner)).max().unwrap_or(Effect::Reads);
         match &expr.kind {
             ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Char(_) | ExprKind::Null | ExprKind::Var(_) | ExprKind::FuncRef(_) | ExprKind::CVar(_) | ExprKind::Constant { .. } | ExprKind::Const(_) | ExprKind::Embed(_) | ExprKind::SizeOf { .. } => Effect::Reads,
+            // The first read of a static whose value is found then calls what finds it.
+            ExprKind::Static(name) => match self.statics[name.as_str()].value {
+                Some(_) => Effect::Reads,
+                None => Effect::Acts,
+            },
             ExprKind::Field { recv: inner, .. }
             | ExprKind::New(inner)
             | ExprKind::Atomic(inner)
@@ -16517,6 +16736,20 @@ impl<'a> Emitter<'a> {
                 }
                 _ => Ok(const_scalar(&self.consts[name].1)),
             },
+            // A static is reached through its address: a number is read there, anything else
+            // lent where it lies.
+            ExprKind::Static(name) => {
+                let at = self.static_at(name, expr.span)?;
+                if let Some(option) = lent_option(&expr.ty) {
+                    return self.lend(&at, &option.clone(), expr.span);
+                }
+                Ok(match &expr.ty {
+                    // A `read string` is a view of the text, not a pointer.
+                    ty if is_text_view(ty) => format!("sg_view({at})"),
+                    Ty::Read(_) => at,
+                    _ => format!("(*{at})"),
+                })
+            }
             ExprKind::Embed(_) => unreachable!("`embed` is written only where a const is given its value"),
             // A number read out of a pointer that has no name: the pointer is freed after the statement.
             ExprKind::Load(inner) if matches!(inner.ty, Ty::Ptr(_) | Ty::Shared(..)) => Ok(format!("(*{})", self.look(inner)?)),

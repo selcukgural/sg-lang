@@ -1,0 +1,9 @@
+error: the value of `First` needs itself: `First` -> `Second` -> `First`
+  the value of a static is found the first time it is used, by running what it is given and every function that calls, so it cannot need the static itself
+  --> error_static_cycle.sg:2:12
+ 2 | static int First = first()
+   |            ^^^^^
+  `Second` is read here, on the way to its value:
+  --> error_static_cycle.sg:6:12
+ 6 |     return Second + 1
+   |            ^^^^^^

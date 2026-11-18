@@ -60,6 +60,9 @@ pub struct Program {
     /// The count each `[Name]` written in a type stands for, by where the name is written.
     /// Filled in by the checker.
     pub sizes: std::collections::BTreeMap<usize, usize>,
+    /// Every `static`, of a module and of a block, in the order of the text. One written in a
+    /// block is kept here too, under a name of its own, as a const is.
+    pub statics: Vec<StaticDecl>,
 }
 
 /// `const int BlockSize = 4096`: a value known when the program is compiled.
@@ -78,6 +81,38 @@ pub struct ConstDecl {
     /// The consts of the blocks around it that it sees, as written and by their full names,
     /// the nearest last.
     pub visible: Vec<(String, String)>,
+}
+
+/// `static Table Crc = makeCrcTable()`: one value for the whole program, which lives until it
+/// ends and is never assigned. `static atomic long Hits = atomic 0` is changed through its atomic
+/// methods, `static locked Config Settings = Config.defaults()` inside a `lock` block.
+pub struct StaticDecl {
+    pub public: bool,
+    /// The full name, as for a const: `shop.Hits`, or `Hits#812` for one written in a block.
+    pub name: String,
+    pub name_span: Span,
+    /// Written `static locked T`: reached only inside a `lock` block.
+    pub locked: bool,
+    /// The type of the value, without `locked`.
+    pub ty: TypeExpr,
+    /// The function that gives the value, `<name>#init`, in `Program::funcs`: its body returns
+    /// what the static is given. Called the first time the static is used, unless the value
+    /// is found when the program is compiled (see `Program::static_values`).
+    pub init: String,
+    /// Written in a block: the name as written there.
+    pub local: Option<String>,
+    /// The consts and statics of the blocks around it that its value sees, as written and by
+    /// their full names, the nearest last.
+    pub consts: Vec<(String, String)>,
+    pub statics: Vec<(String, String)>,
+    /// Set by the checker: the value is found when the program is compiled, from what the rule
+    /// of a const allows, and lies in the program from its start.
+    pub value: Option<ConstVal>,
+}
+
+/// The name of the function that gives the value of the static `name`.
+pub fn static_init(name: &str) -> String {
+    format!("{name}#init")
 }
 
 /// A value a `const` holds: numbers, `bool`, `char`, a text, and arrays, structs and enums of
@@ -879,6 +914,9 @@ pub enum StmtKind {
     /// `const int Size = 64` in a block: the name as written and the full name of the const,
     /// which `Program::consts` holds. Seen from here to the end of the block.
     Const { name: String, name_span: Span, full: String },
+    /// `static int Hits = ...` in a block: the name as written and the full name of the static,
+    /// which `Program::statics` holds. Seen from here to the end of the block.
+    Static { name: String, name_span: Span, full: String },
 }
 
 /// One value of a `lock` block and the name of what it holds.
@@ -1000,6 +1038,10 @@ pub enum ExprKind {
     /// Built by the checker from the name of a `const` (not one of text, which becomes the text
     /// itself): its full name. A value of its type, which no one changes, there for the whole run.
     Const(String),
+    /// Built by the checker from the name of a `static`: its full name. A `read` borrow of the
+    /// one value, or the value itself for a number, a `bool` and a `char`; for `static locked`,
+    /// what a `lock` block takes.
+    Static(String),
     /// `embed("logo.gif")`, by its place in `Program::embeds`: the bytes of the file, as a
     /// `byte[N]`. Written only where a `const` is given its value.
     Embed(usize),

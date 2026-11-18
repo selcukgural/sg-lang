@@ -1,0 +1,43 @@
+// A module with a public static, one it keeps to itself, and a static found by a function of
+// its own the first time another module reads it.
+
+public static atomic long Hits = atomic 0
+
+static locked List<string> Names = List<string>()
+
+public static List<int> Primes = primes(20)
+
+List<int> primes(int below) {
+    var found = List<int>()
+    for n in 2..below {
+        var prime = true
+        for d in 2..n {
+            if n % d == 0 {
+                prime = false
+            }
+        }
+        if prime {
+            found.add(n)
+        }
+    }
+    return found
+}
+
+public void remember(string name) {
+    _ = Hits.fetchAdd(1)
+    lock Names as names {
+        names.add(name)
+    }
+}
+
+public int remembered() {
+    lock Names as names {
+        return (int)names.length()
+    }
+}
+
+test "the module counts" {
+    remember("one")
+    assert(Hits.load() == 1)
+    assert(remembered() == 1)
+}

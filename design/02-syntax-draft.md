@@ -1363,9 +1363,9 @@ toHex(read id, ref text)                         // lent where a slice is expect
 
 The full example is in the [example programs](05-examples.md) file.
 
-### Consts
+### Constants and statics
 
-A value known when the program is compiled, with its type written. At the top of a file (`public const` for
+A const is a value known when the program is compiled, with its type written. At the top of a file (`public const` for
 other modules) or in a block, where it is seen to the end of the block:
 
 ```
@@ -1409,6 +1409,38 @@ const int Size = size()                                  // error: what it runs 
 A local never takes the name of a const it sees. In compiled code a number is written where it is used, and
 a table is one `static const`, which nothing copies. The rules are in the decisions file ("Consts", "Consts,
 as built", "Calls in a const").
+
+A static is one value for the whole program, which lives until it ends and is never assigned. Its value
+may be found when the program runs; the type is written, and one of three kinds:
+
+```
+static uint[256] Crc = crcTable()                        // read only; found the first time it is used
+static atomic long Requests = atomic 0                   // changed by its atomic methods
+static locked Config Settings = Config.defaults()        // changed inside a `lock` block
+
+_ = Requests.fetchAdd(1)
+lock Settings as s { s.port = 8080 }
+var sum = crc(read data)                                 // Crc[i] in there: a `read` borrow of the one table
+Requests = 0                                             // error: a static is never assigned
+
+int nextId() {
+    static atomic int Last = atomic 0                    // in a function: one for the program, seen only here
+    return Last.fetchAdd(1) + 1
+}
+```
+
+A value the rule of a const allows (numbers, other consts, operators, no call), also inside `atomic` and
+`locked`, lies in the program from its start and costs nothing. Any other is found the first time the static
+is used, once, by whichever task comes first; the others wait for it, and every later read is one load and one
+branch. What finds it cannot wait (`lock`, `wait`, `await`, through the calls), and one that needs itself is a
+compile error (`` `A` -> `B` -> `A` ``), or a panic when the circle goes through a function value.
+
+Every task reaches a static, so what it holds follows the thread rule: no borrow, no `shared checked` value,
+no `Task`. Nothing in it is closed or disposed of, since a static is never dropped: no file, stream or socket.
+There is no static that changes freely and none that each thread has of its own: what changes is atomic or
+locked. A number, a `bool`, a `char` or a function is read as a value, anything else lent as `read`; a
+`static locked` value only in a `lock` block. A const cannot read a static. Each test starts with the statics
+not used yet. The rules are in the decisions file ("Globals, as decided", "Statics", "Statics, as built").
 
 ### Raw memory and calling C
 

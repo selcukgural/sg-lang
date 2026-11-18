@@ -1,5 +1,5 @@
 error: a `Huge[9]` takes 72 MB, and a const takes at most 64 MB
-  a const is written into the program; a larger value is found when the program runs, by a function it calls
+  a const is written into the program; a larger value is a `static`, found when the program first uses it
   --> error_comptime_size.sg:9:7
  9 | const Huge[9] Many = { huge(), huge(), huge(), huge(), huge(), huge(), huge(), huge(), huge() }
    |       ^^^^^^^

@@ -1,0 +1,7 @@
+// A static number is copied where it is used.
+static int Limit = 3
+
+void main() {
+    var limit = read Limit
+    print(limit)
+}

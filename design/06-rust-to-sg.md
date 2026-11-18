@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 18 November 2026, the hundred-and-fourth slice.
+Last brought up to date: 18 November 2026, the hundred-and-fifth slice.
 
 ## Functions and variables
 
@@ -39,7 +39,13 @@ Last brought up to date: 18 November 2026, the hundred-and-fourth slice.
 | `const fn` called in a `const` | any function: `const int[256] Crc = crcTable()` | built | No mark on the function. The checker follows the calls and refuses input and output, the clock, the random bytes of the system, the environment, other programs, raw memory, C, tasks, locks, a call through a `Func`, and `sin`, `exp`, `log`, `pow` and their kin, whose last bit the C library of each system finds in its own way. A panic or an overflow is a compile error; at most 100 000 000 steps and 64 MB. Rust's `const fn` cannot allocate; here a function may use a `List`, a `HashMap` or a `string` inside |
 | `include_bytes!("logo.gif")` | `embed("logo.gif")`, in a const: `const byte[] Logo = embed("logo.gif")` | built | C23's `#embed`; the path from the folder of the source file, a file of at most 64 MB |
 | `match x { MAX => ... }` (a const in a pattern) | `match x { Max => ... }` | built | A const of a number, a `char`, a text or a `bool`; a local never takes the name of a const it sees, so the name means the const |
-| `static X: T`, `static mut`, `thread_local!` | none yet | designed | Statics come after the calls in a const (1088 to 1097): a value computed once, `atomic` and `locked` ones; no `static mut` and no thread-local |
+| `static X: T = expr;` (a constant expression) | `static T X = expr` | built | Lies in the program's data from its start, with no check; a `static const` in C when it holds no atomic value |
+| `static X: LazyLock<T> = LazyLock::new(f);`, `OnceLock` | `static T X = f()` | built | Found the first time it is used, once, whichever task comes first; the others wait. A later read is an acquire load and a branch. Read as a `read` borrow |
+| `static HITS: AtomicU64 = AtomicU64::new(0);` | `static atomic ulong Hits = atomic 0` | built | Changed by its atomic methods, with the orders of C11 |
+| `static CONFIG: Mutex<Config> = Mutex::new(...)`, `LazyLock<Mutex<T>>` | `static locked Config Settings = ...` | built | Reached only in a `lock` block, which never waits, so it cannot deadlock |
+| `fn f() { static N: AtomicU32 = ...; }` | `static atomic int N = atomic 0` inside the function | built | One for the program; the name is seen only in that block |
+| `static mut X: T` | none | not in SG | A global that any task assigns is a race the compiler cannot see; what changes is `atomic` or `locked` ("Globals, as decided") |
+| `thread_local!` | none | not in SG | A task moves between the threads of a pool, so a value of each thread would not follow it; what belongs to a task is passed to it |
 | `std::process::exit(2)` | `exit(2)` | built | Takes a `byte`, so `exit(256)` is a compile error |
 | `panic!("...")` | `panic("...")` | built | |
 | `#[track_caller]` on the standard library | nothing to write | built | A panic inside the language's own module (`r.nextInt(5, 5)`, `Duration.fromSeconds` of a count too large) is shown at the call of the program, without the hint about the module's code; a function of your own cannot ask for it |
@@ -231,7 +237,7 @@ Last brought up to date: 18 November 2026, the hundred-and-fourth slice.
 | `#[global_allocator] static A: MyAlloc;` with `unsafe impl GlobalAlloc` (`alloc(layout)`, `dealloc(ptr, layout)`) | `raw byte allocate(nuint size, nuint align)`, `void release(raw byte block, nuint size, nuint align)` | built | Told the size and the alignment, as `Layout` tells them. Without them nothing allocates: a statement that would is a compile error, where Rust without `alloc` has no `String` or `Vec` at all |
 | `compiler_builtins` with `mem` (`memcpy`, `memset` for `no_std`) | nothing written | built | Weak functions of the object, `__divti3` and its kin too; the machine's own take their place |
 | `#[riscv_rt::entry] fn main() -> ! { ... }`, with `riscv-rt`'s start and linker script | `export void kernelMain() { ... }`, called by `_start` in a C file beside the kernel (`extern "./machine.c"`), linked with the kernel's own linker script | built | The start of the core and the vector of traps are a few lines of assembly inside C, not a crate. `examples/kernel` |
-| `static TICKS: AtomicU64`, changed in the handler of an interrupt | an `atomic ulong` field of the kernel's state, whose address the vector hands the handler from `mscratch` | built | SG has no globals; xv6 keeps a pointer for each core the same way |
+| `static TICKS: AtomicU64`, changed in the handler of an interrupt | `static atomic ulong Ticks = atomic 0` | built | In the program's data from its start, so the handler reads it with no check; the rest of the kernel's state still reaches the handler through `mscratch`, as xv6 keeps a pointer for each core |
 | `#[riscv_rt::core_interrupt(Interrupt::MachineTimer)] fn timer() { ... }` | `export void onTrap(raw void state, ulong cause, ulong pc)`, which tells the cause itself | built | One function for every trap, as the core has one vector |
 | `riscv::register::mie::set_mtimer()`, `riscv::asm::wfi()` | `static inline` functions of the C file with `csrs` and `wfi`, called inside `unsafe` | built | Inlined, as the crate's are |
 | `core::ptr::write_volatile(0x1000_0000 as *mut u8, b)` | `unsafe Memory.writeVolatile(uart[0], b)` with `var uart = unsafe (raw byte)0x1000_0000` | built | The devices of the kernel are driven in SG |
@@ -280,7 +286,7 @@ Last brought up to date: 18 November 2026, the hundred-and-fourth slice.
 | C#'s `Interlocked.Increment(ref x)`, `Interlocked.Add(ref x, n)` | `_ = x.fetchAdd(1)`, `x.fetchAdd(n)` | built | C#'s `Add` gives the value after, `fetchAdd` the one before, as C and Rust; the value is `atomic`, so it is never read or written without an atomic operation |
 | C#'s `Interlocked.CompareExchange(ref x, value, comparand)` | `x.compareExchange(comparand, value)` | built | The expected value first, as C and Rust have it |
 | C#'s `Volatile.Read`, `Volatile.Write`, `volatile` fields | `x.load(MemoryOrder.Acquire)`, `x.store(v, MemoryOrder.Release)` | built | C#'s `volatile` orders reads and writes between threads; SG's `Memory.readVolatile` is C's, for devices, and orders nothing |
-| `static`, `thread_local!` | none | not in SG | No global variables: what tasks share is in the arguments of `Task.run` |
+| `static mut`, `thread_local!` | none | not in SG | No global that is assigned freely and none for each thread: what tasks share is in the arguments of `Task.run` or in a `static` that is read only, atomic or locked |
 | `async fn`, `.await` | `async int f()`, `await t`, `await f(x)` | built | C#'s behaviour: a call starts the task at once; a call alone on a line is an error. Compiled as Rust compiles it ("Async, the direction") |
 | `tokio::spawn(f(x))` | `var t = f(x)` (no `await`) | built | What it is given follows the thread rule; `await f(read x)` can borrow, as an awaited future does |
 | `tokio::time::sleep(d).await` | `await Task.delay(ms)` | built | On Windows the clock sleeps on a timer of high resolution, so a delay of 1 ms waits about 1 ms, not a tick of 16 ms |

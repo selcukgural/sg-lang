@@ -129,6 +129,11 @@ pub fn check(prog: &Program) -> Res<()> {
     for (_, body) in &bodies {
         locks_in(body, &waits, &taken, &exports)?;
     }
+    // What gives the value of a static does not wait either: a task that finds it holds up
+    // every task that reads it meanwhile.
+    for decl in &prog.statics {
+        static_waits(decl, &scans[decl.init.as_str()], &waits, &taken, &exports)?;
+    }
     for test in &prog.tests {
         locks_in(&test.body, &waits, &taken, &exports)?;
     }
@@ -554,7 +559,7 @@ pub(crate) fn walk_stmt<'a>(stmt: &'a Stmt, each: &mut dyn FnMut(&'a Expr), lock
                 walk_expr(value, each, lock);
             }
         }
-        StmtKind::Break | StmtKind::Continue | StmtKind::Const { .. } => {}
+        StmtKind::Break | StmtKind::Continue | StmtKind::Const { .. } | StmtKind::Static { .. } => {}
         StmtKind::Expr(value) | StmtKind::Discard(value) => walk_expr(value, each, lock),
     }
 }
@@ -677,6 +682,37 @@ fn inside(body: &Block, waits: &HashMap<String, Why>, taken: &[(String, usize, T
             .hint("lock both in one block, which takes them in a fixed order: `lock a as x, b as y { ... }`"));
     }
     Ok(())
+}
+
+/// The error for the function that gives the value of a static, when it waits.
+fn static_waits(decl: &StaticDecl, scan: &Body, waits: &HashMap<String, Why>, taken: &[(String, usize, Ty)], exports: &[String]) -> Res<()> {
+    let Some(why) = waits.get(&decl.init) else { return Ok(()) };
+    let name = decl.local.clone().unwrap_or_else(|| short_name(&decl.name).to_string());
+    let diag = match why {
+        Why::Itself(span, how) => {
+            let what = match how {
+                How::Lock => "takes a lock",
+                How::Wait => "waits for a task",
+                How::Await => "awaits a task",
+            };
+            Diag::error(*span, format!("the value of the static `{name}` is found where it is first used, and this {what}"))
+        }
+        Why::Calls(callee) => {
+            let span = scan.calls.iter().find(|(called, _)| called == callee).map_or(decl.name_span, |(_, span)| *span);
+            explained(Diag::error(span, format!("the value of the static `{name}` is found where it is first used, and `{}` waits", short_name(callee))), callee, waits)
+        }
+        Why::CallsValue(target) => {
+            let span = scan.values.iter().find(|(count, ret, _)| value_target(taken, waits, *count, ret).is_some()).map(|(_, _, span)| *span);
+            let span = span.unwrap_or(decl.name_span);
+            let what = match scan.calls_c && exports.contains(target) {
+                true => "this call of C may call",
+                false => "this function value could be",
+            };
+            explained(Diag::error(span, format!("the value of the static `{name}` is found where it is first used, and {what} `{}`, which waits", short_name(target))), target, waits)
+        }
+        Why::Holds(..) => unreachable!("a function waits by itself or through a call"),
+    };
+    Err(diag.note("a task that finds the value of a static never waits, so every task that reads the static meanwhile goes on"))
 }
 
 const NO_WAIT: &str = "a task that holds a lock never waits, so it always lets the lock go: locks and waits cannot deadlock";

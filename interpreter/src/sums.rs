@@ -171,7 +171,7 @@ impl<'a> Scan<'a> {
                     self.expr(value);
                 }
             }
-            StmtKind::Break | StmtKind::Continue | StmtKind::Const { .. } => {}
+            StmtKind::Break | StmtKind::Continue | StmtKind::Const { .. } | StmtKind::Static { .. } => {}
             StmtKind::Expr(value) | StmtKind::Discard(value) => self.expr(value),
         }
     }
@@ -246,6 +246,7 @@ pub(crate) fn children<'a>(expr: &'a Expr, each: &mut dyn FnMut(&'a Expr)) {
         | ExprKind::Var(_)
         | ExprKind::Constant { .. }
         | ExprKind::Const(_)
+        | ExprKind::Static(_)
         | ExprKind::Embed(_)
         | ExprKind::FuncRef(_)
         | ExprKind::CVar(_) => {}

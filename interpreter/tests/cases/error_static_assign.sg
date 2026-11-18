@@ -1,0 +1,6 @@
+// A static is never assigned: what changes is `static atomic` or `static locked`.
+static int Hits = 0
+
+void main() {
+    Hits = 3
+}

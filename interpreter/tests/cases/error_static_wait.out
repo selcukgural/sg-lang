@@ -1,0 +1,9 @@
+error: the value of the static `Value` is found where it is first used, and `make` waits
+  a task that finds the value of a static never waits, so every task that reads the static meanwhile goes on
+  --> error_static_wait.sg:11:20
+ 11 | static int Value = make()
+    |                    ^^^^
+  `make` waits for a task here:
+  --> error_static_wait.sg:8:17
+ 8 |     return task.wait()
+   |                 ^^^^

@@ -1,0 +1,10 @@
+// What a `static locked` value holds is reached only inside a `lock` block.
+struct Config {
+    int port
+}
+
+static locked Config Settings = Config { port = 80 }
+
+void main() {
+    print(Settings.port)
+}

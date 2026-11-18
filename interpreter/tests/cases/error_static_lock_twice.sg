@@ -1,0 +1,12 @@
+// One `lock` takes a value once.
+struct Config {
+    int port
+}
+
+static locked Config Settings = Config { port = 80 }
+
+void main() {
+    lock Settings as a, Settings as b {
+        a.port = b.port
+    }
+}

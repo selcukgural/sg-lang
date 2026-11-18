@@ -1,0 +1,172 @@
+// Statics: one value for the whole program. A value the rule of a const allows lies in the
+// program from its start; any other is found the first time the static is used, once, and
+// read through a `read` borrow after that. `static atomic` changes through its atomic
+// methods, `static locked` inside a `lock` block, from any task.
+struct Config {
+    string host
+    int port
+}
+
+struct Stats {
+    atomic long hits
+    atomic long misses
+}
+
+struct Point : Copyable {
+    int x
+    int y
+
+    int sum(read this) {
+        return this.x + this.y
+    }
+}
+
+enum Level : Copyable {
+    Low
+    High(int level)
+}
+
+Config defaults() {
+    print("finding the settings")
+    return Config { host = "localhost", port = 80 }
+}
+
+// The table of CRC-32, found the first time it is read.
+uint[256] crcTable() {
+    print("finding the table")
+    var table = uint[256]
+    for n in 0..256 {
+        var c = (uint)n
+        for _ in 0..8 {
+            if (c & 1) != 0 {
+                c = 0xEDB88320 ^ (c >> 1)
+            } else {
+                c = c >> 1
+            }
+        }
+        table[n] = c
+    }
+    return table
+}
+
+List<string> words() {
+    print("finding the words")
+    var list = List<string>()
+    list.add("static")
+    list.add("atomic")
+    list.add("locked")
+    return list
+}
+
+int twice(int n) {
+    return n * 2
+}
+
+const int Base = 40
+
+static uint[256] Crc = crcTable()
+static atomic long Requests = atomic 0
+static locked Config Settings = defaults()
+static locked int Total = 0
+static int Limit = Base + 2
+static Point Origin = Point { x = 3, y = 4 }
+static Level Top = Level.High(9)
+static Stats Counts = Stats { hits = atomic 0, misses = atomic 0 }
+static List<string> Words = words()
+static string Greeting = $"hello, {Limit}".toString()
+static Func<int, int> Double = twice
+static double Half = 0.5
+
+uint crc(read byte[] data) {
+    uint c = 0xFFFFFFFF
+    for b in data {
+        c = Crc[(int)((c ^ b) & 0xFF)] ^ (c >> 8)
+    }
+    return c ^ (uint)0xFFFFFFFF
+}
+
+// A static of a function: one for the program, its name seen only here.
+int nextId() {
+    static atomic int Last = atomic 0
+    return Last.fetchAdd(1) + 1
+}
+
+int longest(read List<string> list) {
+    var most = 0
+    for word in list {
+        most = most.max((int)word.length())
+    }
+    return most
+}
+
+void count(int times) {
+    for _ in 0..times {
+        _ = Requests.fetchAdd(1, MemoryOrder.Relaxed)
+        lock Total as t {
+            t += 1
+        }
+    }
+}
+
+int wordCount(int extra) {
+    return (int)Words.length() + extra
+}
+
+void main() {
+    print("start")
+    print(Limit)
+    print(Origin.sum())
+    print(Half)
+    if Top is High(level) {
+        print(level)
+    }
+    var double = Double
+    print(double(21))
+    print(Greeting)
+
+    // Found here, once.
+    var hello = byte[5] { 104, 101, 108, 108, 111 }
+    print(crc(read hello))
+    print(crc(read hello))
+
+    print(Words.length())
+    print(longest(Words))
+    var first = Words[0]
+    print(first)
+
+    lock Settings as s {
+        s.port = 8080
+    }
+    lock Settings as s, Total as t {
+        t += s.port
+        print($"{s.host}:{s.port}")
+    }
+
+    _ = Counts.hits.fetchAdd(2)
+    _ = Counts.misses.fetchAdd(1)
+    print($"{Counts.hits.load()} {Counts.misses.load()}")
+
+    print(nextId())
+    print(nextId())
+
+    // A static of a block sees the consts of the blocks around it.
+    if Limit > 0 {
+        const int Step = 5
+        static int[3] Steps = int[3] { Step, Step * 2, Step * 3 }
+        print(Steps[2])
+    }
+
+    // Tasks reach the same statics.
+    var tasks = List<Task<void>>()
+    for _ in 0..4 {
+        tasks.add(Task.run(count, 250))
+    }
+    Task.whenAll(tasks).wait()
+    print(Requests.load())
+    lock Total as t {
+        print(t)
+    }
+    var a = Task.run(wordCount, 1)
+    var b = Task.run(wordCount, 2)
+    print(a.wait() + b.wait())
+}

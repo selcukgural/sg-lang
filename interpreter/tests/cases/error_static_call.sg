@@ -1,0 +1,10 @@
+// A call does not read a static that holds a function.
+int twice(int n) {
+    return n * 2
+}
+
+static Func<int, int> Double = twice
+
+void main() {
+    print(Double(21))
+}

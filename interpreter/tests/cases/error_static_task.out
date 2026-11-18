@@ -1,0 +1,5 @@
+error: a static cannot hold a `Task<int>`: a task is waited for by the task that started it, and by no other
+  every task reaches a static, so what it holds owns all it holds: no borrow, no `shared checked` value, no `Task`
+  --> error_static_task.sg:6:8
+ 6 | static Task<int> Work = Task.run(work)
+   |        ^^^^^^^^^

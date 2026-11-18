@@ -1,5 +1,5 @@
 error: the value of `Counted` is found when the program is compiled, and what it runs takes a lock
-  a value that cannot be found when the program is compiled is found when the program runs, by a function it calls
+  a value that cannot be found when the program is compiled is a `static`, found when the program first uses it: `static T Name = f()`
   --> error_comptime_lock.sg:13:21
  13 | const int Counted = counted()
     |                     ^^^^^^^

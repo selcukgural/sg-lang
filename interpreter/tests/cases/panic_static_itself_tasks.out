@@ -1,0 +1,9 @@
+panic: the value of `Total` needs itself: it is read while it is being found
+  the compiler follows the calls, not a function value, so the circle was found when the program ran
+  --> panic_static_itself_tasks.sg:6:12
+ 6 |     return Total + 1
+   |            ^^^^^
+  in the task `plus` started here:
+  --> panic_static_itself_tasks.sg:18:16
+ 18 |     var task = Task.run(plus, 1)
+    |                ^^^^^^^^^^^^^^^^^

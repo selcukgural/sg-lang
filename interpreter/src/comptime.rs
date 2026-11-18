@@ -28,6 +28,8 @@ pub const ROUNDED_ELSEWHERE: &[&str] = &["sin", "cos", "tan", "asin", "acos", "a
 pub struct Reach {
     pub funcs: Vec<String>,
     pub consts: Vec<String>,
+    /// The statics read on the way, with where each is first read.
+    pub statics: Vec<(String, Span)>,
     /// The first function reached that the checker has not checked yet.
     pub unchecked: Option<String>,
     /// For each function reached, the one that called it and where (none for the initializer).
@@ -42,14 +44,16 @@ struct Scan {
     barred: Option<(Span, String, Option<String>)>,
     calls: Vec<(String, Span)>,
     consts: Vec<String>,
+    statics: Vec<(String, Span)>,
 }
 
 /// Follows the calls of a const's initializer through the bodies `bodies` holds (the checked
 /// ones; `unchecked` names the others). Stops at the first unchecked one.
 pub fn reach(init: &Expr, bodies: &HashMap<String, &Func>, unchecked: &HashSet<String>) -> Reach {
-    let mut found = Reach { funcs: Vec::new(), consts: Vec::new(), unchecked: None, from: HashMap::new() };
+    let mut found = Reach { funcs: Vec::new(), consts: Vec::new(), statics: Vec::new(), unchecked: None, from: HashMap::new() };
     let first = scan_expr(init, bodies);
     found.consts.extend(first.consts);
+    found.statics.extend(first.statics);
     let mut queue: VecDeque<(String, Option<String>, Span)> = first.calls.into_iter().map(|(name, span)| (name, None, span)).collect();
     while let Some((name, caller, span)) = queue.pop_front() {
         if found.from.contains_key(&name) {
@@ -64,6 +68,7 @@ pub fn reach(init: &Expr, bodies: &HashMap<String, &Func>, unchecked: &HashSet<S
         found.funcs.push(name.clone());
         let scan = scan_body(func, bodies);
         found.consts.extend(scan.consts);
+        found.statics.extend(scan.statics);
         queue.extend(scan.calls.into_iter().map(|(callee, at)| (callee, Some(name.clone()), at)));
     }
     found
@@ -118,7 +123,7 @@ pub fn check(init: &Expr, shown: &str, reach: &Reach, bodies: &HashMap<String, &
 }
 
 /// Why a value that the compiler cannot find is found when the program runs.
-const LATER: &str = "a value that cannot be found when the program is compiled is found when the program runs, by a function it calls";
+const LATER: &str = "a value that cannot be found when the program is compiled is a `static`, found when the program first uses it: `static T Name = f()`";
 
 /// `a` calls `b` calls `c`.
 fn path_of(chain: &[String]) -> String {
@@ -183,6 +188,12 @@ fn look(expr: &Expr, scan: &mut Scan, bodies: &HashMap<String, &Func>) {
         ExprKind::Allocate { .. } => bar(scan, expr.span, "allocates raw memory"),
         ExprKind::CVar(name) => bar(scan, expr.span, &format!("reads `{}`, a variable of C", short_name(name))),
         ExprKind::Const(full) => scan.consts.push(full.clone()),
+        // What a static holds is found when the program runs, and may change while it runs.
+        ExprKind::Static(full) => {
+            scan.statics.push((full.clone(), expr.span));
+            let shown = full.split('#').next().map(|name| short_name(name).to_string()).unwrap_or_default();
+            bar(scan, expr.span, &format!("reads the static `{shown}`"));
+        }
         _ => {}
     }
     if matches!(expr.ty, Ty::Raw(_)) {

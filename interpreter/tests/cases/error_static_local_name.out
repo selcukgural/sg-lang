@@ -1,0 +1,10 @@
+error: `Limit` is the name of a static, and a local cannot take it
+  a name means one thing in a function
+  --> error_static_local_name.sg:5:9
+ 5 |     var Limit = 4
+   |         ^^^^^
+  the static:
+  --> error_static_local_name.sg:2:12
+ 2 | static int Limit = 3
+   |            ^^^^^
+  hint: give the local another name

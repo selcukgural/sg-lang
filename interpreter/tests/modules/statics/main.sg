@@ -1,0 +1,20 @@
+// The statics of another module: a public one read by its name, with the module's name and
+// without, and those the module keeps to itself reached through its functions.
+
+use counter
+
+void main() {
+    remember("ann")
+    remember("bob")
+    print(Hits.load())
+    print(counter.Hits.load())
+    print(remembered())
+    print(Primes.length())
+    print(counter.Primes[7])
+}
+
+test "the statics start again" {
+    assert(Hits.load() == 0)
+    remember("eve")
+    assert(remembered() == 1)
+}

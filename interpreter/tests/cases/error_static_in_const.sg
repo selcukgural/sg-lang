@@ -1,0 +1,7 @@
+// A const is found when the program is compiled, a static when it runs.
+static int Base = 3
+const int Size = Base
+
+void main() {
+    print(Size)
+}

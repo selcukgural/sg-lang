@@ -1,0 +1,5 @@
+error: `Settings` is a `static locked` value, reached only inside a `lock` block, where no other task reaches it
+  --> error_static_locked_outside.sg:9:11
+ 9 |     print(Settings.port)
+   |           ^^^^^^^^
+  hint: `lock Settings as name { ... }`

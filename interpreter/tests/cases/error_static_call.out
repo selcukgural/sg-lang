@@ -1,0 +1,6 @@
+error: there is no function named `Double`
+  `Double` is a static, which a call does not read
+  --> error_static_call.sg:9:11
+ 9 |     print(Double(21))
+   |           ^^^^^^
+  hint: copy the function it holds to a local first: `var f = Double`, then `f(...)`

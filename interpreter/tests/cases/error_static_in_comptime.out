@@ -1,0 +1,9 @@
+error: the value of `Size` is found when the program is compiled, and what it runs reads the static `Base`
+  a value that cannot be found when the program is compiled is a `static`, found when the program first uses it: `static T Name = f()`
+  --> error_static_in_comptime.sg:8:18
+ 8 | const int Size = base()
+   |                  ^^^^
+  `base` reads the static `Base` here:
+  --> error_static_in_comptime.sg:5:12
+ 5 |     return Base
+   |            ^^^^

@@ -1,0 +1,41 @@
+// A table found the first time it is read, a static, read in a loop that does little else:
+// CRC-32 of 64 KB, 4096 times, byte by byte through the table. Every read of the static looks
+// whether its value is found (one load and one branch); the C keeps the table in a plain global
+// filled before the loop.
+uint[256] crcTable() {
+    var table = uint[256]
+    for n in 0..256 {
+        var c = (uint)n
+        for _ in 0..8 {
+            if (c & 1) != 0 {
+                c = 0xEDB88320 ^ (c >> 1)
+            } else {
+                c = c >> 1
+            }
+        }
+        table[n] = c
+    }
+    return table
+}
+
+static uint[256] Crc = crcTable()
+
+uint crc(uint start, read byte[] data) {
+    uint c = start ^ 0xFFFFFFFF
+    for i in 0..data.length() {
+        c = Crc[(int)((c ^ data[i]) & 0xFF)] ^ (c >> 8)
+    }
+    return c ^ 0xFFFFFFFF
+}
+
+void main() {
+    var block = byte[65536]
+    for i in 0..65536 {
+        block[i] = (byte)((i * 31 + 7) & 255)
+    }
+    uint sum = 0
+    for _ in 0..4096 {
+        sum = crc(sum, read block)
+    }
+    print(sum)
+}

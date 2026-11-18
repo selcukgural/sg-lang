@@ -1,0 +1,5 @@
+error: `Hits` is a static, and a static is never assigned: it is read by every task
+  a static that changes is `static atomic`, changed by its atomic methods, or `static locked`, changed inside a `lock` block
+  --> error_static_assign.sg:5:5
+ 5 |     Hits = 3
+   |     ^^^^

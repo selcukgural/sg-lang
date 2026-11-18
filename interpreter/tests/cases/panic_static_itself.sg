@@ -1,0 +1,16 @@
+// A static whose value needs itself through a function value, which the compiler does not
+// follow: found when the program runs.
+static int Total = through(readTotal)
+
+int readTotal() {
+    return Total + 1
+}
+
+int through(Func<int> give) {
+    return give()
+}
+
+void main() {
+    print("start")
+    print(Total)
+}

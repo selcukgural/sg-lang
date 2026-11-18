@@ -1,0 +1,21 @@
+// What gives the value of a static does not take a lock, through the functions it calls.
+struct Box {
+    int n
+}
+
+int take(shared locked Box box) {
+    lock box as b {
+        return b.n
+    }
+}
+
+int make() {
+    var box = new shared locked Box { n = 1 }
+    return take(share box)
+}
+
+static int Value = make()
+
+void main() {
+    print(Value)
+}

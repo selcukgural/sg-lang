@@ -1,0 +1,5 @@
+error: a static cannot hold a `shared checked Node`: a `shared checked Node` is checked within one task; one that several tasks change is `shared locked`
+  every task reaches a static, so what it holds owns all it holds: no borrow, no `shared checked` value, no `Task`
+  --> error_static_checked.sg:6:8
+ 6 | static shared checked Node Root = new shared checked Node { n = 1 }
+   |        ^^^^^^^^^^^^^^^^^^^

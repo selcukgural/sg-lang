@@ -1,0 +1,5 @@
+error: `Limit` is a static of `int`, which is copied where it is used, not lent
+  --> error_static_read_number.sg:5:17
+ 5 |     var limit = read Limit
+   |                 ^^^^^^^^^^
+  hint: `Limit`

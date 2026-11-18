@@ -1934,6 +1934,8 @@ fn run_main(interp: &mut Interp) -> Result<(), Stop> {
         }
         other => other,
     };
+    // What the statics hold is let go: it is not a leak.
+    interp.consts.drop_statics();
     match result {
         // What `main` owned is gone; a `shared` value still alive holds itself up.
         Ok(_) => match interp.leaked(first, "the program") {
@@ -1972,7 +1974,9 @@ pub fn run_tests<'a>(prog: &'a Program, sources: &'a crate::source::Sources, out
 fn run_each_test<'a>(interp: &mut Interp<'a, '_>, prog: &'a Program, sources: &crate::source::Sources) -> Result<(usize, usize), Stop> {
     let (mut passed, mut failed) = (0, 0);
     for test in &prog.tests {
-        // Nothing is shared between tests: each starts with variables of its own.
+        // Nothing is shared between tests: each starts with variables of its own, and with
+        // statics not used yet, as each compiled test runs in a process of its own.
+        interp.consts.drop_statics();
         interp.depth = 0;
         interp.io.test_err.borrow_mut().clear();
         open_streams();
@@ -2002,7 +2006,9 @@ fn run_each_test<'a>(interp: &mut Interp<'a, '_>, prog: &'a Program, sources: &c
                 }
             },
         };
-        // A test that passes and leaves `shared` values alive fails with the report.
+        // A test that passes and leaves `shared` values alive fails with the report; what the
+        // statics hold is not one.
+        interp.consts.drop_statics();
         let ended = match ended {
             Ok(Value::Enum(name, 1, fields)) => Ok(Value::Enum(name, 1, fields)),
             Ok(value) => match interp.leaked(first, "the test") {
@@ -2117,11 +2123,35 @@ pub struct Consts<'a> {
     /// While a const that calls functions is found when the program is compiled: the steps it
     /// may still take (each block run and each call is one).
     steps: Option<std::cell::Cell<u64>>,
+    /// The statics: the value of each that the checker found, and the function that finds each
+    /// of the others.
+    static_values: HashMap<&'a str, &'a ConstVal>,
+    static_inits: HashMap<&'a str, &'a str>,
+    /// Each static that has been used: its value, or the fiber that is finding it.
+    statics: RefCell<HashMap<String, StaticState>>,
+    /// The static each fiber waits for, while another finds it.
+    static_waits: RefCell<HashMap<usize, String>>,
+}
+
+/// A static that has been used: found, or being found by a fiber.
+#[derive(Clone)]
+enum StaticState {
+    Found(Cell),
+    Finding(usize),
 }
 
 impl<'a> Consts<'a> {
     fn given(prog: &'a Program) -> Consts<'a> {
-        Consts { inits: HashMap::new(), given: &prog.const_values, embeds: &prog.embeds, cells: RefCell::new(HashMap::new()), finding: RefCell::new(Vec::new()), steps: None }
+        let static_values = prog.statics.iter().filter_map(|decl| decl.value.as_ref().map(|value| (decl.name.as_str(), value))).collect();
+        let static_inits = prog.statics.iter().map(|decl| (decl.name.as_str(), decl.init.as_str())).collect();
+        Consts { inits: HashMap::new(), given: &prog.const_values, embeds: &prog.embeds, cells: RefCell::new(HashMap::new()), finding: RefCell::new(Vec::new()), steps: None, static_values, static_inits, statics: RefCell::new(HashMap::new()), static_waits: RefCell::new(HashMap::new()) }
+    }
+
+    /// The statics are let go, as if never used: before each test, and when a program or a
+    /// test ends, so that what they hold is not a leak.
+    fn drop_statics(&self) {
+        let gone = std::mem::take(&mut *self.statics.borrow_mut());
+        drop(gone);
     }
 }
 
@@ -2194,7 +2224,7 @@ fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)
     let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err: &mut err };
     let io = shared(&mut sink, world, crate::ffi::Library::default(), &sources);
     let steps = counted.then(|| std::cell::Cell::new(CONST_STEPS));
-    let mut consts = Consts { inits: HashMap::new(), given, embeds: &prog.embeds, cells: RefCell::new(HashMap::new()), finding: RefCell::new(Vec::new()), steps };
+    let mut consts = Consts { inits: HashMap::new(), given, embeds: &prog.embeds, cells: RefCell::new(HashMap::new()), finding: RefCell::new(Vec::new()), steps, static_values: HashMap::new(), static_inits: HashMap::new(), statics: RefCell::new(HashMap::new()), static_waits: RefCell::new(HashMap::new()) };
     consts.inits = decls.iter().map(|decl| (decl.name.as_str(), &decl.init)).collect();
     let funcs = prog.funcs.iter().map(|func| (func.name.as_str(), func)).collect();
     let mut methods: HashMap<&str, HashMap<&str, &Func>> = HashMap::new();
@@ -2220,7 +2250,7 @@ fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)
                     ENDING.with(|ending| ending.set(false));
                     return Err(Diag::error(decl.init.span, format!("finding the value of `{name}` takes more than {} steps", group_digits(CONST_STEPS)))
                         .note("a const is found when the program is compiled, in at most that many steps, so that every machine finds the same")
-                        .note("a value that takes longer to find is found when the program runs, by a function it calls"));
+                        .note("a value that takes longer to find is a `static`, found when the program first uses it: `static T Name = f()`"));
                 }
                 Err(Unwind::Stop(Stop::Diag(mut diag))) => {
                     ENDING.with(|ending| ending.set(false));
@@ -2285,6 +2315,65 @@ impl<'a, 'e> Interp<'a, 'e> {
         let slot = cell(value);
         self.consts.cells.borrow_mut().insert(name.to_string(), slot.clone());
         Ok(slot)
+    }
+
+    /// The cell of a static: its value, found the first time it is used. A fiber that finds it
+    /// being found by another waits for it, giving the turn away; one that finds it being found
+    /// by itself, or by a fiber that waits for a static this one is finding, would wait forever,
+    /// and panics.
+    fn static_cell(&mut self, name: &str, span: Span) -> Res<Cell> {
+        let shown = |full: &str| full.split('#').next().map(|written| short_name(written).to_string()).unwrap_or_default();
+        loop {
+            let state = self.consts.statics.borrow().get(name).cloned();
+            match state {
+                Some(StaticState::Found(slot)) => return Ok(slot),
+                Some(StaticState::Finding(by)) => {
+                    if by == self.me {
+                        return Err(Diag::panic(span, format!("the value of `{}` needs itself: it is read while it is being found", shown(name)))
+                            .note("the compiler follows the calls, not a function value, so the circle was found when the program ran")
+                            .into());
+                    }
+                    // The fiber that finds it, the static that fiber waits for, the fiber that
+                    // finds that one: back to this fiber is a circle of waits.
+                    let mut at = by;
+                    for _ in 0..self.consts.static_waits.borrow().len() {
+                        let next = self.consts.static_waits.borrow().get(&at).cloned();
+                        let Some(next) = next else { break };
+                        let Some(StaticState::Finding(finder)) = self.consts.statics.borrow().get(&next).cloned() else { break };
+                        if finder == self.me {
+                            return Err(Diag::panic(span, format!("the value of `{}` is being found by another task, which waits for `{}`, which this task is finding", shown(name), shown(&next)))
+                                .note("the compiler follows the calls, not a function value, so the circle was found when the program ran")
+                                .into());
+                        }
+                        at = finder;
+                    }
+                    self.consts.static_waits.borrow_mut().insert(self.me, name.to_string());
+                    let passed = self.hand_turn(span);
+                    self.consts.static_waits.borrow_mut().remove(&self.me);
+                    passed?;
+                }
+                None => {
+                    if let Some(value) = self.consts.static_values.get(name) {
+                        let slot = cell(value_of(value));
+                        self.consts.statics.borrow_mut().insert(name.to_string(), StaticState::Found(slot.clone()));
+                        return Ok(slot);
+                    }
+                    self.consts.statics.borrow_mut().insert(name.to_string(), StaticState::Finding(self.me));
+                    let func = self.funcs[self.consts.static_inits[name]];
+                    match self.call(func, None, Vec::new(), span) {
+                        Ok(value) => {
+                            let slot = cell(owned(value));
+                            self.consts.statics.borrow_mut().insert(name.to_string(), StaticState::Found(slot.clone()));
+                            return Ok(slot);
+                        }
+                        Err(stop) => {
+                            self.consts.statics.borrow_mut().remove(name);
+                            return Err(stop);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Runs the `export` function numbered `number` for C, with the arguments whose addresses
@@ -2771,6 +2860,11 @@ impl<'a, 'e> Interp<'a, 'e> {
         if self.locking > 0 {
             return Ok(());
         }
+        self.hand_turn(at)
+    }
+
+    /// `pass_turn`, inside a `lock` block too: a fiber that waits for a static another finds.
+    fn hand_turn(&mut self, at: Span) -> Res<()> {
         {
             let state = self.io.sched.lock();
             let lazy = state.lazy.iter().any(|task| task.upgrade().is_some_and(|task| matches!(task.borrow().state, TaskState::Lazy(..))));
@@ -3492,11 +3586,23 @@ impl<'a, 'e> Interp<'a, 'e> {
             // the block waits, so no other task holds the lock here.
             StmtKind::Unsafe(body) => return self.block(body, frame),
             // A const of a block: its value was found when the program was compiled.
-            StmtKind::Const { .. } => {}
+            StmtKind::Const { .. } | StmtKind::Static { .. } => {}
             StmtKind::Lock { items, body } => {
                 let mut taken: Vec<Rc<Held>> = Vec::new();
                 frame.scopes.push(Scope::default());
-                for item in items {
+                let mut statics: Vec<(&str, usize)> = Vec::new();
+                for (position, item) in items.iter().enumerate() {
+                    // `lock Settings as s`: a `static locked` value, in its cell.
+                    if let ExprKind::Static(name) = &item.value.kind {
+                        if let Some(&(_, first)) = statics.iter().find(|(other, _)| *other == name) {
+                            frame.scopes.pop();
+                            return Err(Diag::panic(item.value.span, format!("`{}` and `{}` are one value, which a `lock` takes once", items[first].name, item.name)).into());
+                        }
+                        let slot = self.static_cell(name, item.value.span)?;
+                        frame.declare(&item.name, Value::Borrow(slot));
+                        statics.push((name, position));
+                        continue;
+                    }
                     let holder = self.expr(&item.value, frame)?;
                     let Some(held) = held_of(&holder) else { unreachable!("the checker locks only a `shared locked` value") };
                     if let Some(first) = taken.iter().position(|other| Rc::ptr_eq(other, &held)) {
@@ -3546,6 +3652,7 @@ impl<'a, 'e> Interp<'a, 'e> {
             ExprKind::Var(name) => Ok(frame.slot(name)),
             // Read where it lies: no one changes it.
             ExprKind::Const(name) => self.const_cell(name, expr.span),
+            ExprKind::Static(name) => self.static_cell(name, expr.span),
             ExprKind::Open { inner, how } => {
                 let slot = self.place(inner, frame)?;
                 let value = slot.borrow().clone();
@@ -3667,6 +3774,14 @@ impl<'a, 'e> Interp<'a, 'e> {
             ExprKind::CVar(name) => Ok(Value::Raw(RawPtr { addr: self.io.ffi.variable(name), block: None })),
             ExprKind::Constant { ty, name } => Ok(constant(ty, name)),
             ExprKind::Const(name) => Ok(fresh(&self.const_cell(name, expr.span)?.borrow())),
+            // A `read` borrow of the one value, or a copy of a number.
+            ExprKind::Static(name) => {
+                let slot = self.static_cell(name, expr.span)?;
+                match expr.ty {
+                    Ty::Read(_) => Ok(Value::Borrow(slot)),
+                    _ => Ok(slot.borrow().clone()),
+                }
+            }
             ExprKind::Embed(index) => {
                 let bytes = self.consts.embeds[*index].bytes.as_ref().expect("read before the checker runs");
                 Ok(Value::Array(Rc::new(bytes.iter().map(|byte| cell(Value::Int(IntTy::Byte, *byte as i128))).collect())))

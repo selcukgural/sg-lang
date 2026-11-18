@@ -1,0 +1,5 @@
+error: a static cannot hold a `StreamWriter`: a static is never dropped, so it would never be closed
+  --> error_static_writer.sg:2:8
+ 2 | static StreamWriter Out = File.createText("out.txt")
+   |        ^^^^^^^^^^^^
+  hint: open it where it is used and lend it to the functions that need it, as a parameter

@@ -1,0 +1,5 @@
+// A static is never dropped, so a writer in one would never be closed.
+static StreamWriter Out = File.createText("out.txt")
+
+void main() {
+}

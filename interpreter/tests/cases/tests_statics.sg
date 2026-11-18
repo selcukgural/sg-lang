@@ -1,0 +1,31 @@
+// Each test starts with the statics as they were when the program started, as each compiled
+// test runs in a process of its own: a value found in one test is found again in the next, and
+// what a test changed is gone.
+static atomic int Calls = atomic 0
+static List<int> Seen = seen()
+static locked List<string> Log = List<string>()
+
+List<int> seen() {
+    _ = Calls.fetchAdd(10)
+    var list = List<int>()
+    list.add(1)
+    return list
+}
+
+test "a static is found the first time a test uses it" {
+    assert(Seen.length() == 1)
+    assert(Calls.load() == 10)
+    _ = Calls.fetchAdd(1)
+    lock Log as log {
+        log.add("first")
+    }
+}
+
+test "the next test starts again" {
+    assert(Calls.load() == 0)
+    assert(Seen[0] == 1)
+    assert(Calls.load() == 10)
+    lock Log as log {
+        assert(log.length() == 0)
+    }
+}

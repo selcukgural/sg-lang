@@ -1,0 +1,15 @@
+// Two statics whose values need each other, through the functions they call.
+static int First = first()
+static int Second = second()
+
+int first() {
+    return Second + 1
+}
+
+int second() {
+    return First + 1
+}
+
+void main() {
+    print(First)
+}

@@ -51,6 +51,7 @@ of `tests/Containerfile` has them.
 | `HashSet<T>` | Built in; an item is what a key of a `HashMap` can be. `HashSet<int>()`, `HashSet<int> { 1, 2 }`; `set.add(v)` gives `true` if the item was not there, `set.contains(v)`, `set.remove(v)` gives `true` if it was there, `set.length()`, `set.clear()` |
 | Arrays | `int[8] values`: a fixed number of items, kept where the value is (in the variable, inside the struct), with the length in the type. Built as `int[3] { 1, 2, 3 }` (the items), `byte[16](255)` (one value in every item) or `byte[16]` (zeros: 0, `false`, `null`). `xs[i]` to read and to write, `xs.length()`, `xs.get(i)`, `xs.indexOf(v)`, `xs.contains(v)`, `xs.sort()`, `xs.reverse()`, `==`, `print`. An array of items that can be copied is copied like a number; any other is moved |
 | Consts | `const int BlockSize = 4096`, at the top of a file (`public const` for other modules) or in a block, where it is seen to the end of the block. A number, `bool`, `char`, a text, or an array, a struct or an enum of numbers, `bool` and `char` (`: Copyable`). `const int[] Primes = { 2, 3, 5, 7 }` counts the items, `const byte[] Logo = embed("logo.gif")` holds the bytes of a file beside the source. The value is found when the program is compiled: numbers, texts, other consts, operators, casts, `MinValue` and the others, arrays, structs and variants built of them, `.length()` and an item or a field of a const, and calls: `const int[256] Crc = crcTable()` runs any function when the program is compiled, whose body, and those of the functions it calls, may not read or write, look at the clock or the system, use raw memory, C, tasks or a `Func`, or call `sin` and its kin (an error shows the calls that lead there), within 100 000 000 steps and 64 MB; an overflow or a panic there is a compile error. An integer const gives the count of an array (`byte[BlockSize]`, `int[N](0)`), and a const of a number, a `char`, a text or a `bool` is a pattern (`match tag { Trailer => ... }`). An array, a struct or an enum is lent where it is used, for the whole run, and never changed (`var copy = Masks` copies it); in compiled code it is one `static const`, which nothing copies |
+| Statics | `static uint[256] Crc = crcTable()`, `static atomic long Requests = atomic 0`, `static locked Config Settings = Config.defaults()`: one value for the whole program, never assigned, at the top of a file (`public static` for other modules) or in a function, where its name is seen to the end of the block. A value made as a const's is (numbers, consts, operators, no call; inside `atomic` and `locked` too) lies in the program from its start; any other is found the first time the static is used, once, whichever task comes first, and the others wait. What finds it cannot `lock`, `wait` or `await` through the calls, and one that needs itself is a compile error, or a panic through a `Func`. A number, a `bool`, a `char` or a function is read as a value, anything else lent as `read`; `static atomic` changes by its methods, `static locked` only inside `lock`. What a static holds follows the thread rule and is never closed or disposed of, so no file, stream or socket; each test starts with the statics not used yet, and what they hold is not a leak. In compiled code a static is a global of C, a `static const` when it is known from the start and holds no atomic value; a read of one found later is a load and a branch |
 | Slices | `read T[]` looks at items that something else owns, `ref T[]` can also write them. `read xs` and `ref xs` give one where a slice is expected, for a `List<T>` and a `T[N]`; a range gives one too: `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..]`, and `ref xs[a..b]` for a range that is written through. `s[i]`, `s.length()`, `s.get(i)`, `s.indexOf(v)`, `s.contains(v)`, `==`, `print`, `for`; `s.sort()` and `s.reverse()` through a `ref T[]`, and on a range in front of them: `xs[2..5].sort()` puts those items of `xs` in order where they are. `text.asBytes()` looks at a text as a `read byte[]`; `string.fromUtf8(bytes)` looks at bytes as text and gives a `Result<read string, TextError>` |
 | `for` over a collection | `for x in xs` hands the collection over and `x` owns each item; `for x in read xs` and `for x in ref xs` lend, and so does a collection that is already borrowed. Over a `HashMap` the variable has a `key` and a `value`; a `HashSet` is gone over by hand-over or `read`. An array is gone over like a list; a slice lends its items |
 | `is` | `if s is Circle(r) { ... }`, `if e is Add(Number(0), right) { ... }`, `if e is Add(l, _) or Mul(l, _) { ... }`, `while next() is not End { ... }`. The names reach along `&&`: `if int.parse(read text) is Ok(n) && n > 0 { ... }`, `return s is Circle(r) && r > 10`. The names of `is not` are seen where it fails: `if int.parse(read text) is not Ok(n) { return }` and `n` after it, `if r is not Ok(n) \|\| n < 0 { return }`, `else`, and after `while r is not Ok(n) { ... }` |
@@ -507,6 +508,7 @@ hand with no checks):
 | `bitfields`: four million pixels of 16 bits in bit fields of 5, 6 and 5 made brighter field by field, five hundred times, then four thousand IPv4 headers (bit fields of 4) read out of their bytes with `fromBytes`, twenty thousand times (the C is the same bit fields and `memcpy`) | 0.326 s | 0.323 s | 0.358 s | 0.91 |
 | `atomics`: four tasks add to two counters five million times each, one sequentially consistent and one `Relaxed` (the C is pthreads and the `__atomic` builtins) | 0.274 s | 0.256 s | 0.268 s | 1.02 |
 | `queue`: four tasks push 500,000 numbers each through a queue without locks of 1024 places while four take them out (the C is the same queue with pthreads and `__atomic`) | 0.475 s | 0.456 s | 0.341 s | 1.39 |
+| `statics`: CRC-32 of 64 KB, 4096 times, byte by byte through a table that is a static found the first time it is read, so every read looks whether it is found (the C keeps the table in a plain global filled before the loop) | 0.626 s | 0.626 s | 0.633 s | 0.99 |
 | `library`: a program of C calls a static library built from SG fifty million times through a handle (`ref Stats`), then hashes 256 MB of its own bytes with it through `Memory.view` (the C is the same program linked against the same library written in C) | 0.506 s | 0.507 s | 0.503 s | 1.01 |
 
 Measured on Windows (`python3 bench/run.py`, the hundred-and-second slice): Windows 11 on 64-bit Arm in a
@@ -7231,6 +7233,71 @@ them asked for besides, from 1124. Approved on 18 November 2026:
      `const_steps_run_out` in `golden.rs` (apart from the cases: it takes seconds). `cargo test` passes on macOS and on Linux in a container (360 of 1492
      programs compile through C, 81 of them under the thread sanitizer, 28 of 34 programs of tests).
 
+Choices made in the hundred-and-fifth slice (statics). 1088 to 1097 were put to the author before the slice
+and approved on 17 November 2026; they are in the decisions file ("Statics", "Globals, as decided"). What
+building them asked for besides, from 1135. Approved on 18 November 2026:
+
+1135. **The value is a function of its own**: what a static is given becomes the body of a function,
+     `Name#init`, which no program can name, checked, run and compiled as any other; so the rules of a body
+     (moves, borrows, the values never read) hold there. A static of a block sees the consts and statics of
+     the blocks around it and no local, as a const of a block does.
+1136. **Found when the program is compiled** only by the rule of a const that calls nothing (103): numbers,
+     consts, operators, casts, `MinValue` and the others, arrays, structs and variants of them, and `atomic`
+     around them, of a type a const can hold. A static given a call is found where it is first used, even when
+     the function could run when the program is compiled: running it there could take seconds and turn a
+     panic into a compile error. For a table found when the program is compiled, write a `const` and give the
+     static that const, or use the const.
+1137. **Where it is used**: a number, a `bool`, a `char` or a function is read as a value; anything else is a
+     `read` borrow of the one value, as a const array is (1109), so writing into it, `ref` and a method that
+     changes it are refused. Assigning to a static and `ref` of one are errors that say a static is never
+     assigned and point at `static atomic` and `static locked`; `read Limit` on a number is an error whose
+     hint is `Limit`.
+1138. **`static locked`** is written only as the value of a `lock` (`lock Settings as s`, with others in the
+     same `lock`); anywhere else, `share` and a call included, it is an error whose hint is the `lock`. One
+     `lock` takes it once, as any value.
+1139. **A local does not take the name of a static** it sees, as it does not take a const's (1114): a name
+     means one thing in a function.
+1140. **A static that holds a function is not called by its name** (`Double(21)` is an error whose hint is `var
+     f = Double`, then `f(21)`): a call by a name reads a local; this waits for a program that needs it.
+1141. **The circle** is followed through the calls of what finds the value, the `format`, `equals`, `hash`,
+     `compare` and `dispose` that run unwritten, and the statics read on the way, whose own values are
+     followed in turn. The error names the path and shows where the next static is read (`` the value of
+     `First` needs itself: `First` -> `Second` -> `First` ``).
+1142. **A circle through a function value** panics when the program runs, in the interpreter and in compiled
+     code with the same words: a task that finds a static being found by itself (`` the value of `Total` needs
+     itself: it is read while it is being found ``), or by a task that waits for a static this task is
+     finding. Compiled, every task that waits for a static sleeps on one condition of the runtime, under one
+     lock taken only around the state, never while the value is found. Without an operating system a core
+     spins until the value is found, as 1095 says: a circle there, or an interrupt that reads a static the
+     kernel is finding, spins for ever; the kernel's count of ticks is known from the start, so it never
+     waits.
+1143. **At the end**: a debug build and the interpreter let go of what the statics hold when the program or a
+     test ends, before the leaks are counted, so a static's `List` is not a leak while `shared` values that
+     hold each other inside one still are; a release build does nothing (1092). Nothing in a static is
+     `Disposable`, so letting go of it runs no code of the program.
+1144. **Closed or disposed of** is looked for through the fields, the items and the variants: a struct
+     holding a `StreamWriter` is refused as the writer is, naming the field; the hint gives the value as a
+     parameter.
+1145. **In compiled code** a static known from the start that holds no atomic value is a `static const`, in the
+     data the program only reads; one with atomic values, or `locked`, is a writable global. A `static locked`
+     value lies after a mutex and the counts of a `shared` value, so a `lock` finds it as it finds one made
+     with `new shared locked`; a value aligned to more than 16 bytes there is refused by the C compiler for
+     now. A library always waits for a static on the lock of the runtime, since C may call it from several
+     threads; a program without tasks takes a static being found as a circle.
+1146. **A const reads no static**: by its name it is an error (`` a const cannot read it ``), and in a
+     function a const calls, an error of what may run when the program is compiled (`` what it runs reads the
+     static `Base` ``). The notes that said a value is found when the program runs "by a function it calls"
+     now say it is a `static`.
+1147. **Documents and tests**: this list, the table above, "Not here yet", "Next"; 02 ("Constants and
+     statics"), 04 ("Globals, as decided", "Statics", "Statics, as built", and the rows of C's variables and
+     callbacks), 06; the root README; the kernel counts its ticks in `static atomic ulong Ticks`. Tests:
+     `ok_statics`, `tests_statics`, `panic_static_itself` and `panic_static_itself_tasks`, 18
+     `error_static_*`, the program `tests/modules/statics`, and the benchmark `statics` (0.99 times C on
+     macOS). `cargo test` passes on macOS and on Linux in a container (364 of 1514 programs compile through C,
+     84 of them under the thread sanitizer), the kernel in QEMU included. Found by them: the C type of an
+     atomic value is the type it holds, so whether a static holds one is told from the type as written, or a
+     counter known from the start would have been put where the program only reads.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -7352,7 +7419,11 @@ check off.
 ## Not here yet
 
 - **Of consts**: a text inside an array, a struct or an enum (1110); an array of arrays, as anywhere; the
-  count of an array in a type from a const that calls a function (1125). Statics come next (1088 to 1097).
+  count of an array in a type from a const that calls a function (1125).
+- **Of statics**: a static that holds a function is copied to a local to be called (`var f = Double`, 1140); a
+  value given by a call is found when the program runs even when a const could find it (1136); a `static
+  locked` value aligned to more than 16 bytes is refused by the C compiler (1145). Without an operating
+  system a circle through a function value spins instead of panicking (1142).
 - **Of Windows**, after its six slices: no thread sanitizer there (1011), and a library built from SG is not run
   under the sanitizers there (1062). Job objects, so that a program started ends with the one that started
   it (934), and services of Windows (933). A DLL a DLL of `-L` needs and that lies elsewhere is not copied
@@ -7716,5 +7787,7 @@ counted, the bytes of a file with `embed`, the count of an array from a const an
 value found when the program is compiled and kept in compiled code as one `static const` (1109-1119). The
 hundred-and-fourth is written: a const given the value of any function, run by the interpreter when the
 program is compiled, with what the function and those it calls do checked to give the same value on every
-machine (1100-1108, 1124-1134). Next statics (1088-1097), then the lacks of the language and of its library
+machine (1100-1108, 1124-1134). The hundred-and-fifth is written: statics, read only, `atomic` and `locked`,
+a value known from the start lying in the program's data and any other found the first time it is used, once,
+by whichever task comes first (1088-1097, 1135-1147). Next the lacks of the language and of its library
 measured against C23.

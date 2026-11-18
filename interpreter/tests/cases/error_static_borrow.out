@@ -1,0 +1,5 @@
+error: a static owns its value, and `read` makes it a borrow
+  a static lives until the program ends, longer than anything it could borrow from
+  --> error_static_borrow.sg:2:8
+ 2 | static read int Limit = 3
+   |        ^^^^^^^^

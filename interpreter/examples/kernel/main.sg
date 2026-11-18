@@ -20,11 +20,14 @@ extern "./machine.c" {
     raw uint machine_asked()
 }
 
-// What the vector of traps reaches: there are no global variables, so its address is kept in the
-// core's `mscratch`, and `onTrap` lends it again. The interrupt counts in an atomic value, which
-// the kernel reads while interrupts come.
+// The interrupts of the timer, counted where the vector of traps and the kernel both reach them:
+// a static atomic value, which lies in the program's data from its start, so reading it costs
+// what reading a global of C costs.
+static atomic ulong Ticks = atomic 0
+
+// What else the vector of traps reaches: its address is kept in the core's `mscratch`, and
+// `onTrap` lends it again.
 struct Kernel {
-    atomic ulong ticks
     Timer timer
 }
 
@@ -44,7 +47,7 @@ export void kernelMain() {
     if unsafe Memory.readVolatile(machine_asked()[0]) == 1 {
         fault(read uart)
     }
-    var kernel = Kernel { ticks = atomic 0, timer = Timer.ofMachine(100_000) }
+    var kernel = Kernel { timer = Timer.ofMachine(100_000) }
     unsafe machine_set_trap_state(Memory.addressOf(ref kernel))
     kernel.timer.startNext()
     unsafe machine_enable_timer()
@@ -52,7 +55,7 @@ export void kernelMain() {
     ulong seen = 0
     while seen < 5 {
         unsafe machine_wait()
-        var now = kernel.ticks.load()
+        var now = Ticks.load()
         while seen < now && seen < 5 {
             seen += 1
             uart.say($"tick {seen}\n".toString())
@@ -71,7 +74,7 @@ export void kernelMain() {
 export void onTrap(raw void state, ulong cause, ulong pc) {
     if cause == timerInterrupt() {
         var kernel = unsafe (read Kernel)state
-        _ = kernel.ticks.fetchAdd(1)
+        _ = Ticks.fetchAdd(1)
         kernel.timer.startNext()
         return
     }

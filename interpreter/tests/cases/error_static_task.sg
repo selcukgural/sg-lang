@@ -1,0 +1,9 @@
+// Every task reaches a static, and a task is waited for only by the one that started it.
+int work() {
+    return 1
+}
+
+static Task<int> Work = Task.run(work)
+
+void main() {
+}

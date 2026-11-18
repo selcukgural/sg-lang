@@ -1,0 +1,5 @@
+error: `Base` is a static, and a const cannot read it: what a static holds is found when the program runs
+  --> error_static_in_const.sg:3:18
+ 3 | const int Size = Base
+   |                  ^^^^
+  hint: a `static` can be given the value: `static ... = Base`

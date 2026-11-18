@@ -1,0 +1,9 @@
+// A `shared checked` value stays inside one task, and every task reaches a static.
+struct Node {
+    int n
+}
+
+static shared checked Node Root = new shared checked Node { n = 1 }
+
+void main() {
+}

@@ -1,0 +1,6 @@
+// Two statics of one name.
+static int Limit = 3
+static int Limit = 4
+
+void main() {
+}

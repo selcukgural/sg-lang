@@ -1,0 +1,3 @@
+ok    a static is found the first time a test uses it
+ok    the next test starts again
+2 test(s) passed

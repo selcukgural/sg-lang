@@ -1,0 +1,10 @@
+// A static is lent only to read.
+static int[3] Table = int[3]
+
+void change(ref int[] items) {
+    items[0] = 1
+}
+
+void main() {
+    change(ref Table)
+}

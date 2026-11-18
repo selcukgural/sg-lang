@@ -1,0 +1,8 @@
+error: `Limit` is declared twice in this module
+  --> error_static_twice.sg:3:12
+ 3 | static int Limit = 4
+   |            ^^^^^
+  the other declaration:
+  --> error_static_twice.sg:2:12
+ 2 | static int Limit = 3
+   |            ^^^^^

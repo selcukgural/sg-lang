@@ -1,0 +1,7 @@
+// A local does not take the name of a static.
+static int Limit = 3
+
+void main() {
+    var Limit = 4
+    print(Limit)
+}

@@ -1,0 +1,5 @@
+// A static has its type written.
+static var Limit = 3
+
+void main() {
+}

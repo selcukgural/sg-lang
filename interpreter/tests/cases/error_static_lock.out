@@ -1,0 +1,9 @@
+error: the value of the static `Value` is found where it is first used, and `make` waits
+  a task that finds the value of a static never waits, so every task that reads the static meanwhile goes on
+  --> error_static_lock.sg:17:20
+ 17 | static int Value = make()
+    |                    ^^^^
+  `make` calls `take` takes a lock here:
+  --> error_static_lock.sg:7:5
+ 7 |     lock box as b {
+   |     ^^^^^^^^^^^^^^^

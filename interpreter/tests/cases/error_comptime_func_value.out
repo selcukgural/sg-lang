@@ -1,5 +1,5 @@
 error: the value of `Applied` is found when the program is compiled, and what it runs calls a function value
-  a value that cannot be found when the program is compiled is found when the program runs, by a function it calls
+  a value that cannot be found when the program is compiled is a `static`, found when the program first uses it: `static T Name = f()`
   --> error_comptime_func_value.sg:9:21
  9 | const int Applied = apply(one)
    |                     ^^^^^

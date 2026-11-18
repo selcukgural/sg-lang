@@ -1,0 +1,20 @@
+// A static whose value needs itself through a function value, read first in a task: the task
+// that finds it panics, and does not wait for itself.
+static int Total = through(readTotal)
+
+int readTotal() {
+    return Total + 1
+}
+
+int through(Func<int> give) {
+    return give()
+}
+
+int plus(int n) {
+    return Total + n
+}
+
+void main() {
+    var task = Task.run(plus, 1)
+    print(task.wait())
+}
