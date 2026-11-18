@@ -1,0 +1,4 @@
+error: a variant with a number carries nothing
+  --> error_enum_number_carries.sg:3:5
+ 3 |     Data(int length) = 1
+   |     ^^^^

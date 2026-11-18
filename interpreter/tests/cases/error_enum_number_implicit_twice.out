@@ -1,0 +1,5 @@
+error: `Again` has the number 2, which `Tuesday` has already
+  a number stands for one variant
+  --> error_enum_number_implicit_twice.sg:4:5
+ 4 |     Again = 2
+   |     ^^^^^

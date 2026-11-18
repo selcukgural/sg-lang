@@ -1,0 +1,5 @@
+error: 256 does not fit in byte
+  a variant without a number has one more than the variant above it
+  --> error_enum_number_next_too_large.sg:4:5
+ 4 |     After
+   |     ^^^^^

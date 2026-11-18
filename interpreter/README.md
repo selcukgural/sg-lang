@@ -42,7 +42,7 @@ of `tests/Containerfile` has them.
 | Types that carry a borrow | `struct Word<from source> { read string text` / `int start }`, `enum Token<from source> { Name(read string text) ... }`: a field can be a borrow when the type names its source. In a method `from source` says "from what this value borrowed, not from the value itself"; outside the type it is `from words.source` |
 | Structs | `struct Node { int value` / `Node*? next }`, `Node { value = 1, next = null }`, field access and assignment through pointers and borrows |
 | Methods | Written in the body of a struct or an enum with `this`, `read this` or `ref this` as the first parameter; fields are reached as `this.x`, and an enum looks at itself with `match this`. Called as `stack.push(1)`, `shape.area()`, also through pointers and borrows. With a type in front of `this` (`read FolderRef this`, `FolderRef this`) a method is called on the `shared` value that holds the struct. A function without `this` is called on the type: `Stack.create()`, `Shape.unit()`. `Stack(args)` is short for `Stack.create(args)` |
-| Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line, and methods after or between them. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)` |
+| Enums | `enum Shape { Circle(int radius)` / `Rect(int width, int height)` / `Empty }`, one variant per line, and methods after or between them. Built with the full name: `Shape.Circle(2)`, `Shape.Empty`, `new Expr.Number(1)`. An enum with numbers names their integer type first: `enum Block : byte, Copyable { Image = 0x2C` / `Trailer = 0x3B }`, its variants carry nothing, and one without a number has one more than the variant above; `(byte)block` gives the number, `Block.fromValue(b)` the variant or `null`, and `: Comparable` orders by the numbers without a `compare` written |
 | `match` | `match x { Circle(r) => ... }` as an expression or a statement, on an enum, also behind pointers and borrows. Patterns: a variant with a pattern for each value it carries (a name, `_`, or a pattern inside: `Add(Number(0), right)`, `Word("let")`, `Paint(Red)`), `_`, `var other`; a condition with `when`. On an integer the patterns are numbers and characters, on a `char` characters (`match c { '+' => ... _ => ... }`), on a text texts (`match word { "if" => ... _ => ... }`), on a `bool` `true` and `false`. Patterns are joined with `or` (`Add(l, _) or Mul(l, _)`, `'+' or '-'`), and each names the same values; numbers and characters come in ranges that take both ends (`'a'..='z'`, `0..=9`). On a `T?` the patterns are `null` and those of the `T`, also inside a variant (`Node(null, _)`); a name below an arm `null` takes a value that is not `null`. A value no arm takes, or an arm that can never run, is a compile error that names the value: `does not handle Add(Name(_), _)`, `no arm takes 128..=255`. An arm is an expression, a statement (`r += 1`, `return x`, `break`) or a block whose last line is the value |
 | Interfaces | Seven built-in ones, written after the name: `struct Point : Copyable`, `enum AppError : Formattable`. A `Copyable` value is copied where another would be moved. A `Formattable` value is accepted by `print`, `$"..."` and `f.write`; a struct or an enum can write its own `void format(read this, ref Formatter f)`, otherwise the text is made from the fields. `Equatable` gives `==` and `!=` (field by field, or the type's own `bool equals(read this, read T other)`), `Hashable` lets the type be a key of a `HashMap` or an item of a `HashSet`, `Comparable` gives `<` `<=` `>` `>=` and `sort` through the type's `int compare(read this, read T other)`. A `Disposable` struct has a `void dispose(ref this)` that runs by itself, once, where the last owner of the value ends, before its fields end (not on a panic or `exit`; `x.dispose()` is an error, and no field is moved out of it). A `Closable` struct has a `close(this)` that gives a `Result`, and a local of it is closed before it ends, as a `StreamWriter` is |
 | `List<T>` | Built in. `List<int>()`, `List<int> { 1, 2 }`; `xs.add(v)`, `xs.length()`, `xs[i]` to read and to write (`xs[i] = v`, `xs[i] += 1`, `xs[i].name = ...`, `ref xs[i]`), `xs.get(i)` gives `null` where `xs[i]` would panic, `xs.removeLast()`, `xs.reverse()`, `xs.clear()`, `xs.addAll(items)` copies the items of a slice to the end (`buffer.addAll(text.asBytes())`, `xs.addAll(read ys)`, `xs.addAll(ys[2..])`) when they are `Copyable`. `xs.indexOf(v)` and `xs.contains(v)` on `Equatable` items, `xs.sort()` on `Comparable` ones (numbers and text are both). `string.join(", ", read names)` |
@@ -96,7 +96,7 @@ of `tests/Containerfile` has them.
 | Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`, and `File.openAppend(path)` one that writes after what the file holds. A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left), `lines()` (each line as a `Result<string, IoError>`) `readBytes(ref buffer)` (bytes into the buffer, as many as it holds unless the end comes first, and how many: a `Result<nint, IoError>`) and `readSome(ref buffer)` (what the block holds, or what one read of the system gives when it is empty; how many, 0 at the end); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `writeBytes(bytes)` (a `read byte[]` as it is), `flush()` and `close()`, each with a `Result<void, IoError>`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `AlreadyExists` / `NotDirectory` / `DirectoryNotEmpty` / `InvalidInput` / `InvalidText(long position)` / `Other(int code) }`, with the variants of the network and `Cancelled` |
 | Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A test that passes and leaves `shared` values alive fails with the leak report. Compiled (`sg test --compiled`), each test runs in a process of its own, the program of tests started again with `--only N`; a debug build counts the blocks of its values, and a program or a test that ends with some not given back fails with a report. A normal run leaves the tests out |
 | Comparing by name | `a.compare(b)` on numbers, `char` and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
-| Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic. `tryToInt()` and the others give `null` where a cast would panic, `wrappingToInt()` and the others keep the bits that fit; `min`, `max` |
+| Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic. `tryToInt()` and the others give `null` where a cast would panic, `wrappingToInt()` and the others keep the bits that fit; `min`, `max`. The bits (C23's `<stdbit.h>`): `countOnes`, `countZeros`, `leadingZeros`, `trailingZeros`, `leadingOnes`, `trailingOnes` (an `int`), `rotateLeft(n)`, `rotateRight(n)`, `reverseBytes`, `reverseBits` on every integer type; `isPowerOfTwo`, `nextPowerOfTwo`, `log2` on the unsigned ones |
 | Fractional methods | `abs`, `sqrt`, `floor`, `ceil`, `round`, `truncate`, `isNaN`, `isInfinite`; `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pow`, `fusedMultiplyAdd`, `min`, `max`; `tryToInt()` and the others |
 | Numbers from text | `int.parse(text)`, and the same on every number type, gives a `Result<int, NumberError>`; the built-in `enum NumberError { Invalid(nint position)` / `OutOfRange }` says where the text stops being a number, or that the type does not hold it. `int.parseHex(text)`, and the same on every integer type, reads hex digits (`ff`, `FF`, no `0x`) |
 | Numbers as bytes | `ulong.fromLittleEndian(bytes)` reads the number that exactly as many bytes as the type takes write, the lowest byte first (`ushort.fromLittleEndian(data[at..at + 2])`); `fromBigEndian` reads the highest first. `n.toLittleEndian()` and `n.toBigEndian()` give the bytes of the number as a `byte[N]`. On `short`, `ushort`, `int`, `uint`, `long` and `ulong` |
@@ -7344,6 +7344,50 @@ on 18 November 2026:
      container (368 of 1537 programs compile through C, 84 of them under the thread sanitizer), the kernel in
      QEMU included.
 
+Choices made in the hundred-and-seventh slice (an enum with numbers, the bits of an integer). 1167 to 1183 were
+put to the author before the slice and approved on 18 November 2026; they are in the decisions file ("Enums with
+numbers", "The bits of an integer"). What building them asked for besides, from 1184. Approved on
+18 November 2026:
+
+1184. **The number of a variant is a const of its own**, named by the variant and where it is written (`Image#`),
+     which no program can name, checked against the enum's type and found with the consts that call nothing,
+     before any function is checked: so it calls no function, even through a const (an error that says so).
+     It names consts and, through a cast, the other variants (`Trailer = (byte)Block.Image + 0x0F`); a circle
+     between them is the error of a const that needs itself. A variant named alone there is not seen (`Image +
+     1` is the error of a name that is no const).
+1185. **The cast reads the number where the value is**: `(byte)block` moves nothing, even when the enum is not
+     `Copyable` (Rust's `as` moves an enum that is not `Copy`). It works through a borrow (`read Block`), and in
+     a const.
+1186. **`: Comparable` without a `compare`**, on an enum with numbers, is given one that compares the numbers:
+     the order 1174 asks for, through the path every `compare` takes (`<`, `sort`, `x.compare(read y)`). A
+     `compare` written in the enum is used instead; a struct and an enum without numbers still write theirs.
+1187. **`(Block)code`**: a name in capitals alone in parentheses, before a name or a number, is an error of the
+     parser that says a cast goes to a number type or `char`, with the hint `Block.fromValue(n)`; before, it was
+     a line that did not end where expected.
+1188. **The type of the numbers** is any integer type but C's `long` and `unsigned long`, whose size differs
+     from system to system (hint `int` or `long`); `nint` and `nuint` are taken, as Rust's `isize` and `usize`.
+1189. **`fromValue` is the language's**: a function of that name written in an enum with numbers is an error. In
+     an enum without numbers it is an ordinary name.
+1190. **The bits, the edges**: `reverseBytes` on a `byte` or an `sbyte` is the value itself (where `toLittleEndian`
+     is an error: there it would be an array of one byte); a count of 0 is the width of the type; the next power
+     of two of 0 is 1, as in Rust; the count of a rotation is any integer, as the count of a shift. The panics
+     say `overflow: the next power of two of 129 does not fit in byte` and `log2 of 0: no power of two is 0`.
+     GCC, the C compiler of Linux, has no builtin that turns the bits around, so there it is three swaps and
+     the swap of the bytes; Clang has one.
+1191. **Found on the way**: a method of an enum called on a value with no name, with an argument after it
+     (`Level.High.compare(read Level.Low)`), was compiled with the C type of a struct of that name, which the C
+     compiler refused. The receiver is now typed as the struct or the enum it is written in.
+1192. **Documents and tests**: this list, the table above, "Not here yet", "Next"; 02 ("Enum and match", "Numbers
+     and bit operators"), 04 ("Enums with numbers", "Enums with numbers, as built", "The bits of an integer",
+     and a note on "`Comparable` is written"), 06; the root README. Tests: `ok_enum_numbers`, `ok_bit_methods`,
+     `panic_next_power_overflow`, `panic_log2_zero`, `tests/release/next_power_wraps`, the program
+     `tests/modules/enumnumbers`, and 17 `error_*` (the numbers of the variants, the casts, C, the
+     powers of two on a signed type, the count of a rotation). `cargo test` passes on macOS and on Linux in a
+     container (374 of 1560 programs compile through C, 84 of them under the thread sanitizer), the kernel in
+     QEMU included. Found by them: GCC, which builds the programs without an operating system with warnings
+     as errors, took a test and a statement after it on one line of the new helpers for a misleading indent;
+     they are written in braces.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -7464,6 +7508,10 @@ check off.
 
 ## Not here yet
 
+- **Of the hundred-and-seventh slice**: an enum open to numbers that are no variant (Zig's `_`); an enum with
+  numbers in a signature of C, a struct of plain data or raw memory (1176); a variant's number named by the
+  variant alone (`Image + 1`: it is `(byte)Block.Image + 1`), or given by a function (1184); flags joined with
+  `|` (a `uint` and consts do it); the list of the variants (`Block.values()`); `tryNextPowerOfTwo` (1181).
 - **Of the hundred-and-sixth slice**: a range goes down only by one (no step, Rust's `step_by`), and only a
   range is gone over backwards: a list is gone over from its end by its positions,
   `for i in (0..xs.length()).reversed()`. C#'s `$$"""`, where a brace is written once, is not taken (1154).
@@ -7604,8 +7652,7 @@ check off.
   (`parse`, `parseHex`), not in binary. C#'s other letters (`E`, `G`, `N`, `C`, `P`) and formats made of
   characters (`{x:0.00}`), a fill other than a space, centring, and a width that comes from a variable
   (choices 224, 229). A fractional number is not read out of bytes or written into them
-  (`double.fromLittleEndian`, the bits of a `double` as a `ulong`), and the order of the bytes is not
-  turned around inside a number (`n.reverseBytes()`). `abs` and
+  (`double.fromLittleEndian`, the bits of a `double` as a `ulong`). `abs` and
   `clamp` on integers, `sinh` and the other functions of `<math.h>` that are not listed in 162.
 - Arrays of arrays, `read T[]?`, an array as a key, looking for a run of items in a slice. `addAll` of
   items that are not `Copyable`, moving every item of one list into another, adding a range of a list to
@@ -7844,7 +7891,9 @@ draft of C2y were put in a table, with what Rust, C#, Go and Zig have that costs
 and those taken come in three slices before the library's. The hundred-and-sixth is written: loops with a name
 (`break outer`, `continue outer`), counting down with `(a..b).reversed()`, C#'s raw text and `const assert`,
 which alone measures the size of a type; on the way, what a loop moved is followed at every way out of it
-(1148-1166). Next an enum with numbers of a type it names (`enum Block : byte { Image = 0x2C }`) and the
-operations on the bits of an integer (C23's `<stdbit.h>`); then the default value of a field, `with` and `?.`;
+(1148-1166). The hundred-and-seventh is written: an enum with numbers of a type it names (`enum Block : byte {
+Image = 0x2C }`, `(byte)block`, `Block.fromValue(b)`) and the operations on the bits of an integer (C23's
+`<stdbit.h>`: `countOnes`, `rotateLeft`, `reverseBytes`, `log2` and the others) (1167-1192). Next the default
+value of a field, `with` and `?.`;
 then the library, by the order of C11: seeking in a file and temporary files, the rest of `<math.h>`,
 `binarySearch`, condition variables, the local time zone with the writing and reading of dates.

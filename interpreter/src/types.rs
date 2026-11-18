@@ -81,6 +81,19 @@ impl IntTy {
         matches!(self, IntTy::Sbyte | IntTy::Short | IntTy::Int | IntTy::Long | IntTy::Nint | IntTy::CLong)
     }
 
+    /// The unsigned type of the same width: `uint` for `int`.
+    pub fn unsigned(self) -> IntTy {
+        match self {
+            IntTy::Sbyte => IntTy::Byte,
+            IntTy::Short => IntTy::Ushort,
+            IntTy::Int => IntTy::Uint,
+            IntTy::Long => IntTy::Ulong,
+            IntTy::Nint => IntTy::Nuint,
+            IntTy::CLong => IntTy::CULong,
+            unsigned => unsigned,
+        }
+    }
+
     /// How many bits a value takes on this machine: what a shift count has to stay under.
     /// `nint` and `nuint` take 64 bits on every machine the language runs on so far; `CLong`
     /// and `CULong` take 32 on Windows and 64 elsewhere.

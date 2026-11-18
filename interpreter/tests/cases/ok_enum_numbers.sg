@@ -1,0 +1,95 @@
+// An enum with numbers: each variant stands for a number of the integer type the enum names.
+
+const byte Introducer = 0x21
+
+// The blocks of a GIF file, by the byte that starts each.
+enum Block : byte, Copyable, Equatable, Hashable, Comparable, Formattable {
+    Extension = Introducer
+    Image = 0x2C
+    Trailer = 0x3B
+}
+
+// Without numbers written: 0, 1, 2, and one more than the variant above.
+enum Weekday : int, Copyable, Equatable {
+    Monday
+    Tuesday
+    Wednesday = 10
+    Thursday
+}
+
+// Written out of order, negative, and wide.
+enum Level : sbyte, Copyable, Comparable {
+    High = 100
+    Low = -100
+    Middle = 0
+}
+
+enum Mask : ulong, Copyable {
+    Low = 1
+    High = 0x8000_0000_0000_0000
+}
+
+const byte TrailerByte = (byte)Block.Trailer
+const Block First = Block.Extension
+
+string name(Block block) {
+    return match block {
+        Extension => "extension"
+        Image => "image"
+        Trailer => "trailer"
+    }
+}
+
+// A byte read from a file: a variant, or no block at all.
+string describe(byte code) {
+    var block = Block.fromValue(code) ?? return $"unknown block {code:x}".toString()
+    return $"{name(block)} ({(byte)block:x})".toString()
+}
+
+// A borrowed value: the number is read where the value is.
+byte numberOf(read Block block) {
+    return (byte)block
+}
+
+void main() {
+    print(Block.Image)
+    print((byte)Block.Image)
+    print((int)Block.Extension + 1)
+    print(TrailerByte)
+    print(First)
+    var codes = byte[5] { 0x2C, 0x21, 0x3B, 0x00, 0xFF }
+    for code in codes {
+        print(describe(code))
+    }
+
+    // The numbers of the variants without one.
+    print($"{(int)Weekday.Monday} {(int)Weekday.Tuesday} {(int)Weekday.Wednesday} {(int)Weekday.Thursday}")
+    print((Weekday.fromValue(11) ?? Weekday.Monday) == Weekday.Thursday)
+    print(Weekday.fromValue(2) is null)
+
+    // A cast to another type follows the rules of that integer.
+    print((long)Level.Low)
+    print((byte)Level.High)
+    print((ulong)Mask.High)
+    print(Mask.fromValue(0x8000_0000_0000_0000) is null)
+
+    // The order is that of the numbers, not of the lines they are written on.
+    var levels = List<Level> { Level.High, Level.Low, Level.Middle }
+    levels.sort()
+    for level in levels {
+        print((int)level)
+    }
+    print(Level.Low < Level.Middle)
+    print(Level.High.compare(read Level.Low))
+    var blocks = List<Block> { Block.Trailer, Block.Image, Block.Extension }
+    blocks.sort()
+    print(blocks)
+
+    // A key of a table, and a value lent.
+    var counts = HashMap<Block, int>()
+    counts.add(Block.Image, 2)
+    counts.add(Block.Trailer, 1)
+    print(counts[Block.Image])
+    var trailer = Block.Trailer
+    print(numberOf(read trailer))
+}

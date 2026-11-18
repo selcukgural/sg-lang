@@ -1,0 +1,7 @@
+enum Block : byte {
+    Image = 0x2C
+}
+
+void main() {
+    var block = Block.fromValue("image")
+}

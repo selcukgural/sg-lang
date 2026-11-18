@@ -1,0 +1,10 @@
+// Not every number is the number of a variant.
+enum Block : byte {
+    Image = 0x2C
+}
+
+void main() {
+    byte code = 0x2C
+    var block = (Block)code
+    print((byte)block)
+}

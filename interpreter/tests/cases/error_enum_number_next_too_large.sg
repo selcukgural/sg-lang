@@ -1,0 +1,9 @@
+// A variant without a number has one more than the variant above it.
+enum Block : byte {
+    Last = 255
+    After
+}
+
+void main() {
+    print((byte)Block.Last)
+}

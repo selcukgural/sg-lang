@@ -1,0 +1,8 @@
+enum Packet : byte {
+    Data(int length)
+    Ack
+}
+
+void main() {
+    print((byte)Packet.Ack)
+}

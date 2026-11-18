@@ -1,0 +1,7 @@
+// No power of two is 0, in every build.
+void main() {
+    uint value = 8
+    print(value.log2())
+    value -= 8
+    print(value.log2())
+}

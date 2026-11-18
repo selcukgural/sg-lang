@@ -1,0 +1,9 @@
+// A number stands for one variant.
+enum Block : byte {
+    Image = 0x2C
+    Picture = 0x2C
+}
+
+void main() {
+    print((byte)Block.Image)
+}

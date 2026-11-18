@@ -1,0 +1,5 @@
+error: `nextPowerOfTwo` is a method of the unsigned types, and `int` is signed
+  --> error_power_of_two_signed.sg:4:16
+ 4 |     print(size.nextPowerOfTwo())
+   |                ^^^^^^^^^^^^^^
+  hint: `((uint)size).nextPowerOfTwo()`

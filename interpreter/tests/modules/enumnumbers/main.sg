@@ -1,0 +1,11 @@
+// An enum with numbers of another module: its numbers, `fromValue` and its order.
+
+use codes
+
+void main() {
+    print((byte)Block.Trailer)
+    print(codes.first())
+    var found = codes.Block.fromValue(0x2C) ?? Block.Trailer
+    print(found)
+    print(Block.Extension < Block.Image)
+}

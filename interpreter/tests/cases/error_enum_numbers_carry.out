@@ -1,0 +1,5 @@
+error: the variants of an enum with numbers carry nothing
+  a number stands for one variant, and a variant that carries values is more than a number
+  --> error_enum_numbers_carry.sg:2:5
+ 2 |     Data(int length)
+   |     ^^^^

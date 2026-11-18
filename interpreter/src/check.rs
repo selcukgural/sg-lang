@@ -56,6 +56,8 @@ struct EnumInfo {
     variants: Vec<(String, Vec<(String, Ty)>)>,
     /// Functions written in the enum body, with or without `this`.
     methods: HashMap<String, FuncSig>,
+    /// `enum Block : byte`: the integer type of the numbers of its variants.
+    numbers: Option<IntTy>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -324,7 +326,7 @@ fn is_text_value(ty: &Ty) -> bool {
 /// the change is what they are called for.
 fn gives_only(name: &str, callee: &Callee) -> bool {
     match callee {
-        Callee::Join | Callee::WithCapacity | Callee::FromBytes { .. } | Callee::StructFromBytes(_) => true,
+        Callee::Join | Callee::WithCapacity | Callee::FromBytes { .. } | Callee::StructFromBytes(_) | Callee::FromValue(_) => true,
         Callee::Cancel(call) => *call != CancelCall::Cancel && *call != CancelCall::Check,
         Callee::Net(NetCall::Port | NetCall::Reader) => true,
         Callee::Plain => !matches!(name, "removeLast" | "add" | "remove" | "getOrAdd" | "next"),
@@ -424,10 +426,10 @@ fn number_error() -> EnumDecl {
     let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, atomic: None, raw: 0, name: "nint".to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
     let position = FieldDecl { public: true, readonly: true, ty, name: "position".to_string(), span: nowhere, bits: None };
     let variants = vec![
-        VariantDecl { name: "Invalid".to_string(), span: nowhere, fields: vec![position] },
-        VariantDecl { name: "OutOfRange".to_string(), span: nowhere, fields: Vec::new() },
+        VariantDecl { name: "Invalid".to_string(), span: nowhere, fields: vec![position], number: None },
+        VariantDecl { name: "OutOfRange".to_string(), span: nowhere, fields: Vec::new(), number: None },
     ];
-    EnumDecl { public: true, name: NUMBER_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants, methods: Vec::new() }
+    EnumDecl { public: true, name: NUMBER_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, numbers: None, variants, methods: Vec::new() }
 }
 
 /// What a cancelled wait gives: `token.check()`, `Task.delay(ms, read token)`.
@@ -467,7 +469,7 @@ fn io_error() -> EnumDecl {
         let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, atomic: None, raw: 0, name: ty.to_string(), args: Vec::new(), suffixes: Vec::new(), span: nowhere };
         FieldDecl { public: true, readonly: true, ty, name: name.to_string(), span: nowhere, bits: None }
     };
-    let variant = |name: &str, fields: Vec<FieldDecl>| VariantDecl { name: name.to_string(), span: nowhere, fields };
+    let variant = |name: &str, fields: Vec<FieldDecl>| VariantDecl { name: name.to_string(), span: nowhere, fields, number: None };
     let variants = vec![
         variant("NotFound", Vec::new()),
         variant("PermissionDenied", Vec::new()),
@@ -487,7 +489,7 @@ fn io_error() -> EnumDecl {
         variant("InvalidInput", Vec::new()),
         variant("MessageTooLong", Vec::new()),
     ];
-    EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, variants, methods: Vec::new() }
+    EnumDecl { public: true, name: IO_ERROR.to_string(), name_span: nowhere, sources: Vec::new(), interfaces, numbers: None, variants, methods: Vec::new() }
 }
 
 #[derive(Clone, PartialEq)]
@@ -914,6 +916,15 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
     }
     layout_rules(prog, &structs)?;
 
+    // An enum with numbers that is `Comparable` and writes no `compare` is put in the order of
+    // its numbers.
+    for decl in prog.enums.iter_mut() {
+        if let Some((numbers, _)) = decl.numbers {
+            if decl.interfaces.iter().any(|(name, _)| name == "Comparable") && !decl.methods.iter().any(|func| func.name == "compare") {
+                decl.methods.push(number_compare(decl, numbers));
+            }
+        }
+    }
     let mut enums: HashMap<String, EnumInfo> = HashMap::new();
     for decl in &prog.enums {
         let mut variants: Vec<(String, Vec<(String, Ty)>)> = Vec::new();
@@ -943,7 +954,11 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         }
         let taken = variants.iter().map(|(name, _)| name.as_str());
         let methods = type_methods(&decl.name, &decl.methods, taken, "a variant", &names, &formattable)?;
-        enums.insert(decl.name.clone(), EnumInfo { variants, methods });
+        // `Block.fromValue(b)` is made by the language for an enum with numbers.
+        if let (Some(_), Some(func)) = (decl.numbers, decl.methods.iter().find(|func| func.name == "fromValue")) {
+            return Err(Diag::error(func.name_span, format!("`{}` has numbers, and the language gives it `fromValue`", short_name(&decl.name))));
+        }
+        enums.insert(decl.name.clone(), EnumInfo { variants, methods, numbers: decl.numbers.map(|(ty, _)| ty) });
     }
 
     // What each type holds by value, to find a type that would have to contain itself.
@@ -1337,6 +1352,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
         const_table.values.insert(name, (ty, value));
     }
     prog.const_values = const_table.values.clone();
+    variant_numbers_hold(prog, &called)?;
 
     // What gives the value of a static of a block sees the consts and statics of the blocks
     // around it.
@@ -1788,7 +1804,7 @@ pub fn measures_type(expr: &Expr) -> bool {
 fn first_call(expr: &Expr) -> Option<Span> {
     match &expr.kind {
         ExprKind::Call { name_span, .. } => return Some(*name_span),
-        ExprKind::Method { name, args, name_span, .. } if !(name == "length" && args.is_empty()) => return Some(*name_span),
+        ExprKind::Method { name, args, name_span, .. } if !(name == "length" && args.is_empty()) && name != NUMBER_OF => return Some(*name_span),
         _ => {}
     }
     let mut found = None;
@@ -1875,7 +1891,7 @@ fn called_consts(prog: &Program) -> HashSet<String> {
     fn calls(expr: &Expr, names: &mut Vec<String>) -> bool {
         let mut found = match &expr.kind {
             ExprKind::Call { .. } => true,
-            ExprKind::Method { name, args, .. } => !(name == "length" && args.is_empty()),
+            ExprKind::Method { name, args, .. } => !(name == "length" && args.is_empty()) && name != NUMBER_OF,
             ExprKind::Const(full) => {
                 names.push(full.clone());
                 false
@@ -3041,6 +3057,81 @@ fn endian_hint(name: &str, from: bool) -> Option<&'static str> {
         (false, true) => "toBigEndian",
     })
 }
+
+/// `public int compare(read this, read Block other) { return ((byte)this).compare((byte)other) }`:
+/// the order of an enum with numbers that writes none.
+fn number_compare(decl: &EnumDecl, numbers: IntTy) -> Func {
+    let span = decl.name_span;
+    let ty = |mode: Option<Mode>, name: &str| TypeExpr { mode, holder: None, checked: false, locked: false, atomic: None, raw: 0, name: name.to_string(), args: Vec::new(), suffixes: Vec::new(), span };
+    let expr = |kind: ExprKind| Expr { kind, span, ty: Ty::Void, moved: false };
+    let number = |name: &str| expr(ExprKind::Cast { ty: Ty::Int(numbers), expr: Box::new(expr(ExprKind::Var(name.to_string()))) });
+    let compared = expr(ExprKind::Method { recv: Box::new(number("this")), name: "compare".to_string(), name_span: span, args: vec![number("other")], callee: Callee::Plain });
+    Func {
+        public: true,
+        is_async: false,
+        export: false,
+        ret: ty(None, "int"),
+        name: "compare".to_string(),
+        name_span: span,
+        this: Some(This::Read),
+        this_ty: None,
+        params: vec![Param { ty: ty(Some(Mode::Read), short_name(&decl.name)), name: "other".to_string(), span }],
+        from: Vec::new(),
+        body: vec![Stmt { kind: StmtKind::Return(Some(compared)), span }],
+        foreign: None,
+        variadic: false,
+    }
+}
+
+/// The numbers of the variants of an enum with numbers, in the order they are written: the
+/// const written for a variant, or one more than the variant above it, the first 0.
+pub fn variant_numbers(decl: &EnumDecl, values: &std::collections::BTreeMap<String, (Ty, ConstVal)>) -> Vec<i128> {
+    let mut numbers: Vec<i128> = Vec::new();
+    for variant in &decl.variants {
+        numbers.push(match &variant.number {
+            Some(full) => match values.get(full) {
+                Some((_, ConstVal::Int(_, number))) => *number,
+                _ => unreachable!("the number of a variant is found with the consts"),
+            },
+            None => numbers.last().map_or(0, |above| above + 1),
+        });
+    }
+    numbers
+}
+
+/// The numbers of an enum are found before any function is checked, each fits its type, and
+/// no two variants have the same.
+fn variant_numbers_hold(prog: &Program, called: &HashSet<String>) -> Res<()> {
+    for decl in prog.enums.iter().filter(|decl| decl.numbers.is_some()) {
+        let (ty, _) = decl.numbers.expect("filtered");
+        if let Some(variant) = decl.variants.iter().find(|variant| variant.number.as_ref().is_some_and(|full| called.contains(full))) {
+            return Err(Diag::error(variant.span, format!("the number of `{}` is found before any function is checked, so it calls none", variant.name))
+                .note("it is made of numbers, consts that call no function, and operators"));
+        }
+        let numbers = variant_numbers(decl, &prog.const_values);
+        for (at, (variant, number)) in decl.variants.iter().zip(&numbers).enumerate() {
+            if !ty.fits(*number) {
+                return Err(Diag::error(variant.span, format!("{number} does not fit in {}", ty.name()))
+                    .note("a variant without a number has one more than the variant above it"));
+            }
+            if let Some(same) = numbers[..at].iter().position(|other| other == number) {
+                return Err(Diag::error(variant.span, format!("`{}` has the number {number}, which `{}` has already", variant.name, decl.variants[same].name))
+                    .note("a number stands for one variant"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The method the checker puts around a value of an enum with numbers that is cast to an
+/// integer: it gives the number of the variant. No program can write the name.
+pub const NUMBER_OF: &str = "#number";
+
+/// The methods on the bits of an integer (C23's `<stdbit.h>`).
+pub const BIT_METHODS: [&str; 13] = [
+    "countOnes", "countZeros", "leadingZeros", "trailingZeros", "leadingOnes", "trailingOnes", "rotateLeft", "rotateRight",
+    "reverseBytes", "reverseBits", "isPowerOfTwo", "nextPowerOfTwo", "log2",
+];
 
 /// The fractional type a number is expected to have, behind a borrow or a `?` too.
 fn wanted_float(ty: &Ty) -> Option<FloatTy> {
@@ -6911,7 +7002,9 @@ impl<'a> Checker<'a> {
                 // `Shape.unit()`: a function of the enum, not a variant.
                 // `IoError.fromCode(n)` is a function of the built-in enum, checked with the calls.
                 let built_in = matches!(name.as_str(), "fromCode" | "fromErrno") && matches!(&recv.kind, ExprKind::Var(owner) if owner == IO_ERROR);
-                if let Some(owner) = self.enum_named(recv).filter(|owner| !built_in && !self.methods_of(owner).contains_key(name.as_str())) {
+                // `Block.fromValue(n)` is a function the language gives an enum with numbers.
+                let from_value = |owner: &str| name == "fromValue" && self.enums[owner].numbers.is_some();
+                if let Some(owner) = self.enum_named(recv).filter(|owner| !built_in && !self.methods_of(owner).contains_key(name.as_str()) && !from_value(owner)) {
                     // `await Shape.Circle(f())` awaits no call in it.
                     self.awaiting = false;
                     let (index, ty) = self.variant(owner, name, *name_span, Some(args), span)?;
@@ -7253,8 +7346,18 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Binary(op, left, right) => self.binary(*op, left, right, expected, span),
             ExprKind::Cast { ty, expr: operand } => {
-                let found = self.operand(operand, None)?;
-                let from = found.strip_borrow().clone();
+                let mut found = self.operand(operand, None)?;
+                let mut from = found.strip_borrow().clone();
+                // `(byte)block`: the number of its variant, read where the value is; then the
+                // cast is one of that integer.
+                if let Ty::Enum(owner) = &from {
+                    if let Some(numbers) = self.enums.get(owner.as_str()).and_then(|info| info.numbers) {
+                        let name_span = operand.span;
+                        wrap(operand, |recv| ExprKind::Method { recv, name: NUMBER_OF.to_string(), name_span, args: Vec::new(), callee: Callee::Plain });
+                        operand.ty = Ty::Int(numbers);
+                        (found, from) = (Ty::Int(numbers), Ty::Int(numbers));
+                    }
+                }
                 // `(nuint)p`: the address, as a number. Nothing is read, so no `unsafe`.
                 if let Ty::Raw(_) = &from {
                     if !matches!(&*ty, Ty::Int(IntTy::Nint | IntTy::Nuint)) {
@@ -7277,6 +7380,7 @@ impl<'a> Checker<'a> {
                         (Ty::Char, Ty::Float(_)) | (Ty::Float(_), Ty::Char) => diag.note("a `char` becomes an integer, its code, and an integer becomes a `char`"),
                         (Ty::Str, Ty::Char) => diag.hint("the characters of a text: `for c in text.chars()`"),
                         (Ty::Char, Ty::Str) => diag.hint("`c.toString()`"),
+                        (Ty::Enum(owner), Ty::Int(_)) => diag.note(format!("the variants of `{0}` have no numbers; an enum has them when it names their integer type: `enum {0} : int`", short_name(owner))),
                         _ => diag,
                     });
                 }
@@ -9310,6 +9414,12 @@ impl<'a> Checker<'a> {
         if name == "fromBytes" && !methods.contains_key(name) && self.structs.contains_key(owner) {
             return self.struct_from_bytes(owner, name_span, args, callee, span);
         }
+        // `Block.fromValue(n)`: the variant that has the number, or `null`.
+        if let Some(numbers) = self.enums.get(owner).and_then(|info| info.numbers).filter(|_| name == "fromValue") {
+            self.args(name, args, &[Ty::Int(numbers)], span)?;
+            *callee = Callee::FromValue(owner.to_string());
+            return Ok(Ty::Nullable(Box::new(Ty::Enum(owner.to_string()))));
+        }
         let Some(sig) = methods.get(name) else {
             let diag = Diag::error(name_span, format!("`{owner}` has no function `{name}`"));
             if owner == format!("{STD_MODULE}.Environment") && matches!(name, "set" | "remove" | "unset" | "add") {
@@ -11089,6 +11199,40 @@ impl<'a> Checker<'a> {
                 let other = self.int_operand(&mut args[0], Some(*ty), "the argument")?;
                 let common = Ty::Int(self.common_int(recv, recv_ty.clone(), &mut args[0], Ty::Int(other))?);
                 Ok(Ty::Nullable(Box::new(common)))
+            }
+            // The bits of an integer, as C23's `<stdbit.h>` has them: counted, turned around and
+            // rotated on every integer type, a count is an `int`.
+            (Ty::Int(_), "countOnes" | "countZeros" | "leadingZeros" | "trailingZeros" | "leadingOnes" | "trailingOnes") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Int(IntTy::Int))
+            }
+            (Ty::Int(ty), "reverseBytes" | "reverseBits") => {
+                arity(0)?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Int(*ty))
+            }
+            (Ty::Int(ty), "rotateLeft" | "rotateRight") => {
+                arity(1)?;
+                self.int_operand(&mut args[0], Some(IntTy::Int), "the count of a rotation")?;
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(Ty::Int(*ty))
+            }
+            // A power of two is a question of a number that is never negative.
+            (Ty::Int(ty), "isPowerOfTwo" | "nextPowerOfTwo" | "log2") => {
+                arity(0)?;
+                if ty.signed() {
+                    let text = &self.src[recv.span.start..recv.span.end];
+                    let unsigned = ty.unsigned().name();
+                    return Err(Diag::error(name_span, format!("`{name}` is a method of the unsigned types, and `{}` is signed", ty.name()))
+                        .hint(format!("`(({unsigned}){text}).{name}()`")));
+                }
+                self.coerce(recv, recv_ty.clone(), target)?;
+                Ok(match name {
+                    "isPowerOfTwo" => Ty::Bool,
+                    "log2" => Ty::Int(IntTy::Int),
+                    _ => Ty::Int(*ty),
+                })
             }
             (Ty::Str, "clone") => {
                 arity(0)?;

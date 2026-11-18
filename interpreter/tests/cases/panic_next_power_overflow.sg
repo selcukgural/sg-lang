@@ -1,0 +1,8 @@
+// The next power of two follows the rule of overflow: a panic in a debug build and in the
+// interpreter. A release build gives 0 (`tests/release/next_power_wraps.sg`).
+void main() {
+    byte small = 100
+    print(small.nextPowerOfTwo())
+    byte large = 129
+    print(large.nextPowerOfTwo())
+}

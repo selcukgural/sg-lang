@@ -1,0 +1,5 @@
+3
+panic: log2 of 0: no power of two is 0
+  --> panic_log2_zero.sg:6:11
+ 6 |     print(value.log2())
+   |           ^^^^^^^^^^^^

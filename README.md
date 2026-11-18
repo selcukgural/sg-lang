@@ -157,7 +157,7 @@ language as it is today.
 Working today, in the interpreter and in compiled code: integers, `float` and `double` with their
 constants, math, reading out of text and printing with the fewest digits that read back, `bool`, `char` and text (split, trimmed and searched without
 copying, replaced and repeated into a new text, built piece by piece in place, numbers written with a width, in hex or binary, or with so many
-digits after the point: `$"{crc:x8} {price,8:F2}"`); structs, enums with methods, and `match` with patterns inside
+digits after the point: `$"{crc:x8} {price,8:F2}"`), the bits of an integer counted and rotated (`mask.countOnes()`, `word.rotateLeft(5)`); structs, enums with methods, enums with numbers (`enum Block : byte { Image = 0x2C }`, `Block.fromValue(b)`), and `match` with patterns inside
 patterns, on text, joined with `or` and in ranges (`Add(Number(0), right)`, `"if" => ...`, `'a'..='z' or '_'`,
 `null`), and `is` whose names reach along `&&` (`if int.parse(read text) is Ok(n) && n > 0`) and, for `is not`,
 past an `if` that leaves (`if int.parse(read text) is not Ok(n) { return }`); `T*`, `T?`
@@ -221,7 +221,7 @@ into a `.lib` or a `.dll` that a program of C links, and the examples of zlib, S
 libraries from vcpkg. The sixth and last is written: everything is tested there, the program without an
 operating system and the kernel in QEMU included, and the benchmarks are measured against C on Windows too:
 most take the time of C, and those that lean on Windows' C library (`printf`, `fgets`, its wide
-characters) are several times faster in SG. Before a preview of the language, what it and its library still lack beside C23: consts first, then a const given the value of a call, then statics (all three written). Then what the language lacks beside C23 and the draft of C2y, with what Rust, C#, Go and Zig have that costs nothing when the program runs: loops with a name, counting down, raw text and `const assert` are written; an enum with numbers and the operations on bits come next, then the default value of a field, `with` and `?.`, and then the library.
+characters) are several times faster in SG. Before a preview of the language, what it and its library still lack beside C23: consts first, then a const given the value of a call, then statics (all three written). Then what the language lacks beside C23 and the draft of C2y, with what Rust, C#, Go and Zig have that costs nothing when the program runs: loops with a name, counting down, raw text, `const assert`, an enum with numbers and the operations on bits are written; the default value of a field, `with` and `?.` come next, and then the library.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is

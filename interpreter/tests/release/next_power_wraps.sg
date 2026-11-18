@@ -1,0 +1,9 @@
+// In a release build the next power of two that does not fit wraps to 0, as Rust's does.
+void main() {
+    byte large = 129
+    print(large.nextPowerOfTwo())
+    ulong huge = 0x8000_0000_0000_0001
+    print(huge.nextPowerOfTwo())
+    ulong top = 0x8000_0000_0000_0000
+    print(top.nextPowerOfTwo())
+}

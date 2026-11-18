@@ -1,0 +1,5 @@
+error: the C function `abs` cannot take a `Mode`
+  C takes integers, `float`, `double`, `bool`, `raw T`, plain structs, `ref T` and `read T` of plain data, and `read CString`
+  --> error_enum_numbers_to_c.sg:7:13
+ 7 |     int abs(Mode m)
+   |             ^^^^

@@ -1,0 +1,9 @@
+// An enum without numbers is not converted to a number: the order of its lines is no number.
+enum Color {
+    Red
+    Green
+}
+
+void main() {
+    print((int)Color.Green)
+}

@@ -1,0 +1,13 @@
+// The numbers of the variants are found from the consts of their own module.
+
+const byte Introducer = 0x21
+
+public enum Block : byte, Copyable, Equatable, Comparable, Formattable {
+    Extension = Introducer
+    Image = 0x2C
+    Trailer = (byte)Block.Image + 0x0F
+}
+
+public Block first() {
+    return Block.fromValue(Introducer) ?? Block.Trailer
+}

@@ -1,0 +1,5 @@
+error: `Picture` has the number 44, which `Image` has already
+  a number stands for one variant
+  --> error_enum_number_twice.sg:4:5
+ 4 |     Picture = 0x2C
+   |     ^^^^^^^

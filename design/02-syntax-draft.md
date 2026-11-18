@@ -532,6 +532,29 @@ int keyword(read string word) {
 }
 ```
 
+An enum names the integer type of its numbers before its interfaces, and each variant then stands for a number; such
+variants carry nothing. A variant without a number has one more than the variant above it, the first 0. The number is
+a const of the enum's type: a number, consts, other variants read through a cast, and operators. Two variants with one
+number, or a number that does not fit, are compile errors. An enum that names no type has no numbers: the order of its
+lines is not one.
+
+```
+enum Block : byte, Copyable, Equatable, Comparable {
+    Extension = 0x21
+    Image = 0x2C
+    Trailer = 0x3B
+}
+
+var code = (byte)Block.Image                     // 0x2C, read where the value is: nothing is moved
+var wide = (int)Block.Trailer                    // the rules of a cast of a byte
+var block = Block.fromValue(data[at]) ?? return Error(UnknownBlock(data[at]))   // a Block?: not every byte is a block
+var bad = (Block)data[at]                        // error. Hint: `Block.fromValue(n)`
+if Block.Extension < Block.Image { }             // in the order of the numbers, without a `compare` written
+```
+
+It goes to C as its number (`(int)mode`) and comes back through `fromValue`: not in a signature of C, a struct of plain
+data or raw memory, where C could give a number that is no variant.
+
 The names of `is` are seen on the right of `&&` and in the block of the `if` or `while` whose condition the chain is,
 as in C#; not in `else`, after the `if` only when its `else` leaves, and not beside `||`, where the block could run
 without them. `x is not null`
@@ -804,6 +827,21 @@ long wide = 1 << 40                              // the expected type reaches th
 var big = 1 << 40                                // error: a shift by 40 is out of range: `int` has 32 bits
 var y = x << n                                   // n out of range: debug and tests panic; release cuts n to the bits of the type
 var z = x << (n & 31)                            // the same in every build
+```
+
+The bits of an integer are counted, turned around and rotated by methods, as C23's `<stdbit.h>` has them. A count is
+an `int`, so it mixes with an `int` and widens to an index; a signed number is looked at by its bits. A power of two
+is a question of the unsigned types:
+
+```
+uint mask = 0b1011
+var ones = mask.countOnes()                      // 3; also countZeros, leadingZeros, trailingZeros, leadingOnes, trailingOnes
+var width = 32 - mask.leadingZeros()             // 4: an int
+var turned = mask.rotateLeft(3)                  // the count cut to the bits of the type; rotateRight
+var swapped = port.reverseBytes()                // also reverseBits
+var size = wanted.nextPowerOfTwo()               // overflow rule: debug panics, release gives 0
+var steps = size.log2()                          // rounded down; 0 panics in every build
+var odd = count.isPowerOfTwo()                   // error on an `int`. Hint: `((uint)count).isPowerOfTwo()`
 ```
 
 ### Mixing integer types

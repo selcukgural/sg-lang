@@ -1,0 +1,70 @@
+// The methods on the bits of an integer, as C23's <stdbit.h> has them.
+
+void counts(long value) {
+    print($"{value}: ones {value.countOnes()} zeros {value.countZeros()} leading {value.leadingZeros()} trailing {value.trailingZeros()} leadingOnes {value.leadingOnes()} trailingOnes {value.trailingOnes()}")
+}
+
+// A table of buckets as large as the next power of two.
+nuint buckets(nuint wanted) {
+    return wanted.nextPowerOfTwo()
+}
+
+void main() {
+    // Counted on every width, a negative number by its bits.
+    counts(0)
+    counts(1)
+    counts(-1)
+    counts(0x00F0)
+    counts(long.MinValue)
+    byte b = 0b0001_1000
+    print($"byte {b}: {b.countOnes()} {b.leadingZeros()} {b.trailingZeros()} {b.leadingOnes()} {b.trailingOnes()}")
+    sbyte s = -2
+    print($"sbyte {s}: {s.countOnes()} {s.countZeros()} {s.leadingOnes()} {s.trailingZeros()}")
+    ushort u16 = 0xFFFF
+    print($"ushort {u16}: {u16.countOnes()} {u16.leadingZeros()} {u16.trailingOnes()}")
+    int zero = 0
+    print($"int 0: {zero.leadingZeros()} {zero.trailingZeros()} {zero.leadingOnes()}")
+    nint n = 1
+    print($"nint 1: {n.leadingZeros()}")
+
+    // A count is an `int`: it mixes with an `int` and widens to an index.
+    int[4] table = int[4] { 10, 20, 30, 40 }
+    uint mask = 0b101
+    print(table[mask.countOnes()])
+    int bits = 32
+    print(bits - mask.leadingZeros())
+
+    // Rotated, the count cut to the width; a negative count turns the other way.
+    uint r = 0x8000_0001
+    print($"{r.rotateLeft(1):x} {r.rotateRight(1):x} {r.rotateLeft(33):x} {r.rotateLeft(-1):x} {r.rotateLeft(0):x}")
+    byte rb = 0b1000_0001
+    print($"{rb.rotateLeft(1)} {rb.rotateRight(4):b}")
+    int ri = -2
+    print($"{ri.rotateLeft(1)} {ri.rotateRight(1)}")
+    ulong count = 4
+    ulong big = 0x0123_4567_89AB_CDEF
+    print($"{big.rotateLeft(count):x} {big.rotateRight(count):x}")
+
+    // Turned around: the bytes, and the bits.
+    print($"{big.reverseBytes():x}")
+    ushort port = 0x1F90
+    print($"{port.reverseBytes():x} {port.reverseBits():b}")
+    byte one = 1
+    print($"{one.reverseBytes()} {one.reverseBits()}")
+    int neg = -2
+    print($"{neg.reverseBytes()} {neg.reverseBits()}")
+    uint word = 0b1011
+    print($"{word.reverseBits():x}")
+
+    // Powers of two, on the unsigned types.
+    for x in 0..10 {
+        uint v = (uint)x
+        print($"{v}: {v.isPowerOfTwo()} next {v.nextPowerOfTwo()}")
+    }
+    ulong large = 0x8000_0000_0000_0000
+    print($"{large.isPowerOfTwo()} {large.nextPowerOfTwo():x} {large.log2()}")
+    print(buckets(1000))
+    uint ten = 10
+    byte top = 255
+    print($"log2: {ten.log2()} {top.log2()} {mask.log2()}")
+}

@@ -1,0 +1,5 @@
+error: the number of `Image` is found before any function is checked, so it calls none
+  it is made of numbers, consts that call no function, and operators
+  --> error_enum_number_calls.sg:8:5
+ 8 |     Image = Base + 0x0C
+   |     ^^^^^

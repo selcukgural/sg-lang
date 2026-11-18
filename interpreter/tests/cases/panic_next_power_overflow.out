@@ -1,0 +1,5 @@
+128
+panic: overflow: the next power of two of 129 does not fit in byte
+  --> panic_next_power_overflow.sg:7:11
+ 7 |     print(large.nextPowerOfTwo())
+   |           ^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+// A power of two is a question of a number that is never negative.
+void main() {
+    int size = 100
+    print(size.nextPowerOfTwo())
+}

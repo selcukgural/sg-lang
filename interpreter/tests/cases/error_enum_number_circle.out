@@ -1,0 +1,5 @@
+error: the value of `First` needs itself: `First` -> `Second` -> `First`
+  --> error_enum_number_circle.sg:4:20
+ 4 |     Second = (byte)Block.First + 1
+   |                    ^^^^^^^^^^^
+  hint: a const is given a value that does not lead back to it

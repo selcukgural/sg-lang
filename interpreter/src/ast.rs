@@ -248,6 +248,8 @@ pub struct EnumDecl {
     pub name_span: Span,
     pub sources: Vec<(String, Span)>,
     pub interfaces: Vec<(String, Span)>,
+    /// `enum Block : byte`: the integer type of the numbers its variants have.
+    pub numbers: Option<(IntTy, Span)>,
     pub variants: Vec<VariantDecl>,
     /// Functions written in the enum body after or between the variants, with or without
     /// `this`.
@@ -259,6 +261,9 @@ pub struct VariantDecl {
     pub name: String,
     pub span: Span,
     pub fields: Vec<FieldDecl>,
+    /// `Image = 0x2C` in an enum with numbers: the const that holds the number, by its full
+    /// name (`Image#812`). A variant without one is one more than the variant above it.
+    pub number: Option<String>,
 }
 
 pub struct FieldDecl {
@@ -380,6 +385,8 @@ pub enum Callee {
     /// `Header.fromBytes(bytes)`: a struct or a union of plain data that every pattern of bits
     /// is a value of, out of exactly as many bytes as it takes, as they lie in memory.
     StructFromBytes(String),
+    /// `Block.fromValue(n)`: the variant of an enum with numbers that has the number, or `null`.
+    FromValue(String),
     /// `File.readText(path)`, `File.openText(path)` and the other functions of `File`.
     Io(IoCall),
     /// `File.readTextAsync(path)` and the other async functions of `File`: a task that gives

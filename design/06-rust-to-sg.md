@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 18 November 2026, the hundred-and-sixth slice.
+Last brought up to date: 18 November 2026, the hundred-and-seventh slice.
 
 ## Functions and variables
 
@@ -76,6 +76,10 @@ Last brought up to date: 18 November 2026, the hundred-and-sixth slice.
 | `i32::from_str_radix(s, 16)` | `int.parseHex(s)` | built | |
 | `u64::from_le_bytes(b)` | `ulong.fromLittleEndian(bytes)` | built | Takes a slice of exactly 8 bytes; another width is a compile error where it shows |
 | `n.to_le_bytes()` | `n.toLittleEndian()` | built | A `byte[8]` |
+| `n.count_ones()`, `n.leading_zeros()`, `n.trailing_zeros()`, `n.leading_ones()`, `n.trailing_ones()` | `n.countOnes()`, `n.leadingZeros()`, `n.trailingZeros()`, `n.leadingOnes()`, `n.trailingOnes()`; also `countZeros()` | built | An `int`, where Rust gives a `u32`: it mixes with an `int` and widens to an index. On every integer type, a signed one by its bits |
+| `n.rotate_left(k)`, `n.rotate_right(k)` | `n.rotateLeft(k)`, `n.rotateRight(k)` | built | The count is any integer, cut to the width (a negative one turns the other way) |
+| `n.swap_bytes()`, `n.reverse_bits()` | `n.reverseBytes()`, `n.reverseBits()` | built | |
+| `n.is_power_of_two()`, `n.next_power_of_two()`, `n.ilog2()` | `n.isPowerOfTwo()`, `n.nextPowerOfTwo()`, `n.log2()` | built | On the unsigned types, as in Rust. `nextPowerOfTwo` follows the rule of overflow (0 in a release build, as Rust); `log2` of 0 panics in every build. `checked_next_power_of_two` is not in SG yet |
 | `x.sqrt()`, `x.powf(y)`, `a.min(b)` | `x.sqrt()`, `x.pow(y)`, `a.min(b)` | built | |
 | `0xff`, `0b1010`, `1_000_000` | the same | built | |
 | `i32 + i64` (an error) | `int + long` is a `long` | built | An integer widens on its own only to a type that holds every value of it; `int + uint` is an error |
@@ -143,6 +147,10 @@ Last brought up to date: 18 November 2026, the hundred-and-sixth slice.
 | `&mut self`, `self` | `ref this`, `this` | built | |
 | `P::new(1)` | `P.create(1)`, or `P(1)` for short | built | A function without `this` is called on the type |
 | `enum Shape { Circle(i32) }` | `enum Shape { Circle(int radius) }` | built | What a variant carries has a name |
+| `#[repr(u8)] enum Block { Image = 0x2C, Trailer = 0x3B }` | `enum Block : byte { Image = 0x2C` / `Trailer = 0x3B }` | built | Its variants carry nothing; without a number a variant has one more than the one above, as in Rust. An enum that names no type has no numbers (Rust gives every enum without data some) |
+| `block as u8` | `(byte)block` | built | Reads the number where the value is, without moving it |
+| `Block::try_from(b)` (written by hand, or by a crate) | `Block.fromValue(b)` | built | A `Block?`; `(Block)b` is an error, since not every number is a variant |
+| `#[derive(PartialOrd, Ord)]` on an enum with numbers | `: Comparable` without a `compare` | built | Ordered by the numbers, as Rust's derive. An enum without numbers, and a struct, still write their `compare` |
 | `Shape::Circle(2)` | `Shape.Circle(2)` | built | |
 | `#[derive(Clone, Copy)]` | `struct P : Copyable` | built | |
 | `#[derive(PartialEq)]` | `: Equatable` | built | Or its own `bool equals(read this, read P other)` |

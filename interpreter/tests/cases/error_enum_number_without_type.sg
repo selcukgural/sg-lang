@@ -1,0 +1,9 @@
+// A variant has a number only in an enum that names the integer type of its numbers.
+enum Color {
+    Red = 1
+    Green
+}
+
+void main() {
+    print(Color.Red)
+}

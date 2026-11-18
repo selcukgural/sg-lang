@@ -1,0 +1,5 @@
+error: a `Color` value cannot be converted to `int`
+  the variants of `Color` have no numbers; an enum has them when it names their integer type: `enum Color : int`
+  --> error_enum_without_numbers_cast.sg:8:11
+ 8 |     print((int)Color.Green)
+   |           ^^^^^^^^^^^^^^^^

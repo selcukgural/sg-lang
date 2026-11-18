@@ -1,0 +1,12 @@
+// `fromValue` is given by the language to an enum with numbers.
+enum Block : byte {
+    Image = 0x2C
+
+    Block? fromValue(byte code) {
+        return null
+    }
+}
+
+void main() {
+    print((byte)Block.Image)
+}

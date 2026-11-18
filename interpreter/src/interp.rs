@@ -2312,6 +2312,24 @@ fn std_from(prog: &Program) -> usize {
 
 impl<'a, 'e> Interp<'a, 'e> {
     /// The cell of a const, made the first time it is read.
+    /// The number of a variant of an enum with numbers: the const written for it, or one more
+    /// than the variant above it, the first 0.
+    fn variant_number(&mut self, owner: &str, index: usize, span: Span) -> Res<Value> {
+        let decl = self.enums[owner];
+        let (ty, _) = decl.numbers.expect("the checker reads numbers only of an enum that has them");
+        let mut at = index;
+        loop {
+            match &decl.variants[at].number {
+                Some(full) => {
+                    let Value::Int(_, number) = *self.const_cell(full, span)?.borrow() else { unreachable!("the number is an integer") };
+                    return Ok(Value::Int(ty, number + (index - at) as i128));
+                }
+                None if at == 0 => return Ok(Value::Int(ty, index as i128)),
+                None => at -= 1,
+            }
+        }
+    }
+
     fn const_cell(&mut self, name: &str, span: Span) -> Res<Cell> {
         if let Some(found) = self.consts.cells.borrow().get(name) {
             return Ok(found.clone());
@@ -4374,6 +4392,18 @@ impl<'a, 'e> Interp<'a, 'e> {
                 }
                 // `ulong.fromLittleEndian(bytes)`: exactly as many bytes as the type takes.
                 // The bytes, laid where a value of the type lies.
+                Callee::FromValue(owner) => {
+                    let Value::Int(_, wanted) = owned(self.expr(&args[0], frame)?) else { unreachable!("the checker makes the argument an integer") };
+                    let decl = self.enums[owner.as_str()];
+                    for index in 0..decl.variants.len() {
+                        if let Value::Int(_, number) = self.variant_number(owner, index, expr.span)? {
+                            if number == wanted {
+                                return Ok(Value::Enum(owner.as_str().into(), index, Rc::new(Vec::new())));
+                            }
+                        }
+                    }
+                    Ok(Value::Null)
+                }
                 Callee::StructFromBytes(name) => {
                     let cells = cells_of(&owned(self.expr(&args[0], frame)?));
                     let ty = Ty::Struct(name.clone());
@@ -4658,6 +4688,16 @@ impl<'a, 'e> Interp<'a, 'e> {
                                 repeated.push_str(text);
                             }
                             return Ok(Value::Str(repeated.into()));
+                        }
+                        // `(byte)block`: the number of the variant.
+                        (Value::Enum(owner, index, _), crate::check::NUMBER_OF, []) => return self.variant_number(owner, *index, expr.span),
+                        // The bits of an integer; a power of two that does not fit, and the log2 of 0, panic.
+                        (Value::Int(ty, value), _, _) if crate::check::BIT_METHODS.contains(&name.as_str()) => {
+                            let count = match values.as_slice() {
+                                [Value::Int(_, count)] => *count,
+                                _ => 0,
+                            };
+                            return int_bits(*ty, *value, name, count).map_err(|message| Diag::panic(expr.span, message).into());
                         }
                         _ => {}
                     }
@@ -7033,6 +7073,39 @@ fn ascii_method(code: u32, name: &str) -> Result<bool, u32> {
         "toAsciiUpper" => Err(byte.to_ascii_uppercase() as u32),
         _ => Err(byte.to_ascii_lowercase() as u32),
     }
+}
+
+/// What C23's `<stdbit.h>` finds in the bits of an integer, read without its sign; `count` is
+/// the count of a rotation, cut to the width of the type as it is in compiled code.
+fn int_bits(ty: IntTy, value: i128, name: &str, count: i128) -> Result<Value, String> {
+    let width = ty.bits();
+    let mask = u128::MAX >> (128 - width);
+    let bits = value as u128 & mask;
+    let count_of = |n: u32| Value::Int(IntTy::Int, n as i128);
+    let leading = |bits: u128| bits.leading_zeros() - (128 - width);
+    let back = |bits: u128| Value::Int(ty, ty.wrap(bits as i128));
+    Ok(match name {
+        "countOnes" => count_of(bits.count_ones()),
+        "countZeros" => count_of(width - bits.count_ones()),
+        "leadingZeros" => count_of(leading(bits)),
+        "trailingZeros" => count_of(bits.trailing_zeros().min(width)),
+        "leadingOnes" => count_of(leading(!bits & mask)),
+        "trailingOnes" => count_of((!bits).trailing_zeros()),
+        "rotateLeft" | "rotateRight" => {
+            let k = (count & (width as i128 - 1)) as u32;
+            let k = if name == "rotateLeft" { k } else { (width - k) % width };
+            back(((bits << k) | (bits >> ((width - k) % width))) & mask)
+        }
+        "reverseBytes" => back(u128::from_be_bytes(bits.to_le_bytes()) >> (128 - width)),
+        "reverseBits" => back(bits.reverse_bits() >> (128 - width)),
+        "isPowerOfTwo" => Value::Bool(bits.is_power_of_two()),
+        "log2" if bits == 0 => return Err("log2 of 0: no power of two is 0".to_string()),
+        "log2" => count_of(127 - bits.leading_zeros()),
+        _ => match bits.max(1).next_power_of_two() {
+            next if next <= mask => back(next),
+            _ => return Err(format!("overflow: the next power of two of {value} does not fit in {}", ty.name())),
+        },
+    })
 }
 
 fn method(recv: Value, name: &str, args: Vec<Value>) -> Value {

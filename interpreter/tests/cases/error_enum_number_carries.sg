@@ -1,0 +1,9 @@
+// The variants of an enum with numbers carry nothing.
+enum Packet : byte {
+    Data(int length) = 1
+    Ack = 2
+}
+
+void main() {
+    print((byte)Packet.Ack)
+}

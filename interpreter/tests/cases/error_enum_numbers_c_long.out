@@ -1,0 +1,5 @@
+error: the numbers of an enum are of a type with one size on every system, and C's `CLong` has a size of its own on each
+  --> error_enum_numbers_c_long.sg:1:13
+ 1 | enum Mode : CLong {
+   |             ^^^^^
+  hint: `int` or `long`

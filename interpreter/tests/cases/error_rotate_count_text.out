@@ -1,0 +1,4 @@
+error: the count of a rotation must be an integer, found `string`
+  --> error_rotate_count_text.sg:3:27
+ 3 |     print(word.rotateLeft("one"))
+   |                           ^^^^^

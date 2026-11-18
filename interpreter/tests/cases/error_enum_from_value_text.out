@@ -1,0 +1,4 @@
+error: expected `byte`, found `string`
+  --> error_enum_from_value_text.sg:6:33
+ 6 |     var block = Block.fromValue("image")
+   |                                 ^^^^^^^

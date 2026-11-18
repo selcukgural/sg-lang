@@ -1,0 +1,4 @@
+error: `Block` has numbers, and the language gives it `fromValue`
+  --> error_enum_from_value_written.sg:5:12
+ 5 |     Block? fromValue(byte code) {
+   |            ^^^^^^^^^

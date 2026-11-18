@@ -1,0 +1,8 @@
+enum Block : byte {
+    Image = 0x2C
+    Large = 300
+}
+
+void main() {
+    print((byte)Block.Image)
+}

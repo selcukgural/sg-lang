@@ -1,0 +1,12 @@
+// An enum with numbers goes to C as its number: `(int)mode`, and back with `Mode.fromValue(n)`.
+enum Mode : int, Copyable {
+    Read = 1
+}
+
+extern {
+    int abs(Mode m)
+}
+
+void main() {
+    print(1)
+}

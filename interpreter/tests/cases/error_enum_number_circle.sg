@@ -1,0 +1,9 @@
+// The number of a variant may be found from another one, but not from itself.
+enum Block : byte {
+    First = (byte)Block.Second + 1
+    Second = (byte)Block.First + 1
+}
+
+void main() {
+    print((byte)Block.First)
+}

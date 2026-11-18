@@ -1,0 +1,5 @@
+error: a variant has a number only in an enum that names the integer type of its numbers
+  --> error_enum_number_without_type.sg:3:9
+ 3 |     Red = 1
+   |         ^
+  hint: `enum Color : int`

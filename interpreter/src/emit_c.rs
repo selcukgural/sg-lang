@@ -1281,6 +1281,18 @@ SG_COLD static _Noreturn void sg_neg_overflow(__int128 a, const char* ty, const 
     fprintf(stderr, ") does not fit in %s\n", ty);
     sg_die(loc);
 }
+SG_COLD static _Noreturn void sg_npow_overflow(__int128 a, const char* ty, const char* loc) {
+    SG_PANIC_START();
+    fputs("panic: overflow: the next power of two of ", stderr);
+    sg_err_int(a);
+    fprintf(stderr, " does not fit in %s\n", ty);
+    sg_die(loc);
+}
+SG_COLD static _Noreturn void sg_log2_zero(const char* loc) {
+    SG_PANIC_START();
+    fputs("panic: log2 of 0: no power of two is 0\n", stderr);
+    sg_die(loc);
+}
 SG_COLD static _Noreturn void sg_shift_fail(__int128 n, const char* ty, int bits, const char* loc) {
     SG_PANIC_START();
     fputs("panic: shift by ", stderr);
@@ -1521,6 +1533,23 @@ static int64_t sg_read_fraction(const uint8_t* p, int64_t n, bool single, double
 #define SG_HI(T) ((T)-1 < 0 ? __builtin_ldexp(1.0, (int)sizeof(T) * 8 - 1) : __builtin_ldexp(1.0, (int)sizeof(T) * 8))
 #define SG_MAX(T) ((T)-1 < 0 ? (T)((((uint64_t)1) << (sizeof(T) * 8 - 1)) - 1) : (T)-1)
 
+/* A rotation as C compilers turn into one instruction, and the bits of a number turned around:
+   Clang has a builtin for it, GCC is given the three swaps and the swap of the bytes. */
+static inline uint8_t sg_rotl8(uint8_t u, unsigned k) { k &= 7; return (uint8_t)((u << k) | (u >> (-k & 7))); }
+static inline uint16_t sg_rotl16(uint16_t u, unsigned k) { k &= 15; return (uint16_t)((u << k) | (u >> (-k & 15))); }
+static inline uint32_t sg_rotl32(uint32_t u, unsigned k) { k &= 31; return (u << k) | (u >> (-k & 31)); }
+static inline uint64_t sg_rotl64(uint64_t u, unsigned k) { k &= 63; return (u << k) | (u >> (-k & 63)); }
+static inline uint64_t sg_rbit64(uint64_t x) {
+#if defined(__clang__)
+    return __builtin_bitreverse64(x);
+#else
+    x = ((x >> 1) & 0x5555555555555555ull) | ((x & 0x5555555555555555ull) << 1);
+    x = ((x >> 2) & 0x3333333333333333ull) | ((x & 0x3333333333333333ull) << 2);
+    x = ((x >> 4) & 0x0F0F0F0F0F0F0F0Full) | ((x & 0x0F0F0F0F0F0F0F0Full) << 4);
+    return __builtin_bswap64(x);
+#endif
+}
+
 /* One set of checked operations for each integer type. Overflow is caught by the compiler's
    own overflow builtins: one branch that is never taken in a correct program. `sg_steps`:
    how many rounds of a loop a sum can take when one round adds between `lo` and `hi`, before
@@ -1557,7 +1586,27 @@ static inline __int128 sg_steps_##N(T sum, int64_t lo, int64_t hi) { \
     if (hi > 0) room = (__int128)((uint64_t)((__int128)SG_MAX(T) - sum) / (uint64_t)hi); \
     if (lo < 0) { __int128 down = (__int128)((uint64_t)((__int128)sum - ((T)-1 < 0 ? -(__int128)SG_MAX(T) - 1 : 0)) / (0 - (uint64_t)lo)); if (down < room) room = down; } \
     return room; } \
-static inline T sg_upto_##N(T at, __int128 rounds) { return (__int128)at + rounds > (__int128)SG_MAX(T) ? SG_MAX(T) : (T)(at + rounds); }
+static inline T sg_upto_##N(T at, __int128 rounds) { return (__int128)at + rounds > (__int128)SG_MAX(T) ? SG_MAX(T) : (T)(at + rounds); } \
+/* The bits of the number, as C23's <stdbit.h> has them, read without its sign. */ \
+static inline uint64_t sg_bits_##N(T a) { return sizeof(T) == 8 ? (uint64_t)a : (uint64_t)a & ((1ull << (sizeof(T) * 8 % 64)) - 1); } \
+static inline int32_t sg_ones_##N(T a) { return __builtin_popcountll(sg_bits_##N(a)); } \
+static inline int32_t sg_zeros_##N(T a) { return (int32_t)(sizeof(T) * 8) - __builtin_popcountll(sg_bits_##N(a)); } \
+static inline int32_t sg_lz_##N(T a) { uint64_t u = sg_bits_##N(a); return u == 0 ? (int32_t)(sizeof(T) * 8) : __builtin_clzll(u) - (int32_t)(64 - sizeof(T) * 8); } \
+static inline int32_t sg_tz_##N(T a) { uint64_t u = sg_bits_##N(a); return u == 0 ? (int32_t)(sizeof(T) * 8) : __builtin_ctzll(u); } \
+static inline int32_t sg_lo_##N(T a) { return sg_lz_##N((T)~a); } \
+static inline int32_t sg_to_##N(T a) { return sg_tz_##N((T)~a); } \
+static inline T sg_rotl_##N(T a, unsigned k) { \
+    switch (sizeof(T)) { case 1: return (T)sg_rotl8((uint8_t)a, k); case 2: return (T)sg_rotl16((uint16_t)a, k); case 4: return (T)sg_rotl32((uint32_t)a, k); default: return (T)sg_rotl64((uint64_t)a, k); } } \
+static inline T sg_rotr_##N(T a, unsigned k) { return sg_rotl_##N(a, 0u - k); } \
+static inline T sg_rbytes_##N(T a) { \
+    switch (sizeof(T)) { case 1: return a; case 2: return (T)__builtin_bswap16((uint16_t)a); case 4: return (T)__builtin_bswap32((uint32_t)a); default: return (T)__builtin_bswap64((uint64_t)a); } } \
+static inline T sg_rbits_##N(T a) { return (T)(sg_rbit64((uint64_t)a) >> (64 - sizeof(T) * 8)); } \
+static inline bool sg_pow2_##N(T a) { uint64_t u = sg_bits_##N(a); return u != 0 && (u & (u - 1)) == 0; } \
+static inline int32_t sg_log2_##N(T a, const char* loc) { uint64_t u = sg_bits_##N(a); if (__builtin_expect(u == 0, 0)) { sg_log2_zero(loc); } return 63 - __builtin_clzll(u); } \
+static inline T sg_npow_##N(T a, const char* loc) { \
+    uint64_t u = sg_bits_##N(a); if (u <= 1) { return 1; } int b = 64 - __builtin_clzll(u - 1); \
+    if (__builtin_expect(b >= (int)(sizeof(T) * 8), 0)) { sg_npow_overflow((__int128)u, NAME, loc); } return (T)(1ull << b); } \
+static inline T sg_wnpow_##N(T a) { uint64_t u = sg_bits_##N(a); if (u <= 1) { return 1; } int b = 64 - __builtin_clzll(u - 1); return b >= (int)(sizeof(T) * 8) ? 0 : (T)(1ull << b); }
 
 SG_INT(int8_t, sbyte, "sbyte")
 SG_INT(uint8_t, byte, "byte")
@@ -11744,12 +11793,24 @@ impl<'a> Emitter<'a> {
                     values.push(self.const_init(field_ty, value)?);
                 }
                 match values.is_empty() {
-                    true => format!("{{ .tag = {index} }}"),
+                    true => format!("{{ .tag = {} }}", self.tag(ty, *index)),
                     false => format!("{{ .tag = {index}, .u.v{index} = {{ {} }} }}", values.join(", ")),
                 }
             }
             (_, scalar) => const_scalar(scalar),
         })
+    }
+
+    /// The tag of a variant: where it is written among the variants, or for an enum with
+    /// numbers its number.
+    fn tag(&self, ty: &Ty, index: usize) -> String {
+        if let Ty::Enum(owner) = ty {
+            let decl = self.enums[owner.as_str()];
+            if let Some((numbers, _)) = decl.numbers {
+                return int_literal(crate::check::variant_numbers(decl, self.consts)[index], numbers);
+            }
+        }
+        index.to_string()
     }
 
     fn variants(&self, ty: &Ty, span: Span) -> Res<Option<Vec<Carried>>> {
@@ -11846,7 +11907,7 @@ impl<'a> Emitter<'a> {
                 };
                 body.push_str("switch (v->tag) {");
                 for (index, (word, fields)) in words.iter().zip(&variants).enumerate() {
-                    let _ = write!(body, " case {index}: {}", put_text(&format!("{word}{}", if fields.is_empty() { "" } else { "(" })));
+                    let _ = write!(body, " case {}: {}", self.tag(ty, index), put_text(&format!("{word}{}", if fields.is_empty() { "" } else { "(" })));
                     for (position, (field, field_ty, _)) in fields.iter().enumerate() {
                         if position > 0 {
                             body.push_str(" sg_put(out, \", \", 2);");
@@ -12565,7 +12626,9 @@ impl<'a> Emitter<'a> {
             }
         }
         let union = if members.is_empty() { String::new() } else { format!("    union {{\n{members}    }} u;\n") };
-        let _ = writeln!(self.types, "struct E_{name} {{\n    uint8_t tag;\n{union}}};");
+        // An enum with numbers is the number of its variant, in its integer type.
+        let tag = decl.numbers.map_or("uint8_t", |(numbers, _)| int_ctype(numbers));
+        let _ = writeln!(self.types, "struct E_{name} {{\n    {tag} tag;\n{union}}};");
         // What frees the values of the variant it is, and what takes the enum out of a place:
         // the place is left with a tag that is no variant.
         if !cases.is_empty() {
@@ -14113,7 +14176,7 @@ impl<'a> Emitter<'a> {
             PatternKind::Variant { index, args, .. } => {
                 let (at, core) = behind(place, ty);
                 let fields = self.variants(core, span)?.expect("the checker allows a variant only for an enum")[*index].clone();
-                let mut tests = vec![format!("{at}.tag == {index}")];
+                let mut tests = vec![format!("{at}.tag == {}", self.tag(core, *index))];
                 for (arg, (field, ty, span)) in args.iter().flatten().zip(&fields) {
                     if let Some(test) = self.pattern_test(arg, &format!("{at}.u.v{index}.m_{field}"), ty, *span)? {
                         tests.push(test);
@@ -14700,10 +14763,15 @@ impl<'a> Emitter<'a> {
                 address
             }
         };
+        // The struct or the enum the method is written in.
+        let owner_ty = match self.structs.contains_key(owner) {
+            true => Ty::Struct(owner.to_string()),
+            false => Ty::Enum(owner.to_string()),
+        };
         let this_ty = match this {
-            This::Value => Ty::Struct(owner.to_string()),
-            This::Read => Ty::Read(Box::new(Ty::Struct(owner.to_string()))),
-            This::Ref => Ty::Ref(Box::new(Ty::Struct(owner.to_string()))),
+            This::Value => owner_ty,
+            This::Read => Ty::Read(Box::new(owner_ty)),
+            This::Ref => Ty::Ref(Box::new(owner_ty)),
         };
         Ok(self.part(recv, &this_ty, receiver, before))
     }
@@ -17153,7 +17221,7 @@ impl<'a> Emitter<'a> {
                 }
                 let (values, names) = self.in_order(parts)?;
                 let made = match values.is_empty() {
-                    true => format!("(({ctype}){{ .tag = {index} }})"),
+                    true => format!("(({ctype}){{ .tag = {} }})", self.tag(&expr.ty, *index)),
                     false => format!("(({ctype}){{ .tag = {index}, .u.v{index} = {{ {} }} }})", values.join(", ")),
                 };
                 let made = self.handed_over(made, &expr.ty, &taking.handed, expr.span)?;
@@ -18156,6 +18224,42 @@ impl<'a> Emitter<'a> {
                 // load. Where the window was cut with a constant width just before, the C
                 // compiler sees that the check never fails.
                 // `Header.fromBytes(bytes)`: the count is checked, then the bytes are copied.
+                // `Block.fromValue(n)`: one test of the ends when the numbers follow each other,
+                // a `switch` when they do not.
+                Callee::FromValue(owner) => {
+                    let decl = self.enums[owner.as_str()];
+                    let (numbers, _) = decl.numbers.expect("the checker gives `fromValue` only to an enum with numbers");
+                    let fname = format!("sg_from_value_{}", cname(owner));
+                    let option = self.ctype(&Ty::Nullable(Box::new(Ty::Enum(owner.clone()))), expr.span)?;
+                    if self.made.insert(fname.clone()) {
+                        let mut sorted = crate::check::variant_numbers(decl, self.consts);
+                        sorted.sort();
+                        let (low, high) = (sorted[0], sorted[sorted.len() - 1]);
+                        let found = "{ r.has = true; r.value.tag = v; }";
+                        let test = match sorted.windows(2).all(|pair| pair[1] == pair[0] + 1) {
+                            true => {
+                                let mut ends = Vec::new();
+                                if low > numbers.min() {
+                                    ends.push(format!("v >= {}", int_literal(low, numbers)));
+                                }
+                                if high < numbers.max() {
+                                    ends.push(format!("v <= {}", int_literal(high, numbers)));
+                                }
+                                match ends.is_empty() {
+                                    true => found.to_string(),
+                                    false => format!("if ({}) {found}", ends.join(" && ")),
+                                }
+                            }
+                            false => {
+                                let cases: String = sorted.iter().map(|number| format!("case {}: ", int_literal(*number, numbers))).collect();
+                                format!("switch (v) {{ {cases}{found} break; default: break; }}")
+                            }
+                        };
+                        let _ = writeln!(self.glue, "static inline {option} {fname}({} v) {{ {option} r = {{ 0 }}; {test} return r; }}", int_ctype(numbers));
+                    }
+                    let value = self.value_as(&args[0], &Ty::Int(numbers))?;
+                    Ok(format!("{fname}({value})"))
+                }
                 Callee::StructFromBytes(owner) => {
                     let ty = Ty::Struct(owner.clone());
                     let fname = format!("sg_from_bytes_{}", cname(owner));
@@ -18401,6 +18505,42 @@ impl<'a> Emitter<'a> {
                     }
                     let (values, names) = self.in_order(parts)?;
                     Ok(sequence(&names, format!("{}({}, {}, {})", float_fn(name, ty), values[0], values[1], values[2])))
+                }
+                // `(byte)block`: the number of the variant is its tag.
+                Callee::Plain if name == crate::check::NUMBER_OF => {
+                    let value = self.first(recv, head)?;
+                    let (at, _) = behind(&value, &recv.ty);
+                    Ok(format!("({at}).tag"))
+                }
+                // The bits of an integer: a helper of the prelude for each (see `SG_INT`).
+                Callee::Plain if matches!(recv.ty, Ty::Int(_)) && crate::check::BIT_METHODS.contains(&name.as_str()) => {
+                    let Ty::Int(ty) = recv.ty else { unreachable!("tested above") };
+                    let int = int_name(ty);
+                    if let "rotateLeft" | "rotateRight" = name.as_str() {
+                        let (values, names) = self.two(recv, &args[0], head)?;
+                        let helper = if name == "rotateLeft" { "rotl" } else { "rotr" };
+                        return Ok(sequence(&names, format!("sg_{helper}_{int}({}, (unsigned)({}))", values[0], values[1])));
+                    }
+                    let value = self.first(recv, head)?;
+                    Ok(match name.as_str() {
+                        "log2" => format!("sg_log2_{int}({value}, {})", self.loc(expr.span)),
+                        "nextPowerOfTwo" if self.checked => format!("sg_npow_{int}({value}, {})", self.loc(expr.span)),
+                        "nextPowerOfTwo" => format!("sg_wnpow_{int}({value})"),
+                        _ => {
+                            let helper = match name.as_str() {
+                                "countOnes" => "ones",
+                                "countZeros" => "zeros",
+                                "leadingZeros" => "lz",
+                                "trailingZeros" => "tz",
+                                "leadingOnes" => "lo",
+                                "trailingOnes" => "to",
+                                "reverseBytes" => "rbytes",
+                                "reverseBits" => "rbits",
+                                _ => "pow2",
+                            };
+                            format!("sg_{helper}_{int}({value})")
+                        }
+                    })
                 }
                 Callee::Plain if matches!(recv.ty, Ty::Int(_)) && matches!(name.as_str(), "min" | "max") => {
                     let Ty::Int(ty) = recv.ty else { unreachable!("tested above") };

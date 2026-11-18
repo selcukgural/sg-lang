@@ -844,23 +844,26 @@ impl<'a> Parser<'a> {
 
     /// `: Copyable, Formattable` after the name of a struct or an enum.
     fn interfaces(&mut self) -> Res<Vec<(String, Span)>> {
+        match self.eat(&Tok::Colon) {
+            true => self.interface_list(),
+            false => Ok(Vec::new()),
+        }
+    }
+
+    /// The names after `:`, separated by commas.
+    fn interface_list(&mut self) -> Res<Vec<(String, Span)>> {
         let mut list = Vec::new();
-        if self.eat(&Tok::Colon) {
-            loop {
-                // `: unsafe Sendable`: a promise of the writer, kept with the name.
-                if self.at_word("unsafe") {
-                    let start = self.bump().span;
-                    let (name, span) = self.ident("an interface name")?;
-                    list.push((format!("unsafe {name}"), start.to(span)));
-                    if !self.eat(&Tok::Comma) {
-                        break;
-                    }
-                    continue;
-                }
+        loop {
+            // `: unsafe Sendable`: a promise of the writer, kept with the name.
+            if self.at_word("unsafe") {
+                let start = self.bump().span;
+                let (name, span) = self.ident("an interface name")?;
+                list.push((format!("unsafe {name}"), start.to(span)));
+            } else {
                 list.push(self.ident("an interface name")?);
-                if !self.eat(&Tok::Comma) {
-                    break;
-                }
+            }
+            if !self.eat(&Tok::Comma) {
+                break;
             }
         }
         Ok(list)
@@ -871,7 +874,26 @@ impl<'a> Parser<'a> {
         self.bump();
         let (name, name_span) = self.ident("an enum name")?;
         let sources = self.sources()?;
-        let interfaces = self.interfaces()?;
+        // `enum Block : byte, Copyable`: the integer type of its numbers comes first.
+        let mut numbers = None;
+        if *self.peek() == Tok::Colon {
+            if let Tok::Ident(word) = self.peek_at(1).clone() {
+                if let Some(ty) = IntTy::from_name(&word) {
+                    self.bump();
+                    let span = self.bump().span;
+                    if ty.is_c() {
+                        return Err(Diag::error(span, format!("the numbers of an enum are of a type with one size on every system, and C's `{word}` has a size of its own on each"))
+                            .hint("`int` or `long`"));
+                    }
+                    numbers = Some((ty, span));
+                }
+            }
+        }
+        let interfaces = match numbers {
+            Some(_) if self.eat(&Tok::Comma) => self.interface_list()?,
+            Some(_) => Vec::new(),
+            None => self.interfaces()?,
+        };
         self.open_brace()?;
         let mut variants = Vec::new();
         let mut methods = Vec::new();
@@ -883,7 +905,7 @@ impl<'a> Parser<'a> {
             // A variant is a name alone on its line or followed by `(`; anything else is a
             // function: a type, then its name.
             let variant_line = matches!(self.peek(), Tok::Ident(_))
-                && matches!(self.peek_at(1), Tok::LParen | Tok::Newline | Tok::RBrace | Tok::Comma | Tok::Eof);
+                && matches!(self.peek_at(1), Tok::LParen | Tok::Assign | Tok::Newline | Tok::RBrace | Tok::Comma | Tok::Eof);
             if !variant_line {
                 let public = self.eat(&Tok::Public);
                 let is_async = self.eat_async()?;
@@ -921,7 +943,31 @@ impl<'a> Parser<'a> {
                         .hint(format!("`{variant}`")));
                 }
             }
-            variants.push(VariantDecl { name: variant, span, fields });
+            // `Image = 0x2C`: a number, held by a const of the enum's integer type.
+            let mut number = None;
+            if *self.peek() == Tok::Assign {
+                let assign = self.bump().span;
+                let Some((ty, ty_span)) = numbers else {
+                    return Err(Diag::error(assign, "a variant has a number only in an enum that names the integer type of its numbers")
+                        .hint(format!("`enum {name} : int`")));
+                };
+                if !fields.is_empty() {
+                    return Err(Diag::error(span, "a variant with a number carries nothing"));
+                }
+                let full = format!("{variant}#{}", span.start);
+                let ty = TypeExpr { mode: None, holder: None, checked: false, locked: false, atomic: None, raw: 0, name: ty.name().to_string(), args: Vec::new(), suffixes: Vec::new(), span: ty_span };
+                let visible: Vec<(String, String)> = self.visible.iter().flatten().cloned().collect();
+                self.in_const = true;
+                let init = self.expr();
+                self.in_const = false;
+                self.consts_found.push(ConstDecl { public: false, name: full.clone(), name_span: span, ty, init: init?, local: Some(format!("{name}.{variant}")), visible, assert: None });
+                number = Some(full);
+            }
+            if numbers.is_some() && !fields.is_empty() {
+                return Err(Diag::error(span, "the variants of an enum with numbers carry nothing")
+                    .note("a number stands for one variant, and a variant that carries values is more than a number"));
+            }
+            variants.push(VariantDecl { name: variant, span, fields, number });
             if *self.peek() == Tok::Comma {
                 return Err(Diag::error(self.span(), "variants are separated by line ends, not commas")
                     .hint("write each variant on its own line"));
@@ -932,7 +978,7 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         }
         self.bump();
-        Ok(EnumDecl { public: false, name, name_span, sources, interfaces, variants, methods })
+        Ok(EnumDecl { public: false, name, name_span, sources, interfaces, numbers, variants, methods })
     }
 
     /// The rest of a function after its return type and name. In a struct body the first
@@ -1885,6 +1931,17 @@ impl<'a> Parser<'a> {
                     let operand = self.unary()?;
                     let span = start.to(operand.span);
                     Ok(Expr { ty: Ty::Void, moved: false, kind: ExprKind::Cast { ty, expr: Box::new(operand) }, span })
+                }
+                // `(Block)code`: a type of the program in parentheses, then a value.
+                None if matches!(self.peek_at(1), Tok::Ident(name) if name.starts_with(char::is_uppercase))
+                    && *self.peek_at(2) == Tok::RParen
+                    && matches!(self.peek_at(3), Tok::Ident(_) | Tok::Int(_)) =>
+                {
+                    let Tok::Ident(name) = self.peek_at(1).clone() else { unreachable!("tested above") };
+                    let span = Span::new(start.start, self.toks[self.i + 2].span.end);
+                    Err(Diag::error(span, format!("a value is cast to a number type or to `char`, and `{name}` is neither"))
+                        .note("not every number is the number of a variant")
+                        .hint(format!("the variant of an enum with numbers that has the number, or `null`: `{name}.fromValue(n)`")))
                 }
                 None => self.postfix(),
             },

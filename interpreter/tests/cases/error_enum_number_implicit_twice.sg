@@ -1,0 +1,9 @@
+enum Weekday : int {
+    Monday = 1
+    Tuesday
+    Again = 2
+}
+
+void main() {
+    print((int)Weekday.Monday)
+}

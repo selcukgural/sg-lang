@@ -1,0 +1,6 @@
+error: a value is cast to a number type or to `char`, and `Block` is neither
+  not every number is the number of a variant
+  --> error_cast_to_enum.sg:8:17
+ 8 |     var block = (Block)code
+   |                 ^^^^^^^
+  hint: the variant of an enum with numbers that has the number, or `null`: `Block.fromValue(n)`
