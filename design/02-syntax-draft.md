@@ -2005,8 +2005,8 @@ var word = unsafe Memory.readUnaligned((raw uint)(buffer + 1))   // `p[0]` there
 
 ### The clock
 
-Three types come with the language: `Instant` for measuring, `Duration` for a span of time, `DateTime` for the
-calendar in UTC. They are written in SG, in the language's own module, and seen from every module with nothing
+Four types come with the language: `Instant` for measuring, `Duration` for a span of time, `DateTime` for the
+calendar in UTC, and `DateTimeOffset` for a moment as the clocks of a place show it. They are written in SG, in the language's own module, and seen from every module with nothing
 written; a panic inside that module (a `Duration` too large) is shown at the line of the program that called it. The two clocks are two types, so the time between two readings is taken on one clock.
 
 ```
@@ -2025,11 +2025,21 @@ var due = DateTime.utc(2026, 12, 31, 23, 59, 0) ?? panic("not a date")
                                                  // Result<DateTime, DateError>: InvalidDay for 30 February
 print($"{due.year()}-{due.month()} {due.dayOfWeek()}, in {due.since(now).seconds()} s")
 var epoch = DateTime.fromUnixSeconds(0)          // 1970-01-01T00:00:00Z
+
+var here = now.toLocal()                         // the system's time zone: 2026-11-15T12:30:05.120+03:00
+print($"{here.day():D2}.{here.month():D2}.{here.year()} {here.hour():D2}:{here.minute():D2}")
+                                                 // a form of your own, from the parts: 15.11.2026 12:30
+var meeting = DateTimeOffset.local(2026, 3, 29, 2, 30, 0)
+                                                 // Result: SkippedLocalTime where summer time skips the hour
+var east = now.withOffset(Duration.fromSeconds(5 * 3600)) ?? panic("an offset under a day")
+var sent = DateTime.parse("2026-11-18T12:30:05+03:00") ?? panic("not RFC 3339")
+                                                 // taken to UTC: 2026-11-18T09:30:05Z
 ```
 
 A `Duration` is a `long` of nanoseconds and may be negative; its arithmetic follows the rule of the numbers (a
-panic in a debug build, wrapping in a release build). A `DateTime` holds the years 1677 to 2262. Time zones,
-reading a date out of text and formats of your own come later; `Task.delay` takes its milliseconds as an `int`.
+panic in a debug build, wrapping in a release build). A `DateTime` holds the years 1677 to 2262. A `DateTimeOffset` keeps its offset through `plus`;
+`t.toUtc().plus(span).toLocal()` takes the offset of the new moment. Zones by name (`Europe/Istanbul`) come
+later; `Task.delay` takes its milliseconds as an `int`.
 
 ### Random numbers
 

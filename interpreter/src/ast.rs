@@ -451,10 +451,9 @@ pub enum Callee {
     /// token (`Task.delay(ms, read token)`, the `bool`), it ends early when the token is
     /// cancelled, and gives a `Result<void, Cancelled>`.
     Delay(bool),
-    /// `Clock.monotonic()` (`false`) and `Clock.wall()` (`true`): the nanoseconds of the
-    /// monotonic clock and of the clock of the system since 1970, as a `long`. Only the
-    /// language's own module calls them.
-    Clock(bool),
+    /// `Clock.monotonic()`, `Clock.wall()` and `Clock.offsetAt(seconds)`: the readings of the
+    /// clocks and of the time zone of the system. Only the language's own module calls them.
+    Clock(ClockCall),
     /// `Entropy.fill(ref bytes)`: random bytes of the system into a `ref byte[]`. Only the
     /// language's own module calls it.
     Entropy,
@@ -492,6 +491,18 @@ impl Os {
             Os::MacOS => cfg!(target_os = "macos"),
         }
     }
+}
+
+/// The calls of `Clock`, which only the language's own module makes.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ClockCall {
+    /// `Clock.monotonic()`: the nanoseconds of the monotonic clock, as a `long`.
+    Monotonic,
+    /// `Clock.wall()`: the nanoseconds of the clock of the system since 1970, as a `long`.
+    Wall,
+    /// `Clock.offsetAt(seconds)`: how many seconds the time zone of the system is ahead of UTC
+    /// at that many seconds since 1970, as an `int`; 0 when the system does not say.
+    OffsetAt,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

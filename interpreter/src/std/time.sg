@@ -1,8 +1,9 @@
-// The clock: a span of time (`Duration`), a moment of a monotonic clock (`Instant`), and a moment
-// of the calendar in UTC (`DateTime`). Written in SG and brought along by the language; a program
-// that names one of these types gets this module, seen from every module with nothing written.
-// Only the two readings of the clock (`Clock.monotonic()`, `Clock.wall()`) are the compiler's own,
-// and only this module can call them.
+// The clock: a span of time (`Duration`), a moment of a monotonic clock (`Instant`), a moment of
+// the calendar in UTC (`DateTime`), and one seen at an offset from UTC (`DateTimeOffset`). Written
+// in SG and brought along by the language; a program that names one of these types gets this
+// module, seen from every module with nothing written. Only the readings of the clock and of the
+// time zone of the system (`Clock.monotonic()`, `Clock.wall()`, `Clock.offsetAt(seconds)`) are the
+// compiler's own, and only this module can call them.
 
 // A span of time, in nanoseconds; it may be negative. The arithmetic follows the rule of the
 // numbers: an overflow is a panic in a debug build and in a test, and wraps in a release build.
@@ -159,8 +160,10 @@ public enum DayOfWeek : Copyable, Equatable, Hashable, Formattable {
     Sunday
 }
 
-// The part of a date or a time that `DateTime.utc` was given wrong, or a moment outside the years
-// a `DateTime` holds.
+// The part of a date or a time that `DateTime.utc` was given wrong, a moment outside the years
+// a `DateTime` holds, an offset from UTC of a day or more or with a part of a second, a time the
+// clocks of the place skipped (`DateTimeOffset.local`), or where a text stops being one that
+// `parse` reads.
 public enum DateError : Copyable, Equatable, Hashable, Formattable {
     InvalidMonth
     InvalidDay
@@ -168,6 +171,9 @@ public enum DateError : Copyable, Equatable, Hashable, Formattable {
     InvalidMinute
     InvalidSecond
     OutOfRange
+    InvalidOffset
+    SkippedLocalTime
+    InvalidText(nint position)
 }
 
 // A moment of the calendar in UTC: the nanoseconds since 1970-01-01T00:00:00Z, as the clock of
@@ -190,32 +196,33 @@ public struct DateTime : Copyable, Equatable, Hashable, Comparable, Formattable 
     }
 
     public Result<DateTime, DateError> utc(int year, int month, int day, int hour, int minute, int second) {
-        if month < 1 || month > 12 {
-            return Error(DateError.InvalidMonth)
-        }
-        if day < 1 || day > daysInMonth(year, month) {
-            return Error(DateError.InvalidDay)
-        }
-        if hour < 0 || hour > 23 {
-            return Error(DateError.InvalidHour)
-        }
-        if minute < 0 || minute > 59 {
-            return Error(DateError.InvalidMinute)
-        }
-        if second < 0 || second > 59 {
-            return Error(DateError.InvalidSecond)
-        }
-        // A year this far out is outside the range whatever the rest says, and the days of it
-        // would not fit the arithmetic below.
-        if year < 1000 || year > 3000 {
-            return Error(DateError.OutOfRange)
-        }
-        long seconds = daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second
-        // The whole seconds whose nanoseconds a `long` holds.
-        if seconds < -9223372036 || seconds > 9223372036 {
+        var seconds = try civilSeconds(year, month, day, hour, minute, second)
+        if !holdsSeconds(seconds, 0) {
             return Error(DateError.OutOfRange)
         }
         return Ok(DateTime { ns = seconds * 1000000000 })
+    }
+
+    // A moment written in RFC 3339, as `DateTimeOffset.parse` reads it, taken to UTC:
+    // `2026-11-18T12:30:05+03:00` is `2026-11-18T09:30:05Z`.
+    public Result<DateTime, DateError> parse(read string text) {
+        var seen = try DateTimeOffset.parse(text)
+        return Ok(seen.toUtc())
+    }
+
+    // The moment seen at the offset of the time zone of the system then (`TZ` and
+    // `/etc/localtime` on Linux and macOS; on Windows the zone set in Windows).
+    public DateTimeOffset toLocal(read this) {
+        return DateTimeOffset { ns = this.ns, ahead = Clock.offsetAt(floorDivide(this.ns, 1000000000)) }
+    }
+
+    // The moment seen at an offset from UTC: `InvalidOffset` for a day or more either way, or a
+    // part of a second.
+    public Result<DateTimeOffset, DateError> withOffset(read this, Duration offset) {
+        if offset.ns % 1000000000 != 0 || offset.ns <= -86400000000000 || offset.ns >= 86400000000000 {
+            return Error(DateError.InvalidOffset)
+        }
+        return Ok(DateTimeOffset { ns = this.ns, ahead = (int)(offset.ns / 1000000000) })
     }
 
     // The seconds since 1970, rounded down: a moment before 1970 with a fraction counts the
@@ -257,22 +264,7 @@ public struct DateTime : Copyable, Equatable, Hashable, Comparable, Formattable 
     }
 
     public DayOfWeek dayOfWeek(read this) {
-        // 1970-01-01 was a Thursday.
-        var day = floorModulo(floorDivide(this.ns, 86400000000000) + 3, 7)
-        if day == 0 {
-            return DayOfWeek.Monday
-        } else if day == 1 {
-            return DayOfWeek.Tuesday
-        } else if day == 2 {
-            return DayOfWeek.Wednesday
-        } else if day == 3 {
-            return DayOfWeek.Thursday
-        } else if day == 4 {
-            return DayOfWeek.Friday
-        } else if day == 5 {
-            return DayOfWeek.Saturday
-        }
-        return DayOfWeek.Sunday
+        return weekday(floorDivide(this.ns, 86400000000000))
     }
 
     // The time from `earlier` to this moment; negative when `earlier` is later.
@@ -295,23 +287,215 @@ public struct DateTime : Copyable, Equatable, Hashable, Comparable, Formattable 
     // ISO 8601: `2026-11-15T09:30:05Z`, with the fraction of the second in 3, 6 or 9 digits when
     // there is one: `2026-11-15T09:30:05.120Z`.
     public void format(read this, ref Formatter f) {
-        var date = civilFromDays(floorDivide(this.ns, 86400000000000))
-        var time = floorModulo(this.ns, 86400000000000)
-        var hour = time / 3600000000000
-        var minute = time / 60000000000 % 60
-        var second = time / 1000000000 % 60
-        var part = time % 1000000000
-        f.write($"{date.year:D4}-{date.month:D2}-{date.day:D2}T{hour:D2}:{minute:D2}:{second:D2}")
-        if part != 0 {
-            if part % 1000000 == 0 {
-                f.write($".{part / 1000000:D3}")
-            } else if part % 1000 == 0 {
-                f.write($".{part / 1000:D6}")
-            } else {
-                f.write($".{part:D9}")
+        writeCivil(floorDivide(this.ns, 1000000000), (int)floorModulo(this.ns, 1000000000), ref f)
+        f.write("Z")
+    }
+}
+
+// A moment of the calendar seen at an offset from UTC, as the clocks of a place show it:
+// `2026-11-18T12:30:05+03:00`. `DateTime.toLocal()` sees one at the offset of the time zone of the
+// system, `withOffset` at an offset given, and `toUtc()` gives the moment back. The offset is kept as
+// it was: `plus` of a day after the clocks of the place changed gives the old offset, and
+// `t.toUtc().plus(span).toLocal()` the new one. Two are equal when both the moment and the offset
+// are; `a.toUtc() == b.toUtc()` asks only for the moment. In order by the moment, then the offset.
+public struct DateTimeOffset : Copyable, Equatable, Hashable, Comparable, Formattable {
+    long ns
+    // The seconds the place is ahead of UTC, less than a day either way.
+    int ahead
+
+    // The moment the clocks of the system's time zone show this date and time at.
+    // `SkippedLocalTime` when they skip it (the hour lost when summer time starts); when they show
+    // it twice (the hour when it ends), the earlier of the two. The parts are checked as
+    // `DateTime.utc` checks them.
+    public Result<DateTimeOffset, DateError> local(int year, int month, int day, int hour, int minute, int second) {
+        var wall = try civilSeconds(year, month, day, hour, minute, second)
+        // A moment the clocks show this at is the date and time less an offset in force at that
+        // moment. The offsets around it are those in force a day before, at it and a day after,
+        // as counted in UTC: the clocks change at most once in two days.
+        long? found = null
+        var shift = -1
+        while shift <= 1 {
+            var offset = Clock.offsetAt(wall + shift * 86400)
+            var moment = wall - offset
+            if Clock.offsetAt(moment) == offset && (found is null || moment < found) {
+                found = moment
+            }
+            shift += 1
+        }
+        if found is null {
+            return Error(DateError.SkippedLocalTime)
+        }
+        if !holdsSeconds(found, 0) {
+            return Error(DateError.OutOfRange)
+        }
+        return Ok(DateTimeOffset { ns = found * 1000000000, ahead = (int)(wall - found) })
+    }
+
+    // A moment in RFC 3339, the form of ISO 8601 that `print` writes: `2026-11-18T12:30:05+03:00`,
+    // `2026-11-18T09:30:05.5Z`. The date and the time of day take all their digits; the fraction of
+    // the second has 1 to 9 of them, and the offset is `Z` (kept as `+00:00`), `+hh:mm` or `-hh:mm`,
+    // with `:ss` after it as `print` writes the offsets of old local times. Nothing may come before
+    // or after. `InvalidText` gives where the text stops being one; then the parts are checked as
+    // `DateTime.utc` checks them (a second of 60 is `InvalidSecond`: a `DateTime` counts no leap
+    // seconds), the offset as `withOffset` checks it, and the moment against the range.
+    public Result<DateTimeOffset, DateError> parse(read string text) {
+        nint at = 0
+        var year = try digitsAt(text, ref at, 4)
+        try expect(text, ref at, '-')
+        var month = try digitsAt(text, ref at, 2)
+        try expect(text, ref at, '-')
+        var day = try digitsAt(text, ref at, 2)
+        try expect(text, ref at, 'T')
+        var hour = try digitsAt(text, ref at, 2)
+        try expect(text, ref at, ':')
+        var minute = try digitsAt(text, ref at, 2)
+        try expect(text, ref at, ':')
+        var second = try digitsAt(text, ref at, 2)
+        var part = 0
+        if at < text.length() && text[at] == '.' {
+            at += 1
+            var count = 0
+            while at < text.length() && text[at] >= '0' && text[at] <= '9' {
+                if count == 9 {
+                    return Error(DateError.InvalidText(at))
+                }
+                part = part * 10 + (int)(text[at] - '0')
+                count += 1
+                at += 1
+            }
+            if count == 0 {
+                return Error(DateError.InvalidText(at))
+            }
+            while count < 9 {
+                part *= 10
+                count += 1
             }
         }
-        f.write("Z")
+        var offset = 0
+        var offsetValid = true
+        if at < text.length() && text[at] == 'Z' {
+            at += 1
+        } else if at < text.length() && (text[at] == '+' || text[at] == '-') {
+            var sign = 1
+            if text[at] == '-' {
+                sign = -1
+            }
+            at += 1
+            var hours = try digitsAt(text, ref at, 2)
+            try expect(text, ref at, ':')
+            var minutes = try digitsAt(text, ref at, 2)
+            var seconds = 0
+            if at < text.length() && text[at] == ':' {
+                at += 1
+                seconds = try digitsAt(text, ref at, 2)
+            }
+            offsetValid = hours <= 23 && minutes <= 59 && seconds <= 59
+            offset = sign * (hours * 3600 + minutes * 60 + seconds)
+        } else {
+            return Error(DateError.InvalidText(at))
+        }
+        if at != text.length() {
+            return Error(DateError.InvalidText(at))
+        }
+        var wall = try civilSeconds(year, month, day, hour, minute, second)
+        if !offsetValid {
+            return Error(DateError.InvalidOffset)
+        }
+        var moment = wall - offset
+        if !holdsSeconds(moment, part) {
+            return Error(DateError.OutOfRange)
+        }
+        return Ok(DateTimeOffset { ns = moment * 1000000000 + part, ahead = offset })
+    }
+
+    // The moment in UTC.
+    public DateTime toUtc(read this) {
+        return DateTime { ns = this.ns }
+    }
+
+    // How far the place is ahead of UTC; negative west of it.
+    public Duration offset(read this) {
+        return Duration { ns = (long)this.ahead * 1000000000 }
+    }
+
+    // The parts of the date and the time of day as the clocks of the place show them.
+    public int year(read this) {
+        return civilFromDays(floorDivide(this.wallSeconds(), 86400)).year
+    }
+
+    public int month(read this) {
+        return civilFromDays(floorDivide(this.wallSeconds(), 86400)).month
+    }
+
+    public int day(read this) {
+        return civilFromDays(floorDivide(this.wallSeconds(), 86400)).day
+    }
+
+    public int hour(read this) {
+        return (int)(floorModulo(this.wallSeconds(), 86400) / 3600)
+    }
+
+    public int minute(read this) {
+        return (int)(floorModulo(this.wallSeconds(), 3600) / 60)
+    }
+
+    public int second(read this) {
+        return (int)floorModulo(this.wallSeconds(), 60)
+    }
+
+    public int nanosecond(read this) {
+        return (int)floorModulo(this.ns, 1000000000)
+    }
+
+    public DayOfWeek dayOfWeek(read this) {
+        return weekday(floorDivide(this.wallSeconds(), 86400))
+    }
+
+    // The time from `earlier` to this moment, whatever their offsets; negative when `earlier` is
+    // later.
+    public Duration since(read this, DateTimeOffset earlier) {
+        return Duration { ns = this.ns - earlier.ns }
+    }
+
+    // The moment a span later, at the same offset.
+    public DateTimeOffset plus(read this, Duration span) {
+        return DateTimeOffset { ns = this.ns + span.ns, ahead = this.ahead }
+    }
+
+    public DateTimeOffset minus(read this, Duration span) {
+        return DateTimeOffset { ns = this.ns - span.ns, ahead = this.ahead }
+    }
+
+    public int compare(read this, read DateTimeOffset other) {
+        var moment = this.ns.compare(other.ns)
+        if moment != 0 {
+            return moment
+        }
+        return this.ahead.compare(other.ahead)
+    }
+
+    // RFC 3339: `2026-11-18T12:30:05+03:00`, the fraction as `DateTime` writes it, an offset of 0
+    // as `+00:00`, and the seconds of an offset after it when it has them, as the local times of
+    // old had (`+01:56:56`).
+    public void format(read this, ref Formatter f) {
+        writeCivil(this.wallSeconds(), (int)floorModulo(this.ns, 1000000000), ref f)
+        var rest = this.ahead
+        if rest < 0 {
+            f.write("-")
+            rest = -rest
+        } else {
+            f.write("+")
+        }
+        f.write($"{rest / 3600:D2}:{rest / 60 % 60:D2}")
+        if rest % 60 != 0 {
+            f.write($":{rest % 60:D2}")
+        }
+    }
+
+    // The seconds since 1970 of the date and time the clocks of the place show, counted as if
+    // they were in UTC.
+    long wallSeconds(read this) {
+        return floorDivide(this.ns, 1000000000) + this.ahead
     }
 }
 
@@ -319,6 +503,99 @@ struct Civil : Copyable {
     int year
     int month
     int day
+}
+
+// The seconds since 1970 of a date and a time of day counted as if they were in UTC, or the part
+// given wrong, checked in this order: the month first, so that the day is checked against it.
+Result<long, DateError> civilSeconds(int year, int month, int day, int hour, int minute, int second) {
+    if month < 1 || month > 12 {
+        return Error(DateError.InvalidMonth)
+    }
+    if day < 1 || day > daysInMonth(year, month) {
+        return Error(DateError.InvalidDay)
+    }
+    if hour < 0 || hour > 23 {
+        return Error(DateError.InvalidHour)
+    }
+    if minute < 0 || minute > 59 {
+        return Error(DateError.InvalidMinute)
+    }
+    if second < 0 || second > 59 {
+        return Error(DateError.InvalidSecond)
+    }
+    // A year this far out is outside the range whatever the rest says, and the days of it would
+    // not fit the arithmetic below.
+    if year < 1000 || year > 3000 {
+        return Error(DateError.OutOfRange)
+    }
+    return Ok(daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second)
+}
+
+// Whether the nanoseconds of a moment that many whole seconds and `part` nanoseconds after 1970
+// fit in a `long`, as a `DateTime` keeps them.
+bool holdsSeconds(long seconds, int part) {
+    return seconds >= -9223372036 && (seconds < 9223372036 || seconds == 9223372036 && part <= 854775807)
+}
+
+// The day of the week of a day counted from 1970-01-01, which was a Thursday.
+DayOfWeek weekday(long days) {
+    var day = floorModulo(days + 3, 7)
+    if day == 0 {
+        return DayOfWeek.Monday
+    } else if day == 1 {
+        return DayOfWeek.Tuesday
+    } else if day == 2 {
+        return DayOfWeek.Wednesday
+    } else if day == 3 {
+        return DayOfWeek.Thursday
+    } else if day == 4 {
+        return DayOfWeek.Friday
+    } else if day == 5 {
+        return DayOfWeek.Saturday
+    }
+    return DayOfWeek.Sunday
+}
+
+// The date and time of day of a moment `seconds` and `part` nanoseconds after 1970, in ISO 8601,
+// with the fraction of the second in 3, 6 or 9 digits when there is one.
+void writeCivil(long seconds, int part, ref Formatter f) {
+    var date = civilFromDays(floorDivide(seconds, 86400))
+    var time = floorModulo(seconds, 86400)
+    f.write($"{date.year:D4}-{date.month:D2}-{date.day:D2}T{time / 3600:D2}:{time / 60 % 60:D2}:{time % 60:D2}")
+    if part != 0 {
+        if part % 1000000 == 0 {
+            f.write($".{part / 1000000:D3}")
+        } else if part % 1000 == 0 {
+            f.write($".{part / 1000:D6}")
+        } else {
+            f.write($".{part:D9}")
+        }
+    }
+}
+
+// The number written in exactly `count` digits at `at`, which moves past them; `InvalidText` at
+// the first byte that is not a digit.
+Result<int, DateError> digitsAt(read string text, ref nint at, int count) {
+    var value = 0
+    var left = count
+    while left > 0 {
+        if at >= text.length() || text[at] < '0' || text[at] > '9' {
+            return Error(DateError.InvalidText(at))
+        }
+        value = value * 10 + (int)(text[at] - '0')
+        at += 1
+        left -= 1
+    }
+    return Ok(value)
+}
+
+// Moves past the byte at `at` when it is `expected`; `InvalidText` there when it is not.
+Result<void, DateError> expect(read string text, ref nint at, byte expected) {
+    if at >= text.length() || text[at] != expected {
+        return Error(DateError.InvalidText(at))
+    }
+    at += 1
+    return Ok()
 }
 
 // How many decimal digits a positive number has.

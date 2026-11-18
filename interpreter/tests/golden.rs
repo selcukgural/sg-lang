@@ -1414,6 +1414,95 @@ void main() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), EXPECTED, "compiled: {}", String::from_utf8_lossy(&run.stderr));
 }
 
+/// The time zone of the system, set by `TZ` to the rules of Central Europe written out (choice
+/// 1310), so that no file of the system's zones is needed: an hour ahead of UTC in winter, two in
+/// summer, from 02:00 on the last Sunday of March to 03:00 on the last Sunday of October (macOS
+/// keeps such rules to the years from 1970 on, glibc does not, so a year before has only winter). The
+/// interpreter and compiled code read it with `localtime_r`; Windows does not read `TZ`, so
+/// there `ok_time_offset` checks the zone of the machine only against itself.
+#[cfg(unix)]
+#[test]
+fn local_time_zone() {
+    const PROGRAM: &str = r#"
+void local(int month, int day, int hour, int minute) {
+    match DateTimeOffset.local(2026, month, day, hour, minute, 0) {
+        Ok(moment) => print($"{month}-{day} {hour}:{minute}: {moment} = {moment.toUtc()}")
+        Error(cause) => print($"{month}-{day} {hour}:{minute}: {cause}")
+    }
+}
+
+void at(read string utc) {
+    var moment = DateTime.parse(utc) ?? panic("a moment")
+    var seen = moment.toLocal()
+    print($"{moment} -> {seen} {seen.offset()} {seen.hour()} {seen.dayOfWeek()}")
+}
+
+void main() {
+    at("2026-01-15T12:00:00Z")
+    at("2026-07-01T12:00:00Z")
+    at("1950-01-15T12:00:00Z")
+    at("2026-03-29T00:59:59Z")
+    at("2026-03-29T01:00:00Z")
+    at("2026-10-25T00:59:59Z")
+    at("2026-10-25T01:00:00Z")
+    at("2026-12-31T23:30:00Z")
+    // The hour skipped in spring, and the hour seen twice in autumn: the earlier of the two.
+    local(3, 29, 1, 59)
+    local(3, 29, 2, 0)
+    local(3, 29, 2, 30)
+    local(3, 29, 3, 0)
+    local(10, 25, 1, 59)
+    local(10, 25, 2, 0)
+    local(10, 25, 2, 30)
+    local(10, 25, 3, 0)
+    // `plus` keeps the offset; through UTC the offset of the new moment.
+    var winter = DateTimeOffset.local(2026, 1, 15, 12, 0, 0) ?? panic("a local time")
+    var half = Duration.fromSeconds(86400 * 182)
+    print(winter.plus(half))
+    print(winter.toUtc().plus(half).toLocal())
+}
+"#;
+    const EXPECTED: &str = "\
+2026-01-15T12:00:00Z -> 2026-01-15T13:00:00+01:00 3600s 13 Thursday
+2026-07-01T12:00:00Z -> 2026-07-01T14:00:00+02:00 7200s 14 Wednesday
+1950-01-15T12:00:00Z -> 1950-01-15T13:00:00+01:00 3600s 13 Sunday
+2026-03-29T00:59:59Z -> 2026-03-29T01:59:59+01:00 3600s 1 Sunday
+2026-03-29T01:00:00Z -> 2026-03-29T03:00:00+02:00 7200s 3 Sunday
+2026-10-25T00:59:59Z -> 2026-10-25T02:59:59+02:00 7200s 2 Sunday
+2026-10-25T01:00:00Z -> 2026-10-25T02:00:00+01:00 3600s 2 Sunday
+2026-12-31T23:30:00Z -> 2027-01-01T00:30:00+01:00 3600s 0 Friday
+3-29 1:59: 2026-03-29T01:59:00+01:00 = 2026-03-29T00:59:00Z
+3-29 2:0: SkippedLocalTime
+3-29 2:30: SkippedLocalTime
+3-29 3:0: 2026-03-29T03:00:00+02:00 = 2026-03-29T01:00:00Z
+10-25 1:59: 2026-10-25T01:59:00+02:00 = 2026-10-24T23:59:00Z
+10-25 2:0: 2026-10-25T02:00:00+02:00 = 2026-10-25T00:00:00Z
+10-25 2:30: 2026-10-25T02:30:00+02:00 = 2026-10-25T00:30:00Z
+10-25 3:0: 2026-10-25T03:00:00+01:00 = 2026-10-25T02:00:00Z
+2026-07-16T12:00:00+01:00
+2026-07-16T13:00:00+02:00
+";
+    const ZONE: &str = "CET-1CEST,M3.5.0,M10.5.0/3";
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("local-time-zone");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let source = work.join("main.sg");
+    std::fs::write(&source, PROGRAM).unwrap();
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_sg")).arg(&source).env("TZ", ZONE).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), EXPECTED, "interpreter: {}", String::from_utf8_lossy(&run.stderr));
+    if std::process::Command::new("cc").arg("--version").output().is_err() {
+        eprintln!("no C compiler (`cc`) found: the back end is not tested");
+        return;
+    }
+    let (c_file, binary) = (work.join("main.c"), work.join("main"));
+    std::fs::write(&c_file, sg::emit_c(PROGRAM, "main.sg", true).unwrap()).unwrap();
+    let cc = c_command().args(["-std=c11", "-O1"]).args(warnings("")).arg("-o").arg(&binary).arg(&c_file).arg("-lm").output().unwrap();
+    assert!(cc.status.success(), "the C compiler rejected it:\n{}", String::from_utf8_lossy(&cc.stderr));
+    let run = std::process::Command::new(&binary).env("TZ", ZONE).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), EXPECTED, "compiled: {}", String::from_utf8_lossy(&run.stderr));
+}
+
 /// `examples/shutdown` sent real signals from outside, as Ctrl-C and `kill` send them, interpreted
 /// and compiled (also under the thread sanitizer): with no connection, the first signal ends it;
 /// with one open, it stops taking connections and serves that one to its end; a second signal cuts

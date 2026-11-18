@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 18 November 2026, the hundred-and-thirteenth slice.
+Last brought up to date: 18 November 2026, the hundred-and-fourteenth slice.
 
 ## Functions and variables
 
@@ -481,7 +481,12 @@ Last brought up to date: 18 November 2026, the hundred-and-thirteenth slice.
 | `SystemTime::now()`, `.duration_since(UNIX_EPOCH)` | `DateTime.now()`, `t.unixSeconds()`, `t.unixMilliseconds()` | built | UTC, nanoseconds in a `long`: the years 1677 to 2262 |
 | `chrono::Utc.with_ymd_and_hms(...)`, `t.year()`, `t.weekday()`, `t.to_rfc3339()` | `DateTime.utc(...)` (a `Result<DateTime, DateError>`), `t.year()`, `t.dayOfWeek()`, `print(t)` | built | In the language, not a crate; `2026-11-15T09:30:05Z` |
 | `std::thread::sleep(d)` | `Task.delay(ms).wait()`; `await Task.delay(ms)` in async code | built | Milliseconds as an `int` |
-| `chrono::Local`, `chrono-tz`, `NaiveDate::parse_from_str` | none yet | designed | Time zones and reading a date out of text come later |
+| `chrono::Local::now()`, `t.with_timezone(&Local)`, `t.offset()` | `DateTime.now().toLocal()`, `t.toLocal()`, `seen.offset()` | built | A `DateTimeOffset`: the moment and its offset; the parts are those of the place |
+| `t.with_timezone(&FixedOffset::east_opt(s)?)`, `.with_timezone(&Utc)` | `t.withOffset(Duration.fromSeconds(s))` (a `Result`), `seen.toUtc()` | built | `InvalidOffset` for a day or more, or a part of a second |
+| `Local.with_ymd_and_hms(...)` (a `LocalResult`) | `DateTimeOffset.local(...)` (a `Result<DateTimeOffset, DateError>`) | built | `SkippedLocalTime` where chrono gives `None`; the earlier moment where it gives `Ambiguous` |
+| `DateTime::parse_from_rfc3339(s)`, `t.to_rfc3339()` | `DateTimeOffset.parse(s)`, `DateTime.parse(s)` (to UTC), `print(t)` | built | `InvalidText(position)` says where the text stops being one |
+| `t.format("%d.%m.%Y")`, `NaiveDate::parse_from_str` | `$"{t.day():D2}.{t.month():D2}.{t.year()}"`; none | not in SG | A form is written with the parts and checked when compiled; a text in another form is read with `split` and `int.parse` |
+| `chrono-tz` (`Europe::Istanbul`) | none yet | designed | Zones by name come later |
 
 ## Random numbers
 

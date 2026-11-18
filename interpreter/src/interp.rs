@@ -20,7 +20,7 @@ use crate::ast::*;
 use crate::diag::{Diag, Span};
 use crate::check::float_fits;
 use crate::raw::{self, RawPtr};
-use crate::sys::{clock, command_of, copy_new, ended_as, entropy, executable, make_temp, remove_all, remove_file, rename_new, wait_unreaped};
+use crate::sys::{clock, command_of, local_offset, copy_new, ended_as, entropy, executable, make_temp, remove_all, remove_file, rename_new, wait_unreaped};
 use crate::types::{FloatTy, IntTy, TextIter, Ty};
 
 /// Limit on nested calls. Past it the program gets a readable panic instead of a crash.
@@ -4751,7 +4751,11 @@ impl<'a, 'e> Interp<'a, 'e> {
                     })
                 }
                 Callee::Io(call) => self.io(*call, args, frame),
-                Callee::Clock(wall) => Ok(Value::Int(IntTy::Long, clock(*wall))),
+                Callee::Clock(ClockCall::OffsetAt) => {
+                    let Value::Int(_, seconds) = owned(self.expr(&args[0], frame)?) else { unreachable!("the checker gives `offsetAt` a `long`") };
+                    Ok(Value::Int(IntTy::Int, i128::from(local_offset(seconds as i64))))
+                }
+                Callee::Clock(call) => Ok(Value::Int(IntTy::Long, clock(*call == ClockCall::Wall))),
                 Callee::Os(os) => Ok(Value::Bool(os.here())),
                 Callee::Entropy => {
                     let cells = cells_of(&owned(self.expr(&args[0], frame)?));

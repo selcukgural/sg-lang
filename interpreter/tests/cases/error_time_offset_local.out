@@ -1,0 +1,5 @@
+error: expected `DateTimeOffset`, found `DateTime`
+  --> error_time_offset_local.sg:6:10
+ 6 |     show(DateTime.now())
+   |          ^^^^^^^^^^^^^^
+  hint: the moment at the offset of the system's time zone: `DateTime.now().toLocal()`, or at one of your own: `DateTime.now().withOffset(offset)`

@@ -74,7 +74,7 @@ of `tests/Containerfile` has them.
 | A list of tasks | `var tasks = List<Task<int>>()`, `tasks.add(count(path))`: tasks kept in a list, which has only `add` and `length`. `await Task.whenAll(tasks)` takes the list and gives what every task gave, in the order of the list; `await Task.whenAny(ref tasks)` gives what the first task to end gave and takes it out of the list. Both are awaited, or waited for with `.wait()` in code that is not async, where they are written. A list of tasks is given to `Task.whenAll` or emptied by a loop `while tasks.length() > 0` without a `break`, or it is a compile error; a way out with an error waits for what is left in it. It is kept where a task is kept, and it does not go to another task. In the interpreter the tasks are waited for in the order of the list; compiled, each list has a group that its tasks tell as they end |
 | Async input and output | `File.readTextAsync(read path)`, `readBytesAsync`, `writeTextAsync`, `writeBytesAsync`, `appendTextAsync`, `openTextAsync`, `createTextAsync`, `openAppendAsync`, on a reader (`Stdin` too) `readLineAsync(ref line)`, `readTextAsync()`, `readBytesAsync(ref buffer)`, `readSomeAsync(ref buffer)`, and on a writer (`Stdout` and `Stderr` too) `writeAsync(x)`, `writeLineAsync(x)`, `writeBytesAsync(bytes)`, `flushAsync()` and `closeAsync()`: the work of the function without `Async`, as a task, with a token that may come last (`read token`; not for `closeAsync`). A call given a borrow, and `closeAsync`, is awaited where it is written. A writer an async function drops without `closeAsync` is written and closed the async way, awaited where it is dropped. In the interpreter the work is done when it is called; the token is looked at first. Compiled too: the work is done on a thread of input and output while the task waits, and what the block of a reader or a writer can do is done in place. A read of an input that can make the program wait (a pipe, a terminal) waits on a thread in both, and a cancel ends the wait; what comes later stays for the next read |
 | Network | `TcpListener.bind("127.0.0.1:8080")` (a number, `localhost`, or `":8080"` for every address of the machine; port 0 lets the system choose, `listener.port()` tells which), `listener.accept()`, `TcpStream.connect("example.com:80")` (the host looked up by name, each of its addresses tried in turn), `stream.receive(ref buffer)` (what has come, at most what the buffer holds; how many, 0 once the other side has let go) and `stream.send(bytes)` (all of them, through a `read` borrow): each gives a `Result` with an `IoError` (`ConnectionRefused`, `ConnectionReset`, `AddressInUse`, `HostNotFound`, `LineTooLong` are the network's). `stream.reader()` gives a `StreamReader` that borrows the stream and reads it through a block of its own (`readLine`, `lines()`, `readText`, `readBytes`, `readSome` and their async versions), while the stream goes on sending; a line or a text longer than 64 KB (`stream.reader(limit)` for another limit) is `LineTooLong`, and so is every read after it. A `receive` while the reader is used again is a compile error, and neither `send` nor `reader()` goes through a `shared` stream. `acceptAsync`, `connectAsync`, `receiveAsync` and `sendAsync` do the same work as a task, awaited where they are written, with a token that may come last; a cancel ends a wait at once and loses nothing that came. A socket sends without a buffer and is closed when it ends. In an async function the calls without `Async` are an error, as for files. `stream.localAddress()` and `stream.remoteAddress()` give the two ends as a `SocketAddress`. Datagrams: `UdpSocket.bind("127.0.0.1:0")`, `socket.sendTo(bytes, to)` (one message, whole) and `socket.receiveFrom(ref buffer)` (one message and who sent it, a `Received`), `connect(to)` with `send` and `receive`, all through a `read` borrow so a `shared` socket serves several tasks; a datagram that does not fit is `MessageTooLong`. A `SocketAddress` is read by `SocketAddress.parse("[::1]:53")` and printed the same way, and `SocketAddress.lookup("example.com:53")` gives the addresses of a name. In the interpreter a socket that is not ready gives the turn away, and the scheduler waits for the sockets with `poll` when no task can run. Compiled too: a call that has to wait waits with `poll`, and an async one on the loop of the network (epoll, kqueue), which a thread of the pool with nothing to do waits on. On Windows the same, through Winsock: the loop asks the driver under the sockets (AFD) on an I/O completion port, as mio and Tokio do, and the interpreter waits with `WSAPoll`; a listener and a datagram socket hold their port alone, and a datagram socket that is not connected is not told of a datagram that came back, as on Linux and macOS. Windows tells of a refused connection after about two seconds, and `localhost` tries `::1` before `127.0.0.1` (1025) |
-| Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. All three are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
+| Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. `d.toLocal()` gives a `DateTimeOffset`, the moment seen at the offset of the system's time zone (`2026-11-18T12:30:05+03:00`, its parts those of the place), `d.withOffset(offset)` one at an offset of your own, `DateTimeOffset.local(2026, 3, 29, 2, 30, 0)` the moment the clocks of the place show that at (`SkippedLocalTime` in the hour summer time skips, the earlier of the two in the hour it repeats), and `t.toUtc()` the moment back; `DateTime.parse(text)` and `DateTimeOffset.parse(text)` read RFC 3339 (`InvalidText(position)` where the text stops being one). A format of your own is written with the parts: `$"{t.day():D2}.{t.month():D2}.{t.year()}"`. All four are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into), `File.createTemp()` (a new empty file only the user can read and write, its path given). `Path.join(a, b)` gives a new path; `Path.joinInside(folder, name)` a `Result<string, IoError>` that is an `InvalidInput` for a name that could lead out of the folder on any system (`..`, a root, a `\`, a `:`, a device of Windows); `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
 | Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(int code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. On Windows the same through `CreateProcessW`: a name without an extension is looked for as `name.exe` in the absolute folders of `PATH` (apart at `;`, a quoted folder taken whole) and never in the folder the program works in; the words go on one command line, quoted so that the program reads them back as written; a `.bat` or `.cmd` runs only when named with its extension, through `cmd.exe`, its arguments escaped as Rust escapes them, a line break in one an `InvalidInput`; a cleared environment keeps `SystemRoot`; a code with its highest bit set is written in hex (`exited with code 0xC0000005`); `kill`, `terminate` and `signal` end the program with the code 1, since Windows has no polite stop to send (`Signal.WindowChange` does nothing). `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `signal(Signal.Interrupt)` sends it a signal by its name, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
@@ -938,7 +938,7 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/unicode.rs`, `src/unicode_tables.rs` | What a character is and its case: the tables of Unicode 17.0, one record for each code point found in three steps, read by the interpreter and written into compiled code as C when a program calls a method that needs them. `tools/unicode_tables.py` makes the tables from the Unicode Character Database (each file checked against its SHA-256) and checks every code point against Python's tables of the same version |
 | `src/diag.rs` | Error and panic messages |
 | `src/source.rs` | The files of a program: which folders are modules and which of them are read. All files are kept as one text, so a position says which file it is in; the language's own module comes last, when a file names one of its types |
-| `src/std/time.sg` | The language's own module `std`, written in SG: `Duration`, `Instant`, `DateTime` and the calendar. Only it calls the two readings of the clock, `Clock.monotonic()` and `Clock.wall()` |
+| `src/std/time.sg` | The language's own module `std`, written in SG: `Duration`, `Instant`, `DateTime`, `DateTimeOffset`, the calendar and the reading of RFC 3339. Only it calls the readings of the clock and of the time zone, `Clock.monotonic()`, `Clock.wall()` and `Clock.offsetAt(seconds)` |
 | `src/std/random.sg` | The same module's random numbers: `Random` (xoshiro256\*\* seeded with SplitMix64) and `SecureRandom`. Only it calls `Entropy.fill`, the random bytes of the system. A program gets each file of `std` when it names one of its types. A panic inside the module is shown at the program's call that led there (`Interp::call`; in compiled code `Emitter::tracked`) |
 | `src/std/files.sg`, `src/std/path.sg`, `src/std/environment.sg` | The same module's folders (`Directory`, `DirectoryEntry`, `FileInfo`, `FileKind`, and the work of `File.info` and `File.exists`), paths (`Path`) and variables of the environment (`Environment`, `VariableError`). Only they call `System.list`, `System.status` and the other calls of the system; a file of `std` that names a type of another brings it along (a `FileInfo` holds a `DateTime`) |
 | `src/std/process.sg` | The same module's other programs (`Command`, `Process`, `ExitStatus`, `ProcessError`): the search in `PATH`, the checks of what the system cannot take, the pipes taken out of a running program, its stop when it is not waited for, and the reading of how a program ended, over `System.run`, `System.start`, `System.wait`, `System.waitAsync`, `System.signal`, `System.reader`, `System.writer` and `System.executable` |
@@ -7725,6 +7725,88 @@ Approved on 18 November 2026:
      them under the thread sanitizer); on Windows on Arm `ok_channel` and `ok_channel_async` give the same output
      interpreted and compiled.
 
+Choices made in the hundred-and-fourteenth slice (the local time zone, writing and reading dates). 1300 to 1310
+were put to the author before the slice and approved on 18 November 2026; they are in the decisions file ("Time
+zones and dates in text"). What building them asked for besides, from 1311; 1311 to 1317 were put to the author
+once the slice was built and approved on 18 November 2026.
+
+1300. **The local time comes from the system**: one more call of the compiler that only `std` makes,
+     `Clock.offsetAt(seconds)`, the seconds the system's time zone is ahead of UTC at that moment. On Linux and
+     macOS `localtime_r`, which reads `TZ`, `/etc/localtime` and the system's files of zones; the offset is the
+     local date and time it gives counted by the calendar of `std`, less the moment, since `tm_gmtoff` is not
+     POSIX. On Windows `SystemTimeToTzSpecificLocalTimeEx` with the zone of `GetDynamicTimeZoneInformation`, which
+     keeps the rules of each year, where the C library's `localtime_s` takes this year's rules for every year;
+     `TZ` is not read there. The interpreter makes the same calls. Rust's library has no time zones (chrono reads
+     the files of zones itself on Unix and asks Windows the same way); Go reads the files itself; C# has
+     `TimeZoneInfo.Local`. Reading the files in SG was not taken: more code, and Windows apart all the same.
+1301. **A type of its own, `DateTimeOffset`** (C#'s name): a moment and its offset from UTC. `DateTime` stays in
+     UTC and in 8 bytes, and a function that takes one is not given a local time by mistake. Go keeps the place
+     in its one `time.Time`, where `==` compares the place too; chrono has `DateTime<Tz>`; Java `OffsetDateTime`.
+1302. **How one is made**: `d.toLocal()` at the offset of the system's zone then; `d.withOffset(offset)`, a
+     `Result<DateTimeOffset, DateError>` that is `InvalidOffset` for a day or more either way;
+     `DateTimeOffset.local(year, month, day, hour, minute, second)` from what the clocks of the place show, a
+     `Result`; `t.toUtc()` back. No `DateTimeOffset.now()`: `DateTime.now().toLocal()`, one way to do it.
+1303. **The hours summer time skips and repeats**: in `local(...)` a time the clocks skip (02:30 when summer
+     time starts) is `Error(DateError.SkippedLocalTime)`; a time they show twice (when it ends) gives the earlier
+     moment. Java moves a skipped time on and takes the earlier offset; chrono gives a result with three cases; C#
+     throws for a skipped time and takes the later one; Go does not say which.
+1304. **Its methods**: the parts as the clocks of the place show them, `year()` to `nanosecond()` and
+     `dayOfWeek()`; `offset()` a `Duration`; `since`, `plus` and `minus`. `plus` keeps the offset, as Java's
+     `OffsetDateTime` does: after the clocks change, `t.toUtc().plus(span).toLocal()` gives the new one. Equal
+     and hashed by the moment and the offset, as every struct is; in order by the moment, then the offset (Java);
+     `a.toUtc() == b.toUtc()` compares only the moments.
+1305. **Printed** in RFC 3339, `2026-11-18T12:30:05+03:00`, the fraction as `DateTime` writes it; an offset of
+     0 is `+00:00` (`Z` is for a `DateTime`), and an offset with seconds, as the local mean times of old had,
+     `+01:56:56` (Java's way).
+1306. **No pattern of your own** (`yyyy-MM-dd`, `%Y-%m-%d`): `$"{t.day():D2}.{t.month():D2}.{t.year()}"` does it,
+     checked when the program is compiled and with nothing to run; no names of months either, since there is
+     no locale. C and chrono have `strftime`, C# `"dd.MM.yyyy"`, Go `"02.01.2006"`.
+1307. **Reading**: `DateTime.parse(text)` and `DateTimeOffset.parse(text)` read RFC 3339,
+     `2026-11-18T09:30:05Z`, a fraction of 1 to 9 digits, an offset `Z`, `+hh:mm` or `-hh:mm`, and `:ss` after
+     it to read back what 1305 writes. `DateTime.parse` takes the moment to UTC; `DateTimeOffset.parse` keeps
+     the offset. Strict: only `T` and `Z`, nothing before or after, no date alone, and a second of 60 is
+     `InvalidSecond` (there are no leap seconds). chrono's `parse_from_rfc3339` and Go's
+     `time.Parse(time.RFC3339, ...)` read the same form.
+1308. **Three errors more in `DateError`**: `InvalidText(nint position)`, as `NumberError.Invalid(position)`,
+     `InvalidOffset` and `SkippedLocalTime`. A text of the right form with a wrong value gives the error
+     `DateTime.utc` gives (`2026-02-30` is `InvalidDay`).
+1309. **Zones by name** (`Europe/Istanbul`) are not in this slice ("Not here yet"); Windows has no files of
+     the IANA database either.
+1310. **Tests**: on Linux and macOS a program with an exact output runs with `TZ` set to the rules written out,
+     `CET-1CEST,M3.5.0,M10.5.0/3`, which needs no files of zones in a container; Windows does not read `TZ`,
+     so there a program checks the zone of the machine against itself, and the exact one is not run.
+
+Approved on 18 November 2026:
+
+1311. **A `DateTime` where a `DateTimeOffset` goes**, or the other way, is the error of two types, with a hint:
+     `seen.toUtc()` for the moment in UTC, `d.toLocal()` or `d.withOffset(offset)` for a moment seen somewhere.
+1312. **An offset with a part of a second is `InvalidOffset`** in `withOffset`, as no clock of a place shows
+     one; `-00:00` is read as `+00:00`.
+1313. **The order of the checks of `parse`**: the whole text first, so a text not of the form is
+     `InvalidText` whatever its numbers say; then the parts in the order of `DateTime.utc` (the month first,
+     the year's range last), then the offset, then the moment against the range of a `DateTime`, its fraction
+     counted (`2262-04-11T23:47:16.854775808Z` is `OutOfRange`).
+1314. **How `local` finds the moment**: it reads the offsets in force a day before, at and a day after the
+     date and time counted as UTC, and keeps each moment, the date and time less one of them, at which that
+     offset is in force; none is a skipped time, two a repeated one, of which it takes the earlier. Three
+     readings, which hold while the clocks of a place change at most once in two days.
+1315. **The rules of `TZ` before 1970**: macOS takes the rules of a `TZ` written out (`CET-1CEST,...`) only
+     from 1970 on, and before that only the first offset; glibc takes them for every year. It is the C
+     library's; a test gives such a year only a time in winter.
+1316. **The field of the offset is `ahead`**, in seconds, so that `offset()` is the method, since a field and a
+     method do not share a name; a program does not see it, as with every field of `std`.
+1317. **Documents and tests**: this list, the table above, "Not here yet", "Next"; 02, 04 (the rows of the
+     decision and "as built"), 06; the root README. Tests: `ok_time_offset` (offsets of your own, the parts
+     of a place east and west of the date line, every form and every error of `parse`, the edges of the
+     range, equality, order, a set, `plus` and `minus`, and the zone of the machine checked against itself),
+     `local_time_zone` in `tests/golden.rs` (Linux and macOS: moments on both sides of both changes of the
+     clocks, the skipped and the repeated hour, `plus` against the way through UTC, interpreted and compiled),
+     and 3 `error_*` (a `DateTimeOffset` where a `DateTime` goes and the other way, `Clock.offsetAt` called by
+     a program). `cargo test` passes on macOS and on Linux in a container (395 of 1639 programs compile
+     through C, 90 of them under the thread sanitizer); on Windows on Arm `ok_time_offset` gives the same output
+     interpreted and compiled, and the zone of the machine, Istanbul's, takes the rules of each year (2010 in
+     summer `+03:00`). `dates` takes 0.126 s against 0.425 s for C, as before.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -7845,6 +7927,11 @@ check off.
 
 ## Not here yet
 
+- **Of the hundred-and-fourteenth slice**: the offset of the system's time zone is read again at each call
+  (`toLocal`, `local`), each a call of the C library (`localtime_r`), which on glibc takes a lock; a cache of
+  the rules is a candidate if a program that converts many moments asks for it. On Windows the exact zone of
+  a run cannot be set from outside, so only `ok_time_offset`, which checks the zone of the machine against
+  itself, runs there (1310).
 - **Of the hundred-and-thirteenth slice**: in compiled code, tasks that wait on channels for each other wait
   for ever, where the interpreter stops with a panic (1286): the count of waiting tasks comes with the hardening.
   Waiting on several channels at once (Go's `select`), a `for` that awaits (`for await job in jobs`, with
@@ -8025,9 +8112,11 @@ check off.
   writing one file through one stream (C's `"r+"`), a temporary file with no name that goes when it is closed
   (C's `tmpfile`), and where a stream stands without moving it other than by `seek(SeekFrom.Current(0))`
   (1211-1222).
-- **Of the clock**: time zones and local time, reading a date out of text, formats of your own
-  (`yyyy-MM-dd`), minutes and hours in the text of a `Duration` (`1m30s`), `Task.delay` given a `Duration`,
-  `abs` and `dividedBy` on a `Duration`, the number of a day of the week and an order of the days.
+- **Of the clock**: time zones by name (`Europe/Istanbul`, the IANA database; Windows has no files of it) and
+  `TZ` on Windows (1300, 1309), a date without a time and a time without a date, the text of HTTP's dates
+  (`Tue, 18 Nov 2026 09:30:05 GMT`) and the names of the months, minutes and hours in the text of a `Duration`
+  (`1m30s`), `Task.delay` given a `Duration`, `abs` and `dividedBy` on a `Duration`, the number of a day of the
+  week and an order of the days. A pattern of your own (`yyyy-MM-dd`, `%Y`) is not taken (1306).
 - **Of random numbers**: shuffling a list and picking one of its items (`xs.shuffle(ref r)`,
   `r.choose(xs)`) wait for generics or a built-in method; Fisher-Yates is four lines (`ok_random_seeded`
   has it). `nextFloat`, numbers of a normal distribution (`nextGaussian`), and `split` to give a task a
@@ -8262,5 +8351,8 @@ hundred-and-eleventh is written: `binarySearch` on items in order, which gives t
 waits under a lock until its condition holds and is woken by every `lock` block on the value that ends, in
 place of a condition variable that is told by hand, `await lock ... when` in async code (1259-1275). The
 hundred-and-thirteenth is written: channels, `Channel<T>(n)` and the `Sender<T>`s it makes, which end for their
-receivers when the last sender ends, with no `close` to forget (1276-1299). Next the local time zone with the
-writing and reading of dates.
+receivers when the last sender ends, with no `close` to forget (1276-1299). The hundred-and-fourteenth is written:
+the local time zone, `DateTimeOffset` (`d.toLocal()`, `withOffset`, `DateTimeOffset.local`), and dates written
+and read in RFC 3339 (1300-1317). Next the hardening, before the preview: a review of the soundness of the
+checker, the boundary of `unsafe` and C, and the C runtime; fuzzing; mutants of the rules of safety; and the
+command line tested end to end.

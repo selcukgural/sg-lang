@@ -1,0 +1,5 @@
+error: expected `DateTime`, found `DateTimeOffset`
+  --> error_time_offset_utc.sg:7:9
+ 7 |     log(seen)
+   |         ^^^^
+  hint: the moment in UTC: `seen.toUtc()`

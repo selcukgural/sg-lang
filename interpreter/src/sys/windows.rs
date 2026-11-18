@@ -49,6 +49,10 @@ extern "system" {
     fn QueryPerformanceCounter(count: *mut i64) -> Bool;
     fn QueryPerformanceFrequency(frequency: *mut i64) -> Bool;
     fn GetSystemTimePreciseAsFileTime(time: *mut u64);
+    fn FileTimeToSystemTime(time: *const u64, out: *mut u16) -> Bool;
+    fn SystemTimeToFileTime(time: *const u16, out: *mut u64) -> Bool;
+    fn GetDynamicTimeZoneInformation(zone: *mut u32) -> u32;
+    fn SystemTimeToTzSpecificLocalTimeEx(zone: *const u32, utc: *const u16, local: *mut u16) -> Bool;
     fn LoadLibraryExW(name: *const u16, file: Handle, flags: u32) -> Handle;
     fn GetProcAddress(module: Handle, name: *const c_char) -> *mut c_void;
     fn AddDllDirectory(folder: *const u16) -> *mut c_void;
@@ -143,6 +147,31 @@ pub(crate) fn clock(wall: bool) -> i128 {
         QueryPerformanceFrequency(&mut frequency);
     }
     i128::from(count) * 1_000_000_000 / i128::from(frequency.max(1))
+}
+
+/// `Clock.offsetAt(seconds)`: how many seconds the time zone of the system is ahead of UTC at that
+/// moment, by the rules Windows keeps for that year, as compiled code reads it; 0 when Windows does
+/// not say. `TZ` is not read.
+pub(crate) fn local_offset(seconds: i64) -> i32 {
+    let units = seconds.wrapping_mul(10_000_000).wrapping_add(116_444_736_000_000_000);
+    if units < 0 {
+        return 0;
+    }
+    let (mut utc, mut local) = ([0u16; 8], [0u16; 8]);
+    // `DYNAMIC_TIME_ZONE_INFORMATION`, 432 bytes, whose fields lie at multiples of four.
+    let mut zone = [0u32; 108];
+    let mut there = 0u64;
+    // SAFETY: each buffer is as large as the structure Windows writes (`SYSTEMTIME` is eight
+    // `WORD`s) and lives across the calls.
+    unsafe {
+        if FileTimeToSystemTime(&(units as u64), utc.as_mut_ptr()) == 0 || GetDynamicTimeZoneInformation(zone.as_mut_ptr()) == u32::MAX {
+            return 0;
+        }
+        if SystemTimeToTzSpecificLocalTimeEx(zone.as_ptr(), utc.as_ptr(), local.as_mut_ptr()) == 0 || SystemTimeToFileTime(local.as_ptr(), &mut there) == 0 {
+            return 0;
+        }
+    }
+    ((there as i64 - units) / 10_000_000) as i32
 }
 
 /// `System.executable`: 1 for a file, 0 for none (a folder is none). Windows has no right to run a

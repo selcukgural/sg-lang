@@ -30,7 +30,7 @@ const INTERFACES: &[&str] = &["Copyable", "Formattable", "Equatable", "Hashable"
 const BUILTINS: &[&str] = &["print", "printError", "assert", "panic", "exit", "same", "Ok", "Error", "embed"];
 
 /// Types the language brings along; a program cannot define another one under these names.
-const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "SeekFrom", "Path", "Environment", "VariableError", "OperatingSystem"];
+const BUILTIN_TYPES: &[&str] = &["Result", "List", "HashMap", "HashSet", "Func", "CFunc", "TextError", "NumberError", "IoError", "Cancelled", "File", "Stdin", "Stdout", "Stderr", "Task", "CancellationSource", "CancellationToken", "TcpListener", "TcpStream", "Memory", "C", "CString", "Duration", "Instant", "DateTime", "DateTimeOffset", "DayOfWeek", "DateError", "Random", "SecureRandom", "Directory", "DirectoryEntry", "FileInfo", "FileKind", "SeekFrom", "Path", "Environment", "VariableError", "OperatingSystem"];
 
 struct StructInfo {
     fields: Vec<(String, Ty)>,
@@ -6735,6 +6735,14 @@ impl<'a> Checker<'a> {
                 Err(Diag::error(expr.span, format!("expected `{expected}`, found `{found}`"))
                     .note("an `Instant` is a reading of the monotonic clock and a `DateTime` one of the clock of the system, which can be set and go back; the time between two readings is taken on one clock"))
             }
+            // A moment in UTC and one seen at an offset are two types, so that a local time is not
+            // taken for UTC.
+            (Ty::Struct(a), Ty::Struct(b)) if a == "std.DateTimeOffset" && b == "std.DateTime" => {
+                mismatch(Some(format!("the moment in UTC: `{text}.toUtc()`")))
+            }
+            (Ty::Struct(a), Ty::Struct(b)) if a == "std.DateTime" && b == "std.DateTimeOffset" => {
+                mismatch(Some(format!("the moment at the offset of the system's time zone: `{text}.toLocal()`, or at one of your own: `{text}.withOffset(offset)`")))
+            }
             (Ty::Fmt, Ty::Str) => Err(Diag::error(expr.span, "expected `string`; `$\"...\"` does not become a `string` on its own")
                 .hint("add `.toString()` at the end; that is where the allocation shows")),
             // `T` where `T?` is expected.
@@ -11441,8 +11449,14 @@ impl<'a> Checker<'a> {
                 // The two readings of the clock, which only the language's own module makes.
                 if owner == "Clock" && self.names.module(span) == STD_MODULE && matches!(name, "monotonic" | "wall") {
                     self.args(name, args, &[], span)?;
-                    *callee = Callee::Clock(name == "wall");
+                    *callee = Callee::Clock(if name == "wall" { ClockCall::Wall } else { ClockCall::Monotonic });
                     return Ok(Ty::Int(IntTy::Long));
+                }
+                // The offset of the time zone of the system at a moment, in seconds.
+                if owner == "Clock" && self.names.module(span) == STD_MODULE && name == "offsetAt" {
+                    self.args(name, args, &[Ty::Int(IntTy::Long)], span)?;
+                    *callee = Callee::Clock(ClockCall::OffsetAt);
+                    return Ok(Ty::Int(IntTy::Int));
                 }
                 // The calls of the file system and of the environment that only the language's own
                 // module makes; `Directory`, `FileInfo` and `Environment` are built on them.

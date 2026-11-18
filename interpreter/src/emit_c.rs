@@ -2635,12 +2635,39 @@ static inline int64_t sg_clock(int id) {
     int64_t whole = count.QuadPart / hz, part = count.QuadPart % hz;
     return whole * 1000000000 + part * 1000000000 / hz;
 }
+/* `Clock.offsetAt(seconds)`: the seconds the time zone of the system is ahead of UTC then, by the
+   rules Windows keeps for that year; 0 when Windows does not say. `TZ` is not read. */
+static int32_t sg_local_offset(int64_t seconds) {
+    int64_t units = seconds * 10000000 + INT64_C(116444736000000000);
+    FILETIME at = { (DWORD)(uint64_t)units, (DWORD)((uint64_t)units >> 32) }, there;
+    SYSTEMTIME utc, local;
+    DYNAMIC_TIME_ZONE_INFORMATION zone;
+    if (units < 0 || !FileTimeToSystemTime(&at, &utc)) return 0;
+    if (GetDynamicTimeZoneInformation(&zone) == TIME_ZONE_ID_INVALID) return 0;
+    if (!SystemTimeToTzSpecificLocalTimeEx(&zone, &utc, &local) || !SystemTimeToFileTime(&local, &there)) return 0;
+    int64_t later = (int64_t)(((uint64_t)there.dwHighDateTime << 32) | there.dwLowDateTime);
+    return (int32_t)((later - units) / 10000000);
+}
 #else
 #include <time.h>
 static inline int64_t sg_clock(clockid_t id) {
     struct timespec t;
     clock_gettime(id, &t);
     return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+/* `Clock.offsetAt(seconds)`: the seconds the time zone of the system (`TZ`, `/etc/localtime`) is
+   ahead of UTC then; 0 when the C library does not say. The offset is the local date and time
+   `localtime_r` gives, counted as seconds since 1970 by the calendar of `std`, less `seconds`:
+   `tm_gmtoff` is not POSIX. */
+static int32_t sg_local_offset(int64_t seconds) {
+    time_t at = (time_t)seconds;
+    struct tm local;
+    if (!localtime_r(&at, &local)) return 0;
+    int64_t month = local.tm_mon + 1, year = (int64_t)local.tm_year + 1900 - (month <= 2);
+    int64_t era = (year >= 0 ? year : year - 399) / 400, of_era = year - era * 400;
+    int64_t of_year = (153 * (month > 2 ? month - 3 : month + 9) + 2) / 5 + local.tm_mday - 1;
+    int64_t days = era * 146097 + of_era * 365 + of_era / 4 - of_era / 100 + of_year - 719468;
+    return (int32_t)(days * 86400 + local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec - seconds);
 }
 #endif
 "#;
@@ -19275,9 +19302,13 @@ impl<'a> Emitter<'a> {
                 }
                 // Known when the program is built; without an operating system, none of them.
                 Callee::Os(os) => Ok(self.runs_on(*os).to_string()),
-                Callee::Clock(wall) => {
+                Callee::Clock(ClockCall::OffsetAt) => {
                     self.made.insert("clock".to_string());
-                    Ok(format!("sg_clock({})", if *wall { "CLOCK_REALTIME" } else { "CLOCK_MONOTONIC" }))
+                    Ok(format!("sg_local_offset({})", self.first(&args[0], head)?))
+                }
+                Callee::Clock(call) => {
+                    self.made.insert("clock".to_string());
+                    Ok(format!("sg_clock({})", if *call == ClockCall::Wall { "CLOCK_REALTIME" } else { "CLOCK_MONOTONIC" }))
                 }
                 // `Entropy.fill(ref bytes)`: the system's random bytes into the slice.
                 Callee::Entropy => {

@@ -1,0 +1,7 @@
+void show(DateTimeOffset at) {
+    print(at)
+}
+
+void main() {
+    show(DateTime.now())
+}

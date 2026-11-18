@@ -1,0 +1,4 @@
+error: there is no variable or type named `Clock`
+  --> error_time_offset_hidden.sg:2:11
+ 2 |     print(Clock.offsetAt(0))
+   |           ^^^^^

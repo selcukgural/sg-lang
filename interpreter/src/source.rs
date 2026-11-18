@@ -18,7 +18,7 @@ pub const STD_MODULE: &str = "std";
 /// The files of the language's own module, each with the types it brings: a program that names
 /// one of them gets the file.
 const STD_FILES: &[(&str, &str, &[&str])] = &[
-    ("time.sg", include_str!("std/time.sg"), &["Duration", "Instant", "DateTime", "DayOfWeek", "DateError"]),
+    ("time.sg", include_str!("std/time.sg"), &["Duration", "Instant", "DateTime", "DateTimeOffset", "DayOfWeek", "DateError"]),
     ("random.sg", include_str!("std/random.sg"), &["Random", "SecureRandom"]),
     ("files.sg", include_str!("std/files.sg"), &["Directory", "DirectoryEntry", "FileInfo", "FileKind", "SeekFrom"]),
     ("path.sg", include_str!("std/path.sg"), &["Path"]),

@@ -61,6 +61,48 @@ pub(crate) fn clock(wall: bool) -> i128 {
     i128::from(time.seconds) * 1_000_000_000 + i128::from(time.nanoseconds)
 }
 
+/// `Clock.offsetAt(seconds)`: how many seconds the time zone of the system (`TZ`,
+/// `/etc/localtime`) is ahead of UTC at that moment, as `localtime_r` gives the local date and
+/// time, which compiled code reads the same way; 0 when the C library does not say.
+pub(crate) fn local_offset(seconds: i64) -> i32 {
+    use std::ffi::{c_char, c_int, c_long};
+    // `struct tm` of glibc and of macOS, which are the same.
+    #[repr(C)]
+    struct Tm {
+        second: c_int,
+        minute: c_int,
+        hour: c_int,
+        day: c_int,
+        month: c_int,
+        year: c_int,
+        weekday: c_int,
+        year_day: c_int,
+        summer: c_int,
+        offset: c_long,
+        zone: *const c_char,
+    }
+    extern "C" {
+        fn localtime_r(time: *const i64, out: *mut Tm) -> *mut Tm;
+    }
+    let mut local = Tm { second: 0, minute: 0, hour: 0, day: 0, month: 0, year: 0, weekday: 0, year_day: 0, summer: 0, offset: 0, zone: std::ptr::null() };
+    // SAFETY: both live across the call; `time_t` is 64 bits on the systems the interpreter runs on.
+    if unsafe { localtime_r(&seconds, &mut local) }.is_null() {
+        return 0;
+    }
+    let days = days_from_civil(i64::from(local.year) + 1900, i64::from(local.month) + 1, i64::from(local.day));
+    let at = days * 86400 + i64::from(local.hour) * 3600 + i64::from(local.minute) * 60 + i64::from(local.second);
+    (at - seconds) as i32
+}
+
+/// The days from 1970-01-01 to a date of the Gregorian calendar, as `std/time.sg` counts them.
+pub(super) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let of_era = year - era * 400;
+    let of_year = (153 * if month > 2 { month - 3 } else { month + 9 } + 2) / 5 + day - 1;
+    era * 146097 + of_era * 365 + of_era / 4 - of_era / 100 + of_year - 719468
+}
+
 /// `System.executable(path)`: 1 for a file this program may run, 2 for a file that is there
 /// and may not be run, 0 for no file (a folder is none). A link is followed.
 pub(crate) fn executable(path: &str) -> i128 {

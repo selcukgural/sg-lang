@@ -1,0 +1,134 @@
+// `DateTimeOffset`: a moment seen at an offset from UTC, made with `withOffset`, read out of RFC 3339
+// text, written back, taken apart, compared and kept as a key. What depends on the time zone of the
+// machine is only checked against itself here; `tests/golden.rs` (`local_time_zone`) runs a zone
+// of its own.
+
+void show(read string text) {
+    match DateTimeOffset.parse(text) {
+        Ok(moment) => print($"{text} -> {moment} = {moment.toUtc()}")
+        Error(cause) => print($"{text} -> {cause}")
+    }
+}
+
+void offset(DateTime moment, long seconds) {
+    match moment.withOffset(Duration.fromSeconds(seconds)) {
+        Ok(seen) => print($"{seconds} -> {seen} {seen.offset()}")
+        Error(cause) => print($"{seconds} -> {cause}")
+    }
+}
+
+void main() {
+    var noon = DateTime.utc(2026, 11, 18, 12, 0, 0) ?? panic("a valid date")
+
+    // At an offset of your own: whole seconds, less than a day either way.
+    offset(noon, 10800)
+    offset(noon, -16200)
+    offset(noon, 0)
+    offset(noon, 7016)
+    offset(noon, 86399)
+    offset(noon, -86399)
+    offset(noon, 86400)
+    offset(noon, -86400)
+    match noon.withOffset(Duration.fromMilliseconds(1500)) {
+        Ok(seen) => print(seen)
+        Error(cause) => print($"1.5s -> {cause}")
+    }
+
+    // The parts are those of the place; the day may be another one than in UTC.
+    var east = noon.withOffset(Duration.fromSeconds(50400)) ?? panic("an offset")
+    print($"{east} {east.year()}-{east.month()}-{east.day()} {east.hour()}:{east.minute()}:{east.second()} {east.dayOfWeek()}")
+    var west = noon.withOffset(Duration.fromSeconds(-46800)) ?? panic("an offset")
+    print($"{west} {west.year()}-{west.month()}-{west.day()} {west.hour()}:{west.minute()}:{west.second()} {west.dayOfWeek()}")
+    var year = (DateTime.utc(2026, 12, 31, 23, 30, 0) ?? panic("a date")).withOffset(Duration.fromSeconds(3600)) ?? panic("an offset")
+    print($"{year} {year.year()} {year.month()} {year.day()} {year.dayOfWeek()}")
+
+    // Read out of text: what `print` writes comes back the same.
+    show("2026-11-18T12:30:05Z")
+    show("2026-11-18T12:30:05+03:00")
+    show("2026-11-18T12:30:05-04:30")
+    show("2026-11-18T12:30:05-00:00")
+    show("2026-11-18T12:30:05.5Z")
+    show("2026-11-18T12:30:05.120+01:00")
+    show("2026-11-18T12:30:05.000001Z")
+    show("2026-11-18T12:30:05.123456789Z")
+    show("1880-01-01T00:00:00+01:56:56")
+    show("1969-12-31T23:59:59.999Z")
+    show("2026-01-01T00:30:00+01:00")
+    // Where the text stops being one.
+    show("")
+    show("2026")
+    show("26-11-18T12:30:05Z")
+    show("2026-11-18 12:30:05Z")
+    show("2026-11-18t12:30:05Z")
+    show("2026-11-18T12:30:05")
+    show("2026-11-18T12:30:05z")
+    show("2026-11-18T12:30Z")
+    show("2026-11-18T12:30:05.Z")
+    show("2026-11-18T12:30:05.1234567890Z")
+    show("2026-11-18T12:30:05+0300")
+    show("2026-11-18T12:30:05+03")
+    show("2026-11-18T12:30:05+03:00:0")
+    show("2026-11-18T12:30:05Z ")
+    show(" 2026-11-18T12:30:05Z")
+    show("2026-11-18")
+    show("２026-11-18T12:30:05Z")
+    // Read whole, then checked as `DateTime.utc` and `withOffset` check.
+    show("2026-02-29T12:00:00Z")
+    show("2026-13-01T12:00:00Z")
+    show("2026-11-18T24:00:00Z")
+    show("2026-11-18T12:60:00Z")
+    show("2026-11-18T12:30:60Z")
+    show("2026-11-18T12:30:05+24:00")
+    show("2026-11-18T12:30:05+03:60")
+    show("2026-11-18T12:30:05+03:00:60")
+    show("0999-12-31T00:00:00Z")
+    show("2262-04-11T23:47:16.854775807Z")
+    show("2262-04-11T23:47:16.854775808Z")
+    show("2262-04-12T02:47:16+03:00")
+    show("2262-04-12T02:47:17+03:00")
+    show("1677-09-21T00:12:44Z")
+    show("1677-09-20T23:12:44-01:00")
+    show("1677-09-21T00:12:43.999Z")
+
+    // `DateTime.parse` takes the moment to UTC.
+    print(DateTime.parse("2026-11-18T12:30:05+03:00") ?? panic("a moment"))
+    print(DateTime.parse("2026-11-18T12:30:05.25-01:15") ?? panic("a moment"))
+    match DateTime.parse("2026-11-18") {
+        Ok(moment) => print(moment)
+        Error(cause) => print(cause)
+    }
+
+    // Equal when the moment and the offset are; in order by the moment, then the offset.
+    var utc = DateTimeOffset.parse("2026-11-18T09:30:00Z") ?? panic("a moment")
+    var istanbul = DateTimeOffset.parse("2026-11-18T12:30:00+03:00") ?? panic("a moment")
+    var later = DateTimeOffset.parse("2026-11-18T12:31:00+03:00") ?? panic("a moment")
+    print($"{utc == istanbul} {utc.toUtc() == istanbul.toUtc()} {utc < istanbul} {istanbul < later} {later.since(utc)}")
+    var moments = List<DateTimeOffset> { later, istanbul, utc }
+    moments.sort()
+    for m in moments {
+        print(m)
+    }
+    var seen = HashSet<DateTimeOffset> { utc, istanbul, utc }
+    print(seen.length())
+
+    // `plus` and `minus` keep the offset.
+    print(istanbul.plus(Duration.fromSeconds(86400 * 200)))
+    print(istanbul.minus(Duration.fromMilliseconds(250)))
+
+    // The time zone of the machine: the same moment, and the same offset for the same moment.
+    var here = noon.toLocal()
+    print(here.toUtc() == noon)
+    print(here.offset() == noon.toLocal().offset())
+    print(here.offset().seconds() > -86400 && here.offset().seconds() < 86400)
+    var again = DateTimeOffset.local(here.year(), here.month(), here.day(), here.hour(), here.minute(), here.second()) ?? panic("noon is a local time")
+    print(again == here)
+    print(DateTime.now().toLocal().toUtc() < DateTime.now().plus(Duration.fromSeconds(1)))
+    match DateTimeOffset.local(2026, 2, 30, 12, 0, 0) {
+        Ok(moment) => print(moment)
+        Error(cause) => print(cause)
+    }
+    match DateTimeOffset.local(9999, 1, 1, 0, 0, 0) {
+        Ok(moment) => print(moment)
+        Error(cause) => print(cause)
+    }
+}
