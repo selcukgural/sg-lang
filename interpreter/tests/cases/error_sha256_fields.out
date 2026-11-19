@@ -1,0 +1,5 @@
+error: a `Sha256` is made by its functions, not field by field
+  --> error_sha256_fields.sg:2:13
+ 2 |     var h = Sha256 { filled = 0 }
+   |             ^^^^^^
+  hint: `Sha256()`, then `h.update(read bytes)` and `h.finish()`; or `Sha256.of(read bytes)` at once

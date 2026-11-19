@@ -15,7 +15,7 @@ and cancellation; `Memory` and the types of C. Their methods are checked by the 
 it can say, for example, that `name.trim()` alone does nothing.
 
 **The module `std`** is the part written in SG: the clock (`Duration`, `Instant`, `DateTime`,
-`DateTimeOffset`), random numbers (`Random`, `SecureRandom`), hex and Base64 (`Hex`, `Base64`), CRC-32 (`Crc32`), folders and paths (`Directory`, `Path`,
+`DateTimeOffset`), random numbers (`Random`, `SecureRandom`), hex and Base64 (`Hex`, `Base64`), CRC-32 (`Crc32`), SHA-256 and HMAC (`Sha256`, `Hmac`), folders and paths (`Directory`, `Path`,
 `FileInfo`), other programs (`Command`, `Process`), `Environment`, `Signals`, `MemoryOrder`, and the network
 beyond a TCP connection. It comes with the compiler. A program gets it by naming one of its types, from every
 module, with nothing written: `use std` is an error whose hint is to take the line away. Only `std` itself can
@@ -66,5 +66,8 @@ from each item to its source.
 - [Tasks](./tasks.md): `Task<R>`, `Channel<T>` and `Sender<T>`, `shared locked T`, atomics and cancellation.
 - [Random numbers](./random.md): `Random`, with a seed, and `SecureRandom`.
 - [Programs and the system](./process.md): `Command`, `Process`, `ExitStatus`, `Environment` and `Signals`.
+- [Hex and Base64](./encoding.md): `Hex` and `Base64`, bytes written as text and read back strictly.
+- [CRC-32](./checksum.md): `Crc32`, the checksum of zlib, gzip, PNG and ZIP.
+- [SHA-256 and HMAC](./hash.md): `Sha256`, `Hmac.sha256` and `Bytes.equalInConstantTime`.
 
 The network (`TcpListener`, `TcpStream`, `UdpSocket`, `SocketAddress`) does not have a page yet.

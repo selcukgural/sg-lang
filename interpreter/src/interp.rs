@@ -5068,6 +5068,16 @@ impl<'a, 'e> Interp<'a, 'e> {
                         }
                         return Ok(Value::Void);
                     }
+                    // The length and an item of an array or a slice are read where they are: a
+                    // list made of a million cells for each `data.length()` of a loop made
+                    // hashing a megabyte take most of a minute.
+                    match (&recv, name.as_str(), values.as_slice()) {
+                        (Value::Array(cells) | Value::Slice(cells), "length", []) => return Ok(Value::Int(IntTy::Nint, cells.len() as i128)),
+                        (Value::Array(cells) | Value::Slice(cells), "get", [Value::Int(_, at)]) => {
+                            return Ok(usize::try_from(*at).ok().and_then(|at| cells.get(at).cloned()).map_or(Value::Null, Value::Borrow));
+                        }
+                        _ => {}
+                    }
                     let recv = as_list(recv);
                     if matches!(recv, Value::List(_) | Value::Map(_) | Value::Set(_)) {
                         if let (Some(_), Value::List(items), "add" | "addAll") = (&self.consts.steps, &recv, name.as_str()) {

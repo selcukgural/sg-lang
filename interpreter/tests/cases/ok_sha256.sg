@@ -1,0 +1,52 @@
+// SHA-256 (choice 1409): the examples of NIST's FIPS 180-4 (one block, two blocks, nothing at all, a
+// million times 'a'), every length around where the padding takes a second block, every way of cutting
+// a text in two pieces handed to `update`, and a hash asked between pieces, which does not change it.
+
+string hex(read byte[32] hash) {
+    return Hex.encode(read hash)
+}
+
+void main() {
+    print(hex(read Sha256.of("abc".asBytes())))
+    print(hex(read Sha256.of("".asBytes())))
+    print(hex(read Sha256.of("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".asBytes())))
+    print(hex(read Sha256.of("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu".asBytes())))
+    var million = byte[1_000_000]('a')
+    print(hex(read Sha256.of(read million)))
+
+    // Lengths 55 and 56 are where the length of the message stops fitting in the last block.
+    var lengths = nint[8] { 55, 56, 63, 64, 65, 119, 120, 128 }
+    for n in lengths {
+        var bytes = List<byte>()
+        for i in 0..n {
+            bytes.add((byte)i)
+        }
+        var oneByOne = Sha256()
+        for b in read bytes {
+            oneByOne.update(read byte[1] { b })
+        }
+        var same = Bytes.equalInConstantTime(read oneByOne.finish(), read Sha256.of(read bytes))
+        print($"{n}: {hex(read Sha256.of(read bytes))} {same}")
+    }
+
+    var text = "Sixty-four bytes make a block; the last block holds a one bit, zeros and the length in bits."
+    var bytes = text.asBytes()
+    var whole = Sha256.of(bytes)
+    nint agree = 0
+    for cut in 0..bytes.length() + 1 {
+        var h = Sha256()
+        h.update(bytes[0..cut])
+        h.update(bytes[cut..bytes.length()])
+        if Bytes.equalInConstantTime(read h.finish(), read whole) {
+            agree += 1
+        }
+    }
+    print($"{agree} of {bytes.length() + 1} cuts agree with {hex(read whole)}")
+
+    var h = Sha256()
+    print(hex(read h.finish()))
+    h.update("a".asBytes())
+    print(hex(read h.finish()))
+    h.update("bc".asBytes())
+    print(hex(read h.finish()))
+}

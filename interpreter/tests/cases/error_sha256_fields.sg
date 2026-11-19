@@ -1,0 +1,4 @@
+void main() {
+    var h = Sha256 { filled = 0 }
+    print(Hex.encode(read h.finish()))
+}

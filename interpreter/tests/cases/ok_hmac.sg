@@ -1,0 +1,44 @@
+// HMAC-SHA-256 (choice 1409): the test cases of RFC 4231 (a key shorter than a block, one of four bytes,
+// one longer than a block that is hashed first), and tags compared with `Bytes.equalInConstantTime`.
+
+List<byte> repeated(byte value, nint count) {
+    var bytes = List<byte>()
+    for _ in 0..count {
+        bytes.add(value)
+    }
+    return bytes
+}
+
+void main() {
+    var key1 = repeated(0x0b, 20)
+    print(Hex.encode(read Hmac.sha256(read key1, "Hi There".asBytes())))
+    print(Hex.encode(read Hmac.sha256("Jefe".asBytes(), "what do ya want for nothing?".asBytes())))
+    var key3 = repeated(0xaa, 20)
+    var data3 = repeated(0xdd, 50)
+    print(Hex.encode(read Hmac.sha256(read key3, read data3)))
+    var key4 = List<byte>()
+    for i in 1..26 {
+        key4.add((byte)i)
+    }
+    var data4 = repeated(0xcd, 50)
+    print(Hex.encode(read Hmac.sha256(read key4, read data4)))
+    var key6 = repeated(0xaa, 131)
+    print(Hex.encode(read Hmac.sha256(read key6, "Test Using Larger Than Block-Size Key - Hash Key First".asBytes())))
+    var data7 = "This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm."
+    print(Hex.encode(read Hmac.sha256(read key6, data7.asBytes())))
+
+    // A key of exactly one block is used as it is; one byte more and it is hashed first.
+    var block = repeated(0x42, 64)
+    var longer = repeated(0x42, 65)
+    print(Hex.encode(read Hmac.sha256(read block, "".asBytes())))
+    print(Hex.encode(read Hmac.sha256(read longer, "".asBytes())))
+
+    var tag = Hmac.sha256("secret".asBytes(), "message".asBytes())
+    var forged = tag
+    forged[31] ^= 1
+    print(Bytes.equalInConstantTime(read tag, read tag))
+    print(Bytes.equalInConstantTime(read tag, read forged))
+    print(Bytes.equalInConstantTime(tag[0..31], read tag))
+    var none = List<byte>()
+    print(Bytes.equalInConstantTime(read none, "".asBytes()))
+}

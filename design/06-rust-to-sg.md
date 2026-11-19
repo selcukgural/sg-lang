@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 19 November 2026, the hundred-and-twenty-fifth slice (CRC-32 in `std`, 1408).
+Last brought up to date: 19 November 2026, the hundred-and-twenty-sixth slice (SHA-256 and HMAC in `std`, 1409).
 
 ## Functions and variables
 
@@ -514,13 +514,18 @@ Last brought up to date: 19 November 2026, the hundred-and-twenty-fifth slice (C
 | `URL_SAFE_NO_PAD.encode(bytes)`, `.decode(text)` | `Base64.encodeUrl(read bytes)`, `Base64.decodeUrl(text)` | built | `-` and `_`, no padding |
 | `base64::DecodeError::InvalidByte(i, b)`, `InvalidLength` | `DecodeError.InvalidCharacter(position)`, `InvalidLength` | built | The place of the byte, not the byte |
 
-## Checksums
+## Checksums and hashes
 
 | Rust | SG | Status | Note |
 |---|---|---|---|
 | `crc32fast::hash(bytes)` | `Crc32.of(read bytes)` | built | In the language's own module; a `uint` |
 | `let mut h = crc32fast::Hasher::new(); h.update(bytes); h.finalize()` | `var c = Crc32(); c.update(read bytes); c.value()` | built | `value()` does not end it: more may be taken in after it |
 | `crc32fast` with the processor's CRC instructions | none yet | | Sixteen bytes in a step through tables, as `crc32fast` without them; zlib's `crc32` through C for that speed |
+| `sha2::Sha256::digest(bytes)` | `Sha256.of(read bytes)` | built | A `byte[32]`; `Hex.encode(read hash)` writes it as text |
+| `let mut h = Sha256::new(); h.update(bytes); h.finalize()` | `var h = Sha256(); h.update(read bytes); h.finish()` | built | `finish()` does not end it: more may be taken in after it |
+| `Hmac::<Sha256>::new_from_slice(key)?.chain_update(data).finalize()` | `Hmac.sha256(read key, read data)` | built | One call; a key of any length |
+| `mac.verify_slice(tag)` / `subtle::ConstantTimeEq` | `Bytes.equalInConstantTime(read a, read b)` | built | Never `==` for a tag |
+| `sha2` with the processor's SHA instructions | none yet | | Plain arithmetic, the time of the same algorithm in C; OpenSSL through C for that speed |
 
 ## Tests and the tools
 

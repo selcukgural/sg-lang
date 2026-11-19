@@ -240,6 +240,9 @@ fn std_makers(short: &str) -> &'static str {
         "Hex" => "nothing is made: the functions are called on the type, `Hex.encode(read bytes)`, `Hex.decode(text)`",
         "Base64" => "nothing is made: the functions are called on the type, `Base64.encode(read bytes)`, `Base64.decode(text)`",
         "Crc32" => "`Crc32()`, then `c.update(read bytes)` and `c.value()`; or `Crc32.of(read bytes)` at once",
+        "Sha256" => "`Sha256()`, then `h.update(read bytes)` and `h.finish()`; or `Sha256.of(read bytes)` at once",
+        "Hmac" => "nothing is made: the function is called on the type, `Hmac.sha256(read key, read data)`",
+        "Bytes" => "nothing is made: the function is called on the type, `Bytes.equalInConstantTime(read a, read b)`",
         "DateTime" => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
         _ => "nothing is made: the functions are called on the type",
     }

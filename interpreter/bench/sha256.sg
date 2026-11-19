@@ -1,0 +1,14 @@
+// One gigabyte through the language's own SHA-256, 64 KB of an array at a time: `Sha256` of `std`,
+// written in SG, next to OpenSSL's, called from C.
+
+void main() {
+    var block = byte[65536]
+    for i in 0..65536 {
+        block[i] = (byte)((i * 31 + 7) & 255)
+    }
+    var hash = Sha256()
+    for _ in 0..16384 {
+        hash.update(read block)
+    }
+    print(Hex.encode(read hash.finish()))
+}
