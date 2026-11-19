@@ -8586,6 +8586,35 @@ Approved on 19 November 2026, after the slice was written:
 With 1403, 448 of the 1806 programs are compiled on macOS and on Linux (102 under the thread sanitizer), and the
 214 programs of the site run as they show.
 
+Choices made in the hundred-and-twenty-fourth slice (the library: hex and Base64). Approved on 19 November
+2026, with the four slices of the library that follow it:
+
+1406. **The library grows before the reference**: five slices go into `std`, the language's own module written in
+     SG: hex and Base64, CRC-32 and SHA-256 (1407-1409); the command line (1410); JSON (1411); a log (1412); and,
+     approved the same day, XML without a DTD (1413: elements, attributes, text and CDATA, the five entities
+     XML defines and numeric references, a DTD an error, so no outside file or growing entity is ever read;
+     YAML is left out, whose anchors and tags carry the same dangers, and a program that needs it wraps
+     libyaml). Each runs the same in the interpreter and compiled, is tested on Windows, and gets a page of the
+     library on the site. Left out of `std` on purpose: TLS, encryption, regular expressions and compression, which stay with
+     C libraries that are looked after for that (OpenSSL or libsodium, PCRE2, zlib), behind a module whose users
+     write no `unsafe`, as `examples/zlib`, `sqlite` and `curl` do.
+1407. **Hex and Base64** (`std/encoding.sg`): `Hex.encode(read byte[] data)` gives the bytes as lower-case hex,
+     `Hex.encodeInto(ref string target, read byte[] data)` writes them at the end of a text with no new one made,
+     and `Hex.decode(read string text)` gives a `Result<List<byte>, DecodeError>`, upper or lower case.
+     `Base64.encode` and `Base64.decode` use the standard alphabet with `=` padding; `encodeUrl` and `decodeUrl`
+     the alphabet safe in a URL and a file name (`-`, `_`), without padding (RFC 4648). Reading is strict: a
+     space, a line break, a character of another alphabet, padding where it cannot be and bits left over beyond
+     the last byte are `DecodeError.InvalidCharacter(long position)`, a length the encoding never writes is
+     `InvalidLength`, never skipped, so that two programs cannot read one text as two sets of bytes and each
+     set of bytes has one text only. Rust's crates `hex` and `base64` and C#'s `Convert.ToHexString` and
+     `Convert.FromBase64String` are the models; C#'s skips white space, which this does not
+     (`ok_encoding`: the vectors of RFC 4648, the errors, and every byte value written and read back).
+     `Base64()` is refused with a hint that names the functions on the type (`error_base64_made`); a type of
+     `std` with no hint of its own was told how to make a `DateTime`, and is now told that nothing is made.
+
+With 1407, 449 of the 1808 programs are compiled on macOS and on Linux (102 under the thread sanitizer), and the
+216 programs of the site run as they show.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -9189,5 +9218,7 @@ The web site teaches the language in a book and pages of its library, every prog
 and what writing it found is fixed, each after a test that shows it: a build whose program would take the name
 of its folder asks for `-o`, the tool's own output ends quietly when closed, a type of `std` named only in
 `$"..."` is found, and a score of hints and messages lead to code that compiles, the index panic among them
-naming `xs.get(i)` (1398-1402). Next: the reference of the language on the site (1394), then the third stage of
-the generator of programs, which borrows and moves, and the preview (942) with `sg doc` (1392).
+naming `xs.get(i)` (1398-1402). The library grows before the reference (1406): hex and Base64 are written
+(`Hex`, `Base64`, read strictly, 1407); CRC-32 and SHA-256, the command line, JSON, a log and XML without
+a DTD come next (1408-1413). Then the reference of the language on the site (1394), the third stage of the generator of
+programs, which borrows and moves, and the preview (942) with `sg doc` (1392).

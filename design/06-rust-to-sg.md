@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 19 November 2026, the hundred-and-twenty-third slice (what writing the site found in `sg`, and 1403).
+Last brought up to date: 19 November 2026, the hundred-and-twenty-fourth slice (hex and Base64 in `std`, 1407).
 
 ## Functions and variables
 
@@ -503,6 +503,16 @@ Last brought up to date: 19 November 2026, the hundred-and-twenty-third slice (w
 | `hex::encode(bytes)` of random bytes | `SecureRandom.hexString(32)` | built | Lower-case hex digits, four random bits each |
 | `slice.shuffle(&mut rng)`, `slice.choose(&mut rng)` | none yet | designed | Waits for generics or a built-in method; Fisher-Yates is four lines |
 | `rand_distr::Normal` | none yet | designed | |
+
+## Hex and Base64
+
+| Rust | SG | Status | Note |
+|---|---|---|---|
+| `hex::encode(bytes)`, `hex::decode(text)` | `Hex.encode(read bytes)`, `Hex.decode(text)` | built | In the language's own module, not a crate; decoding gives `Result<List<byte>, DecodeError>` |
+| `write!(s, "{:02x}", b)` in a loop | `Hex.encodeInto(ref s, read bytes)` | built | Appends to the text, no new one made |
+| `base64::engine::general_purpose::STANDARD.encode(bytes)`, `.decode(text)` | `Base64.encode(read bytes)`, `Base64.decode(text)` | built | Strict as the crate is: no white space, padding where it belongs, no bits left over |
+| `URL_SAFE_NO_PAD.encode(bytes)`, `.decode(text)` | `Base64.encodeUrl(read bytes)`, `Base64.decodeUrl(text)` | built | `-` and `_`, no padding |
+| `base64::DecodeError::InvalidByte(i, b)`, `InvalidLength` | `DecodeError.InvalidCharacter(position)`, `InvalidLength` | built | The place of the byte, not the byte |
 
 ## Tests and the tools
 

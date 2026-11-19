@@ -15,7 +15,7 @@ and cancellation; `Memory` and the types of C. Their methods are checked by the 
 it can say, for example, that `name.trim()` alone does nothing.
 
 **The module `std`** is the part written in SG: the clock (`Duration`, `Instant`, `DateTime`,
-`DateTimeOffset`), random numbers (`Random`, `SecureRandom`), folders and paths (`Directory`, `Path`,
+`DateTimeOffset`), random numbers (`Random`, `SecureRandom`), hex and Base64 (`Hex`, `Base64`), folders and paths (`Directory`, `Path`,
 `FileInfo`), other programs (`Command`, `Process`), `Environment`, `Signals`, `MemoryOrder`, and the network
 beyond a TCP connection. It comes with the compiler. A program gets it by naming one of its types, from every
 module, with nothing written: `use std` is an error whose hint is to take the line away. Only `std` itself can

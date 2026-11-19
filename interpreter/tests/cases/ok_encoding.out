@@ -1,0 +1,40 @@
+4869
+[]
+id=cafe
+hex 4869FF: [72, 105, 255]
+hex 486: InvalidLength
+hex 48 9: InvalidCharacter(2)
+hex 4g: InvalidCharacter(1)
+ ->  
+base64 : []
+url : []
+f -> Zg== Zg
+base64 Zg==: [102]
+url Zg: [102]
+fo -> Zm8= Zm8
+base64 Zm8=: [102, 111]
+url Zm8: [102, 111]
+foo -> Zm9v Zm9v
+base64 Zm9v: [102, 111, 111]
+url Zm9v: [102, 111, 111]
+foob -> Zm9vYg== Zm9vYg
+base64 Zm9vYg==: [102, 111, 111, 98]
+url Zm9vYg: [102, 111, 111, 98]
+fooba -> Zm9vYmE= Zm9vYmE
+base64 Zm9vYmE=: [102, 111, 111, 98, 97]
+url Zm9vYmE: [102, 111, 111, 98, 97]
+foobar -> Zm9vYmFy Zm9vYmFy
+base64 Zm9vYmFy: [102, 111, 111, 98, 97, 114]
+url Zm9vYmFy: [102, 111, 111, 98, 97, 114]
+base64 Zm9vYg=: InvalidLength
+base64 Zm9vYh==: InvalidCharacter(5)
+base64 Zm9v YmFy: InvalidLength
+base64 Zm=v: InvalidCharacter(2)
+base64 ====: InvalidCharacter(0)
+base64 _-8=: InvalidCharacter(0)
+url Zm9vY: InvalidLength
+url _-8: [255, 239]
+url Zg==: InvalidCharacter(2)
+true
+true
+true

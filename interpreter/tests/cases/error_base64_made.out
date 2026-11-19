@@ -1,0 +1,5 @@
+error: a `Base64` is made by its functions, not with `Base64(...)`
+  --> error_base64_made.sg:4:17
+ 4 |     var codec = Base64()
+   |                 ^^^^^^
+  hint: nothing is made: the functions are called on the type, `Base64.encode(read bytes)`, `Base64.decode(text)`

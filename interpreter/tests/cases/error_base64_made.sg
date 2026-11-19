@@ -1,0 +1,5 @@
+// `Hex` and `Base64` hold nothing: their functions are called on the type (1407). The hint names them,
+// where it named the functions of `DateTime` before.
+void main() {
+    var codec = Base64()
+}

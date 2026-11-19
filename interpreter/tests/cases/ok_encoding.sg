@@ -1,0 +1,63 @@
+// Hex and Base64 (choice 1407): the vectors of RFC 4648, the strict reading (a space, a wrong length,
+// padding where it cannot be and bits left over beyond the last byte are errors with their place), and
+// every byte value written and read back in each encoding.
+
+void hex(read string text) {
+    match Hex.decode(text) {
+        Ok(bytes) => print($"hex {text}: {bytes}")
+        Error(cause) => print($"hex {text}: {cause}")
+    }
+}
+
+void base64(read string text) {
+    match Base64.decode(text) {
+        Ok(bytes) => print($"base64 {text}: {bytes}")
+        Error(cause) => print($"base64 {text}: {cause}")
+    }
+}
+
+void base64Url(read string text) {
+    match Base64.decodeUrl(text) {
+        Ok(bytes) => print($"url {text}: {bytes}")
+        Error(cause) => print($"url {text}: {cause}")
+    }
+}
+
+void main() {
+    print(Hex.encode("Hi".asBytes()))
+    var none = List<byte>()
+    print($"[{Hex.encode(read none)}]")
+    var text = "id="
+    Hex.encodeInto(ref text, read byte[2] { 0xCA, 0xFE })
+    print(text)
+    hex("4869FF")
+    hex("486")
+    hex("48 9")
+    hex("4g")
+    for t in (List<string> { "", "f", "fo", "foo", "foob", "fooba", "foobar" }) {
+        var e = Base64.encode(t.asBytes())
+        var u = Base64.encodeUrl(t.asBytes())
+        print($"{t} -> {e} {u}")
+        base64(read e)
+        base64Url(read u)
+    }
+    base64("Zm9vYg=")
+    base64("Zm9vYh==")
+    base64("Zm9v YmFy")
+    base64("Zm=v")
+    base64("====")
+    base64("_-8=")
+    base64Url("Zm9vY")
+    base64Url("_-8")
+    base64Url("Zg==")
+    var all = List<byte>()
+    for i in 0..256 {
+        all.add((byte)i)
+    }
+    var back = Base64.decode(read Base64.encode(read all)) ?? List<byte>()
+    print(back == all)
+    var backUrl = Base64.decodeUrl(read Base64.encodeUrl(read all)) ?? List<byte>()
+    print(backUrl == all)
+    var backHex = Hex.decode(read Hex.encode(read all)) ?? List<byte>()
+    print(backHex == all)
+}

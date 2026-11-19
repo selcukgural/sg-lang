@@ -237,7 +237,10 @@ fn std_makers(short: &str) -> &'static str {
         "Command" => "`Command(\"ls\")`, then `cmd.arg(word)`",
         "Process" => "`cmd.start()`",
         "Received" => "`socket.receiveFrom(ref buffer)`",
-        _ => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
+        "Hex" => "nothing is made: the functions are called on the type, `Hex.encode(read bytes)`, `Hex.decode(text)`",
+        "Base64" => "nothing is made: the functions are called on the type, `Base64.encode(read bytes)`, `Base64.decode(text)`",
+        "DateTime" => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
+        _ => "nothing is made: the functions are called on the type",
     }
 }
 
