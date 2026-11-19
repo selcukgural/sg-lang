@@ -243,6 +243,8 @@ fn std_makers(short: &str) -> &'static str {
         "Sha256" => "`Sha256()`, then `h.update(read bytes)` and `h.finish()`; or `Sha256.of(read bytes)` at once",
         "Hmac" => "nothing is made: the function is called on the type, `Hmac.sha256(read key, read data)`",
         "Bytes" => "nothing is made: the function is called on the type, `Bytes.equalInConstantTime(read a, read b)`",
+        "CommandLine" => "`CommandLine(\"name\", \"what it does\")`, then `cl.flag(...)`, `cl.option(...)`, `cl.positional(...)`",
+        "Arguments" => "`cl.parse(read args)` or `cl.parseOrExit(read args)` of a `CommandLine` gives one",
         "DateTime" => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
         _ => "nothing is made: the functions are called on the type",
     }

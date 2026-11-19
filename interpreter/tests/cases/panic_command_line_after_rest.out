@@ -1,0 +1,4 @@
+panic: `positional("output")` comes after `rest`: declare every `positional` before the `rest` that takes the words left
+  --> panic_command_line_after_rest.sg:4:5
+ 4 |     cl.positional("output", "Where to write")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

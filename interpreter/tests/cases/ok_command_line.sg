@@ -1,0 +1,158 @@
+// The command line read as declared (choices 1410, 1423-1433): GNU's ways of writing, the words in
+// their places, and each error with its message.
+
+CommandLine gifcrop() {
+    var cl = CommandLine("gifcrop", "Crops GIF images.")
+    cl.flag("verbose", 'v', "Print each step")
+    cl.flag("quiet", 'q', "Print nothing")
+    cl.option("output", 'o', "FILE", "Where to write")
+    cl.option("include", 'i', "NAME", "A frame to keep")
+    cl.flag("dry-run", null, "Show what would be done")
+    cl.positional("input", "The GIF to read")
+    cl.rest("files", "More GIFs")
+    cl.version("1.2.0")
+    return cl
+}
+
+// The words of a command line written with spaces between them.
+List<string> words(read string line) {
+    var args = List<string>()
+    for word in line.splitWhitespace() {
+        args.add(word.clone())
+    }
+    return args
+}
+
+void show(read CommandLine cl, read string commandLine) {
+    var args = words(commandLine)
+    match cl.parse(read args) {
+        Ok(a) => {
+            var line = $"verbose={a.flag("verbose")} quiet={a.flag("quiet")} dry={a.flag("dry-run")}".toString()
+            line.write($" output={a.option("output") ?? "(none)"} input={a.positional("input")}")
+            line.write(" include=[")
+            for name in a.options("include") {
+                line.write($"{name};")
+            }
+            line.write("] files=[")
+            for file in a.rest() {
+                line.write($"{file};")
+            }
+            line.write("]")
+            print(line)
+        }
+        Error(HelpAsked(_)) => print("help asked")
+        Error(cause) => print($"error: {cause}")
+    }
+}
+
+void main() {
+    var cl = gifcrop()
+    print(cl.help())
+    print("--")
+
+    // Long and short, joined and apart.
+    show(read cl, "in.gif")
+    show(read cl, "--verbose --output out.gif in.gif")
+    show(read cl, "--output=out.gif in.gif")
+    show(read cl, "--output= in.gif")
+    show(read cl, "--output=a=b in.gif")
+    show(read cl, "-v -q in.gif")
+    show(read cl, "-vq in.gif")
+    show(read cl, "-oout.gif in.gif")
+    show(read cl, "-vqo out.gif in.gif")
+    show(read cl, "-vqoout.gif in.gif")
+    // An option takes the next word whatever it is.
+    show(read cl, "-o -5 in.gif")
+    show(read cl, "--output --verbose in.gif")
+    // Given twice: the last value, and every value.
+    show(read cl, "-o a.gif -o b.gif in.gif")
+    show(read cl, "-i one --include two --include=three in.gif")
+    show(read cl, "-v -v in.gif")
+    // Options after the words, `--`, and a lone `-`.
+    show(read cl, "in.gif a.gif -v b.gif --dry-run")
+    show(read cl, "-- -v --output")
+    show(read cl, "-v -- in.gif -- -q")
+    show(read cl, "- -")
+
+    // Help and version, in order with the rest.
+    show(read cl, "-h")
+    show(read cl, "--help")
+    show(read cl, "-vh --nothing")
+    show(read cl, "in.gif --help")
+    match cl.parse(read words("--version --nothing")) {
+        Error(VersionAsked(text)) => print($"version: {text}")
+        _ => print("no version")
+    }
+
+    // Errors.
+    show(read cl, "")
+    show(read cl, "-v")
+    show(read cl, "--verbos in.gif")
+    show(read cl, "--verbse in.gif")
+    show(read cl, "--outptu x in.gif")
+    show(read cl, "--hepl")
+    show(read cl, "--versio")
+    show(read cl, "--colour in.gif")
+    show(read cl, "--verb in.gif")
+    show(read cl, "--verbose=yes in.gif")
+    show(read cl, "--help=1")
+    show(read cl, "--version=1")
+    show(read cl, "-x in.gif")
+    show(read cl, "-vx in.gif")
+    show(read cl, "-é in.gif")
+    show(read cl, "in.gif -o")
+    show(read cl, "in.gif --output")
+    show(read cl, "in.gif -vo")
+    // A dash alone in a cluster is not an option either.
+    show(read cl, "-v- in.gif")
+    print("--")
+
+    // No words declared, no version: no `Arguments:` and no `--version`.
+    var bare = CommandLine("tidy", "")
+    bare.flag("all", 'a', "")
+    bare.option("depth", null, "N", "How deep to go")
+    print(bare.help())
+    match bare.parse(read words("--depth 3 -a")) {
+        Ok(a) => print($"all={a.flag("all")} depth={a.option("depth") ?? "?"}")
+        Error(cause) => print($"error: {cause}")
+    }
+    match bare.parse(read words("stray")) {
+        Ok(_) => print("read")
+        Error(cause) => print($"error: {cause}")
+    }
+    match bare.parse(read words("--version")) {
+        Ok(_) => print("read")
+        Error(cause) => print($"error: {cause}")
+    }
+    match bare.parse(read words("")) {
+        Ok(a) => print($"all={a.flag("all")} depth={a.option("depth") ?? "?"}")
+        Error(cause) => print($"error: {cause}")
+    }
+    print("--")
+
+    // Two words in their places and no rest; a value name of letters outside ASCII lines up by
+    // characters.
+    var copy = CommandLine("copy", "Copies a file.")
+    copy.positional("from", "What to copy")
+    copy.positional("to", "Where to put it")
+    copy.option("mode", 'm', "KİP", "The mode")
+    print(copy.help())
+    match copy.parse(read words("a b")) {
+        Ok(a) => print($"from={a.positional("from")} to={a.positional("to")}")
+        Error(cause) => print($"error: {cause}")
+    }
+    for line in (List<string> { "a", "a b c" }) {
+        match copy.parse(read words(read line)) {
+            Ok(_) => print("read")
+            Error(cause) => print($"error: {cause}")
+        }
+    }
+
+    // The errors compare as values.
+    match cl.parse(read words("-x in.gif")) {
+        Error(cause) => print(cause == CommandLineError.UnknownOption("-x", null))
+        Ok(_) => print("read")
+    }
+    var nearest = CommandLineError.UnknownOption("--verbos", "verbose")
+    print(nearest == CommandLineError.UnknownOption("--verbos", "verbose"))
+}

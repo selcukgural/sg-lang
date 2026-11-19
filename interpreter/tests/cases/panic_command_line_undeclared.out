@@ -1,0 +1,5 @@
+true
+panic: `flag("verbos")` asks a name that was not declared: did you mean `flag("verbose")`?
+  --> panic_command_line_undeclared.sg:7:11
+ 7 |     print(a.flag("verbos"))
+   |           ^^^^^^^^^^^^^^^^

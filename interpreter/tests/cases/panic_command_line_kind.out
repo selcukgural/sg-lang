@@ -1,0 +1,4 @@
+panic: `option("verbose")` asks a name declared with `flag`: ask it with `flag("verbose")`
+  --> panic_command_line_kind.sg:6:11
+ 6 |     print(a.option("verbose") ?? "none")
+   |           ^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,10 @@
+void main() {
+    var cl = CommandLine("tool", "")
+    cl.positional("input", "The file to read")
+    var args = List<string> { "a.txt" }
+    var a = cl.parseOrExit(read args)
+    print(a.positional("input"))
+    for file in a.rest() {
+        print(file)
+    }
+}

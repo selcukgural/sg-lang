@@ -1,0 +1,4 @@
+void main() {
+    var cl = CommandLine("tool", "")
+    cl.flag("hidden", 'h', "Show hidden files")
+}

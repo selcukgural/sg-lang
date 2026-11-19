@@ -1,0 +1,4 @@
+panic: `Output` cannot be the name of an argument: lower-case letters, digits and `-`, starting with a letter
+  --> panic_command_line_name.sg:3:5
+ 3 |     cl.option("Output", 'o', "FILE", "Where to write")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

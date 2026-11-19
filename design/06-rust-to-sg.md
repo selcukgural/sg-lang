@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 19 November 2026, the hundred-and-twenty-sixth slice (SHA-256 and HMAC in `std`, 1409).
+Last brought up to date: 19 November 2026, the hundred-and-twenty-seventh slice (the command line in `std`, 1410).
 
 ## Functions and variables
 
@@ -526,6 +526,23 @@ Last brought up to date: 19 November 2026, the hundred-and-twenty-sixth slice (S
 | `Hmac::<Sha256>::new_from_slice(key)?.chain_update(data).finalize()` | `Hmac.sha256(read key, read data)` | built | One call; a key of any length |
 | `mac.verify_slice(tag)` / `subtle::ConstantTimeEq` | `Bytes.equalInConstantTime(read a, read b)` | built | Never `==` for a tag |
 | `sha2` with the processor's SHA instructions | none yet | | Plain arithmetic, the time of the same algorithm in C; OpenSSL through C for that speed |
+
+## The command line
+
+| Rust | SG | Status | Note |
+|---|---|---|---|
+| `Command::new("gifcrop").about("Crops GIF images.")` (clap) | `var cl = CommandLine("gifcrop", "Crops GIF images.")` | built | In the language's own module |
+| `.arg(Arg::new("verbose").short('v').long("verbose").action(ArgAction::SetTrue))` | `cl.flag("verbose", 'v', "Print each step")` | built | `null` for no short letter |
+| `.arg(Arg::new("output").short('o').long("output").value_name("FILE"))` | `cl.option("output", 'o', "FILE", "Where to write")` | built | Given twice: `option` the last, `options` all |
+| `.arg(Arg::new("input").required(true))` | `cl.positional("input", "The GIF to read")` | built | Always required, in the order declared |
+| `.arg(Arg::new("files").num_args(0..))` | `cl.rest("files", "More GIFs")` | built | Once, last |
+| `.version("1.2.0")` | `cl.version("1.2.0")` | built | `--version` only, no `-V` |
+| `.get_matches()` | `cl.parseOrExit(read args)` | built | Help and version with 0, an error with 2 |
+| `.try_get_matches_from(words)` | `cl.parse(read words)` | built | A `Result<Arguments, CommandLineError>` |
+| `m.get_flag("verbose")` | `a.flag("verbose")` | built | A name not declared is a panic, as clap's is in a debug build |
+| `m.get_one::<String>("output")` | `a.option("output")` | built | A `read string?`; no typed values: `int.parse` |
+| `m.get_many::<String>("files")` | `a.rest()`, `a.options(name)` | built | |
+| `#[derive(Parser)]` | none | | No reflection or macros: the command line is declared with calls |
 
 ## Tests and the tools
 

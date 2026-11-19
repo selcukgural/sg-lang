@@ -1,0 +1,7 @@
+void main() {
+    var cl = CommandLine("tool", "")
+    cl.flag("verbose", 'v', "Print each step")
+    cl.option("output", 'o', "FILE", "Where to write")
+    print("declared")
+    cl.flag("verbose", null, "Print more")
+}

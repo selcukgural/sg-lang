@@ -1,0 +1,7 @@
+void main() {
+    var cl = CommandLine("tool", "")
+    cl.flag("verbose", 'v', "Print each step")
+    var args = List<string>()
+    var a = cl.parseOrExit(read args)
+    print(a.option("output") ?? "out.txt")
+}

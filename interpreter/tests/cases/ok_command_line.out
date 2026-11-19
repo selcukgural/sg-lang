@@ -1,0 +1,88 @@
+Crops GIF images.
+
+Usage: gifcrop [options] <input> [files...]
+
+Arguments:
+  <input>               The GIF to read
+  [files...]            More GIFs
+
+Options:
+  -v, --verbose         Print each step
+  -q, --quiet           Print nothing
+  -o, --output FILE     Where to write
+  -i, --include NAME    A frame to keep
+      --dry-run         Show what would be done
+  -h, --help            Print this help
+      --version         Print the version
+--
+verbose=false quiet=false dry=false output=(none) input=in.gif include=[] files=[]
+verbose=true quiet=false dry=false output=out.gif input=in.gif include=[] files=[]
+verbose=false quiet=false dry=false output=out.gif input=in.gif include=[] files=[]
+verbose=false quiet=false dry=false output= input=in.gif include=[] files=[]
+verbose=false quiet=false dry=false output=a=b input=in.gif include=[] files=[]
+verbose=true quiet=true dry=false output=(none) input=in.gif include=[] files=[]
+verbose=true quiet=true dry=false output=(none) input=in.gif include=[] files=[]
+verbose=false quiet=false dry=false output=out.gif input=in.gif include=[] files=[]
+verbose=true quiet=true dry=false output=out.gif input=in.gif include=[] files=[]
+verbose=true quiet=true dry=false output=out.gif input=in.gif include=[] files=[]
+verbose=false quiet=false dry=false output=-5 input=in.gif include=[] files=[]
+verbose=false quiet=false dry=false output=--verbose input=in.gif include=[] files=[]
+verbose=false quiet=false dry=false output=b.gif input=in.gif include=[] files=[]
+verbose=false quiet=false dry=false output=(none) input=in.gif include=[one;two;three;] files=[]
+verbose=true quiet=false dry=false output=(none) input=in.gif include=[] files=[]
+verbose=true quiet=false dry=true output=(none) input=in.gif include=[] files=[a.gif;b.gif;]
+verbose=false quiet=false dry=false output=(none) input=-v include=[] files=[--output;]
+verbose=true quiet=false dry=false output=(none) input=in.gif include=[] files=[--;-q;]
+verbose=false quiet=false dry=false output=(none) input=- include=[] files=[-;]
+help asked
+help asked
+help asked
+help asked
+version: gifcrop 1.2.0
+error: missing <input>
+error: missing <input>
+error: unknown option '--verbos' (did you mean '--verbose'?)
+error: unknown option '--verbse' (did you mean '--verbose'?)
+error: unknown option '--outptu' (did you mean '--output'?)
+error: unknown option '--hepl' (did you mean '--help'?)
+error: unknown option '--versio' (did you mean '--version'?)
+error: unknown option '--colour'
+error: unknown option '--verb'
+error: option '--verbose' takes no value
+error: option '--help' takes no value
+error: option '--version' takes no value
+error: unknown option '-x'
+error: unknown option '-x'
+error: unknown option '-é'
+error: option '-o' needs a value
+error: option '--output' needs a value
+error: option '-o' needs a value
+error: unknown option '-v-'
+--
+Usage: tidy [options]
+
+Options:
+  -a, --all
+      --depth N    How deep to go
+  -h, --help       Print this help
+all=true depth=3
+error: unexpected argument 'stray'
+error: unknown option '--version'
+all=false depth=?
+--
+Copies a file.
+
+Usage: copy [options] <from> <to>
+
+Arguments:
+  <from>            What to copy
+  <to>              Where to put it
+
+Options:
+  -m, --mode KİP    The mode
+  -h, --help        Print this help
+from=a to=b
+error: missing <to>
+error: unexpected argument 'c'
+true
+true

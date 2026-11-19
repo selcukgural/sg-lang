@@ -1,0 +1,5 @@
+a.txt
+panic: `rest()` with no `rest` declared: declare it with `cl.rest("name", "help")`
+  --> panic_command_line_no_rest.sg:7:17
+ 7 |     for file in a.rest() {
+   |                 ^^^^^^^^

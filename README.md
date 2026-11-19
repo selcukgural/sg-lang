@@ -178,7 +178,7 @@ are built and tested on Linux, macOS and Windows (x86-64 and Arm); what is writt
 - **C**: calling C and being called by it, C's layouts (unions, bit fields, `packed`), and libraries of SG
   that C links. SQLite, libcurl and zlib are wrapped in modules whose users write no `unsafe`.
 - **A small library**: files, folders and paths, other programs, TCP and UDP, signals, time and time
-  zones, random numbers, Unicode, hex and Base64, CRC-32, SHA-256 and HMAC.
+  zones, random numbers, Unicode, hex and Base64, CRC-32, SHA-256 and HMAC, the command line.
 - **No operating system needed**: a program can be built freestanding, and a small kernel for RISC-V boots
   in QEMU.
 - **Tools**: `sg test`, a debug build that reports leaks, and `sg lsp` with an extension for VS Code.

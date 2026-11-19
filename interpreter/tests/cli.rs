@@ -1,6 +1,7 @@
 //! The `sg` command from outside (choice 1322): each command and flag on a path that works, what
 //! it writes and where, and its exit code; and the ways it fails, each with its code. What the
-//! programs themselves do is tested in `golden.rs`; here only the command around them.
+//! programs themselves do is tested in `golden.rs`; here only the command around them, and the codes and the
+//! streams of a program that reads its command line with `parseOrExit` (choice 1429).
 //!
 //! The exit codes: 0 when all went well; what `exit` gives; 1 for an error the checker or the C
 //! compiler finds, a panic, or a failed test; 2 for a command line that is not one of the usages, a
@@ -548,4 +549,35 @@ fn refuses_a_frame_no_stack_holds() {
     write(&dir, "fits.sg", "void main() {\n    var data = byte[100000000]\n    print(data[0])\n}\n");
     let (code, _, err) = ran(&sg(&dir, &["build", "fits.sg"]));
     assert_eq!((code, err.as_str()), (0, ""));
+}
+
+/// A program that reads its command line with `parseOrExit` (choice 1429), interpreted and compiled:
+/// the help and the version go to the output with 0, an error to the standard error with 2 and a line
+/// that names `--help`, and a command line that reads runs the program.
+#[test]
+fn a_command_line_read_or_exit() {
+    const GIFCROP: &str = "void main(List<string> args) {\n    var cl = CommandLine(\"gifcrop\", \"Crops GIF images.\")\n    cl.flag(\"verbose\", 'v', \"Print each step\")\n    cl.option(\"output\", 'o', \"FILE\", \"Where to write\")\n    cl.positional(\"input\", \"The GIF to read\")\n    cl.version(\"1.2.0\")\n    var a = cl.parseOrExit(read args)\n    print($\"{a.positional(\"input\")} -> {a.option(\"output\") ?? \"out.gif\"}, verbose {a.flag(\"verbose\")}\")\n}\n";
+    const HELP: &str = "Crops GIF images.\n\nUsage: gifcrop [options] <input>\n\nArguments:\n  <input>              The GIF to read\n\nOptions:\n  -v, --verbose        Print each step\n  -o, --output FILE    Where to write\n  -h, --help           Print this help\n      --version        Print the version\n";
+    let dir = work("a_command_line_read_or_exit");
+    write(&dir, "gifcrop.sg", GIFCROP);
+    let mut ways: Vec<(Vec<String>, &str)> = vec![(vec![env!("CARGO_BIN_EXE_sg").into(), "gifcrop.sg".into()], "interpreted")];
+    if has_compiler() {
+        assert_eq!(ran(&sg(&dir, &["build", "gifcrop.sg"])), (0, String::new(), String::new()));
+        ways.push((vec![program(&dir, "gifcrop").to_string_lossy().into_owned()], "compiled"));
+    }
+    for (command, way) in ways {
+        let run = |words: &[&str]| {
+            ran(&Command::new(&command[0]).args(&command[1..]).args(words).current_dir(&dir).stdin(Stdio::null()).output().unwrap())
+        };
+        assert_eq!(run(&["--help"]), (0, HELP.into(), String::new()), "{way}");
+        assert_eq!(run(&["in.gif", "-h"]), (0, HELP.into(), String::new()), "{way}");
+        assert_eq!(run(&["--version"]), (0, "gifcrop 1.2.0\n".into(), String::new()), "{way}");
+        assert_eq!(run(&["-vo", "small.gif", "in.gif"]), (0, "in.gif -> small.gif, verbose true\n".into(), String::new()), "{way}");
+        assert_eq!(run(&["in.gif"]), (0, "in.gif -> out.gif, verbose false\n".into(), String::new()), "{way}");
+        let tried = "Try 'gifcrop --help'.\n";
+        assert_eq!(run(&[]), (2, String::new(), format!("gifcrop: missing <input>\n{tried}")), "{way}");
+        assert_eq!(run(&["--verbos", "in.gif"]), (2, String::new(), format!("gifcrop: unknown option '--verbos' (did you mean '--verbose'?)\n{tried}")), "{way}");
+        assert_eq!(run(&["in.gif", "-o"]), (2, String::new(), format!("gifcrop: option '-o' needs a value\n{tried}")), "{way}");
+        assert_eq!(run(&["in.gif", "more.gif"]), (2, String::new(), format!("gifcrop: unexpected argument 'more.gif'\n{tried}")), "{way}");
+    }
 }

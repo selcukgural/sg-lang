@@ -1,0 +1,5 @@
+declared
+panic: the name `verbose` is declared a second time: give each flag, option and word a name of its own
+  --> panic_command_line_twice.sg:6:5
+ 6 |     cl.flag("verbose", null, "Print more")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

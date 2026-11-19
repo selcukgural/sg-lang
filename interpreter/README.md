@@ -77,6 +77,7 @@ of `tests/Containerfile` has them.
 | Time | `Instant.now()` reads the monotonic clock: `start.elapsed()` and `later.since(earlier)` give a `Duration`, and an `Instant` is not printed, since only the time between two means something. `Duration.fromMilliseconds(250)` (and `fromNanoseconds`, `fromMicroseconds`, `fromSeconds`) is a span of time that may be negative; `d.milliseconds()` and the other units give the whole count cut toward zero, `d.totalSeconds()` a `double`, `plus`, `minus` and `times` the arithmetic, and `print(d)` writes `1.5s`, `250ms`, `3µs`. `DateTime.now()` reads the clock of the system in UTC; `DateTime.utc(2026, 11, 15, 9, 30, 0)` gives a `Result<DateTime, DateError>`, `DateTime.fromUnixSeconds(n)` a moment from the seconds since 1970; `year()`, `month()`, `day()`, `hour()`, `minute()`, `second()`, `nanosecond()`, `dayOfWeek()`, `unixSeconds()`, and `print` writes ISO 8601: `2026-11-15T09:30:00Z`. `d.toLocal()` gives a `DateTimeOffset`, the moment seen at the offset of the system's time zone (`2026-11-18T12:30:05+03:00`, its parts those of the place), `d.withOffset(offset)` one at an offset of your own, `DateTimeOffset.local(2026, 3, 29, 2, 30, 0)` the moment the clocks of the place show that at (`SkippedLocalTime` in the hour summer time skips, the earlier of the two in the hour it repeats), and `t.toUtc()` the moment back; `DateTime.parse(text)` and `DateTimeOffset.parse(text)` read RFC 3339 (`InvalidText(position)` where the text stops being one). A format of your own is written with the parts: `$"{t.day():D2}.{t.month():D2}.{t.year()}"`. All four are compared, hashed and copied. They are written in SG, in the language's own module `std`, which a program that names one of them gets |
 | Random numbers | `Random.fromSeed(42)` is a generator that gives the same numbers for the same seed, in the interpreter, in compiled code and on every system (xoshiro256\*\*); `Random.fromSystem()` one seeded by the system, different on every run. `r.nextInt(1, 7)` and `r.nextLong(low, high)` give a number from `low` up to `high`, without `high`, each as likely as the others; `r.nextDouble()` a fraction from 0 up to 1, `r.nextBool()`, `r.nextUlong()` 64 random bits, `r.fill(ref bytes)`. A `Random` is lent with `ref` and is not copied, so that two never give the same numbers. It is not for a key or a token: `SecureRandom.fill(ref bytes)`, `SecureRandom.nextInt(low, high)`, `SecureRandom.nextLong(low, high)`, `SecureRandom.nextUlong()` and `SecureRandom.hexString(32)` (32 hex digits, 128 bits) read the random bytes of the system. Written in SG in the module `std`, like the clock |
 | Bytes as text, and checksums | `Hex.encode(read data)` and `Hex.decode(text)`, `Base64.encode` and `decode` (padded) and `encodeUrl` and `decodeUrl` (unpadded), read strictly: a decoding gives `Result<List<byte>, DecodeError>`, with the place of the first byte that does not belong. `Crc32.of(read data)` is the CRC-32 of zlib, gzip, PNG and ZIP; `var c = Crc32()`, `c.update(read piece)`, `c.value()` the same piece by piece. `Sha256.of(read data)` is SHA-256 as a `byte[32]`, `var h = Sha256()`, `h.update(read piece)`, `h.finish()` piece by piece; `Hmac.sha256(read key, read data)` is HMAC-SHA-256, and `Bytes.equalInConstantTime(read a, read b)` compares a tag in a time that does not tell where it differs. Written in SG in the module `std` |
+| The command line | `var cl = CommandLine("gifcrop", "Crops GIF images.")`, then `cl.flag("verbose", 'v', "Print each step")`, `cl.option("output", 'o', "FILE", "Where to write")` (`null` for no short letter), `cl.positional("input", "The GIF to read")`, `cl.rest("files", "More GIFs")` and `cl.version("1.2.0")`; `cl.parseOrExit(read args)` gives an `Arguments` or ends the program: the help (`-h`, `--help`) or the version printed with 0, an error to the standard error with 2 and `Try 'gifcrop --help'.` `cl.parse(read args)` gives a `Result<Arguments, CommandLineError>` instead. GNU's way of writing (`--output x`, `--output=x`, `-vq`, `-ox`, options after the words, `--`, a lone `-` a word), no long name shortened, and an unknown one told the declared name nearest to it. `a.flag(name)`, `a.option(name)` (`read string?`, the last given), `a.options(name)` (all), `a.positional(name)`, `a.rest()`; a name not declared, or declared as something else, is a panic. Written in SG in the module `std` |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into), `File.createTemp()` (a new empty file only the user can read and write, its path given). `Path.join(a, b)` gives a new path; `Path.joinInside(folder, name)` a `Result<string, IoError>` that is an `InvalidInput` for a name that could lead out of the folder on any system (`..`, a root, a `\`, a `:`, a device of Windows); `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
 | Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(int code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. On Windows the same through `CreateProcessW`: a name without an extension is looked for as `name.exe` in the absolute folders of `PATH` (apart at `;`, a quoted folder taken whole) and never in the folder the program works in; the words go on one command line, quoted so that the program reads them back as written; a `.bat` or `.cmd` runs only when named with its extension, through `cmd.exe`, its arguments escaped as Rust escapes them, a line break in one an `InvalidInput`; a cleared environment keeps `SystemRoot`; a code with its highest bit set is written in hex (`exited with code 0xC0000005`); `kill`, `terminate` and `signal` end the program with the code 1, since Windows has no polite stop to send (`Signal.WindowChange` does nothing). `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `signal(Signal.Interrupt)` sends it a signal by its name, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
 | Signals | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })`: while the listener lives, those signals do not end the program; `signals.next()` waits for the next and gives it, `await signals.nextAsync(read token)` without holding the thread. Several of one kind before a call are one; every listener gets each signal it listens for. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`. `Signals.raise(signal)` sends one to this program. Written in SG in the module `std`; the handler only writes into a pipe, and a thread hands each signal on. On Windows `Interrupt` is Ctrl-C and Ctrl-Break, `Terminate` the console closed, the user logging off and the system shutting down (the program is then held until it ends, within the few seconds Windows gives); the others never come there, and `raise` hands them to listeners all the same; with no listener a raised signal ends the program as Ctrl-C does (`0xC000013A`), and `WindowChange` does nothing |
@@ -8695,6 +8696,64 @@ With 1409, 452 of the 1813 programs are compiled on macOS and on Linux (102 unde
 220 programs of the site run as they show; on the Windows Arm VM `ok_sha256` and `ok_hmac` print the same
 interpreted and compiled.
 
+Choices made in the hundred-and-twenty-seventh slice (the library: the command line). 1410 was approved on 19
+November 2026, with 1406; 1423-1433 the same day, before the slice was written:
+
+1410. **The command line, declared** (`std/command_line.sg`): a program says what it takes, with no generics and
+     no reflection, and reads it: `var cl = CommandLine("gifcrop", "Crops GIF images.")`, `cl.flag(...)`,
+     `cl.option(...)`, `cl.positional(...)`, then `cl.parse(read args)`. The values are text; a number is read
+     by the program (`int.parse`). Rust's `clap` with its builder, Go's `flag` and GNU's `getopt_long` are the
+     models.
+1423. **The names**: `CommandLine` declares, `Arguments` is what was read, `CommandLineError` why it could not be
+     (clap's `Command`, `ArgMatches` and `Error`; Go's `FlagSet`).
+1424. **A short letter is a `char?`**: `cl.flag("dry-run", null, "Show what would be done")` has only the long
+     name; one function for each kind, not one more for each kind without a letter.
+1425. **Words in their places**: `positional(name, help)` must be given, in the order declared;
+     `rest(name, help)` takes the words left, none or more, declared once and last. `a.positional(name)` gives a
+     `read string`, `a.rest()` a `read List<string>`. No single word that may be left out: `rest` does it.
+1426. **An option given twice**: `a.option(name)` gives the last value, as Go's `flag`, Python's `argparse` and
+     `getopt` do, and `a.options(name)` every value in order, with nothing more declared. A flag given twice is
+     no error. No count of a flag (`-vvv`) yet.
+1427. **GNU's way of writing**: an option that takes a value takes the next word whatever it is (`--offset
+     -5`); `-ofile` and `-vo file`; a lone `-` is a word (the input, by custom); options may come after the
+     words (GNU reorders them, POSIX and Go's `flag` stop at the first word); every word after `--` is a word;
+     `--verbose=yes` is an error. A long name is never shortened: `getopt_long` takes `--verb` for
+     `--verbose`, and a script that wrote it would read another option once `--verbatim` is declared; clap does
+     not shorten either. The nearest name is told instead.
+1428. **The nearest name**: an unknown long name is told the declared one at most two edits from it (Levenshtein
+     over the bytes; the first declared of those as near), `--help` and `--version` among them. No suggestion for
+     a short letter.
+1429. **`parseOrExit`**: the help or the version printed to the output with 0; an error to the standard error,
+     `gifcrop: unknown option '--verbos' (did you mean '--verbose'?)` and `Try 'gifcrop --help'.`, with 2, as
+     Go's `flag.Parse` and clap's `get_matches` end the program. `parse` stays for a program that does its
+     own: the same five lines in every program otherwise.
+1430. **What is declared wrongly is a panic**: a name declared twice, a short letter twice, `h` or the name
+     `help` (and `version` once `cl.version` is called), a name other than lower-case ASCII letters, digits and
+     `-` starting with a letter, a short letter other than an ASCII letter or digit, a second `rest` or a
+     `positional` after it; asking a name that was not declared (with the declared one nearest to it, when
+     there is one) or one declared as something else (`a.option("verbose")` of a flag), or `a.rest()` with no
+     `rest`. The names are text, so the checker cannot see them; but the declaring runs on every run, whatever
+     the command line holds, so the first run shows the mistake.
+1431. **The help**: the line `about`, `Usage: gifcrop [options] <input> [files...]`, the words under
+     `Arguments:` and the options under `Options:`, in the order declared, `-h, --help` and `--version` last; one
+     column for the texts, four spaces after the longest, counted in characters; no wrapping, no colour.
+     `cl.help()` gives the same text.
+1432. **`--version` only when asked for**: `cl.version("1.2.0")` adds `--version`, which prints `gifcrop
+     1.2.0`, with no short letter (`-v` and `-V` are taken by other things too often). Built in because a
+     `--version` the program declared itself would end in `missing <input>` when the program takes a word;
+     Go's `flag` has no words that must be given, so it never meets this.
+1433. **`CommandLineError`**: `HelpAsked(text)`, `VersionAsked(text)`, `UnknownOption(word, suggestion)`,
+     `MissingValue(option)`, `UnexpectedValue(option)`, `MissingArgument(name)`, `TooManyArguments(word)`;
+     `{cause}` gives the line `parseOrExit` writes, and the errors compare as values. A short option that is
+     not a letter or a digit (`-v-`, `-é`) is named with its whole word.
+
+`ok_command_line` reads 51 command lines of three programs, the help of each among them; eight `panic_command_line_`
+programs show each mistake of the declaring and of the asking; `error_command_line_fields` is told how an
+`Arguments` is made; `a_command_line_read_or_exit` (in `tests/cli.rs`) runs a program interpreted and compiled
+and looks at what goes to the output, what to the standard error, and the codes 0 and 2. With 1410, 461 of the 1823 programs are compiled on macOS and on Linux (102 under the thread
+sanitizer), and the 222 programs of the site run as they show; on the Windows Arm VM `ok_command_line` and the
+panics print the same interpreted and compiled, and `a_command_line_read_or_exit` passes.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -9312,8 +9371,8 @@ of its folder asks for `-o`, the tool's own output ends quietly when closed, a t
 `$"..."` is found, and a score of hints and messages lead to code that compiles, the index panic among them
 naming `xs.get(i)` (1398-1402). The library grows before the reference (1406): hex and Base64 are written
 (`Hex`, `Base64`, read strictly, 1407), CRC-32 (`Crc32`, sixteen bytes in a step, 1408, 1414, 1415) and
-SHA-256 with HMAC (`Sha256`, `Hmac`, `Bytes.equalInConstantTime`, 1409); the command line, JSON and a log come
-next (1410-1412). Then real programs written in SG, Rust and Go and measured against each other, each
+SHA-256 with HMAC (`Sha256`, `Hmac`, `Bytes.equalInConstantTime`, 1409) and the command line (`CommandLine`,
+GNU's way of writing, 1410, 1423-1433); JSON and a log come next (1411, 1412). Then real programs written in SG, Rust and Go and measured against each other, each
 difference a choice (1418), and after them XML without a DTD (1413), the reference of the language on the site
 (1394), the third stage of the generator of programs, which borrows and moves, and the preview (942) with `sg
 doc` (1392).

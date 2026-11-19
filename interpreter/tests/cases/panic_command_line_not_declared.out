@@ -1,0 +1,4 @@
+panic: `option("output")` asks a name that was not declared: declare it with `cl.option("output", ...)`
+  --> panic_command_line_not_declared.sg:6:11
+ 6 |     print(a.option("output") ?? "out.txt")
+   |           ^^^^^^^^^^^^^^^^^^

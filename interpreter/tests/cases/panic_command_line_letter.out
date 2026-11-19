@@ -1,0 +1,4 @@
+panic: the short letter `h` of `hidden` is taken: `-h` is the help's own
+  --> panic_command_line_letter.sg:3:5
+ 3 |     cl.flag("hidden", 'h', "Show hidden files")
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

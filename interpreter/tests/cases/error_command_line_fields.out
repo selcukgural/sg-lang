@@ -1,0 +1,5 @@
+error: an `Arguments` is made by its functions, not field by field
+  --> error_command_line_fields.sg:2:13
+ 2 |     var a = Arguments { names = List<string>() }
+   |             ^^^^^^^^^
+  hint: `cl.parse(read args)` or `cl.parseOrExit(read args)` of a `CommandLine` gives one
