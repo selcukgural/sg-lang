@@ -65,6 +65,8 @@ exp is a Number: 1000
 [false,null] true
 {"b":2,"c":"line\nbreak and \u001b[31m","d":0.5}
 48
+20 0 19 20 true true k1
+line 1, column 162: duplicate key "k17"
 {"x":1.5,"y":-2.0}
 1.5 -2
 true

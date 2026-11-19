@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 19 November 2026, the hundred-and-twenty-eighth slice (JSON in `std`, 1411).
+Last brought up to date: 19 November 2026, the hundred-and-twenty-eighth slice (JSON in `std`, 1411; `int? x = xs.get(i)`, 1446).
 
 ## Functions and variables
 
@@ -137,6 +137,7 @@ Last brought up to date: 19 November 2026, the hundred-and-twenty-eighth slice (
 | `Vec::new()`, `vec![1, 2]` | `List<int>()`, `List<int> { 1, 2 }` | built | |
 | `v.push(x)`, `v.pop()`, `v.len()` | `xs.add(x)`, `xs.removeLast()`, `xs.length()` | built | `removeLast` gives a `T?` |
 | `v[i]`, `v.get(i)` | `xs[i]`, `xs.get(i)` | built | `get` gives a `T?`; the panic of `xs[i]` names it, where Rust's names nothing |
+| `v.get(i).copied()` | `int? first = xs.get(i)` | built | A `read T?` is copied into a `T?` where one is written, when `T` is copyable; otherwise `xs.get(i)?.clone()` |
 | `v.extend_from_slice(&s)` | `xs.addAll(s)` | built | For `Copyable` items |
 | `v.sort()`, `v.reverse()`, `v.contains(&x)`, `v.iter().position(...)` | `xs.sort()`, `xs.reverse()`, `xs.contains(x)`, `xs.indexOf(x)` | built | `sort` is stable; a `compare` that gives no single order leaves the items in some order and does not panic, where Rust's `sort_by` may |
 | `v.binary_search(&x).ok()` | `xs.binarySearch(x)` | built | `nint?`, the first of equal items, where Rust gives any one of them; the place to insert is `lowerBound` |

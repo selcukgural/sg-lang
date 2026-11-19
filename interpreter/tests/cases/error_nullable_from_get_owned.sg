@@ -1,0 +1,6 @@
+// A `read string?` is only lent: a `string?` that owns its text is a copy written out.
+void main() {
+    var names = List<string> { "ada" }
+    string? first = names.get(0)
+    print(first ?? "none")
+}

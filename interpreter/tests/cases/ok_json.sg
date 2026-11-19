@@ -100,6 +100,37 @@ void main() {
     print(built)
     print(built.toJson().length())
 
+    // Past 16 members an object finds a name through a table (1444): read, added to, changed,
+    // taken from, a name twice refused.
+    var wide = string.withCapacity(400)
+    wide.write('{')
+    for i in 0..20 {
+        if i > 0 {
+            wide.write(',')
+        }
+        wide.write($"\"k{i}\":{i}")
+    }
+    wide.write('}')
+    var big = Json.parse(read wide) ?? panic("wide")
+    var bigMembers = big.asObject()
+    if bigMembers is not null {
+        var copy = bigMembers.clone()
+        copy.add("k20", JsonValue.Integer(20))
+        copy.set("k3", JsonValue.Null)
+        var taken = copy.remove("k0")
+        print($"{copy.length()} {taken ?? JsonValue.Null} {copy.get("k19")?.asLong() ?? -1} {copy.get("k20")?.asLong() ?? -1} {copy.get("k3")?.isNull() ?? false} {copy.get("k0") is null} {copy.names()[0]}")
+    }
+    wide.clear()
+    wide.write("{")
+    for i in 0..20 {
+        wide.write($"\"k{i}\":{i},")
+    }
+    wide.write("\"k17\":0}")
+    match Json.parse(read wide) {
+        Ok(_) => print("read")
+        Error(e) => print(e)
+    }
+
     // A struct of the program, written and read back by hand.
     var p = pointToJson(Point { x = 1.5, y = -2.0 })
     print(p)

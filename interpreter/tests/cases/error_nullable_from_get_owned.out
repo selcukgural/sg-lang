@@ -1,0 +1,5 @@
+error: expected `string?`, found `read string?`
+  --> error_nullable_from_get_owned.sg:4:21
+ 4 |     string? first = names.get(0)
+   |                     ^^^^^^^^^^^^
+  hint: `read string?` only borrows the value; `string?` needs to own it: `names.get(0)?.clone()`

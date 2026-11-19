@@ -1,0 +1,47 @@
+// A `read T?` that `get` gives is copied into a `T?` where one is written, when `T` is copyable
+// (choice 1446): a declared variable, a `return`, an argument, a field. `null` stays `null`.
+struct Point : Copyable {
+    int x
+    int y
+}
+
+struct Found {
+    int? first
+}
+
+int? first(read List<int> xs) {
+    return xs.get(0)
+}
+
+nint? place(read HashMap<string, nint> places, read string name) {
+    return places.get(name)
+}
+
+string describe(int? value) {
+    if value is null {
+        return "none"
+    }
+    return $"{value}".toString()
+}
+
+void main() {
+    var xs = List<int> { 4, 5 }
+    var empty = List<int>()
+    int? a = xs.get(1)
+    int? b = xs.get(9)
+    print($"{a ?? -1} {b ?? -1} {first(read xs) ?? -1} {first(read empty) ?? -1}")
+    var places = HashMap<string, nint> { {"a", 3} }
+    print($"{place(read places, "a") ?? -1} {place(read places, "z") ?? -1}")
+    print($"{describe(xs.get(0))} {describe(empty.get(0))}")
+    var points = List<Point> { Point { x = 1, y = 2 } }
+    Point? p = points.get(0)
+    if p is not null {
+        print($"{p.x} {p.y}")
+    }
+    var found = Found { first = xs.get(0) }
+    print(found.first ?? -1)
+    // The copy is its own: changing the list after does not change it.
+    int? kept = xs.get(0)
+    xs[0] = 40
+    print($"{kept ?? -1} {xs[0]}")
+}

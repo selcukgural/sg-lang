@@ -7196,6 +7196,16 @@ impl<'a> Checker<'a> {
             }
             (Ty::Fmt, Ty::Str) => Err(Diag::error(expr.span, "expected `string`; `$\"...\"` does not become a `string` on its own")
                 .hint("add `.toString()` at the end; that is where the allocation shows")),
+            // A borrow of a `T?` where a `T?` goes (`int? first = xs.get(0)`): a copyable value is
+            // copied out, or `null` (choice 1446); any other is only lent.
+            (Ty::Read(inner) | Ty::Ref(inner), Ty::Nullable(_)) if **inner == *expected => {
+                if !inner.is_copyable(self.copyable) {
+                    return mismatch(Some(format!("`{found}` only borrows the value; `{expected}` needs to own it: `{text}?.clone()`")));
+                }
+                wrap(expr, ExprKind::Load);
+                expr.ty = expected.clone();
+                Ok(())
+            }
             // `T` where `T?` is expected.
             (_, Ty::Nullable(inner)) => self.coerce(expr, found.clone(), inner),
             (Ty::Shared(from, a), Ty::Shared(to, b)) if from == to && a != b => {

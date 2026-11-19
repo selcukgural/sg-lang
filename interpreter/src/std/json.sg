@@ -260,11 +260,7 @@ public struct JsonObject : Equatable {
     // The place of the member named `name`.
     nint? find(read this, read string name) {
         if this.places.length() > 0 {
-            var place = this.places.get(name)
-            if place is null {
-                return null
-            }
-            return place
+            return this.places.get(name)
         }
         for i in 0..this.keys.length() {
             if this.keys[i] == name {
