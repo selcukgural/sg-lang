@@ -70,15 +70,26 @@ for (const page of pages(join(site, 'docs'))) {
     }
   });
 }
-// The program on the front page, in `src/pages/index.js`.
-const front = readFileSync(join(site, 'src', 'pages', 'index.js'), 'utf8').match(/const sample = `([\s\S]*?)`;/);
-if (front) {
+// The programs on the front page, in `src/pages/index.js`: the sample prints what is shown, and the mistake is
+// refused with the message shown, written for a file named `main.sg`.
+const index = readFileSync(join(site, 'src', 'pages', 'index.js'), 'utf8');
+const literal = (name) => {
+  const found = index.match(new RegExp(`const ${name} = [\`']([\\s\\S]*?)[\`'];`));
+  return found ? found[1].replaceAll('\\`', '`').replaceAll('\\$', '$') : null;
+};
+for (const [code, shown, refused] of [['sample', 'sampleOutput', false], ['mistake', 'mistakeMessage', true]]) {
+  const program = literal(code);
+  if (program === null) continue;
   programs += 1;
-  writeFileSync(join(work, 'example.sg'), front[1].replaceAll('\\`', '`').replaceAll('\\$', '$'));
-  const result = run(['example.sg']);
-  if (result.code !== 0) {
+  writeFileSync(join(work, 'main.sg'), program);
+  const result = run(['main.sg']);
+  const expected = literal(shown);
+  if (refused ? result.code === 0 : result.code !== 0) {
     failures += 1;
-    console.error(`src/pages/index.js: the program ended with code ${result.code}:\n${result.text}`);
+    console.error(`src/pages/index.js, \`${code}\`: the program ended with code ${result.code}:\n${result.text}`);
+  } else if (expected !== null && (refused ? !result.text.startsWith(expected) : result.text.trimEnd() !== expected)) {
+    failures += 1;
+    console.error(`src/pages/index.js, \`${code}\`: prints otherwise.\nshown:\n${expected}\ngiven:\n${result.text}`);
   }
 }
 console.log(`${programs} programs of SG on the pages, ${failures} wrong`);

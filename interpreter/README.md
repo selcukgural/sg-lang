@@ -8568,9 +8568,13 @@ Approved on 19 November 2026, after the slice was written:
      `greet("")` no longer asks for `read ""`, in the interpreter and in compiled code
      (`ok_literal_to_read_nullable`, which was `error_literal_to_read_nullable`). A number where a `read int` or a
      `read int?` goes is still lent with `read` (`error_number_to_read_nullable`).
+1404. **The front page and the root README**: the front page shows what its program prints, a mistake with the
+     message of the compiler, the measurements against C and how to try it; `npm run check` runs the mistake
+     too, and compares both with what the page shows. The root README starts with what SG is and links into the
+     site. The logo is not chosen yet: the site keeps its simple mark until one is.
 
 With 1403, 448 of the 1806 programs are compiled on macOS and on Linux (102 under the thread sanitizer), and the
-213 programs of the site run as they show.
+214 programs of the site run as they show.
 
 ## Slower than C, and could be better
 

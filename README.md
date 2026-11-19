@@ -1,7 +1,15 @@
-# SG
+<h1 align="center">SG</h1>
 
 <p align="center">
-  <img src="brand/pasha.png" alt="Pasha, a white Van cat with one blue and one amber eye, curled up in a circle" width="240">
+  <a href="https://sg-lang.org">Web site</a> ·
+  <a href="https://sg-lang.org/docs/learn/tour">Tour</a> ·
+  <a href="https://sg-lang.org/docs/learn/book/getting-started">Book</a> ·
+  <a href="https://sg-lang.org/docs/learn/install">Install</a> ·
+  <a href="https://sg-lang.org/docs/status">Status</a>
+</p>
+
+<p align="center">
+  <img src="brand/pasha.png" alt="Pasha, a white Van cat with one blue and one amber eye, curled up in a circle" width="200">
   <br>
   <em>Pasha, the mascot of SG</em>
 </p>
@@ -241,6 +249,9 @@ SG rules out. It is taken up when the language is further along.
 | [interpreter](interpreter/README.md) | The code, in Rust: checker, interpreter, C back end, tests and benchmarks |
 | [topics](topics) | Background: essays on C, Rust, Zig and Go, and on the problem SG sets out to solve |
 | [sources](sources/reading-list.md) | Reading list: books, Hylo, Vale, Rust writings, tools |
+| [website](website/README.md) | The web site, [sg-lang.org](https://sg-lang.org), built with Docusaurus |
+| [editors](editors) | The extension for VS Code, which runs `sg lsp` |
+| [brand](brand) | Pasha, the mascot |
 
 If you read one design document, read
 [decisions and open questions](design/04-decisions-and-open-questions.md): every decision with

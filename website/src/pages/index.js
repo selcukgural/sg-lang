@@ -1,4 +1,6 @@
-// The front page (choice 1384): what SG promises, three pillars, a program, and where it stands.
+// The front page (choices 1384 and 1404): what SG promises, three pillars, a program and what it prints, a
+// mistake and what the compiler says of it, measurements against C, what was built with it, how to try it,
+// and Pasha.
 import React from 'react';
 import Link from '@docusaurus/Link';
 import Layout from '@theme/Layout';
@@ -34,6 +36,36 @@ void main() {
         Error(why) => print(why)
     }
 }`;
+
+// What the sample prints; `npm run check` runs it.
+const sampleOutput = '42 items in stock';
+
+// A mistake the checker refuses, and its message as `sg` writes it; `npm run check` compares the two.
+const mistake = `void main() {
+    var names = List<string> { "Ada", "Grace" }
+    var kept = names
+    print(names.length())
+    print(kept.length())
+}`;
+
+const mistakeMessage = `error: \`names\` was moved and can no longer be used
+  --> main.sg:4:11
+ 4 |     print(names.length())
+   |           ^^^^^
+  it was moved here:
+  --> main.sg:3:16
+ 3 |     var kept = names
+   |                ^^^^^`;
+
+// Time of SG divided by time of C, the same C compiler with -O2 (interpreter/README.md, "The C back end").
+const measured = [
+  ['Recursive `fib(40)`', '0.98'],
+  ['A linked list of a million nodes, built, walked and freed', '1.01'],
+  ['A list of a million numbers, filled, changed, added up', '1.02'],
+  ['Three hundred million lookups that give back a borrow or nothing', '1.01'],
+  ['Counting in a hash table, with a keyed hash against crafted keys', '1.20'],
+  ['Printing two million structs', '0.57'],
+];
 
 const pillars = [
   {
@@ -92,8 +124,50 @@ export default function Home() {
             </p>
           </div>
           <div className={styles.sampleCode}>
-            <CodeBlock language="sg">{sample}</CodeBlock>
+            <CodeBlock language="sg" title="main.sg">{sample}</CodeBlock>
+            <CodeBlock language="text" title="sg main.sg">{sampleOutput}</CodeBlock>
           </div>
+        </section>
+        <section className={styles.sample}>
+          <div className={styles.sampleText}>
+            <h2>What the compiler tells you</h2>
+            <p>
+              <Words text="A value has one owner. Here the list is given to `kept`, and `names` is used after it: the program does not compile, and the message shows both lines. A use after free, a borrow that outlives its value and an error left unread are found the same way, before the program runs." />
+            </p>
+            <p>
+              <Link to="/docs/learn/book/getting-started">The book</Link> goes through the rules one at a time.
+            </p>
+          </div>
+          <div className={styles.sampleCode}>
+            <CodeBlock language="sg" title="main.sg">{mistake}</CodeBlock>
+            <CodeBlock language="text" title="sg main.sg">{mistakeMessage}</CodeBlock>
+          </div>
+        </section>
+        <section className={styles.measured}>
+          <h2>Measured against C</h2>
+          <p>
+            <Words text="Each program is written twice, in SG and in C by hand, and both go through the same C compiler with `-O2`. The time of SG divided by the time of C; 1.00 is the same speed." />
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Program</th>
+                <th>SG / C</th>
+              </tr>
+            </thead>
+            <tbody>
+              {measured.map(([program, ratio]) => (
+                <tr key={program}>
+                  <td><Words text={program} /></td>
+                  <td className={styles.ratio}>{ratio}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className={styles.small}>
+            Small programs on two machines, macOS and Windows on Arm, not proof. With a plain hash the hash table is 0.99.{' '}
+            <Link href="https://github.com/selcukgural/sg-lang/blob/main/interpreter/README.md#the-c-back-end">All the numbers, and how they were taken</Link>
+          </p>
         </section>
         <section className={styles.built}>
           <h2>Built with it</h2>
@@ -105,9 +179,27 @@ export default function Home() {
             ))}
           </ul>
         </section>
+        <section className={styles.tryIt}>
+          <div>
+            <h2>Try it</h2>
+            <p>
+              <Words text="You need Rust to build `sg`, and a C compiler for compiled programs. The interpreter needs nothing more." />
+            </p>
+            <div className={styles.buttonsDark}>
+              <Link className="button button--primary" to="/docs/learn/install">Install</Link>
+              <Link className="button button--outline button--primary" to="/docs/learn/tour">Take the tour</Link>
+            </div>
+          </div>
+          <CodeBlock language="bash">{`git clone https://github.com/selcukgural/sg-lang
+cd sg-lang/interpreter
+cargo build --release
+target/release/sg examples/stack.sg`}</CodeBlock>
+        </section>
         <section className={styles.pasha}>
-          <img src="/img/pasha.png" alt="Pasha, the cat of SG" width="160" height="160" loading="lazy" />
-          <p>Pasha, the cat of SG.</p>
+          <img src="/img/pasha.png" alt="Pasha, a white Van cat with one blue and one amber eye, curled up in a circle" width="200" height="200" loading="lazy" />
+          <p>
+            <strong>Pasha</strong>, the cat of SG: a Van cat, one eye blue and one amber.
+          </p>
         </section>
       </main>
     </Layout>
