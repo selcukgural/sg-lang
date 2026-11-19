@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><title>Pasha, small sizes</title>
+<circle cx="128" cy="128" r="128" fill="#0028A6"/>
+<path fill="#FFFFFF" d="M58 34 L102 72 Q128 64 154 72 L198 34 Q216 70 216 112 C216 158 178 178 128 178 C78 178 40 158 40 112 Q40 70 58 34Z"/>
+<path fill="#FD6E7A" d="M68 58 L94 80 Q80 88 72 98 Q64 78 68 58Z M188 58 L162 80 Q176 88 184 98 Q192 78 188 58Z"/>
+<circle cx="90" cy="124" r="23" fill="#011E65"/>
+<circle cx="90" cy="124" r="18" fill="#01C5FE"/>
+<circle cx="98" cy="122" r="11" fill="#011E65"/>
+<circle cx="101" cy="117" r="4.5" fill="#FFFFFF"/>
+<circle cx="166" cy="124" r="23" fill="#011E65"/>
+<circle cx="166" cy="124" r="18" fill="#FDA402"/>
+<circle cx="158" cy="122" r="11" fill="#011E65"/>
+<circle cx="155" cy="117" r="4.5" fill="#FFFFFF"/>
+<path fill="#FD6E7A" d="M116 150 Q128 146 140 150 L128 162Z"/>
+<circle cx="128" cy="214" r="30" fill="#FFFFFF"/>
+<circle cx="128" cy="214" r="20" fill="#43D6FD"/>
+<circle cx="128" cy="214" r="10" fill="#011E65"/>
+</svg>

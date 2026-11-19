@@ -10,8 +10,15 @@ const repo = 'https://github.com/selcukgural/sg-lang';
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'SG',
-  tagline: 'As fast and small as C, memory safe like Rust, written like C#.',
+  tagline: 'Safe by design. Fast by default.',
   favicon: 'img/favicon.svg',
+  // The icons of the logo (choice 1405), made by brand/src/build.py: the S-cat in white on a navy tile.
+  headTags: [
+    { tagName: 'link', attributes: { rel: 'icon', href: '/favicon.ico', sizes: '48x48' } },
+    { tagName: 'link', attributes: { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' } },
+    { tagName: 'link', attributes: { rel: 'manifest', href: '/site.webmanifest' } },
+    { tagName: 'meta', attributes: { name: 'theme-color', content: '#021A50' } },
+  ],
   url: 'https://sg-lang.org',
   baseUrl: '/',
   trailingSlash: false,
@@ -46,10 +53,10 @@ const config = {
     /** @type {import('@docusaurus/preset-classic').ThemeConfig} */
     ({
       colorMode: { respectPrefersColorScheme: true },
-      image: 'img/pasha.png',
+      image: 'img/social-card.png',
       navbar: {
         title: 'SG',
-        logo: { alt: 'SG', src: 'img/logo.svg' },
+        logo: { alt: 'SG', src: 'img/logo.svg', srcDark: 'img/logo-dark.svg' },
         items: [
           { type: 'docSidebar', sidebarId: 'learn', position: 'left', label: 'Learn' },
           { type: 'docSidebar', sidebarId: 'reference', position: 'left', label: 'Reference' },

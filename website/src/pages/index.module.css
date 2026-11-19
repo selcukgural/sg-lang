@@ -58,17 +58,21 @@
 }
 
 .sample {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
-  gap: 2rem;
   max-width: 72rem;
-  margin: 3rem auto;
+  margin: 3rem auto 2rem;
   padding: 0 1rem;
+}
+
+.sampleRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.9fr);
+  gap: 2rem;
   align-items: start;
+  padding-top: 0.5rem;
 }
 
 @media (max-width: 860px) {
-  .sample {
+  .sampleRow {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -77,18 +81,28 @@
   margin-top: -0.5rem;
 }
 
-.measured {
+.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 3rem;
   max-width: 72rem;
-  margin: 3rem auto;
+  margin: 2rem auto;
   padding: 0 1rem;
+  align-items: start;
 }
 
-.measured table {
+@media (max-width: 860px) {
+  .pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.table {
   display: table;
   width: 100%;
 }
 
-.measured th {
+.table th {
   text-align: left;
 }
 
@@ -97,6 +111,10 @@
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   white-space: nowrap;
+}
+
+.built li {
+  margin-bottom: 0.6rem;
 }
 
 .small {
@@ -109,7 +127,7 @@
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
   gap: 2rem;
   max-width: 72rem;
-  margin: 3rem auto;
+  margin: 2rem auto;
   padding: 0 1rem;
   align-items: start;
 }
@@ -126,19 +144,27 @@
   flex-wrap: wrap;
 }
 
-.built {
-  max-width: 72rem;
-  margin: 3rem auto;
-  padding: 0 1rem;
-}
-
 .pasha {
-  text-align: center;
-  max-width: 36rem;
-  margin: 3rem auto 4rem;
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: center;
+  max-width: 72rem;
+  margin: 1rem auto 3rem;
   padding: 0 1rem;
 }
 
 .pasha img {
   border-radius: 50%;
+}
+
+.pasha p {
+  margin: 0;
+}
+
+/* The outline buttons sit on the dark hero in both colour modes, so their text is white in both
+   (Infima gives an outline button the page's text colour, which is dark in the light mode). */
+.buttons :global(.button.button--secondary.button--outline:not(.button--active):not(:hover)) {
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.75);
 }

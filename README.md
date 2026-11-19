@@ -1,4 +1,11 @@
-<h1 align="center">SG</h1>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/logo/sg-lang-horizontal-dark.svg">
+    <img src="brand/logo/sg-lang-horizontal.svg" alt="sg-lang: a cat whose head and body make an S, with one blue and one amber eye" width="400">
+  </picture>
+</p>
+
+<p align="center"><strong>Safe by design. Fast by default.</strong></p>
 
 <p align="center">
   <a href="https://sg-lang.org">Web site</a> ·
@@ -6,12 +13,6 @@
   <a href="https://sg-lang.org/docs/learn/book/getting-started">Book</a> ·
   <a href="https://sg-lang.org/docs/learn/install">Install</a> ·
   <a href="https://sg-lang.org/docs/status">Status</a>
-</p>
-
-<p align="center">
-  <img src="brand/pasha.png" alt="Pasha, a white Van cat with one blue and one amber eye, curled up in a circle" width="200">
-  <br>
-  <em>Pasha, the mascot of SG</em>
 </p>
 
 SG is a small systems language: about as small and as fast as C, memory safe like Rust, and
@@ -251,7 +252,7 @@ SG rules out. It is taken up when the language is further along.
 | [sources](sources/reading-list.md) | Reading list: books, Hylo, Vale, Rust writings, tools |
 | [website](website/README.md) | The web site, [sg-lang.org](https://sg-lang.org), built with Docusaurus |
 | [editors](editors) | The extension for VS Code, which runs `sg lsp` |
-| [brand](brand) | Pasha, the mascot |
+| [brand](brand) | The logo, its icons and how they are made; Pasha, the mascot, and Pasha's badge |
 
 If you read one design document, read
 [decisions and open questions](design/04-decisions-and-open-questions.md): every decision with
@@ -309,7 +310,9 @@ Licensed under either of
 at your option. This is the way Rust is licensed. It covers the design documents, the
 interpreter and the back end, and the C that `sg build` writes into a compiled program: a
 program written in SG is yours, under whatever license you choose. The same license covers the
-picture of Pasha, the mascot (`brand/pasha.png`). The Unicode tables
+picture of Pasha, the mascot (`brand/pasha.png`), and the logo (`brand/`). The letters of the
+wordmark are outlines of the Outfit font, and the font in `brand/src/` is under the SIL Open Font
+License 1.1 (`brand/src/OFL-Outfit.txt`). The Unicode tables
 (`interpreter/src/unicode_tables.rs`) are made from the Unicode Character Database, under the
 Unicode License v3, whose notice is at the top of that file.
 

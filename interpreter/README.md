@@ -8572,6 +8572,16 @@ Approved on 19 November 2026, after the slice was written:
      message of the compiler, the measurements against C and how to try it; `npm run check` runs the mistake
      too, and compares both with what the page shows. The root README starts with what SG is and links into the
      site. The logo is not chosen yet: the site keeps its simple mark until one is.
+1405. **The logo and the tagline**: the logo is the S-cat, a cat whose head and body make an S, with one blue
+     and one amber eye, in navy. A second version keeps a sky band under the S for large, colourful places,
+     and Pasha's badge (Pasha's face in a cobalt circle with a nazar bead) is the mascot's. Both were first drawn
+     as raster images; `brand/src/build.py` redraws them as vector art, sets the name **sg-lang** in Outfit
+     (SIL OFL 1.1) and exports the lockups and the web icons. The site takes its favicon, icons, manifest and
+     social card from `brand/`, its front page opens with the mark drawing itself (CSS only, still for reduced
+     motion), and the root README starts with the logo. The tagline is **Safe by design.
+     Fast by default.**, with no other language in it, and the front page's three pillars are called Small
+     and fast, Memory safe, and Reads plainly. This replaces the simple nazar bead of 1387; the site keeps
+     its colours.
 
 With 1403, 448 of the 1806 programs are compiled on macOS and on Linux (102 under the thread sanitizer), and the
 214 programs of the site run as they show.

@@ -1,10 +1,12 @@
-// The front page (choices 1384 and 1404): what SG promises, three pillars, a program and what it prints, a
-// mistake and what the compiler says of it, measurements against C, what was built with it, how to try it,
-// and Pasha.
+// The front page (choices 1384, 1404 and 1405): what SG promises, three pillars, a program and what it prints
+// beside a mistake and what the compiler says of it (two tabs), measurements against C beside what was built
+// with it, how to try it, and Pasha.
 import React from 'react';
 import Link from '@docusaurus/Link';
 import Layout from '@theme/Layout';
 import CodeBlock from '@theme/CodeBlock';
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 import styles from './index.module.css';
 
 // Text with `code` in backticks, as the docs write it.
@@ -69,15 +71,15 @@ const measured = [
 
 const pillars = [
   {
-    title: 'As fast and small as C',
+    title: 'Small and fast',
     text: 'SG compiles through C, with no garbage collector and no runtime to carry. A check that safety does not need is left out by default; the checked way is one word away.',
   },
   {
-    title: 'Memory safe like Rust',
+    title: 'Memory safe',
     text: 'Ownership and borrows are checked when the program compiles. What depends on data, an index or an overflow, stops the program with a message that says what to write instead. `unsafe` marks the rest.',
   },
   {
-    title: 'Written like C#',
+    title: 'Reads plainly',
     text: 'Types come first, blocks have braces and lines need no semicolons. `read` and `ref` say what a function does with what it is given. An error says what is wrong and what to write.',
   },
 ];
@@ -91,12 +93,12 @@ const built = [
 
 export default function Home() {
   return (
-    <Layout title="SG" description="SG: a small systems language, as fast and small as C, memory safe like Rust, written like C#.">
+    <Layout title="SG" description="SG, a small systems language: safe by design, fast by default.">
       <header className={styles.hero}>
         <div className={styles.heroInner}>
-          <img className={styles.mark} src="/img/logo.svg" alt="" width="96" height="96" />
+          <img className={styles.mark} src="/img/logo-hero.svg" alt="" width="160" height="160" />
           <h1 className={styles.title}>SG</h1>
-          <p className={styles.tagline}>A small systems language: as fast and small as C, memory safe like Rust, written like C#.</p>
+          <p className={styles.tagline}>Safe by design. Fast by default.</p>
           <div className={styles.buttons}>
             <Link className="button button--secondary button--lg" to="/docs/learn/tour">Take the tour</Link>
             <Link className="button button--outline button--secondary button--lg" to="/docs/learn/book/getting-started">Read the book</Link>
@@ -117,68 +119,75 @@ export default function Home() {
           ))}
         </section>
         <section className={styles.sample}>
-          <div className={styles.sampleText}>
-            <h2>What it looks like</h2>
-            <p>
-              <Words text="A function borrows the list it is given (`read`), gives a `Result`, and the caller looks at both ways. Nothing is copied, nothing is freed by hand, and the same program runs in the interpreter and compiled through C." />
-            </p>
-          </div>
-          <div className={styles.sampleCode}>
-            <CodeBlock language="sg" title="main.sg">{sample}</CodeBlock>
-            <CodeBlock language="text" title="sg main.sg">{sampleOutput}</CodeBlock>
-          </div>
+          <h2>What it looks like</h2>
+          <Tabs>
+            <TabItem value="program" label="A program" default>
+              <div className={styles.sampleRow}>
+                <p>
+                  <Words text="A function borrows the list it is given (`read`), gives a `Result`, and the caller looks at both ways. Nothing is copied, nothing is freed by hand, and the same program runs in the interpreter and compiled through C." />
+                </p>
+                <div className={styles.sampleCode}>
+                  <CodeBlock language="sg" title="main.sg">{sample}</CodeBlock>
+                  <CodeBlock language="text" title="sg main.sg">{sampleOutput}</CodeBlock>
+                </div>
+              </div>
+            </TabItem>
+            <TabItem value="mistake" label="A mistake">
+              <div className={styles.sampleRow}>
+                <div>
+                  <p>
+                    <Words text="A value has one owner. Here the list is given to `kept`, and `names` is used after it: the program does not compile, and the message shows both lines. A use after free, a borrow that outlives its value and an error left unread are found the same way, before the program runs." />
+                  </p>
+                  <p>
+                    <Link to="/docs/learn/book/getting-started">The book</Link> goes through the rules one at a time.
+                  </p>
+                </div>
+                <div className={styles.sampleCode}>
+                  <CodeBlock language="sg" title="main.sg">{mistake}</CodeBlock>
+                  <CodeBlock language="text" title="sg main.sg">{mistakeMessage}</CodeBlock>
+                </div>
+              </div>
+            </TabItem>
+          </Tabs>
         </section>
-        <section className={styles.sample}>
-          <div className={styles.sampleText}>
-            <h2>What the compiler tells you</h2>
+        <div className={styles.pair}>
+          <section>
+            <h2>Measured against C</h2>
             <p>
-              <Words text="A value has one owner. Here the list is given to `kept`, and `names` is used after it: the program does not compile, and the message shows both lines. A use after free, a borrow that outlives its value and an error left unread are found the same way, before the program runs." />
+              <Words text="Each program is written twice, in SG and in C by hand, and both go through the same C compiler with `-O2`. The time of SG divided by the time of C; 1.00 is the same speed." />
             </p>
-            <p>
-              <Link to="/docs/learn/book/getting-started">The book</Link> goes through the rules one at a time.
-            </p>
-          </div>
-          <div className={styles.sampleCode}>
-            <CodeBlock language="sg" title="main.sg">{mistake}</CodeBlock>
-            <CodeBlock language="text" title="sg main.sg">{mistakeMessage}</CodeBlock>
-          </div>
-        </section>
-        <section className={styles.measured}>
-          <h2>Measured against C</h2>
-          <p>
-            <Words text="Each program is written twice, in SG and in C by hand, and both go through the same C compiler with `-O2`. The time of SG divided by the time of C; 1.00 is the same speed." />
-          </p>
-          <table>
-            <thead>
-              <tr>
-                <th>Program</th>
-                <th>SG / C</th>
-              </tr>
-            </thead>
-            <tbody>
-              {measured.map(([program, ratio]) => (
-                <tr key={program}>
-                  <td><Words text={program} /></td>
-                  <td className={styles.ratio}>{ratio}</td>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>Program</th>
+                  <th>SG / C</th>
                 </tr>
+              </thead>
+              <tbody>
+                {measured.map(([program, ratio]) => (
+                  <tr key={program}>
+                    <td><Words text={program} /></td>
+                    <td className={styles.ratio}>{ratio}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className={styles.small}>
+              Small programs on two machines, macOS and Windows on Arm, not proof. With a plain hash the hash table is 0.99.{' '}
+              <Link href="https://github.com/selcukgural/sg-lang/blob/main/interpreter/README.md#the-c-back-end">All the numbers, and how they were taken</Link>
+            </p>
+          </section>
+          <section>
+            <h2>Built with it</h2>
+            <ul className={styles.built}>
+              {built.map(([name, what]) => (
+                <li key={name}>
+                  <strong>{name}</strong>: <Words text={what} />
+                </li>
               ))}
-            </tbody>
-          </table>
-          <p className={styles.small}>
-            Small programs on two machines, macOS and Windows on Arm, not proof. With a plain hash the hash table is 0.99.{' '}
-            <Link href="https://github.com/selcukgural/sg-lang/blob/main/interpreter/README.md#the-c-back-end">All the numbers, and how they were taken</Link>
-          </p>
-        </section>
-        <section className={styles.built}>
-          <h2>Built with it</h2>
-          <ul>
-            {built.map(([name, what]) => (
-              <li key={name}>
-                <strong>{name}</strong>: <Words text={what} />
-              </li>
-            ))}
-          </ul>
-        </section>
+            </ul>
+          </section>
+        </div>
         <section className={styles.tryIt}>
           <div>
             <h2>Try it</h2>
@@ -196,7 +205,7 @@ cargo build --release
 target/release/sg examples/stack.sg`}</CodeBlock>
         </section>
         <section className={styles.pasha}>
-          <img src="/img/pasha.png" alt="Pasha, a white Van cat with one blue and one amber eye, curled up in a circle" width="200" height="200" loading="lazy" />
+          <img src="/img/pasha.png" alt="Pasha, a white Van cat with one blue and one amber eye, curled up in a circle" width="88" height="88" loading="lazy" />
           <p>
             <strong>Pasha</strong>, the cat of SG: a Van cat, one eye blue and one amber.
           </p>
