@@ -199,6 +199,12 @@ fn missing_use(sources: &Sources, diag: &Diag) -> Option<String> {
 
 /// Parses, checks and runs a program that is one text. `print` output goes to `out`. The
 /// `test` blocks are left out, as in a normal build.
+/// Whether the standard error, a terminal, shows the colours `Log` gives its levels (choice
+/// 1455): on Windows the console is asked to take the escape sequences.
+pub fn colour_console() -> bool {
+    sys::colour_console()
+}
+
 pub fn run(src: &str, out: &mut (dyn Write + Send)) -> Result<(), Stop> {
     run_sources(&Sources::single(src, ""), out)
 }
@@ -207,7 +213,7 @@ pub fn run(src: &str, out: &mut (dyn Write + Send)) -> Result<(), Stop> {
 /// and the standard error of this process.
 pub fn run_sources(sources: &Sources, out: &mut (dyn Write + Send)) -> Result<(), Stop> {
     let mut err = std::io::stderr();
-    run_sources_in(sources, out, World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err: &mut err })
+    run_sources_in(sources, out, World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, err: &mut err })
 }
 
 /// Parses, checks and runs the program in the world it is given: its command line, its input
@@ -230,7 +236,7 @@ pub fn test_sources(sources: &Sources, out: &mut (dyn Write + Send)) -> Result<b
     on_large_stack(|| {
         let prog = check_all(sources, true)?;
         let mut err = std::io::stderr();
-        let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err: &mut err };
+        let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, err: &mut err };
         let (_, failed) = interp::run_tests(&prog, sources, out, world)?;
         Ok(failed == 0)
     })

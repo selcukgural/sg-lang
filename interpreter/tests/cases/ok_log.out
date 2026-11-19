@@ -1,0 +1,18 @@
+Info false true
+calls while Debug is off: 0
+calls while Trace is on: 2
+Off false false
+Warn true 4
+<time> INFO  started
+<time> WARN  disk 91% full
+<time> ERROR cannot open settings.json
+<time> TRACE value 7
+<time> DEBUG value 8
+<time> INFO  settings.json
+<time> INFO  thirteen
+<time> INFO  std is 3
+<time> WARN  ${jndi:ldap://example.com/a} ${env:HOME} %s {0}
+<time> INFO  login failed for bob\n2026-11-19T20:15:03.123Z INFO  admin logged in
+<time> INFO  cr\r tab\t esc\u001b[31m del\u007f nul\u0000 c1\u0085 back\\slash
+<time> INFO  rlo\u202etxt.exe zwsp\u200b bom\ufeff ls\u2028 isolate\u2066 é ü 😀
+<time> WARN  written

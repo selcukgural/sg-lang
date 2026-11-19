@@ -138,7 +138,8 @@ impl Names {
 
     /// The full name of the type or function that `written` means in the file at `at`: a name
     /// of the file's own module first, then a `public` name of a module the file names with
-    /// `use`. With a module in front (`billing.Line`) no `use` is needed.
+    /// `use`, then a type of the language's own module. With a module in front (`billing.Line`)
+    /// no `use` is needed.
     fn full(&self, written: &str, at: Span) -> Res<Option<String>> {
         let (module, uses) = self.file(at).map_or(("", &[][..]), |file| (file.module.as_str(), file.uses.as_slice()));
         let hidden = |name: &str, from: &str, full: &str| {
@@ -162,13 +163,6 @@ impl Names {
         if written == TEXT_ERROR || written == NUMBER_ERROR || written == IO_ERROR || written == CANCELLED {
             return Ok(Some(written.to_string()));
         }
-        // The types of the language's own module are seen from every module.
-        if std_types().any(|name| name == written) {
-            let full = format!("{STD_MODULE}.{written}");
-            if self.known(&full) {
-                return Ok(Some(full));
-            }
-        }
         let mut found: Vec<String> = Vec::new();
         let mut closed = None;
         for (used, _) in uses {
@@ -177,6 +171,15 @@ impl Names {
                 true if self.public.contains(&full) => found.push(full),
                 true => closed = Some((used, full)),
                 false => {}
+            }
+        }
+        // The types of the language's own module are seen from every module, after the module's
+        // own names and those of the modules it names with `use`: a type the program wrote is
+        // never taken for one the language adds later (choice 1456); `std.Log` reaches it.
+        if found.is_empty() && std_types().any(|name| name == written) {
+            let full = format!("{STD_MODULE}.{written}");
+            if self.known(&full) {
+                return Ok(Some(full));
             }
         }
         match found.len() {
@@ -1455,6 +1458,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             is_async: false,
             awaiting: false,
             unsafe_at: None,
+            log_guarded: HashSet::new(),
             writing: false,
             written: Vec::new(),
             extern_arg: false,
@@ -1526,6 +1530,7 @@ pub fn check(prog: &mut Program, src: &str, tests: bool) -> Res<()> {
             is_async: func.is_async,
             awaiting: false,
             unsafe_at: None,
+            log_guarded: HashSet::new(),
             writing: false,
             written: Vec::new(),
             extern_arg: false,
@@ -2512,6 +2517,7 @@ fn check_tests(
             is_async: false,
             awaiting: false,
             unsafe_at: None,
+            log_guarded: HashSet::new(),
             writing: false,
             written: Vec::new(),
             extern_arg: false,
@@ -4095,6 +4101,9 @@ struct LoopCx {
 
 struct Checker<'a> {
     names: &'a Names,
+    /// The calls `Log.debug(text)` and the others already put inside `if Log.isOn(...)`, by
+    /// where they start (choice 1447).
+    log_guarded: HashSet<usize>,
     consts: &'a ConstTable,
     /// The initializer of a const is being checked: what it is made of is known when the
     /// program is compiled.
@@ -5826,7 +5835,81 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// `Log.debug(text)` or `std.Log.debug(text)` as a statement: the level of the language's
+    /// `Log` it writes at, when the call is not guarded yet and `Log` is the language's, not a
+    /// variable, a const, a static or a type of the program (choice 1456).
+    fn log_level_of(&self, expr: &Expr) -> Option<&'static str> {
+        let ExprKind::Method { recv, name, .. } = &expr.kind else { return None };
+        if self.log_guarded.contains(&expr.span.start) {
+            return None;
+        }
+        let language = match &recv.kind {
+            ExprKind::Var(owner) if owner == "Log" => {
+                self.var_named("Log").is_none() && matches!(self.names.full("Log", recv.span), Ok(Some(full)) if full == format!("{STD_MODULE}.Log"))
+            }
+            ExprKind::Field { recv: module, name, .. } if name == "Log" => {
+                matches!(&module.kind, ExprKind::Var(written) if written == STD_MODULE) && self.var_named(STD_MODULE).is_none()
+            }
+            _ => false,
+        };
+        if !language {
+            return None;
+        }
+        Some(match name.as_str() {
+            "trace" => "Trace",
+            "debug" => "Debug",
+            "info" => "Info",
+            "warn" => "Warn",
+            "error" => "Error",
+            _ => return None,
+        })
+    }
+
+    /// `Log.debug(text)` becomes `if Log.isOn(std.LogLevel.Debug) { Log.debug(text) }`, so that the
+    /// text of a level that is off is never built (choice 1447); a `$"..."` given to it is made a
+    /// `string` there, inside the `if`.
+    fn guard_log(&mut self, stmt: &mut Stmt) {
+        let StmtKind::Expr(expr) = &mut stmt.kind else { return };
+        let Some(level) = self.log_level_of(expr) else { return };
+        self.log_guarded.insert(expr.span.start);
+        let span = expr.span;
+        let ExprKind::Method { recv, name_span, args, .. } = &mut expr.kind else { unreachable!("tested above") };
+        let name_span = *name_span;
+        for arg in args.iter_mut() {
+            if matches!(arg.kind, ExprKind::Interp(_)) {
+                let at = arg.span;
+                let text = std::mem::replace(arg, Expr { kind: ExprKind::Null, span: at, ty: Ty::Void, moved: false });
+                let made = Expr {
+                    kind: ExprKind::Method { recv: Box::new(text), name: "toString".to_string(), name_span: at, args: Vec::new(), callee: Callee::Plain },
+                    span: at,
+                    ty: Ty::Void,
+                    moved: false,
+                };
+                *arg = Expr { kind: ExprKind::Borrow { mutable: false, expr: Box::new(made) }, span: at, ty: Ty::Void, moved: false };
+            }
+        }
+        let at = |kind: ExprKind| Expr { kind, span: name_span, ty: Ty::Void, moved: false };
+        let owner = |name: &str| at(ExprKind::Var(name.to_string()));
+        let log = (**recv).clone();
+        // `std.LogLevel.Debug`: the language's, whatever the program names `LogLevel`; a variable
+        // named `std` hides the module, and then `LogLevel` is written alone.
+        let levels = match self.var_named(STD_MODULE) {
+            None => at(ExprKind::Field { recv: Box::new(owner(STD_MODULE)), name: "LogLevel".to_string(), name_span, index: 0 }),
+            Some(_) => owner("LogLevel"),
+        };
+        let level = at(ExprKind::Field { recv: Box::new(levels), name: level.to_string(), name_span, index: 0 });
+        let cond = Expr {
+            kind: ExprKind::Method { recv: Box::new(log), name: "isOn".to_string(), name_span, args: vec![level], callee: Callee::Plain },
+            span,
+            ty: Ty::Void,
+            moved: false,
+        };
+        let call = std::mem::replace(&mut stmt.kind, StmtKind::Break(None));
+        stmt.kind = StmtKind::If { cond, then: vec![Stmt { kind: call, span: stmt.span }], els: None, after: Vec::new() };
+    }
+
     fn stmt(&mut self, stmt: &mut Stmt) -> Res<()> {
+        self.guard_log(stmt);
         let stmt_span = stmt.span;
         match &mut stmt.kind {
             StmtKind::Let { ty, name, name_span, init } => {
@@ -9623,6 +9706,11 @@ impl<'a> Checker<'a> {
                     (None, None) => handled_all = true,
                 },
             }
+            // `Some(v) => Log.debug(...)`: the call goes into the body, where it is guarded.
+            if unused && arm.value.as_ref().is_some_and(|value| self.log_level_of(value).is_some()) {
+                let value = arm.value.take().expect("tested above");
+                arm.body.push(Stmt { span: value.span, kind: StmtKind::Expr(value) });
+            }
             for stmt in arm.body.iter_mut() {
                 self.stmt(stmt)?;
             }
@@ -11596,6 +11684,7 @@ impl<'a> Checker<'a> {
             "makeTempFile" => (SystemCall::MakeTempFile, vec![text()], io(Ty::Str)),
             "tempFolder" => (SystemCall::TempFolder, Vec::new(), io(Ty::Str)),
             "variable" => (SystemCall::Variable, vec![text(), Ty::Ref(Box::new(Ty::List(Box::new(Ty::Int(IntTy::Byte)))))], Ty::Bool),
+            "colourTerminal" => (SystemCall::ColourTerminal, Vec::new(), Ty::Bool),
             "executable" => (SystemCall::Executable, vec![text()], Ty::Int(IntTy::Long)),
             "run" => {
                 let texts = || Ty::Read(Box::new(Ty::List(Box::new(Ty::Str))));

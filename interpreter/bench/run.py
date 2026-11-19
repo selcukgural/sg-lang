@@ -39,7 +39,7 @@ PROGRAMS = """fib primes collatz words list expr parse vector counts show lookup
 numbers floats fields lines copy bytes table blocks keywords classes rewrite tree tasks async
 asynclines tasklist asynccopy echo echosync echowork netlines ring crc deflate clock dates rng
 secure listing status spawn capture pipelines pipesasync spawnasync case letters udpecho
-udpechosync inline callback sqlite curl signals bitfields atomics queue statics checksum sha256 json""".split()
+udpechosync inline callback sqlite curl signals bitfields atomics queue statics checksum sha256 json log""".split()
 
 
 def compiler():

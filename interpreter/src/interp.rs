@@ -1806,6 +1806,9 @@ pub struct World<'w> {
     /// a thread of its own, and a cancel can end the wait. Input in memory or in a file is
     /// read where it is asked for.
     pub input_waits: bool,
+    /// The standard error is a terminal that shows colours: `System.colourTerminal()`, which
+    /// `Log` asks (choice 1455). False where `err` is not the standard error.
+    pub err_colour: bool,
     pub err: &'w mut (dyn Write + Send + 'static),
 }
 
@@ -2365,7 +2368,7 @@ fn run_consts(prog: &Program, src: &str, given: &BTreeMap<String, (Ty, ConstVal)
     let sources = crate::source::Sources::single(src, "");
     let mut sink = std::io::sink();
     let mut err = std::io::sink();
-    let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err: &mut err };
+    let world = World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, err: &mut err };
     let io = shared(&mut sink, world, crate::ffi::Library::default(), &sources);
     let steps = counted.then(|| std::cell::Cell::new(CONST_STEPS));
     let mut consts = Consts { inits: HashMap::new(), given, embeds: &prog.embeds, cells: RefCell::new(HashMap::new()), finding: RefCell::new(Vec::new()), steps, static_values: HashMap::new(), static_inits: HashMap::new(), statics: RefCell::new(HashMap::new()), static_waits: RefCell::new(HashMap::new()) };
@@ -6196,6 +6199,9 @@ impl<'a, 'e> Interp<'a, 'e> {
             SystemCall::Move | SystemCall::Replace | SystemCall::Copy => 2,
             _ => 1,
         };
+        if call == SystemCall::ColourTerminal {
+            return Ok(Value::Bool(self.io.world.borrow().err_colour));
+        }
         if call == SystemCall::Executable {
             return Ok(Value::Int(IntTy::Long, executable(&text(0))));
         }
@@ -6317,7 +6323,8 @@ impl<'a, 'e> Interp<'a, 'e> {
             | SystemCall::SignalNextAsync
             | SystemCall::SignalStop
             | SystemCall::SignalRaise
-            | SystemCall::SignalNumber => unreachable!("done above"),
+            | SystemCall::SignalNumber
+            | SystemCall::ColourTerminal => unreachable!("done above"),
             SystemCall::Variable => {
                 let name = text(0);
                 // A name with `=` or a zero byte in it is no variable's name.

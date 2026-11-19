@@ -1,0 +1,63 @@
+// Log (choices 1412, 1416, 1417, 1447-1455): lines to the standard error, `<time>` in this file
+// standing for the time of each (tests/golden.rs); a level that is off builds no text and runs no
+// call inside it; a message is written as it was given, its control characters escaped, so one
+// line is always one call. The same interpreted and compiled.
+
+int counted(ref int calls, int value) {
+    calls += 1
+    return value
+}
+
+// A variable named `std` hides the module; the line is guarded all the same.
+void hidden() {
+    var std = 3
+    Log.info($"std is {std}")
+}
+
+void main() {
+    // `Info` and above when `SG_LOG` is not set.
+    print($"{Log.level()} {Log.isOn(LogLevel.Debug)} {Log.isOn(LogLevel.Info)}")
+    Log.trace("not written")
+    Log.debug("not written")
+    Log.info("started")
+    Log.warn("disk 91% full")
+    Log.error("cannot open settings.json")
+
+    // A level that is off builds no text: the call inside it does not run (1447).
+    var calls = 0
+    Log.debug($"value {counted(ref calls, 7)}")
+    print($"calls while Debug is off: {calls}")
+    Log.setLevel(LogLevel.Trace)
+    Log.trace($"value {counted(ref calls, 7)}")
+    Log.debug($"value {counted(ref calls, 8)}")
+    print($"calls while Trace is on: {calls}")
+
+    // A text of the program, lent as any `read string` is.
+    var name = "settings.json"
+    Log.info(read name)
+    match name.length() {
+        13 => Log.info("thirteen")
+        _ => {}
+    }
+
+    hidden()
+
+    // Nothing in a message is looked up (1416).
+    Log.warn("${jndi:ldap://example.com/a} ${env:HOME} %s {0}")
+
+    // A forged line stays on the line of its call (1417), and nothing that drives a terminal or
+    // turns the text around goes out as it is.
+    var user = "bob\n2026-11-19T20:15:03.123Z INFO  admin logged in"
+    Log.info($"login failed for {user}")
+    Log.info("cr\r tab\t esc\u{1b}[31m del\u{7f} nul\u{0} c1\u{85} back\\slash")
+    Log.info("rlo\u{202e}txt.exe zwsp\u{200b} bom\u{feff} ls\u{2028} isolate\u{2066} é ü 😀")
+
+    // `Off` writes nothing, and a level is a value.
+    Log.setLevel(LogLevel.Off)
+    Log.error("not written")
+    print($"{Log.level()} {Log.isOn(LogLevel.Error)} {Log.isOn(LogLevel.Off)}")
+    Log.setLevel(LogLevel.Warn)
+    print($"{Log.level()} {LogLevel.Warn > LogLevel.Info} {(byte)LogLevel.Error}")
+    Log.info("not written")
+    Log.warn("written")
+}

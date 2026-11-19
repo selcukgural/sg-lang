@@ -70,6 +70,9 @@ extern "system" {
     fn GetExitCodeProcess(process: Handle, code: *mut u32) -> Bool;
     fn TerminateProcess(process: Handle, code: u32) -> Bool;
     fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
+    fn GetStdHandle(which: u32) -> Handle;
+    fn GetConsoleMode(console: Handle, mode: *mut u32) -> Bool;
+    fn SetConsoleMode(console: Handle, mode: u32) -> Bool;
 }
 
 #[link(name = "advapi32")]
@@ -554,6 +557,23 @@ pub(crate) fn make_temp(template: &str, file: bool) -> std::io::Result<String> {
 /// The folder for files that do not have to stay, as `GetTempPath2W` gives it where Windows has
 /// it (a folder of the system's own for a service), and `GetTempPathW` before; without the `\` at
 /// its end.
+/// Whether the console of the standard error takes the escape sequences of colours, turned on
+/// here when it does not yet (`ENABLE_VIRTUAL_TERMINAL_PROCESSING`); an old console that refuses
+/// them shows no colour, never the sequences (choice 1455).
+pub(crate) fn colour_console() -> bool {
+    const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    const VIRTUAL_TERMINAL: u32 = 0x0004;
+    let mut mode = 0u32;
+    // SAFETY: the handle of the standard error, and a mode read into a local.
+    unsafe {
+        let console = GetStdHandle(STD_ERROR_HANDLE);
+        if GetConsoleMode(console, &mut mode) == 0 {
+            return false;
+        }
+        mode & VIRTUAL_TERMINAL != 0 || SetConsoleMode(console, mode | VIRTUAL_TERMINAL) != 0
+    }
+}
+
 pub(crate) fn temp_folder() -> String {
     type GetTempPath2W = unsafe extern "system" fn(u32, *mut u16) -> u32;
     static FOUND: OnceLock<Option<GetTempPath2W>> = OnceLock::new();

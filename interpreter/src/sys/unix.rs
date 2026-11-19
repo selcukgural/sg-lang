@@ -484,6 +484,11 @@ pub(crate) fn library_symbol(handle: *mut std::ffi::c_void, name: &str) -> Resul
 
 /// The folder for files that do not have to stay, as the system gives it. Only Windows asks:
 /// on Linux and macOS the language's own module reads `TMPDIR` itself.
+/// A terminal of Linux or macOS takes the escape sequences of colours as they are (choice 1455).
+pub(crate) fn colour_console() -> bool {
+    true
+}
+
 pub(crate) fn temp_folder() -> String {
     std::env::temp_dir().to_string_lossy().into_owned()
 }

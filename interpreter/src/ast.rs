@@ -767,6 +767,9 @@ pub enum SystemCall {
     TempFolder,
     /// `System.variable(name, ref bytes)`: a variable of the environment, `false` when it is not set.
     Variable,
+    /// `System.colourTerminal()`: the standard error is a terminal that shows colours (on Windows,
+    /// a console that takes the escape sequences, turned on if it was not), for `Log` (choice 1455).
+    ColourTerminal,
     /// `System.executable(path)`: 1 for a file this program may run, 2 for a file it may not, 0
     /// for no file.
     Executable,

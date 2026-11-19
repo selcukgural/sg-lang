@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 19 November 2026, the hundred-and-twenty-eighth slice (JSON in `std`, 1411; `int? x = xs.get(i)`, 1446).
+Last brought up to date: 19 November 2026, the hundred-and-twenty-ninth slice (a log in `std`, 1412, 1447-1455; the types of a module named with `use` before those of `std`, 1456).
 
 ## Functions and variables
 
@@ -371,6 +371,7 @@ Last brought up to date: 19 November 2026, the hundred-and-twenty-eighth slice (
 | `stock::total(&xs)` | `stock.total(read xs)` | built | The full name works without `use` |
 | `pub` | `public` | built | On a type, a function, a field, a method |
 | `pub(crate)` | none | not in SG | A name is seen in its module or everywhere |
+| The prelude (`Option`, `Vec`, ...), shadowed by what is imported | the types of `std` (`Log`, `Json`, ...), seen everywhere | built | A type of the module or of a module named with `use` comes first; `std.Log` reaches the language's |
 
 ## Files and input
 
@@ -562,6 +563,19 @@ Last brought up to date: 19 November 2026, the hundred-and-twenty-eighth slice (
 | `json!({"a": 1})` | `var o = JsonObject()`, `o.add("a", JsonValue.Integer(1))` | built | No macros |
 | `#[derive(Serialize, Deserialize)]` | `toJson` and `fromJson` written by hand | | No reflection or macros |
 | `serde_json::Deserializer::from_reader(...).into_iter()` | none yet | | The whole text is read first |
+
+## Log
+
+| Rust | SG | Status | Note |
+|---|---|---|---|
+| `log::info!("listening on {port}")` (with `env_logger`) | `Log.info($"listening on {port}")` | built | To the standard error, `2026-11-19T20:15:03.123Z INFO  listening on 8080`; nothing to set up |
+| `trace!`, `debug!`, `warn!`, `error!` | `Log.trace`, `Log.debug`, `Log.warn`, `Log.error` | built | A level that is off builds no text and runs no call inside it, as the macros do |
+| `log::set_max_level(LevelFilter::Debug)` | `Log.setLevel(LogLevel.Debug)` | built | `LogLevel.Off` writes nothing |
+| `log::max_level()`, `log_enabled!(Level::Debug)` | `Log.level()`, `Log.isOn(LogLevel.Debug)` | built | |
+| `RUST_LOG=debug` | `SG_LOG=debug` | built | One level for the program, in any case; a value that is no level is told and `Info` is used |
+| `RUST_LOG=my_crate=debug`, targets | none | | One level for the whole program |
+| `env_logger`'s colours, `RUST_LOG_STYLE` | colours on a terminal, `NO_COLOR` | built | Only the level is coloured; no way to force colours on |
+| `log::info!(target: ..., key = value; ...)`, `tracing` spans | none yet | | No structured fields, files or rotation |
 
 ## Tests and the tools
 

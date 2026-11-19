@@ -1,0 +1,221 @@
+// Lines of a log, written to the standard error: `Log.info($"listening on {port}")` writes
+// `2026-11-19T20:15:03.123Z INFO  listening on 8080`, the time in UTC to the millisecond. Written
+// in SG and brought along by the language (choices 1412, 1416, 1417, 1447-1455).
+//
+// The compiler writes `Log.debug(text)` as `if Log.isOn(LogLevel.Debug) { Log.debug(text) }`, so
+// the text of a level that is off is never built: a call inside it does not run either (1447).
+//
+// The text of a message is never read for anything in it: no `${...}` is looked up and no
+// pattern takes arguments; what is given is written, its control characters escaped, so that
+// one line always comes from one call (1416, 1417).
+
+// The levels, from the most said to the least; `Off` writes nothing.
+public enum LogLevel : byte, Copyable, Equatable, Hashable, Comparable, Formattable {
+    Trace = 0
+    Debug
+    Info
+    Warn
+    Error
+    Off
+}
+
+// The level lines are written from, as its number: `SG_LOG` the first time a line is asked for
+// (`Info` when it is not set), then what `Log.setLevel` gives. A line that is off costs the load
+// and the branch of a static found the first time it is read, one load and a compare.
+static atomic int LogFrom = atomic logStartLevel()
+// The level is coloured: the standard error is a terminal, and neither `NO_COLOR` nor
+// `TERM=dumb` asks for no colour (1455).
+static bool LogColour = logColourOn()
+
+public struct Log {
+    public void trace(read string message) {
+        logWrite(LogLevel.Trace, message)
+    }
+
+    public void debug(read string message) {
+        logWrite(LogLevel.Debug, message)
+    }
+
+    public void info(read string message) {
+        logWrite(LogLevel.Info, message)
+    }
+
+    public void warn(read string message) {
+        logWrite(LogLevel.Warn, message)
+    }
+
+    public void error(read string message) {
+        logWrite(LogLevel.Error, message)
+    }
+
+    // From now on, lines of `level` and above are written; `Off` writes none. Any task may set
+    // it, and what it set is seen by the others' next lines.
+    public void setLevel(LogLevel level) {
+        LogFrom.store((int)(byte)level, MemoryOrder.Relaxed)
+    }
+
+    public LogLevel level() {
+        return LogLevel.fromValue((byte)LogFrom.load(MemoryOrder.Relaxed)) ?? LogLevel.Info
+    }
+
+    // A line of `level` would be written: `if Log.isOn(LogLevel.Debug) { ... }` around work
+    // done only for the log.
+    public bool isOn(LogLevel level) {
+        return level != LogLevel.Off && (int)(byte)level >= LogFrom.load(MemoryOrder.Relaxed)
+    }
+}
+
+void logWrite(LogLevel level, read string message) {
+    if Log.isOn(level) {
+        logLine(level, message)
+    }
+}
+
+// The line is made whole, then written at once, so that lines of tasks never mix.
+void logLine(LogLevel level, read string message) {
+    var line = string.withCapacity(message.length() + 48)
+    var now = DateTime.now()
+    long seconds = floorDivide(now.ns, 1000000000)
+    long millis = floorModulo(now.ns, 1000000000) / 1000000
+    var date = civilFromDays(floorDivide(seconds, 86400))
+    var time = floorModulo(seconds, 86400)
+    line.write($"{date.year:D4}-{date.month:D2}-{date.day:D2}T{time / 3600:D2}:{time / 60 % 60:D2}:{time % 60:D2}.{millis:D3}Z ")
+    var name = "TRACE"
+    var colour = "\u{1b}[90m"
+    match level {
+        Trace => {}
+        Debug => {
+            name = "DEBUG"
+            colour = "\u{1b}[34m"
+        }
+        Info => {
+            name = "INFO "
+            colour = "\u{1b}[32m"
+        }
+        Warn => {
+            name = "WARN "
+            colour = "\u{1b}[33m"
+        }
+        Error => {
+            name = "ERROR"
+            colour = "\u{1b}[1;31m"
+        }
+        Off => return
+    }
+    if LogColour {
+        line.write(colour)
+        line.write(name.trimEnd())
+        line.write("\u{1b}[0m")
+        line.write(name[name.trimEnd().length()..])
+    } else {
+        line.write(name)
+    }
+    line.write(' ')
+    logEscaped(ref line, message)
+    printError(line)
+}
+
+// The text with a backslash and every character that is not seen or that drives a terminal
+// escaped: the control characters (C0, DEL, C1), the marks of direction and the characters of no
+// width (U+200B-U+200F, U+2028-U+202E, U+2060-U+2069) and the byte order mark. `\n`, `\r` and
+// `\t` by their letter, `\\` for the backslash, the others as `\u001b`.
+void logEscaped(ref string line, read string text) {
+    var bytes = text.asBytes()
+    nint run = 0
+    nint at = 0
+    while at < bytes.length() {
+        byte c = bytes[at]
+        int code = -1
+        nint size = 1
+        if c < 32 || c == 127 || c == '\\' {
+            code = (int)c
+        } else if c == 0xC2 && at + 1 < bytes.length() && bytes[at + 1] < 0xA0 {
+            code = (int)bytes[at + 1]
+            size = 2
+        } else if (c == 0xE2 || c == 0xEF) && at + 2 < bytes.length() {
+            int found = ((int)(c & 15) << 12) | ((int)(bytes[at + 1] & 63) << 6) | (int)(bytes[at + 2] & 63)
+            if logHidden(found) {
+                code = found
+                size = 3
+            }
+        }
+        if code < 0 {
+            at += 1
+            continue
+        }
+        line.write(text[run..at])
+        if code == '\n' {
+            line.write("\\n")
+        } else if code == '\r' {
+            line.write("\\r")
+        } else if code == '\t' {
+            line.write("\\t")
+        } else if code == '\\' {
+            line.write("\\\\")
+        } else {
+            line.write("\\u")
+            for k in 0..4 {
+                line.write(LogHexDigits[(nint)(code >> (12 - 4 * k) & 15)])
+            }
+        }
+        at += size
+        run = at
+    }
+    line.write(text[run..])
+}
+
+const char[16] LogHexDigits = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' }
+
+// A character of three bytes that is not seen or that turns the text around it.
+bool logHidden(int code) {
+    return code == 0xFEFF || (code >= 0x200B && code <= 0x200F) || (code >= 0x2028 && code <= 0x202E) || (code >= 0x2060 && code <= 0x2069)
+}
+
+// The level `SG_LOG` names, any case; `Info` when it is not set or empty. A value that names no
+// level is told in a line of its own, and `Info` is used: the program goes on (1449).
+int logStartLevel() {
+    var given = ""
+    match Environment.get("SG_LOG") {
+        Ok(text) => given = text
+        Error(Missing) => return (int)(byte)LogLevel.Info
+        Error(InvalidText(_)) => {
+            logLine(LogLevel.Warn, "SG_LOG is not UTF-8, so it names no level (trace, debug, info, warn, error, off); Info is used")
+            return (int)(byte)LogLevel.Info
+        }
+    }
+    var names = string[6] { "trace", "debug", "info", "warn", "error", "off" }
+    if given.length() == 0 {
+        return (int)(byte)LogLevel.Info
+    }
+    for i in 0..6 {
+        if given.equalsIgnoreAsciiCase(names[i]) {
+            return i
+        }
+    }
+    var quoted = string.withCapacity(given.length() + 2)
+    quoted.write('"')
+    quoted.write(given)
+    quoted.write('"')
+    logLine(LogLevel.Warn, read $"SG_LOG is {quoted}, which is not a level (trace, debug, info, warn, error, off); Info is used".toString())
+    return (int)(byte)LogLevel.Info
+}
+
+bool logColourOn() {
+    match Environment.get("NO_COLOR") {
+        Ok(text) => {
+            if text.length() > 0 {
+                return false
+            }
+        }
+        Error(_) => {}
+    }
+    match Environment.get("TERM") {
+        Ok(text) => {
+            if text == "dumb" {
+                return false
+            }
+        }
+        Error(_) => {}
+    }
+    return System.colourTerminal()
+}

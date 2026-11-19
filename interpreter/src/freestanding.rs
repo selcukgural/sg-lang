@@ -104,9 +104,11 @@ fn needs(expr: &Expr) -> Option<(Span, String)> {
 }
 
 /// The functions a body calls by name, with where: also a function whose address it takes,
-/// which may be called through it.
+/// which may be called through it, and the function that gives the value of a static it reads,
+/// which the read calls the first time (`Log.isOn` reads a level that `SG_LOG` gives).
 fn calls(expr: &Expr) -> Option<(String, Span)> {
     match &expr.kind {
+        ExprKind::Static(full) => Some((static_init(full), expr.span)),
         ExprKind::Method { name, name_span, callee: Callee::Method { owner, .. }, .. } => Some((format!("{owner}.{name}"), *name_span)),
         ExprKind::Call { callee: Callee::Static { owner, name }, name_span, .. } | ExprKind::Method { callee: Callee::Static { owner, name }, name_span, .. } => {
             Some((format!("{owner}.{name}"), *name_span))

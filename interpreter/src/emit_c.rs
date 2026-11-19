@@ -8499,6 +8499,14 @@ static int sg_sys_read(int fd, uint8_t* to, int64_t n, int64_t* got) {
 static int sg_sys_close(int fd) { return CloseHandle(sg_handle(fd)) ? 0 : sg_win_error(); }
 /* Whether the input is a console, where what was printed goes out before the program waits. */
 static bool sg_sys_terminal(int fd) { DWORD mode; return GetConsoleMode(sg_handle(fd), &mode) != 0; }
+/* Whether the standard error is a console that shows colours: the escape sequences are turned on
+   when they are not yet; an old console that refuses them shows no colour (choice 1455). */
+static bool sg_sys_colour(void) {
+    HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    DWORD mode;
+    if (!h || h == INVALID_HANDLE_VALUE || !GetConsoleMode(h, &mode)) return false;
+    return (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) || SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+}
 #else
 #define SG_E_NOT_FOUND ENOENT
 #define SG_E_IS_DIR EISDIR
@@ -8514,6 +8522,7 @@ static int sg_sys_read(int fd, uint8_t* to, int64_t n, int64_t* got) {
 }
 static inline int sg_sys_close(int fd) { return close(fd) == 0 ? 0 : sg_os_error(); }
 static inline bool sg_sys_terminal(int fd) { return isatty(fd); }
+static inline bool sg_sys_colour(void) { return isatty(2); }
 /* `seek`: the file goes on from `to`, and `sg_sys_end` gives its size, `sg_sys_where` where it
    stands. A pipe or a socket is `NotSeekable` (`ESPIPE`). */
 static int sg_sys_seek(int fd, int64_t to) { return lseek(fd, (off_t)to, SEEK_SET) < 0 ? sg_os_error() : 0; }
@@ -16915,6 +16924,10 @@ impl<'a> Emitter<'a> {
                         ),
                     ),
                 }
+            }
+            SystemCall::ColourTerminal => {
+                self.made.insert("io".to_string());
+                ("sg_system_colour", Vec::new(), "return sg_sys_colour();".to_string())
             }
             SystemCall::Variable => (
                 "sg_system_variable",

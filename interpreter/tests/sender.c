@@ -8,6 +8,11 @@
 //                            A line (or the end) of its standard input closes that console, as
 //                            closing a tab of Windows Terminal does; it then ends with the
 //                            program's exit code.
+//   sender show <command line>
+//                            runs the command line in a pseudo console of its own whose output
+//                            and error are that console, and writes what the console shows (in
+//                            VT codes) to the sender's output; ends with the program's exit
+//                            code. `Log` colours its levels there (choice 1455).
 //
 // A console made with CREATE_NEW_CONSOLE and closed through its window is not closed the same
 // way on every machine: where new consoles go to a terminal of their own, the window is only a
@@ -25,13 +30,57 @@ static BOOL WINAPI kept(DWORD event) {
     return TRUE;
 }
 
-// What the pseudo console shows (in VT codes) is read and dropped, so it never waits on a full pipe.
+// Where `show` copies what the pseudo console shows; NULL for `pty`.
+static HANDLE shown_to = NULL;
+
+// What the pseudo console shows (in VT codes) is read, and copied for `show` or else dropped,
+// so it never waits on a full pipe.
 static DWORD WINAPI drain(LPVOID pipe) {
     char buffer[4096];
-    DWORD got;
+    DWORD got, put;
     while (ReadFile((HANDLE)pipe, buffer, sizeof buffer, &got, NULL) && got > 0) {
+        if (shown_to) WriteFile(shown_to, buffer, got, &put, NULL);
     }
     return 0;
+}
+
+static int show(wchar_t* line) {
+    HANDLE in_read, in_write, out_read, out_write;
+    if (!CreatePipe(&in_read, &in_write, NULL, 0) || !CreatePipe(&out_read, &out_write, NULL, 0)) return 10;
+    HPCON console;
+    COORD size = { 200, 50 };
+    if (CreatePseudoConsole(size, in_read, out_write, 0, &console) != S_OK) return 11;
+    shown_to = GetStdHandle(STD_OUTPUT_HANDLE);
+    HANDLE drainer = CreateThread(NULL, 0, drain, out_read, 0, NULL);
+    if (!drainer) return 12;
+    SIZE_T bytes = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &bytes);
+    LPPROC_THREAD_ATTRIBUTE_LIST list = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0, bytes);
+    if (!list || !InitializeProcThreadAttributeList(list, 1, 0, &bytes)) return 13;
+    if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, console, sizeof console, NULL, NULL)) return 14;
+    // No handles of the sender: the program's output and error are the pseudo console. A child
+    // takes the standard handles of its parent when they are not those of a console, so the
+    // sender lets go of its own first (it writes through `shown_to`).
+    SetStdHandle(STD_INPUT_HANDLE, NULL);
+    SetStdHandle(STD_OUTPUT_HANDLE, NULL);
+    SetStdHandle(STD_ERROR_HANDLE, NULL);
+    STARTUPINFOEXW info;
+    memset(&info, 0, sizeof info);
+    info.StartupInfo.cb = sizeof info;
+    info.lpAttributeList = list;
+    PROCESS_INFORMATION program;
+    if (!CreateProcessW(NULL, line, NULL, NULL, FALSE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, &info.StartupInfo, &program)) return 16;
+    CloseHandle(in_read);
+    CloseHandle(out_write);
+    WaitForSingleObject(program.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(program.hProcess, &code);
+    // What the console still holds is shown before it closes.
+    Sleep(500);
+    ClosePseudoConsole(console);
+    WaitForSingleObject(drainer, 5000);
+    CloseHandle(in_write);
+    return (int)code;
 }
 
 static int in_pty(wchar_t* line) {
@@ -96,6 +145,7 @@ static int in_pty(wchar_t* line) {
 
 int wmain(int argc, wchar_t** argv) {
     if (argc == 3 && wcscmp(argv[1], L"pty") == 0) return in_pty(argv[2]);
+    if (argc == 3 && wcscmp(argv[1], L"show") == 0) return show(argv[2]);
     if (argc != 3) return 2;
     FreeConsole();
     if (!AttachConsole((DWORD)_wtoi(argv[1]))) return 3;

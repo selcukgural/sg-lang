@@ -269,7 +269,7 @@ fn run_file(path: &Path) -> String {
         let run = child.wait_with_output().unwrap();
         feeding.join().unwrap();
         let text = format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
-        return with_slashes(&text.replace(&given.dir.display().to_string(), "{dir}"));
+        return log_times(&with_slashes(&text.replace(&given.dir.display().to_string(), "{dir}")));
     }
     let mut out = Vec::new();
     let mut err = Vec::new();
@@ -278,7 +278,7 @@ fn run_file(path: &Path) -> String {
         true => sg::run_tests(&src, &name, &mut out).map(|_| ()),
         false => {
             let args = given.args.iter().map(|arg| arg.clone().into_bytes()).collect();
-            let world = sg::World { args, input: Box::new(std::io::Cursor::new(given.input)), input_is_terminal: false, input_waits: false, err: &mut err };
+            let world = sg::World { args, input: Box::new(std::io::Cursor::new(given.input)), input_is_terminal: false, input_waits: false, err_colour: false, err: &mut err };
             let mut sources = sg::Sources::single(&src, "");
             // A program that tells which folders were looked in is not given those of this
             // machine.
@@ -297,7 +297,7 @@ fn run_file(path: &Path) -> String {
         Err(sg::Stop::Exit(code)) => text.push_str(&exit_line(Some(code as i32))),
         Err(other) => text.push_str(&format!("{other:?}\n")),
     }
-    text.replace(&given.dir.display().to_string(), "{dir}")
+    log_times(&text.replace(&given.dir.display().to_string(), "{dir}"))
 }
 
 /// A program of several files: `path` is its main file, or its folder. With `tests` the test
@@ -312,7 +312,7 @@ fn run_program(path: &Path, tests: bool, within: &Path) -> String {
     let result = match tests {
         true => sg::test_sources(&sources, &mut out).map(|_| ()),
         false => {
-            let world = sg::World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err: &mut err };
+            let world = sg::World { args: Vec::new(), input: Box::new(std::io::empty()), input_is_terminal: false, input_waits: false, err_colour: false, err: &mut err };
             sg::run_sources_in(&sources, &mut out, world)
         }
     };
@@ -325,12 +325,37 @@ fn run_program(path: &Path, tests: bool, within: &Path) -> String {
         Err(sg::Stop::Exit(code)) => text.push_str(&exit_line(Some(code as i32))),
         Err(other) => text.push_str(&format!("{other:?}\n")),
     }
-    let text = with_slashes(&text);
+    let text = log_times(&with_slashes(&text));
     text.replace(&format!("{}/", within.display()), "").replace(&format!("{}/", within.display()).replace('\\', "/"), "")
 }
 
 /// On Windows the place of an error is written with `\` (`--> stock\items.sg:3:5`); the
 /// output of the program is compared with these written as on Linux and macOS.
+/// The time at the start of a line of `Log` (`2026-11-19T20:15:03.123Z INFO  `) as `<time> `, so that
+/// the output of a program that logs is the same on every run (choice 1453). Only a time of
+/// exactly that form is replaced: one written otherwise shows in the difference.
+fn log_times(text: &str) -> String {
+    const FORM: &[u8] = b"0000-00-00T00:00:00.000Z ";
+    let mut shown = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let bytes = line.as_bytes();
+        let stamped = bytes.len() >= FORM.len()
+            && FORM.iter().zip(bytes).all(|(form, byte)| match form {
+                b'0' => byte.is_ascii_digit(),
+                other => other == byte,
+            })
+            && ["TRACE ", "DEBUG ", "INFO  ", "WARN  ", "ERROR "].iter().any(|level| line[FORM.len()..].starts_with(level));
+        match stamped {
+            true => {
+                shown.push_str("<time> ");
+                shown.push_str(&line[FORM.len()..]);
+            }
+            false => shown.push_str(line),
+        }
+    }
+    shown
+}
+
 fn with_slashes(text: &str) -> String {
     if !cfg!(windows) {
         return text.to_string();
@@ -702,7 +727,7 @@ fn compiled() {
         let shown = |run: &std::process::Output| {
             let text = format!("{}{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr), exit_line(run.status.code()));
             let text = text.replace(&given.dir.display().to_string(), "{dir}");
-            let text = with_slashes(&text);
+            let text = log_times(&with_slashes(&text));
             if within.is_empty() { text } else { text.replace(&within, "").replace(&within.replace('\\', "/"), "") }
         };
         let actual = shown(&run);
@@ -979,7 +1004,7 @@ fn interpreted_input_cancel() {
     let (errors, mut err) = std::io::pipe().unwrap();
     let running = std::thread::spawn(move || {
         let mut out = Vec::new();
-        let world = sg::World { args: Vec::new(), input: Box::new(input), input_is_terminal: false, input_waits: true, err: &mut err };
+        let world = sg::World { args: Vec::new(), input: Box::new(input), input_is_terminal: false, input_waits: true, err_colour: false, err: &mut err };
         let result = sg::run_sources_in(&sg::Sources::single(INPUT_CANCEL, ""), &mut out, world);
         (result.is_ok(), String::from_utf8(out).unwrap())
     });
@@ -2448,5 +2473,134 @@ fn ports_are_held_alone() {
         assert!(!shared_bind(2, datagrams), "{how}: another socket took the port of the datagram socket");
         child.stdin.take().unwrap().write_all(b"\n").unwrap();
         assert!(child.wait().unwrap().success(), "{how}: the program failed");
+    }
+}
+
+/// `Log` colours the word of the level only when the standard error is a terminal, and not with
+/// `NO_COLOR` set or `TERM=dumb` (choice 1455); into a pipe it never does (the golden files). The
+/// terminal is a pseudo terminal on Linux and macOS, and a pseudo console on Windows, made by
+/// `tests/sender.c show`, which shows what the console shows: there the console writes the
+/// colours again in codes of its own, so only that the colour is there is looked at.
+#[test]
+fn log_colours() {
+    const SOURCE: &str = "void main() {\n    Log.info(\"green\")\n    Log.error(\"red\")\n}\n";
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = root.join("target").join("log-colours");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let source = work.join("colours.sg");
+    std::fs::write(&source, SOURCE).unwrap();
+    let binary = build_compiled(SOURCE, "log-colours");
+    let terminal = Terminal::new(&work);
+    let ways: Vec<(&str, Vec<std::ffi::OsString>)> = vec![("interpreted", vec![env!("CARGO_BIN_EXE_sg").into(), source.into()]), ("compiled", vec![binary.into()])];
+    let mut failures = Vec::new();
+    for (way, command) in &ways {
+        for (setting, coloured) in [(None, true), (Some(("NO_COLOR", "1")), false), (Some(("TERM", "dumb")), false)] {
+            let shown = terminal.run(command, setting);
+            let seen = coloured_level(&shown, "INFO", "32m") && coloured_level(&shown, "ERROR", "31m");
+            let plain = shown.contains("INFO  green") && shown.contains("ERROR red");
+            if seen != coloured || (!coloured && !plain) {
+                failures.push(format!("{way} with {setting:?}: {shown:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The line of `level` has a colour that ends in `colour` before the word.
+fn coloured_level(shown: &str, level: &str, colour: &str) -> bool {
+    shown.split(['\r', '\n']).any(|line| line.find(level).is_some_and(|at| line[..at].contains(colour)))
+}
+
+#[cfg(unix)]
+struct Terminal;
+
+#[cfg(unix)]
+impl Terminal {
+    fn new(_work: &Path) -> Self {
+        Terminal
+    }
+
+    /// What `command` wrote to its standard error, a pseudo terminal.
+    fn run(&self, command: &[std::ffi::OsString], setting: Option<(&str, &str)>) -> String {
+        use std::io::Read;
+        use std::os::fd::FromRawFd;
+        extern "C" {
+            fn posix_openpt(flags: i32) -> i32;
+            fn grantpt(fd: i32) -> i32;
+            fn unlockpt(fd: i32) -> i32;
+            fn ptsname(fd: i32) -> *const std::ffi::c_char;
+            fn fcntl(fd: i32, command: i32, ...) -> i32;
+        }
+        const O_RDWR: i32 = 2;
+        const F_SETFL: i32 = 4;
+        #[cfg(target_os = "macos")]
+        const O_NONBLOCK: i32 = 4;
+        #[cfg(not(target_os = "macos"))]
+        const O_NONBLOCK: i32 = 0o4000;
+        // SAFETY: a new pseudo terminal, whose name is copied at once; the descriptor is owned by
+        // the `File` from then on.
+        let (mut master, name) = unsafe {
+            let fd = posix_openpt(O_RDWR);
+            assert!(fd >= 0 && grantpt(fd) == 0 && unlockpt(fd) == 0, "no pseudo terminal");
+            let name = std::ffi::CStr::from_ptr(ptsname(fd)).to_str().unwrap().to_string();
+            (std::fs::File::from_raw_fd(fd), name)
+        };
+        let slave = std::fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        // Kept open until what was written is read: a terminal whose last end closes may drop
+        // what it still holds (macOS).
+        let kept = slave.try_clone().unwrap();
+        let mut run = std::process::Command::new(&command[0]);
+        run.args(&command[1..]).env_remove("NO_COLOR").env("TERM", "xterm");
+        if let Some((name, value)) = setting {
+            run.env(name, value);
+        }
+        run.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(slave);
+        let mut child = run.spawn().unwrap();
+        drop(run);
+        // The few lines fit in what the terminal holds: they are read after the program ends.
+        child.wait().unwrap();
+        // SAFETY: the descriptor of `master`, open.
+        unsafe { fcntl(std::os::fd::AsRawFd::as_raw_fd(&master), F_SETFL, O_NONBLOCK) };
+        let mut shown = Vec::new();
+        let mut buffer = [0u8; 4096];
+        while let Ok(n @ 1..) = master.read(&mut buffer) {
+            shown.extend_from_slice(&buffer[..n]);
+        }
+        drop(kept);
+        String::from_utf8_lossy(&shown).into_owned()
+    }
+}
+
+#[cfg(windows)]
+struct Terminal {
+    sender: PathBuf,
+}
+
+#[cfg(windows)]
+impl Terminal {
+    fn new(work: &Path) -> Self {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let sender = program_at(work, "sender");
+        let cc = c_command().arg("-o").arg(&sender).arg(root.join("tests/sender.c")).args(system_libs(work)).output().unwrap();
+        assert!(cc.status.success(), "the C compiler rejected the sender:\n{}", String::from_utf8_lossy(&cc.stderr));
+        Terminal { sender }
+    }
+
+    /// What the pseudo console showed while `command` wrote to it.
+    fn run(&self, command: &[std::ffi::OsString], setting: Option<(&str, &str)>) -> String {
+        let mut line = std::ffi::OsString::new();
+        for part in command {
+            line.push("\"");
+            line.push(part);
+            line.push("\" ");
+        }
+        let mut run = std::process::Command::new(&self.sender);
+        run.arg("show").arg(line).env_remove("NO_COLOR").env_remove("TERM");
+        if let Some((name, value)) = setting {
+            run.env(name, value);
+        }
+        let output = run.stdin(std::process::Stdio::null()).output().unwrap();
+        String::from_utf8_lossy(&output.stdout).into_owned()
     }
 }

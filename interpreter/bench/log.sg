@@ -1,0 +1,13 @@
+// A line of `Log` at a level that is off, in a loop that does little else: a billion
+// `Log.debug($"...")` calls while the level is `Info`. The compiler puts each inside
+// `if Log.isOn(LogLevel.Debug)` (choice 1447), so the text is never built: what is left is the
+// load of the level, a static found the first time it is read (one load and one branch more),
+// and a compare. The C keeps the level in a plain atomic global and does the same test.
+void main() {
+    long sum = 0
+    for i in 0..1000000000 {
+        Log.debug($"step {i}, sum {sum}")
+        sum = sum.wrappingAdd(i ^ (sum >> 3))
+    }
+    print(sum)
+}

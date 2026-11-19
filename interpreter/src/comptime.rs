@@ -231,6 +231,7 @@ fn barred_call(callee: &Callee) -> Option<&'static str> {
         Callee::Net(_) | Callee::NetAsync(_) => "uses the network",
         Callee::System(call) => match call {
             SystemCall::Variable => "reads a variable of the environment",
+            SystemCall::ColourTerminal => "looks at the terminal",
             SystemCall::UdpSend | SystemCall::UdpReceive | SystemCall::Lookup => "uses the network",
             SystemCall::Run | SystemCall::Wait => "runs another program",
             SystemCall::SignalNext => "waits for a signal",

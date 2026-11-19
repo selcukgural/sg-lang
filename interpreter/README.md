@@ -79,6 +79,7 @@ of `tests/Containerfile` has them.
 | Bytes as text, and checksums | `Hex.encode(read data)` and `Hex.decode(text)`, `Base64.encode` and `decode` (padded) and `encodeUrl` and `decodeUrl` (unpadded), read strictly: a decoding gives `Result<List<byte>, DecodeError>`, with the place of the first byte that does not belong. `Crc32.of(read data)` is the CRC-32 of zlib, gzip, PNG and ZIP; `var c = Crc32()`, `c.update(read piece)`, `c.value()` the same piece by piece. `Sha256.of(read data)` is SHA-256 as a `byte[32]`, `var h = Sha256()`, `h.update(read piece)`, `h.finish()` piece by piece; `Hmac.sha256(read key, read data)` is HMAC-SHA-256, and `Bytes.equalInConstantTime(read a, read b)` compares a tag in a time that does not tell where it differs. Written in SG in the module `std` |
 | The command line | `var cl = CommandLine("gifcrop", "Crops GIF images.")`, then `cl.flag("verbose", 'v', "Print each step")`, `cl.option("output", 'o', "FILE", "Where to write")` (`null` for no short letter), `cl.positional("input", "The GIF to read")`, `cl.rest("files", "More GIFs")` and `cl.version("1.2.0")`; `cl.parseOrExit(read args)` gives an `Arguments` or ends the program: the help (`-h`, `--help`) or the version printed with 0, an error to the standard error with 2 and `Try 'gifcrop --help'.` `cl.parse(read args)` gives a `Result<Arguments, CommandLineError>` instead. GNU's way of writing (`--output x`, `--output=x`, `-vq`, `-ox`, options after the words, `--`, a lone `-` a word), no long name shortened, and an unknown one told the declared name nearest to it. `a.flag(name)`, `a.option(name)` (`read string?`, the last given), `a.options(name)` (all), `a.positional(name)`, `a.rest()`; a name not declared, or declared as something else, is a panic. Written in SG in the module `std` |
 | JSON | `Json.parse(text)` gives a `Result<JsonValue, JsonError>`; a `JsonValue` is `Null`, `Bool`, `Integer` (a whole number that fits a `long`), `Number` (every other), `String`, `Array` or `Object` (a `JsonObject`, its members in order). `v.get(name)`, `v.at(i)`, `asString()`, `asLong()`, `asDouble()`, `asBool()`, `asArray()`, `asObject()` give `null` for what is not there, so `doc.get("user")?.get("name")?.asString() ?? "-"` never panics; `o.add`, `o.set`, `o.remove`, `o.get`, `o.names()` on a `JsonObject`. `v.toJson()` writes it on one line (`$"{v}"` too), `v.toJsonIndented(2)` on lines. Read strictly (RFC 8259): no comments, trailing commas, `NaN` or byte order mark, a name twice an error, nesting to 128; a `JsonError` gives the line, the column and a `JsonErrorKind`. `==` compares objects in any order, `clone()` copies. A struct of the program is written and read by hand. Written in SG in the module `std` |
+| Log | `Log.trace`, `debug`, `info`, `warn` and `error` write a line to the standard error: `2026-11-19T20:15:03.123Z INFO  listening on 8080`, the time in UTC. `Log.setLevel(LogLevel.Debug)`, `Log.level()`, `Log.isOn(level)`; a program starts at `Info` or at what `SG_LOG` names. A level that is off builds no text: `Log.debug($"...")` is compiled inside `if Log.isOn(...)`, and a call in the text does not run. A message is never read for anything in it (no `${...}` lookups), and its control characters, marks of direction and backslashes are escaped, so one line is always one call. Lines of tasks never mix. The level is coloured on a terminal, not with `NO_COLOR`. Written in SG in the module `std` |
 | Folders and the environment | `File.delete(path)`, `File.move(from, to)` (never takes the place of a file: `AlreadyExists`, told in the same step as the rename), `File.replace(from, to)` (takes its place in one step) and `File.copy(from, to)` (a new file, with the permissions) give a `Result<void, IoError>`. `File.info(path)` gives a `FileInfo` with `kind` (`FileKind.File`, `Directory`, `Link`, `Other`), `size` and `modified` (a `DateTime`); `File.exists(path)` and `Directory.exists(path)` a `bool`. `Directory.create`, `createAll`, `delete` (an empty folder) and `deleteAll` (all it holds, links not followed); `Directory.list(path)` gives a `List<DirectoryEntry>` (`name`, `kind`) in the order of the bytes of the names. `Directory.current()`, `Directory.temp()`, `Directory.createTemp()` (a new folder only the user can go into), `File.createTemp()` (a new empty file only the user can read and write, its path given). `Path.join(a, b)` gives a new path; `Path.joinInside(folder, name)` a `Result<string, IoError>` that is an `InvalidInput` for a name that could lead out of the folder on any system (`..`, a root, a `\`, a `:`, a device of Windows); `Path.fileName`, `Path.extension` and `Path.parent` a view of it. `Environment.get(name)` gives a `Result<string, VariableError>` (`Missing`, `InvalidText(position)`); the variables are only read. Written in SG in the module `std`; only the calls of the system are the compiler's |
 | Other programs | `var git = Command("git")`, then `git.arg(word)`, `git.args(read words)`, `git.directory(path)`, `git.setVariable(name, value)`, `git.removeVariable(name)`, `git.clearVariables()` and `git.input(text)`; no shell reads the words. `git.run()` gives a `Result<void, ProcessError>` (our input, output and standard error), `git.output()` a `Result<string, ProcessError>` (what it wrote, as text), each taking an end with anything but 0 for `Failed(status)`; `git.status()` a `Result<ExitStatus, IoError>` (`Code(int code)`, `Signal(int number)`). A name is looked for in the folders of `PATH` that start with `/`. Written in SG in the module `std`. On Windows the same through `CreateProcessW`: a name without an extension is looked for as `name.exe` in the absolute folders of `PATH` (apart at `;`, a quoted folder taken whole) and never in the folder the program works in; the words go on one command line, quoted so that the program reads them back as written; a `.bat` or `.cmd` runs only when named with its extension, through `cmd.exe`, its arguments escaped as Rust escapes them, a line break in one an `InvalidInput`; a cleared environment keeps `SystemRoot`; a code with its highest bit set is written in hex (`exited with code 0xC0000005`); `kill`, `terminate` and `signal` end the program with the code 1, since Windows has no polite stop to send (`Signal.WindowChange` does nothing). `git.start()` gives a `Result<Process, IoError>` and goes on: the streams asked for with `pipeInput()`, `pipeOutput()` and `pipeError()` are taken out once (`process.takeInput()` a `StreamWriter?`, `takeOutput()` and `takeError()` a `StreamReader?`), `process.wait()` takes it and gives how it ended, `kill()` and `terminate()` stop it, `signal(Signal.Interrupt)` sends it a signal by its name, `id()` gives its number. A `Process` in a local variable is waited for on every path; one that ends without that stops its program with the signal 9. `runAsync`, `outputAsync`, `statusAsync` and `waitAsync` take a token that may come last, and a cancel stops the program |
 | Signals | `var signals = Signals.listen(read List<Signal> { Signal.Interrupt, Signal.Terminate })`: while the listener lives, those signals do not end the program; `signals.next()` waits for the next and gives it, `await signals.nextAsync(read token)` without holding the thread. Several of one kind before a call are one; every listener gets each signal it listens for. `Signal` is `Interrupt`, `Terminate`, `Hangup`, `Quit`, `User1`, `User2` or `WindowChange`. `Signals.raise(signal)` sends one to this program. Written in SG in the module `std`; the handler only writes into a pipe, and a thread hands each signal on. On Windows `Interrupt` is Ctrl-C and Ctrl-Break, `Terminate` the console closed, the user logging off and the system shutting down (the program is then held until it ends, within the few seconds Windows gives); the others never come there, and `raise` hands them to listeners all the same; with no listener a raised signal ends the program as Ctrl-C does (`0xC000013A`), and `WindowChange` does nothing |
@@ -519,6 +520,7 @@ hand with no checks):
 | `checksum`: four gigabytes through `Crc32` of `std`, written in SG, 64 KB of an array at a time (the C calls zlib's `crc32`, which on macOS uses the processor's CRC instructions; the same sixteen tables written in C take 1.10 s) | 1.095 s | 1.085 s | 0.113 s | 9.67 |
 | `sha256`: a gigabyte through `Sha256` of `std`, written in SG, 64 KB of an array at a time (the C calls OpenSSL 3.5's SHA-256, which uses the processor's SHA instructions; the same algorithm written in plain C takes 2.90 s) | 3.138 s | 3.198 s | 0.351 s | 8.93 |
 | `json`: a JSON document of 100,000 records (34 MB) read five times by `Json.parse` of `std`, written in SG, and walked once (the C reads it with cJSON 1.7.19) | 0.773 s | 0.789 s | 0.675 s | 1.15 |
+| `log`: a billion `Log.debug($"...")` calls while the level is `Info`, in a loop that does little else, so no text is built: the static of the level, a load and a compare (the C tests an atomic global the same way; between 1.01 and 1.10 over several runs) | 0.811 s | 0.808 s | 0.805 s | 1.01 |
 
 Measured on Windows (`python3 bench/run.py`, the hundred-and-second slice): Windows 11 on 64-bit Arm in a
 virtual machine on the Mac of the table above, Clang 23 with C's library in the program (`/MT`, as `sg build`
@@ -8843,6 +8845,76 @@ Approved with 1443-1445 and built after the slice, on the same day:
      refuses an object past 16 members, through the table of 1444, which no test reached before.
      With 1446, 467 of the 1831 programs are compiled on macOS and on Linux (102 under the thread sanitizer).
 
+Choices made in the hundred-and-twenty-ninth slice (the library: a log). 1412, 1416 and 1417 were approved on
+19 November 2026, with 1406; 1447-1455 the same day, before the slice was written:
+
+1412. **A log** (`std/log.sg`): `Log.debug`, `info`, `warn` and `error` with a text, `Log.setLevel`, the level
+     `Info` unless `SG_LOG` names another. Lines to the standard error, `2026-11-19T20:15:03.123Z INFO message`,
+     the time in UTC (RFC 3339); the lines of tasks never mix; a level that is off costs almost nothing. No
+     files, rotation or structured fields yet.
+1416. **A message is never read for anything in it**: no lookups (`${...}`), no pattern with arguments; `Log`
+     takes a finished `string`, and a value put into a `$"..."` is never read again. Written as a rule, so that
+     a later "lookup" is refused: Log4Shell (CVE-2021-44228) was a lookup in a message.
+1417. **One line is one call**: a line break and every other control character of a message is escaped when
+     it is written (`\n`, `\r`, `\t`, `\u001b`), so a text from outside cannot add a line of its own (CWE-117,
+     log forging) or drive a terminal. Tested with a forged line.
+1447. **A level that is off builds nothing**: the compiler writes `Log.debug(text)` as `if Log.isOn(LogLevel.Debug)
+     { Log.debug(text) }`, for `Log` alone; a general lazy argument would be a closure, which the language left
+     out. A call inside the text does not run when the level is off, as with the macros of Rust's `log`; C#
+     does it with interpolated-string handlers, Swift with `@autoclosure`, and Go's `slog` always builds it.
+1448. **The names**: `LogLevel` is `Trace`, `Debug`, `Info`, `Warn`, `Error` and `Off`, in that order
+     (`Comparable`, `Formattable`); `Log.trace`, `debug`, `info`, `warn` and `error` take a `read string`;
+     `Log.setLevel(level)`, `Log.level()` and `Log.isOn(level)`, for work done only for the log. The level is
+     an atomic number: looking at it is one load, and any task may set it. `Trace`, which Go's `slog` does not
+     have, was added for nothing at run time.
+1449. **`SG_LOG`** is read once, when the first line asks for the level: `trace`, `debug`, `info`, `warn`,
+     `error` or `off`, in any case; empty is not set. A later `Log.setLevel` takes its place, so the program's
+     own `--verbose` has the last word. A value that names no level does not stop the program: one line says
+     `SG_LOG is "verbose", which is not a level (trace, debug, info, warn, error, off); Info is used`, the value
+     escaped as any message is.
+1450. **The line**: the time with three digits of the second always, the level padded to five letters so that
+     the messages line up (`INFO  `, `DEBUG`), then the message; no file or line of the call.
+1451. **Written at once**: the line is made whole, then written as one `printError`, under its lock, so it
+     never mixes with another task's line or with `printError` and `Stderr`. Each line goes out when it is
+     written; a write that fails does what `printError` does.
+1452. **What is escaped**: the control characters (C0, DEL and C1) as `\n`, `\r`, `\t` or `\u001b`; the
+     characters that cannot be seen or that turn the text around them, as 1445 names them (U+200B-U+200F,
+     U+2028-U+202E, U+2060-U+2069, U+FEFF), as `\u202e` (Trojan Source, CVE-2021-42574); the backslash as
+     `\\`, so that a `\n` that was in the text is not taken for an escaped line break (a path of Windows shows
+     `C:\\Users`). Other characters stay as they are, in UTF-8.
+1453. **Tested** with the time at the start of a line of `Log` written `<time>` by `tests/golden.rs` (only a
+     time of exactly that form, before a level), a forged line, a `${jndi:...}` written as it is, a call that
+     does not run when the level is off, four tasks of 200 lines each (`ok_log_tasks`, under the thread
+     sanitizer when compiled), and `SG_LOG` from outside (`tests/cli.rs`). Nothing was added for the tests.
+1454. **Measured**: a billion `Log.debug($"...")` calls while the level is `Info` take 1.01 to 1.10 times a C
+     loop that tests an atomic global (`bench/log`).
+1455. **Colours**: on a terminal the level is coloured, `ERROR` red and bold, `WARN` yellow, `INFO` green,
+     `DEBUG` blue, `TRACE` grey (env_logger's); the message never is. None into a file or a pipe, none with
+     `NO_COLOR` set or `TERM=dumb`, and on Windows none when the console refuses the escape sequences
+     (`ENABLE_VIRTUAL_TERMINAL_PROCESSING`); never the sequences themselves. No way to force them on. Tested
+     through a pseudo terminal (`posix_openpt`) and, on Windows, a pseudo console (`tests/sender.c show`).
+
+What writing it found, from 1456. Approved on 19 November 2026:
+
+1456. **A type of a module named with `use` comes before a type of `std`**: the order is the module's own
+     names, then those `use` brings, then the language's. `examples/bare` has a module `log` with a `Log` of
+     its own, and the new `Log` of `std` was taken in its place; a `Json` of a module was taken for the
+     language's the same way since 1411, without a word. Rust's prelude is shadowed by what is imported in
+     the same way, and adding a type to `std` no longer changes what a program means. The language's is
+     `std.Log`, and `std.Log.debug(...)` is guarded as `Log.debug(...)` is (1447). `tests/modules/stdnames`
+     was red before.
+
+Writing it found two mistakes more, fixed in it: a function of `std` that reads a static whose value needs
+the system was kept in a program built `--freestanding` while the function that gives the value was left
+out, so C was refused (`examples/bare`, which names a `Log` of its own and so brought in `std/log.sg`); a read
+of a static now counts as a call of that function. And `Log.isOn` with the first value of the level looked
+up inside it was no longer inlined by the C compiler (1.33 times C): the level stays a static found where it
+is first read.
+
+With 1412, 470 of the 1834 programs are compiled on macOS and on Linux (103 under the thread sanitizer), and the
+230 programs of the site run as they show; on the Windows Arm VM `ok_log` prints the same interpreted and
+compiled, and `log_colours` and `log_level_from_the_environment` pass.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -9204,6 +9276,9 @@ check off.
 - **Of JSON**: a reader of a stream (a value read while the text comes, `serde_json::StreamDeserializer`),
   turning a struct into JSON and back on its own (no reflection or macros: the program writes both by hand),
   JSON Pointer (`/a/0/b`) and JSON Lines (1411).
+- **Of the log**: files and their rotation, structured fields (JSON lines, `key = value`), a level for each
+  module (`RUST_LOG=my_crate=debug`), the file and line of the call, and a way to force colours on (1412,
+  1455). A general lazy argument, of which `Log`'s is one case, would be a closure (1447).
 - Freeing a long linked list recurses, the open stack-depth question from the design; here it runs on a 1 GB stack.
   Compiled code frees a chain of `T*` in a loop, but a chain of `shared` values recursively, one call for each.
 
@@ -9470,7 +9545,7 @@ naming `xs.get(i)` (1398-1402). The library grows before the reference (1406): h
 (`Hex`, `Base64`, read strictly, 1407), CRC-32 (`Crc32`, sixteen bytes in a step, 1408, 1414, 1415) and
 SHA-256 with HMAC (`Sha256`, `Hmac`, `Bytes.equalInConstantTime`, 1409) and the command line (`CommandLine`,
 GNU's way of writing, 1410, 1423-1433) and JSON (`Json`, `JsonValue`, read strictly and tested with
-JSONTestSuite, 1411, 1434-1445); a log comes next (1412). Then real programs written in SG, Rust and Go and measured against each other, each
+JSONTestSuite, 1411, 1434-1445) and a log (`Log`, a level that is off building nothing, 1412, 1447-1456). Then real programs written in SG, Rust and Go and measured against each other, each
 difference a choice (1418), and after them XML without a DTD (1413), the reference of the language on the site
 (1394), the third stage of the generator of programs, which borrows and moves, and the preview (942) with `sg
 doc` (1392).

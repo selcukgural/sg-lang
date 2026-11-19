@@ -599,3 +599,53 @@ fn a_json_suite() {
         assert_eq!(ran(&run), expected, "compiled");
     }
 }
+
+const LOGS: &str = "void main() {\n    print(Log.level())\n    Log.debug(\"debug\")\n    Log.warn(\"warn\")\n}\n";
+
+/// The lines of standard error with the time of each left out: what follows `Z `.
+fn log_lines(err: &str) -> Vec<String> {
+    err.lines().map(|line| line.split_once("Z ").map_or(line, |(_, rest)| rest).to_string()).collect()
+}
+
+/// `SG_LOG` sets the level a program starts at, in any case; empty is not set; a value that names
+/// no level is told in a line of `Log`'s own, escaped, and `Info` is used (choice 1449). The same
+/// interpreted and compiled.
+#[test]
+fn log_level_from_the_environment() {
+    let dir = work("log_level_from_the_environment");
+    write(&dir, "logs.sg", LOGS);
+    let mut ways = vec![vec![env!("CARGO_BIN_EXE_sg").to_string(), "logs.sg".to_string()]];
+    if has_compiler() {
+        assert_eq!(ran(&sg(&dir, &["build", "logs.sg"])).0, 0);
+        ways.push(vec![program(&dir, "logs").to_string_lossy().into_owned()]);
+    }
+    let bad = "SG_LOG is \"verbose\", which is not a level (trace, debug, info, warn, error, off); Info is used";
+    let cases: [(Option<&str>, &str, Vec<String>); 7] = [
+        (None, "Info", vec!["WARN  warn".into()]),
+        (Some("debug"), "Debug", vec!["DEBUG debug".into(), "WARN  warn".into()]),
+        (Some("DeBuG"), "Debug", vec!["DEBUG debug".into(), "WARN  warn".into()]),
+        (Some("off"), "Off", vec![]),
+        (Some(""), "Info", vec!["WARN  warn".into()]),
+        (Some("verbose"), "Info", vec![format!("WARN  {bad}"), "WARN  warn".into()]),
+        (
+            Some("x\n2026-11-19T20:15:03.123Z INFO  forged"),
+            "Info",
+            vec![
+                "WARN  SG_LOG is \"x\\n2026-11-19T20:15:03.123Z INFO  forged\", which is not a level (trace, debug, info, warn, error, off); Info is used".into(),
+                "WARN  warn".into(),
+            ],
+        ),
+    ];
+    for way in &ways {
+        for (value, level, lines) in &cases {
+            let mut command = Command::new(&way[0]);
+            command.args(&way[1..]).current_dir(&dir).stdin(Stdio::null());
+            match value {
+                Some(value) => command.env("SG_LOG", value),
+                None => command.env_remove("SG_LOG"),
+            };
+            let (code, out, err) = ran(&command.output().unwrap());
+            assert_eq!((code, out, log_lines(&err)), (0, format!("{level}\n"), lines.clone()), "{way:?} with SG_LOG={value:?}");
+        }
+    }
+}

@@ -1,0 +1,17 @@
+// Lines of `Log` from tasks never mix (choice 1451): each line is made whole and written at once.
+// Four tasks write two hundred lines each; every line comes out whole.
+
+int logLines(int task) {
+    for _ in 0..200 {
+        Log.info("a line that four tasks write at the same time, whole each time")
+    }
+    return task
+}
+
+void main() {
+    var a = Task.run(logLines, 1)
+    var b = Task.run(logLines, 2)
+    var c = Task.run(logLines, 3)
+    var d = Task.run(logLines, 4)
+    print(a.wait() + b.wait() + c.wait() + d.wait())
+}

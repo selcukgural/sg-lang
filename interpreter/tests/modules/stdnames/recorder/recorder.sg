@@ -1,0 +1,23 @@
+// Types named as types of the language's own module are: a module that names them is not
+// overruled by the language, now or when the language adds a type of that name later.
+
+public enum LogLevel : Formattable {
+    Quiet
+    Loud
+}
+
+public struct Log {
+    public List<string> lines
+
+    public Log create() {
+        return Log { lines = List<string>() }
+    }
+
+    public void info(ref this, read string line) {
+        this.lines.add(line.clone())
+    }
+}
+
+public struct Json {
+    public string text
+}

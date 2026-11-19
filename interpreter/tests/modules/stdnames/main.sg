@@ -1,0 +1,22 @@
+// A type of a module named with `use` comes before a type of the language's own module of the
+// same name (choice 1456): `Log`, `LogLevel` and `Json` here are `recorder`'s, and the language's
+// are reached as `std.Log`. Before, the language's were taken, without a word.
+use recorder
+
+int counted(ref int calls) {
+    calls += 1
+    return calls
+}
+
+void main() {
+    var log = Log.create()
+    log.info("kept by the program")
+    print($"{log.lines.length()} {LogLevel.Loud}")
+    var doc = Json { text = "{}" }
+    print(doc.text)
+    std.Log.info("written by the language")
+    // Written with the module in front, a level that is off still builds nothing (choice 1447).
+    var calls = 0
+    std.Log.debug($"{counted(ref calls)}")
+    print($"calls: {calls}")
+}
