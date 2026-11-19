@@ -18,5 +18,8 @@ built with Docusaurus, published by Cloudflare Pages from this folder.
 - `static/_headers` holds the headers Cloudflare gives each page: a CSP that allows no inline script but the
   one Docusaurus writes for the colour mode, by its hash (`scripts/check-csp.mjs` fails the build if another
   appears), HSTS and the others. There is no analytics and no search service: search is built into the site.
+- `overrides` in `package.json` lift packages that Docusaurus pulls in to the versions their security fixes came
+  in (`serialize-javascript`, `tinypool`, `uuid`); `editors/vscode` does the same for `minimatch`. Take one out when
+  the package that needs it moves past it.
 - Publishing: Cloudflare Pages builds `main` from this folder (`npm ci --ignore-scripts && npm run build`,
   output `build`); a pull request gets a preview. No secret is kept in the repository.
