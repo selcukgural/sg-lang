@@ -166,75 +166,30 @@ language as it is today.
 
 ## Where it stands
 
-Working today, in the interpreter and in compiled code: integers, `float` and `double` with their
-constants, math, reading out of text and printing with the fewest digits that read back, `bool`, `char` and text (split, trimmed and searched without
-copying, replaced and repeated into a new text, built piece by piece in place, numbers written with a width, in hex or binary, or with so many
-digits after the point: `$"{crc:x8} {price,8:F2}"`), the bits of an integer counted and rotated (`mask.countOnes()`, `word.rotateLeft(5)`); structs with default values of fields (`int port = 80`) and copies with fields changed (`p with { x = 3 }`), enums with methods, enums with numbers (`enum Block : byte { Image = 0x2C }`, `Block.fromValue(b)`), and `match` with patterns inside
-patterns, on text, joined with `or` and in ranges (`Add(Number(0), right)`, `"if" => ...`, `'a'..='z' or '_'`,
-`null`), and `is` whose names reach along `&&` (`if int.parse(read text) is Ok(n) && n > 0`) and, for `is not`,
-past an `if` that leaves (`if int.parse(read text) is not Ok(n) { return }`); `T*`, `T?`
-(narrowed along `&&` and `||`, under `!` and after `while x is null`, and read along a chain with `person?.boss?.name`) and `Result` with `try` and `??`; `List`, `HashMap` and `HashSet`; fixed-size arrays (`int[8]`) and slices (`read byte[]`); consts known when the program is compiled (`const int BlockSize = 4096`, a table `const uint[] Masks = { 1, 3, 7 }` kept once where the program only reads, the bytes of a file with `embed("logo.gif")`, a const as the count of an array and as a pattern, and a const given the value of any function, run when the program is compiled: `const int[256] Crc = crcTable()`); statics, one value for the program that is never assigned, found the first time it is used or known from the start (`static uint[256] Crc = crcTable()`, `static atomic long Requests = atomic 0`, `static locked Config Settings = ...`), with bytes
-gathered into a list in one copy (`buffer.addAll(piece)`), numbers read out of bytes and written into them in
-either order (`ushort.fromLittleEndian(data[6..8])`, `n.toBigEndian()`), and ranges sorted where they are (`xs[2..5].sort()`);
-function values; ownership, moves and the borrow check; several owners of one value (`shared T`, `share x`,
-and `weak T`, which looks without owning), changed through any of them with `shared checked T` (each access
-checked against the borrows in progress, a certain conflict a compile error, the values that hold each
-other up reported when the program ends) and type aliases (`using NodeRef = shared Node`);
-modules (`use`, `public`, `readonly`); `test` blocks. A local variable nothing reads is a compile error, also one only written
-(`var p = rect.corner; p.x = 0` writes to a copy, and the hint is `var p = ref rect.corner`), with `_` for a name that is not needed.
+SG is before its preview. The language, its checker, an interpreter and a back end that compiles through C
+are built and tested on Linux, macOS and Windows (x86-64 and Arm); what is written here can still change.
 
-Programs read and write files whole or piece by piece, as text or as bytes, and append to them (a writer left open is a compile error), read
-their input line by line and see their command line. Tasks (`Task.run`, `t.wait()`, every task waited for) and
-values that several tasks change (`shared locked T`, a `lock` block that cannot deadlock) run in the
-interpreter and in compiled code, where a task is a thread of the system. Async functions in the way of
-C# (`async`, `await`, `Task.delay`, waiting the wrong way a compile error), cancellation tokens that a
-task looks at where it chooses, lists of tasks waited for all at once or as they end (`Task.whenAll`,
-`Task.whenAny`), and async reading and writing of files and the input, streams included, run in the
-interpreter and in compiled code, where an async function becomes a machine whose variables live in a
-frame, run by a pool of threads that each keep a queue of tasks and steal from the others when they have none, as Tokio's do, and input and output the async way runs on threads of its own. TCP
-connections (`TcpListener`, `TcpStream`, with and without async) run in both too: compiled, a thread of
-the pool with nothing to do waits for every socket a task waits for, with epoll or kqueue, as Tokio's
-driver, each socket put on the loop once, and a cancel ends a wait for a socket or for a line of the input at once. A connection is read line by line through a `StreamReader` that borrows it
-while it goes on sending, and a line longer than 64 KB is an error, not memory without end. Raw memory is
-there for what the checker cannot follow (`raw T`, `Memory.allocate<T>(n)`, `p[i]` inside `unsafe { }`):
-the interpreter checks every item against the block it came from, and compiled code checks nothing. C is
-called through `extern` blocks, each call inside `unsafe`, with C text (`CString`) and the items of a buffer
-handed over for the call, structs of plain data by value and types of C seen only behind a pointer; a
-module can keep a library of C behind a safe interface, as `examples/zlib` does for zlib, and a
-`Disposable` type gives back what C made when its last owner ends. A C file beside the program
-(`extern "./native.c"`) is compiled with it, so a macro, a `static inline` function or assembly is
-reached and inlined; the variables of C (`optind`) are read and written inside `unsafe`, `errno` is read
-after a call (`IoError.fromErrno(C.errno())`), C's `long` is a type of its own that is 32 bits on Windows and 64 elsewhere and has no arithmetic, so no sum overflows on one system only (`CLong`), and an address is a number when it has to be (`(nuint)p`). C calls functions of SG back (`export int compare(raw void a, raw void b)`), through pointers to functions of C that go both ways (`CFunc<raw void, raw void, int>`), and a callback reaches its state through the `void*` C gives back (`unsafe (ref State)data`). A function of C that takes a varying count of arguments is called with the types each value says (`printf`, `snprintf`), and SQLite and libcurl are wrapped in modules whose users write no `unsafe` (`examples/sqlite`, and `examples/curl`, which fetches over HTTPS with only `http` and `https` allowed, certificates always checked and a limit on what a response brings); the bytes C hands a callback are looked at as a slice (`Memory.view`), and a call of C that waits holds up no other task. The promise of memory safety holds outside `unsafe`, as in Rust. The clock is there (`Instant`, `Duration`, `DateTime` in UTC, and `DateTimeOffset` for the local time zone or an offset of your own, with dates written and read in RFC 3339), written in SG itself, the first piece of a standard library that is otherwise still the compiler's built-in types, and so are random numbers (`Random` with a seed, `SecureRandom` from the system), folders and paths (`Directory`, `File.move` that never writes over a file, `File.createTemp`, a reader or a writer of a file moved with `seek(SeekFrom.End(-16))`, `Path`, and `Path.joinInside`, which keeps a name from outside inside its folder on every system), the variables of the environment, which are only read, and other programs, run without a shell, waited for or talked to through pipes while they run, and stopped (`Command`, `Process`, with async versions); a method can be async. A program listens for signals and takes them one at a time instead of writing a handler (`Signals.listen`, `next`, `nextAsync`), so a server ends cleanly on Ctrl-C (`examples/shutdown`). What C lays out is written as C has it: unions, bit fields, `packed` structs and `align(64)`, laid out as C lays them out on each system, Windows' rules included, and read out of bytes with no `unsafe` (`Header.fromBytes`, `examples/headers`: a BMP header and an IPv4 header); an item of raw memory reached where its type may not lie is a panic in a debug build. Tasks share atomic values (`atomic long`, `count.fetchAdd(1)`, `flag.load(MemoryOrder.Acquire)`) with the orders of C11, an order an operation cannot keep being an error of the compiler, and a queue without locks for many producers and many consumers is written with no `unsafe` (`examples/queue`); the registers of a device are read and written with `Memory.readVolatile` and `writeVolatile`. A folder of SG is built into a static or a shared library that a program of C links, with its header (`sg build calclib --library`): C holds a value of SG by its address and lends it back (`export int calc_eval(ref Calculator calc, read CString text, raw double out)`), with no `unsafe` for what C gives back, and `examples/calclib` is a calculator in SG used by a program of C. A program is built for a machine without an operating system (`sg build kernel --freestanding --target riscv64-unknown-elf`): an object that takes nothing of C's library, whose panics go to the program's `onPanic` and whose memory comes from its `allocate`, what needs a system being a compile error where it is written (`examples/bare`), and a small kernel for RISC-V boots in QEMU, writes to its serial port and takes interrupts of the timer, its devices driven in SG and only the instructions of the core in C (`examples/kernel`). A character is tested against the tables of Unicode 17.0 (`isLetter`, `isUpper`) and a text changes its case by Unicode's full mappings (`toUpper`, `equalsIgnoreCase`), the same in every country. Datagrams are sent and received over UDP (`UdpSocket`), with an address read and printed in SG (`SocketAddress`). A name never hides another: a local variable with the name of one still in scope around it, or of a parameter, is a compile error, as in C#, not a second variable as with Rust's shadowing. Generics of your own are put off. There is no full standard library
-and no package manager; in an editor, VS Code colours SG and shows the first error as it is written, with
-a fix applied with one click for some hints (`sg lsp`, `editors/vscode`).
+- **The language**: integers of every width, `float` and `double`, `char` and UTF-8 text, structs, enums
+  and `match`, `T?` and `Result<T, E>`, modules, consts computed when the program compiles, statics,
+  arrays, slices, lists, maps and sets.
+- **Memory safety without a collector**: one owner for each value, `read` and `ref` borrows checked when
+  the program compiles, `shared` values with several owners; `unsafe` marks raw memory and C.
+- **Tasks**: threads and `async`/`await`, locks, channels and atomics with the orders of C11.
+- **C**: calling C and being called by it, C's layouts (unions, bit fields, `packed`), and libraries of SG
+  that C links. SQLite, libcurl and zlib are wrapped in modules whose users write no `unsafe`.
+- **A small library**: files, folders and paths, other programs, TCP and UDP, signals, time and time
+  zones, random numbers, Unicode.
+- **No operating system needed**: a program can be built freestanding, and a small kernel for RISC-V boots
+  in QEMU.
+- **Tools**: `sg test`, a debug build that reports leaks, and `sg lsp` with an extension for VS Code.
 
-No preview was to come out while there was work that C can do and SG cannot. With the kernel, each of the
-seven programs set as that threshold runs and is tested (design/04, "Reaching what C reaches, the direction"):
-SQLite, libcurl, a server that ends on Ctrl-C, a library of SG for C, the kernel, a queue without locks and
-a binary header read with a union and bit fields. SG is to run on Linux, macOS and Windows: Linux and macOS came first,
-and nothing was built in a way Windows cannot take. How Windows is reached has been talked through (design/04,
-"Windows, the direction"): Windows 10 and 11 on x86-64 and 64-bit Arm, tested on GitHub's machines with Windows,
-two slices of what every system gains first (both are written: C's `long`, a name kept inside its folder, the
-codes of 32 bits a program of Windows ends with, the system's last error; then `-L folder`, a library named by
-each of its names on the systems, tests run without `fork`, and a debug build that counts the blocks of its
-values and reports a leak on every system), then six slices of Windows, and a preview of the language after
-them. The first slice of Windows is written: the interpreter runs there, and `sg build` builds with Clang a
-program that prints to the console in UTF-8 without touching its code page, reads and writes files, lists,
-moves and deletes them as on Linux, reads the clock, random bytes, its command line and the environment, and
-runs its tests; a program can ask which system it is built for (`OperatingSystem.isWindows()`), and what
-Windows does not run yet is a compile error that names the slice that brings it. The second slice of
-Windows is written too: tasks, threads, locks, atomics and async functions run there, and a delay of a
-millisecond waits about a millisecond. The third is written: the network, datagrams and async input and
-output run there, a listener holds its port alone, and a datagram that came back is told as on Linux and
-macOS. The fourth is written: other programs and signals run there, a program started with its words quoted
-as it reads them back and a batch file only by its extension, its arguments escaped, and Ctrl-C, Ctrl-Break
-and the console closed come as `Interrupt` and `Terminate`. The fifth is written: C runs there, a DLL is
-looked for only beside the program, in the folders it is given and in the system's, a folder of SG is built
-into a `.lib` or a `.dll` that a program of C links, and the examples of zlib, SQLite and curl take their
-libraries from vcpkg. The sixth and last is written: everything is tested there, the program without an
-operating system and the kernel in QEMU included, and the benchmarks are measured against C on Windows too:
-most take the time of C, and those that lean on Windows' C library (`printf`, `fgets`, its wide
-characters) are several times faster in SG. Before a preview of the language, what it and its library still lack beside C23: consts first, then a const given the value of a call, then statics (all three written). Then what the language lacks beside C23 and the draft of C2y, with what Rust, C#, Go and Zig have that costs nothing when the program runs: loops with a name, counting down, raw text, `const assert`, an enum with numbers, the operations on bits, the default value of a field, `with` and `?.` are written. Then the library, in the order of C11: seeking in a file, temporary files, the rest of `<math.h>`, `abs`, `clamp` and saturating arithmetic on integers, wiping a secret with zeros the compiler keeps, `binarySearch` with `lowerBound` and `upperBound`, and `lock ... when`, a block that waits under a lock until its condition holds and needs no condition variable told by hand, channels, whose last sender to end closes them so there is no `close` to forget, and the local time zone with dates written and read in RFC 3339, are written. The hardening of what is built is done: the command line is tested end to end, a review of the soundness of what is built found faults, each fixed after a test that shows it, and fuzzing (of the front end, and of generated programs run by the interpreter against compiled code) and mutants of the rules of safety found more, fixed the same way. Writing the book and the library pages of the web site found one more fault of compiled code and a score of hints and messages that led to code that does not compile, or were missing, each fixed after a test that shows it.
+Not yet: generics of your own, a package manager and a full standard library. Left out on purpose:
+closures; a function value is the address of a named function.
+
+Every test program runs in the interpreter and compiled, under the sanitizers, and the two must print the
+same; the front end was fuzzed and the rules of safety tried with mutants. The [status page](https://sg-lang.org/docs/status)
+says where it stands in short; [decisions and open questions](design/04-decisions-and-open-questions.md) and
+[the interpreter's README](interpreter/README.md) keep the full record, slice by slice.
 
 The plan is to write a well-known, widely used program in it, one that has not been rewritten in
 Rust yet, and see how the claim holds on real software. The program is

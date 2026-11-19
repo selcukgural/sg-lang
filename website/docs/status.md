@@ -35,7 +35,8 @@ that make the rules of safety tried with mutants; each finding was fixed after a
 
 ## Not yet
 
-Generics of your own, closures, a package manager and a full standard library. On this site, the reference of
+Generics of your own, a package manager and a full standard library. Closures are left out on purpose: a
+function value is the address of a named function. On this site, the reference of
 the language is still to be written, and the pages of the library are written by hand until `sg doc` makes them
 from the source. The repository keeps the full list:
 [Not here yet](https://github.com/selcukgural/sg-lang/blob/main/interpreter/README.md#not-here-yet).
