@@ -1,0 +1,13 @@
+// A static is never dropped, so the `dispose` of a value it holds would never run.
+struct Lease : Disposable {
+    int id
+
+    void dispose(ref this) {
+        print($"lease {this.id} given back")
+    }
+}
+
+static Lease Held = Lease { id = 1 }
+
+void main() {
+}

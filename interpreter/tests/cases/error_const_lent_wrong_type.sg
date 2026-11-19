@@ -1,0 +1,13 @@
+// `read Origin` lends a const struct for the whole run; given where an `int` is expected,
+// the error points at all of `read Origin`, not only at the name.
+struct Point : Copyable {
+    int x
+    int y
+}
+
+const Point Origin = Point { x = 1, y = 2 }
+
+void main() {
+    int n = read Origin
+    print(n)
+}

@@ -1,0 +1,20 @@
+// The same through another owner: `ref other` lends the value to be changed while `read bag as`
+// looks at it, so the program stops (choice 1379). It was lent as if only to be read, and compiled
+// code then read a text that the change had freed.
+struct Holder {
+    string name
+}
+
+void rename(ref Holder holder) {
+    holder.name = "a much longer name that needs a new block of memory".clone()
+}
+
+void main() {
+    var bag = new shared checked Holder { name = "the first name, long enough to be on the heap".clone() }
+    var other = share bag
+    read bag as seen {
+        var head = seen.name[0..9]
+        rename(ref other)
+        print(head)
+    }
+}

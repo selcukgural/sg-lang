@@ -1,0 +1,9 @@
+error: `s` cannot be changed here: `word` borrows from it and is used again later
+  --> error_match_carrier_keeps_subject.sg:19:5
+ 19 |     s = "a new long text that lives on the heap two".clone()
+    |     ^
+  `word` borrowed it here:
+  --> error_match_carrier_keeps_subject.sg:14:28
+ 14 |     var token = Token.Name(read s)
+    |                            ^^^^^^
+  hint: finish with `word` before this line: a borrow ends at its last use

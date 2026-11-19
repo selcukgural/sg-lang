@@ -1,0 +1,18 @@
+// A method that takes `this` by value, called on a `shared checked` value, copies what it holds:
+// while another owner lends it to change, that stops the program.
+struct Point : Copyable {
+    long x
+
+    public long doubled(this) {
+        return this.x * 2
+    }
+}
+
+void main() {
+    var a = new shared checked Point { x = 1 }
+    var b = share a
+    ref b as point {
+        point.x = 2
+        print(a.doubled())
+    }
+}

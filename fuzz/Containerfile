@@ -1,0 +1,16 @@
+# The image the front end is fuzzed in (choice 1354): Rust nightly, pinned to a day, cargo-fuzz,
+# pinned to a version, and the crates of `Cargo.lock`, fetched here so that the fuzzing itself
+# runs without the network. Built with the network, from the folder of the repository:
+#   podman build -t sg-fuzz -f fuzz/Containerfile fuzz
+# and built again when `Cargo.lock` changes. `README.md` beside this file says how it is run.
+FROM docker.io/library/rust:1.99.1
+ENV RUSTUP_TOOLCHAIN=nightly-2026-11-01
+RUN rustup toolchain install nightly-2026-11-01 --profile minimal \
+ && cargo install cargo-fuzz --version 0.13.2 --locked
+# `sg` has no dependencies, so a crate of the same name stands for it while the others are fetched.
+COPY Cargo.toml Cargo.lock /fetch/fuzz/
+RUN mkdir -p /fetch/fuzz/fuzz_targets /fetch/fuzz/src /fetch/interpreter/src \
+ && printf '[package]\nname = "sg"\nversion = "0.1.0"\nedition = "2021"\n' > /fetch/interpreter/Cargo.toml \
+ && touch /fetch/interpreter/src/lib.rs /fetch/fuzz/src/lib.rs /fetch/fuzz/fuzz_targets/parse.rs /fetch/fuzz/fuzz_targets/check.rs \
+ && cd /fetch/fuzz && cargo fetch --locked \
+ && rm -rf /fetch

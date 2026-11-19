@@ -1,0 +1,5 @@
+error: a static cannot hold a `Lease`: a static is never dropped, so it would never be closed
+  --> error_static_disposable.sg:10:8
+ 10 | static Lease Held = Lease { id = 1 }
+    |        ^^^^^
+  hint: open it where it is used and lend it to the functions that need it, as a parameter

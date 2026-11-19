@@ -1,0 +1,34 @@
+# Fuzzing of the front end (choices 1323, 1349-1355): a crate apart from `interpreter/`, so that
+# `sg` keeps no dependencies. Built and run with cargo-fuzz on Rust nightly, in the container of
+# `Containerfile`; `README.md` says how.
+[package]
+name = "sg-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+sg = { path = "../interpreter" }
+
+# Not a member of a workspace of the repository: its lock file and its target are its own.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "check"
+path = "fuzz_targets/check.rs"
+test = false
+doc = false
+bench = false

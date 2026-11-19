@@ -1,0 +1,24 @@
+// Where a block ends, a `Disposable` value that borrows is disposed only if it is still
+// there: `g` was moved away, so `text` can change after the move. `h` is disposed, and
+// `count`, declared after it, is not what it borrows from.
+struct Guard<from source> : Disposable {
+    read string text
+
+    void dispose(ref this) {
+        print(this.text)
+    }
+}
+
+void finish(Guard g) {
+    print("finish")
+}
+
+void main() {
+    var text = "a long text that lives on the heap one".clone()
+    var g = Guard { text = read text }
+    finish(g)
+    text = "a new long text that lives on the heap two".clone()
+    var h = Guard { text = read text }
+    var count = text.length()
+    print(count)
+}

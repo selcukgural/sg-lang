@@ -1,0 +1,13 @@
+// A loop inside the body runs its steps many times a round: the outer loop is written with its
+// tests, and its narrow step overflows where the interpreter's does.
+void main() {
+    int total = 0
+    byte step = 200
+    for _ in 0..10 {
+        total += step
+        for j in 0..1 {
+            total += 2147483300 + j
+        }
+    }
+    print(total)
+}

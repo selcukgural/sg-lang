@@ -1,0 +1,27 @@
+{
+  "name": "sg-lang-website",
+  "private": true,
+  "description": "The web site of the SG language, sg-lang.org (choices 1383-1390).",
+  "license": "(MIT OR Apache-2.0)",
+  "scripts": {
+    "sync": "node scripts/sync-docs.mjs",
+    "check": "node scripts/check-examples.mjs",
+    "start": "npm run sync && docusaurus start",
+    "build": "npm run sync && docusaurus build && node scripts/check-csp.mjs",
+    "serve": "docusaurus serve",
+    "clear": "docusaurus clear"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@docusaurus/core": "3.10.2",
+    "@docusaurus/preset-classic": "3.10.2",
+    "@easyops-cn/docusaurus-search-local": "0.55.3",
+    "@mdx-js/react": "3.1.1",
+    "clsx": "2.1.1",
+    "prism-react-renderer": "2.4.1",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  }
+}

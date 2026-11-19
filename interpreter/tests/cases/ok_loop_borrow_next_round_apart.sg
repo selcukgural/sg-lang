@@ -1,0 +1,20 @@
+// A borrow taken at the end of a round is held when the next round starts, but only its own
+// place is kept: another field of the struct and other variables may change.
+struct Pair {
+    int left
+    int right
+}
+
+void main() {
+    var pair = Pair { left = 1, right = 2 }
+    var other = 0
+    var r = read other
+    var i = 0
+    while i < 3 {
+        pair.right = i
+        print(r)
+        r = read pair.left
+        i += 1
+    }
+    print(pair.right)
+}

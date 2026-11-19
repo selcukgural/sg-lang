@@ -1,0 +1,10 @@
+// Taking a negative `sbyte` from a sum makes it grow: what a round may change is counted both
+// ways, so the sum near its greatest value keeps its test and overflows where the interpreter's does.
+void main() {
+    int total = int.MaxValue - 300
+    sbyte step = -100
+    for _ in 0..10 {
+        total -= step
+    }
+    print(total)
+}

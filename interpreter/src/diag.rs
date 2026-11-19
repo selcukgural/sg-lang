@@ -35,23 +35,38 @@ pub struct Diag {
     /// A second place worth showing, such as where a value was moved.
     pub related: Option<Box<(Span, String)>>,
     pub hint: Option<String>,
+    /// The hint as an edit an editor applies with one click (choice 1371): only where the code it
+    /// gives is certain to be what the hint says.
+    pub fix: Option<Box<Fix>>,
+}
+
+/// An edit of the source: the text at `span` becomes `text` (an empty span inserts it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fix {
+    pub span: Span,
+    pub text: String,
 }
 
 impl Diag {
     pub fn error(span: Span, msg: impl Into<String>) -> Diag {
-        Diag { kind: Kind::Error, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None }
+        Diag { kind: Kind::Error, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None, fix: None }
     }
 
     pub fn panic(span: Span, msg: impl Into<String>) -> Diag {
-        Diag { kind: Kind::Panic, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None }
+        Diag { kind: Kind::Panic, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None, fix: None }
     }
 
     pub fn leak(span: Span, msg: impl Into<String>) -> Diag {
-        Diag { kind: Kind::Leak, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None }
+        Diag { kind: Kind::Leak, msg: msg.into(), span, notes: Vec::new(), related: None, hint: None, fix: None }
     }
 
     pub fn hint(mut self, hint: impl Into<String>) -> Diag {
         self.hint = Some(hint.into());
+        self
+    }
+
+    pub fn fix(mut self, span: Span, text: impl Into<String>) -> Diag {
+        self.fix = Some(Box::new(Fix { span, text: text.into() }));
         self
     }
 

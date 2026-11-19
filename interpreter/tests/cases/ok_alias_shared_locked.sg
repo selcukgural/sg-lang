@@ -1,0 +1,16 @@
+// An alias of a `shared locked` struct builds with `new`, like `new shared locked Account`.
+using AccountRef = shared locked Account
+
+struct Account {
+    int balance
+}
+
+void main() {
+    var account = new AccountRef { balance = 10 }
+    lock account as a {
+        a.balance += 5
+    }
+    lock account as a {
+        print(a.balance)
+    }
+}

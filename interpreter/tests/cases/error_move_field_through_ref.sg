@@ -1,0 +1,19 @@
+// A field that is not nullable cannot be moved out through a `ref` borrow either; the hint
+// is to swap it with `replace`, which leaves a value in its place.
+struct Name {
+    string text
+}
+
+struct Person {
+    Name name
+}
+
+void rename(ref Person p) {
+    var n = p.name
+    print(n.text)
+}
+
+void main() {
+    var p = Person { name = Name { text = "Ada" } }
+    rename(ref p)
+}

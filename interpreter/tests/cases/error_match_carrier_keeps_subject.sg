@@ -1,0 +1,21 @@
+// A `match` that builds a value carrying a borrow from what an arm took out borrows what the
+// subject borrowed: the text cannot change while the result is used.
+struct Word<from source> {
+    read string text
+}
+
+enum Token<from source> {
+    Name(read string text)
+    End
+}
+
+void main() {
+    var s = "a long text that lives on the heap one".clone()
+    var token = Token.Name(read s)
+    var word = match token {
+        Name(text) => Word { text = text }
+        End => Word { text = "end" }
+    }
+    s = "a new long text that lives on the heap two".clone()
+    print(word.text)
+}

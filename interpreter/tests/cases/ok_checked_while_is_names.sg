@@ -1,0 +1,19 @@
+// The names an `is` gives in the condition of a `while` borrow what a `shared checked` value
+// holds for the loop; used only inside it, that is accepted.
+enum Shape {
+    Circle(long radius)
+    Empty
+}
+
+struct Drawing {
+    Shape shape
+}
+
+void main() {
+    var drawing = new shared checked Drawing { shape = Shape.Circle(2) }
+    var rounds = 0
+    while drawing.shape is Circle(radius) && rounds < radius {
+        rounds += 1
+    }
+    print(rounds)
+}

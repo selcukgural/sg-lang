@@ -1,0 +1,16 @@
+// A new value for a whole variable replaces what it borrowed: after `view` looks at `b`,
+// `a` may change while `view` is still used.
+struct View<from source> {
+    read string text
+}
+
+void main() {
+    var a = "one".clone()
+    var b = "two".clone()
+    var view = View { text = read a }
+    print(view.text)
+    view = View { text = read b }
+    a = "changed".clone()
+    print(view.text)
+    print(a)
+}

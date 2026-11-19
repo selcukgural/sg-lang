@@ -1,0 +1,19 @@
+// `receive` goes on from where the connection is, so it changes it: on a connection held by a
+// `shared checked` value being read for a block, through the same variable, it is refused.
+struct Peer {
+    TcpStream conn
+    long received
+}
+
+Result<void, IoError> talk(TcpStream conn) {
+    var peer = new shared checked Peer { conn = conn, received = 0 }
+    var buffer = byte[16](0)
+    read peer as p {
+        print(p.received)
+        _ = try peer.conn.receive(ref buffer)
+    }
+    return Ok()
+}
+
+void main() {
+}

@@ -1,0 +1,13 @@
+// A sum the loop also assigns: what it adds is not all that changes it, so it is not taken as a
+// sum that cannot overflow, and the step after the assignment overflows where the interpreter's does.
+void main() {
+    int total = 0
+    byte step = 200
+    for i in 0..10 {
+        total += step
+        if i == 3 {
+            total = int.MaxValue - 100
+        }
+    }
+    print(total)
+}

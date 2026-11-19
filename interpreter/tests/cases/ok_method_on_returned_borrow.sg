@@ -1,0 +1,15 @@
+// A method called on a borrow that a call returned looks at what that borrow points to, which
+// has a name and lives on: the result may be kept.
+struct Holder {
+    string label
+
+    read string name(read this) {
+        return read this.label
+    }
+}
+
+void main() {
+    var holder = Holder { label = "  core  ".clone() }
+    var name = holder.name().trim()
+    print($"[{name}]")
+}

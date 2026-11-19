@@ -1,0 +1,75 @@
+// Runs every program of SG on the pages of the site, so a page never shows code that the language no
+// longer takes (the rule of keeping everything in step). A block ```sg is a whole program: it must
+// run and end with code 0, and a ```text block after it, before the next code, is what it prints.
+// ```sg error must be refused, and the ```text after it is how the message starts. ```sg test runs
+// its tests (`sg test`). The program is written as `tour.sg` in a folder of its own, so the messages
+// name that file. `SG` names the sg program (../interpreter/target/release/sg by default).
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const site = join(dirname(fileURLToPath(import.meta.url)), '..');
+const sg = process.env.SG || join(site, '..', 'interpreter', 'target', 'release', 'sg');
+const work = mkdtempSync(join(tmpdir(), 'sg-site-'));
+
+function pages(folder) {
+  return readdirSync(folder).flatMap((name) => {
+    const path = join(folder, name);
+    return statSync(path).isDirectory() ? pages(path) : name.endsWith('.md') ? [path] : [];
+  });
+}
+
+function run(args) {
+  try {
+    return { code: 0, text: execFileSync(sg, args, { cwd: work, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) };
+  } catch (error) {
+    return { code: error.status ?? 1, text: `${error.stdout ?? ''}${error.stderr ?? ''}` };
+  }
+}
+
+let failures = 0;
+let programs = 0;
+for (const page of pages(join(site, 'docs'))) {
+  const text = readFileSync(page, 'utf8');
+  const blocks = [...text.matchAll(/^```(\w+)([^\n]*)\n([\s\S]*?)^```$/gm)].map((match) => ({ lang: match[1], meta: match[2].trim(), body: match[3] }));
+  blocks.forEach((block, at) => {
+    if (block.lang !== 'sg') return;
+    programs += 1;
+    writeFileSync(join(work, 'tour.sg'), block.body);
+    const kind = block.meta.split(/\s+/)[0];
+    const result = run(kind === 'test' ? ['test', 'tour.sg'] : ['tour.sg']);
+    const next = blocks[at + 1];
+    const shown = next && next.lang === 'text' ? next.body.trimEnd() : null;
+    const name = `${page.slice(site.length + 1)}, program ${programs}`;
+    if (kind === 'error') {
+      if (result.code === 0) {
+        failures += 1;
+        console.error(`${name}: should be refused, and ran:\n${result.text}`);
+      } else if (shown !== null && !result.text.startsWith(shown)) {
+        failures += 1;
+        console.error(`${name}: the message differs.\nshown:\n${shown}\ngiven:\n${result.text}`);
+      }
+    } else if (result.code !== 0) {
+      failures += 1;
+      console.error(`${name}: ended with code ${result.code}:\n${result.text}`);
+    } else if (shown !== null && result.text.trimEnd() !== shown) {
+      failures += 1;
+      console.error(`${name}: prints otherwise.\nshown:\n${shown}\ngiven:\n${result.text}`);
+    }
+  });
+}
+// The program on the front page, in `src/pages/index.js`.
+const front = readFileSync(join(site, 'src', 'pages', 'index.js'), 'utf8').match(/const sample = `([\s\S]*?)`;/);
+if (front) {
+  programs += 1;
+  writeFileSync(join(work, 'tour.sg'), front[1].replaceAll('\\`', '`').replaceAll('\\$', '$'));
+  const result = run(['tour.sg']);
+  if (result.code !== 0) {
+    failures += 1;
+    console.error(`src/pages/index.js: the program ended with code ${result.code}:\n${result.text}`);
+  }
+}
+console.log(`${programs} programs of SG on the pages, ${failures} wrong`);
+process.exit(failures === 0 ? 0 : 1);

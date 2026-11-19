@@ -1,0 +1,9 @@
+panic: this `Counter` is being changed, so it cannot be read here
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> panic_checked_order_while_changed.sg:18:15
+ 18 |         print(a < b)
+    |               ^
+  it is being changed from here:
+  --> panic_checked_order_while_changed.sg:16:9
+ 16 |     ref c as changing {
+    |         ^

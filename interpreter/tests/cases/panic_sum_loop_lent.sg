@@ -1,0 +1,14 @@
+// A sum lent as `ref` inside the loop may change through the borrow: it is not taken as a sum
+// that cannot overflow, and its narrow step overflows in the next round where the interpreter's does.
+void main() {
+    int total = 0
+    byte step = 200
+    for i in 0..10 {
+        total += step
+        var through = ref total
+        if i == 0 {
+            through += 2147483300
+        }
+    }
+    print(total)
+}

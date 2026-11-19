@@ -1,0 +1,12 @@
+// An index that changes the text it looks into, where the value is only looked at (`print`, an
+// operand, a receiver): the text is what the index looks into, so it may not be changed by a later
+// part (choice 1382). Compiled code read the old text after the change had freed it.
+nint cut(ref string text) {
+    text = "a new text that takes another block of memory".clone()
+    return 2
+}
+
+void main() {
+    var s = "abc, an old text long enough to be on the heap".clone()
+    print(s[cut(ref s)])
+}

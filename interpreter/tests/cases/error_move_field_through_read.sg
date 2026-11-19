@@ -1,0 +1,19 @@
+// A field cannot be moved out of a value that is only lent with `read`: the owner would be
+// left with a hole. The hint is to borrow the field too.
+struct Name {
+    string text
+}
+
+struct Person {
+    Name name
+}
+
+void show(read Person p) {
+    var n = p.name
+    print(n.text)
+}
+
+void main() {
+    var p = Person { name = Name { text = "Ada" } }
+    show(read p)
+}

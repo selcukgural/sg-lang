@@ -1,0 +1,18 @@
+# The functions mutants are tried on (choices 1325 and 1356-1360): those that make the rules of
+# safety, not all of `sg`. A mutant of one of them that the tests do not notice is a test that is
+# missing. Two runs, each with the tests that can notice its mutants:
+#   cargo mutants -j 4 --cargo-arg=--release -f src/check.rs -f src/opening.rs -- --test golden -- --exact golden
+#   SG_NO_SANITIZERS=1 cargo mutants -j 4 --cargo-arg=--release -f src/sums.rs -f src/emit_c.rs -- --test golden -- --exact compiled
+# and, in a later slice, only the lines a change touched: `git diff | cargo mutants --in-diff /dev/stdin ...`.
+# cargo-mutants changes the Rust of `sg`, not the C it writes, so the checks of bounds and of
+# overflow written as C are tried through the Rust that decides when they are left out.
+examine_re = [
+    # The checker: moves, borrows and what a borrow outlives.
+    "src/check\\.rs:.* (in |replace )[A-Za-z_<>':]*\\b(after_loop|alias_target|borrow_conflicts|check_parts|held|held_by|held_value|holds|kept_open|kept_unnamed|lends|lent_by|lent_for_next_round|lent_places|lent_to_the_end|lent_twice|loans_of|loop_body|merge_moves|move_out|moved_for_next_round|moves|not_lent|only_looked|owner|part_loans|place_loans|place_unchecked|pop_scope|read_only|returned_borrow|same_loan|set_moves|shared_alias|stores|task_kept|through_borrow|touch|unnamed_owner|indexable|index)( |$)",
+    # Where a `shared checked` value is opened and for how long.
+    "src/opening\\.rs:",
+    # The sums that cannot overflow, whose checks a debug build leaves out.
+    "src/sums\\.rs:",
+    # The back end: where it leaves a check of bounds or of overflow out, and what it lends.
+    "src/emit_c\\.rs:.* (in |replace )[A-Za-z_<>':]*\\b(index_or_sum|index_sum|counted_loop|borrowed_name|lend|lent_holds|lent_none|lent_nothing|lent_option|move_of|unlent)( |$)",
+]

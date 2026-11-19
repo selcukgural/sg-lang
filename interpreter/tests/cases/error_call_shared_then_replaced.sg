@@ -1,0 +1,16 @@
+// `same` looks at a `shared` value without taking it: a later argument that gives the
+// variable another value would change what the call compares.
+struct Box {
+    int value
+}
+using BoxRef = shared Box
+
+BoxRef fresh(ref BoxRef b) {
+    b = new BoxRef { value = 2 }
+    return share b
+}
+
+void main() {
+    var a = new BoxRef { value = 1 }
+    print(same(a, fresh(ref a)))
+}

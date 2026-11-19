@@ -2296,7 +2296,12 @@ impl<'a> Consts<'a> {
 
 /// How many steps finding the value of one const may take when the program is compiled: a
 /// count, not a time, so that every machine finds the same or stops at the same place.
+#[cfg(not(fuzzing))]
 pub const CONST_STEPS: u64 = 100_000_000;
+/// Fewer when the front end is fuzzed (`fuzz/`, choice 1352): the fuzzer counts a slow input as
+/// one that hangs, and a hundred million steps take seconds.
+#[cfg(fuzzing)]
+pub const CONST_STEPS: u64 = 1_000_000;
 
 /// A value of a const as the interpreter holds it.
 fn value_of(found: &ConstVal) -> Value {

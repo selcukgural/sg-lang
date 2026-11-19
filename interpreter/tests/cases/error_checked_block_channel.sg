@@ -1,0 +1,9 @@
+// The methods of a channel only read it: on a `shared checked Channel` that a `ref ... as` block
+// is changing, through the same variable, that is refused.
+void main() {
+    var jobs = new shared checked Channel<int>(4)
+    ref jobs as changing {
+        _ = changing.sender().send(1)
+        print(jobs.receive() ?? -1)
+    }
+}

@@ -1,0 +1,19 @@
+// A borrow of a whole struct taken at the end of a round is held when the next round starts:
+// writing one of its fields then clashes with it.
+struct Pair {
+    int left
+    int right
+}
+
+void main() {
+    var pair = Pair { left = 1, right = 2 }
+    var other = Pair { left = 3, right = 4 }
+    var r = read other
+    var i = 0
+    while i < 3 {
+        pair.left = i
+        print(r.right)
+        r = read pair
+        i += 1
+    }
+}

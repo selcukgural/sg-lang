@@ -1,0 +1,17 @@
+// An `is` that gives names still borrows for the whole `if` when it is joined with `&&` to a
+// test that gives none, so the value cannot be changed inside it.
+enum Shape {
+    Circle(long radius)
+    Named(string name)
+}
+
+struct Drawing {
+    Shape shape
+}
+
+void main() {
+    var drawing = new shared checked Drawing { shape = Shape.Named("a") }
+    if drawing.shape is Named(name) && name.length() > 0 {
+        drawing.shape = Shape.Circle(1)
+    }
+}

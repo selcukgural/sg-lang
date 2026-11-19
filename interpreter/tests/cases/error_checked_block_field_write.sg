@@ -1,0 +1,18 @@
+// A `shared checked` value reached through a field of a variable (`pair.first`) is known before
+// the program runs as well: changing it through the same path inside a `read ... as` block is refused.
+struct Box {
+    long count
+}
+using BoxRef = shared checked Box
+
+struct Pair {
+    BoxRef first
+}
+
+void main() {
+    var pair = Pair { first = new BoxRef { count = 1 } }
+    read pair.first as b {
+        print(b.count)
+        pair.first.count = 2
+    }
+}

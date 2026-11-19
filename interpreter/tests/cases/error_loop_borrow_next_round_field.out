@@ -1,0 +1,10 @@
+error: `pair.left` cannot be changed here: `r` borrows from it and is used again later
+  the loop comes round again, and `r` still holds the borrow of the round before
+  --> error_loop_borrow_next_round_field.sg:14:9
+ 14 |         pair.left = i
+    |         ^^^^^^^^^
+  `r` borrowed it here:
+  --> error_loop_borrow_next_round_field.sg:16:13
+ 16 |         r = read pair
+    |             ^^^^^^^^^
+  hint: finish with `r` before this line: a borrow ends at its last use

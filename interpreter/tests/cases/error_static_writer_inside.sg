@@ -1,0 +1,11 @@
+// A writer a static holds deep inside, in a field, in a list, behind `shared`, would never be
+// closed either; the error says where it lies.
+struct Logs {
+    int count
+    List<shared StreamWriter> outs
+}
+
+static Logs All = Logs { count = 0, outs = List<shared StreamWriter>() }
+
+void main() {
+}

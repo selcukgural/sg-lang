@@ -1,0 +1,19 @@
+// A struct built in an argument carries the borrow it was given: a later argument that
+// changes the borrowed text is refused, and the message points at the borrow inside.
+struct Word<from source> : Copyable {
+    read string text
+}
+
+nint change(ref string s) {
+    s = "a new long text that lives on the heap two".clone()
+    return 1
+}
+
+void show(Word w, nint n) {
+    print(w.text)
+}
+
+void main() {
+    var s = "a long text that lives on the heap one".clone()
+    show(Word { text = read s }, change(ref s))
+}

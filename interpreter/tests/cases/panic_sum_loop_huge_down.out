@@ -1,0 +1,5 @@
+panic: overflow: -5000000000000000000 - 5000000000000000000 does not fit in long
+  --> panic_sum_loop_huge_down.sg:6:9
+ 6 |         total -= 5000000000000000000
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: `trySubtract` gives `null` instead, and `wrappingSubtract` wraps around

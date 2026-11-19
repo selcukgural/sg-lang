@@ -1,0 +1,10 @@
+error: `pair.first` is being read for the whole block, so it cannot be changed here: this line would stop the program every time it ran
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> error_checked_block_field_write.sg:16:9
+ 16 |         pair.first.count = 2
+    |         ^^^^^^^^^^
+  it is being read from here:
+  --> error_checked_block_field_write.sg:14:10
+ 14 |     read pair.first as b {
+    |          ^^^^^^^^^^
+  hint: open it with `ref pair.first as ...` and change it through that name

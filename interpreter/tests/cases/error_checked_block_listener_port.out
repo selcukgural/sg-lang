@@ -1,0 +1,10 @@
+error: `held` is being changed for the whole block, so it cannot be read here: this line would stop the program every time it ran
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> error_checked_block_listener_port.sg:7:15
+ 7 |         print(held.port())
+   |               ^^^^
+  it is being changed from here:
+  --> error_checked_block_listener_port.sg:5:9
+ 5 |     ref held as changing {
+   |         ^^^^
+  hint: use the name the block gives

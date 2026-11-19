@@ -1,0 +1,10 @@
+error: `s` cannot be changed here: `s` is what this index looks into, and the index still uses it
+  the parts of an index are computed from left to right, and it runs after the last one
+  --> error_index_part_changes_text_looked_at.sg:11:21
+ 11 |     print(s[cut(ref s)])
+    |                     ^
+  lent to the index here:
+  --> error_index_part_changes_text_looked_at.sg:11:11
+ 11 |     print(s[cut(ref s)])
+    |           ^
+  hint: compute it before the index: `var value = cut(ref s)`, then give it `value`

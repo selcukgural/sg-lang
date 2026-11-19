@@ -1,0 +1,10 @@
+// The same for a sum that a narrower value is taken from: it overflows below its least value.
+void main() {
+    int total = int.MinValue + 1000
+    byte step = 200
+    for _ in 0..10 {
+        total -= step
+        total -= step
+    }
+    print(total)
+}

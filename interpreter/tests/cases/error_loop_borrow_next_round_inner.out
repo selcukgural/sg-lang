@@ -1,0 +1,10 @@
+error: `line.start.x` cannot be changed here: `r` borrows from it and is used again later
+  the loop comes round again, and `r` still holds the borrow of the round before
+  --> error_loop_borrow_next_round_inner.sg:19:9
+ 19 |         line.start.x = i
+    |         ^^^^^^^^^^^^
+  `r` borrowed it here:
+  --> error_loop_borrow_next_round_inner.sg:21:13
+ 21 |         r = read line.start
+    |             ^^^^^^^^^^^^^^^
+  hint: finish with `r` before this line: a borrow ends at its last use

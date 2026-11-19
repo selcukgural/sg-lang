@@ -1,0 +1,9 @@
+error: `bag` is being read, so it cannot be changed here: this line would stop the program every time it ran
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> error_checked_item_field_then_lent.sg:18:46
+ 18 |     var total = bag.items[0].size + grow(ref bag.items)
+    |                                              ^^^
+  it is being read from here:
+  --> error_checked_item_field_then_lent.sg:18:17
+ 18 |     var total = bag.items[0].size + grow(ref bag.items)
+    |                 ^^^

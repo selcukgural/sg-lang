@@ -1,0 +1,19 @@
+// `ref a`, where a `ref Counter` goes, lends what a `shared checked` value holds to be changed:
+// inside a block that reads `a`, through the same variable, that is refused (choice 1379). It was
+// lent as if only to be read.
+struct Counter {
+    long count
+}
+
+void reset(ref Counter counter) {
+    counter.count = 0
+}
+
+void main() {
+    var a = new shared checked Counter { count = 1 }
+    read a as seen {
+        print(seen.count)
+        reset(ref a)
+    }
+    print(a.count)
+}

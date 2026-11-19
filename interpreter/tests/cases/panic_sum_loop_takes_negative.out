@@ -1,0 +1,5 @@
+panic: overflow: 2147483647 - -100 does not fit in int
+  --> panic_sum_loop_takes_negative.sg:7:9
+ 7 |         total -= step
+   |         ^^^^^^^^^^^^^
+  hint: `trySubtract` gives `null` instead, and `wrappingSubtract` wraps around

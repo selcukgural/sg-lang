@@ -1,0 +1,20 @@
+// `<` on two `shared checked` values compares what they hold, as `==` does: while another owner
+// lends one of them to be changed, reading it stops the program (choice 1380). Only `==` and `!=`
+// looked through the check, so `a < b` read `a` while it was being changed.
+struct Counter : Comparable {
+    long count
+
+    int compare(read this, read Counter other) {
+        return this.count.compare(other.count)
+    }
+}
+
+void main() {
+    var a = new shared checked Counter { count = 1 }
+    var b = new shared checked Counter { count = 2 }
+    var c = share a
+    ref c as changing {
+        changing.count = 3
+        print(a < b)
+    }
+}

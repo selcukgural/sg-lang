@@ -1,0 +1,12 @@
+// A nullable field cannot be moved out of an item of a list either; for a nullable value
+// the hint offers `take()`, which leaves `null` in the item.
+struct User {
+    string? nick
+}
+
+void main() {
+    var users = List<User>()
+    users.add(User { nick = "ada" })
+    var nick = users[0].nick
+    print(nick ?? "none")
+}

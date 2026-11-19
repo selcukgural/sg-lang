@@ -1,0 +1,9 @@
+panic: this `Point` is being changed, so it cannot be read here
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> panic_checked_value_method_while_changed.sg:16:15
+ 16 |         print(a.doubled())
+    |               ^
+  it is being changed from here:
+  --> panic_checked_value_method_while_changed.sg:14:9
+ 14 |     ref b as point {
+    |         ^

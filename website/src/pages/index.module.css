@@ -1,0 +1,89 @@
+.hero {
+  background: var(--sg-hero-background);
+  color: #ffffff;
+  padding: 4.5rem 1rem 3.5rem;
+  text-align: center;
+}
+
+.heroInner {
+  max-width: 52rem;
+  margin: 0 auto;
+}
+
+.mark {
+  display: block;
+  margin: 0 auto 1rem;
+}
+
+.title {
+  font-size: 3.5rem;
+  margin-bottom: 0.5rem;
+  color: #ffffff;
+}
+
+.tagline {
+  font-size: 1.35rem;
+  opacity: 0.95;
+}
+
+.buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 1.75rem 0 1.25rem;
+}
+
+.status {
+  font-size: 0.95rem;
+  color: var(--sg-sky);
+}
+
+.status a {
+  color: #ffffff;
+  text-decoration: underline;
+}
+
+.pillars {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 2rem;
+  max-width: 72rem;
+  margin: 3rem auto;
+  padding: 0 1rem;
+}
+
+.pillar h2 {
+  font-size: 1.3rem;
+}
+
+.sample {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+  gap: 2rem;
+  max-width: 72rem;
+  margin: 3rem auto;
+  padding: 0 1rem;
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .sample {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.built {
+  max-width: 72rem;
+  margin: 3rem auto;
+  padding: 0 1rem;
+}
+
+.pasha {
+  text-align: center;
+  margin: 3rem auto 4rem;
+}
+
+.pasha img {
+  border-radius: 50%;
+}

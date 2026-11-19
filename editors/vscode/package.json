@@ -1,0 +1,67 @@
+{
+  "name": "sg-lang",
+  "displayName": "SG",
+  "description": "The SG language: colours, brackets, comments and indentation, and the errors of `sg lsp` as you type, with fixes.",
+  "version": "0.0.1",
+  "publisher": "sg-lang",
+  "license": "(MIT OR Apache-2.0)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/selcukgural/sg-lang"
+  },
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:sg"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "restrictedConfigurations": [
+        "sg.path"
+      ],
+      "description": "`sg.path` is read only in a trusted workspace, so that a folder cannot choose the program the editor starts."
+    }
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "sg",
+        "aliases": [
+          "SG",
+          "sg"
+        ],
+        "extensions": [
+          ".sg"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sg",
+        "scopeName": "source.sg",
+        "path": "./syntaxes/sg.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "SG",
+      "properties": {
+        "sg.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "The `sg` program that `sg lsp` is started from. Empty: `sg` on the `PATH`."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "10.1.2"
+  }
+}

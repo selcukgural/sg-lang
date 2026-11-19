@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 19 November 2026, the hundred-and-seventeenth slice.
+Last brought up to date: 19 November 2026, the hundred-and-eighteenth to hundred-and-twenty-first slices (fuzzing, mutants, editors, the web site).
 
 ## Functions and variables
 
@@ -514,4 +514,8 @@ Last brought up to date: 19 November 2026, the hundred-and-seventeenth slice.
 | `cargo build`, `cargo build --release` | `sg build file.sg`, `sg build file.sg --release` | built | A debug build checks overflow and reports leaks. What it makes on the way is in a folder of the temporary folder only its user opens, made new and removed at the end, where Cargo keeps it in `target/` |
 | a test that leaks `Rc` passes | the test fails with the leak report | built | |
 | a leak is seen only under a tool (LSan, Valgrind, Miri) | a debug build counts the blocks of its values and reports those not given back | built | On every system, Windows too, where there is no LSan; raw memory is not counted |
+| `cargo fuzz` | `fuzz/` (libFuzzer on the front end) and `fuzz/difference` (generated programs, interpreter against compiled code) | built | A crate apart, so `sg` keeps no dependencies; the second has a generator of its own, as Csmith is for C and rustlantis for Rust |
+| `cargo mutants` | the same tool, on the functions named in `.cargo/mutants.toml` | built | Only the rules of safety, then `--in-diff` on what a change touches |
+| rust-analyzer | `sg lsp` | built | In `sg` itself, not a program of its own: the first error as you type, and four hints applied with one click; no hover, definition or completion yet. `editors/vscode` is the extension for VS Code |
+| a suggestion marked `MachineApplicable` | an error with a fix (`Diag::fix`) | built | Given only where the code it writes is certain to check; the risky way (`_ =` on a `Result`) is never one |
 | Cargo, crates.io | none yet | designed | No package manager yet |

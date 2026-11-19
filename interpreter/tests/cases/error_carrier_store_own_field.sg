@@ -1,0 +1,13 @@
+// A struct that borrows may keep only what its own source lends: a borrow of one of its
+// own fields would point into the struct itself.
+struct Words<from source> {
+    read string input
+    string label
+
+    void useLabel(ref this) {
+        this.input = read this.label
+    }
+}
+
+void main() {
+}

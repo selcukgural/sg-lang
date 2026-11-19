@@ -1,0 +1,8 @@
+// A sum that a number written in the program is added to.
+void main() {
+    long total = long.MaxValue - 20
+    for _ in 0..10 {
+        total += 7
+    }
+    print(total)
+}

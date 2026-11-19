@@ -1,0 +1,10 @@
+error: `a` is being read for the whole block, so it cannot be changed here: this line would stop the program every time it ran
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> error_checked_ref_whole_in_block.sg:16:15
+ 16 |         reset(ref a)
+    |               ^^^^^
+  it is being read from here:
+  --> error_checked_ref_whole_in_block.sg:14:10
+ 14 |     read a as seen {
+    |          ^
+  hint: open it with `ref a as ...` and change it through that name

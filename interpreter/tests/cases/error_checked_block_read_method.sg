@@ -1,0 +1,17 @@
+// A method that takes `read this` is lent the value for the call: through the variable a
+// `ref ... as` block is changing it, that is refused.
+struct Counter {
+    long count
+
+    public long current(read this) {
+        return this.count
+    }
+}
+
+void main() {
+    var counter = new shared checked Counter { count = 1 }
+    ref counter as c {
+        c.count += 1
+        print(counter.current())
+    }
+}

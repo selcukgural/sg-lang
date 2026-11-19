@@ -1,0 +1,26 @@
+// A text that a `ref` parameter holds is not the parameter: a call may look at it while a
+// later argument changes the parameter's other fields.
+struct Word<from source> : Copyable {
+    read string text
+    int count
+}
+
+nint bump(ref Word w) {
+    w.count += 1
+    return w.count
+}
+
+void show(read string text, nint n) {
+    print($"{text} {n}")
+}
+
+void run(ref Word w) {
+    show(w.text, bump(ref w))
+}
+
+void main() {
+    var s = "words".clone()
+    var w = Word { text = read s, count = 0 }
+    run(ref w)
+    print(w.count)
+}

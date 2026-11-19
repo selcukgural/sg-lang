@@ -1,0 +1,16 @@
+// A borrow that comes from what a carrier holds is named by its source: `words.source` for
+// one taken as a borrow, the plain name for one taken by value.
+struct Word<from source> : Copyable {
+    read string text
+}
+
+struct Words<from source> {
+    read string input
+}
+
+read string pick(read Words words, Word word) from words.source {
+    return word.text
+}
+
+void main() {
+}

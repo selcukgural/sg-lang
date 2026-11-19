@@ -1,0 +1,17 @@
+// A part moved before a `match` is not moved by a `when` condition that only looks:
+// the condition is accepted, and the parts left are used as before.
+struct Pair {
+    string first
+    string second
+}
+
+void main() {
+    var pair = Pair { first = "one".clone(), second = "two".clone() }
+    var taken = pair.first
+    var size = 3
+    var said = match size {
+        var n when n > 2 => "big"
+        _ => "small"
+    }
+    print($"{taken} {pair.second} {said}")
+}

@@ -243,8 +243,17 @@ fn named_paths(text: &str, range: Span) -> Vec<String> {
 /// files are the modules; one is read when a file names it. With `every_module` all of them
 /// are read and their tests run: that is what the test command does with a folder.
 pub fn load(path: &Path, every_module: bool) -> Result<Sources, String> {
+    load_over(path, every_module, &HashMap::new())
+}
+
+/// The same, where a file `open` has is read from there and not from the disk: the text an
+/// editor holds and has not saved (`sg lsp`, choice 1372).
+pub fn load_over(path: &Path, every_module: bool, open: &HashMap<PathBuf, String>) -> Result<Sources, String> {
     let shown = |path: &Path| path.to_string_lossy().into_owned();
-    let read = |path: &Path| std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", shown(path)));
+    let read = |path: &Path| match open.get(path) {
+        Some(text) => Ok(text.clone()),
+        None => std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", shown(path))),
+    };
     let mut sources = Sources { text: String::new(), files: Vec::new(), root: None, lib_dirs: Vec::new() };
     let root = if path.is_dir() {
         let files = sg_files(path);

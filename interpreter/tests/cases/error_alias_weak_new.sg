@@ -1,0 +1,11 @@
+// An alias of a `weak` type is not built with `new`: a `weak` value looks at a `shared` one.
+using NodeLook = weak Node
+
+struct Node {
+    int value
+}
+
+void main() {
+    var look = new NodeLook(1)
+    print(look is null)
+}

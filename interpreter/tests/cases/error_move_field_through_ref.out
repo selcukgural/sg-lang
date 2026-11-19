@@ -1,0 +1,5 @@
+error: a `Name` field cannot be moved out through a borrow
+  --> error_move_field_through_ref.sg:12:13
+ 12 |     var n = p.name
+    |             ^^^^^^
+  hint: swap it with `p.name.replace(value)`, or borrow it: `read p.name`

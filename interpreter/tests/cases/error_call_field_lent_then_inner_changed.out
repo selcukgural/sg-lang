@@ -1,0 +1,10 @@
+error: `o.inner.name` cannot be changed here: `read o.inner` is given to this call before it, and the call still uses it
+  the parts of a call are computed from left to right, and it runs after the last one
+  --> error_call_field_lent_then_inner_changed.sg:22:35
+ 22 |     show(read o.inner, rename(ref o.inner.name))
+    |                                   ^^^^^^^^^^^^
+  lent to the call here:
+  --> error_call_field_lent_then_inner_changed.sg:22:10
+ 22 |     show(read o.inner, rename(ref o.inner.name))
+    |          ^^^^^^^^^^^^
+  hint: compute it before the call: `var value = rename(ref o.inner.name)`, then give it `value`

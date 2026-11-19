@@ -1,0 +1,10 @@
+error: `bytes` cannot be changed here: `(raw void)bytes.pointer()` is given to this call before it, and the call still uses it
+  the parts of a call are computed from left to right, and it runs after the last one
+  --> error_call_pointer_cast_then_changed.sg:16:62
+ 16 |     _ = unsafe memset((raw void)bytes.pointer(), 0, grow(ref bytes))
+    |                                                              ^^^^^
+  lent to the call here:
+  --> error_call_pointer_cast_then_changed.sg:16:23
+ 16 |     _ = unsafe memset((raw void)bytes.pointer(), 0, grow(ref bytes))
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^
+  hint: compute it before the call: `var value = grow(ref bytes)`, then give it `value`

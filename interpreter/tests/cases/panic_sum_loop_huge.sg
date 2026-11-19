@@ -1,0 +1,9 @@
+// Steps whose sum over a round does not fit in a `long`: the loop keeps its tests.
+void main() {
+    long total = 0
+    for _ in 0..10 {
+        total += 5000000000000000000
+        total += 5000000000000000000
+    }
+    print(total)
+}

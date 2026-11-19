@@ -1,0 +1,9 @@
+error: `line.start.y` is lent twice in one call, and a `ref` borrow must be the only one
+  --> error_borrow_lent_field_and_inner.sg:19:32
+ 19 |     shift(ref line.start, read line.start.y)
+    |                                ^^^^^^^^^^^^
+  the other borrow is here:
+  --> error_borrow_lent_field_and_inner.sg:19:15
+ 19 |     shift(ref line.start, read line.start.y)
+    |               ^^^^^^^^^^
+  hint: copy what is needed into a variable before the call

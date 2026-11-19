@@ -1,0 +1,12 @@
+// `listener.port()` reads a `shared checked TcpListener`: through the variable a `ref ... as`
+// block is changing it, that is refused.
+void serve(TcpListener listener) {
+    var held = new shared checked listener
+    ref held as changing {
+        print(changing.port())
+        print(held.port())
+    }
+}
+
+void main() {
+}

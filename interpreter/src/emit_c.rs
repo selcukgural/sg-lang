@@ -13608,10 +13608,10 @@ impl<'a> Emitter<'a> {
         let address = self.list_address(recv)?;
         let after = self.pre.len();
         let chan = format!("(*{address})");
-        let (Ty::Channel(item) | Ty::Sender(item)) = recv.ty.strip_borrow().clone() else { unreachable!("the checker calls these on an end of a channel") };
+        let (Ty::Channel(item) | Ty::Sender(item)) = chan_end(&recv.ty) else { unreachable!("the checker calls these on an end of a channel") };
         match call {
             ChanCall::Sender => return Ok(format!("sg_chan_more({chan}, true)")),
-            ChanCall::Clone => return Ok(format!("sg_chan_more({chan}, {})", matches!(recv.ty.strip_borrow(), Ty::Sender(_)))),
+            ChanCall::Clone => return Ok(format!("sg_chan_more({chan}, {})", matches!(chan_end(&recv.ty), Ty::Sender(_)))),
             _ => {}
         }
         let held = self.ctype(&item, expr.span)?;
@@ -13629,7 +13629,7 @@ impl<'a> Emitter<'a> {
         let start = match sent {
             // The end of the channel is found before the value is computed.
             Some(value) => {
-                let end = format!("{}*", self.ctype(recv.ty.strip_borrow(), recv.span)?);
+                let end = format!("{}*", self.ctype(&chan_end(&recv.ty), recv.span)?);
                 let address = self.receiver_first(&end, address, after);
                 format!("{end} {slot}c = {address}; {held} {slot} = {value}; int {gave} = sg_chan_send(*{slot}c, &{slot}, {token});")
             }
@@ -16103,6 +16103,9 @@ impl<'a> Emitter<'a> {
                 format!("({{ {ctype}* {temp} = {}; {ctype} {temp}v = *{temp}; sg_free_as({temp}, {ctype}); {temp}v; }})", self.move_of(&held, &place))
             }
             (This::Value, Ty::Ptr(_)) => format!("(*{})", self.lvalue(recv)?),
+            // A `Copyable` value a `shared` (or `shared checked`) value holds: copied out of its box
+            // (choice 1391).
+            (This::Value, Ty::Shared(..)) => format!("(*{})", self.lvalue(recv)?),
             (This::Value, _) if recv.moved && self.droppable(&held) => {
                 let place = self.lvalue(recv)?;
                 self.move_of(&held, &place)
@@ -17366,7 +17369,7 @@ impl<'a> Emitter<'a> {
             // frame, with the item, and is looked at each time the task is woken.
             ExprKind::Method { recv, args, callee: Callee::ChanAsync(call, told), .. } => {
                 let chan = format!("(*{})", self.list_address(recv)?);
-                let (Ty::Channel(item) | Ty::Sender(item)) = recv.ty.strip_borrow().clone() else { unreachable!("the checker calls these on an end of a channel") };
+                let (Ty::Channel(item) | Ty::Sender(item)) = chan_end(&recv.ty) else { unreachable!("the checker calls these on an end of a channel") };
                 let held = self.ctype(&item, inner.span)?;
                 let (wait, slot) = (self.temp(), self.temp());
                 let sends = *call == ChanCall::Send;
@@ -20616,4 +20619,14 @@ fn hoisted(body: &str) -> Result<Hoisted, usize> {
     }
     text.push_str(&body[from..]);
     Ok(Hoisted { text, fields, resumes })
+}
+
+/// The type of the end of a channel a method is called on, behind any pointers to it, which
+/// `list_address` follows too (`new jobs.sender()` is a `Sender<int>*`, choice 1377).
+fn chan_end(ty: &Ty) -> Ty {
+    let mut behind = ty.strip_borrow();
+    while let Some(inner) = pointee(behind) {
+        behind = inner;
+    }
+    behind.clone()
 }

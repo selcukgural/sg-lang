@@ -1,0 +1,10 @@
+error: `counter` is being changed for the whole block, so it cannot be read here: this line would stop the program every time it ran
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> error_checked_block_read_method.sg:15:15
+ 15 |         print(counter.current())
+    |               ^^^^^^^
+  it is being changed from here:
+  --> error_checked_block_read_method.sg:13:9
+ 13 |     ref counter as c {
+    |         ^^^^^^^
+  hint: use the name the block gives

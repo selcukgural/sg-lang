@@ -1,0 +1,5 @@
+error: a `string?` field cannot be moved out of a `shared checked` value: its other owners still look at it
+  --> error_checked_move_nullable_field.sg:11:16
+ 11 |     var nick = user.nick
+    |                ^^^^^^^^^
+  hint: take it with `user.nick.take()`, which leaves `null` there, or borrow it: `read user.nick`

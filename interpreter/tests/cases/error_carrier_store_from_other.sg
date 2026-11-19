@@ -1,0 +1,12 @@
+// What another carrier holds comes from its own source, which need not be this one's:
+// keeping it in `this` would let it outlive that source.
+struct Words<from source> {
+    read string input
+
+    void takeFrom(ref this, read Words other) {
+        this.input = other.input
+    }
+}
+
+void main() {
+}

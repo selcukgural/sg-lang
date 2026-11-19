@@ -1,0 +1,24 @@
+// A borrow of a field taken at the end of a round is held when the next round starts:
+// writing a field inside that field then clashes with it.
+struct Point {
+    int x
+    int y
+}
+
+struct Line {
+    Point start
+    Point end
+}
+
+void main() {
+    var line = Line { start = Point { x = 1, y = 2 }, end = Point { x = 3, y = 4 } }
+    var spare = Point { x = 0, y = 0 }
+    var r = read spare
+    var i = 0
+    while i < 3 {
+        line.start.x = i
+        print(r.y)
+        r = read line.start
+        i += 1
+    }
+}

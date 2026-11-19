@@ -1,0 +1,14 @@
+// A sum with one step of no small bound (an `int` added to an `int`) is not split: its narrow step
+// overflows in the next round where the interpreter's does.
+void main() {
+    int total = 0
+    byte step = 200
+    int jump = 2147483300
+    for i in 0..10 {
+        total += step
+        if i == 0 {
+            total += jump
+        }
+    }
+    print(total)
+}

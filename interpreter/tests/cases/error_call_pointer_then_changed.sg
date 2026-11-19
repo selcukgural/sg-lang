@@ -1,0 +1,18 @@
+// `bytes.pointer()` given to C is an address into the list: a later argument that grows the
+// list moves its items, and C would write to the old place.
+extern {
+    raw void memset(raw byte target, int value, nuint count)
+}
+
+nuint grow(ref List<byte> bytes) {
+    for i in 0..100 {
+        bytes.add((byte)i)
+    }
+    return 2
+}
+
+void main() {
+    var bytes = List<byte> { 1, 2, 3, 4 }
+    _ = unsafe memset(bytes.pointer(), 0, grow(ref bytes))
+    print(bytes.length())
+}

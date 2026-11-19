@@ -27,6 +27,8 @@ pub mod signals;
 pub mod signals;
 pub mod source;
 pub mod opening;
+pub mod json;
+pub mod lsp;
 pub mod sums;
 pub(crate) mod sys;
 pub mod types;
@@ -39,7 +41,7 @@ use std::io::Write;
 
 pub use diag::Diag;
 pub use interp::{Stop, World};
-pub use source::{load, Sources};
+pub use source::{load, load_over, Sources};
 
 /// The tree is walked recursively, so deep calls need stack. `interp::MAX_DEPTH` sets the limit;
 /// this stack is large enough to reach it.
@@ -156,10 +158,27 @@ fn check_all(sources: &Sources, tests: bool) -> Result<ast::Program, Diag> {
     match check::check(&mut prog, &sources.text, tests) {
         Ok(()) => Ok(prog),
         Err(diag) => Err(match missing_use(sources, &diag) {
-            Some(module) => diag.hint(format!("`use {module}` at the top of the file")),
+            Some(module) => with_use(sources, diag, &module),
             None => diag,
         }),
     }
+}
+
+/// The hint of the missing `use` line, and its fix: the line put before the first line of the
+/// file that is not a comment or blank (choice 1371).
+fn with_use(sources: &Sources, diag: Diag, module: &str) -> Diag {
+    let file = sources.file_at(diag.span.start);
+    let text = &sources.text[file.start..file.end];
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with("//") {
+            break;
+        }
+        at += line.len();
+    }
+    let place = diag::Span::new(file.start + at, file.start + at);
+    diag.hint(format!("`use {module}` at the top of the file")).fix(place, format!("use {module}\n"))
 }
 
 fn missing_use(sources: &Sources, diag: &Diag) -> Option<String> {
@@ -217,6 +236,12 @@ pub fn test_sources(sources: &Sources, out: &mut (dyn Write + Send)) -> Result<b
     })
 }
 
+/// Parses and checks the program, `test` blocks too, as an editor shows it (`sg lsp`): the first
+/// error, or nothing.
+pub fn check_sources(sources: &Sources) -> Result<(), Diag> {
+    on_large_stack(|| check_all(sources, true).map(|_| ()))
+}
+
 /// The back end for a program that is one text. `path` names the source file in the panic
 /// messages of the compiled program.
 pub fn emit_c(src: &str, path: &str, checked: bool) -> Result<String, Diag> {
@@ -243,7 +268,7 @@ pub fn emit_c_library(sources: &Sources, checked: bool, name: &str) -> Result<(S
             Ok(()) => {}
             Err(diag) => {
                 return Err(match missing_use(sources, &diag) {
-                    Some(module) => diag.hint(format!("`use {module}` at the top of the file")),
+                    Some(module) => with_use(sources, diag, &module),
                     None => diag,
                 })
             }
@@ -269,7 +294,7 @@ pub fn emit_c_freestanding_for(sources: &Sources, checked: bool, other_machine: 
         prog.other_machine = other_machine;
         if let Err(diag) = check::check(&mut prog, &sources.text, false) {
             return Err(match missing_use(sources, &diag) {
-                Some(module) => diag.hint(format!("`use {module}` at the top of the file")),
+                Some(module) => with_use(sources, diag, &module),
                 None => diag,
             });
         }

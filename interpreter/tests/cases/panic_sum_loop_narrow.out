@@ -1,0 +1,5 @@
+panic: overflow: 2147483647 + 200 does not fit in int
+  --> panic_sum_loop_narrow.sg:9:9
+ 9 |         total += step
+   |         ^^^^^^^^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around

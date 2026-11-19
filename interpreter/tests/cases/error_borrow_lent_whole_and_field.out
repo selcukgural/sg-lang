@@ -1,0 +1,9 @@
+error: `pair.right` is lent twice in one call, and a `ref` borrow must be the only one
+  --> error_borrow_lent_whole_and_field.sg:14:26
+ 14 |     addTo(ref pair, read pair.right)
+    |                          ^^^^^^^^^^
+  the other borrow is here:
+  --> error_borrow_lent_whole_and_field.sg:14:15
+ 14 |     addTo(ref pair, read pair.right)
+    |               ^^^^
+  hint: copy what is needed into a variable before the call

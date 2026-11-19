@@ -1,0 +1,4 @@
+error: a `weak` value is not made with `new`: it looks at a `shared` one
+  --> error_alias_weak_new.sg:9:20
+ 9 |     var look = new NodeLook(1)
+   |                    ^^^^^^^^^^^

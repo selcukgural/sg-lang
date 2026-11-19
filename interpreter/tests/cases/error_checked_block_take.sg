@@ -1,0 +1,14 @@
+// `.take()` changes the place it takes from: on a field of a `shared checked` value being read
+// for a block, through the same variable, it is refused.
+struct Slot {
+    string? label
+    long uses
+}
+
+void main() {
+    var slot = new shared checked Slot { label = "a".clone(), uses = 0 }
+    read slot as s {
+        print(s.uses)
+        _ = slot.label.take()
+    }
+}

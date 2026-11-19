@@ -1,0 +1,12 @@
+// A sum in a loop that adds a narrower value twice a round overflows on the third round. A debug
+// build runs the first rounds without the test only while the sum cannot overflow (`sums.rs`),
+// so it stops at the same step as the interpreter, with the same message.
+void main() {
+    int total = int.MaxValue - 1000
+    byte step = 200
+    for _ in 0..10 {
+        total += step
+        total += step
+    }
+    print(total)
+}

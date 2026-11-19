@@ -1,0 +1,5 @@
+error: this returns a borrow that comes from `word`, and `from` names only `words.source`
+  --> error_from_names_other_source.sg:12:12
+ 12 |     return word.text
+    |            ^^^^^^^^^
+  hint: `from words.source, word`

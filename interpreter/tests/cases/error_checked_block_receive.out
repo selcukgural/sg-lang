@@ -1,0 +1,10 @@
+error: `peer` is being read for the whole block, so it cannot be changed here: this line would stop the program every time it ran
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> error_checked_block_receive.sg:13:17
+ 13 |         _ = try peer.conn.receive(ref buffer)
+    |                 ^^^^
+  it is being read from here:
+  --> error_checked_block_receive.sg:11:10
+ 11 |     read peer as p {
+    |          ^^^^
+  hint: open it with `ref peer as ...` and change it through that name

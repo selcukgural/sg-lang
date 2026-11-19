@@ -1,0 +1,9 @@
+// What gives the value of a static of a block sees the statics written before it in the
+// blocks around it, as it sees their consts.
+void main() {
+    static int Base = 4
+    if Base > 0 {
+        static int Twice = Base * 2
+        print(Twice)
+    }
+}

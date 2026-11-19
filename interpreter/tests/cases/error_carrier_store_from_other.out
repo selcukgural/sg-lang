@@ -1,0 +1,5 @@
+error: `other.input` borrows from somewhere else than `this` does, and `this` would keep that borrow after the call
+  storing a borrow from outside into `this` is not in the language yet; build the value where its source is known
+  --> error_carrier_store_from_other.sg:7:22
+ 7 |         this.input = other.input
+   |                      ^^^^^^^^^^^

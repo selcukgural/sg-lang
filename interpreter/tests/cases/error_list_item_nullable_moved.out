@@ -1,0 +1,5 @@
+error: a `string?` cannot be moved out of an item of a collection
+  --> error_list_item_nullable_moved.sg:10:16
+ 10 |     var nick = users[0].nick
+    |                ^^^^^^^^^^^^^
+  hint: borrow it: `read users[0].nick`, or take it with `users[0].nick.take()`, which leaves `null` there

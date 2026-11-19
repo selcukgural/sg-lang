@@ -1,0 +1,5 @@
+error: a static cannot hold a `Logs`, which holds a `StreamWriter` (the field `outs` of `Logs`): a static is never dropped, so it would never be closed
+  --> error_static_writer_inside.sg:8:8
+ 8 | static Logs All = Logs { count = 0, outs = List<shared StreamWriter>() }
+   |        ^^^^
+  hint: open it where it is used and lend it to the functions that need it, as a parameter

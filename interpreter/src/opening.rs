@@ -414,8 +414,11 @@ impl Opener<'_> {
                 }
             }
             ExprKind::Binary(op, left, right) => {
-                // `a == b` on two `shared checked` values compares what they hold.
-                let compares = matches!(op, BinOp::Eq | BinOp::Ne) && checked_behind(&left.ty).is_some() && checked_behind(&right.ty).is_some();
+                // `a == b` and `a < b` on two `shared checked` values compare what they hold
+                // (choice 1380).
+                let compares = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+                    && checked_behind(&left.ty).is_some()
+                    && checked_behind(&right.ty).is_some();
                 for side in [left, right] {
                     match compares {
                         true => self.open_here(side, Use::Lend)?,

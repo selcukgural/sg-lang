@@ -1,0 +1,15 @@
+// The async methods of an end of a channel behind a pointer (choice 1377).
+async void produce(Sender<int>* tx) {
+    _ = await tx.sendAsync(100)
+    _ = await tx.sendAsync(200)
+}
+
+async void main() {
+    Channel<int>* jobs = new Channel<int>(8)
+    Sender<int>* tx = new jobs.sender()
+    _ = await tx.sendAsync(1)
+    await produce(new jobs.sender())
+    print(await jobs.receiveAsync() ?? -1)
+    print(await jobs.receiveAsync() ?? -1)
+    print(await jobs.receiveAsync() ?? -1)
+}

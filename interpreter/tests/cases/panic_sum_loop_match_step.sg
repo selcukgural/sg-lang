@@ -1,0 +1,16 @@
+// A step inside an arm of a `match` counts in what one round adds: a large one there leaves no
+// room, and the narrow step of the next round overflows.
+void main() {
+    int total = 0
+    byte step = 200
+    for i in 0..10 {
+        total += step
+        match i {
+            2 => {
+                total += 2147483000
+            }
+            _ => {}
+        }
+    }
+    print(total)
+}

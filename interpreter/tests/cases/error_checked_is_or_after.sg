@@ -1,0 +1,19 @@
+// The names an `is` with alternatives gives (`Circle(size) or Square(size)`) borrow what a
+// `shared checked` value holds as one name does: they cannot be used after their `if`.
+enum Shape {
+    Circle(long size)
+    Square(long size)
+    Empty
+}
+
+struct Drawing {
+    Shape shape
+}
+
+void main() {
+    var drawing = new shared checked Drawing { shape = Shape.Square(4) }
+    if !(drawing.shape is Circle(size) or Square(size)) {
+        return
+    }
+    print(size)
+}

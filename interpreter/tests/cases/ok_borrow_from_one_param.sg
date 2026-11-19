@@ -1,0 +1,25 @@
+// A result borrows only the parameters its `from` names: the other text may change while the
+// result is still used, for a function and for `T(...)`, which is short for `T.create(...)`.
+struct View<from source> {
+    read string text
+
+    View create(read string a, read string b) from a {
+        print(b)
+        return View { text = a }
+    }
+}
+
+read string first(read string a, read string b) from a {
+    print(b)
+    return a
+}
+
+void main() {
+    var a = "kept".clone()
+    var b = "looked at".clone()
+    var x = first(read a, read b)
+    b = "changed".clone()
+    var view = View(read a, read b)
+    b = "changed again".clone()
+    print($"{x} {view.text} {b}")
+}

@@ -1,0 +1,21 @@
+// A `ref` field copied out of a parameter lends what the field borrowed, not the parameter:
+// changing the list through the copy leaves a borrow of another field of the parameter usable.
+struct Tally<from source> {
+    ref List<int> counts
+    string label
+}
+
+void bump(ref Tally tally) {
+    var label = read tally.label
+    var copy = Tally { counts = ref tally.counts, label = "copy".clone() }
+    copy.counts.add(1)
+    print(label)
+    print(copy.label)
+}
+
+void main() {
+    var counts = List<int>()
+    var tally = Tally { counts = ref counts, label = "main".clone() }
+    bump(ref tally)
+    print(counts)
+}

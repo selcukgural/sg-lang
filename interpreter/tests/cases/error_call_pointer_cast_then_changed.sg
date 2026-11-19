@@ -1,0 +1,18 @@
+// The address of a list's items, cast for C, is still an address into the list: a later
+// argument that grows the list is refused, as without the cast.
+extern {
+    raw void memset(raw void target, int value, nuint count)
+}
+
+nuint grow(ref List<byte> bytes) {
+    for i in 0..100 {
+        bytes.add((byte)i)
+    }
+    return 2
+}
+
+void main() {
+    var bytes = List<byte> { 1, 2, 3, 4 }
+    _ = unsafe memset((raw void)bytes.pointer(), 0, grow(ref bytes))
+    print(bytes.length())
+}

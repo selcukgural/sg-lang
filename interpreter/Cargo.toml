@@ -11,3 +11,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "sg"
 path = "src/main.rs"
+
+# `fuzzing` is set by cargo-fuzz when it builds the fuzz targets of `fuzz/` (choice 1352).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }

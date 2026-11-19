@@ -1,0 +1,20 @@
+// A field of an item (`bag.items[0].size`) is read where the item lies, so the value it is read
+// out of stays lent until its line ends: lending it to change later in the line is refused.
+struct Item {
+    long size
+}
+
+struct Bag {
+    List<Item> items
+}
+
+long grow(ref List<Item> items) {
+    items.add(Item { size = 5 })
+    return 1
+}
+
+void main() {
+    var bag = new shared checked Bag { items = List<Item> { Item { size = 2 } } }
+    var total = bag.items[0].size + grow(ref bag.items)
+    print(total)
+}

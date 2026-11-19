@@ -1,0 +1,5 @@
+panic: overflow: -9223372036854775802 + -7 does not fit in long
+  --> panic_sum_loop_negative.sg:5:9
+ 5 |         total += -7
+   |         ^^^^^^^^^^^
+  hint: `tryAdd` gives `null` instead, and `wrappingAdd` wraps around

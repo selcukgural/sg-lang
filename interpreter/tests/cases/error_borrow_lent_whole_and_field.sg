@@ -1,0 +1,16 @@
+// A `ref` borrow of a whole struct and a `read` borrow of one of its fields in one call
+// overlap: the function could change the field through the first while it reads the second.
+struct Pair {
+    int left
+    int right
+}
+
+void addTo(ref Pair pair, read int amount) {
+    pair.left += amount
+}
+
+void main() {
+    var pair = Pair { left = 1, right = 2 }
+    addTo(ref pair, read pair.right)
+    print(pair.left)
+}

@@ -1,0 +1,9 @@
+panic: this `Holder` is being read, so it cannot be changed here
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> panic_checked_ref_whole_through_other.sg:17:16
+ 17 |         rename(ref other)
+    |                ^^^^^^^^^
+  it is being read from here:
+  --> panic_checked_ref_whole_through_other.sg:15:10
+ 15 |     read bag as seen {
+    |          ^^^

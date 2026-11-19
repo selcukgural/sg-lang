@@ -1,0 +1,15 @@
+// `.clone()` of a `shared checked` value makes one more owner and reaches nothing of what it
+// holds: it is allowed while a `ref ... as` block changes the value through the same variable.
+struct Counter {
+    long count
+}
+
+void main() {
+    var counter = new shared checked Counter { count = 1 }
+    ref counter as c {
+        c.count += 1
+        var other = counter.clone()
+        print(same(other, counter))
+    }
+    print(counter.count)
+}

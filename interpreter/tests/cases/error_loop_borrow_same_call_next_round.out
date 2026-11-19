@@ -1,0 +1,10 @@
+error: `buffer` cannot be changed here: `view` borrows from it and is used again later
+  the loop comes round again, and `view` still holds the borrow of the round before
+  --> error_loop_borrow_same_call_next_round.sg:26:38
+ 26 |         view = later(Window { part = buffer.all() }, view)
+    |                                      ^^^^^^
+  `view` borrowed it here:
+  --> error_loop_borrow_same_call_next_round.sg:26:38
+ 26 |         view = later(Window { part = buffer.all() }, view)
+    |                                      ^^^^^^
+  hint: finish with `view` before this line: a borrow ends at its last use

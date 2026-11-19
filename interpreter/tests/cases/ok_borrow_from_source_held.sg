@@ -1,0 +1,24 @@
+// A function that returns what its argument holds (`from h.source`) borrows the text, not the
+// holder: the holder may change, and a holder built in the call itself is fine.
+struct Holder<from source> : Copyable {
+    read string text
+    int uses
+}
+
+read string textOf(read Holder h) from h.source {
+    return h.text
+}
+
+read string textIn(Holder h) from h.source {
+    return h.text
+}
+
+void main() {
+    var s = "words".clone()
+    var holder = Holder { text = read s, uses = 0 }
+    var t = textOf(read holder)
+    holder.uses += 1
+    print($"{t} {holder.uses}")
+    var u = textIn(Holder { text = read s, uses = 0 })
+    print(u)
+}

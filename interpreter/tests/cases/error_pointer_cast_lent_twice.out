@@ -1,0 +1,9 @@
+error: `bytes` is lent twice in one call, and a `ref` borrow must be the only one
+  --> error_pointer_cast_lent_twice.sg:9:60
+ 9 |     _ = unsafe memcpy((raw void)bytes.pointer(), (raw void)bytes.pointer(), 2)
+   |                                                            ^^^^^
+  the other borrow is here:
+  --> error_pointer_cast_lent_twice.sg:9:33
+ 9 |     _ = unsafe memcpy((raw void)bytes.pointer(), (raw void)bytes.pointer(), 2)
+   |                                 ^^^^^
+  hint: copy what is needed into a variable before the call

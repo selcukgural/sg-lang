@@ -1,0 +1,4 @@
+error: expected `int`, found `Point`
+  --> error_const_lent_wrong_type.sg:11:13
+ 11 |     int n = read Origin
+    |             ^^^^^^^^^^^

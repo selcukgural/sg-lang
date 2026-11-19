@@ -1,0 +1,18 @@
+// The names of an `is` with alternatives (`Named(name) or Label(name)`) borrow for the whole
+// `if` too, so the value cannot be changed inside it.
+enum Shape {
+    Circle(long radius)
+    Named(string name)
+    Label(string name)
+}
+
+struct Drawing {
+    Shape shape
+}
+
+void main() {
+    var drawing = new shared checked Drawing { shape = Shape.Named("a") }
+    if drawing.shape is Named(name) or Label(name) {
+        drawing.shape = Shape.Circle(1)
+    }
+}

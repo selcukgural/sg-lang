@@ -1,0 +1,30 @@
+// The borrow a round leaves in `view` is still held when the next round lends `buffer` again
+// in the same call: both would reach `later` at once.
+struct Buffer {
+    byte[4] bytes
+
+    ref byte[] all(ref this) {
+        return ref this.bytes[0..]
+    }
+}
+
+struct Window<from source> {
+    ref byte[] part
+}
+
+Window later(Window first, Window second) from first, second {
+    print(first.part[0])
+    return second
+}
+
+void main() {
+    var buffer = Buffer { bytes = byte[4] { 1, 2, 3, 4 } }
+    var other = Buffer { bytes = byte[4] { 5, 6, 7, 8 } }
+    var view = Window { part = other.all() }
+    var i = 0
+    while i < 2 {
+        view = later(Window { part = buffer.all() }, view)
+        i += 1
+    }
+    print(view.part[0])
+}

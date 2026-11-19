@@ -1,0 +1,15 @@
+# Fuzzing for differences (choices 1324 and 1361-1368): a generator of programs of SG that are
+# typed and end, each run by the interpreter and compiled under the sanitizers, the outputs
+# compared. No dependencies, stable Rust; `../README.md` says how it is run.
+[package]
+name = "sg-difference"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1

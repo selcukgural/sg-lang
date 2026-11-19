@@ -1,0 +1,10 @@
+// The address of a list's items stays lent to C when it is cast to another raw type:
+// given twice to one call, C may write the items through one while it reads them through the other.
+extern {
+    raw void memcpy(raw void target, raw void source, nuint count)
+}
+
+void main() {
+    var bytes = List<byte> { 1, 2, 3, 4 }
+    _ = unsafe memcpy((raw void)bytes.pointer(), (raw void)bytes.pointer(), 2)
+}

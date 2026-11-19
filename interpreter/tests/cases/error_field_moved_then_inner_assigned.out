@@ -1,0 +1,8 @@
+error: `p.name` was moved and can no longer be used
+  --> error_field_moved_then_inner_assigned.sg:16:5
+ 16 |     p.name.text = "Grace"
+    |     ^^^^^^^^^^^
+  it was moved here:
+  --> error_field_moved_then_inner_assigned.sg:14:17
+ 14 |     var taken = p.name
+    |                 ^^^^^^

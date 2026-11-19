@@ -1,0 +1,5 @@
+error: a static cannot hold a `Sink`, which holds a `StreamWriter` (the field `byName` of `Sink`): a static is never dropped, so it would never be closed
+  --> error_static_writer_in_enum.sg:7:8
+ 7 | static Sink Out = Sink.Nowhere
+   |        ^^^^
+  hint: open it where it is used and lend it to the functions that need it, as a parameter

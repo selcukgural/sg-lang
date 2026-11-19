@@ -1,0 +1,27 @@
+// A `Disposable` value moved on every way of the `else` but on only some of the `then` may
+// still be there where its block ends, so what it borrows cannot change before that.
+struct Guard<from source> : Disposable {
+    read string text
+
+    void dispose(ref this) {
+        print(this.text)
+    }
+}
+
+void finish(Guard g) {
+    print("finish")
+}
+
+void main() {
+    var text = "a long text that lives on the heap one".clone()
+    var g = Guard { text = read text }
+    if text.length() > 10 {
+        if text.length() > 100 {
+            finish(g)
+        }
+    } else {
+        finish(g)
+    }
+    text = "a new long text that lives on the heap two".clone()
+    print(text)
+}

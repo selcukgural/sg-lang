@@ -1,0 +1,22 @@
+// After an `if` whose branches move different fields, both fields are gone: the one the
+// first branch moved is not forgotten because the `else` moved another.
+struct Name {
+    string text
+}
+
+struct Person {
+    Name first
+    Name last
+}
+
+void main() {
+    var p = Person { first = Name { text = "Ada" }, last = Name { text = "Lovelace" } }
+    if p.first.text.length() > 2 {
+        var a = p.first
+        print(a.text)
+    } else {
+        var b = p.last
+        print(b.text)
+    }
+    print(p.first.text)
+}

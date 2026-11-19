@@ -1,0 +1,19 @@
+// An end of a channel behind a pointer (`new jobs.sender()` is a `Sender<int>*`): its methods are
+// reached through the pointer, as those of a list are. `sg build` stopped with a fault of its own
+// on it (choice 1377); the interpreter ran it. The async methods: `ok_channel_behind_pointer_async`.
+void produce(Sender<int>* tx, int from) {
+    for i in from..from + 3 {
+        _ = tx.send(i)
+    }
+}
+
+void main() {
+    Channel<int>* jobs = new Channel<int>(8)
+    Sender<int>* tx = new jobs.sender()
+    _ = tx.send(0)
+    var more = tx.clone()
+    _ = more.send(9)
+    produce(new jobs.sender(), 1)
+    print($"{jobs.receive() ?? -1} {jobs.receive() ?? -1} {jobs.receive() ?? -1}")
+    print($"{jobs.receive() ?? -1} {jobs.receive() ?? -1}")
+}

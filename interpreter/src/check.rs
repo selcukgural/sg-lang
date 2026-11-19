@@ -284,6 +284,27 @@ fn constant(ty: &Ty, name: &str, span: Span) -> Res<()> {
     })
 }
 
+/// `(T)x` for the fix of a conversion: the value in parentheses unless it is a name, a number
+/// or a call, which a cast takes as it is.
+fn cast_of(to: &str, expr: &Expr, text: &str) -> String {
+    match is_simple(expr) {
+        true => format!("({to}){text}"),
+        false => format!("({to})({text})"),
+    }
+}
+
+/// An expression a cast or a method call after it takes without parentheses.
+fn is_simple(expr: &Expr) -> bool {
+    matches!(peel_widen(expr).kind, ExprKind::Var(_) | ExprKind::Int(..) | ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::Call { .. } | ExprKind::Method { .. } | ExprKind::Const(_) | ExprKind::Str(_))
+}
+
+fn peel_widen(expr: &Expr) -> &Expr {
+    match &expr.kind {
+        ExprKind::Widen(_, inner) | ExprKind::Load(inner) => peel_widen(inner),
+        _ => expr,
+    }
+}
+
 /// The integer type a `tryTo...`, `wrappingTo...` or `saturatingTo...` method converts to:
 /// `tryToInt` gives an `int?`. A conversion that cannot fail is an error, as is cutting a
 /// fractional number.
@@ -5419,8 +5440,10 @@ impl<'a> Checker<'a> {
                     .note(format!("`{holder}` is `Disposable`: its `dispose` runs at the end of its block and uses it there"))
                     .hint(format!("put `{holder}` in a block of its own that ends before this line")));
             }
-            // Borrowed further down in a loop: the touch is in the next round.
-            if clash.loan.span.start > clash.span.start && !clash.at.loops.is_empty() {
+            // Borrowed further down in a loop, or where the touch is (one part lends what another
+            // changes, `later(Window { part = buffer.all() }, view)`): the borrow is of the round
+            // before (choice 1381).
+            if clash.loan.span.start >= clash.span.start && !clash.at.loops.is_empty() {
                 diag = diag.note(format!("the loop comes round again, and `{holder}` still holds the borrow of the round before"));
             }
             // Used by the place of the assignment whose right side touched it.
@@ -6628,7 +6651,8 @@ impl<'a> Checker<'a> {
                 if matches!(expr.kind, ExprKind::Await(_)) && !matches!(ty, Ty::Void | Ty::Result(..)) {
                     let text = &self.src[span.start..span.end];
                     return Err(Diag::error(span, format!("the `{ty}` that `{text}` gives is not used"))
-                        .hint(format!("keep it: `var value = {text}`; to drop it on purpose, `_ = {text}`")));
+                        .hint(format!("keep it: `var value = {text}`; to drop it on purpose, `_ = {text}`"))
+                        .fix(Span::new(span.start, span.start), "_ = "));
                 }
                 // `line.trim()` alone changes nothing: a built-in method that only gives a value
                 // gives it to nobody.
@@ -6639,7 +6663,8 @@ impl<'a> Checker<'a> {
                         let text = &self.src[span.start..span.end];
                         let task = &self.src[recv.span.start..recv.span.end];
                         return Err(Diag::error(span, format!("the `{ty}` that `{task}` gives is not used"))
-                            .hint(format!("keep it: `var value = {text}`; to drop it on purpose, `_ = {text}`")));
+                            .hint(format!("keep it: `var value = {text}`; to drop it on purpose, `_ = {text}`"))
+                            .fix(Span::new(span.start, span.start), "_ = "));
                     }
                     if ty != Ty::Void && gives_only(name, callee) {
                         return Err(self.not_used(recv, name, &ty, span));
@@ -6660,7 +6685,8 @@ impl<'a> Checker<'a> {
                         _ => text,
                     };
                     return Err(Diag::error(span, format!("the `{ty}` that `{name}` gives is not used"))
-                        .hint(format!("keep it: `var value = {text}`; to drop it on purpose, `_ = {text}`")));
+                        .hint(format!("keep it: `var value = {text}`; to drop it on purpose, `_ = {text}`"))
+                        .fix(Span::new(span.start, span.start), "_ = "));
                 }
             }
             _ => {
@@ -7008,7 +7034,8 @@ impl<'a> Checker<'a> {
                 Ok(())
             }
             (Ty::Int(_), Ty::Int(to)) => {
-                mismatch(Some(format!("convert with `({})`; it panics if the value does not fit", to.name())))
+                let cast = cast_of(to.name(), expr, text);
+                mismatch(Some(format!("convert with `({})`; it panics if the value does not fit", to.name()))).map_err(|diag| diag.fix(expr.span, cast))
             }
             (Ty::Int(from), Ty::Float(to)) if to.holds(*from) => {
                 wrap(expr, |inner| ExprKind::Widen(expected.clone(), inner));
@@ -7114,7 +7141,8 @@ impl<'a> Checker<'a> {
                 self.coerce(expr, (**inner).clone(), expected)
             }
             (Ty::Read(inner), Ty::Str) if **inner == Ty::Str => {
-                mismatch(Some(format!("`{found}` only borrows the text; to own a copy write `{text}.clone()`")))
+                let copy = format!("{}.clone()", if is_simple(expr) { text.to_string() } else { format!("({text})") });
+                mismatch(Some(format!("`{found}` only borrows the text; to own a copy write `{text}.clone()`"))).map_err(|diag| diag.fix(expr.span, copy))
             }
             (Ty::Read(_) | Ty::Ref(_), _) if !expected.is_borrow() => {
                 mismatch(Some(format!("`{found}` only borrows the value; `{expected}` needs to own it")))
@@ -7131,11 +7159,15 @@ impl<'a> Checker<'a> {
             // A borrow of a `shared T` stands in for a `read` of the `T` it points to.
             (Ty::Read(from) | Ty::Ref(from), Ty::Read(to)) if matches!(&**from, Ty::Shared(inner, _) if inner == to) => {
                 wrap(expr, ExprKind::Unbox);
+                expr.ty = expected.clone();
                 Ok(())
             }
             // What a `shared checked` value points to is lent to be changed with `ref`.
+            // The node has the type it stands in for: `opening` lends a `ref` of it to be changed
+            // (choice 1379).
             (Ty::Ref(from), Ty::Ref(to)) if matches!(&**from, Ty::Shared(inner, true) if inner == to) => {
                 wrap(expr, ExprKind::Unbox);
+                expr.ty = expected.clone();
                 Ok(())
             }
             (Ty::Read(from), Ty::Ref(to)) if matches!(&**from, Ty::Shared(inner, true) if inner == to) => {
@@ -7161,6 +7193,7 @@ impl<'a> Checker<'a> {
                 if matches!(&**from, Ty::Ptr(inner) if inner == to) =>
             {
                 wrap(expr, ExprKind::Unbox);
+                expr.ty = expected.clone();
                 Ok(())
             }
             (Ty::Ptr(inner), Ty::Read(to)) if inner == to => mismatch(Some(format!("lend it with `read`: `read {text}`"))),
@@ -7196,8 +7229,14 @@ impl<'a> Checker<'a> {
     /// The type of a variable or field, without using its value up. `None` if `expr` is
     /// not a place. The flag says whether it can be written to.
     fn place(&mut self, expr: &mut Expr) -> Res<Option<(Ty, bool)>> {
+        let mark = self.borrows.touched.len();
         let found = self.place_unchecked(expr)?;
         if found.is_some() {
+            // What a part lends lasts until the index or call runs, also where its value is only
+            // looked at (`print(s[cut(ref s)])`, choice 1382), as in `expr`.
+            if self.borrows.touched[mark..].iter().any(|touch| touch.2 != Access::Read) {
+                self.lent_to_the_end(expr, mark)?;
+            }
             self.check_parts(expr, false)?;
             self.touch(expr, Access::Read);
         }
@@ -7732,7 +7771,7 @@ impl<'a> Checker<'a> {
                 };
                 let done = if *access == Access::Move { "moved" } else { "changed" };
                 let diag = Diag::error(*span, format!("`{text}` cannot be {done} here: {given}, and the {what} still uses it"))
-                    .note(format!("the parts of a {what} are computed from left to right, and it runs after the last one"));
+                    .note(format!("the parts of {} {what} are computed from left to right, and it runs after the last one", if what == "index" { "an" } else { "a" }));
                 let diag = match (part.span.start..part.span.end).contains(&loan.span.start) && loan.span != part.span {
                     true => diag.related(loan.span, format!("lent to the {what} here")),
                     false => diag.related(part.span, format!("lent to the {what} here")),

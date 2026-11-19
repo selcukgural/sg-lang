@@ -1,0 +1,12 @@
+// The text an index looks into is lent until the index runs: the index itself cannot give
+// the variable a new text, which would free the bytes being read.
+nint cut(ref string s) {
+    s = "a new long text that lives on the heap two".clone()
+    return 2
+}
+
+void main() {
+    var s = "a long text that lives on the heap one".clone()
+    var c = s[cut(ref s)]
+    print(c)
+}

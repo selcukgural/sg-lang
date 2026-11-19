@@ -1,0 +1,17 @@
+// What a condition without names lends (`counter.name` looked at to compare it) ends with the
+// condition: the block of the `if` and of the `while` may change the value.
+struct Counter {
+    string name
+    long count
+}
+
+void main() {
+    var counter = new shared checked Counter { name = "a".clone(), count = 0 }
+    if counter.name == "a" {
+        counter.count += 1
+    }
+    while counter.name == "a" && counter.count < 3 {
+        counter.count += 1
+    }
+    print(counter.count)
+}

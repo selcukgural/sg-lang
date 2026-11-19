@@ -1,0 +1,19 @@
+// A method is called on a `Copyable` struct: it is still looked at where it is, not copied,
+// so an argument that changes it is refused, as for any other receiver.
+struct Counter : Copyable {
+    int value
+
+    int next(ref this) {
+        this.value += 1
+        return this.value
+    }
+
+    int plus(read this, int a) {
+        return this.value + a
+    }
+}
+
+void main() {
+    var counter = Counter { value = 0 }
+    print(counter.plus(counter.next()))
+}

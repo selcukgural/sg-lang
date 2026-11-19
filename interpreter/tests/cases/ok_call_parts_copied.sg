@@ -1,0 +1,55 @@
+// What a part of a call gives as a copy, or as a new value, does not lend: a later part may
+// change the variable it came from, and the call sees the value from before the change.
+struct Point : Copyable {
+    int x
+    int y
+}
+
+nint bump(ref int n) {
+    n += 1
+    return 1
+}
+
+nint shift(ref Point p) {
+    p.x += 10
+    return 2
+}
+
+nint rename(ref string t) {
+    t = "other".clone()
+    return 3
+}
+
+string tail(ref string t) {
+    t = "other".clone()
+    return "c".clone()
+}
+
+void place(Point p, nint k) {
+    print($"{p.x} {k}")
+}
+
+void show(bool found, nint k) {
+    print($"{found} {k}")
+}
+
+void main() {
+    var p = Point { x = 1, y = 2 }
+    place(p, shift(ref p))
+    print(p.x)
+
+    var n = 5
+    print(n.max(bump(ref n)))
+    print(n)
+
+    var t = "abc".clone()
+    var s = "b".clone()
+    show(t.contains(read s), rename(ref t))
+    print(t)
+
+    var u = "abc".clone()
+    var a = "b".clone()
+    var b = "x".clone()
+    print(u.replaceAll(read a, read b).contains(read tail(ref u)))
+    print(u)
+}

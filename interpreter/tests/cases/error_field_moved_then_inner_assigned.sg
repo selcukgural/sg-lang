@@ -1,0 +1,18 @@
+// After `p.name` is moved out, a field inside it cannot be given a value: there is no
+// `p.name` left to hold it. Only `p.name` as a whole can be given a value again.
+struct Name {
+    string text
+}
+
+struct Person {
+    Name name
+    int age
+}
+
+void main() {
+    var p = Person { name = Name { text = "Ada" }, age = 36 }
+    var taken = p.name
+    print(taken.text)
+    p.name.text = "Grace"
+    print(p.age)
+}

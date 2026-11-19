@@ -96,6 +96,7 @@ of `tests/Containerfile` has them.
 | Built-ins | `print(x)`, `printError(x)` (the same, to the standard error), `panic("...")`, `assert(condition)`, `exit(code)` (ends the program with that code), `same(a, b)` (two `shared` values point to one object) |
 | Files and the input | `File.readText(path)` gives a `Result<string, IoError>`, `File.readBytes(path)` a `Result<List<byte>, IoError>`; `File.writeText(path, text)`, `File.writeBytes(path, bytes)` and `File.appendText(path, text)` a `Result<void, IoError>`. `File.openText(path)` gives a `Result<StreamReader, IoError>`, `File.createText(path)` a `Result<StreamWriter, IoError>`, `File.openAppend(path)` one that writes after what the file holds, and `File.openWrite(path)` one that writes from the start over what it holds (a missing file is made). A reader has `readLine(ref line)` (the next line into `line`, `false` at the end), `readText()` (what is left), `lines()` (each line as a `Result<string, IoError>`) `readBytes(ref buffer)` (bytes into the buffer, as many as it holds unless the end comes first, and how many: a `Result<nint, IoError>`) and `readSome(ref buffer)` (what the block holds, or what one read of the system gives when it is empty; how many, 0 at the end); a writer has `write(x)` and `writeLine(x)` (what `print` takes), `writeBytes(bytes)` (a `read byte[]` as it is), `flush()` and `close()`, each with a `Result<void, IoError>`. A reader and a writer of a file move with `seek(SeekFrom.Start(n))`, `SeekFrom.End(n)` or `SeekFrom.Current(n)`, which gives the new place as a `Result<long, IoError>`; a reader moves inside its block without the system, a writer writes what it holds first (`seekAsync` in an async function); a place before the start is `InvalidInput`, and a pipe, a writer of `openAppend` or `Stdin` lent on is `NotSeekable`. `Stdin` is a `StreamReader`, `Stdout` and `Stderr` are `StreamWriter`s, lent on with `ref Stdin`. The built-in `enum IoError { NotFound` / `PermissionDenied` / `IsDirectory` / `NoSpace` / `AlreadyExists` / `NotDirectory` / `DirectoryNotEmpty` / `InvalidInput` / `NotSeekable` / `InvalidText(long position)` / `Other(int code) }`, with the variants of the network and `Cancelled` |
 | Tests | `test "name" { ... }` at the top level of a file, run by `sg test file.sg`: one line per test (`ok` or `FAIL` with the reason), exit code 1 if any failed. In a test `try` passes on an error of any type, and the test fails with it. A test that passes and leaves `shared` values alive fails with the leak report. Compiled (`sg test --compiled`), each test runs in a process of its own, the program of tests started again with `--only N`; a debug build counts the blocks of its values, and a program or a test that ends with some not given back fails with a report. A normal run leaves the tests out |
+| Editor | `sg lsp`, the language server an editor starts: the first error of the program a file belongs to as it is written, with its notes and hint and a link to a second place it names, what the editor has not saved read instead of the disk; a fix applied with one click for a conversion `(int)x`, `.clone()` of a text only borrowed, `_ = ` before a value dropped on purpose, and a missing `use`. `editors/vscode`: colours (a TextMate grammar), brackets, comments and indentation for VS Code, and its client of `sg lsp` |
 | Comparing by name | `a.compare(b)` on numbers, `char` and text (negative, 0, positive), `a.equals(b)` on those and `bool`: what `<` and `==` are short for |
 | Integer methods | `wrappingAdd`, `wrappingSubtract`, `wrappingMultiply`; `tryAdd`, `trySubtract`, `tryMultiply`, `tryDivide` give `null` where the operator would panic; `saturatingAdd`, `saturatingSubtract`, `saturatingMultiply` give the nearest end of the type. `tryToInt()` and the others give `null` where a cast would panic, `wrappingToInt()` and the others keep the bits that fit, `saturatingToInt()` and the others give the nearest end; `min`, `max`, `clamp(low, high)`. `abs` on the signed types (`int.MinValue.abs()` overflows as `-x` does), `tryAbs`, `wrappingAbs`, `unsignedAbs` (a `uint` for an `int`); `tryNegate`, `wrappingNegate`. The bits (C23's `<stdbit.h>`): `countOnes`, `countZeros`, `leadingZeros`, `trailingZeros`, `leadingOnes`, `trailingOnes` (an `int`), `rotateLeft(n)`, `rotateRight(n)`, `reverseBytes`, `reverseBits` on every integer type; `isPowerOfTwo`, `nextPowerOfTwo`, `log2` on the unsigned ones |
 | Fractional methods | `abs`, `sqrt`, `floor`, `ceil`, `round`, `roundToEven`, `truncate`, `fraction`, `isNaN`, `isInfinite`, `isFinite`, `isSignNegative`; `exp`, `exp2`, `expMinusOne`, `log`, `log2`, `log10`, `logOnePlus`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `cbrt`, `hypot`, `pow`, `erf`, `erfc`, `gamma`, `logGamma`, `fusedMultiplyAdd`, `ieeeRemainder` (beside `%`, which is C's `fmod`), `copySign`, `exponent` (an `int?`), `scaleByPowerOfTwo`, `nextUp`, `nextDown`, `min`, `max`, `clamp`; `tryToInt()`, `saturatingToInt()` and the others |
@@ -947,10 +948,13 @@ Choices made in the nineteenth slice (enums and `match`), approved on 12 Novembe
 | `src/std/net.sg` | The same module's datagrams and addresses (`UdpSocket`, `SocketAddress`, `Received`): reading and printing a v4 and a v6 address, and the two ends of a `TcpStream`. Only it calls the sockets of the system (`System.udpBind`, `System.udpSend`, `System.udpReceive`, `System.lookup` and the others) |
 | `src/std/signals.sg` | The same module's signals (`Signal`, `Signals`, `SignalListener`). Only it calls `System.signalListen`, `System.signalNext` and the other calls of the signals |
 | `src/signals.rs` | For the interpreter: the signals of the process, a handler that writes the kind into a pipe and a thread that hands each to its listeners, waking the fiber that waits through the scheduler |
+| `src/lsp.rs` | The language server (`sg lsp`): the messages of the Language Server Protocol on the input and output, the program each open file belongs to, a check 300 ms after the last change on a thread of its own, the first error as a diagnostic and its fix as a quick fix, positions in UTF-16 as the protocol counts them |
+| `src/json.rs` | JSON read and written for the language server, so that `sg` keeps no dependencies |
 | `src/lib.rs`, `src/main.rs` | Library entry point and the command line |
 
-It is a library with a thin command line on top, so that a language server can later reuse the parser and the
-checks.
+It is a library with a thin command line on top, so that the language server (`sg lsp`) uses the same parser
+and checks as the command. An error carries its hint as text and, where the code it gives is certain, as an
+edit (`Diag::fix`), which an editor applies with one click.
 
 The command's exit codes, tested from outside in `tests/cli.rs` (1322):
 
@@ -960,6 +964,7 @@ The command's exit codes, tested from outside in `tests/cli.rs` (1322):
 | what `exit` gives | The program called `exit(code)`, a `byte` |
 | 1 | An error the checker or the C compiler finds, a panic, a failed test, a program that leaks or races |
 | 2 | A command line that is not one of the usages (a second program, a flag given twice, `-o` or `--target` with nothing after it, `-o` with `emit-c`), a folder of `-L` that is not there, a program that cannot be read (no such file, not UTF-8, a folder with no `.sg` file), an output into a folder that is not there |
+| 0 or 1, `sg lsp` | The language server ends with 0 when the editor asked it to (`shutdown`, then `exit`), and with 1 when its input ends or it is told `exit` without `shutdown`, as the protocol has it |
 | `SIGPIPE` | On Linux and macOS, an output closed before the program was through (`sg x.sg \| head`), interpreted and compiled, as C's and Go's programs end (1330); on Windows that is 0 |
 
 Tests are golden files: every `.sg` file in `examples/` and `tests/cases/` is run and its output (what it
@@ -973,6 +978,14 @@ Programs with modules are in `tests/modules/`: the folders there (`stock`, `bill
 `links`, `aliasleak`, `clib`, `timing`) are modules, and each `.sg` file next to them is a program of one file that uses them. A folder with a `main.sg`
 (`tests/modules/rootdir`, `examples/shop`, `examples/zlib`) is a program run as a folder; its output is in `main.out` and what
 the test command prints for it in `tests.out`.
+
+Two kinds of trying are not part of `cargo test`. The front end is fuzzed (`fuzz/` at the root of the
+repository, a crate of its own with its own `README.md`): on any text, the parser, and all `sg build` does
+before the C compiler runs, must end with a result or a message, never a panic, a hang or a stack run out
+(1349-1355). And mutants are tried on the functions that make the rules of safety, named in
+`.cargo/mutants.toml` with the commands that run them (1356-1360): a mutant the tests do not notice is a
+test that is missing. A change to those functions is tried where it touched them with `git diff | cargo
+mutants --in-diff /dev/stdin`, with the arguments `.cargo/mutants.toml` gives.
 
 ## Grammar rules
 
@@ -8204,6 +8217,245 @@ the choices it raised:
      passes on macOS and on Linux in a container (412 of 1710 programs compile through C, 99 of them under
      the thread sanitizer).
 
+Choices made in the hundred-and-eighteenth slice (fuzzing the front end, 1323, and mutants of the rules
+of safety, 1325). Approved on 19 November 2026:
+
+1349. **The order**: this slice fuzzes the front end (1323) and then tries mutants (1325); fuzzing for
+     differences (1324), with a generator of programs of our own, is the largest piece and is the next slice.
+1350. **Two targets** (`fuzz/`): `parse`, the lexer and the parser; and `check`, all `sg build` does before
+     the C compiler runs (the parser, the checker, the consts it finds and the C written), on a stack as
+     large as the one `sg` gives them. The interpreter does not run there; that is 1324's. An input that is
+     not UTF-8 is passed over, as `sg` does not read such a file.
+1351. **What counts as a finding**: a panic of Rust, a stack run out, more than 2 GB of memory, or an input
+     that takes more than 10 seconds. The targets are built with debug assertions, so an overflow a release
+     build of `sg` would wrap without a word is a panic there. A message about the program is the answer
+     expected.
+1352. **A const takes at most 1 000 000 steps while it is fuzzed** (`cfg(fuzzing)`, which cargo-fuzz sets):
+     a hundred million take about 9 seconds, and the fuzzer would count each such input as one that hangs.
+     `sg` itself is built as before. The steps stay counted for each const, as Rust counts them for each
+     const (`long_running_const_eval`) and Zig for each block run when it compiles (`@setEvalBranchQuota`).
+1353. **Where the fuzzer starts**: from the programs of `tests/cases` and `examples`, with the words and
+     marks of the language in `fuzz/sg.dict`. The corpus it grows is kept in a volume of the container, not
+     in the repository. An input that fails is made smaller (`cargo fuzz tmin`) and becomes a test before
+     the fix (1321).
+1354. **How it is set up**: `fuzz/` is a crate of its own, not in a workspace with `sg`; its one dependency,
+     libfuzzer-sys, has its version pinned and its `Cargo.lock` kept, and Dependabot watches it. The image of
+     `fuzz/Containerfile` pins Rust nightly to a day and cargo-fuzz to a version and fetches the crates; only
+     building it uses the network, and the fuzzing runs without it (`fuzz/run.sh`). It is not in the CI,
+     which runs on Windows and with stable Rust.
+1355. **How long**: three hours of `check` and one of `parse`, six at once; a short run again after a fix.
+1356. **Which functions mutants are tried on**, named in `.cargo/mutants.toml`: those of the checker that
+     follow moves and borrows and what a borrow outlives, all of `src/opening.rs`, all of `src/sums.rs`,
+     and the functions of the back end that leave a check of bounds or of overflow out or lend a value; 677
+     mutants in all. `Emitter::value` (533 mutants alone) and the rules of types are left out.
+     cargo-mutants changes the Rust of `sg`, not the C it writes, so a check written as C is tried through
+     the Rust that decides when it is left out.
+1357. **Which tests run on each mutant**: on those of the checker and of `opening`, the golden tests in the
+     interpreter (`--exact golden`, 34 seconds), where every `error_*` program is; on those of the back end,
+     the compiled golden tests without the sanitizers (`--exact compiled`, about two minutes).
+1358. **Where**: on macOS, four at once; the fuzzing runs beside it in the container.
+1359. **A mutant that lives** is read: a missing test gets written; a mutant that changes nothing a
+     program can see is left out in `.cargo/mutants.toml` with the reason; a way of the code that is not
+     needed comes as a choice.
+1360. **After this slice**, a change to these functions is tried only where it touched them: `git diff |
+     cargo mutants --in-diff`. It is not in the CI.
+
+What fuzzing the front end found, from 1377. The first run gave `check` three hours (15 845 031 inputs)
+and `parse` one (30 086 188), six at once: no input hung or took more than 2 GB, the parser never panicked,
+and `check` found one fault, approved on 19 November 2026 (after the fixes of this slice, half an hour more of
+`check`, 2 747 192 inputs, found nothing):
+
+1377. **An end of a channel behind a pointer** (`new jobs.sender()` is a `Sender<int>*`): the checker took
+     `tx.send(1)`, `await tx.sendAsync(1)` and `jobs.receive()` through the pointer and the interpreter ran
+     them, but `sg build` stopped with a fault of its own (the back end looked at the type without going
+     through the pointer, which the address it computes already did). Fixing it showed two more of the same:
+     `tx.clone()` counted the copy as an end that receives, so compiled code never let the channel go (a
+     leak its debug build reported), and the temporary that holds the end of a send had the C type of one
+     pointer too many, which the C compiler took with a warning. The back end now looks through the
+     pointers in all four places, as it does for a `List<T>*`; Rust's `Box<Sender<T>>` reaches the methods
+     the same way. Tested by `ok_channel_behind_pointer` and `ok_channel_behind_pointer_async`, with which `sg
+     emit-c` stopped before the fix; compiled, under the sanitizers, they print what the interpreter prints.
+
+What trying mutants found, from 1378. Approved on 19 November 2026:
+
+1378. **How far the living mutants are followed**: read in four groups, each by a reviewer of its own
+     (borrows of the parts of a call, the other borrows, moves and scopes, `opening.rs`), a test written for each
+     one a program can tell, and the rest listed as equivalent or out of reach with the reason, once. After this,
+     only `--in-diff` (1360). Most of what lives is equivalent, and following each costs more than it finds.
+
+The first runs: in the checker and `opening.rs`, 250 mutants were caught, 108 lived, 3 hung and 161 did not
+compile; in the back end, 23 were caught, 62 lived and 70 did not compile. The tests written for them, 75 in
+all, are what the slice adds to `tests/cases`:
+
+- **The sums that cannot overflow** (`sums.rs`) had no test of a loop whose sum does overflow, so a mutant that
+  took the test out of a loop where it is needed lived: compiled code would have wrapped where the interpreter
+  panics. Nine `panic_sum_loop_*` programs overflow at the narrow step that a wrong count would leave without its
+  test: a narrower value added or taken twice a round, a number, a negative number, a sum the loop also assigns,
+  a step in an arm of a `match`, a sum lent as `ref`, a loop inside the body, and steps whose sum over a round
+  does not fit in a `long`. The body holds no call and no formatted text, so the loop is split (a first version printed in the loop, which
+  `sums.rs` does not split, and caught nothing). With three more (a negative `sbyte` taken, a sum with a step of no
+  small bound, steps below a `long`), 39 of the 61 mutants of `sums.rs` are caught, where none was; the 20 that live
+  keep a test that could go, so they make a loop slower and not wrong.
+- **A static that would never be closed** was tested only for a writer of its own: `error_static_disposable`,
+  `error_static_writer_inside` (a field, a list, `shared`) and `error_static_writer_in_enum`.
+- **The checker**: 57 tests from the four groups, among them a field moved out through a `read` or a `ref`
+  parameter, a part moved in one branch of a `match` and not the other, a `Copyable` receiver changed by an
+  argument, a pointer given to a call that a later part changes, a borrow lent whole and through a field in one
+  call, the next round of a loop that changes what a borrow of the round before holds, and the methods of a
+  `shared checked` value inside `read ... as` and `ref ... as`. With them, 291 mutants of the checker and
+  `opening.rs` are caught, 3 hang and 27 live, from 108.
+
+Four faults of the checker came out of reading them, approved on 19 November 2026:
+
+1379. **`ref a`, `a` a `shared checked` value, lent it to be read only.** Where a `ref T` goes, the checker
+     wraps the borrow in the node that reaches what the value holds, and left that node without a type, so
+     `opening.rs` took the borrow for a read. Through the same variable, `read a as v { reset(ref a) }` was
+     taken; through another owner the change did not stop the program, and compiled code then read a text the
+     change had freed (`var head = seen.name[0..9]`, then `rename(ref other)`, then `print(head)`, found with
+     the address sanitizer). The node now has the type it stands for, in the three places it is made. Tested
+     by `error_checked_ref_whole_in_block` and `panic_checked_ref_whole_through_other`.
+1380. **`<`, `<=`, `>` and `>=` on two `shared checked` values** compare what they hold, as `==` and `!=` do,
+     so they look through the check too: `a < b` read `a` while another owner changed it. Only the interpreter
+     had the fault; compiled code does not take the comparison yet. Tested by `panic_checked_order_while_changed`.
+1381. **A borrow of the round before** is named so also where the borrow and the change start at the same place
+     (`later(Window { part = buffer.all() }, view)` in a loop), as `error_loop_borrow_same_call_next_round` shows.
+1382. **What a part of an index lends lasts until the index runs, also where its value is only looked at**:
+     `print(s[cut(ref s)])`, where `cut` gives `s` a new text, was taken (`var c = s[cut(ref s)]` was refused), and
+     compiled code read the old text after it was freed. The rule of 1340 and 1347 now holds on that way as well.
+     And the note says "the parts of an index". Tested by `error_index_part_changes_text_looked_at`.
+
+And one of the back end, found when the tests above were built under `-Werror`, approved on 19 November 2026:
+
+1391. **A method that takes `this` by value, called on a `shared` or a `shared checked` value**, was given the
+     address of the box where C wants the value, which the C compiler refuses: `sg build` could not build a
+     program the checker takes. The value is now copied out of its box, as it is out of a `T*`. Tested by
+     `panic_checked_value_method_while_changed`, which panics where the interpreter does.
+
+Equivalent or out of reach, read and left: the arms of `held` for `shared` around `shared`, a slice or `void`,
+which the parser and the rules of aliases refuse first; the guards whose arm gives what the next one gives
+(`part_loans` and `unnamed_owner` on a borrow, `lent_by` on a place); the count of loops in `loop_body`, which only
+a `break` outside a loop would see and which is refused before; the order of points of the same `seq`; and in the
+back end the mutants that only keep a test that could go (`sums` giving nothing, a step whose bound is not
+found), and the indentation of the copies of a loop. `opening.rs`'s guard of a comparison became equivalent with
+1380, and the arms of `loans_of` for a formatted value change only a refusal of a safe program
+(`s.write($"{r}".toString())` with `r` a borrow of `s`). Not read: the two of `not_lent`, and the arm of `part_loans`
+for a number given as the receiver, which lives although `ok_call_parts_copied` was written for it.
+
+Choices made in the hundred-and-nineteenth slice (fuzzing for differences, 1324). Approved on 19 November 2026:
+
+1361. **A generator of our own** (`fuzz/difference/`), a crate with no dependencies on stable Rust, as Csmith
+     and YARPGen are for C and rustlantis for Rust (which compares Miri with what LLVM makes): a seed gives one
+     program, the same on every machine, so a finding is its seed. libFuzzer is not used here: each input is a
+     build of C, and what guides it, the coverage of `sg`, does not see the C runtime.
+1362. **A program that the checker takes and that ends**: the generator keeps the type of every value it writes;
+     a loop runs a number of rounds written in it, a `while` has a counter that no `continue` steps over, a
+     function calls only those written before it, and one that calls itself is given its depth; the steps a
+     function may take are counted, so a program ends in a fraction of a second. Its only output is `print`: no
+     clock, randomness, files, `unsafe` or C. A program the checker refuses is kept apart and read: either the
+     generator wrote what it should not, or the checker is stricter than it should be.
+1363. **Panics are allowed and compared**: safe SG has no undefined behaviour, and an overflow, an index out of
+     range or a division by zero is a panic, whose message and code must be the same both ways. Most operations
+     are guarded (`i & 7` as an index, `d | 1` as a divisor, the wrapping methods), about one in ten not, so a
+     program does not stop at its first line.
+1364. **What is compared**: the interpreter against the debug build under the address and undefined-behaviour
+     sanitizers (`-O1`), output, errors and code; and when the program does not panic, the release build
+     (`-O2`, under the undefined-behaviour sanitizer) against the debug build, so the way that wraps never
+     reaches undefined behaviour of C. A report of a sanitizer, a run that does not end and a fault of `sg` are
+     findings too.
+1365. **Step by step**: stage 1, the integer types, `bool`, arithmetic, the bit operators, conversions,
+     comparisons, `if`, `match`, `for` and `while`, functions, recursion, arrays, consts and `print` with a
+     format; stage 2, `Copyable` structs, enums with what they carry and `match` on them, `T?` with `??` and
+     narrowing, lists, text and functions that give a `Result` with `??`, `match` and `try`. Borrows and moves
+     (stage 3) and tasks with channels (stage 4, compared in any order) come later.
+1366. **A finding is made smaller** by a reducer of our own: the generator writes a tree of statements, and
+     runs of them are taken away, halves first, then blocks replaced by what they hold, while the checker takes
+     the program and the finding stays. C-Reduce does not know SG. The program then becomes a test (1321).
+1367. **Where**: in the Linux image of the tests, without the network, six at once for two hours; what is found
+     and its seed stay in the volume of the fuzzing. On macOS only to see a finding again.
+1368. **The interpreter is the `sg` program**, run in a process of its own with a time limit, so a fault or a
+     hang of it does not stop the run, and the way a user runs a program is the one tried.
+
+The first run, two hours in the Linux container, six at once: 135 496 programs, of which 14 885 ended in a panic,
+gave the same output, message and code interpreted and compiled, and none drew a report of a sanitizer or a
+difference between the debug and the release build. The 60 programs the checker refused were all the
+generator's: it took a list written through an index that is not cut (`l[5] = x`) for one that was read, and the
+checker rightly said the list is given values that are never read; after the fix, 1 703 programs in three minutes
+on macOS, none refused. Writing the generator taught it the rules a program must keep, each a rule of the
+language as it is meant (`b.max(300)` on a `byte` is an `int`, 163; a `T?` has no text; `x is null` narrows `x`
+where it holds, so a `??` there is an error; a program nests at most 1000 deep). The reducer, tried on a difference
+made on purpose (the interpreter given one more line when the program has a `while`), took a program of 47 lines
+to 10 in 40 tries, nine seconds.
+
+Choices made in the hundred-and-twentieth slice (support for editors). Approved on 19 November 2026:
+
+1369. **The order**: (1) colours and the settings of the editor (a TextMate grammar, its brackets, comments and
+     indentation, and an extension for VS Code in `editors/vscode`), and (2) `sg lsp`, the errors as you write and
+     a hint applied with one click, in this slice; (3) the type under the pointer, going to a definition and the
+     names of a file, and (4) completion, which needs a parser that goes on after an error, later.
+1370. **The language server is in `sg`** (`sg lsp`), with JSON read and written by `sg` itself and no dependency,
+     as Deno and Gleam have it: one program, so the server and the compiler are always the same version.
+     rust-analyzer, zls and gopls are programs of their own. Publishing the extension is a step outward and is
+     asked for with the preview.
+1371. **A hint applied with one click** is an edit the error carries beside its text (`Diag::fix`: a place and
+     what is written there), given only where the code is certain; rustc marks such suggestions
+     `MachineApplicable`. The first four: a conversion (`(int)big`, or `(int)(a + b)`), `.clone()` of a text
+     that is only borrowed, `_ = ` before a value dropped on purpose, and the missing `use` line, put before
+     the first line of the file that is not a comment. An unused `Result` has none: its two ways are `try`,
+     which needs a function that gives a `Result`, and `_ =`, which drops the error, the risky way a hint does
+     not take (the first rule of hints in 04). Each fix is applied in `tests/lsp.rs` and the program then checks.
+1372. **When and what is checked**: 300 ms after the last change, on a thread of its own with the stack the
+     checker needs; the program is the one `sg` would read the file in (the nearest folder above it with a
+     `main.sg`, or the file alone with its modules beside it), and an open file is read from the editor, saved
+     or not. The program is only checked, never run; `test` blocks are checked too.
+1373. **What is shown**: the first error, as the checker stops there, in the file it is in (an error in a module
+     is shown in the module's file), with its notes and hint, and the second place it names as a link. An error in
+     the language's own module is shown at the start of the file. Several errors at once wait for a parser that
+     goes on after one (part 4).
+1374. **A fault of the checker does not stop the server**: a panic is caught and shown as one error, *the
+     checker stopped: this is a mistake in sg*, and the next change is checked again.
+1375. **Tested from outside** (`tests/lsp.rs`): a `sg lsp` process is talked to as an editor talks to it; the
+     first error comes, at the column the protocol counts (UTF-16, a character of two units before it), and goes
+     once the text is right; what the editor has not saved is read, an error in a module is shown there; each of
+     the four fixes is applied and the program then checks; a request it does not serve is answered with an error,
+     and the exit codes are as the protocol has them. `json.rs` and the reading of `file:` URIs have tests of
+     their own.
+1376. **The client for VS Code** is plain JavaScript (`extension.js`), with nothing to build, and one
+     dependency, vscode-languageclient 10.1.2, pinned in `package-lock.json` and watched by Dependabot. `sg.path`
+     names the `sg` program (`sg` on the `PATH` without it); a workspace that is not trusted cannot set it, so
+     a folder cannot choose the program the editor starts. Tried by hand in VS Code 1.146 on macOS: the colours,
+     the error under `int small = big` and its fix `(int)big`, after which the error went.
+
+Choices made in the hundred-and-twenty-first slice (the web site, `website/`). Approved on 19 November 2026:
+
+1383. **In the repository**: `website/`, built with Docusaurus 3.10.2 on Node 22, its packages pinned and
+     locked and watched by Dependabot, so a slice's one commit changes the code and the page that describes it.
+1384. **Laid out as Rust's site is**: a front page (what SG promises, three pillars, a program that runs, what was
+     built with it, where it stands), then Learn, Reference, Library and Status.
+1385. **A thin start**: the front page, how to install, a tour, SG for Rust programmers and the status; the
+     reference and the library point into the repository until the preview (942), and pages of the library
+     made from its source, as source.dot.net shows .NET's, come with a `sg doc` of their own later. The pages are
+     written for the reader, not copied from the record of decisions, in English. `learn/for-rust.md` is the
+     exception: `scripts/sync-docs.mjs` makes it from `design/06-rust-to-sg.md` before each build, which keeps it
+     as the slice left it.
+1386. **Search built into the site** (a plugin, no service outside it); Algolia's DocSearch, which asks for an
+     application and runs its own crawler, is for after the preview.
+1387. **The look**: the nazar bead (drawn simply for now, `static/img/logo.svg`) and Pasha; cobalt, sky blue,
+     white and navy; light or dark as the system is set.
+1388. **SG coloured on the site** with the words and marks of the VS Code grammar (`src/theme/prism-include-languages.js`).
+1389. **Published by Cloudflare Pages** from the repository on GitHub, no secret in it, with headers of its own
+     (`static/_headers`): a CSP that runs no inline script but the colour mode's, by its hash
+     (`scripts/check-csp.mjs` fails the build otherwise; Docusaurus's banner about a wrong base URL, another
+     inline script, is turned off), HSTS, `nosniff`, no framing. No analytics.
+1390. **Publishing is the author's step**: the account, the connection of Pages and the name servers of
+     sg-lang.org. Tried before it on macOS with the headers applied: the front page, the tour, and the search,
+     with no script refused. Every program on the pages runs (`npm run check`, 9 programs).
+1392. **The pages of the library are made from its code**, as Rust's `std` documentation and Go's pkg.go.dev
+     are: a page for each type, with its methods, what each does (from comments `///` written in the source),
+     examples that run, and a link from each item to its source on GitHub. A browser of the source itself, as
+     source.dot.net is for .NET, is for reading how a thing is built rather than how to use it, and is not what
+     these pages are; one may come later from what `sg lsp` knows. The pages come with the preview, from a
+     `sg doc` of their own and the `///` comments that were put off until then.
+
 ## Slower than C, and could be better
 
 Places where a measurement found SG slower than the same program in C and a fix is in sight. They are kept
@@ -8334,6 +8586,15 @@ check off.
 
 ## Not here yet
 
+- **Of fuzzing for differences (1361-1368)**: the generator writes stages 1 and 2; borrows and moves (stage 3) and
+  tasks with channels, compared in any order (stage 4), are still to come. The reducer takes statements and blocks
+  away, not parts of an expression.
+- **Of editor support (1369-1376)**: one error at a time, since the checker stops at the first; the type of what
+  the pointer is over, going to where a name is defined and the names of a file (part 3), and completion as you
+  type, which needs a parser that goes on after an error (part 4). Four hints have a fix so far; the others are
+  shown as text and get theirs one by one. Not published to the Marketplace or Open VSX: that comes with the
+  preview. A panic of the checker is caught and shown as one error, but no program is known that makes one, so
+  that way is not tested.
 - **Of the hundred-and-fourteenth slice**: the offset of the system's time zone is read again at each call
   (`toLocal`, `local`), each a call of the C library (`localtime_r`), which on glibc takes a lock; a cache of
   the rules is a candidate if a program that converts many moments asks for it. On Windows the exact zone of
@@ -8781,4 +9042,9 @@ what `lock` and `read ... as` open is lent for their block only, a `ref` reached
 reads, what a collection keeps it keeps all of, a `Disposable` value uses its borrow where its block ends, and
 what a `shared checked` value holds, looked at, is lent for its line (1340); compiled code finds the
 receiver of a built-in method before it computes the arguments (1348);
-then fuzzing and mutants of the rules of safety (1323-1325).
+and then the front end was fuzzed, its rules of safety tried with mutants and its programs fuzzed against
+compiled code (1323-1325, 1349-1368), which found an end of a channel behind a pointer that `sg build` could
+not compile, a `ref` of a `shared checked` value and an index that changes its text that compiled code turned
+into reads of freed memory, and the loops whose overflow check is left out untested (1377-1382). An editor shows the first error as a
+program is written and applies four hints with one click (`sg lsp`, `editors/vscode`, 1369-1376); the type
+under the pointer, going to a definition and completion come after it.

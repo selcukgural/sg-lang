@@ -1,0 +1,21 @@
+// A `ref` borrow of a field and a `read` borrow of a field inside it overlap in one call,
+// as a whole and its part do.
+struct Point {
+    int x
+    int y
+}
+
+struct Line {
+    Point start
+    Point end
+}
+
+void shift(ref Point point, read int amount) {
+    point.x += amount
+}
+
+void main() {
+    var line = Line { start = Point { x = 1, y = 2 }, end = Point { x = 3, y = 4 } }
+    shift(ref line.start, read line.start.y)
+    print(line.start.x)
+}

@@ -1,0 +1,23 @@
+// A field lent to a call covers the fields inside it: a later argument that changes one of
+// them changes what the call still looks at.
+struct Inner {
+    string name
+}
+
+struct Outer {
+    Inner inner
+}
+
+nint rename(ref string name) {
+    name = "a new long text that lives on the heap two".clone()
+    return 1
+}
+
+void show(read Inner inner, nint n) {
+    print(inner.name)
+}
+
+void main() {
+    var o = Outer { inner = Inner { name = "a long text that lives on the heap one".clone() } }
+    show(read o.inner, rename(ref o.inner.name))
+}

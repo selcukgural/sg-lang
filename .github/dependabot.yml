@@ -1,5 +1,7 @@
-# Dependency updates. The interpreter has no dependencies today; this keeps watch for the day
-# it gets one, and for the GitHub Actions that will be used once there is a CI.
+# Dependency updates: the GitHub Actions of the CI, the crate that fuzzes the front end (`fuzz/`,
+# which uses libfuzzer-sys), the extension for VS Code (`editors/vscode`, which uses
+# vscode-languageclient), the web site (`website/`, Docusaurus), and the interpreter, which has no dependencies today and is watched for
+# the day it gets one.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -8,5 +10,17 @@ updates:
       interval: weekly
   - package-ecosystem: github-actions
     directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /editors/vscode
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /website
     schedule:
       interval: weekly

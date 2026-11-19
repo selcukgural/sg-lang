@@ -1,0 +1,13 @@
+// A nullable field is not moved out of a value that others own too; the hint offers
+// `take()`, which leaves `null` there for the other owners.
+using UserRef = shared checked User
+
+struct User {
+    string? nick
+}
+
+void main() {
+    var user = new UserRef { nick = "ada" }
+    var nick = user.nick
+    print(nick ?? "none")
+}

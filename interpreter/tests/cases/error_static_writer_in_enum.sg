@@ -1,0 +1,10 @@
+// A variant of an enum that carries a map of results that hold a writer.
+enum Sink {
+    Nowhere
+    Files(HashMap<string, Result<int, StreamWriter>> byName)
+}
+
+static Sink Out = Sink.Nowhere
+
+void main() {
+}

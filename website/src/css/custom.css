@@ -1,0 +1,30 @@
+/* The colours of SG (choice 1387), from the nazar bead: cobalt, sky blue, white and navy. */
+:root {
+  --ifm-color-primary: #1c4fb8;
+  --ifm-color-primary-dark: #1947a6;
+  --ifm-color-primary-darker: #18439c;
+  --ifm-color-primary-darkest: #133781;
+  --ifm-color-primary-light: #1f57ca;
+  --ifm-color-primary-lighter: #215bd3;
+  --ifm-color-primary-lightest: #3a6fe0;
+  --ifm-code-font-size: 95%;
+  --ifm-font-family-base: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --ifm-navbar-background-color: #ffffff;
+  --sg-hero-background: linear-gradient(160deg, #0b1a33 0%, #13306e 55%, #1c4fb8 100%);
+  --sg-sky: #7fcbf5;
+  --docusaurus-highlighted-code-line-bg: rgba(28, 79, 184, 0.12);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #7fcbf5;
+  --ifm-color-primary-dark: #5fbdf2;
+  --ifm-color-primary-darker: #4fb6f1;
+  --ifm-color-primary-darkest: #20a0ea;
+  --ifm-color-primary-light: #9fd9f8;
+  --ifm-color-primary-lighter: #afe0f9;
+  --ifm-color-primary-lightest: #dff2fd;
+  --ifm-background-color: #0b1a33;
+  --ifm-navbar-background-color: #0b1a33;
+  --ifm-footer-background-color: #07122a;
+  --docusaurus-highlighted-code-line-bg: rgba(127, 203, 245, 0.15);
+}
