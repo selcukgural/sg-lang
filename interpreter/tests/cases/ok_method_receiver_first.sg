@@ -1,0 +1,93 @@
+// The value a built-in method is called on is found before its arguments are computed, also
+// when an argument is a new value that lives until the end of the statement.
+int at(int i) {
+    print($"at {i}")
+    return i
+}
+
+string word(read string w) {
+    print($"word {w}")
+    return w.clone()
+}
+
+char letter(char c) {
+    print($"letter {c}")
+    return c
+}
+
+struct Point : Equatable {
+    int x
+    int y
+}
+
+Point point(int x) {
+    print($"point {x}")
+    return Point { x = x, y = 0 }
+}
+
+struct Holder {
+    string label
+
+    read string name(read this) {
+        print("name")
+        return read this.label
+    }
+}
+
+struct Outlet {
+    Sender<string> tx
+
+    read Sender<string> sender(read this) {
+        print("sender")
+        return read this.tx
+    }
+}
+
+void main() {
+    var xs = List<string> { "abcab", "b" }
+    print(xs[at(0)].contains(read word("ca")))
+    print(xs[at(0)].startsWith(read word("ab")))
+    print(xs[at(0)].endsWith(read word("ab")))
+    print(xs[at(0)].indexOf(read word("b")) ?? -1)
+    print(xs[at(0)].lastIndexOf(read word("b")) ?? -1)
+    print(xs[at(0)].split(read word("c")).next() ?? "-")
+    print(xs[at(0)].replaceAll(read word("b"), read word("x")))
+    print(xs[at(0)].replaceAll(letter('a'), read word("y")))
+    print(xs[at(0)].equals(read word("abcab")))
+    print(xs[at(0)].compare(read word("b")))
+    print(xs[at(0)].equalsIgnoreCase(read word("ABCAB")))
+    print(xs[at(0)].equalsIgnoreAsciiCase(read word("ABCAB")))
+
+    var tables = List<HashMap<string, int>> { HashMap<string, int> { {"a", 1} } }
+    print(tables[at(0)].contains(read word("a")))
+    print(tables[at(0)].get(read word("a")) ?? -1)
+    tables[at(0)].add(word("b"), 2)
+    print(tables[at(0)].remove(read word("a")) ?? -1)
+    print(tables[at(0)])
+
+    var sets = List<HashSet<string>>()
+    sets.add(HashSet<string>())
+    _ = sets[0].add("a".clone())
+    print(sets[at(0)].contains(read word("a")))
+    print(sets[at(0)].add(word("b")))
+    print(sets[at(0)].remove(read word("a")))
+    print(sets[at(0)])
+
+    var lists = List<List<Point>> { List<Point> { Point { x = 1, y = 0 }, Point { x = 2, y = 0 } } }
+    print(lists[at(0)].indexOf(read point(2)) ?? -1)
+    print(lists[at(0)].contains(read point(3)))
+    print(lists[at(0)][..].indexOf(read point(1)) ?? -1)
+
+    var holder = Holder { label = "abc".clone() }
+    print(holder.name().contains(read word("b")))
+    print(holder.name().replaceAll(read word("b"), read word("x")))
+    print(holder.name().equals(read word("abc")))
+    var out = "".clone()
+    out.write(holder.name())
+    print(out)
+
+    var rx = Channel<string>(1)
+    var outlet = Outlet { tx = rx.sender() }
+    print(outlet.sender().send(word("sent")))
+    print(rx.receive() ?? "-")
+}

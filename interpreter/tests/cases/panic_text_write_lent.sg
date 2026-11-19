@@ -1,0 +1,13 @@
+// `a.name.write(...)` lends the text to change before the pieces of what is written are
+// computed: reading it through another owner in them stops the program there.
+struct Box {
+    string name
+}
+using BoxRef = shared checked Box
+
+void main() {
+    var a = new BoxRef { name = "some text".clone() }
+    var b = share a
+    a.name.write($"{b.name}{b.name}")
+    print(a.name)
+}

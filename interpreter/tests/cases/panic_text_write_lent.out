@@ -1,0 +1,9 @@
+panic: this `Box` is being changed, so it cannot be read here
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> panic_text_write_lent.sg:11:21
+ 11 |     a.name.write($"{b.name}{b.name}")
+    |                     ^
+  it is being changed from here:
+  --> panic_text_write_lent.sg:11:5
+ 11 |     a.name.write($"{b.name}{b.name}")
+    |     ^

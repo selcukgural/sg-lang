@@ -13334,6 +13334,28 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// A search of items for one that is looked at where it is (`pointer`): the items first,
+    /// then the one searched for (see `in_order`).
+    fn by_pointer(&mut self, helper: &str, receiver: Part, arg: &'a Expr, item: &Ty) -> Res<String> {
+        let before = self.mark();
+        let value = self.pointer(arg)?;
+        let part = self.part(arg, &Ty::Read(Box::new(item.clone())), value, before);
+        let (values, names) = self.in_order(vec![receiver, part])?;
+        Ok(sequence(&names, format!("{helper}({}, {})", values[0], values[1])))
+    }
+
+    /// The key a method of a table is given, as one of the values of the call (see `key`).
+    fn key_part(&mut self, table: &Ty, arg: &'a Expr) -> Res<Part> {
+        let (Ty::Map(key, _) | Ty::Set(key)) = table else { unreachable!("only called for a table") };
+        let before = self.mark();
+        let value = self.key(table, arg)?;
+        let ty = match &**key {
+            Ty::Int(_) | Ty::Bool | Ty::Char => (**key).clone(),
+            _ => Ty::Read(key.clone()),
+        };
+        Ok(self.part(arg, &ty, value, before))
+    }
+
     /// Writes, once, the helpers of a table that give a `V?` (`get` and `remove` of a map) and
     /// the one that needs a copy of the key (`getOrAdd`).
     fn table_helper(&mut self, table: &Ty, what: &str, span: Span) -> Res<String> {
@@ -13583,7 +13605,9 @@ impl<'a> Emitter<'a> {
     /// The methods of the ends of a channel in code that is not async: a send or a receive
     /// waits on this thread.
     fn chan_call(&mut self, call: ChanCall, told: bool, recv: &'a Expr, args: &'a [Expr], expr: &'a Expr) -> Res<String> {
-        let chan = format!("(*{})", self.list_address(recv)?);
+        let address = self.list_address(recv)?;
+        let after = self.pre.len();
+        let chan = format!("(*{address})");
         let (Ty::Channel(item) | Ty::Sender(item)) = recv.ty.strip_borrow().clone() else { unreachable!("the checker calls these on an end of a channel") };
         match call {
             ChanCall::Sender => return Ok(format!("sg_chan_more({chan}, true)")),
@@ -13592,17 +13616,24 @@ impl<'a> Emitter<'a> {
         }
         let held = self.ctype(&item, expr.span)?;
         let sends = call == ChanCall::Send;
+        // The value sent is computed before the token, as it is written before it.
+        let sent = match sends {
+            true => Some(self.value_as(&args[0], &item)?),
+            false => None,
+        };
         let token = match told {
             true => format!("(*{})", self.value(&args[usize::from(sends)])?),
             false => "NULL".to_string(),
         };
         let (slot, gave) = (self.temp(), self.temp());
-        let start = match sends {
-            true => {
-                let value = self.value_as(&args[0], &item)?;
-                format!("{held} {slot} = {value}; int {gave} = sg_chan_send({chan}, &{slot}, {token});")
+        let start = match sent {
+            // The end of the channel is found before the value is computed.
+            Some(value) => {
+                let end = format!("{}*", self.ctype(recv.ty.strip_borrow(), recv.span)?);
+                let address = self.receiver_first(&end, address, after);
+                format!("{end} {slot}c = {address}; {held} {slot} = {value}; int {gave} = sg_chan_send(*{slot}c, &{slot}, {token});")
             }
-            false => format!("{held} {slot}; int {gave} = sg_chan_receive({chan}, &{slot}, {token});"),
+            None => format!("{held} {slot}; int {gave} = sg_chan_receive({chan}, &{slot}, {token});"),
         };
         let gives = self.chan_gives(call, told, &item, &gave, &slot, expr.span)?;
         Ok(format!("({{ {start} {gives}; }})"))
@@ -14156,6 +14187,31 @@ impl<'a> Emitter<'a> {
             names.push(temp);
         }
         format!("({{ {lines}sg_change_reserved(&{guard}); {helper}({}); }})", names.join(", "))
+    }
+
+    /// The receiver of a built-in method, written before its arguments, kept in a temporary
+    /// when an argument has put lines before the statement since (`after`: the length of `pre`
+    /// when the receiver was written). Those lines run first, so without it the argument would
+    /// be computed before the receiver, and before the receiver is lent: a change the argument
+    /// makes to the `shared checked` value the receiver is in would not be seen, and a call
+    /// that gives the receiver would run after the argument. `value` is a look at text, a
+    /// window or an address, of the C type `ctype`, which a copy leaves as it is.
+    fn receiver_first(&mut self, ctype: &str, value: String, after: usize) -> String {
+        if self.pre.len() == after {
+            return value;
+        }
+        let temp = self.temp();
+        self.pre.insert(after, format!("{ctype} {temp} = {value};"));
+        temp
+    }
+
+    /// A text a built-in method is called on and the text it is given, as looks at text, the
+    /// receiver first (see `receiver_first`).
+    fn text_and_argument(&mut self, recv: &'a Expr, arg: &'a Expr) -> Res<(String, String)> {
+        let text = self.view(recv)?;
+        let after = self.pre.len();
+        let other = self.view(arg)?;
+        Ok((self.receiver_first("sg_str", text, after), other))
     }
 
     /// The borrows of `shared checked` values the function makes, declared at its start with
@@ -16473,7 +16529,7 @@ impl<'a> Emitter<'a> {
             }
             Ty::Int(_) => {
                 let value = self.value(arg)?;
-                Ok((format!("uint8_t {temp}b[1] = {{ {value} }}; sg_str {temp}n = {{ {temp}b, 1 }};"), format!("{temp}n")))
+                Ok((format!("uint8_t {temp}b[1]; {temp}b[0] = {value}; sg_str {temp}n = (sg_str){{ {temp}b, 1 }};"), format!("{temp}n")))
             }
             _ => {
                 let value = self.view(arg)?;
@@ -18068,6 +18124,7 @@ impl<'a> Emitter<'a> {
             }
             _ => self.first(recv, head)?,
         };
+        let after = self.pre.len();
         while let Ty::Read(inner) | Ty::Ref(inner) | Ty::Ptr(inner) | Ty::Shared(inner, _) = ty {
             if matches!(**inner, Ty::Atomic(_)) {
                 break;
@@ -18091,6 +18148,8 @@ impl<'a> Emitter<'a> {
             parts.push(self.part(arg, &item, value, before));
         }
         let (values, names) = self.in_order(parts)?;
+        // The value worked on is found before the arguments are computed.
+        let at = self.receiver_first(&format!("{ctype}*"), at, after);
         let (p, f) = (self.temp(), failure.c_name());
         let weak = matches!(op, AtomicOp::CompareExchange(true));
         let pointer = format!("{ctype}* {p} = {at};");
@@ -19271,64 +19330,74 @@ impl<'a> Emitter<'a> {
                     let table = table.clone();
                     let base = mangle(&table).ok_or_else(|| not_yet(expr.span, &format!("the type `{table}`")))?;
                     self.ctype(&table, expr.span)?;
+                    let before = self.mark();
                     let address = self.list_address(recv)?;
+                    let receiver = self.part(recv, &Ty::Read(Box::new(table.clone())), address.clone(), before);
                     // A table in a `shared checked` value that the method changes: lent to read
                     // while the arguments are computed, then to change (`reserved`).
                     let reserved = self.reserving.take();
                     let is_map = matches!(table, Ty::Map(..));
-                    match (name.as_str(), is_map) {
-                        ("length", _) => Ok(format!("{address}->len")),
-                        ("clear", _) => Ok(format!("sg_clear_{base}({address})")),
-                        ("contains", _) => Ok(format!("sg_contains_{base}({address}, {})", self.key(&table, &args[0])?)),
-                        // The key and the value are computed before the table is touched.
+                    // The table, then the arguments, in order (see `in_order`): the key and the
+                    // value are computed before the table is touched.
+                    let mut parts = vec![receiver];
+                    match (name.as_str(), &table) {
+                        ("length" | "clear", _) => {}
+                        ("add", Ty::Map(key, value)) | ("getOrAdd", Ty::Map(key, value)) => {
+                            let first = match name.as_str() {
+                                "add" => {
+                                    let before = self.mark();
+                                    let written = self.value_as(&args[0], key)?;
+                                    self.part(&args[0], key, written, before)
+                                }
+                                _ => self.key_part(&table, &args[0])?,
+                            };
+                            parts.push(first);
+                            let before = self.mark();
+                            let written = self.value_as(&args[1], value)?;
+                            parts.push(self.part(&args[1], value, written, before));
+                        }
+                        ("add", Ty::Set(key)) => {
+                            let before = self.mark();
+                            let written = self.value_as(&args[0], key)?;
+                            parts.push(self.part(&args[0], key, written, before));
+                        }
+                        _ => parts.push(self.key_part(&table, &args[0])?),
+                    }
+                    let (mut values, names) = self.in_order(parts)?;
+                    let address = values.remove(0);
+                    let called = match (name.as_str(), is_map) {
+                        ("length", _) => return Ok(format!("{address}->len")),
+                        ("clear", _) => return Ok(format!("sg_clear_{base}({address})")),
+                        ("contains", _) => format!("sg_contains_{base}({address}, {})", values[0]),
                         ("add", true) => {
-                            let Ty::Map(key, value) = &table else { unreachable!("it is a map") };
-                            let mut parts = Vec::new();
-                            for (arg, want) in args.iter().zip([&**key, &**value]) {
-                                let before = self.mark();
-                                let written = self.value_as(arg, want)?;
-                                parts.push(self.part(arg, want, written, before));
-                            }
-                            let (values, names) = self.in_order(parts)?;
                             let loc = self.loc(expr.span);
-                            let called = self.reserved(reserved, &format!("sg_add_{base}"), vec![address, values[0].clone(), values[1].clone(), loc]);
-                            Ok(sequence(&names, called))
+                            self.reserved(reserved, &format!("sg_add_{base}"), vec![address, values[0].clone(), values[1].clone(), loc])
                         }
-                        ("add", false) => {
-                            let Ty::Set(key) = &table else { unreachable!("it is a set") };
-                            let item = self.value_as(&args[0], key)?;
-                            Ok(self.reserved(reserved, &format!("sg_add_{base}"), vec![address, item]))
-                        }
-                        ("remove", false) => {
-                            let key = self.key(&table, &args[0])?;
-                            Ok(self.reserved(reserved, &format!("sg_remove_{base}"), vec![address, key]))
-                        }
+                        ("add", false) => self.reserved(reserved, &format!("sg_add_{base}"), vec![address, values[0].clone()]),
+                        ("remove", false) => self.reserved(reserved, &format!("sg_remove_{base}"), vec![address, values[0].clone()]),
                         ("remove", true) => {
                             let helper = self.table_helper(&table, "remove", expr.span)?;
-                            let key = self.key(&table, &args[0])?;
-                            Ok(self.reserved(reserved, &helper, vec![address, key]))
+                            self.reserved(reserved, &helper, vec![address, values[0].clone()])
                         }
                         // A look at a value that may not be there; see `get` of a list.
                         ("get", true) => {
                             let Ty::Map(_, value) = &table else { unreachable!("it is a map") };
                             let helper = self.table_helper(&table, "get", expr.span)?;
-                            let called = format!("{helper}({address}, {})", self.key(&table, &args[0])?);
+                            let called = sequence(&names, format!("{helper}({address}, {})", values[0]));
                             if is_option(&Ty::Nullable(value.clone())) {
                                 return Ok(called);
                             }
                             let (ctype, temp) = (self.ctype(&Ty::Nullable(value.clone()), expr.span)?, self.temp());
                             self.pre.push(format!("{ctype} {temp} = {called};"));
-                            Ok(format!("(&{temp})"))
+                            return Ok(format!("(&{temp})"));
                         }
                         ("getOrAdd", true) => {
-                            let Ty::Map(_, value) = &table else { unreachable!("it is a map") };
                             let helper = self.table_helper(&table, "getOrAdd", expr.span)?;
-                            let key = self.key(&table, &args[0])?;
-                            let value = self.value_as(&args[1], value)?;
-                            Ok(self.reserved(reserved, &helper, vec![address, key, value]))
+                            self.reserved(reserved, &helper, vec![address, values[0].clone(), values[1].clone()])
                         }
-                        _ => Err(not_yet(expr.span, &format!("the method `{name}`"))),
-                    }
+                        _ => return Err(not_yet(expr.span, &format!("the method `{name}`"))),
+                    };
+                    Ok(sequence(&names, called))
                 }
                 // The searches in items that are in order, on a list, an array or a window,
                 // each through the window of its items.
@@ -19345,11 +19414,11 @@ impl<'a> Emitter<'a> {
                     let helper = self.window_helper(&slice, name, expr.span)?;
                     let before = self.mark();
                     let window = self.window(recv)?;
+                    let receiver = self.part(recv, &Ty::Read(Box::new(slice.clone())), window, before);
                     let called = if matches!(*item, Ty::Int(_) | Ty::Float(_) | Ty::Char | Ty::Str) {
-                        let receiver = self.part(recv, &Ty::Read(Box::new(slice.clone())), window, before);
                         self.call(helper, Some(receiver), args, false, &Ty::Int(IntTy::Nint))?
                     } else {
-                        format!("{helper}({window}, {})", self.pointer(&args[0])?)
+                        self.by_pointer(&helper, receiver, &args[0], &item)?
                     };
                     match name.as_str() {
                         "binarySearch" => {
@@ -19378,10 +19447,10 @@ impl<'a> Emitter<'a> {
                     let address = self.list_address(recv)?;
                     let Ty::List(item) = &list else { unreachable!("it is a list") };
                     let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str);
+                    let receiver = self.part(recv, &Ty::Read(Box::new(list.clone())), address, before);
                     let called = if by_pointer {
-                        format!("{helper}({address}, {})", self.pointer(&args[0])?)
+                        self.by_pointer(&helper, receiver, &args[0], item)?
                     } else {
-                        let receiver = self.part(recv, &Ty::Read(Box::new(list.clone())), address, before);
                         self.call(helper, Some(receiver), args, false, &expr.ty)?
                     };
                     match name.as_str() {
@@ -19427,10 +19496,10 @@ impl<'a> Emitter<'a> {
                     let before = self.mark();
                     let window = self.window(recv)?;
                     let by_pointer = matches!(name.as_str(), "indexOf" | "contains") && !matches!(**item, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Str);
+                    let receiver = self.part(recv, &Ty::Read(Box::new(slice.clone())), window, before);
                     let called = if by_pointer {
-                        format!("{helper}({window}, {})", self.pointer(&args[0])?)
+                        self.by_pointer(&helper, receiver, &args[0], item)?
                     } else {
-                        let receiver = self.part(recv, &Ty::Read(Box::new(slice.clone())), window, before);
                         self.call(helper, Some(receiver), args, false, &expr.ty)?
                     };
                     match name.as_str() {
@@ -19810,11 +19879,13 @@ impl<'a> Emitter<'a> {
                 // the block for what is written next.
                 Callee::Plain if matches!(name.as_str(), "write" | "clear") && (is_text(&recv.ty) || is_text_behind_pointer(&recv.ty)) => {
                     let out = self.list_address(recv)?;
+                    let after = self.pre.len();
                     match name.as_str() {
                         "clear" => Ok(format!("(({out})->len = 0)")),
                         _ => {
                             let temp = self.temp();
                             let written = self.write_into(&temp, &args[0])?;
+                            let out = self.receiver_first("sg_string*", out, after);
                             Ok(format!("({{ sg_string* {temp} = {out}; {written}; }})"))
                         }
                     }
@@ -19832,12 +19903,15 @@ impl<'a> Emitter<'a> {
                     "indexOf" | "lastIndexOf" | "contains" | "startsWith" | "endsWith" | "split" => {
                         let temp = self.temp();
                         let text = self.view(recv)?;
+                        let after = self.pre.len();
                         // A separator that is one character is kept inside the iterator.
                         if name == "split" && *args[0].ty.strip_borrow() == Ty::Char {
                             let separator = self.value(&args[0])?;
+                            let text = self.receiver_first("sg_str", text, after);
                             return Ok(format!("({{ sg_str {temp}h = {text}; sg_split_char({temp}h, {separator}); }})"));
                         }
                         let (setup, needle) = self.needle(&args[0], &temp)?;
+                        let text = self.receiver_first("sg_str", text, after);
                         let start = format!("sg_str {temp}h = {text}; {setup}");
                         Ok(match name.as_str() {
                             "indexOf" | "lastIndexOf" => {
@@ -19857,15 +19931,24 @@ impl<'a> Emitter<'a> {
                     "replaceAll" => {
                         let (temp, other) = (self.temp(), self.temp());
                         let text = self.view(recv)?;
-                        let (find, old) = self.needle(&args[0], &temp)?;
+                        let after = self.pre.len();
+                        let (mut find, old) = self.needle(&args[0], &temp)?;
+                        let between = self.pre.len();
                         let (put, new) = self.needle(&args[1], &other)?;
+                        // What is searched for is computed before what replaces it.
+                        if self.pre.len() > between {
+                            self.pre.insert(between, std::mem::take(&mut find));
+                        }
+                        let text = self.receiver_first("sg_str", text, after);
                         let loc = self.loc(expr.span);
                         Ok(format!("({{ sg_str {temp}h = {text}; {find} {put} sg_replace_all({temp}h, {old}, {new}, {loc}); }})"))
                     }
                     "repeat" => {
                         let temp = self.temp();
                         let text = self.view(recv)?;
+                        let after = self.pre.len();
                         let times = self.value_as(&args[0], &Ty::Int(IntTy::Nint))?;
+                        let text = self.receiver_first("sg_str", text, after);
                         let loc = self.loc(expr.span);
                         Ok(format!("({{ sg_str {temp}h = {text}; sg_repeat({temp}h, {times}, {loc}); }})"))
                     }
@@ -19883,21 +19966,26 @@ impl<'a> Emitter<'a> {
                     "equalsIgnoreCase" => {
                         self.made.insert("unicode".to_string());
                         let temp = self.temp();
-                        let (text, other) = (self.view(recv)?, self.view(&args[0])?);
+                        let (text, other) = self.text_and_argument(recv, &args[0])?;
                         Ok(format!("({{ sg_str {temp}a = {text}; sg_str {temp}b = {other}; sg_eq_case({temp}a, {temp}b); }})"))
                     }
                     "equalsIgnoreAsciiCase" => {
                         let temp = self.temp();
-                        let (text, other) = (self.view(recv)?, self.view(&args[0])?);
+                        let (text, other) = self.text_and_argument(recv, &args[0])?;
                         Ok(format!("({{ sg_str {temp}a = {text}; sg_str {temp}b = {other}; sg_eq_ascii_case({temp}a, {temp}b); }})"))
                     }
                     "chars" | "splitWhitespace" | "lines" => Ok(format!("sg_iter_of({})", self.view(recv)?)),
                     "length" => Ok(format!("{}.len", self.view(recv)?)),
-                    "equals" => Ok(format!("sg_eq({}, {})", self.view(recv)?, self.view(&args[0])?)),
+                    "equals" => {
+                        let temp = self.temp();
+                        let (text, other) = self.text_and_argument(recv, &args[0])?;
+                        Ok(format!("({{ sg_str {temp}a = {text}; sg_eq({temp}a, {other}); }})"))
+                    }
                     // Less than zero, zero or more than zero, as -1, 0 and 1.
                     "compare" => {
                         let temp = self.temp();
-                        Ok(format!("({{ int {temp} = sg_cmp({}, {}); (int32_t)(({temp} > 0) - ({temp} < 0)); }})", self.view(recv)?, self.view(&args[0])?))
+                        let (text, other) = self.text_and_argument(recv, &args[0])?;
+                        Ok(format!("({{ sg_str {temp}a = {text}; int {temp} = sg_cmp({temp}a, {other}); (int32_t)(({temp} > 0) - ({temp} < 0)); }})"))
                     }
                     // A copy is the one place where text is allocated.
                     "clone" => Ok(format!("sg_clone({})", self.view(recv)?)),

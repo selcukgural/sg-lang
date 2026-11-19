@@ -1,0 +1,9 @@
+panic: this `Box` is being read, so it cannot be changed here
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> panic_method_receiver_lent.sg:9:5
+ 9 |     b.name.write(" and more")
+   |     ^
+  it is being read from here:
+  --> panic_method_receiver_lent.sg:16:11
+ 16 |     print(a.name.contains(read grow(read b)))
+    |           ^

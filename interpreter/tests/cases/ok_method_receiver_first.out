@@ -1,0 +1,87 @@
+at 0
+word ca
+true
+at 0
+word ab
+true
+at 0
+word ab
+true
+at 0
+word b
+1
+at 0
+word b
+4
+at 0
+word c
+ab
+at 0
+word b
+word x
+axcax
+at 0
+letter a
+word y
+ybcyb
+at 0
+word abcab
+true
+at 0
+word b
+-1
+at 0
+word ABCAB
+true
+at 0
+word ABCAB
+true
+at 0
+word a
+true
+at 0
+word a
+1
+at 0
+word b
+at 0
+word a
+1
+at 0
+{"b": 2}
+at 0
+word a
+true
+at 0
+word b
+true
+at 0
+word a
+true
+at 0
+{"b"}
+at 0
+point 2
+1
+at 0
+point 3
+false
+at 0
+point 1
+0
+name
+word b
+true
+name
+word b
+word x
+axc
+name
+word abc
+true
+name
+abc
+sender
+word sent
+true
+sent

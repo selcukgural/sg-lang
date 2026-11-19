@@ -1,0 +1,17 @@
+// The value a built-in method is called on is lent before its arguments are computed: an
+// argument that changes it through another owner stops the program, in compiled code too.
+struct Box {
+    string name
+}
+using BoxRef = shared checked Box
+
+string grow(read BoxRef b) {
+    b.name.write(" and more")
+    return "n".clone()
+}
+
+void main() {
+    var a = new BoxRef { name = "n".clone() }
+    var b = share a
+    print(a.name.contains(read grow(read b)))
+}

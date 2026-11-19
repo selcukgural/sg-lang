@@ -8187,17 +8187,22 @@ the choices it raised:
      macOS (403 of 1675 programs compile through C, 97 of them under the thread sanitizer); only the checker
      changed, so it was not run again on Linux and Windows.
 
-They wait for approval:
-
-1348. **The receiver of a built-in method is computed before its arguments in compiled code too.** Found
-     while testing (11): in `a.name.startsWith(read mk(read b))` compiled code computes `mk(...)`, whose
-     value is kept in a temporary, before it lends `a.name`, so the interpreter stops at the change `mk`
-     makes and the compiled program does not (it reads the new text; nothing is read after it is freed).
-     The same for `contains`, `replaceAll`, `indexOf` and the other methods of a text that take a text.
-     And in `a.name.write($"{b.name}{b.name}")`, with `b` another owner of `a`, both stop the program, but
-     compiled code reads `b.name` before it lends `a.name` to change, so it names the other access.
-     Proposed: the receiver goes into a temporary before such an argument, as `in_order` does for the
-     arguments of a call. Not fixed yet.
+1348. **The receiver of a built-in method is computed before its arguments in compiled code too**, approved
+     on 19 November 2026. Found while testing (11): an argument whose value is kept in a temporary until the
+     statement ends (`a.name.startsWith(read mk(read b))`, where `mk` returns a new text) was computed on a
+     line of its own before the statement, so before the receiver was found and lent: the interpreter
+     stopped at the change `mk` makes through `b`, another owner of `a`, and the compiled program did not (it
+     read the new text; nothing was read after it was freed). The same for the other methods of a text
+     that take a text, for `write` (`a.name.write($"{b.name}")` named the other access), for the methods
+     of a map and a set, for the searches of a list, an array or a window for an item compared where it
+     is, for `send` and for the atomic operations, and also where no `shared checked` value is in play: a
+     receiver given by a call (`holder.name().contains(read word("b"))`) ran after the argument, and the
+     second argument of `replaceAll` before the first. Now the receiver goes into a temporary before such an
+     argument, as `in_order` does for the arguments of a call, and the arguments of these methods are
+     computed in order; it costs a copy of a pointer or of a look at text, and only there. Tested by
+     `ok_method_receiver_first`, `panic_method_receiver_lent` and `panic_text_write_lent`. `cargo test`
+     passes on macOS and on Linux in a container (412 of 1710 programs compile through C, 99 of them under
+     the thread sanitizer).
 
 ## Slower than C, and could be better
 
@@ -8774,5 +8779,6 @@ call runs, with no exception (1340, 1347); an item a loop lends borrows the coll
 ways join and are held into the next round of a loop, writing through a `ref` variable uses it, and
 what `lock` and `read ... as` open is lent for their block only, a `ref` reached through `read` only
 reads, what a collection keeps it keeps all of, a `Disposable` value uses its borrow where its block ends, and
-what a `shared checked` value holds, looked at, is lent for its line (1340);
+what a `shared checked` value holds, looked at, is lent for its line (1340); compiled code finds the
+receiver of a built-in method before it computes the arguments (1348);
 then fuzzing and mutants of the rules of safety (1323-1325).
