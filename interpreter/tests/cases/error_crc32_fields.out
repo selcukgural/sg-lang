@@ -1,0 +1,5 @@
+error: a `Crc32` is made by its functions, not field by field
+  --> error_crc32_fields.sg:2:13
+ 2 |     var c = Crc32 { state = 0 }
+   |             ^^^^^
+  hint: `Crc32()`, then `c.update(read bytes)` and `c.value()`; or `Crc32.of(read bytes)` at once

@@ -28,6 +28,7 @@ const STD_FILES: &[(&str, &str, &[&str])] = &[
     ("signals.sg", include_str!("std/signals.sg"), &["Signal", "Signals", "SignalListener"]),
     ("atomic.sg", include_str!("std/atomic.sg"), &["MemoryOrder"]),
     ("encoding.sg", include_str!("std/encoding.sg"), &["Hex", "Base64", "DecodeError"]),
+    ("checksum.sg", include_str!("std/checksum.sg"), &["Crc32"]),
 ];
 
 /// The functions of the built-in `File` that the language's own module does the work of

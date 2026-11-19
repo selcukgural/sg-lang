@@ -1,0 +1,83 @@
+// CRC-32 as zlib, gzip, PNG and ZIP compute it (IEEE 802.3, reflected, polynomial 0xEDB88320). Written
+// in SG and brought along by the language (choice 1408). Sixteen bytes are taken in each step through
+// sixteen tables of 256 numbers ("slicing by 16", as Rust's crc32fast does without the CPU's CRC
+// instructions); the tables are a const, found when the program is compiled.
+
+const uint[4096] Crc32Tables = crc32Tables()
+
+// Table `k` (from `k * 256`) gives what a byte is worth when `k` more bytes follow it in the step.
+uint[4096] crc32Tables() {
+    var tables = uint[4096]
+    for n in 0..256 {
+        uint c = (uint)n
+        for _ in 0..8 {
+            if c & 1 != 0 {
+                c = 0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c = c >> 1
+            }
+        }
+        tables[n] = c
+    }
+    for n in 0..256 {
+        for k in 1..16 {
+            uint c = tables[(k - 1) * 256 + n]
+            tables[k * 256 + n] = tables[(nint)(c & 255)] ^ (c >> 8)
+        }
+    }
+    return tables
+}
+
+// The running CRC-32 of bytes given piece by piece: `var c = Crc32()`, `c.update(read piece)` for each
+// piece, `c.value()` at the end, the same number `Crc32.of` gives for all the bytes at once.
+public struct Crc32 {
+    // The register, kept inverted as the algorithm wants it.
+    uint state
+
+    // A CRC of no bytes yet.
+    public Crc32 create() {
+        return Crc32 { state = 0xFFFF_FFFF }
+    }
+
+    // The CRC-32 of `data`: `Crc32.of("123456789".asBytes())` is `0xCBF43926`.
+    public uint of(read byte[] data) {
+        return crc32Run(0xFFFF_FFFF, data) ^ 0xFFFF_FFFF
+    }
+
+    // Takes in more bytes.
+    public void update(ref this, read byte[] data) {
+        this.state = crc32Run(this.state, data)
+    }
+
+    // The CRC-32 of the bytes taken in so far; more may still be taken in after it.
+    public uint value(read this) {
+        return this.state ^ 0xFFFF_FFFF
+    }
+}
+
+// The register after `data`, sixteen bytes in each step and the last ones one by one.
+uint crc32Run(uint state, read byte[] data) {
+    uint c = state
+    nint n = data.length()
+    nint i = 0
+    while i + 16 <= n {
+        uint a = c ^ uint.fromLittleEndian(data[i..i + 4])
+        uint b = uint.fromLittleEndian(data[i + 4..i + 8])
+        uint d = uint.fromLittleEndian(data[i + 8..i + 12])
+        uint e = uint.fromLittleEndian(data[i + 12..i + 16])
+        c = Crc32Tables[3840 + (nint)(a & 255)] ^ Crc32Tables[3584 + (nint)(a >> 8 & 255)] ^
+            Crc32Tables[3328 + (nint)(a >> 16 & 255)] ^ Crc32Tables[3072 + (nint)(a >> 24)] ^
+            Crc32Tables[2816 + (nint)(b & 255)] ^ Crc32Tables[2560 + (nint)(b >> 8 & 255)] ^
+            Crc32Tables[2304 + (nint)(b >> 16 & 255)] ^ Crc32Tables[2048 + (nint)(b >> 24)] ^
+            Crc32Tables[1792 + (nint)(d & 255)] ^ Crc32Tables[1536 + (nint)(d >> 8 & 255)] ^
+            Crc32Tables[1280 + (nint)(d >> 16 & 255)] ^ Crc32Tables[1024 + (nint)(d >> 24)] ^
+            Crc32Tables[768 + (nint)(e & 255)] ^ Crc32Tables[512 + (nint)(e >> 8 & 255)] ^
+            Crc32Tables[256 + (nint)(e >> 16 & 255)] ^ Crc32Tables[(nint)(e >> 24)]
+        i += 16
+    }
+    while i < n {
+        c = Crc32Tables[(nint)((c ^ data[i]) & 255)] ^ (c >> 8)
+        i += 1
+    }
+    return c
+}

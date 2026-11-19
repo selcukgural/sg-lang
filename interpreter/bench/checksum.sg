@@ -1,0 +1,14 @@
+// Four gigabytes through the language's own CRC-32, 64 KB of an array at a time: `Crc32` of `std`,
+// written in SG, next to zlib's `crc32` called from C.
+
+void main() {
+    var block = byte[65536]
+    for i in 0..65536 {
+        block[i] = (byte)((i * 31 + 7) & 255)
+    }
+    var crc = Crc32()
+    for _ in 0..65536 {
+        crc.update(read block)
+    }
+    print(crc.value())
+}

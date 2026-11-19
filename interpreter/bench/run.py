@@ -10,8 +10,8 @@ the three systems:
     python3 bench/run.py --runs 1 spawn   one run of each instead of the best of five, for a
                                           program that takes long (starting 5,000 programs on
                                           Windows)
-    python3 bench/run.py -L folder ...    the libraries of `crc`, `deflate`, `sqlite` and `curl`
-                                          are also looked for there (on Windows, vcpkg's `lib`
+    python3 bench/run.py -L folder ...    the libraries of `crc`, `checksum`, `deflate`, `sqlite`
+                                          and `curl` are also looked for there (on Windows, vcpkg's `lib`
                                           and `bin`; their headers through `CPATH`)
 
 A program whose C needs a library writes it on its first line, `/* link: -lz */`, and where the
@@ -39,7 +39,7 @@ PROGRAMS = """fib primes collatz words list expr parse vector counts show lookup
 numbers floats fields lines copy bytes table blocks keywords classes rewrite tree tasks async
 asynclines tasklist asynccopy echo echosync echowork netlines ring crc deflate clock dates rng
 secure listing status spawn capture pipelines pipesasync spawnasync case letters udpecho
-udpechosync inline callback sqlite curl signals bitfields atomics queue statics""".split()
+udpechosync inline callback sqlite curl signals bitfields atomics queue statics checksum""".split()
 
 
 def compiler():

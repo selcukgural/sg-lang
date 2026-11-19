@@ -1,0 +1,41 @@
+// CRC-32 (choice 1408): the check value of the standard and other known values, nothing at all, every
+// way of cutting a text in two pieces handed to `update` (each length around the step of sixteen
+// bytes), and a list, an array and a slice lent alike.
+
+void main() {
+    print($"{Crc32.of("123456789".asBytes()):x8}")
+    print($"{Crc32.of("The quick brown fox jumps over the lazy dog".asBytes()):x8}")
+    var none = List<byte>()
+    print($"{Crc32.of(read none):x8}")
+    var zeros = byte[32]
+    print($"{Crc32.of(read zeros):x8}")
+    var ones = byte[32](255)
+    print($"{Crc32.of(read ones):x8}")
+    var all = List<byte>()
+    for i in 0..256 {
+        all.add((byte)i)
+    }
+    print($"{Crc32.of(read all):x8}")
+    print($"{Crc32.of(all[0..16]):x8} {Crc32.of(all[0..17]):x8} {Crc32.of(all[1..33]):x8}")
+
+    var text = "Sixteen bytes in each step, and the last ones one by one, as zlib computes it."
+    var bytes = text.asBytes()
+    uint whole = Crc32.of(bytes)
+    nint agree = 0
+    for cut in 0..bytes.length() + 1 {
+        var c = Crc32()
+        c.update(bytes[0..cut])
+        c.update(bytes[cut..bytes.length()])
+        if c.value() == whole {
+            agree += 1
+        }
+    }
+    print($"{agree} of {bytes.length() + 1} cuts agree with {whole:x8}")
+
+    var c = Crc32()
+    print($"{c.value():x8}")
+    c.update("1234".asBytes())
+    print($"{c.value():x8}")
+    c.update("56789".asBytes())
+    print($"{c.value():x8} = {Crc32.of("123456789".asBytes()):x8}")
+}

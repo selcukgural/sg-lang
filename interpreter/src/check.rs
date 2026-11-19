@@ -239,6 +239,7 @@ fn std_makers(short: &str) -> &'static str {
         "Received" => "`socket.receiveFrom(ref buffer)`",
         "Hex" => "nothing is made: the functions are called on the type, `Hex.encode(read bytes)`, `Hex.decode(text)`",
         "Base64" => "nothing is made: the functions are called on the type, `Base64.encode(read bytes)`, `Base64.decode(text)`",
+        "Crc32" => "`Crc32()`, then `c.update(read bytes)` and `c.value()`; or `Crc32.of(read bytes)` at once",
         "DateTime" => "`DateTime.utc(year, month, day, hour, minute, second)`, `DateTime.fromUnixSeconds(n)`",
         _ => "nothing is made: the functions are called on the type",
     }

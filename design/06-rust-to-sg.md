@@ -15,7 +15,7 @@ The details of each line are in the [decisions file](04-decisions-and-open-quest
 [interpreter README](../interpreter/README.md). This file is brought up to date with every slice of the
 language, in the same commit.
 
-Last brought up to date: 19 November 2026, the hundred-and-twenty-fourth slice (hex and Base64 in `std`, 1407).
+Last brought up to date: 19 November 2026, the hundred-and-twenty-fifth slice (CRC-32 in `std`, 1408).
 
 ## Functions and variables
 
@@ -513,6 +513,14 @@ Last brought up to date: 19 November 2026, the hundred-and-twenty-fourth slice (
 | `base64::engine::general_purpose::STANDARD.encode(bytes)`, `.decode(text)` | `Base64.encode(read bytes)`, `Base64.decode(text)` | built | Strict as the crate is: no white space, padding where it belongs, no bits left over |
 | `URL_SAFE_NO_PAD.encode(bytes)`, `.decode(text)` | `Base64.encodeUrl(read bytes)`, `Base64.decodeUrl(text)` | built | `-` and `_`, no padding |
 | `base64::DecodeError::InvalidByte(i, b)`, `InvalidLength` | `DecodeError.InvalidCharacter(position)`, `InvalidLength` | built | The place of the byte, not the byte |
+
+## Checksums
+
+| Rust | SG | Status | Note |
+|---|---|---|---|
+| `crc32fast::hash(bytes)` | `Crc32.of(read bytes)` | built | In the language's own module; a `uint` |
+| `let mut h = crc32fast::Hasher::new(); h.update(bytes); h.finalize()` | `var c = Crc32(); c.update(read bytes); c.value()` | built | `value()` does not end it: more may be taken in after it |
+| `crc32fast` with the processor's CRC instructions | none yet | | Sixteen bytes in a step through tables, as `crc32fast` without them; zlib's `crc32` through C for that speed |
 
 ## Tests and the tools
 
