@@ -1,0 +1,5 @@
+error: a field of a `packed` struct is not lent: `p.arr` may lie where a `uint[4]` cannot be reached
+  --> error_packed_field_range.sg:15:15
+ 15 |     print(sum(p.arr[0..2]))
+    |               ^^^^^
+  hint: copy it out: `var part = p.arr`, and write it back whole

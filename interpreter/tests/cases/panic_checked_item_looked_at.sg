@@ -1,0 +1,24 @@
+// An item of a list in a `shared checked` value, looked at in a formatted line, is lent until the
+// line ends: a call that empties the list through another owner stops the program.
+struct Item : Formattable {
+    string label
+    int n
+}
+
+struct Box {
+    List<Item> items
+}
+
+using BoxRef = shared checked Box
+
+int grow(read BoxRef b) {
+    b.items.clear()
+    return 0
+}
+
+void main() {
+    var a = new BoxRef { items = List<Item>() }
+    a.items.add(Item { label = "first".clone(), n = 1 })
+    var b = share a
+    print($"{a.items[0]} {grow(read b)}")
+}

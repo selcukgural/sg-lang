@@ -1,0 +1,10 @@
+// Nor can the text change while the list is used.
+struct Word<from source> : Copyable {
+    read string text
+}
+void main() {
+    var text = "hello world, a long text that lives on the heap".clone()
+    var all = List<Word> { Word { text = read text } }
+    text = "changed to something else entirely".clone()
+    print(all[0].text)
+}

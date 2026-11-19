@@ -1,0 +1,9 @@
+error: `text` cannot be changed here: `all` borrows from it and is used again later
+  --> error_collection_literal_changed.sg:8:5
+ 8 |     text = "changed to something else entirely".clone()
+   |     ^^^^
+  `all` borrowed it here:
+  --> error_collection_literal_changed.sg:7:42
+ 7 |     var all = List<Word> { Word { text = read text } }
+   |                                          ^^^^^^^^^
+  hint: finish with `all` before this line: a borrow ends at its last use

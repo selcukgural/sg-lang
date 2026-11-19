@@ -8144,6 +8144,39 @@ the choices it raised:
      Tested by `error_lock_name_kept`, `_returned`, `error_as_name_kept` and `ok_lock_name_copied`. `cargo test` passes on
      macOS (405 of 1691 programs compile through C, 98 of them under the thread sanitizer); only the checker
      changed, so it was not run again on Linux and Windows.
+     (6) **A `ref` field reached through `read` only reads, and a change through it changes what it
+     borrowed.** `void clear(read this) { this.items.clear() }`, where `items` is a `ref List<string>`,
+     changed the list through a struct that was only looked at (a field, an item, a method that changes,
+     a range); now that is the error a `read` borrow gives, as `&&mut T` only reads in Rust. And `var v =
+     read w.items[0]` followed by `w.items.clear()` freed the text `v` looked at, since the change
+     touched `w` and not the list `w.items` borrowed; it touches that list now. (7) **Every value that
+     carries a borrow says so**: the items of a list being built (`List<Word> { Word { text = read text }
+     }`) carry what they borrow, as a struct being built does; what a value borrows is written out for
+     each kind of expression, with no case left to a default. (8) **What a collection keeps, it keeps
+     all of**: `add` of a list put only the last item's borrow in the list, `getOrAdd`, the key of
+     `HashMap.add` and `HashSet.add` none, and writing an item (`xs[i] = w`) forgot what the other items
+     borrowed; each now adds to what the collection borrows. (9) **A `Disposable` value that borrows
+     uses the borrow where its block ends**, since its `dispose` runs there: the owner cannot be changed
+     before that, and an owner of the same block declared after it, which is gone first, is an error
+     (*declare `text` before `g`*). (10) **A range of an array in a `packed` struct is not taken**: it
+     would be a slice whose items lie where their type cannot be reached, as a field there is not lent.
+     (11) **What a `shared checked` value holds, looked at, is lent until its line ends.** A text, a list
+     or a struct in it that a line looks at where it lies (`$"{a.name} {grow(read b)}"`, `a.name ==
+     ...`, `a.name[grow(read b)]`) was opened only for a look, so a call later in the line that changed
+     it through another owner freed what was being looked at; now the line holds it, and the change
+     stops the program with the usual panic, compiled and interpreted alike. A number read out is still
+     only looked at, and so is the value an item is read out of once the item is read. And a borrow of it
+     put into a collection (`all.add(Word { text = read a.name })`), which outlives the line, is an error
+     with the hint `.clone()`. Tested by `error_ref_field_through_read`, `_item_through_read`,
+     `_change_clashes`, `ok_ref_field_changes`, `error_collection_literal_outlives`, `_changed`,
+     `error_list_add_keeps_every_borrow`, `error_set_add_keeps_borrow`, `error_map_get_or_add_keeps_borrow`,
+     `error_dispose_uses_borrow`, `_owner_declared_after`, `error_packed_field_range`,
+     `error_checked_borrow_kept_by_list`, `panic_checked_text_looked_at`, `_text_indexed` and
+     `_item_looked_at`; each was taken before, or ran into freed memory compiled.
+     `cargo test` passes on macOS and on Linux in a container (409 of 1707 programs compile through C, 98
+     of them under the thread sanitizer); on Linux `ok_task_list` once came out of order under the thread
+     sanitizer while the macOS tests ran beside it, and passed again alone.
+
 1347. **No exception for plain data**, approved on 19 November 2026: a later part that changes what an earlier
      one lends is an error also where the change frees nothing, as with a local struct of numbers in
      `counter.plus(counter.next(), counter.next())`, where compiled code gave `plus` the value after the
@@ -8153,6 +8186,18 @@ the choices it raised:
      `error_call_receiver_changed_by_argument` and `error_call_text_lent_then_changed`. `cargo test` passes on
      macOS (403 of 1675 programs compile through C, 97 of them under the thread sanitizer); only the checker
      changed, so it was not run again on Linux and Windows.
+
+They wait for approval:
+
+1348. **The receiver of a built-in method is computed before its arguments in compiled code too.** Found
+     while testing (11): in `a.name.startsWith(read mk(read b))` compiled code computes `mk(...)`, whose
+     value is kept in a temporary, before it lends `a.name`, so the interpreter stops at the change `mk`
+     makes and the compiled program does not (it reads the new text; nothing is read after it is freed).
+     The same for `contains`, `replaceAll`, `indexOf` and the other methods of a text that take a text.
+     And in `a.name.write($"{b.name}{b.name}")`, with `b` another owner of `a`, both stop the program, but
+     compiled code reads `b.name` before it lends `a.name` to change, so it names the other access.
+     Proposed: the receiver goes into a temporary before such an argument, as `in_order` does for the
+     arguments of a call. Not fixed yet.
 
 ## Slower than C, and could be better
 
@@ -8727,5 +8772,7 @@ the alignment of its type (1339); a function whose frame no stack holds is an er
 hundred-and-seventeenth and the next fix the rules of borrowing: what a part of a call lends lasts until the
 call runs, with no exception (1340, 1347); an item a loop lends borrows the collection, borrows join where
 ways join and are held into the next round of a loop, writing through a `ref` variable uses it, and
-what `lock` and `read ... as` open is lent for their block only (1340);
+what `lock` and `read ... as` open is lent for their block only, a `ref` reached through `read` only
+reads, what a collection keeps it keeps all of, a `Disposable` value uses its borrow where its block ends, and
+what a `shared checked` value holds, looked at, is lent for its line (1340);
 then fuzzing and mutants of the rules of safety (1323-1325).

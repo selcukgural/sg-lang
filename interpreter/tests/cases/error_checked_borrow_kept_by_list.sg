@@ -1,0 +1,15 @@
+// What a list keeps outlives the line, and a borrow of a `shared checked` value ends with it.
+struct Word<from source> : Copyable {
+    read string text
+}
+struct Counter {
+    string name
+}
+void main() {
+    var a = new shared checked Counter { name = "a long text that lives on the heap, number one".clone() }
+    var b = share a
+    var all = List<Word>()
+    all.add(Word { text = read a.name })
+    b.name = "changed to a new long text on the heap".clone()
+    print(all[0].text)
+}

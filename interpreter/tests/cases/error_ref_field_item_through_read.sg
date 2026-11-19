@@ -1,0 +1,15 @@
+// An item of a list a `ref` field borrows is not written through `read this` either.
+struct Tally<from source> {
+    ref List<int> counts
+
+    void reset(read this) {
+        this.counts[0] = 0
+    }
+}
+
+void main() {
+    var counts = List<int> { 3 }
+    var tally = Tally { counts = ref counts }
+    tally.reset()
+    print(counts)
+}

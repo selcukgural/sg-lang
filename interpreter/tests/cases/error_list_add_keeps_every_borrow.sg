@@ -1,0 +1,14 @@
+// Each item added to a list adds what it borrows: the list borrows from both texts.
+struct Word<from source> : Copyable {
+    read string text
+}
+
+void main() {
+    var a = "first text that is long enough for the heap".clone()
+    var b = "second text that is long enough for the heap".clone()
+    var all = List<Word>()
+    all.add(Word { text = read a })
+    all.add(Word { text = read b })
+    a = "changed".clone()
+    print(all[0].text)
+}

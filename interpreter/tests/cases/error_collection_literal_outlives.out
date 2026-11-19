@@ -1,0 +1,5 @@
+error: `all` borrows from `text` here, but `text` is gone at the end of its block and `all` is used after that
+  --> error_collection_literal_outlives.sg:9:42
+ 9 |         all = List<Word> { Word { text = read text } }
+   |                                          ^^^^^^^^^
+  hint: declare `text` where `all` is declared, so that it lives as long

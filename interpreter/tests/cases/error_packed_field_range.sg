@@ -1,0 +1,16 @@
+// A range of an array field of a `packed` struct would be a slice whose items lie where a `uint` cannot be reached.
+packed struct P : Copyable {
+    byte tag
+    uint[4] arr
+}
+uint sum(read uint[] xs) {
+    uint total = 0
+    for x in xs {
+        total += x
+    }
+    return total
+}
+void main() {
+    var p = P { tag = 1, arr = uint[4] { 1, 2, 3, 4 } }
+    print(sum(p.arr[0..2]))
+}

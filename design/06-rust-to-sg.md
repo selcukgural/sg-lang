@@ -228,6 +228,8 @@ Last brought up to date: 19 November 2026, the hundred-and-seventeenth slice.
 | `'a`, `fn f<'a>(a: &'a str) -> &'a str` | `read string f(read string a) from a` | built | Only a returned borrow names where it comes from |
 | `struct Token<'a> { text: &'a str }` | `struct Token<from source> { read string text }` | built | |
 | non-lexical lifetimes | a borrow lasts until its last use | built | |
+| `&&mut T` only reads | a `ref` field reached through `read this` only reads | built | |
+| drop check: a value with `Drop` that borrows outlives what it borrows | the same for a `Disposable` value | built | Its `dispose` at the end of the block is a use of the borrow; an owner declared after it is an error |
 | two-phase borrows: `v.push(v.len())` is fine, `f(&v[0], g(&mut v))` is not | the same | built | What a part of a call lends lasts until the call runs; a later part may read it, not change or move it |
 | `Box<T>`, `Box::new(x)` | `T*`, `new x` | built | |
 | `Option<Box<T>>` | `T*?` | built | |

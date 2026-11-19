@@ -1,0 +1,5 @@
+error: this item is reached through a `read` borrow and cannot be written
+  --> error_ref_field_item_through_read.sg:6:9
+ 6 |         this.counts[0] = 0
+   |         ^^^^^^^^^^^^^^
+  hint: take the value as `ref` instead of `read`

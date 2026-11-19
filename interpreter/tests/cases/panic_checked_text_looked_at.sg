@@ -1,0 +1,17 @@
+// A text of a `shared checked` value looked at in a line is lent until the line ends: another owner that
+// changes it meanwhile stops the program, instead of freeing the bytes being written.
+struct Box {
+    string name
+}
+using BoxRef = shared checked Box
+
+int grow(read BoxRef b) {
+    b.name.write("a much longer text than the block of the name has room for, so it moves")
+    return 7
+}
+
+void main() {
+    var a = new BoxRef { name = "n".clone() }
+    var b = share a
+    print($"{a.name} {grow(read b)}")
+}

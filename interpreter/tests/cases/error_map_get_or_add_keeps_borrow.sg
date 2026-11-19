@@ -1,0 +1,13 @@
+// `getOrAdd` keeps the value it adds, and what that value borrows.
+struct Word<from source> : Copyable {
+    read string text
+}
+void main() {
+    var map = HashMap<int, Word>()
+    var text = "hello world, a long text that lives on the heap".clone()
+    var w = map.getOrAdd(1, Word { text = read text })
+    print(w.text.length())
+    text = "changed to something else entirely".clone()
+    var again = map.get(1) ?? panic("none")
+    print(again.text)
+}

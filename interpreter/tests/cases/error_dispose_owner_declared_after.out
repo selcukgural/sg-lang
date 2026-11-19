@@ -1,0 +1,5 @@
+error: `g` borrows from `text`, which is declared after it: at the end of the block `text` is gone first, and the `dispose` of `g` would still look at it
+  --> error_dispose_owner_declared_after.sg:17:24
+ 17 |     g = Guard { text = read text }
+    |                        ^^^^^^^^^
+  hint: declare `text` before `g`

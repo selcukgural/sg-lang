@@ -1,0 +1,5 @@
+error: `clear` changes the list, but it is reached through a `read` borrow
+  --> error_ref_field_through_read.sg:8:9
+ 8 |         this.items.clear()
+   |         ^^^^^^^^^^
+  hint: take the value as `ref` instead of `read`

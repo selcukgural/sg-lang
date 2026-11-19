@@ -1,0 +1,11 @@
+// Changing a list through a `ref` field changes the list the field borrowed: a borrow of an item ends first.
+struct W<from source> {
+    ref List<string> items
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap one".clone() }
+    var w = W { items = ref xs }
+    var v = read w.items[0]
+    w.items.clear()
+    print(v)
+}

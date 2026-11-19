@@ -24,6 +24,10 @@ type Res<T> = Result<T, Diag>;
 enum Use {
     /// Copied out, compared, or only passed through.
     Value,
+    /// The value a field or an item is read out of (`a.order` in `a.order[0] + 1`), or what a
+    /// `match` without names tests: only looked at, and not lent for the line as a whole value
+    /// is.
+    Hold,
     /// Assigned.
     Change,
     /// Lent to read.
@@ -42,7 +46,7 @@ impl Use {
     /// How a `shared checked` value is opened for this use.
     fn opening(self) -> Opening {
         match self {
-            Use::Value => Opening::Look,
+            Use::Value | Use::Hold => Opening::Look,
             Use::Change => Opening::Change,
             Use::Lend => Opening::Lend,
             Use::LendChange => Opening::LendChange,
@@ -55,7 +59,7 @@ impl Use {
         if self.lends() {
             Use::Lend
         } else {
-            Use::Value
+            Use::Hold
         }
     }
 }
@@ -353,14 +357,29 @@ impl Opener<'_> {
         let used = match (used, &expr.ty, expr.is_place()) {
             (Use::Value, Ty::Read(_), true) => Use::Lend,
             (Use::Value, Ty::Ref(_), true) => Use::LendChange,
+            // A text, a collection or a struct is looked at where it lies, not copied out
+            // (`$"{a.name} {grow(read b)}"`): it is lent until its line ends, so that another
+            // owner that changes it meanwhile stops the program instead of freeing what is
+            // looked at.
+            (Use::Value, ty, true) if !matches!(ty, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Raw(_) | Ty::CFunc(..) | Ty::Func(..)) => Use::Lend,
             _ => used,
         };
         // Where what was lent to a call (or a `match`) began.
         let mut call = None;
         match &mut expr.kind {
-            ExprKind::Field { recv, .. } => self.reached(recv, used)?,
+            ExprKind::Field { recv, .. } => self.reached(recv, used.of_holder_read())?,
             ExprKind::Index { recv, index, .. } => {
-                self.reached(recv, used)?;
+                // The value an item is read out of is looked at while the index is computed
+                // (`a.name[grow(read b)]`): lent until the item is read, as to a call; when a
+                // field of the item is read after it, until the line ends.
+                match used {
+                    Use::Value => {
+                        call = Some(self.borrowed.len());
+                        self.reached(recv, Use::Lend)?;
+                    }
+                    Use::Hold => self.reached(recv, Use::Lend)?,
+                    _ => self.reached(recv, used.of_holder_read())?,
+                }
                 self.expr(index, Use::Value)?;
             }
             ExprKind::Slice { recv, from, to } => {
@@ -451,7 +470,7 @@ impl Opener<'_> {
             }
             ExprKind::IsVariant { expr: inner, pattern, by_ref, .. } => {
                 let used = match (names_in(pattern), *by_ref) {
-                    (false, _) => Use::Value,
+                    (false, _) => Use::Hold,
                     (true, false) => Use::Lend,
                     (true, true) => Use::LendChange,
                 };
@@ -459,7 +478,7 @@ impl Opener<'_> {
             }
             ExprKind::Match { subject, arms, borrowed } => {
                 call = Some(self.borrowed.len());
-                let used = if *borrowed { Use::Lend } else { Use::Value };
+                let used = if *borrowed { Use::Lend } else { Use::Hold };
                 self.subject(subject, used, Why::Match)?;
                 let why = self.why;
                 for arm in arms {
@@ -514,8 +533,19 @@ impl Opener<'_> {
                     false => self.expr(recv, used)?,
                 }
                 let lent = self.borrowed.len();
+                // What a collection keeps (`all.add(Word { text = read a.name })`) outlives
+                // the line, and a borrow of a `shared checked` value ends with it.
+                let keeps = matches!(callee, Callee::Replace) || (matches!(callee, Callee::Plain) && matches!(name.as_str(), "add" | "getOrAdd"));
                 for arg in args {
+                    let before = self.borrowed.len();
                     self.expr(arg, Use::Value)?;
+                    if keeps && (self.lends)(&arg.ty) && self.borrowed.len() > before {
+                        let kept = &self.borrowed[before];
+                        let holder = self.text(recv.span);
+                        return Err(Diag::error(arg.span, format!("this borrows what a `shared checked` value holds, and such a borrow ends with its line; `{holder}` would keep it"))
+                            .related(kept.span, "it is borrowed here")
+                            .hint("keep a copy instead: `.clone()`"));
+                    }
                 }
                 // The receiver that was lent to read while the arguments were computed is lent
                 // to change now.
@@ -573,10 +603,18 @@ impl Opener<'_> {
 }
 
 impl Use {
+    /// The use of the value a field or an item is read out of: a value read is only held.
+    fn of_holder_read(self) -> Use {
+        match self {
+            Use::Value => Use::Hold,
+            other => other,
+        }
+    }
+
     /// The use a loop over a `shared checked` collection makes of it: always lent.
     fn max_lend(self) -> Use {
         match self {
-            Use::Value => Use::Lend,
+            Use::Value | Use::Hold => Use::Lend,
             other => other,
         }
     }

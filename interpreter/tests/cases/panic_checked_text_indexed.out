@@ -1,0 +1,9 @@
+panic: this `Box` is being read, so it cannot be changed here
+  a `shared checked` value is lent to one that changes it or to any number that read it, not both at once
+  --> panic_checked_text_indexed.sg:10:5
+ 10 |     b.name.write("a much longer text than the block of the name has room for, so it moves")
+    |     ^
+  it is being read from here:
+  --> panic_checked_text_indexed.sg:17:11
+ 17 |     print(a.name[grow(read b)])
+    |           ^

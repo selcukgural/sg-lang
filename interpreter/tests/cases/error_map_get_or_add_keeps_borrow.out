@@ -1,0 +1,9 @@
+error: `text` cannot be changed here: `map` borrows from it and is used again later
+  --> error_map_get_or_add_keeps_borrow.sg:10:5
+ 10 |     text = "changed to something else entirely".clone()
+    |     ^^^^
+  `map` borrowed it here:
+  --> error_map_get_or_add_keeps_borrow.sg:8:43
+ 8 |     var w = map.getOrAdd(1, Word { text = read text })
+   |                                           ^^^^^^^^^
+  hint: finish with `map` before this line: a borrow ends at its last use

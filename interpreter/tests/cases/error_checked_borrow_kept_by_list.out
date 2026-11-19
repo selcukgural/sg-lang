@@ -1,0 +1,9 @@
+error: this borrows what a `shared checked` value holds, and such a borrow ends with its line; `all` would keep it
+  --> error_checked_borrow_kept_by_list.sg:12:13
+ 12 |     all.add(Word { text = read a.name })
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  it is borrowed here:
+  --> error_checked_borrow_kept_by_list.sg:12:32
+ 12 |     all.add(Word { text = read a.name })
+    |                                ^
+  hint: keep a copy instead: `.clone()`

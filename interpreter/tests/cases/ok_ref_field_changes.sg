@@ -1,0 +1,17 @@
+// A struct that holds a `ref` borrow changes what it borrowed through `ref this`, or as a local.
+struct Tally<from source> {
+    ref List<int> counts
+
+    void bump(ref this, nint i) {
+        this.counts[i] += 1
+    }
+}
+
+void main() {
+    var counts = List<int> { 0, 0 }
+    var tally = Tally { counts = ref counts }
+    tally.bump(1)
+    tally.counts.add(5)
+    tally.bump(0)
+    print(counts)
+}

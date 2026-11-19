@@ -1,0 +1,12 @@
+// A set keeps the items added to it, and what they borrow.
+struct Word<from source> : Copyable, Equatable, Hashable {
+    read string text
+}
+
+void main() {
+    var text = "a text that is long enough for the heap".clone()
+    var seen = HashSet<Word>()
+    _ = seen.add(Word { text = read text })
+    text = "changed".clone()
+    print(seen.length())
+}

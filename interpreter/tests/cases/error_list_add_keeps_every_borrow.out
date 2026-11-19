@@ -1,0 +1,9 @@
+error: `a` cannot be changed here: `all` borrows from it and is used again later
+  --> error_list_add_keeps_every_borrow.sg:12:5
+ 12 |     a = "changed".clone()
+    |     ^
+  `all` borrowed it here:
+  --> error_list_add_keeps_every_borrow.sg:10:27
+ 10 |     all.add(Word { text = read a })
+    |                           ^^^^^^
+  hint: finish with `all` before this line: a borrow ends at its last use

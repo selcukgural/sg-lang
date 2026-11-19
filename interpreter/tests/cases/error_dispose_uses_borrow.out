@@ -1,0 +1,10 @@
+error: `text` cannot be changed here: `g` borrows from it and is used again later
+  `g` is `Disposable`: its `dispose` runs at the end of its block and uses it there
+  --> error_dispose_uses_borrow.sg:13:5
+ 13 |     text = "a new long text that lives on the heap two".clone()
+    |     ^^^^
+  `g` borrowed it here:
+  --> error_dispose_uses_borrow.sg:11:28
+ 11 |     var g = Guard { text = read text }
+    |                            ^^^^^^^^^
+  hint: put `g` in a block of its own that ends before this line

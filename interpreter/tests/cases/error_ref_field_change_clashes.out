@@ -1,0 +1,9 @@
+error: `w.items` cannot be changed here: `v` borrows from it and is used again later
+  --> error_ref_field_change_clashes.sg:9:5
+ 9 |     w.items.clear()
+   |     ^^^^^^^
+  `v` borrowed it here:
+  --> error_ref_field_change_clashes.sg:7:25
+ 7 |     var w = W { items = ref xs }
+   |                         ^^^^^^
+  hint: finish with `v` before this line: a borrow ends at its last use

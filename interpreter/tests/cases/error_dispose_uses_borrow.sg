@@ -1,0 +1,14 @@
+// A `Disposable` value that borrows uses the borrow where its block ends: its `dispose` runs there.
+struct Guard<from source> : Disposable {
+    read string text
+
+    void dispose(ref this) {
+        print(this.text)
+    }
+}
+void main() {
+    var text = "a long text that lives on the heap one".clone()
+    var g = Guard { text = read text }
+    print(g.text.length())
+    text = "a new long text that lives on the heap two".clone()
+}

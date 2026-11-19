@@ -1,0 +1,18 @@
+// A byte of a text in a `shared checked` value: the text is looked at while the index is
+// computed, so a call in the index that changes it through another owner stops the program.
+struct Box {
+    string name
+}
+
+using BoxRef = shared checked Box
+
+nint grow(read BoxRef b) {
+    b.name.write("a much longer text than the block of the name has room for, so it moves")
+    return 0
+}
+
+void main() {
+    var a = new BoxRef { name = "n".clone() }
+    var b = share a
+    print(a.name[grow(read b)])
+}

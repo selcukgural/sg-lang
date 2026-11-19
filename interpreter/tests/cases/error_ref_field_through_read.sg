@@ -1,0 +1,17 @@
+// A `ref` field reached through `read this` only reads: the struct is only looked at.
+struct W<from source> {
+    ref List<string> items
+    read string first(read this) from source {
+        return read this.items[0]
+    }
+    void clear(read this) {
+        this.items.clear()
+    }
+}
+void main() {
+    var xs = List<string> { "a long text that lives on the heap one".clone() }
+    var w = W { items = ref xs }
+    var v = w.first()
+    w.clear()
+    print(v)
+}

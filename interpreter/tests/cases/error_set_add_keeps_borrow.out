@@ -1,0 +1,9 @@
+error: `text` cannot be changed here: `seen` borrows from it and is used again later
+  --> error_set_add_keeps_borrow.sg:10:5
+ 10 |     text = "changed".clone()
+    |     ^^^^
+  `seen` borrowed it here:
+  --> error_set_add_keeps_borrow.sg:9:32
+ 9 |     _ = seen.add(Word { text = read text })
+   |                                ^^^^^^^^^
+  hint: finish with `seen` before this line: a borrow ends at its last use

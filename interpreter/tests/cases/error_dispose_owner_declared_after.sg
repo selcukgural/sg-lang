@@ -1,0 +1,18 @@
+// An owner declared after a `Disposable` value that borrows it is gone first at the end of the block.
+struct Guard<from source> : Disposable {
+    read string text
+
+    void dispose(ref this) {
+        print(this.text)
+    }
+}
+void main() {
+    var g = Guard { text = "none" }
+    if true {
+        var text = "a long text that lives on the heap one".clone()
+        var h = Guard { text = read text }
+        _ = h
+    }
+    var text = "a long text that lives on the heap one".clone()
+    g = Guard { text = read text }
+}

@@ -1,0 +1,12 @@
+// The items of a list being built carry what they borrow: the list cannot outlive the text.
+struct Word<from source> : Copyable {
+    read string text
+}
+void main() {
+    var all = List<Word>()
+    if true {
+        var text = "hello world, a long text that lives on the heap".clone()
+        all = List<Word> { Word { text = read text } }
+    }
+    print(all[0].text)
+}
